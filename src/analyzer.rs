@@ -1,17 +1,19 @@
-#[derive(Clone, Debug, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
     pub id: usize,
     pub content: String,
     pub marked: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FilterType {
     Include,
     Exclude,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Filter {
     pub id: usize,
     pub pattern: String,
@@ -197,6 +199,19 @@ impl LogAnalyzer {
                 self.filters.swap(index, index + 1);
             }
         }
+    }
+
+    pub fn save_filters(&self, path: &str) -> anyhow::Result<()> {
+        let json = serde_json::to_string_pretty(&self.filters)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn load_filters(&mut self, path: &str) -> anyhow::Result<()> {
+        let json = std::fs::read_to_string(path)?;
+        self.filters = serde_json::from_str(&json)?;
+        self.next_filter_id = self.filters.iter().map(|f| f.id).max().unwrap_or(0) + 1;
+        Ok(())
     }
 }
 

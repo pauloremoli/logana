@@ -663,6 +663,20 @@ impl App {
                         }
                     }
                 }
+                "save-filters" => {
+                    if let Some(path) = command_parts.get(1) {
+                        if !path.is_empty() {
+                            let _ = self.analyzer.save_filters(path);
+                        }
+                    }
+                }
+                "load-filters" => {
+                    if let Some(path) = command_parts.get(1) {
+                        if !path.is_empty() {
+                            let _ = self.analyzer.load_filters(path);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
