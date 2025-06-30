@@ -1,8 +1,5 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use ratatui::{
-    prelude::*,
-    widgets::{Block, Borders, Paragraph},
-};
+use ratatui::{prelude::*, widgets::{Block, Borders, Paragraph, Wrap}};
 use std::time::{Duration, Instant};
 
 use crate::analyzer::{FilterType, LogAnalyzer, LogEntry};
@@ -31,6 +28,8 @@ pub struct App {
     pub search_input: String,
     pub search_forward: bool, // true for '/', false for '?'
     pub g_key_pressed: bool,
+    pub wrap: bool,
+    pub horizontal_scroll: usize,
 }
 
 impl App {
@@ -50,6 +49,8 @@ impl App {
             search_input: String::new(),
             search_forward: true,
             g_key_pressed: false,
+            wrap: true,
+            horizontal_scroll: 0,
         }
     }
 
@@ -81,6 +82,24 @@ impl App {
                                 }
                                 KeyCode::Char('k') => {
                                     self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                                    self.g_key_pressed = false;
+                                }
+                                KeyCode::Char('h') => {
+                                    if !self.wrap {
+                                        self.horizontal_scroll =
+                                            self.horizontal_scroll.saturating_sub(1);
+                                    }
+                                    self.g_key_pressed = false;
+                                }
+                                KeyCode::Char('l') => {
+                                    if !self.wrap {
+                                        self.horizontal_scroll =
+                                            self.horizontal_scroll.saturating_add(1);
+                                    }
+                                    self.g_key_pressed = false;
+                                }
+                                KeyCode::Char('w') => {
+                                    self.wrap = !self.wrap;
                                     self.g_key_pressed = false;
                                 }
                                 KeyCode::Char('G') => {
@@ -285,6 +304,22 @@ impl App {
                 }
                 KeyCode::Char('k') => {
                     self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    self.g_key_pressed = false;
+                }
+                KeyCode::Char('h') => {
+                    if !self.wrap {
+                        self.horizontal_scroll = self.horizontal_scroll.saturating_sub(1);
+                    }
+                    self.g_key_pressed = false;
+                }
+                KeyCode::Char('l') => {
+                    if !self.wrap {
+                        self.horizontal_scroll = self.horizontal_scroll.saturating_add(1);
+                    }
+                    self.g_key_pressed = false;
+                }
+                KeyCode::Char('w') => {
+                    self.wrap = !self.wrap;
                     self.g_key_pressed = false;
                 }
                 KeyCode::Char('G') => {
@@ -514,9 +549,14 @@ impl App {
             })
             .collect();
 
-        let paragraph = Paragraph::new(log_lines)
+        let mut paragraph = Paragraph::new(log_lines)
             .block(Block::default().borders(Borders::ALL).title("Logs"))
-            .scroll((self.scroll_offset as u16, 0));
+            .scroll((self.scroll_offset as u16, self.horizontal_scroll as u16));
+
+        if self.wrap {
+            paragraph = paragraph.wrap(Wrap { trim: false });
+        }
+
         frame.render_widget(paragraph, chunks[0]);
 
         let input_prefix = match self.mode {
