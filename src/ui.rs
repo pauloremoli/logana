@@ -30,6 +30,7 @@ pub struct App {
     pub search: Search,
     pub search_input: String,
     pub search_forward: bool, // true for '/', false for '?'
+    pub g_key_pressed: bool,
 }
 
 impl App {
@@ -48,6 +49,7 @@ impl App {
             search: Search::new(),
             search_input: String::new(),
             search_forward: true,
+            g_key_pressed: false,
         }
     }
 
@@ -73,41 +75,73 @@ impl App {
                                     self.show_sidebar = true
                                 }
                                 KeyCode::Char('s') => self.show_sidebar = !self.show_sidebar,
+                                KeyCode::Char('j') => {
+                                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                                    self.g_key_pressed = false;
+                                }
+                                KeyCode::Char('k') => {
+                                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                                    self.g_key_pressed = false;
+                                }
+                                KeyCode::Char('G') => {
+                                    let num_logs = self.get_filtered_logs().len();
+                                    if num_logs > 0 {
+                                        self.scroll_offset = num_logs - 1;
+                                    }
+                                    self.g_key_pressed = false;
+                                }
+                                KeyCode::Char('g') => {
+                                    if self.g_key_pressed {
+                                        self.scroll_offset = 0;
+                                        self.g_key_pressed = false;
+                                    } else {
+                                        self.g_key_pressed = true;
+                                    }
+                                }
                                 KeyCode::Down => {
-                                    self.scroll_offset = self.scroll_offset.saturating_add(1)
+                                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                                    self.g_key_pressed = false;
                                 }
                                 KeyCode::Up => {
-                                    self.scroll_offset = self.scroll_offset.saturating_sub(1)
+                                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                                    self.g_key_pressed = false;
                                 }
                                 KeyCode::Char('m') => {
                                     let logs_to_display = self.get_filtered_logs();
                                     if let Some(log) = logs_to_display.get(self.scroll_offset) {
                                         self.analyzer.toggle_mark(log.id);
                                     }
+                                    self.g_key_pressed = false;
                                 }
                                 KeyCode::Char('/') => {
                                     self.mode = AppMode::Search;
                                     self.search_input.clear();
                                     self.search_forward = true;
+                                    self.g_key_pressed = false;
                                 }
                                 KeyCode::Char('?') => {
                                     self.mode = AppMode::Search;
                                     self.search_input.clear();
                                     self.search_forward = false;
+                                    self.g_key_pressed = false;
                                 }
                                 KeyCode::Char('n') => {
                                     if let Some(result) = self.search.next_match() {
                                         let log_id = result.log_id;
                                         self.scroll_to_log_entry(log_id);
                                     }
+                                    self.g_key_pressed = false;
                                 }
                                 KeyCode::Char('N') => {
                                     if let Some(result) = self.search.previous_match() {
                                         let log_id = result.log_id;
                                         self.scroll_to_log_entry(log_id);
                                     }
+                                    self.g_key_pressed = false;
                                 }
-                                _ => {}
+                                _ => {
+                                    self.g_key_pressed = false;
+                                }
                             },
                             AppMode::Command => match key.code {
                                 KeyCode::Enter => {
@@ -245,37 +279,73 @@ impl App {
                     self.show_sidebar = true
                 }
                 KeyCode::Char('s') => self.show_sidebar = !self.show_sidebar,
-                KeyCode::Down => self.scroll_offset = self.scroll_offset.saturating_add(1),
-                KeyCode::Up => self.scroll_offset = self.scroll_offset.saturating_sub(1),
+                KeyCode::Char('j') => {
+                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                    self.g_key_pressed = false;
+                }
+                KeyCode::Char('k') => {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    self.g_key_pressed = false;
+                }
+                KeyCode::Char('G') => {
+                    let num_logs = self.get_filtered_logs().len();
+                    if num_logs > 0 {
+                        self.scroll_offset = num_logs - 1;
+                    }
+                    self.g_key_pressed = false;
+                }
+                KeyCode::Char('g') => {
+                    if self.g_key_pressed {
+                        self.scroll_offset = 0;
+                        self.g_key_pressed = false;
+                    } else {
+                        self.g_key_pressed = true;
+                    }
+                }
+                KeyCode::Down => {
+                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                    self.g_key_pressed = false;
+                }
+                KeyCode::Up => {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    self.g_key_pressed = false;
+                }
                 KeyCode::Char('m') => {
                     let logs_to_display = self.get_filtered_logs();
                     if let Some(log) = logs_to_display.get(self.scroll_offset) {
                         self.analyzer.toggle_mark(log.id);
                     }
+                    self.g_key_pressed = false;
                 }
                 KeyCode::Char('/') => {
                     self.mode = AppMode::Search;
                     self.search_input.clear();
                     self.search_forward = true;
+                    self.g_key_pressed = false;
                 }
                 KeyCode::Char('?') => {
                     self.mode = AppMode::Search;
                     self.search_input.clear();
                     self.search_forward = false;
+                    self.g_key_pressed = false;
                 }
                 KeyCode::Char('n') => {
                     if let Some(result) = self.search.next_match() {
                         let log_id = result.log_id;
                         self.scroll_to_log_entry(log_id);
                     }
+                    self.g_key_pressed = false;
                 }
                 KeyCode::Char('N') => {
                     if let Some(result) = self.search.previous_match() {
                         let log_id = result.log_id;
                         self.scroll_to_log_entry(log_id);
                     }
+                    self.g_key_pressed = false;
                 }
-                _ => {}
+                _ => {
+                    self.g_key_pressed = false;
+                }
             },
             AppMode::Command => match key_code {
                 KeyCode::Enter => {

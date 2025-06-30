@@ -219,3 +219,4 @@ mod tests {
 }
 
 mod stdin;
+mod vim_motions;
