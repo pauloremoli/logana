@@ -222,3 +222,4 @@ mod stdin;
 mod vim_motions;
 mod line_wrapping;
 mod filter_persistence;
+mod color_config;

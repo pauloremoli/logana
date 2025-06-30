@@ -545,6 +545,13 @@ impl App {
                 if log.marked {
                     line = line.bg(Color::DarkGray);
                 }
+
+                for (pattern, config) in &self.analyzer.color_configs {
+                    if log.content.contains(pattern) {
+                        line = line.fg(config.fg).bg(config.bg);
+                    }
+                }
+
                 line
             })
             .collect();
@@ -674,6 +681,14 @@ impl App {
                     if let Some(path) = command_parts.get(1) {
                         if !path.is_empty() {
                             let _ = self.analyzer.load_filters(path);
+                        }
+                    }
+                }
+                "set-color" => {
+                    if let Some(args) = command_parts.get(1) {
+                        let args: Vec<&str> = args.split_whitespace().collect();
+                        if args.len() == 3 {
+                            self.analyzer.set_color_config(args[0], args[1], args[2]);
                         }
                     }
                 }

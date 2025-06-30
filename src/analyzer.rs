@@ -1,4 +1,6 @@
+use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
+use serde_with::{serde_as, DisplayFromStr};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -21,6 +23,15 @@ pub struct Filter {
     pub enabled: bool,
 }
 
+#[serde_as]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColorConfig {
+    #[serde_as(as = "DisplayFromStr")]
+    pub fg: Color,
+    #[serde_as(as = "DisplayFromStr")]
+    pub bg: Color,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct SearchResult {
     pub log_id: usize,
@@ -31,6 +42,7 @@ pub struct LogAnalyzer {
     pub entries: Vec<LogEntry>,
     pub filters: Vec<Filter>,
     next_filter_id: usize,
+    pub color_configs: Vec<(String, ColorConfig)>,
 }
 
 impl Default for LogAnalyzer {
@@ -45,6 +57,7 @@ impl LogAnalyzer {
             entries: Vec::new(),
             filters: Vec::new(),
             next_filter_id: 0,
+            color_configs: Vec::new(),
         }
     }
 
@@ -212,6 +225,39 @@ impl LogAnalyzer {
         self.filters = serde_json::from_str(&json)?;
         self.next_filter_id = self.filters.iter().map(|f| f.id).max().unwrap_or(0) + 1;
         Ok(())
+    }
+
+    pub fn set_color_config(&mut self, pattern: &str, fg: &str, bg: &str) {
+        let fg_color = self.parse_color(fg);
+        let bg_color = self.parse_color(bg);
+
+        if let (Some(fg), Some(bg)) = (fg_color, bg_color) {
+            self.color_configs.push((
+                pattern.to_string(),
+                ColorConfig { fg, bg },
+            ));
+        }
+    }
+
+    pub fn get_color_config(&self, pattern: &str) -> Option<&ColorConfig> {
+        self.color_configs
+            .iter()
+            .find(|(p, _)| p == pattern)
+            .map(|(_, c)| c)
+    }
+
+    fn parse_color(&self, color_str: &str) -> Option<Color> {
+        match color_str.to_lowercase().as_str() {
+            "black" => Some(Color::Black),
+            "red" => Some(Color::Red),
+            "green" => Some(Color::Green),
+            "yellow" => Some(Color::Yellow),
+            "blue" => Some(Color::Blue),
+            "magenta" => Some(Color::Magenta),
+            "cyan" => Some(Color::Cyan),
+            "white" => Some(Color::White),
+            _ => None,
+        }
     }
 }
 
