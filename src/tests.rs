@@ -217,3 +217,5 @@ mod tests {
         assert!(!app.analyzer.entries[1].marked);
     }
 }
+
+mod stdin;

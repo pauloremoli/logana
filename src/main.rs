@@ -6,7 +6,7 @@ use crossterm::{
 use logsmith_rs::analyzer::LogAnalyzer;
 use logsmith_rs::ui::App;
 use ratatui::prelude::*;
-use std::io::stdout;
+use std::io::{stdin, stdout, IsTerminal};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -21,6 +21,8 @@ fn main() -> anyhow::Result<()> {
 
     if let Some(file_path) = args.file {
         analyzer.ingest_file(&file_path)?;
+    } else if !stdin().is_terminal() {
+        analyzer.ingest_reader(stdin())?;
     }
 
     let res = {
