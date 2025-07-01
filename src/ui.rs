@@ -11,33 +11,35 @@ use crate::search::Search;
 #[derive(Debug, PartialEq)]
 pub enum AppMode {
     Normal,
-    Command,
-    FilterManagement,
-    FilterEdit,
-    Search,
+    Command {
+        input: String,
+        cursor: usize,
+        history: Vec<String>,
+        history_index: Option<usize>,
+    },
+    FilterManagement {
+        selected_filter_index: usize,
+    },
+    FilterEdit {
+        filter_id: Option<usize>,
+        filter_input: String,
+    },
+    Search {
+        input: String,
+        forward: bool,
+    },
 }
 
 #[derive(Debug)]
 pub struct App {
     pub analyzer: LogAnalyzer,
     pub mode: AppMode,
-    pub command_input: String,
-    pub command_cursor: usize,
-    pub command_history: Vec<String>,
-    pub command_history_index: Option<usize>,
     pub scroll_offset: usize,
-
     pub show_sidebar: bool,
-    pub selected_filter_index: usize,
-    pub editing_filter_id: Option<usize>,
-    pub editing_filter_input: String,
-
-    pub search: Search,
-    pub search_input: String,
-    pub search_forward: bool, // true for '/', false for '?'
     pub g_key_pressed: bool,
     pub wrap: bool,
     pub horizontal_scroll: usize,
+    pub search: Search,
 }
 
 impl App {
@@ -45,23 +47,12 @@ impl App {
         App {
             analyzer,
             mode: AppMode::Normal,
-            command_input: String::new(),
-            command_cursor: 0,
-            command_history: Vec::new(),
-            command_history_index: None,
             scroll_offset: 0,
-
             show_sidebar: false,
-            selected_filter_index: 0,
-            editing_filter_id: None,
-            editing_filter_input: String::new(),
-
-            search: Search::new(),
-            search_input: String::new(),
-            search_forward: true,
             g_key_pressed: false,
             wrap: true,
             horizontal_scroll: 0,
+            search: Search::new(),
         }
     }
 
@@ -85,12 +76,12 @@ impl App {
                                 }
                                 self.handle_normal_mode_key(key.code)
                             }
-                            AppMode::Command => self.handle_command_mode_key(key.code),
-                            AppMode::FilterManagement => {
+                            AppMode::Command { .. } => self.handle_command_mode_key(key.code),
+                            AppMode::FilterManagement { .. } => {
                                 self.handle_filter_management_mode_key(key.code)
                             }
-                            AppMode::FilterEdit => self.handle_filter_edit_mode_key(key.code),
-                            AppMode::Search => self.handle_search_mode_key(key.code),
+                            AppMode::FilterEdit { .. } => self.handle_filter_edit_mode_key(key.code),
+                            AppMode::Search { .. } => self.handle_search_mode_key(key.code),
                         }
                     }
                 }
@@ -105,11 +96,15 @@ impl App {
     fn handle_normal_mode_key(&mut self, key_code: KeyCode) {
         match key_code {
             KeyCode::Char('q') => {} // handled in run()
-            KeyCode::Char(':') => self.mode = AppMode::Command,
-            KeyCode::Char('f') => {
-                self.mode = AppMode::FilterManagement;
-                self.show_sidebar = true
-            }
+            KeyCode::Char(':') => self.mode = AppMode::Command {
+                input: String::new(),
+                cursor: 0,
+                history: Vec::new(),
+                history_index: None,
+            },
+            KeyCode::Char('f') => self.mode = AppMode::FilterManagement {
+                selected_filter_index: 0,
+            },
             KeyCode::Char('s') => self.show_sidebar = !self.show_sidebar,
             KeyCode::Char('j') => {
                 self.scroll_offset = self.scroll_offset.saturating_add(1);
@@ -166,15 +161,17 @@ impl App {
                 self.g_key_pressed = false;
             }
             KeyCode::Char('/') => {
-                self.mode = AppMode::Search;
-                self.search_input.clear();
-                self.search_forward = true;
+                self.mode = AppMode::Search {
+                    input: String::new(),
+                    forward: true,
+                };
                 self.g_key_pressed = false;
             }
             KeyCode::Char('?') => {
-                self.mode = AppMode::Search;
-                self.search_input.clear();
-                self.search_forward = false;
+                self.mode = AppMode::Search {
+                    input: String::new(),
+                    forward: false,
+                };
                 self.g_key_pressed = false;
             }
             KeyCode::Char('n') => {
@@ -201,73 +198,88 @@ impl App {
         match key_code {
             KeyCode::Enter => {
                 self.handle_command();
-                if !self.command_input.is_empty() {
-                    self.command_history.push(self.command_input.clone());
+                if let AppMode::Command { input, cursor, history, history_index } = &mut self.mode {
+                    if !input.is_empty() {
+                        history.push(input.clone());
+                    }
+                    *input = String::new();*cursor = 0;
+                    *history_index = None;
                 }
-                self.command_input.clear();
-                self.command_cursor = 0;
-                self.command_history_index = None;
                 self.mode = AppMode::Normal;
             }
             KeyCode::Esc => {
-                self.command_input.clear();
-                self.command_cursor = 0;
-                self.command_history_index = None;
+                if let AppMode::Command { input, cursor, history_index, .. } = &mut self.mode {
+                    *input = String::new();
+                    *cursor = 0;
+                    *history_index = None;
+                }
                 self.mode = AppMode::Normal;
             }
             KeyCode::Backspace => {
-                if self.command_cursor > 0 && !self.command_input.is_empty() {
-                    self.command_input.remove(self.command_cursor - 1);
-                    self.command_cursor -= 1;
+                if let AppMode::Command { input, cursor, .. } = &mut self.mode {
+                    if *cursor > 0 && !input.is_empty() {
+                        input.remove(*cursor - 1);
+                        *cursor -= 1;
+                    }
                 }
             }
             KeyCode::Char(c) => {
-                self.command_input.insert(self.command_cursor, c);
-                self.command_cursor += 1;
+                if let AppMode::Command { input, cursor, .. } = &mut self.mode {
+                    input.insert(*cursor, c);
+                    *cursor += 1;
+                }
             }
             KeyCode::Left => {
-                if self.command_cursor > 0 {
-                    self.command_cursor -= 1;
+                if let AppMode::Command { cursor, .. } = &mut self.mode {
+                    if *cursor > 0 {
+                        *cursor -= 1;
+                    }
                 }
             }
             KeyCode::Right => {
-                if self.command_cursor < self.command_input.len() {
-                    self.command_cursor += 1;
+                if let AppMode::Command { input, cursor, .. } = &mut self.mode {
+                    if *cursor < input.len() {
+                        *cursor += 1;
+                    }
                 }
             }
             KeyCode::Up => {
-                if self.command_history.is_empty() {
-                    return;
-                }
-                let new_index = match self.command_history_index {
-                    None => Some(self.command_history.len() - 1),
-                    Some(0) => Some(0),
-                    Some(i) => Some(i - 1),
-                };
-                if let Some(i) = new_index {
-                    self.command_input = self.command_history[i].clone();
-                    self.command_cursor = self.command_input.len();
-                    self.command_history_index = Some(i);
+                if let AppMode::Command { input, cursor, history, history_index } = &mut self.mode {
+                    if history.is_empty() {
+                        return;
+                    }
+                    let new_index = match history_index {
+                        None => Some(history.len() - 1),
+                        Some(0) => Some(0),
+                        Some(i) => Some(*i - 1),
+                    };
+                    if let Some(i) = new_index {
+                        *input = history[i].clone();
+                        *cursor = input.len();
+                        *history_index = Some(i);
+                    }
                 }
             }
             KeyCode::Down => {
-                if self.command_history.is_empty() {
-                    return;
-                }
-                let new_index = match self.command_history_index {
-                    None => return,
-                    Some(i) if i + 1 >= self.command_history.len() => {
-                        self.command_input.clear();
-                        self.command_cursor = 0;
-                        self.command_history_index = None;
+                if let AppMode::Command { input, cursor, history, history_index } = &mut self.mode {
+                    if history.is_empty() {
                         return;
                     }
-                    Some(i) => Some(i + 1),
-                };
-                if let Some(i) = new_index {
-                    self.command_input = self.command_history[i].clone();
-                    self.command_cursor = self.command_input.len();
-                    self.command_history_index = Some(i);
+                    let new_index = match history_index {
+                        None => return,
+                        Some(i) if *i + 1 >= history.len() => {
+                            *input = String::new();
+                            *cursor = 0;
+                            *history_index = None;
+                            return;
+                        }
+                        Some(i) => Some(*i + 1),
+                    };
+                    if let Some(i) = new_index {
+                        *input = history[i].clone();
+                        *cursor = input.len();
+                        *history_index = Some(i);
+                    }
                 }
             }
             _ => {}
@@ -275,144 +287,190 @@ impl App {
     }
 
     fn handle_filter_management_mode_key(&mut self, key_code: KeyCode) {
-        match key_code {
-            KeyCode::Esc => self.mode = AppMode::Normal,
-            KeyCode::Up => {
-                self.selected_filter_index = self.selected_filter_index.saturating_sub(1);
-            }
-            KeyCode::Down => {
-                self.selected_filter_index = self.selected_filter_index.saturating_add(1);
-                let num_filters = self.analyzer.filters.len();
-                if num_filters > 0 && self.selected_filter_index >= num_filters {
-                    self.selected_filter_index = num_filters - 1;
+        if let AppMode::FilterManagement {
+            selected_filter_index,
+        } = &mut self.mode
+        {
+            match key_code {
+                KeyCode::Esc => self.mode = AppMode::Normal,
+                KeyCode::Up => {
+                    *selected_filter_index = selected_filter_index.saturating_sub(1);
                 }
-            }
-            KeyCode::Char(' ') => {
-                if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
-                    self.analyzer.toggle_filter(filter.id);
-                }
-            }
-            KeyCode::Char('d') => {
-                if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
-                    self.analyzer.remove_filter(filter.id);
-                    if self.selected_filter_index >= self.analyzer.filters.len()
-                        && !self.analyzer.filters.is_empty()
-                    {
-                        self.selected_filter_index = self.analyzer.filters.len() - 1;
+                KeyCode::Down => {
+                    *selected_filter_index = selected_filter_index.saturating_add(1);
+                    let num_filters = self.analyzer.filters.len();
+                    if num_filters > 0 && *selected_filter_index >= num_filters {
+                        *selected_filter_index = num_filters - 1;
                     }
                 }
-            }
-            KeyCode::Char('e') => {
-                if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
-                    use crate::analyzer::FilterType;
-                    let mut cmd = String::from("filter");
-                    if filter.filter_type == FilterType::Include {
+                KeyCode::Char(' ') => {
+                    if let Some(filter) = self.analyzer.filters.get(*selected_filter_index) {
+                        self.analyzer.toggle_filter(filter.id);
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if let Some(filter) = self.analyzer.filters.get(*selected_filter_index) {
+                        self.analyzer.remove_filter(filter.id);
+                        if *selected_filter_index >= self.analyzer.filters.len()
+                            && !self.analyzer.filters.is_empty()
+                        {
+                            *selected_filter_index = self.analyzer.filters.len() - 1;
+                        }
+                    }
+                }
+                KeyCode::Char('e') => {
+                    if let Some(filter) = self.analyzer.filters.get(*selected_filter_index) {
+                        use crate::analyzer::FilterType;
+                        let mut cmd = String::from("filter");
+                        if filter.filter_type == FilterType::Include {
+                            if let Some(cfg) = &filter.color_config {
+                                cmd.push_str(&format!(" --fg {:?} --bg {:?}", cfg.fg, cfg.bg));
+                            }
+                        }
+                        // Always add a space before the pattern
+                        cmd.push(' ');
+                        cmd.push_str(&filter.pattern);
+                        let len = cmd.len();
+                        self.mode = AppMode::Command {
+                            input: cmd,
+                            cursor: len,
+                            history: Vec::new(),
+                            history_index: None,
+                        };
+                    }
+                }
+                KeyCode::Char('c') => {
+                    // Enter command mode with set-color command prefilled for the selected filter
+                    if let Some(filter) = self.analyzer.filters.get(*selected_filter_index) {
+                        let mut cmd = String::from("set-color");
                         if let Some(cfg) = &filter.color_config {
-                            cmd.push_str(&format!(" --fg {:?} --bg {:?}", cfg.fg, cfg.bg));
+                            if let Some(fg) = cfg.fg {
+                                cmd.push_str(&format!(" --fg {:?}", fg));
+                            }
+                            if let Some(bg) = cfg.bg {
+                                cmd.push_str(&format!(" --bg {:?}", bg));
+                            }
                         }
+                        let len = cmd.len();
+                        self.mode = AppMode::Command {
+                            input: cmd,
+                            cursor: len,
+                            history: Vec::new(),
+                            history_index: None,
+                        };
                     }
-                    // Always add a space before the pattern
-                    cmd.push(' ');
-                    cmd.push_str(&filter.pattern);
-                    self.mode = AppMode::Command;
-                    self.command_input = cmd;
                 }
-            }
-            KeyCode::Char('c') => {
-                // Enter command mode with set-color command prefilled for the selected filter
-                if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
-                    let mut cmd = String::from("set-color");
-                    if let Some(cfg) = &filter.color_config {
-                        if let Some(fg) = cfg.fg {
-                            cmd.push_str(&format!(" --fg {:?}", fg));
-                        }
-                        if let Some(bg) = cfg.bg {
-                            cmd.push_str(&format!(" --bg {:?}", bg));
-                        }
-                    }
-                    self.mode = AppMode::Command;
-                    self.command_input = cmd;
+                KeyCode::Char('i') => {
+                    // Prompt for include filter pattern and color
+                    self.mode = AppMode::Command {
+                        input: "filter ".to_string(),
+                        cursor: 7,
+                        history: Vec::new(),
+                        history_index: None,
+                    };
                 }
+                KeyCode::Char('x') => {
+                    // Prompt for exclude filter pattern
+                    self.mode = AppMode::Command {
+                        input: "exclude ".to_string(),
+                        cursor: 8,
+                        history: Vec::new(),
+                        history_index: None,
+                    };
+                }
+                _ => {}
             }
-            KeyCode::Char('i') => {
-                // Prompt for include filter pattern and color
-                self.mode = AppMode::Command;
-                self.command_input = "filter ".to_string();
-            }
-            KeyCode::Char('x') => {
-                // Prompt for exclude filter pattern
-                self.mode = AppMode::Command;
-                self.command_input = "exclude ".to_string();
-            }
-            _ => {}
         }
     }
 
     fn handle_filter_edit_mode_key(&mut self, key_code: KeyCode) {
-        match key_code {
-            KeyCode::Enter => {
-                if let Some(id) = self.editing_filter_id {
-                    self.analyzer
-                        .edit_filter(id, self.editing_filter_input.clone());
-                    self.editing_filter_id = None;
-                    self.editing_filter_input.clear();
-                    self.mode = AppMode::FilterManagement;
+        if let AppMode::FilterEdit {
+            filter_id,
+            filter_input,
+        } = &mut self.mode
+        {
+            match key_code {
+                KeyCode::Enter => {
+                    if let Some(id) = filter_id {
+                        self.analyzer
+                            .edit_filter(*id, filter_input.clone());
+                        *filter_id = None;
+                        *filter_input = String::new();
+                        self.mode = AppMode::FilterManagement {
+                            selected_filter_index: 0,
+                        };
+                    }
                 }
+                KeyCode::Esc => {
+                    *filter_id = None;
+                    *filter_input = String::new();
+                    self.mode = AppMode::FilterManagement {
+                        selected_filter_index: 0,
+                    };
+                }
+                KeyCode::Backspace => {
+                    filter_input.pop();
+                }
+                KeyCode::Char(c) => {
+                    filter_input.push(c);
+                }
+                _ => {}
             }
-            KeyCode::Esc => {
-                self.editing_filter_id = None;
-                self.editing_filter_input.clear();
-                self.mode = AppMode::FilterManagement;
-            }
-            KeyCode::Backspace => {
-                self.editing_filter_input.pop();
-            }
-            KeyCode::Char(c) => {
-                self.editing_filter_input.push(c);
-            }
-            _ => {}
         }
     }
 
     fn handle_search_mode_key(&mut self, key_code: KeyCode) {
-        match key_code {
-            KeyCode::Enter => {
-                let _ = self
-                    .search
-                    .search(&self.search_input, &self.analyzer.entries);
-                if self.search_forward {
-                    if let Some(result) = self.search.next_match() {
+        if let AppMode::Search {
+            input,
+            forward: _,
+        } = &mut self.mode
+        {
+            match key_code {
+                KeyCode::Enter => {
+                    // Extract needed values
+                    let (search_input, forward_val) = match &mut self.mode {
+                        AppMode::Search { input, forward } => (input.clone(), *forward),
+                        _ => return,
+                    };
+                    let search_result = if forward_val {
+                        self.search.search(&search_input, &self.analyzer.entries).ok();
+                        self.search.next_match()
+                    } else {
+                        self.search.search(&search_input, &self.analyzer.entries).ok();
+                        self.search.previous_match()
+                    };
+                    if let Some(result) = search_result {
                         let log_id = result.log_id;
                         self.scroll_to_log_entry(log_id);
                     }
-                } else if let Some(result) = self.search.previous_match() {
-                    let log_id = result.log_id;
-                    self.scroll_to_log_entry(log_id);
+                    // Now update mode and clear input
+                    if let AppMode::Search { input, .. } = &mut self.mode {
+                        *input = String::new();
+                    }
+                    self.mode = AppMode::Normal;
                 }
-                self.mode = AppMode::Normal;
-                self.search_input.clear();
+                KeyCode::Esc => {
+                    *input = String::new();
+                    self.mode = AppMode::Normal;
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) => {
+                    input.push(c);
+                }
+                _ => {}
             }
-            KeyCode::Esc => {
-                self.search_input.clear();
-                self.mode = AppMode::Normal;
-            }
-            KeyCode::Backspace => {
-                self.search_input.pop();
-            }
-            KeyCode::Char(c) => {
-                self.search_input.push(c);
-            }
-            _ => {}
         }
     }
 
     pub fn handle_key_event(&mut self, key_code: KeyCode) {
         match self.mode {
             AppMode::Normal => self.handle_normal_mode_key(key_code),
-            AppMode::Command => self.handle_command_mode_key(key_code),
-            AppMode::FilterManagement => self.handle_filter_management_mode_key(key_code),
-            AppMode::FilterEdit => self.handle_filter_edit_mode_key(key_code),
-            AppMode::Search => self.handle_search_mode_key(key_code),
+            AppMode::Command { .. } => self.handle_command_mode_key(key_code),
+            AppMode::FilterManagement { .. } => self.handle_filter_management_mode_key(key_code),
+            AppMode::FilterEdit { .. } => self.handle_filter_edit_mode_key(key_code),
+            AppMode::Search { .. } => self.handle_search_mode_key(key_code),
         }
     }
 
@@ -420,7 +478,7 @@ impl App {
         let size = frame.size();
         // Split vertically: logs, command bar (if needed), command list (full width)
         let mut constraints = vec![Constraint::Min(1)];
-        let show_command_bar = matches!(self.mode, AppMode::Command);
+        let show_command_bar = matches!(self.mode, AppMode::Command { .. });
         if show_command_bar {
             constraints.push(Constraint::Length(1));
         }
@@ -521,7 +579,7 @@ impl App {
                 .enumerate()
                 .map(|(i, filter)| {
                     let status = if filter.enabled { "[x]" } else { "[ ]" };
-                    let selected_prefix = if i == self.selected_filter_index {
+                    let selected_prefix = if i == self.get_selected_filter_index().unwrap_or(0) {
                         ">"
                     } else {
                         " "
@@ -545,7 +603,7 @@ impl App {
         // Command bar (full width, only in command mode)
         if show_command_bar {
             let input_prefix = ":";
-            let input_text = &self.command_input;
+            let (input_text, cursor_pos) = self.get_command_input_and_cursor().unwrap_or(("", 0));
             let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
                 .style(Style::default().fg(Color::White).bg(Color::DarkGray))
                 .wrap(Wrap { trim: false });
@@ -556,7 +614,7 @@ impl App {
             }
             frame.render_widget(command_line, area);
             // Set cursor at the correct position
-            let cursor_x = chunks[1].x + 1 + self.command_cursor as u16;
+            let cursor_x = chunks[1].x + 1 + cursor_pos as u16;
             if cursor_x < chunks[1].x + chunks[1].width && area.height == 1 {
                 frame.set_cursor(cursor_x, chunks[1].y);
             }
@@ -576,7 +634,11 @@ impl App {
     fn handle_command(&mut self) {
         use crate::command_args::{CommandLine, Commands};
         use clap::Parser;
-        let input = self.command_input.trim();
+        // Extract command input from mode
+        let input = match &self.mode {
+            AppMode::Command { input, .. } => input.trim(),
+            _ => return,
+        };
         let args = match CommandLine::try_parse_from(input.split_whitespace()) {
             Ok(args) => args,
             Err(_) => return, // Optionally show error
@@ -597,7 +659,12 @@ impl App {
                 self.scroll_offset = 0;
             }
             Some(Commands::SetColor { fg, bg }) => {
-                if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
+                // Extract selected_filter_index from mode
+                let selected_filter_index = match &self.mode {
+                    AppMode::FilterManagement { selected_filter_index } => *selected_filter_index,
+                    _ => 0,
+                };
+                if let Some(filter) = self.analyzer.filters.get(selected_filter_index) {
                     if filter.filter_type == FilterType::Include {
                         let pattern = filter.pattern.clone();
                         self.analyzer
@@ -641,19 +708,19 @@ impl App {
     fn get_command_list(&self) -> String {
         match self.mode {
             AppMode::Normal => {
-                "[NORMAL] [Q]uit | : => command Mode | [f]ilter mode | [s]idebar | [m]ark Line | / => Search Forward | ? => Search Backward | [n]ext match | N => previous match".to_string()
+                "[NORMAL] [q]uit | : => command Mode | [f]ilter mode | [s]idebar | [m]ark Line | / => search | ? => search backward | [n]ext match | N => previous match".to_string()
             },
-            AppMode::Command => {
+            AppMode::Command { .. } => {
                 "[COMMAND] filter | exclude | set-color | export-marked | save-filters | load-filters | wrap | Esc | Enter".to_string()
             },
-            AppMode::FilterManagement => {
-                "[FILTER] [i]nclude | e[x]clude | Space: toggle | [d]elete | [e]dit | set [c]olor | Esc => normal mode".to_string()
+            AppMode::FilterManagement { .. } => {
+                "[FILTER] [i]nclude | e[x]clude | Space => toggle | [d]elete | [e]dit | set [c]olor | Esc => normal mode".to_string()
             },
-            AppMode::FilterEdit => {
-                "[FILTER EDIT] Esc => Cancel | Enter => Save".to_string()
+            AppMode::FilterEdit { .. } => {
+                "[FILTER EDIT] Esc => cancel | Enter => save".to_string()
             },
-            AppMode::Search => {
-                "[SEARCH] Esc => Cancel | Enter => Search".to_string()
+            AppMode::Search { .. } => {
+                "[SEARCH] Esc => cancel | Enter => search".to_string()
             },
         }
     }
@@ -667,6 +734,34 @@ impl App {
     fn scroll_to_log_entry(&mut self, log_id: usize) {
         if let Some(index) = self.analyzer.entries.iter().position(|e| e.id == log_id) {
             self.scroll_offset = index;
+        }
+    }
+
+    fn get_selected_filter_index(&self) -> Option<usize> {
+        match &self.mode {
+            AppMode::FilterManagement { selected_filter_index } => Some(*selected_filter_index),
+            _ => None,
+        }
+    }
+
+    fn get_command_input_and_cursor(&self) -> Option<(&str, usize)> {
+        match &self.mode {
+            AppMode::Command { input, cursor, .. } => Some((input.as_str(), *cursor)),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn set_selected_filter_index_for_test(&mut self, idx: usize) {
+        if let AppMode::FilterManagement { selected_filter_index } = &mut self.mode {
+            *selected_filter_index = idx;
+        }
+    }
+    #[cfg(test)]
+    fn get_selected_filter_index_for_test(&self) -> Option<usize> {
+        match &self.mode {
+            AppMode::FilterManagement { selected_filter_index } => Some(*selected_filter_index),
+            _ => None,
         }
     }
 }
@@ -702,11 +797,21 @@ mod tests {
     #[test]
     fn test_toggle_wrap_command() {
         let mut app = App::new(mock_analyzer());
-        app.mode = AppMode::Command;
-        app.command_input = "wrap".to_string();
+        app.mode = AppMode::Command {
+            input: "wrap".to_string(),
+            cursor: 4,
+            history: Vec::new(),
+            history_index: None,
+        };
         app.handle_command();
         assert!(!app.wrap);
-        app.command_input = "wrap".to_string();
+        // Set up command mode again for the next command
+        app.mode = AppMode::Command {
+            input: "wrap".to_string(),
+            cursor: 4,
+            history: Vec::new(),
+            history_index: None,
+        };
         app.handle_command();
         assert!(app.wrap);
     }
@@ -714,8 +819,12 @@ mod tests {
     #[test]
     fn test_add_filter_command() {
         let mut app = App::new(mock_analyzer());
-        app.mode = AppMode::Command;
-        app.command_input = "filter foo".to_string();
+        app.mode = AppMode::Command {
+            input: "filter foo".to_string(),
+            cursor: 10,
+            history: Vec::new(),
+            history_index: None,
+        };
         app.handle_command();
         assert_eq!(app.analyzer.filters.len(), 1);
         assert_eq!(app.analyzer.filters[0].filter_type, FilterType::Include);
@@ -725,8 +834,12 @@ mod tests {
     #[test]
     fn test_add_exclude_command() {
         let mut app = App::new(mock_analyzer());
-        app.mode = AppMode::Command;
-        app.command_input = "exclude bar".to_string();
+        app.mode = AppMode::Command {
+            input: "exclude bar".to_string(),
+            cursor: 11,
+            history: Vec::new(),
+            history_index: None,
+        };
         app.handle_command();
         assert_eq!(app.analyzer.filters.len(), 1);
         assert_eq!(app.analyzer.filters[0].filter_type, FilterType::Exclude);
@@ -753,7 +866,7 @@ mod tests {
     fn test_mode_switching() {
         let mut app = App::new(mock_analyzer());
         app.handle_normal_mode_key(KeyCode::Char(':'));
-        assert!(matches!(app.mode, AppMode::Command));
+        assert!(matches!(app.mode, AppMode::Command { .. }));
         app.handle_command_mode_key(KeyCode::Esc);
         assert!(matches!(app.mode, AppMode::Normal));
     }
@@ -791,22 +904,26 @@ mod tests {
     #[test]
     fn test_filter_management_mode_navigation() {
         let mut app = App::new(mock_analyzer());
-        app.mode = AppMode::FilterManagement;
+        app.mode = AppMode::FilterManagement {
+            selected_filter_index: 0,
+        };
         app.analyzer
             .add_filter("foo".to_string(), FilterType::Include);
         app.analyzer
             .add_filter("bar".to_string(), FilterType::Exclude);
-        app.selected_filter_index = 1;
+        app.set_selected_filter_index_for_test(1);
         app.handle_filter_management_mode_key(KeyCode::Up);
-        assert_eq!(app.selected_filter_index, 0);
+        assert_eq!(app.get_selected_filter_index_for_test(), Some(0));
         app.handle_filter_management_mode_key(KeyCode::Down);
-        assert_eq!(app.selected_filter_index, 1);
+        assert_eq!(app.get_selected_filter_index_for_test(), Some(1));
     }
 
     #[test]
     fn test_filter_toggle_and_delete() {
         let mut app = App::new(mock_analyzer());
-        app.mode = AppMode::FilterManagement;
+        app.mode = AppMode::FilterManagement {
+            selected_filter_index: 0,
+        };
         app.analyzer
             .add_filter("foo".to_string(), FilterType::Include);
         assert!(app.analyzer.filters[0].enabled);
@@ -819,41 +936,58 @@ mod tests {
     #[test]
     fn test_filter_edit() {
         let mut app = App::new(mock_analyzer());
-        app.mode = AppMode::FilterManagement;
+        app.mode = AppMode::FilterManagement {
+            selected_filter_index: 0,
+        };
         app.analyzer
             .add_filter("foo".to_string(), FilterType::Include);
         // Simulate pressing 'e' in filter management, which now enters command mode with prefilled command
         app.handle_filter_management_mode_key(KeyCode::Char('e'));
-        assert_eq!(app.mode, AppMode::Command);
-        assert!(app.command_input.starts_with("filter"));
-        assert!(app.command_input.contains("foo"));
+        match &app.mode {
+            AppMode::Command { input, .. } => {
+                assert!(input.starts_with("filter"));
+                assert!(input.contains("foo"));
+            }
+            _ => panic!("Expected Command mode"),
+        }
     }
 
     #[test]
     fn test_search_mode_and_input() {
         let mut app = App::new(mock_analyzer());
         app.handle_normal_mode_key(KeyCode::Char('/'));
-        assert_eq!(app.mode, AppMode::Search);
+        assert!(matches!(app.mode, AppMode::Search { .. }));
+        // Simulate entering 't' in search mode
         app.handle_search_mode_key(KeyCode::Char('t'));
-        assert_eq!(app.search_input, "t");
+        match &app.mode {
+            AppMode::Search { input, .. } => assert_eq!(input, "t"),
+            _ => panic!("Expected Search mode"),
+        }
         app.handle_search_mode_key(KeyCode::Backspace);
-        assert_eq!(app.search_input, "");
+        match &app.mode {
+            AppMode::Search { input, .. } => assert_eq!(input, ""),
+            _ => panic!("Expected Search mode"),
+        }
         app.handle_search_mode_key(KeyCode::Esc);
-        assert_eq!(app.mode, AppMode::Normal);
+        assert!(matches!(app.mode, AppMode::Normal));
     }
 
     #[test]
     fn test_command_input_and_backspace() {
         let mut app = App::new(mock_analyzer());
-        app.mode = AppMode::Command;
-        app.handle_command_mode_key(KeyCode::Char('a'));
-        app.handle_command_mode_key(KeyCode::Char('b'));
-        assert_eq!(app.command_input, "ab");
+        app.mode = AppMode::Command {
+            input: "ab".to_string(),
+            cursor: 2,
+            history: Vec::new(),
+            history_index: None,
+        };
         app.handle_command_mode_key(KeyCode::Backspace);
-        assert_eq!(app.command_input, "a");
+        match &app.mode {
+            AppMode::Command { input, .. } => assert_eq!(input, "a"),
+            _ => panic!("Expected Command mode"),
+        }
         app.handle_command_mode_key(KeyCode::Esc);
-        assert_eq!(app.command_input, "");
-        assert_eq!(app.mode, AppMode::Normal);
+        assert!(matches!(app.mode, AppMode::Normal));
     }
 
     #[test]
