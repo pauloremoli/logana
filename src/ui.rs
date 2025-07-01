@@ -314,14 +314,7 @@ impl App {
 
     fn ui(&mut self, frame: &mut Frame) {
         let size = frame.size();
-        let main_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(1), // Main content (logs, command bar, command list)
-                Constraint::Length(if self.show_sidebar { 30 } else { 0 }), // Sidebar
-            ])
-            .split(size);
-
+        // First, split vertically: logs, command bar, command list (full width)
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -329,10 +322,23 @@ impl App {
                 Constraint::Length(1), // Command input
                 Constraint::Length(3), // Command list
             ])
-            .split(main_chunks[0]);
+            .split(size);
+
+        // Now, if sidebar is shown, split only the logs area horizontally
+        let (logs_area, sidebar_area) = if self.show_sidebar {
+            let horizontal = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Min(1),
+                    Constraint::Length(30),
+                ])
+                .split(chunks[0]);
+            (horizontal[0], Some(horizontal[1]))
+        } else {
+            (chunks[0], None)
+        };
 
         let logs_to_display = self.get_filtered_logs();
-
         let num_logs = logs_to_display.len();
         if self.scroll_offset >= num_logs && num_logs > 0 {
             self.scroll_offset = num_logs - 1;
@@ -385,8 +391,34 @@ impl App {
             paragraph = paragraph.wrap(Wrap { trim: false });
         }
 
-        frame.render_widget(paragraph, chunks[0]);
+        frame.render_widget(paragraph, logs_area);
 
+        if let Some(sidebar_area) = sidebar_area {
+            let filters_text: Vec<Line> = self
+                .analyzer
+                .filters
+                .iter()
+                .enumerate()
+                .map(|(i, filter)| {
+                    let status = if filter.enabled { "[x]" } else { "[ ]" };
+                    let selected_prefix = if i == self.selected_filter_index {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    Line::from(format!(
+                        "{}{} {}: {}",
+                        selected_prefix, status, filter.filter_type, filter.pattern
+                    ))
+                })
+                .collect();
+
+            let sidebar = Paragraph::new(filters_text)
+                .block(Block::default().borders(Borders::ALL).title("Filters"));
+            frame.render_widget(sidebar, sidebar_area);
+        }
+
+        // Command bar (full width)
         let input_prefix = match self.mode {
             AppMode::Command => ":",
             AppMode::Search => {
@@ -421,39 +453,10 @@ impl App {
             );
         }
 
+        // Command list (full width)
         let command_list =
             Paragraph::new(self.get_command_list()).block(Block::default().borders(Borders::ALL));
         frame.render_widget(command_list, chunks[2]);
-
-        if self.show_sidebar {
-            let sidebar_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1)])
-                .split(main_chunks[1]);
-
-            let filters_text: Vec<Line> = self
-                .analyzer
-                .filters
-                .iter()
-                .enumerate()
-                .map(|(i, filter)| {
-                    let status = if filter.enabled { "[x]" } else { "[ ]" };
-                    let selected_prefix = if i == self.selected_filter_index {
-                        ">"
-                    } else {
-                        " "
-                    };
-                    Line::from(format!(
-                        "{}{} {}: {}",
-                        selected_prefix, status, filter.filter_type, filter.pattern
-                    ))
-                })
-                .collect();
-
-            let sidebar = Paragraph::new(filters_text)
-                .block(Block::default().borders(Borders::ALL).title("Filters"));
-            frame.render_widget(sidebar, sidebar_chunks[0]);
-        }
     }
 
     fn handle_command(&mut self) {
