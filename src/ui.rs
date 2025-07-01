@@ -71,7 +71,12 @@ impl App {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
                         match self.mode {
-                            AppMode::Normal => self.handle_normal_mode_key(key.code),
+                            AppMode::Normal => {
+                                if key.code == KeyCode::Char('q') {
+                                    return Ok(());
+                                }
+                                self.handle_normal_mode_key(key.code)
+                            },
                             AppMode::Command => self.handle_command_mode_key(key.code),
                             AppMode::FilterManagement => {
                                 self.handle_filter_management_mode_key(key.code)
@@ -91,7 +96,7 @@ impl App {
 
     fn handle_normal_mode_key(&mut self, key_code: KeyCode) {
         match key_code {
-            KeyCode::Char('q') => {} // Can't test exit in the same way
+            KeyCode::Char('q') => {}, // handled in run()
             KeyCode::Char(':') => self.mode = AppMode::Command,
             KeyCode::Char('f') => {
                 self.mode = AppMode::FilterManagement;
@@ -314,14 +319,16 @@ impl App {
 
     fn ui(&mut self, frame: &mut Frame) {
         let size = frame.size();
-        // First, split vertically: logs, command bar, command list (full width)
+        // Split vertically: logs, command bar (if needed), command list (full width)
+        let mut constraints = vec![Constraint::Min(1)];
+        let show_command_bar = matches!(self.mode, AppMode::Command);
+        if show_command_bar {
+            constraints.push(Constraint::Length(1));
+        }
+        constraints.push(Constraint::Length(3));
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),    // Logs
-                Constraint::Length(1), // Command input
-                Constraint::Length(3), // Command list
-            ])
+            .constraints(constraints)
             .split(size);
 
         // Now, if sidebar is shown, split only the logs area horizontally
@@ -347,8 +354,7 @@ impl App {
         let log_lines: Vec<Line> = logs_to_display
             .iter()
             .map(|log| {
-                let prefix = if log.marked { "* " } else { "  " };
-                let mut spans = vec![Span::raw(prefix)];
+                let mut spans = Vec::new();
                 let mut last_end = 0;
 
                 if let Some(search_result) = self
@@ -373,6 +379,14 @@ impl App {
                     line = line.bg(Color::DarkGray);
                 }
 
+                // Color by log level (only for ERROR and WARN)
+                if log.content.contains("ERROR") {
+                    line = line.fg(Color::Red);
+                } else if log.content.contains("WARN") {
+                    line = line.fg(Color::Yellow);
+                }
+
+                // Custom color configs override log level coloring
                 for (pattern, config) in &self.analyzer.color_configs {
                     if log.content.contains(pattern) {
                         line = line.fg(config.fg).bg(config.bg);
@@ -418,45 +432,35 @@ impl App {
             frame.render_widget(sidebar, sidebar_area);
         }
 
-        // Command bar (full width)
-        let input_prefix = match self.mode {
-            AppMode::Command => ":",
-            AppMode::Search => {
-                if self.search_forward {
-                    "/"
-                } else {
-                    "?"
-                }
+        // Command bar (full width, only in command mode)
+        if show_command_bar {
+            let input_prefix = ":";
+            let input_text = &self.command_input;
+            let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
+                .style(Style::default().fg(Color::White).bg(Color::DarkGray))
+                .wrap(Wrap { trim: false });
+            // Limit the command bar to 5 lines
+            let mut area = chunks[1];
+            if area.height > 5 {
+                area.height = 5;
             }
-            _ => "",
-        };
-
-        let input_text = match self.mode {
-            AppMode::Command => &self.command_input,
-            AppMode::Search => &self.search_input,
-            _ => "",
-        };
-
-        let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
-            .style(Style::default().fg(Color::White).bg(Color::DarkGray));
-        frame.render_widget(command_line, chunks[1]);
-
-        if let AppMode::Command = self.mode {
-            frame.set_cursor(
-                chunks[1].x + self.command_input.len() as u16 + 1, // +1 for the ':' character
-                chunks[1].y,
-            );
-        } else if let AppMode::Search = self.mode {
-            frame.set_cursor(
-                chunks[1].x + self.search_input.len() as u16 + 1, // +1 for the '/' or '?' character
-                chunks[1].y,
-            );
+            frame.render_widget(command_line, area);
+            // Set cursor only if the input fits on the first line
+            let cursor_x = chunks[1].x + self.command_input.len() as u16 + 1;
+            if cursor_x < chunks[1].x + chunks[1].width && area.height == 1 {
+                frame.set_cursor(cursor_x, chunks[1].y);
+            }
         }
 
-        // Command list (full width)
-        let command_list =
-            Paragraph::new(self.get_command_list()).block(Block::default().borders(Borders::ALL));
-        frame.render_widget(command_list, chunks[2]);
+        // Command list (full width, always last chunk)
+        let command_list = Paragraph::new(self.get_command_list())
+            .block(Block::default().borders(Borders::ALL))
+            .wrap(Wrap { trim: true }); // Enable word wrapping
+        let mut area = *chunks.last().unwrap();
+        if area.height > 5 {
+            area.height = 5;
+        }
+        frame.render_widget(command_list, area);
     }
 
     fn handle_command(&mut self) {
