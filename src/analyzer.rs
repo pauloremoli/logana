@@ -15,7 +15,7 @@ pub enum FilterType {
     Exclude,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Filter {
     pub id: usize,
     pub pattern: String,
@@ -32,12 +32,13 @@ pub struct ColorConfig {
     pub bg: Color,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SearchResult {
     pub log_id: usize,
     pub matches: Vec<(usize, usize)>, // (start_index, end_index) of the match
 }
 
+#[derive(Debug)]
 pub struct LogAnalyzer {
     pub entries: Vec<LogEntry>,
     pub filters: Vec<Filter>,
@@ -671,6 +672,30 @@ mod tests {
         analyzer.move_filter_down(1);
         assert_eq!(analyzer.filters[0].id, 0);
         assert_eq!(analyzer.filters[1].id, 1);
+
+        Ok(())
+    }
+
+
+    #[test]
+    fn test_save_and_load_filters() -> anyhow::Result<()> {
+        let mut analyzer = LogAnalyzer::new();
+        analyzer.add_filter("error".to_string(), FilterType::Include);
+        analyzer.add_filter("info".to_string(), FilterType::Exclude);
+
+        let file = NamedTempFile::new()?;
+        let path = file.path().to_str().unwrap();
+
+        analyzer.save_filters(path)?;
+
+        let mut new_analyzer = LogAnalyzer::new();
+        new_analyzer.load_filters(path)?;
+
+        assert_eq!(new_analyzer.filters.len(), 2);
+        assert_eq!(new_analyzer.filters[0].pattern, "error");
+        assert_eq!(new_analyzer.filters[0].filter_type, FilterType::Include);
+        assert_eq!(new_analyzer.filters[1].pattern, "info");
+        assert_eq!(new_analyzer.filters[1].filter_type, FilterType::Exclude);
 
         Ok(())
     }

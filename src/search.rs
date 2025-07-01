@@ -1,6 +1,7 @@
 use crate::analyzer::{LogEntry, SearchResult};
 use regex::Regex;
 
+#[derive(Debug, Clone)]
 pub struct Search {
     pattern: Option<Regex>,
     results: Vec<SearchResult>,

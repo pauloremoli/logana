@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crate::analyzer::{FilterType, LogAnalyzer, LogEntry};
 use crate::search::Search;
 
+#[derive(Debug, PartialEq)]
 pub enum AppMode {
     Normal,
     Command,
@@ -16,6 +17,7 @@ pub enum AppMode {
     Search,
 }
 
+#[derive(Debug)]
 pub struct App {
     pub analyzer: LogAnalyzer,
     pub mode: AppMode,
@@ -420,9 +422,13 @@ impl App {
                     } else {
                         " "
                     };
+                    let filter_type_str = match filter.filter_type {
+                        FilterType::Include => "In",
+                        FilterType::Exclude => "Out",
+                    };
                     Line::from(format!(
                         "{}{} {}: {}",
-                        selected_prefix, status, filter.filter_type, filter.pattern
+                        selected_prefix, status, filter_type_str, filter.pattern
                     ))
                 })
                 .collect();
@@ -523,6 +529,9 @@ impl App {
                         }
                     }
                 }
+                "wrap" => {
+                    self.wrap = !self.wrap;
+                }
                 _ => {}
             }
         }
@@ -558,5 +567,258 @@ impl App {
         if let Some(index) = self.analyzer.entries.iter().position(|e| e.id == log_id) {
             self.scroll_offset = index;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+use crate::analyzer::{ColorConfig, FilterType, LogAnalyzer, LogEntry};
+use crate::ui::{App, AppMode};
+use crossterm::event::KeyCode;
+use ratatui::style::Color;
+
+fn mock_analyzer() -> LogAnalyzer {
+    let mut analyzer = LogAnalyzer::new();
+    analyzer.entries = vec![
+        LogEntry { id: 0, content: "INFO something".to_string(), marked: false },
+        LogEntry { id: 1, content: "WARN warning".to_string(), marked: false },
+        LogEntry { id: 2, content: "ERROR error".to_string(), marked: false },
+    ];
+    analyzer
+}
+
+#[test]
+fn test_toggle_wrap_command() {
+    let mut app = App::new(mock_analyzer());
+    app.mode = AppMode::Command;
+    app.command_input = "wrap".to_string();
+    app.handle_command();
+    assert!(!app.wrap);
+    app.command_input = "wrap".to_string();
+    app.handle_command();
+    assert!(app.wrap);
+}
+
+#[test]
+fn test_add_filter_command() {
+    let mut app = App::new(mock_analyzer());
+    app.mode = AppMode::Command;
+    app.command_input = "filter foo".to_string();
+    app.handle_command();
+    assert_eq!(app.analyzer.filters.len(), 1);
+    assert_eq!(app.analyzer.filters[0].filter_type, FilterType::Include);
+    assert_eq!(app.analyzer.filters[0].pattern, "foo");
+}
+
+#[test]
+fn test_add_exclude_command() {
+    let mut app = App::new(mock_analyzer());
+    app.mode = AppMode::Command;
+    app.command_input = "exclude bar".to_string();
+    app.handle_command();
+    assert_eq!(app.analyzer.filters.len(), 1);
+    assert_eq!(app.analyzer.filters[0].filter_type, FilterType::Exclude);
+    assert_eq!(app.analyzer.filters[0].pattern, "bar");
+}
+
+#[test]
+fn test_mark_line() {
+    let mut app = App::new(mock_analyzer());
+    app.handle_normal_mode_key(KeyCode::Char('m'));
+    assert!(app.analyzer.entries[0].marked);
+}
+
+#[test]
+fn test_scroll_offset_j_k() {
+    let mut app = App::new(mock_analyzer());
+    app.handle_normal_mode_key(KeyCode::Char('j'));
+    assert_eq!(app.scroll_offset, 1);
+    app.handle_normal_mode_key(KeyCode::Char('k'));
+    assert_eq!(app.scroll_offset, 0);
+}
+
+#[test]
+fn test_mode_switching() {
+    let mut app = App::new(mock_analyzer());
+    app.handle_normal_mode_key(KeyCode::Char(':'));
+    assert!(matches!(app.mode, AppMode::Command));
+    app.handle_command_mode_key(KeyCode::Esc);
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn test_sidebar_filter_display_in_out() {
+    let mut app = App::new(mock_analyzer());
+    app.analyzer.add_filter("foo".to_string(), FilterType::Include);
+    app.analyzer.add_filter("bar".to_string(), FilterType::Exclude);
+    let filters = &app.analyzer.filters;
+    assert_eq!(filters[0].filter_type, FilterType::Include);
+    assert_eq!(filters[1].filter_type, FilterType::Exclude);
+    // The UI rendering is not tested here, but the filter types are correct for sidebar display
+}
+
+#[test]
+fn test_command_list_texts() {
+    let app = App::new(mock_analyzer());
+    let normal = app.get_command_list();
+    assert!(normal.contains("[NORMAL]"));
+}
+
+#[test]
+fn test_toggle_sidebar() {
+    let mut app = App::new(mock_analyzer());
+    assert!(!app.show_sidebar);
+    app.handle_normal_mode_key(KeyCode::Char('s'));
+    assert!(app.show_sidebar);
+    app.handle_normal_mode_key(KeyCode::Char('s'));
+    assert!(!app.show_sidebar);
+}
+
+#[test]
+fn test_filter_management_mode_navigation() {
+    let mut app = App::new(mock_analyzer());
+    app.mode = AppMode::FilterManagement;
+    app.analyzer.add_filter("foo".to_string(), FilterType::Include);
+    app.analyzer.add_filter("bar".to_string(), FilterType::Exclude);
+    app.selected_filter_index = 1;
+    app.handle_filter_management_mode_key(KeyCode::Up);
+    assert_eq!(app.selected_filter_index, 0);
+    app.handle_filter_management_mode_key(KeyCode::Down);
+    assert_eq!(app.selected_filter_index, 1);
+}
+
+#[test]
+fn test_filter_toggle_and_delete() {
+    let mut app = App::new(mock_analyzer());
+    app.mode = AppMode::FilterManagement;
+    app.analyzer.add_filter("foo".to_string(), FilterType::Include);
+    assert!(app.analyzer.filters[0].enabled);
+    app.handle_filter_management_mode_key(KeyCode::Char(' '));
+    assert!(!app.analyzer.filters[0].enabled);
+    app.handle_filter_management_mode_key(KeyCode::Char('d'));
+    assert!(app.analyzer.filters.is_empty());
+}
+
+#[test]
+fn test_filter_edit() {
+    let mut app = App::new(mock_analyzer());
+    app.mode = AppMode::FilterManagement;
+    app.analyzer.add_filter("foo".to_string(), FilterType::Include);
+    app.handle_filter_management_mode_key(KeyCode::Char('e'));
+    assert_eq!(app.mode, AppMode::FilterEdit);
+    app.editing_filter_input = "bar".to_string();
+    app.handle_filter_edit_mode_key(KeyCode::Enter);
+    assert_eq!(app.analyzer.filters[0].pattern, "bar");
+    assert_eq!(app.mode, AppMode::FilterManagement);
+}
+
+#[test]
+fn test_search_mode_and_input() {
+    let mut app = App::new(mock_analyzer());
+    app.handle_normal_mode_key(KeyCode::Char('/'));
+    assert_eq!(app.mode, AppMode::Search);
+    app.handle_search_mode_key(KeyCode::Char('t'));
+    assert_eq!(app.search_input, "t");
+    app.handle_search_mode_key(KeyCode::Backspace);
+    assert_eq!(app.search_input, "");
+    app.handle_search_mode_key(KeyCode::Esc);
+    assert_eq!(app.mode, AppMode::Normal);
+}
+
+#[test]
+fn test_command_input_and_backspace() {
+    let mut app = App::new(mock_analyzer());
+    app.mode = AppMode::Command;
+    app.handle_command_mode_key(KeyCode::Char('a'));
+    app.handle_command_mode_key(KeyCode::Char('b'));
+    assert_eq!(app.command_input, "ab");
+    app.handle_command_mode_key(KeyCode::Backspace);
+    assert_eq!(app.command_input, "a");
+    app.handle_command_mode_key(KeyCode::Esc);
+    assert_eq!(app.command_input, "");
+    assert_eq!(app.mode, AppMode::Normal);
+}
+
+#[test]
+fn test_scroll_to_log_entry() {
+    let mut app = App::new(mock_analyzer());
+    app.scroll_to_log_entry(2);
+    assert_eq!(app.scroll_offset, 2);
+}
+
+#[test]
+fn test_set_color_command() {
+    let mut app = App::new(mock_analyzer());
+    app.mode = AppMode::Command;
+    app.command_input = "set-color error red black".to_string();
+    app.handle_command();
+    assert!(app.analyzer.color_configs.contains(&("error".to_string(), ColorConfig { fg: Color::Red, bg: Color::Black })));
+}
+
+
+    #[test]
+    fn test_toggle_line_wrapping() {
+        let mut app = App::new(Default::default());
+        assert!(app.wrap);
+        app.handle_key_event(KeyCode::Char('w'));
+        assert!(!app.wrap);
+        app.handle_key_event(KeyCode::Char('w'));
+        assert!(app.wrap);
+    }
+
+    #[test]
+    fn test_horizontal_scroll() {
+        let mut app = App::new(Default::default());
+        app.wrap = false;
+        assert_eq!(app.horizontal_scroll, 0);
+        app.handle_key_event(KeyCode::Char('l'));
+        assert_eq!(app.horizontal_scroll, 1);
+        app.handle_key_event(KeyCode::Char('h'));
+        assert_eq!(app.horizontal_scroll, 0);
+    }
+
+
+    fn setup_test_app_for_vim_motions() -> App {
+        let mut analyzer = LogAnalyzer::new();
+        for i in 0..100 {
+            analyzer.entries.push(LogEntry {
+                id: i,
+                content: format!("line {}", i),
+                marked: false,
+            });
+        }
+        App::new(analyzer)
+    }
+
+    #[test]
+    fn test_vim_j_key() {
+        let mut app = setup_test_app_for_vim_motions();
+        app.handle_key_event(KeyCode::Char('j'));
+        assert_eq!(app.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_vim_k_key() {
+        let mut app = setup_test_app_for_vim_motions();
+        app.scroll_offset = 5;
+        app.handle_key_event(KeyCode::Char('k'));
+        assert_eq!(app.scroll_offset, 4);
+    }
+
+    #[test]
+    fn test_vim_gg_key() {
+        let mut app = setup_test_app_for_vim_motions();
+        app.scroll_offset = 50;
+        app.handle_key_event(KeyCode::Char('g'));
+        app.handle_key_event(KeyCode::Char('g'));
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_vim_g_key() {
+        let mut app = setup_test_app_for_vim_motions();
+        app.scroll_offset = 50;
+        app.handle_key_event(KeyCode::Char('G'));
+        assert_eq!(app.scroll_offset, 99);
     }
 }
