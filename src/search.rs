@@ -1,5 +1,5 @@
-use regex::Regex;
 use crate::analyzer::{LogEntry, SearchResult};
+use regex::Regex;
 
 pub struct Search {
     pattern: Option<Regex>,
@@ -93,10 +93,26 @@ mod tests {
 
     fn create_test_logs() -> Vec<LogEntry> {
         vec![
-            LogEntry { id: 0, content: "This is a test line".to_string(), marked: false },
-            LogEntry { id: 1, content: "Another line with Test".to_string(), marked: false },
-            LogEntry { id: 2, content: "No match here".to_string(), marked: false },
-            LogEntry { id: 3, content: "test test test".to_string(), marked: false },
+            LogEntry {
+                id: 0,
+                content: "This is a test line".to_string(),
+                marked: false,
+            },
+            LogEntry {
+                id: 1,
+                content: "Another line with Test".to_string(),
+                marked: false,
+            },
+            LogEntry {
+                id: 2,
+                content: "No match here".to_string(),
+                marked: false,
+            },
+            LogEntry {
+                id: 3,
+                content: "test test test".to_string(),
+                marked: false,
+            },
         ]
     }
 

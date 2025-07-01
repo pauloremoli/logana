@@ -1,5 +1,8 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use ratatui::{prelude::*, widgets::{Block, Borders, Paragraph, Wrap}};
+use ratatui::{
+    prelude::*,
+    widgets::{Block, Borders, Paragraph, Wrap},
+};
 use std::time::{Duration, Instant};
 
 use crate::analyzer::{FilterType, LogAnalyzer, LogEntry};
@@ -68,215 +71,13 @@ impl App {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
                         match self.mode {
-                            AppMode::Normal => match key.code {
-                                KeyCode::Char('q') => return Ok(()),
-                                KeyCode::Char(':') => self.mode = AppMode::Command,
-                                KeyCode::Char('f') => {
-                                    self.mode = AppMode::FilterManagement;
-                                    self.show_sidebar = true
-                                }
-                                KeyCode::Char('s') => self.show_sidebar = !self.show_sidebar,
-                                KeyCode::Char('j') => {
-                                    self.scroll_offset = self.scroll_offset.saturating_add(1);
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('k') => {
-                                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('h') => {
-                                    if !self.wrap {
-                                        self.horizontal_scroll =
-                                            self.horizontal_scroll.saturating_sub(1);
-                                    }
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('l') => {
-                                    if !self.wrap {
-                                        self.horizontal_scroll =
-                                            self.horizontal_scroll.saturating_add(1);
-                                    }
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('w') => {
-                                    self.wrap = !self.wrap;
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('G') => {
-                                    let num_logs = self.get_filtered_logs().len();
-                                    if num_logs > 0 {
-                                        self.scroll_offset = num_logs - 1;
-                                    }
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('g') => {
-                                    if self.g_key_pressed {
-                                        self.scroll_offset = 0;
-                                        self.g_key_pressed = false;
-                                    } else {
-                                        self.g_key_pressed = true;
-                                    }
-                                }
-                                KeyCode::Down => {
-                                    self.scroll_offset = self.scroll_offset.saturating_add(1);
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Up => {
-                                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('m') => {
-                                    let logs_to_display = self.get_filtered_logs();
-                                    if let Some(log) = logs_to_display.get(self.scroll_offset) {
-                                        self.analyzer.toggle_mark(log.id);
-                                    }
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('/') => {
-                                    self.mode = AppMode::Search;
-                                    self.search_input.clear();
-                                    self.search_forward = true;
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('?') => {
-                                    self.mode = AppMode::Search;
-                                    self.search_input.clear();
-                                    self.search_forward = false;
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('n') => {
-                                    if let Some(result) = self.search.next_match() {
-                                        let log_id = result.log_id;
-                                        self.scroll_to_log_entry(log_id);
-                                    }
-                                    self.g_key_pressed = false;
-                                }
-                                KeyCode::Char('N') => {
-                                    if let Some(result) = self.search.previous_match() {
-                                        let log_id = result.log_id;
-                                        self.scroll_to_log_entry(log_id);
-                                    }
-                                    self.g_key_pressed = false;
-                                }
-                                _ => {
-                                    self.g_key_pressed = false;
-                                }
-                            },
-                            AppMode::Command => match key.code {
-                                KeyCode::Enter => {
-                                    self.handle_command();
-                                    self.command_input.clear();
-                                    self.mode = AppMode::Normal;
-                                }
-                                KeyCode::Esc => {
-                                    self.command_input.clear();
-                                    self.mode = AppMode::Normal;
-                                }
-                                KeyCode::Backspace => {
-                                    self.command_input.pop();
-                                }
-                                KeyCode::Char(c) => {
-                                    self.command_input.push(c);
-                                }
-                                _ => {}
-                            },
-                            AppMode::FilterManagement => match key.code {
-                                KeyCode::Esc => self.mode = AppMode::Normal,
-                                KeyCode::Up => {
-                                    self.selected_filter_index =
-                                        self.selected_filter_index.saturating_sub(1);
-                                }
-                                KeyCode::Down => {
-                                    self.selected_filter_index =
-                                        self.selected_filter_index.saturating_add(1);
-                                    let num_filters = self.analyzer.filters.len();
-                                    if num_filters > 0 && self.selected_filter_index >= num_filters
-                                    {
-                                        self.selected_filter_index = num_filters - 1;
-                                    }
-                                }
-                                KeyCode::Char(' ') => {
-                                    if let Some(filter) =
-                                        self.analyzer.filters.get(self.selected_filter_index)
-                                    {
-                                        self.analyzer.toggle_filter(filter.id);
-                                    }
-                                }
-                                KeyCode::Char('d') => {
-                                    if let Some(filter) =
-                                        self.analyzer.filters.get(self.selected_filter_index)
-                                    {
-                                        self.analyzer.remove_filter(filter.id);
-                                        // Adjust selected_filter_index if the last filter was removed
-                                        if self.selected_filter_index >= self.analyzer.filters.len()
-                                            && !self.analyzer.filters.is_empty()
-                                        {
-                                            self.selected_filter_index =
-                                                self.analyzer.filters.len() - 1;
-                                        }
-                                    }
-                                }
-                                KeyCode::Char('e') => {
-                                    if let Some(filter) =
-                                        self.analyzer.filters.get(self.selected_filter_index)
-                                    {
-                                        self.editing_filter_id = Some(filter.id);
-                                        self.editing_filter_input = filter.pattern.clone();
-                                        self.mode = AppMode::FilterEdit;
-                                    }
-                                }
-                                _ => {}
-                            },
-                            AppMode::FilterEdit => match key.code {
-                                KeyCode::Enter => {
-                                    if let Some(id) = self.editing_filter_id {
-                                        self.analyzer
-                                            .edit_filter(id, self.editing_filter_input.clone());
-                                        self.editing_filter_id = None;
-                                        self.editing_filter_input.clear();
-                                        self.mode = AppMode::FilterManagement;
-                                    }
-                                }
-                                KeyCode::Esc => {
-                                    self.editing_filter_id = None;
-                                    self.editing_filter_input.clear();
-                                    self.mode = AppMode::FilterManagement;
-                                }
-                                KeyCode::Backspace => {
-                                    self.editing_filter_input.pop();
-                                }
-                                KeyCode::Char(c) => {
-                                    self.editing_filter_input.push(c);
-                                }
-                                _ => {}
-                            },
-                            AppMode::Search => match key.code {
-                                KeyCode::Enter => {
-                                    let _ = self.search.search(&self.search_input, &self.analyzer.entries);
-                                    if self.search_forward {
-                                        if let Some(result) = self.search.next_match() {
-                                            let log_id = result.log_id;
-                                            self.scroll_to_log_entry(log_id);
-                                        }
-                                    } else if let Some(result) = self.search.previous_match() {
-                                        let log_id = result.log_id;
-                                        self.scroll_to_log_entry(log_id);
-                                    }
-                                    self.mode = AppMode::Normal;
-                                    self.search_input.clear();
-                                }
-                                KeyCode::Esc => {
-                                    self.search_input.clear();
-                                    self.mode = AppMode::Normal;
-                                }
-                                KeyCode::Backspace => {
-                                    self.search_input.pop();
-                                }
-                                KeyCode::Char(c) => {
-                                    self.search_input.push(c);
-                                }
-                                _ => {}
-                            },
+                            AppMode::Normal => self.handle_normal_mode_key(key.code),
+                            AppMode::Command => self.handle_command_mode_key(key.code),
+                            AppMode::FilterManagement => {
+                                self.handle_filter_management_mode_key(key.code)
+                            }
+                            AppMode::FilterEdit => self.handle_filter_edit_mode_key(key.code),
+                            AppMode::Search => self.handle_search_mode_key(key.code),
                         }
                     }
                 }
@@ -288,206 +89,226 @@ impl App {
         }
     }
 
-    pub fn handle_key_event(&mut self, key_code: KeyCode) {
-        match self.mode {
-            AppMode::Normal => match key_code {
-                KeyCode::Char('q') => {} // Can't test exit in the same way
-                KeyCode::Char(':') => self.mode = AppMode::Command,
-                KeyCode::Char('f') => {
-                    self.mode = AppMode::FilterManagement;
-                    self.show_sidebar = true
+    fn handle_normal_mode_key(&mut self, key_code: KeyCode) {
+        match key_code {
+            KeyCode::Char('q') => {} // Can't test exit in the same way
+            KeyCode::Char(':') => self.mode = AppMode::Command,
+            KeyCode::Char('f') => {
+                self.mode = AppMode::FilterManagement;
+                self.show_sidebar = true
+            }
+            KeyCode::Char('s') => self.show_sidebar = !self.show_sidebar,
+            KeyCode::Char('j') => {
+                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('k') => {
+                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('h') => {
+                if !self.wrap {
+                    self.horizontal_scroll = self.horizontal_scroll.saturating_sub(1);
                 }
-                KeyCode::Char('s') => self.show_sidebar = !self.show_sidebar,
-                KeyCode::Char('j') => {
-                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('l') => {
+                if !self.wrap {
+                    self.horizontal_scroll = self.horizontal_scroll.saturating_add(1);
+                }
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('w') => {
+                self.wrap = !self.wrap;
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('G') => {
+                let num_logs = self.get_filtered_logs().len();
+                if num_logs > 0 {
+                    self.scroll_offset = num_logs - 1;
+                }
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('g') => {
+                if self.g_key_pressed {
+                    self.scroll_offset = 0;
                     self.g_key_pressed = false;
+                } else {
+                    self.g_key_pressed = true;
                 }
-                KeyCode::Char('k') => {
-                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                    self.g_key_pressed = false;
+            }
+            KeyCode::Down => {
+                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                self.g_key_pressed = false;
+            }
+            KeyCode::Up => {
+                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('m') => {
+                let logs_to_display = self.get_filtered_logs();
+                if let Some(log) = logs_to_display.get(self.scroll_offset) {
+                    self.analyzer.toggle_mark(log.id);
                 }
-                KeyCode::Char('h') => {
-                    if !self.wrap {
-                        self.horizontal_scroll = self.horizontal_scroll.saturating_sub(1);
-                    }
-                    self.g_key_pressed = false;
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('/') => {
+                self.mode = AppMode::Search;
+                self.search_input.clear();
+                self.search_forward = true;
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('?') => {
+                self.mode = AppMode::Search;
+                self.search_input.clear();
+                self.search_forward = false;
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('n') => {
+                if let Some(result) = self.search.next_match() {
+                    let log_id = result.log_id;
+                    self.scroll_to_log_entry(log_id);
                 }
-                KeyCode::Char('l') => {
-                    if !self.wrap {
-                        self.horizontal_scroll = self.horizontal_scroll.saturating_add(1);
-                    }
-                    self.g_key_pressed = false;
+                self.g_key_pressed = false;
+            }
+            KeyCode::Char('N') => {
+                if let Some(result) = self.search.previous_match() {
+                    let log_id = result.log_id;
+                    self.scroll_to_log_entry(log_id);
                 }
-                KeyCode::Char('w') => {
-                    self.wrap = !self.wrap;
-                    self.g_key_pressed = false;
+                self.g_key_pressed = false;
+            }
+            _ => {
+                self.g_key_pressed = false;
+            }
+        }
+    }
+
+    fn handle_command_mode_key(&mut self, key_code: KeyCode) {
+        match key_code {
+            KeyCode::Enter => {
+                self.handle_command();
+                self.command_input.clear();
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Esc => {
+                self.command_input.clear();
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.command_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.command_input.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_filter_management_mode_key(&mut self, key_code: KeyCode) {
+        match key_code {
+            KeyCode::Esc => self.mode = AppMode::Normal,
+            KeyCode::Up => {
+                self.selected_filter_index = self.selected_filter_index.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                self.selected_filter_index = self.selected_filter_index.saturating_add(1);
+                let num_filters = self.analyzer.filters.len();
+                if num_filters > 0 && self.selected_filter_index >= num_filters {
+                    self.selected_filter_index = num_filters - 1;
                 }
-                KeyCode::Char('G') => {
-                    let num_logs = self.get_filtered_logs().len();
-                    if num_logs > 0 {
-                        self.scroll_offset = num_logs - 1;
-                    }
-                    self.g_key_pressed = false;
+            }
+            KeyCode::Char(' ') => {
+                if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
+                    self.analyzer.toggle_filter(filter.id);
                 }
-                KeyCode::Char('g') => {
-                    if self.g_key_pressed {
-                        self.scroll_offset = 0;
-                        self.g_key_pressed = false;
-                    } else {
-                        self.g_key_pressed = true;
-                    }
-                }
-                KeyCode::Down => {
-                    self.scroll_offset = self.scroll_offset.saturating_add(1);
-                    self.g_key_pressed = false;
-                }
-                KeyCode::Up => {
-                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                    self.g_key_pressed = false;
-                }
-                KeyCode::Char('m') => {
-                    let logs_to_display = self.get_filtered_logs();
-                    if let Some(log) = logs_to_display.get(self.scroll_offset) {
-                        self.analyzer.toggle_mark(log.id);
-                    }
-                    self.g_key_pressed = false;
-                }
-                KeyCode::Char('/') => {
-                    self.mode = AppMode::Search;
-                    self.search_input.clear();
-                    self.search_forward = true;
-                    self.g_key_pressed = false;
-                }
-                KeyCode::Char('?') => {
-                    self.mode = AppMode::Search;
-                    self.search_input.clear();
-                    self.search_forward = false;
-                    self.g_key_pressed = false;
-                }
-                KeyCode::Char('n') => {
-                    if let Some(result) = self.search.next_match() {
-                        let log_id = result.log_id;
-                        self.scroll_to_log_entry(log_id);
-                    }
-                    self.g_key_pressed = false;
-                }
-                KeyCode::Char('N') => {
-                    if let Some(result) = self.search.previous_match() {
-                        let log_id = result.log_id;
-                        self.scroll_to_log_entry(log_id);
-                    }
-                    self.g_key_pressed = false;
-                }
-                _ => {
-                    self.g_key_pressed = false;
-                }
-            },
-            AppMode::Command => match key_code {
-                KeyCode::Enter => {
-                    self.handle_command();
-                    self.command_input.clear();
-                    self.mode = AppMode::Normal;
-                }
-                KeyCode::Esc => {
-                    self.command_input.clear();
-                    self.mode = AppMode::Normal;
-                }
-                KeyCode::Backspace => {
-                    self.command_input.pop();
-                }
-                KeyCode::Char(c) => {
-                    self.command_input.push(c);
-                }
-                _ => {}
-            },
-            AppMode::FilterManagement => match key_code {
-                KeyCode::Esc => self.mode = AppMode::Normal,
-                KeyCode::Up => {
-                    self.selected_filter_index = self.selected_filter_index.saturating_sub(1);
-                }
-                KeyCode::Down => {
-                    self.selected_filter_index = self.selected_filter_index.saturating_add(1);
-                    let num_filters = self.analyzer.filters.len();
-                    if num_filters > 0 && self.selected_filter_index >= num_filters {
-                        self.selected_filter_index = num_filters - 1;
-                    }
-                }
-                KeyCode::Char(' ') => {
-                    if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
-                        self.analyzer.toggle_filter(filter.id);
-                    }
-                }
-                KeyCode::Char('d') => {
-                    if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
-                        self.analyzer.remove_filter(filter.id);
-                        if self.selected_filter_index >= self.analyzer.filters.len()
-                            && !self.analyzer.filters.is_empty()
-                        {
-                            self.selected_filter_index = self.analyzer.filters.len() - 1;
-                        }
-                    }
-                }
-                KeyCode::Char('e') => {
-                    if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
-                        self.editing_filter_id = Some(filter.id);
-                        self.editing_filter_input = filter.pattern.clone();
-                        self.mode = AppMode::FilterEdit;
+            }
+            KeyCode::Char('d') => {
+                if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
+                    self.analyzer.remove_filter(filter.id);
+                    if self.selected_filter_index >= self.analyzer.filters.len()
+                        && !self.analyzer.filters.is_empty()
+                    {
+                        self.selected_filter_index = self.analyzer.filters.len() - 1;
                     }
                 }
-                _ => {}
-            },
-            AppMode::FilterEdit => match key_code {
-                KeyCode::Enter => {
-                    if let Some(id) = self.editing_filter_id {
-                        self.analyzer
-                            .edit_filter(id, self.editing_filter_input.clone());
-                        self.editing_filter_id = None;
-                        self.editing_filter_input.clear();
-                        self.mode = AppMode::FilterManagement;
-                    }
+            }
+            KeyCode::Char('e') => {
+                if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
+                    self.editing_filter_id = Some(filter.id);
+                    self.editing_filter_input = filter.pattern.clone();
+                    self.mode = AppMode::FilterEdit;
                 }
-                KeyCode::Esc => {
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_filter_edit_mode_key(&mut self, key_code: KeyCode) {
+        match key_code {
+            KeyCode::Enter => {
+                if let Some(id) = self.editing_filter_id {
+                    self.analyzer
+                        .edit_filter(id, self.editing_filter_input.clone());
                     self.editing_filter_id = None;
                     self.editing_filter_input.clear();
                     self.mode = AppMode::FilterManagement;
                 }
-                KeyCode::Backspace => {
-                    self.editing_filter_input.pop();
-                }
-                KeyCode::Char(c) => {
-                    self.editing_filter_input.push(c);
-                }
-                _ => {}
-            },
-            AppMode::Search => match key_code {
-                KeyCode::Enter => {
-                    let _ = self
-                        .search
-                        .search(&self.search_input, &self.analyzer.entries);
-                    if self.search_forward {
-                        if let Some(result) = self.search.next_match() {
-                            let log_id = result.log_id;
-                            self.scroll_to_log_entry(log_id);
-                        }
-                    } else if let Some(result) = self.search.previous_match() {
+            }
+            KeyCode::Esc => {
+                self.editing_filter_id = None;
+                self.editing_filter_input.clear();
+                self.mode = AppMode::FilterManagement;
+            }
+            KeyCode::Backspace => {
+                self.editing_filter_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.editing_filter_input.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_search_mode_key(&mut self, key_code: KeyCode) {
+        match key_code {
+            KeyCode::Enter => {
+                let _ = self
+                    .search
+                    .search(&self.search_input, &self.analyzer.entries);
+                if self.search_forward {
+                    if let Some(result) = self.search.next_match() {
                         let log_id = result.log_id;
                         self.scroll_to_log_entry(log_id);
                     }
-                    self.mode = AppMode::Normal;
-                    self.search_input.clear();
+                } else if let Some(result) = self.search.previous_match() {
+                    let log_id = result.log_id;
+                    self.scroll_to_log_entry(log_id);
                 }
-                KeyCode::Esc => {
-                    self.search_input.clear();
-                    self.mode = AppMode::Normal;
-                }
-                KeyCode::Backspace => {
-                    self.search_input.pop();
-                }
-                KeyCode::Char(c) => {
-                    self.search_input.push(c);
-                }
-                _ => {}
-            },
+                self.mode = AppMode::Normal;
+                self.search_input.clear();
+            }
+            KeyCode::Esc => {
+                self.search_input.clear();
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.search_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.search_input.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn handle_key_event(&mut self, key_code: KeyCode) {
+        match self.mode {
+            AppMode::Normal => self.handle_normal_mode_key(key_code),
+            AppMode::Command => self.handle_command_mode_key(key_code),
+            AppMode::FilterManagement => self.handle_filter_management_mode_key(key_code),
+            AppMode::FilterEdit => self.handle_filter_edit_mode_key(key_code),
+            AppMode::Search => self.handle_search_mode_key(key_code),
         }
     }
 
@@ -568,7 +389,13 @@ impl App {
 
         let input_prefix = match self.mode {
             AppMode::Command => ":",
-            AppMode::Search => if self.search_forward { "/" } else { "?" },
+            AppMode::Search => {
+                if self.search_forward {
+                    "/"
+                } else {
+                    "?"
+                }
+            }
             _ => "",
         };
 
@@ -618,10 +445,7 @@ impl App {
                     };
                     Line::from(format!(
                         "{}{} {}: {}",
-                        selected_prefix,
-                        status,
-                        filter.filter_type,
-                        filter.pattern
+                        selected_prefix, status, filter.filter_type, filter.pattern
                     ))
                 })
                 .collect();

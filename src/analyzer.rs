@@ -1,6 +1,6 @@
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{DisplayFromStr, serde_as};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -232,10 +232,8 @@ impl LogAnalyzer {
         let bg_color = self.parse_color(bg);
 
         if let (Some(fg), Some(bg)) = (fg_color, bg_color) {
-            self.color_configs.push((
-                pattern.to_string(),
-                ColorConfig { fg, bg },
-            ));
+            self.color_configs
+                .push((pattern.to_string(), ColorConfig { fg, bg }));
         }
     }
 

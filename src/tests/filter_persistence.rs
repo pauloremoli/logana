@@ -1,25 +1,29 @@
-use crate::analyzer::{Filter, FilterType, LogAnalyzer};
-use tempfile::NamedTempFile;
+#[cfg(test)]
+mod tests {
 
-#[test]
-fn test_save_and_load_filters() -> anyhow::Result<()> {
-    let mut analyzer = LogAnalyzer::new();
-    analyzer.add_filter("error".to_string(), FilterType::Include);
-    analyzer.add_filter("info".to_string(), FilterType::Exclude);
+    use crate::analyzer::{FilterType, LogAnalyzer};
+    use tempfile::NamedTempFile;
 
-    let file = NamedTempFile::new()?;
-    let path = file.path().to_str().unwrap();
+    #[test]
+    fn test_save_and_load_filters() -> anyhow::Result<()> {
+        let mut analyzer = LogAnalyzer::new();
+        analyzer.add_filter("error".to_string(), FilterType::Include);
+        analyzer.add_filter("info".to_string(), FilterType::Exclude);
 
-    analyzer.save_filters(path)?;
+        let file = NamedTempFile::new()?;
+        let path = file.path().to_str().unwrap();
 
-    let mut new_analyzer = LogAnalyzer::new();
-    new_analyzer.load_filters(path)?;
+        analyzer.save_filters(path)?;
 
-    assert_eq!(new_analyzer.filters.len(), 2);
-    assert_eq!(new_analyzer.filters[0].pattern, "error");
-    assert_eq!(new_analyzer.filters[0].filter_type, FilterType::Include);
-    assert_eq!(new_analyzer.filters[1].pattern, "info");
-    assert_eq!(new_analyzer.filters[1].filter_type, FilterType::Exclude);
+        let mut new_analyzer = LogAnalyzer::new();
+        new_analyzer.load_filters(path)?;
 
-    Ok(())
+        assert_eq!(new_analyzer.filters.len(), 2);
+        assert_eq!(new_analyzer.filters[0].pattern, "error");
+        assert_eq!(new_analyzer.filters[0].filter_type, FilterType::Include);
+        assert_eq!(new_analyzer.filters[1].pattern, "info");
+        assert_eq!(new_analyzer.filters[1].filter_type, FilterType::Exclude);
+
+        Ok(())
+    }
 }

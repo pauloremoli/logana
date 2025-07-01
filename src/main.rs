@@ -6,7 +6,7 @@ use crossterm::{
 use logsmith_rs::analyzer::LogAnalyzer;
 use logsmith_rs::ui::App;
 use ratatui::prelude::*;
-use std::io::{stdin, stdout, IsTerminal};
+use std::io::{IsTerminal, stdin, stdout};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

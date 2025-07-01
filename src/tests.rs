@@ -1,4 +1,3 @@
-
 #[cfg(test)]
 mod tests {
     use crate::analyzer::{LogAnalyzer, LogEntry};
@@ -110,8 +109,10 @@ mod tests {
     #[test]
     fn test_filter_management() {
         let mut app = setup_test_app();
-        app.analyzer.add_filter("filter1".to_string(), crate::analyzer::FilterType::Include);
-        app.analyzer.add_filter("filter2".to_string(), crate::analyzer::FilterType::Include);
+        app.analyzer
+            .add_filter("filter1".to_string(), crate::analyzer::FilterType::Include);
+        app.analyzer
+            .add_filter("filter2".to_string(), crate::analyzer::FilterType::Include);
 
         // Enter filter management mode
         app.handle_key_event(KeyCode::Char('f'));
@@ -218,8 +219,8 @@ mod tests {
     }
 }
 
+mod color_config;
+mod filter_persistence;
+mod line_wrapping;
 mod stdin;
 mod vim_motions;
-mod line_wrapping;
-mod filter_persistence;
-mod color_config;
