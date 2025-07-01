@@ -21,15 +21,16 @@ pub struct Filter {
     pub pattern: String,
     pub filter_type: FilterType,
     pub enabled: bool,
+    pub color_config: Option<ColorConfig>,
 }
 
 #[serde_as]
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 pub struct ColorConfig {
-    #[serde_as(as = "DisplayFromStr")]
-    pub fg: Color,
-    #[serde_as(as = "DisplayFromStr")]
-    pub bg: Color,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub fg: Option<Color>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub bg: Option<Color>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -43,7 +44,6 @@ pub struct LogAnalyzer {
     pub entries: Vec<LogEntry>,
     pub filters: Vec<Filter>,
     next_filter_id: usize,
-    pub color_configs: Vec<(String, ColorConfig)>,
 }
 
 impl Default for LogAnalyzer {
@@ -58,7 +58,6 @@ impl LogAnalyzer {
             entries: Vec::new(),
             filters: Vec::new(),
             next_filter_id: 0,
-            color_configs: Vec::new(),
         }
     }
 
@@ -109,6 +108,39 @@ impl LogAnalyzer {
             pattern,
             filter_type,
             enabled: true,
+            color_config: None,
+        });
+        self.next_filter_id += 1;
+    }
+
+    pub fn add_filter_with_color(
+        &mut self,
+        pattern: String,
+        filter_type: FilterType,
+        fg: Option<&str>,
+        bg: Option<&str>,
+    ) {
+        let color_config = match filter_type {
+            FilterType::Include => match (fg, bg) {
+                (Some(fg), Some(bg)) => {
+                    let fg = self.parse_color(fg);
+                    let bg = self.parse_color(bg);
+                    if fg.is_some() || bg.is_some() {
+                        Some(ColorConfig { fg, bg })
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+            FilterType::Exclude => None,
+        };
+        self.filters.push(Filter {
+            id: self.next_filter_id,
+            pattern,
+            filter_type,
+            enabled: true,
+            color_config,
         });
         self.next_filter_id += 1;
     }
@@ -228,35 +260,47 @@ impl LogAnalyzer {
         Ok(())
     }
 
-    pub fn set_color_config(&mut self, pattern: &str, fg: &str, bg: &str) {
-        let fg_color = self.parse_color(fg);
-        let bg_color = self.parse_color(bg);
-
-        if let (Some(fg), Some(bg)) = (fg_color, bg_color) {
-            self.color_configs
-                .push((pattern.to_string(), ColorConfig { fg, bg }));
+    pub fn set_color_config(&mut self, pattern: &str, fg: Option<&str>, bg: Option<&str>) {
+        if let (Some(fg), Some(bg)) = (fg, bg) {
+            let fg_color = self.parse_color(fg);
+            let bg_color = self.parse_color(bg);
+            if let Some(filter) = self
+                .filters
+                .iter_mut()
+                .find(|f| f.pattern == pattern && f.filter_type == FilterType::Include)
+            {
+                filter.color_config = Some(ColorConfig {
+                    bg: fg_color,
+                    fg: bg_color,
+                });
+            }
         }
     }
 
-    pub fn get_color_config(&self, pattern: &str) -> Option<&ColorConfig> {
-        self.color_configs
-            .iter()
-            .find(|(p, _)| p == pattern)
-            .map(|(_, c)| c)
+    pub fn parse_fg_bg_args(args: &str) -> (Option<String>, Option<String>) {
+        let mut fg = None;
+        let mut bg = None;
+        let mut tokens = args.split_whitespace().peekable();
+        while let Some(token) = tokens.next() {
+            match token {
+                "--fg" => {
+                    if let Some(val) = tokens.next() {
+                        fg = Some(val.to_string());
+                    }
+                }
+                "--bg" => {
+                    if let Some(val) = tokens.next() {
+                        bg = Some(val.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        (fg, bg)
     }
 
-    fn parse_color(&self, color_str: &str) -> Option<Color> {
-        match color_str.to_lowercase().as_str() {
-            "black" => Some(Color::Black),
-            "red" => Some(Color::Red),
-            "green" => Some(Color::Green),
-            "yellow" => Some(Color::Yellow),
-            "blue" => Some(Color::Blue),
-            "magenta" => Some(Color::Magenta),
-            "cyan" => Some(Color::Cyan),
-            "white" => Some(Color::White),
-            _ => None,
-        }
+    pub fn parse_color(&self, color_str: &str) -> Option<Color> {
+        color_str.parse::<Color>().ok()
     }
 }
 
@@ -675,7 +719,6 @@ mod tests {
 
         Ok(())
     }
-
 
     #[test]
     fn test_save_and_load_filters() -> anyhow::Result<()> {

@@ -22,6 +22,9 @@ pub struct App {
     pub analyzer: LogAnalyzer,
     pub mode: AppMode,
     pub command_input: String,
+    pub command_cursor: usize,
+    pub command_history: Vec<String>,
+    pub command_history_index: Option<usize>,
     pub scroll_offset: usize,
 
     pub show_sidebar: bool,
@@ -43,6 +46,9 @@ impl App {
             analyzer,
             mode: AppMode::Normal,
             command_input: String::new(),
+            command_cursor: 0,
+            command_history: Vec::new(),
+            command_history_index: None,
             scroll_offset: 0,
 
             show_sidebar: false,
@@ -78,7 +84,7 @@ impl App {
                                     return Ok(());
                                 }
                                 self.handle_normal_mode_key(key.code)
-                            },
+                            }
                             AppMode::Command => self.handle_command_mode_key(key.code),
                             AppMode::FilterManagement => {
                                 self.handle_filter_management_mode_key(key.code)
@@ -98,7 +104,7 @@ impl App {
 
     fn handle_normal_mode_key(&mut self, key_code: KeyCode) {
         match key_code {
-            KeyCode::Char('q') => {}, // handled in run()
+            KeyCode::Char('q') => {} // handled in run()
             KeyCode::Char(':') => self.mode = AppMode::Command,
             KeyCode::Char('f') => {
                 self.mode = AppMode::FilterManagement;
@@ -195,18 +201,74 @@ impl App {
         match key_code {
             KeyCode::Enter => {
                 self.handle_command();
+                if !self.command_input.is_empty() {
+                    self.command_history.push(self.command_input.clone());
+                }
                 self.command_input.clear();
+                self.command_cursor = 0;
+                self.command_history_index = None;
                 self.mode = AppMode::Normal;
             }
             KeyCode::Esc => {
                 self.command_input.clear();
+                self.command_cursor = 0;
+                self.command_history_index = None;
                 self.mode = AppMode::Normal;
             }
             KeyCode::Backspace => {
-                self.command_input.pop();
+                if self.command_cursor > 0 && !self.command_input.is_empty() {
+                    self.command_input.remove(self.command_cursor - 1);
+                    self.command_cursor -= 1;
+                }
             }
             KeyCode::Char(c) => {
-                self.command_input.push(c);
+                self.command_input.insert(self.command_cursor, c);
+                self.command_cursor += 1;
+            }
+            KeyCode::Left => {
+                if self.command_cursor > 0 {
+                    self.command_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                if self.command_cursor < self.command_input.len() {
+                    self.command_cursor += 1;
+                }
+            }
+            KeyCode::Up => {
+                if self.command_history.is_empty() {
+                    return;
+                }
+                let new_index = match self.command_history_index {
+                    None => Some(self.command_history.len() - 1),
+                    Some(0) => Some(0),
+                    Some(i) => Some(i - 1),
+                };
+                if let Some(i) = new_index {
+                    self.command_input = self.command_history[i].clone();
+                    self.command_cursor = self.command_input.len();
+                    self.command_history_index = Some(i);
+                }
+            }
+            KeyCode::Down => {
+                if self.command_history.is_empty() {
+                    return;
+                }
+                let new_index = match self.command_history_index {
+                    None => return,
+                    Some(i) if i + 1 >= self.command_history.len() => {
+                        self.command_input.clear();
+                        self.command_cursor = 0;
+                        self.command_history_index = None;
+                        return;
+                    }
+                    Some(i) => Some(i + 1),
+                };
+                if let Some(i) = new_index {
+                    self.command_input = self.command_history[i].clone();
+                    self.command_cursor = self.command_input.len();
+                    self.command_history_index = Some(i);
+                }
             }
             _ => {}
         }
@@ -242,10 +304,45 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
-                    self.editing_filter_id = Some(filter.id);
-                    self.editing_filter_input = filter.pattern.clone();
-                    self.mode = AppMode::FilterEdit;
+                    use crate::analyzer::FilterType;
+                    let mut cmd = String::from("filter");
+                    if filter.filter_type == FilterType::Include {
+                        if let Some(cfg) = &filter.color_config {
+                            cmd.push_str(&format!(" --fg {:?} --bg {:?}", cfg.fg, cfg.bg));
+                        }
+                    }
+                    // Always add a space before the pattern
+                    cmd.push(' ');
+                    cmd.push_str(&filter.pattern);
+                    self.mode = AppMode::Command;
+                    self.command_input = cmd;
                 }
+            }
+            KeyCode::Char('c') => {
+                // Enter command mode with set-color command prefilled for the selected filter
+                if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
+                    let mut cmd = String::from("set-color");
+                    if let Some(cfg) = &filter.color_config {
+                        if let Some(fg) = cfg.fg {
+                            cmd.push_str(&format!(" --fg {:?}", fg));
+                        }
+                        if let Some(bg) = cfg.bg {
+                            cmd.push_str(&format!(" --bg {:?}", bg));
+                        }
+                    }
+                    self.mode = AppMode::Command;
+                    self.command_input = cmd;
+                }
+            }
+            KeyCode::Char('i') => {
+                // Prompt for include filter pattern and color
+                self.mode = AppMode::Command;
+                self.command_input = "filter ".to_string();
+            }
+            KeyCode::Char('x') => {
+                // Prompt for exclude filter pattern
+                self.mode = AppMode::Command;
+                self.command_input = "exclude ".to_string();
             }
             _ => {}
         }
@@ -337,10 +434,7 @@ impl App {
         let (logs_area, sidebar_area) = if self.show_sidebar {
             let horizontal = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Min(1),
-                    Constraint::Length(30),
-                ])
+                .constraints([Constraint::Min(1), Constraint::Length(30)])
                 .split(chunks[0]);
             (horizontal[0], Some(horizontal[1]))
         } else {
@@ -389,9 +483,19 @@ impl App {
                 }
 
                 // Custom color configs override log level coloring
-                for (pattern, config) in &self.analyzer.color_configs {
-                    if log.content.contains(pattern) {
-                        line = line.fg(config.fg).bg(config.bg);
+                if let Some(filter) = self
+                    .analyzer
+                    .filters
+                    .iter()
+                    .find(|f| log.content.contains(&f.pattern))
+                {
+                    if let Some(config) = &filter.color_config {
+                        if let Some(fg) = config.fg {
+                            line = line.fg(fg);
+                        }
+                        if let Some(bg) = config.bg {
+                            line = line.bg(bg);
+                        }
                     }
                 }
 
@@ -451,8 +555,8 @@ impl App {
                 area.height = 5;
             }
             frame.render_widget(command_line, area);
-            // Set cursor only if the input fits on the first line
-            let cursor_x = chunks[1].x + self.command_input.len() as u16 + 1;
+            // Set cursor at the correct position
+            let cursor_x = chunks[1].x + 1 + self.command_cursor as u16;
             if cursor_x < chunks[1].x + chunks[1].width && area.height == 1 {
                 frame.set_cursor(cursor_x, chunks[1].y);
             }
@@ -470,89 +574,86 @@ impl App {
     }
 
     fn handle_command(&mut self) {
-        let command_parts: Vec<&str> = self.command_input.splitn(2, ' ').collect();
-        if let Some(cmd) = command_parts.first() {
-            match *cmd {
-                "filter" => {
-                    if let Some(pattern) = command_parts.get(1) {
-                        self.analyzer
-                            .add_filter(pattern.to_string(), FilterType::Include);
-                        self.scroll_offset = 0;
-                    }
-                }
-                "exclude" => {
-                    if let Some(pattern) = command_parts.get(1) {
-                        self.analyzer
-                            .add_filter(pattern.to_string(), FilterType::Exclude);
-                        self.scroll_offset = 0;
-                    }
-                }
-                "export-marked" => {
-                    if let Some(path) = command_parts.get(1) {
-                        if !path.is_empty() {
-                            let marked_logs: Vec<String> = self
-                                .analyzer
-                                .entries
-                                .iter()
-                                .filter(|e| e.marked)
-                                .map(|e| e.content.clone())
-                                .collect();
-                            let mut marked_logs_content = marked_logs.join("\n");
-                            if !marked_logs_content.ends_with("\n") {
-                                marked_logs_content.push('\n');
-                            }
-                            if std::fs::write(path, marked_logs_content).is_ok() {
-                                // Optionally, provide feedback to the user that the export was successful
-                            }
-                        }
-                    }
-                }
-                "save-filters" => {
-                    if let Some(path) = command_parts.get(1) {
-                        if !path.is_empty() {
-                            let _ = self.analyzer.save_filters(path);
-                        }
-                    }
-                }
-                "load-filters" => {
-                    if let Some(path) = command_parts.get(1) {
-                        if !path.is_empty() {
-                            let _ = self.analyzer.load_filters(path);
-                        }
-                    }
-                }
-                "set-color" => {
-                    if let Some(args) = command_parts.get(1) {
-                        let args: Vec<&str> = args.split_whitespace().collect();
-                        if args.len() == 3 {
-                            self.analyzer.set_color_config(args[0], args[1], args[2]);
-                        }
-                    }
-                }
-                "wrap" => {
-                    self.wrap = !self.wrap;
-                }
-                _ => {}
+        use crate::command_args::{CommandLine, Commands};
+        use clap::Parser;
+        let input = self.command_input.trim();
+        let args = match CommandLine::try_parse_from(input.split_whitespace()) {
+            Ok(args) => args,
+            Err(_) => return, // Optionally show error
+        };
+        match args.command {
+            Some(Commands::Filter { pattern, fg, bg }) => {
+                self.analyzer.add_filter_with_color(
+                    pattern,
+                    FilterType::Include,
+                    fg.as_deref(),
+                    bg.as_deref(),
+                );
+                self.scroll_offset = 0;
             }
+            Some(Commands::Exclude { pattern }) => {
+                self.analyzer
+                    .add_filter_with_color(pattern, FilterType::Exclude, None, None);
+                self.scroll_offset = 0;
+            }
+            Some(Commands::SetColor { fg, bg }) => {
+                if let Some(filter) = self.analyzer.filters.get(self.selected_filter_index) {
+                    if filter.filter_type == FilterType::Include {
+                        let pattern = filter.pattern.clone();
+                        self.analyzer
+                            .set_color_config(&pattern, fg.as_deref(), bg.as_deref());
+                    }
+                }
+            }
+            Some(Commands::ExportMarked { path }) => {
+                if !path.is_empty() {
+                    let marked_logs: Vec<String> = self
+                        .analyzer
+                        .entries
+                        .iter()
+                        .filter(|e| e.marked)
+                        .map(|e| e.content.clone())
+                        .collect();
+                    let mut marked_logs_content = marked_logs.join("\n");
+                    if !marked_logs_content.ends_with("\n") {
+                        marked_logs_content.push('\n');
+                    }
+                    let _ = std::fs::write(path, marked_logs_content);
+                }
+            }
+            Some(Commands::SaveFilters { path }) => {
+                if !path.is_empty() {
+                    let _ = self.analyzer.save_filters(&path);
+                }
+            }
+            Some(Commands::LoadFilters { path }) => {
+                if !path.is_empty() {
+                    let _ = self.analyzer.load_filters(&path);
+                }
+            }
+            Some(Commands::Wrap) => {
+                self.wrap = !self.wrap;
+            }
+            None => {}
         }
     }
 
     fn get_command_list(&self) -> String {
         match self.mode {
             AppMode::Normal => {
-                "[NORMAL] q: Quit | : : Command Mode | Up/Down: Scroll | f: Filter Management | s: Toggle Sidebar | m: Mark Line | /: Search Forward | ?: Search Backward | n: Next Match | N: Previous Match".to_string()
+                "[NORMAL] [Q]uit | : => command Mode | [f]ilter mode | [s]idebar | [m]ark Line | / => Search Forward | ? => Search Backward | [n]ext match | N => previous match".to_string()
             },
             AppMode::Command => {
-                "[COMMAND] filter | exclude | export-marked | Esc | Enter".to_string()
+                "[COMMAND] filter | exclude | set-color | export-marked | save-filters | load-filters | wrap | Esc | Enter".to_string()
             },
             AppMode::FilterManagement => {
-                "[FILTER] Esc: Exit | Up/Down: Select | Space: Toggle | d: Delete | e: Edit".to_string()
+                "[FILTER] [i]nclude | e[x]clude | Space: toggle | [d]elete | [e]dit | set [c]olor | Esc => normal mode".to_string()
             },
             AppMode::FilterEdit => {
-                "[FILTER EDIT] Esc: Cancel | Enter: Save".to_string()
+                "[FILTER EDIT] Esc => Cancel | Enter => Save".to_string()
             },
             AppMode::Search => {
-                "[SEARCH] Esc: Cancel | Enter: Search".to_string()
+                "[SEARCH] Esc => Cancel | Enter => Search".to_string()
             },
         }
     }
@@ -572,189 +673,195 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-use crate::analyzer::{ColorConfig, FilterType, LogAnalyzer, LogEntry};
-use crate::ui::{App, AppMode};
-use crossterm::event::KeyCode;
-use ratatui::style::Color;
+    use crate::analyzer::{FilterType, LogAnalyzer, LogEntry};
+    use crate::ui::{App, AppMode};
+    use crossterm::event::KeyCode;
 
-fn mock_analyzer() -> LogAnalyzer {
-    let mut analyzer = LogAnalyzer::new();
-    analyzer.entries = vec![
-        LogEntry { id: 0, content: "INFO something".to_string(), marked: false },
-        LogEntry { id: 1, content: "WARN warning".to_string(), marked: false },
-        LogEntry { id: 2, content: "ERROR error".to_string(), marked: false },
-    ];
-    analyzer
-}
+    fn mock_analyzer() -> LogAnalyzer {
+        let mut analyzer = LogAnalyzer::new();
+        analyzer.entries = vec![
+            LogEntry {
+                id: 0,
+                content: "INFO something".to_string(),
+                marked: false,
+            },
+            LogEntry {
+                id: 1,
+                content: "WARN warning".to_string(),
+                marked: false,
+            },
+            LogEntry {
+                id: 2,
+                content: "ERROR error".to_string(),
+                marked: false,
+            },
+        ];
+        analyzer
+    }
 
-#[test]
-fn test_toggle_wrap_command() {
-    let mut app = App::new(mock_analyzer());
-    app.mode = AppMode::Command;
-    app.command_input = "wrap".to_string();
-    app.handle_command();
-    assert!(!app.wrap);
-    app.command_input = "wrap".to_string();
-    app.handle_command();
-    assert!(app.wrap);
-}
+    #[test]
+    fn test_toggle_wrap_command() {
+        let mut app = App::new(mock_analyzer());
+        app.mode = AppMode::Command;
+        app.command_input = "wrap".to_string();
+        app.handle_command();
+        assert!(!app.wrap);
+        app.command_input = "wrap".to_string();
+        app.handle_command();
+        assert!(app.wrap);
+    }
 
-#[test]
-fn test_add_filter_command() {
-    let mut app = App::new(mock_analyzer());
-    app.mode = AppMode::Command;
-    app.command_input = "filter foo".to_string();
-    app.handle_command();
-    assert_eq!(app.analyzer.filters.len(), 1);
-    assert_eq!(app.analyzer.filters[0].filter_type, FilterType::Include);
-    assert_eq!(app.analyzer.filters[0].pattern, "foo");
-}
+    #[test]
+    fn test_add_filter_command() {
+        let mut app = App::new(mock_analyzer());
+        app.mode = AppMode::Command;
+        app.command_input = "filter foo".to_string();
+        app.handle_command();
+        assert_eq!(app.analyzer.filters.len(), 1);
+        assert_eq!(app.analyzer.filters[0].filter_type, FilterType::Include);
+        assert_eq!(app.analyzer.filters[0].pattern, "foo");
+    }
 
-#[test]
-fn test_add_exclude_command() {
-    let mut app = App::new(mock_analyzer());
-    app.mode = AppMode::Command;
-    app.command_input = "exclude bar".to_string();
-    app.handle_command();
-    assert_eq!(app.analyzer.filters.len(), 1);
-    assert_eq!(app.analyzer.filters[0].filter_type, FilterType::Exclude);
-    assert_eq!(app.analyzer.filters[0].pattern, "bar");
-}
+    #[test]
+    fn test_add_exclude_command() {
+        let mut app = App::new(mock_analyzer());
+        app.mode = AppMode::Command;
+        app.command_input = "exclude bar".to_string();
+        app.handle_command();
+        assert_eq!(app.analyzer.filters.len(), 1);
+        assert_eq!(app.analyzer.filters[0].filter_type, FilterType::Exclude);
+        assert_eq!(app.analyzer.filters[0].pattern, "bar");
+    }
 
-#[test]
-fn test_mark_line() {
-    let mut app = App::new(mock_analyzer());
-    app.handle_normal_mode_key(KeyCode::Char('m'));
-    assert!(app.analyzer.entries[0].marked);
-}
+    #[test]
+    fn test_mark_line() {
+        let mut app = App::new(mock_analyzer());
+        app.handle_normal_mode_key(KeyCode::Char('m'));
+        assert!(app.analyzer.entries[0].marked);
+    }
 
-#[test]
-fn test_scroll_offset_j_k() {
-    let mut app = App::new(mock_analyzer());
-    app.handle_normal_mode_key(KeyCode::Char('j'));
-    assert_eq!(app.scroll_offset, 1);
-    app.handle_normal_mode_key(KeyCode::Char('k'));
-    assert_eq!(app.scroll_offset, 0);
-}
+    #[test]
+    fn test_scroll_offset_j_k() {
+        let mut app = App::new(mock_analyzer());
+        app.handle_normal_mode_key(KeyCode::Char('j'));
+        assert_eq!(app.scroll_offset, 1);
+        app.handle_normal_mode_key(KeyCode::Char('k'));
+        assert_eq!(app.scroll_offset, 0);
+    }
 
-#[test]
-fn test_mode_switching() {
-    let mut app = App::new(mock_analyzer());
-    app.handle_normal_mode_key(KeyCode::Char(':'));
-    assert!(matches!(app.mode, AppMode::Command));
-    app.handle_command_mode_key(KeyCode::Esc);
-    assert!(matches!(app.mode, AppMode::Normal));
-}
+    #[test]
+    fn test_mode_switching() {
+        let mut app = App::new(mock_analyzer());
+        app.handle_normal_mode_key(KeyCode::Char(':'));
+        assert!(matches!(app.mode, AppMode::Command));
+        app.handle_command_mode_key(KeyCode::Esc);
+        assert!(matches!(app.mode, AppMode::Normal));
+    }
 
-#[test]
-fn test_sidebar_filter_display_in_out() {
-    let mut app = App::new(mock_analyzer());
-    app.analyzer.add_filter("foo".to_string(), FilterType::Include);
-    app.analyzer.add_filter("bar".to_string(), FilterType::Exclude);
-    let filters = &app.analyzer.filters;
-    assert_eq!(filters[0].filter_type, FilterType::Include);
-    assert_eq!(filters[1].filter_type, FilterType::Exclude);
-    // The UI rendering is not tested here, but the filter types are correct for sidebar display
-}
+    #[test]
+    fn test_sidebar_filter_display_in_out() {
+        let mut app = App::new(mock_analyzer());
+        app.analyzer
+            .add_filter("foo".to_string(), FilterType::Include);
+        app.analyzer
+            .add_filter("bar".to_string(), FilterType::Exclude);
+        let filters = &app.analyzer.filters;
+        assert_eq!(filters[0].filter_type, FilterType::Include);
+        assert_eq!(filters[1].filter_type, FilterType::Exclude);
+        // The UI rendering is not tested here, but the filter types are correct for sidebar display
+    }
 
-#[test]
-fn test_command_list_texts() {
-    let app = App::new(mock_analyzer());
-    let normal = app.get_command_list();
-    assert!(normal.contains("[NORMAL]"));
-}
+    #[test]
+    fn test_command_list_texts() {
+        let app = App::new(mock_analyzer());
+        let normal = app.get_command_list();
+        assert!(normal.contains("[NORMAL]"));
+    }
 
-#[test]
-fn test_toggle_sidebar() {
-    let mut app = App::new(mock_analyzer());
-    assert!(!app.show_sidebar);
-    app.handle_normal_mode_key(KeyCode::Char('s'));
-    assert!(app.show_sidebar);
-    app.handle_normal_mode_key(KeyCode::Char('s'));
-    assert!(!app.show_sidebar);
-}
+    #[test]
+    fn test_toggle_sidebar() {
+        let mut app = App::new(mock_analyzer());
+        assert!(!app.show_sidebar);
+        app.handle_normal_mode_key(KeyCode::Char('s'));
+        assert!(app.show_sidebar);
+        app.handle_normal_mode_key(KeyCode::Char('s'));
+        assert!(!app.show_sidebar);
+    }
 
-#[test]
-fn test_filter_management_mode_navigation() {
-    let mut app = App::new(mock_analyzer());
-    app.mode = AppMode::FilterManagement;
-    app.analyzer.add_filter("foo".to_string(), FilterType::Include);
-    app.analyzer.add_filter("bar".to_string(), FilterType::Exclude);
-    app.selected_filter_index = 1;
-    app.handle_filter_management_mode_key(KeyCode::Up);
-    assert_eq!(app.selected_filter_index, 0);
-    app.handle_filter_management_mode_key(KeyCode::Down);
-    assert_eq!(app.selected_filter_index, 1);
-}
+    #[test]
+    fn test_filter_management_mode_navigation() {
+        let mut app = App::new(mock_analyzer());
+        app.mode = AppMode::FilterManagement;
+        app.analyzer
+            .add_filter("foo".to_string(), FilterType::Include);
+        app.analyzer
+            .add_filter("bar".to_string(), FilterType::Exclude);
+        app.selected_filter_index = 1;
+        app.handle_filter_management_mode_key(KeyCode::Up);
+        assert_eq!(app.selected_filter_index, 0);
+        app.handle_filter_management_mode_key(KeyCode::Down);
+        assert_eq!(app.selected_filter_index, 1);
+    }
 
-#[test]
-fn test_filter_toggle_and_delete() {
-    let mut app = App::new(mock_analyzer());
-    app.mode = AppMode::FilterManagement;
-    app.analyzer.add_filter("foo".to_string(), FilterType::Include);
-    assert!(app.analyzer.filters[0].enabled);
-    app.handle_filter_management_mode_key(KeyCode::Char(' '));
-    assert!(!app.analyzer.filters[0].enabled);
-    app.handle_filter_management_mode_key(KeyCode::Char('d'));
-    assert!(app.analyzer.filters.is_empty());
-}
+    #[test]
+    fn test_filter_toggle_and_delete() {
+        let mut app = App::new(mock_analyzer());
+        app.mode = AppMode::FilterManagement;
+        app.analyzer
+            .add_filter("foo".to_string(), FilterType::Include);
+        assert!(app.analyzer.filters[0].enabled);
+        app.handle_filter_management_mode_key(KeyCode::Char(' '));
+        assert!(!app.analyzer.filters[0].enabled);
+        app.handle_filter_management_mode_key(KeyCode::Char('d'));
+        assert!(app.analyzer.filters.is_empty());
+    }
 
-#[test]
-fn test_filter_edit() {
-    let mut app = App::new(mock_analyzer());
-    app.mode = AppMode::FilterManagement;
-    app.analyzer.add_filter("foo".to_string(), FilterType::Include);
-    app.handle_filter_management_mode_key(KeyCode::Char('e'));
-    assert_eq!(app.mode, AppMode::FilterEdit);
-    app.editing_filter_input = "bar".to_string();
-    app.handle_filter_edit_mode_key(KeyCode::Enter);
-    assert_eq!(app.analyzer.filters[0].pattern, "bar");
-    assert_eq!(app.mode, AppMode::FilterManagement);
-}
+    #[test]
+    fn test_filter_edit() {
+        let mut app = App::new(mock_analyzer());
+        app.mode = AppMode::FilterManagement;
+        app.analyzer
+            .add_filter("foo".to_string(), FilterType::Include);
+        // Simulate pressing 'e' in filter management, which now enters command mode with prefilled command
+        app.handle_filter_management_mode_key(KeyCode::Char('e'));
+        assert_eq!(app.mode, AppMode::Command);
+        assert!(app.command_input.starts_with("filter"));
+        assert!(app.command_input.contains("foo"));
+    }
 
-#[test]
-fn test_search_mode_and_input() {
-    let mut app = App::new(mock_analyzer());
-    app.handle_normal_mode_key(KeyCode::Char('/'));
-    assert_eq!(app.mode, AppMode::Search);
-    app.handle_search_mode_key(KeyCode::Char('t'));
-    assert_eq!(app.search_input, "t");
-    app.handle_search_mode_key(KeyCode::Backspace);
-    assert_eq!(app.search_input, "");
-    app.handle_search_mode_key(KeyCode::Esc);
-    assert_eq!(app.mode, AppMode::Normal);
-}
+    #[test]
+    fn test_search_mode_and_input() {
+        let mut app = App::new(mock_analyzer());
+        app.handle_normal_mode_key(KeyCode::Char('/'));
+        assert_eq!(app.mode, AppMode::Search);
+        app.handle_search_mode_key(KeyCode::Char('t'));
+        assert_eq!(app.search_input, "t");
+        app.handle_search_mode_key(KeyCode::Backspace);
+        assert_eq!(app.search_input, "");
+        app.handle_search_mode_key(KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal);
+    }
 
-#[test]
-fn test_command_input_and_backspace() {
-    let mut app = App::new(mock_analyzer());
-    app.mode = AppMode::Command;
-    app.handle_command_mode_key(KeyCode::Char('a'));
-    app.handle_command_mode_key(KeyCode::Char('b'));
-    assert_eq!(app.command_input, "ab");
-    app.handle_command_mode_key(KeyCode::Backspace);
-    assert_eq!(app.command_input, "a");
-    app.handle_command_mode_key(KeyCode::Esc);
-    assert_eq!(app.command_input, "");
-    assert_eq!(app.mode, AppMode::Normal);
-}
+    #[test]
+    fn test_command_input_and_backspace() {
+        let mut app = App::new(mock_analyzer());
+        app.mode = AppMode::Command;
+        app.handle_command_mode_key(KeyCode::Char('a'));
+        app.handle_command_mode_key(KeyCode::Char('b'));
+        assert_eq!(app.command_input, "ab");
+        app.handle_command_mode_key(KeyCode::Backspace);
+        assert_eq!(app.command_input, "a");
+        app.handle_command_mode_key(KeyCode::Esc);
+        assert_eq!(app.command_input, "");
+        assert_eq!(app.mode, AppMode::Normal);
+    }
 
-#[test]
-fn test_scroll_to_log_entry() {
-    let mut app = App::new(mock_analyzer());
-    app.scroll_to_log_entry(2);
-    assert_eq!(app.scroll_offset, 2);
-}
-
-#[test]
-fn test_set_color_command() {
-    let mut app = App::new(mock_analyzer());
-    app.mode = AppMode::Command;
-    app.command_input = "set-color error red black".to_string();
-    app.handle_command();
-    assert!(app.analyzer.color_configs.contains(&("error".to_string(), ColorConfig { fg: Color::Red, bg: Color::Black })));
-}
-
+    #[test]
+    fn test_scroll_to_log_entry() {
+        let mut app = App::new(mock_analyzer());
+        app.scroll_to_log_entry(2);
+        assert_eq!(app.scroll_offset, 2);
+    }
 
     #[test]
     fn test_toggle_line_wrapping() {
@@ -776,7 +883,6 @@ fn test_set_color_command() {
         app.handle_key_event(KeyCode::Char('h'));
         assert_eq!(app.horizontal_scroll, 0);
     }
-
 
     fn setup_test_app_for_vim_motions() -> App {
         let mut analyzer = LogAnalyzer::new();
