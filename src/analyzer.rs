@@ -1,12 +1,98 @@
 use ratatui::style::Color;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct LogEntry {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub enum LogLevel {
+    Info,
+    Warning,
+    Error,
+    Debug,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct LogEntry<'a> {
     pub id: usize,
-    pub content: String,
+    pub timestamp: Option<String>,
+    pub hostname: Option<String>,
+    pub process_name: Option<String>,
+    pub pid: Option<u32>,
+    pub level: LogLevel,
+    pub message: String,
     pub marked: bool,
+    pub file: Option<&'a str>,
+}
+
+#[derive(Debug)]
+pub struct LogParser {
+    regexes: Vec<Regex>,
+}
+
+impl LogParser {
+    pub fn new() -> Self {
+        let regexes = vec![
+            // Syslog/journalctl: timestamp hostname process_name[pid]: LEVEL: message
+            Regex::new(r"^(?P<timestamp>\w{3} \d{1,2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?) (?P<hostname>\S+) (?P<process_name>[^\[:]+)\[(?P<pid>\d+)\]: (?P<level>\w+): (?P<message>.*)$").unwrap(),
+            // Syslog/journalctl: timestamp hostname process_name[pid]: message (no level)
+            Regex::new(r"^(?P<timestamp>\w{3} \d{1,2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?) (?P<hostname>\S+) (?P<process_name>[^\[:]+)\[(?P<pid>\d+)\]: (?P<message>.*)$").unwrap(),
+            // Syslog/journalctl: timestamp hostname process_name: LEVEL: message (no pid)
+            Regex::new(r"^(?P<timestamp>\w{3} \d{1,2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?) (?P<hostname>\S+) (?P<process_name>[^:]+): (?P<level>\w+): (?P<message>.*)$").unwrap(),
+            // Syslog/journalctl: timestamp hostname process_name: message (no pid, no level)
+            Regex::new(r"^(?P<timestamp>\w{3} \d{1,2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?) (?P<hostname>\S+) (?P<process_name>[^:]+): (?P<message>.*)$").unwrap(),
+        ];
+        Self { regexes }
+    }
+
+    pub fn parse<'a>(&self, id: usize, log_content: &str) -> LogEntry<'a> {
+        for re in &self.regexes {
+            if let Some(caps) = re.captures(log_content) {
+                let level = caps.name("level").map_or(LogLevel::Unknown, |m| {
+                    match m.as_str().to_lowercase().as_str() {
+                        "info" => LogLevel::Info,
+                        "warn" | "warning" => LogLevel::Warning,
+                        "error" => LogLevel::Error,
+                        "debug" => LogLevel::Debug,
+                        _ => LogLevel::Unknown,
+                    }
+                });
+
+                return LogEntry {
+                    id,
+                    timestamp: caps.name("timestamp").map(|m| m.as_str().to_string()),
+                    hostname: caps.name("hostname").map(|m| m.as_str().to_string()),
+                    process_name: caps.name("process_name").map(|m| m.as_str().to_string()),
+                    pid: caps.name("pid").and_then(|m| m.as_str().parse().ok()),
+                    level,
+                    message: caps
+                        .name("message")
+                        .map_or(log_content.to_string(), |m| m.as_str().to_string()),
+                    marked: false,
+                    file: None, // Default, will be set by ingest_file/ingest_reader
+                };
+            }
+        }
+
+        LogEntry {
+            id,
+            timestamp: None,
+            hostname: None,
+            process_name: None,
+            pid: None,
+            level: LogLevel::Unknown,
+            message: log_content.to_string(),
+            marked: false,
+            file: None,
+        }
+    }
+}
+
+impl Default for LogParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -40,24 +126,26 @@ pub struct SearchResult {
 }
 
 #[derive(Debug)]
-pub struct LogAnalyzer {
-    pub entries: Vec<LogEntry>,
+pub struct LogAnalyzer<'a> {
+    pub entries: Vec<LogEntry<'a>>,
     pub filters: Vec<Filter>,
     next_filter_id: usize,
+    log_parser: LogParser,
 }
 
-impl Default for LogAnalyzer {
+impl Default for LogAnalyzer<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl LogAnalyzer {
+impl<'a> LogAnalyzer<'a> {
     pub fn new() -> Self {
         LogAnalyzer {
             entries: Vec::new(),
             filters: Vec::new(),
             next_filter_id: 0,
+            log_parser: LogParser::new(),
         }
     }
 
@@ -67,19 +155,19 @@ impl LogAnalyzer {
         }
     }
 
-    pub fn ingest_file(&mut self, path: &str) -> anyhow::Result<()> {
+    pub fn ingest_file(&mut self, path: &'a str) -> anyhow::Result<()> {
         use std::fs::File;
         use std::io::{self, BufRead};
 
         let file = File::open(path)?;
         let reader = io::BufReader::new(file);
 
+        let file_name = Some(path);
         for (id, line) in reader.lines().enumerate() {
-            self.entries.push(LogEntry {
-                id,
-                content: line?,
-                marked: false,
-            });
+            let content = line?;
+            let mut entry = self.log_parser.parse(id, &content);
+            entry.file = file_name;
+            self.entries.push(entry);
         }
         Ok(())
     }
@@ -89,11 +177,10 @@ impl LogAnalyzer {
 
         let reader = io::BufReader::new(reader);
         for (id, line) in reader.lines().enumerate() {
-            self.entries.push(LogEntry {
-                id,
-                content: line?,
-                marked: false,
-            });
+            let content = line?;
+            let mut entry = self.log_parser.parse(id, &content);
+            entry.file = None; // stdin or unknown
+            self.entries.push(entry);
         }
         Ok(())
     }
@@ -165,7 +252,7 @@ impl LogAnalyzer {
         }
     }
 
-    pub fn apply_filters(&self, logs: &[LogEntry]) -> anyhow::Result<Vec<LogEntry>> {
+    pub fn apply_filters(&self, logs: &[LogEntry<'a>]) -> anyhow::Result<Vec<LogEntry<'a>>> {
         use regex::Regex;
 
         let enabled_filters: Vec<&Filter> = self.filters.iter().filter(|f| f.enabled).collect();
@@ -189,7 +276,7 @@ impl LogAnalyzer {
                 .filter(|log_entry| {
                     include_filters
                         .iter()
-                        .any(|re| re.is_match(&log_entry.content))
+                        .any(|re| re.is_match(&log_entry.message))
                 })
                 .cloned()
                 .collect()
@@ -204,7 +291,7 @@ impl LogAnalyzer {
             .filter(|log_entry| {
                 !exclude_filters
                     .iter()
-                    .any(|re| re.is_match(&log_entry.content))
+                    .any(|re| re.is_match(&log_entry.message))
             })
             .collect();
 
@@ -218,7 +305,7 @@ impl LogAnalyzer {
 
         for entry in &self.entries {
             let mut matches = Vec::new();
-            for mat in re.find_iter(&entry.content) {
+            for mat in re.find_iter(&entry.message) {
                 matches.push((mat.start(), mat.end()));
             }
             if !matches.is_empty() {
@@ -302,6 +389,10 @@ impl LogAnalyzer {
     pub fn parse_color(&self, color_str: &str) -> Option<Color> {
         color_str.parse::<Color>().ok()
     }
+
+    pub fn extract_process_name(&self, log_content: &str) -> Option<String> {
+        self.log_parser.parse(0, log_content).process_name
+    }
 }
 
 impl std::fmt::Display for FilterType {
@@ -313,9 +404,9 @@ impl std::fmt::Display for FilterType {
     }
 }
 
-impl std::fmt::Display for LogEntry {
+impl std::fmt::Display for LogEntry<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.content)
+        write!(f, "{}", self.message)
     }
 }
 
@@ -325,6 +416,28 @@ mod tests {
     use std::io::Cursor;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_log_parser() {
+        let parser = LogParser::new();
+        let log1 = "Jun 28 10:00:03 myhost myapp[1234]: INFO: Application started successfully.";
+        let entry1 = parser.parse(0, log1);
+        assert_eq!(entry1.timestamp, Some("Jun 28 10:00:03".to_string()));
+        assert_eq!(entry1.hostname, Some("myhost".to_string()));
+        assert_eq!(entry1.process_name, Some("myapp".to_string()));
+        assert_eq!(entry1.pid, Some(1234));
+        assert_eq!(entry1.level, LogLevel::Info);
+        assert_eq!(entry1.message, "Application started successfully.");
+
+        let log2 = "Jun 28 10:00:02 myhost kernel: Linux version 6.8.0-31-generic";
+        let entry2 = parser.parse(1, log2);
+        assert_eq!(entry2.timestamp, Some("Jun 28 10:00:02".to_string()));
+        assert_eq!(entry2.hostname, Some("myhost".to_string()));
+        assert_eq!(entry2.process_name, Some("kernel".to_string()));
+        assert_eq!(entry2.pid, None);
+        assert_eq!(entry2.level, LogLevel::Unknown);
+        assert_eq!(entry2.message, "Linux version 6.8.0-31-generic");
+    }
 
     #[test]
     fn test_default_log_analyzer() {
@@ -347,13 +460,13 @@ mod tests {
 
         assert_eq!(analyzer.entries.len(), 3);
         assert_eq!(analyzer.entries[0].id, 0);
-        assert_eq!(analyzer.entries[0].content, "log line 1");
+        assert_eq!(analyzer.entries[0].message, "log line 1");
         assert!(!analyzer.entries[0].marked);
         assert_eq!(analyzer.entries[1].id, 1);
-        assert_eq!(analyzer.entries[1].content, "log line 2");
+        assert_eq!(analyzer.entries[1].message, "log line 2");
         assert!(!analyzer.entries[1].marked);
         assert_eq!(analyzer.entries[2].id, 2);
-        assert_eq!(analyzer.entries[2].content, "log line 3");
+        assert_eq!(analyzer.entries[2].message, "log line 3");
         assert!(!analyzer.entries[2].marked);
 
         Ok(())
@@ -369,13 +482,13 @@ mod tests {
 
         assert_eq!(analyzer.entries.len(), 3);
         assert_eq!(analyzer.entries[0].id, 0);
-        assert_eq!(analyzer.entries[0].content, "stdin line 1");
+        assert_eq!(analyzer.entries[0].message, "stdin line 1");
         assert!(!analyzer.entries[0].marked);
         assert_eq!(analyzer.entries[1].id, 1);
-        assert_eq!(analyzer.entries[1].content, "stdin line 2");
+        assert_eq!(analyzer.entries[1].message, "stdin line 2");
         assert!(!analyzer.entries[1].marked);
         assert_eq!(analyzer.entries[2].id, 2);
-        assert_eq!(analyzer.entries[2].content, "stdin line 3");
+        assert_eq!(analyzer.entries[2].message, "stdin line 3");
         assert!(!analyzer.entries[2].marked);
 
         Ok(())
@@ -386,13 +499,17 @@ mod tests {
         let mut analyzer = LogAnalyzer::new();
         analyzer.entries.push(LogEntry {
             id: 0,
-            content: "line 1".to_string(),
+            message: "line 1".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
         analyzer.entries.push(LogEntry {
             id: 1,
-            content: "line 2".to_string(),
+            message: "line 2".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
 
         assert!(!analyzer.entries[0].marked);
@@ -442,13 +559,16 @@ mod tests {
         let mut analyzer = LogAnalyzer::new();
         analyzer.entries.push(LogEntry {
             id: 0,
-            content: "This is a test line".to_string(),
+            message: "This is a test line".to_string(),
             marked: false,
+            ..Default::default()
         });
         analyzer.entries.push(LogEntry {
             id: 1,
-            content: "Another line".to_string(),
+            message: "Another line".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
 
         let results = analyzer.search("test")?;
@@ -463,8 +583,10 @@ mod tests {
         let mut analyzer = LogAnalyzer::new();
         analyzer.entries.push(LogEntry {
             id: 0,
-            content: "test test test".to_string(),
+            message: "test test test".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
 
         let results = analyzer.search("test")?;
@@ -479,8 +601,10 @@ mod tests {
         let mut analyzer = LogAnalyzer::new();
         analyzer.entries.push(LogEntry {
             id: 0,
-            content: "This is a line".to_string(),
+            message: "This is a line".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
 
         let results = analyzer.search("nomatch")?;
@@ -493,8 +617,10 @@ mod tests {
         let mut analyzer = LogAnalyzer::new();
         analyzer.entries.push(LogEntry {
             id: 0,
-            content: "Test line test".to_string(),
+            message: "Test line test".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
 
         let results = analyzer.search("(?i)test")?;
@@ -509,8 +635,10 @@ mod tests {
         let mut analyzer = LogAnalyzer::new();
         analyzer.entries.push(LogEntry {
             id: 0,
-            content: "line with .*".to_string(),
+            message: "line with .*".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
 
         let results = analyzer.search(r".*")?;
@@ -562,28 +690,38 @@ mod tests {
         let mut analyzer = LogAnalyzer::new();
         analyzer.entries.push(LogEntry {
             id: 0,
-            content: "error: critical issue ".to_string(),
+            message: "error: critical issue ".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
         analyzer.entries.push(LogEntry {
             id: 1,
-            content: "info: user logged in ".to_string(),
+            message: "info: user logged in ".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
         analyzer.entries.push(LogEntry {
             id: 2,
-            content: "error: minor issue ".to_string(),
+            message: "error: minor issue ".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
         analyzer.entries.push(LogEntry {
             id: 3,
-            content: "debug: value is 5".to_string(),
+            message: "debug: value is 5".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
         analyzer.entries.push(LogEntry {
             id: 4,
-            content: "info: user logged out ".to_string(),
+            message: "info: user logged out ".to_string(),
+            level: LogLevel::Info,
             marked: false,
+            ..Default::default()
         });
 
         // Scenario 1: No filters

@@ -25,7 +25,7 @@ impl Search {
         }
     }
 
-    pub fn search(&mut self, pattern_str: &str, logs: &[LogEntry]) -> anyhow::Result<()> {
+    pub fn search(&mut self, pattern_str: &str, logs: &[LogEntry<'_>]) -> anyhow::Result<()> {
         let pattern = if self.case_sensitive {
             Regex::new(pattern_str)?
         } else {
@@ -37,7 +37,7 @@ impl Search {
 
         for entry in logs {
             let mut matches = Vec::new();
-            for mat in pattern.find_iter(&entry.content) {
+            for mat in pattern.find_iter(&entry.message) {
                 matches.push((mat.start(), mat.end()));
             }
             if !matches.is_empty() {
@@ -90,29 +90,53 @@ impl Search {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyzer::LogEntry;
+    use crate::analyzer::{LogEntry, LogLevel};
 
-    fn create_test_logs() -> Vec<LogEntry> {
+    fn create_test_logs<'a>() -> Vec<LogEntry<'a>> {
         vec![
             LogEntry {
                 id: 0,
-                content: "This is a test line".to_string(),
+                timestamp: None,
+                hostname: None,
+                process_name: None,
+                pid: None,
+                level: LogLevel::Info,
+                message: "This is a test line".to_string(),
                 marked: false,
+                file: None,
             },
             LogEntry {
                 id: 1,
-                content: "Another line with Test".to_string(),
+                timestamp: None,
+                hostname: None,
+                process_name: None,
+                pid: None,
+                level: LogLevel::Info,
+                message: "Another line with Test".to_string(),
                 marked: false,
+                file: None,
             },
             LogEntry {
                 id: 2,
-                content: "No match here".to_string(),
+                timestamp: None,
+                hostname: None,
+                process_name: None,
+                pid: None,
+                level: LogLevel::Info,
+                message: "No match here".to_string(),
                 marked: false,
+                file: None,
             },
             LogEntry {
                 id: 3,
-                content: "test test test".to_string(),
+                timestamp: None,
+                hostname: None,
+                process_name: None,
+                pid: None,
+                level: LogLevel::Info,
+                message: "test test test".to_string(),
                 marked: false,
+                file: None,
             },
         ]
     }

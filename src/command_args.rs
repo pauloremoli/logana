@@ -34,4 +34,6 @@ pub enum Commands {
     LoadFilters { path: String },
     /// Toggle line wrapping
     Wrap,
+    /// Set the theme
+    SetTheme { theme_name: String },
 }

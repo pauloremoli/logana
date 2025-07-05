@@ -1,5 +1,6 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
+    Frame, Terminal,
     prelude::*,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -7,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use crate::analyzer::{FilterType, LogAnalyzer, LogEntry};
 use crate::search::Search;
+use crate::theme::Theme;
+use std::collections::HashSet;
 
 #[derive(Debug, PartialEq)]
 pub enum AppMode {
@@ -31,8 +34,8 @@ pub enum AppMode {
 }
 
 #[derive(Debug)]
-pub struct App {
-    pub analyzer: LogAnalyzer,
+pub struct App<'a> {
+    pub analyzer: LogAnalyzer<'a>,
     pub mode: AppMode,
     pub scroll_offset: usize,
     pub show_sidebar: bool,
@@ -40,10 +43,45 @@ pub struct App {
     pub wrap: bool,
     pub horizontal_scroll: usize,
     pub search: Search,
+    pub theme: Theme,
+    pub available_themes: Vec<String>,
+    pub theme_tab_index: Option<usize>,
+    pub command_error: Option<String>,
 }
 
-impl App {
-    pub fn new(analyzer: LogAnalyzer) -> Self {
+impl<'a> App<'a> {
+    pub fn new(analyzer: LogAnalyzer<'a>, theme: Theme) -> App<'a> {
+        let mut theme_paths = vec![];
+        // Local themes directory
+        if let Ok(entries) = std::fs::read_dir("themes") {
+            for entry in entries.flatten() {
+                theme_paths.push(entry.path());
+            }
+        }
+
+        // User config themes directory
+        if let Some(config_dir) = dirs::config_dir() {
+            let user_themes_path = config_dir.join("logsmith-rs/themes");
+            if let Ok(entries) = std::fs::read_dir(user_themes_path) {
+                for entry in entries.flatten() {
+                    theme_paths.push(entry.path());
+                }
+            }
+        }
+
+        let mut available_themes_set = HashSet::new();
+        for path in theme_paths {
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    available_themes_set.insert(stem.to_string());
+                }
+            }
+        }
+
+        let mut available_themes: Vec<String> = available_themes_set.into_iter().collect();
+        available_themes.sort();
+        dbg!(&available_themes);
+
         App {
             analyzer,
             mode: AppMode::Normal,
@@ -53,6 +91,10 @@ impl App {
             wrap: true,
             horizontal_scroll: 0,
             search: Search::new(),
+            theme,
+            available_themes,
+            theme_tab_index: None,
+            command_error: None,
         }
     }
 
@@ -80,7 +122,9 @@ impl App {
                             AppMode::FilterManagement { .. } => {
                                 self.handle_filter_management_mode_key(key.code)
                             }
-                            AppMode::FilterEdit { .. } => self.handle_filter_edit_mode_key(key.code),
+                            AppMode::FilterEdit { .. } => {
+                                self.handle_filter_edit_mode_key(key.code)
+                            }
                             AppMode::Search { .. } => self.handle_search_mode_key(key.code),
                         }
                     }
@@ -96,15 +140,19 @@ impl App {
     fn handle_normal_mode_key(&mut self, key_code: KeyCode) {
         match key_code {
             KeyCode::Char('q') => {} // handled in run()
-            KeyCode::Char(':') => self.mode = AppMode::Command {
-                input: String::new(),
-                cursor: 0,
-                history: Vec::new(),
-                history_index: None,
-            },
-            KeyCode::Char('f') => self.mode = AppMode::FilterManagement {
-                selected_filter_index: 0,
-            },
+            KeyCode::Char(':') => {
+                self.mode = AppMode::Command {
+                    input: String::new(),
+                    cursor: 0,
+                    history: Vec::new(),
+                    history_index: None,
+                }
+            }
+            KeyCode::Char('f') => {
+                self.mode = AppMode::FilterManagement {
+                    selected_filter_index: 0,
+                }
+            }
             KeyCode::Char('s') => self.show_sidebar = !self.show_sidebar,
             KeyCode::Char('j') => {
                 self.scroll_offset = self.scroll_offset.saturating_add(1);
@@ -194,21 +242,38 @@ impl App {
         }
     }
 
-    fn handle_command_mode_key(&mut self, key_code: KeyCode) {
+    pub fn handle_command_mode_key(&mut self, key_code: KeyCode) {
         match key_code {
             KeyCode::Enter => {
                 self.handle_command();
-                if let AppMode::Command { input, cursor, history, history_index } = &mut self.mode {
-                    if !input.is_empty() {
-                        history.push(input.clone());
+                // Only clear and exit if no error
+                if self.command_error.is_none() {
+                    if let AppMode::Command {
+                        input,
+                        cursor,
+                        history,
+                        history_index,
+                    } = &mut self.mode
+                    {
+                        if !input.is_empty() {
+                            history.push(input.clone());
+                        }
+                        *input = String::new();
+                        *cursor = 0;
+                        *history_index = None;
                     }
-                    *input = String::new();*cursor = 0;
-                    *history_index = None;
+                    self.mode = AppMode::Normal;
                 }
-                self.mode = AppMode::Normal;
+                // If there is an error, stay in command mode and keep input/history as is
             }
             KeyCode::Esc => {
-                if let AppMode::Command { input, cursor, history_index, .. } = &mut self.mode {
+                if let AppMode::Command {
+                    input,
+                    cursor,
+                    history_index,
+                    ..
+                } = &mut self.mode
+                {
                     *input = String::new();
                     *cursor = 0;
                     *history_index = None;
@@ -227,6 +292,7 @@ impl App {
                 if let AppMode::Command { input, cursor, .. } = &mut self.mode {
                     input.insert(*cursor, c);
                     *cursor += 1;
+                    self.command_error = None;
                 }
             }
             KeyCode::Left => {
@@ -244,7 +310,13 @@ impl App {
                 }
             }
             KeyCode::Up => {
-                if let AppMode::Command { input, cursor, history, history_index } = &mut self.mode {
+                if let AppMode::Command {
+                    input,
+                    cursor,
+                    history,
+                    history_index,
+                } = &mut self.mode
+                {
                     if history.is_empty() {
                         return;
                     }
@@ -261,7 +333,13 @@ impl App {
                 }
             }
             KeyCode::Down => {
-                if let AppMode::Command { input, cursor, history, history_index } = &mut self.mode {
+                if let AppMode::Command {
+                    input,
+                    cursor,
+                    history,
+                    history_index,
+                } = &mut self.mode
+                {
                     if history.is_empty() {
                         return;
                     }
@@ -279,6 +357,22 @@ impl App {
                         *input = history[i].clone();
                         *cursor = input.len();
                         *history_index = Some(i);
+                    }
+                }
+            }
+            KeyCode::Tab => {
+                if let AppMode::Command { input, cursor, .. } = &mut self.mode {
+                    if input.trim_start().starts_with(":set-theme") {
+                        let themes = &self.available_themes;
+                        if themes.is_empty() {
+                            return;
+                        }
+                        let mut idx = self.theme_tab_index.unwrap_or(0);
+                        let theme_name = &themes[idx];
+                        *input = format!(":set-theme {}", theme_name);
+                        *cursor = input.len();
+                        idx = (idx + 1) % themes.len();
+                        self.theme_tab_index = Some(idx);
                     }
                 }
             }
@@ -392,8 +486,7 @@ impl App {
             match key_code {
                 KeyCode::Enter => {
                     if let Some(id) = filter_id {
-                        self.analyzer
-                            .edit_filter(*id, filter_input.clone());
+                        self.analyzer.edit_filter(*id, filter_input.clone());
                         *filter_id = None;
                         *filter_input = String::new();
                         self.mode = AppMode::FilterManagement {
@@ -420,11 +513,7 @@ impl App {
     }
 
     fn handle_search_mode_key(&mut self, key_code: KeyCode) {
-        if let AppMode::Search {
-            input,
-            forward: _,
-        } = &mut self.mode
-        {
+        if let AppMode::Search { input, forward: _ } = &mut self.mode {
             match key_code {
                 KeyCode::Enter => {
                     // Extract needed values
@@ -433,10 +522,14 @@ impl App {
                         _ => return,
                     };
                     let search_result = if forward_val {
-                        self.search.search(&search_input, &self.analyzer.entries).ok();
+                        self.search
+                            .search(&search_input, &self.analyzer.entries)
+                            .ok();
                         self.search.next_match()
                     } else {
-                        self.search.search(&search_input, &self.analyzer.entries).ok();
+                        self.search
+                            .search(&search_input, &self.analyzer.entries)
+                            .ok();
                         self.search.previous_match()
                     };
                     if let Some(result) = search_result {
@@ -476,10 +569,10 @@ impl App {
 
     fn ui(&mut self, frame: &mut Frame) {
         let size = frame.size();
-        // Split vertically: logs, command bar (if needed), command list (full width)
+        frame.render_widget(Block::default().bg(self.theme.root_bg), size);
+
         let mut constraints = vec![Constraint::Min(1)];
-        let show_command_bar = matches!(self.mode, AppMode::Command { .. });
-        if show_command_bar {
+        if matches!(self.mode, AppMode::Command { .. }) {
             constraints.push(Constraint::Length(1));
         }
         constraints.push(Constraint::Length(3));
@@ -488,7 +581,6 @@ impl App {
             .constraints(constraints)
             .split(size);
 
-        // Now, if sidebar is shown, split only the logs area horizontally
         let (logs_area, sidebar_area) = if self.show_sidebar {
             let horizontal = Layout::default()
                 .direction(Direction::Horizontal)
@@ -501,69 +593,64 @@ impl App {
 
         let logs_to_display = self.get_filtered_logs();
         let num_logs = logs_to_display.len();
-        if self.scroll_offset >= num_logs && num_logs > 0 {
-            self.scroll_offset = num_logs - 1;
-        }
 
-        let log_lines: Vec<Line> = logs_to_display
+        // Only render visible log lines + buffer for performance
+        let logs_area_height = logs_area.height as usize;
+        let buffer = 5;
+        let start = self.scroll_offset.saturating_sub(buffer);
+        let end = (self.scroll_offset + logs_area_height + buffer).min(num_logs);
+        let visible_logs = &logs_to_display[start..end];
+
+        let log_lines: Vec<Line> = visible_logs
             .iter()
             .map(|log| {
-                let mut spans = Vec::new();
-                let mut last_end = 0;
-
-                if let Some(search_result) = self
-                    .search
-                    .get_results()
-                    .iter()
-                    .find(|r| r.log_id == log.id)
-                {
-                    for (start, end) in &search_result.matches {
-                        spans.push(Span::raw(&log.content[last_end..*start]));
-                        spans.push(Span::styled(
-                            &log.content[*start..*end],
-                            Style::default().fg(Color::Black).bg(Color::Yellow),
-                        ));
-                        last_end = *end;
-                    }
+                let mut spans = vec![];
+                if let Some(timestamp) = &log.timestamp {
+                    spans.push(Span::styled(
+                        format!("{} ", timestamp),
+                        Style::default().fg(self.theme.text),
+                    ));
                 }
-                spans.push(Span::raw(&log.content[last_end..]));
+                if let Some(hostname) = &log.hostname {
+                    spans.push(Span::styled(
+                        format!("{} ", hostname),
+                        Style::default().fg(self.theme.text),
+                    ));
+                }
+                if let Some(process_name) = &log.process_name {
+                    let color = self.get_process_color(process_name);
+                    spans.push(Span::styled(
+                        format!("{}: ", process_name),
+                        Style::default().fg(color),
+                    ));
+                }
+                spans.push(Span::raw(log.message.clone()));
 
-                let mut line = Line::from(spans);
+                let mut line = Line::from(spans).style(Style::default().fg(self.theme.text));
                 if log.marked {
-                    line = line.bg(Color::DarkGray);
-                }
-
-                // Color by log level (only for ERROR and WARN)
-                if log.content.contains("ERROR") {
-                    line = line.fg(Color::Red);
-                } else if log.content.contains("WARN") {
-                    line = line.fg(Color::Yellow);
-                }
-
-                // Custom color configs override log level coloring
-                if let Some(filter) = self
-                    .analyzer
-                    .filters
-                    .iter()
-                    .find(|f| log.content.contains(&f.pattern))
-                {
-                    if let Some(config) = &filter.color_config {
-                        if let Some(fg) = config.fg {
-                            line = line.fg(fg);
-                        }
-                        if let Some(bg) = config.bg {
-                            line = line.bg(bg);
-                        }
-                    }
+                    line = line.bg(self.theme.border);
                 }
 
                 line
             })
             .collect();
 
+        if self.scroll_offset >= num_logs && num_logs > 0 {
+            self.scroll_offset = num_logs - 1;
+        }
+
         let mut paragraph = Paragraph::new(log_lines)
-            .block(Block::default().borders(Borders::ALL).title("Logs"))
-            .scroll((self.scroll_offset as u16, self.horizontal_scroll as u16));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.border))
+                    .title("Logs")
+                    .title_style(Style::default().fg(self.theme.border_title)),
+            )
+            .scroll((
+                self.scroll_offset.saturating_sub(start) as u16,
+                self.horizontal_scroll as u16,
+            ));
 
         if self.wrap {
             paragraph = paragraph.wrap(Wrap { trim: false });
@@ -592,38 +679,68 @@ impl App {
                         "{}{} {}: {}",
                         selected_prefix, status, filter_type_str, filter.pattern
                     ))
+                    .style(Style::default().fg(self.theme.text))
                 })
                 .collect();
 
-            let sidebar = Paragraph::new(filters_text)
-                .block(Block::default().borders(Borders::ALL).title("Filters"));
+            let sidebar = Paragraph::new(filters_text).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.border))
+                    .title("Filters")
+                    .title_style(Style::default().fg(self.theme.border_title)),
+            );
             frame.render_widget(sidebar, sidebar_area);
         }
 
-        // Command bar (full width, only in command mode)
-        if show_command_bar {
+        if matches!(self.mode, AppMode::Command { .. }) {
             let input_prefix = ":";
             let (input_text, cursor_pos) = self.get_command_input_and_cursor().unwrap_or(("", 0));
             let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
-                .style(Style::default().fg(Color::White).bg(Color::DarkGray))
+                .style(Style::default().fg(self.theme.text).bg(self.theme.border))
                 .wrap(Wrap { trim: false });
-            // Limit the command bar to 5 lines
+            // Dynamically allocate area for command and error
             let mut area = chunks[1];
+            let mut error_height = 0;
+            if let Some(err) = &self.command_error {
+                // Calculate error height based on message length and area width
+                let width = area.width.max(1) as usize;
+                let lines = (err.len() / width) + 1;
+                error_height = lines as u16;
+                area.height = area.height.saturating_sub(error_height);
+            }
             if area.height > 5 {
                 area.height = 5;
             }
             frame.render_widget(command_line, area);
-            // Set cursor at the correct position
             let cursor_x = chunks[1].x + 1 + cursor_pos as u16;
             if cursor_x < chunks[1].x + chunks[1].width && area.height == 1 {
                 frame.set_cursor(cursor_x, chunks[1].y);
             }
+
+            // Show error message below command line if present
+            if let Some(err) = &self.command_error {
+                let error_area = Rect {
+                    x: area.x,
+                    y: area.y + area.height,
+                    width: area.width,
+                    height: error_height.max(1),
+                };
+                let error_paragraph = Paragraph::new(err.as_str())
+                    .style(Style::default().fg(Color::Red).bg(self.theme.root_bg))
+                    .wrap(Wrap { trim: false });
+                frame.render_widget(error_paragraph, error_area);
+            }
         }
 
-        // Command list (full width, always last chunk)
         let command_list = Paragraph::new(self.get_command_list())
-            .block(Block::default().borders(Borders::ALL))
-            .wrap(Wrap { trim: true }); // Enable word wrapping
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.border)),
+            )
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(self.theme.text));
         let mut area = *chunks.last().unwrap();
         if area.height > 5 {
             area.height = 5;
@@ -641,7 +758,10 @@ impl App {
         };
         let args = match CommandLine::try_parse_from(input.split_whitespace()) {
             Ok(args) => args,
-            Err(_) => return, // Optionally show error
+            Err(e) => {
+                self.command_error = Some(format!("Invalid command: {}", e));
+                return;
+            }
         };
         match args.command {
             Some(Commands::Filter { pattern, fg, bg }) => {
@@ -661,7 +781,9 @@ impl App {
             Some(Commands::SetColor { fg, bg }) => {
                 // Extract selected_filter_index from mode
                 let selected_filter_index = match &self.mode {
-                    AppMode::FilterManagement { selected_filter_index } => *selected_filter_index,
+                    AppMode::FilterManagement {
+                        selected_filter_index,
+                    } => *selected_filter_index,
                     _ => 0,
                 };
                 if let Some(filter) = self.analyzer.filters.get(selected_filter_index) {
@@ -679,10 +801,10 @@ impl App {
                         .entries
                         .iter()
                         .filter(|e| e.marked)
-                        .map(|e| e.content.clone())
+                        .map(|e| e.message.clone())
                         .collect();
                     let mut marked_logs_content = marked_logs.join("\n");
-                    if !marked_logs_content.ends_with("\n") {
+                    if !marked_logs_content.ends_with('\n') {
                         marked_logs_content.push('\n');
                     }
                     let _ = std::fs::write(path, marked_logs_content);
@@ -701,6 +823,16 @@ impl App {
             Some(Commands::Wrap) => {
                 self.wrap = !self.wrap;
             }
+            Some(Commands::SetTheme { theme_name }) => {
+                let theme_filename = format!("{}.json", theme_name.to_lowercase());
+                match Theme::from_file(&theme_filename) {
+                    Ok(theme) => self.theme = theme,
+                    Err(e) => {
+                        self.command_error =
+                            Some(format!("Failed to load theme '{}': {}", theme_name, e))
+                    }
+                }
+            }
             None => {}
         }
     }
@@ -711,7 +843,7 @@ impl App {
                 "[NORMAL] [q]uit | : => command Mode | [f]ilter mode | [s]idebar | [m]ark Line | / => search | ? => search backward | [n]ext match | N => previous match".to_string()
             },
             AppMode::Command { .. } => {
-                "[COMMAND] filter | exclude | set-color | export-marked | save-filters | load-filters | wrap | Esc | Enter".to_string()
+                "[COMMAND] filter | exclude | set-color | export-marked | save-filters | load-filters | wrap | set-theme | Esc | Enter".to_string()
             },
             AppMode::FilterManagement { .. } => {
                 "[FILTER] [i]nclude | e[x]clude | Space => toggle | [d]elete | [e]dit | set [c]olor | Esc => normal mode".to_string()
@@ -739,7 +871,9 @@ impl App {
 
     fn get_selected_filter_index(&self) -> Option<usize> {
         match &self.mode {
-            AppMode::FilterManagement { selected_filter_index } => Some(*selected_filter_index),
+            AppMode::FilterManagement {
+                selected_filter_index,
+            } => Some(*selected_filter_index),
             _ => None,
         }
     }
@@ -751,44 +885,50 @@ impl App {
         }
     }
 
-    #[cfg(test)]
-    fn set_selected_filter_index_for_test(&mut self, idx: usize) {
-        if let AppMode::FilterManagement { selected_filter_index } = &mut self.mode {
-            *selected_filter_index = idx;
+    fn get_process_color(&self, process_name: &str) -> Color {
+        for filter in &self.analyzer.filters {
+            if filter.filter_type == FilterType::Include && filter.pattern == process_name {
+                if let Some(color_config) = &filter.color_config {
+                    if let Some(fg) = color_config.fg {
+                        return fg;
+                    }
+                }
+            }
         }
-    }
-    #[cfg(test)]
-    fn get_selected_filter_index_for_test(&self) -> Option<usize> {
-        match &self.mode {
-            AppMode::FilterManagement { selected_filter_index } => Some(*selected_filter_index),
-            _ => None,
-        }
+        self.theme.text
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::analyzer::{FilterType, LogAnalyzer, LogEntry};
+    use crate::analyzer::{FilterType, LogAnalyzer, LogEntry, LogLevel};
+    use crate::ui::Theme;
     use crate::ui::{App, AppMode};
     use crossterm::event::KeyCode;
 
-    fn mock_analyzer() -> LogAnalyzer {
+    fn mock_analyzer() -> LogAnalyzer<'static> {
         let mut analyzer = LogAnalyzer::new();
         analyzer.entries = vec![
             LogEntry {
                 id: 0,
-                content: "INFO something".to_string(),
+                message: "INFO something".to_string(),
+                level: LogLevel::Info,
                 marked: false,
+                ..Default::default()
             },
             LogEntry {
                 id: 1,
-                content: "WARN warning".to_string(),
+                message: "WARN warning".to_string(),
+                level: LogLevel::Info,
                 marked: false,
+                ..Default::default()
             },
             LogEntry {
                 id: 2,
-                content: "ERROR error".to_string(),
+                message: "ERROR error".to_string(),
+                level: LogLevel::Info,
                 marked: false,
+                ..Default::default()
             },
         ];
         analyzer
@@ -796,7 +936,7 @@ mod tests {
 
     #[test]
     fn test_toggle_wrap_command() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.mode = AppMode::Command {
             input: "wrap".to_string(),
             cursor: 4,
@@ -818,7 +958,7 @@ mod tests {
 
     #[test]
     fn test_add_filter_command() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.mode = AppMode::Command {
             input: "filter foo".to_string(),
             cursor: 10,
@@ -833,7 +973,7 @@ mod tests {
 
     #[test]
     fn test_add_exclude_command() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.mode = AppMode::Command {
             input: "exclude bar".to_string(),
             cursor: 11,
@@ -848,14 +988,14 @@ mod tests {
 
     #[test]
     fn test_mark_line() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.handle_normal_mode_key(KeyCode::Char('m'));
         assert!(app.analyzer.entries[0].marked);
     }
 
     #[test]
     fn test_scroll_offset_j_k() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.handle_normal_mode_key(KeyCode::Char('j'));
         assert_eq!(app.scroll_offset, 1);
         app.handle_normal_mode_key(KeyCode::Char('k'));
@@ -864,7 +1004,7 @@ mod tests {
 
     #[test]
     fn test_mode_switching() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.handle_normal_mode_key(KeyCode::Char(':'));
         assert!(matches!(app.mode, AppMode::Command { .. }));
         app.handle_command_mode_key(KeyCode::Esc);
@@ -873,7 +1013,7 @@ mod tests {
 
     #[test]
     fn test_sidebar_filter_display_in_out() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.analyzer
             .add_filter("foo".to_string(), FilterType::Include);
         app.analyzer
@@ -886,14 +1026,14 @@ mod tests {
 
     #[test]
     fn test_command_list_texts() {
-        let app = App::new(mock_analyzer());
+        let app = App::new(mock_analyzer(), Theme::default());
         let normal = app.get_command_list();
         assert!(normal.contains("[NORMAL]"));
     }
 
     #[test]
     fn test_toggle_sidebar() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         assert!(!app.show_sidebar);
         app.handle_normal_mode_key(KeyCode::Char('s'));
         assert!(app.show_sidebar);
@@ -903,7 +1043,7 @@ mod tests {
 
     #[test]
     fn test_filter_management_mode_navigation() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.mode = AppMode::FilterManagement {
             selected_filter_index: 0,
         };
@@ -911,16 +1051,32 @@ mod tests {
             .add_filter("foo".to_string(), FilterType::Include);
         app.analyzer
             .add_filter("bar".to_string(), FilterType::Exclude);
-        app.set_selected_filter_index_for_test(1);
-        app.handle_filter_management_mode_key(KeyCode::Up);
-        assert_eq!(app.get_selected_filter_index_for_test(), Some(0));
+
         app.handle_filter_management_mode_key(KeyCode::Down);
-        assert_eq!(app.get_selected_filter_index_for_test(), Some(1));
+
+        match app.mode {
+            AppMode::FilterManagement {
+                selected_filter_index,
+            } => {
+                assert_eq!(selected_filter_index, (1));
+            }
+            _ => panic!("should be in filter mode"),
+        }
+
+        app.handle_filter_management_mode_key(KeyCode::Up);
+        match app.mode {
+            AppMode::FilterManagement {
+                selected_filter_index,
+            } => {
+                assert_eq!(selected_filter_index, 0);
+            }
+            _ => panic!("should be in filter mode"),
+        }
     }
 
     #[test]
     fn test_filter_toggle_and_delete() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.mode = AppMode::FilterManagement {
             selected_filter_index: 0,
         };
@@ -935,7 +1091,7 @@ mod tests {
 
     #[test]
     fn test_filter_edit() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.mode = AppMode::FilterManagement {
             selected_filter_index: 0,
         };
@@ -954,7 +1110,7 @@ mod tests {
 
     #[test]
     fn test_search_mode_and_input() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.handle_normal_mode_key(KeyCode::Char('/'));
         assert!(matches!(app.mode, AppMode::Search { .. }));
         // Simulate entering 't' in search mode
@@ -974,7 +1130,7 @@ mod tests {
 
     #[test]
     fn test_command_input_and_backspace() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.mode = AppMode::Command {
             input: "ab".to_string(),
             cursor: 2,
@@ -992,14 +1148,14 @@ mod tests {
 
     #[test]
     fn test_scroll_to_log_entry() {
-        let mut app = App::new(mock_analyzer());
+        let mut app = App::new(mock_analyzer(), Theme::default());
         app.scroll_to_log_entry(2);
         assert_eq!(app.scroll_offset, 2);
     }
 
     #[test]
     fn test_toggle_line_wrapping() {
-        let mut app = App::new(Default::default());
+        let mut app = App::new(Default::default(), Theme::default());
         assert!(app.wrap);
         app.handle_key_event(KeyCode::Char('w'));
         assert!(!app.wrap);
@@ -1009,7 +1165,7 @@ mod tests {
 
     #[test]
     fn test_horizontal_scroll() {
-        let mut app = App::new(Default::default());
+        let mut app = App::new(Default::default(), Theme::default());
         app.wrap = false;
         assert_eq!(app.horizontal_scroll, 0);
         app.handle_key_event(KeyCode::Char('l'));
@@ -1018,16 +1174,18 @@ mod tests {
         assert_eq!(app.horizontal_scroll, 0);
     }
 
-    fn setup_test_app_for_vim_motions() -> App {
+    fn setup_test_app_for_vim_motions() -> App<'static> {
         let mut analyzer = LogAnalyzer::new();
         for i in 0..100 {
             analyzer.entries.push(LogEntry {
                 id: i,
-                content: format!("line {}", i),
+                message: format!("line {}", i),
+                level: LogLevel::Info,
                 marked: false,
+                ..Default::default()
             });
         }
-        App::new(analyzer)
+        App::new(analyzer, Theme::default())
     }
 
     #[test]

@@ -4,6 +4,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use logsmith_rs::analyzer::LogAnalyzer;
+use logsmith_rs::theme::Theme;
 use logsmith_rs::ui::App;
 use ratatui::prelude::*;
 use std::io::{IsTerminal, stdin, stdout};
@@ -17,10 +18,12 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let file_path = args.file;
     let mut analyzer = LogAnalyzer::new();
 
-    if let Some(file_path) = args.file {
-        analyzer.ingest_file(&file_path)?;
+    let file_path_ref: Option<&str> = file_path.as_deref();
+    if let Some(path) = file_path_ref {
+        analyzer.ingest_file(path)?;
     } else if !stdin().is_terminal() {
         analyzer.ingest_reader(stdin())?;
     }
@@ -31,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
         terminal.clear()?;
 
-        let mut app = App::new(analyzer);
+        let mut app = App::new(analyzer, Theme::default());
         let app_result = app.run(&mut terminal);
 
         disable_raw_mode()?;
