@@ -10,13 +10,50 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  check:
+    name: Check & Lint
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    - uses: Swatinem/rust-cache@v2
+    - name: Check formatting
+      run: cargo fmt --check
+    - name: Clippy
+      run: cargo clippy -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - name: Install cargo-tarpaulin
+      run: cargo install cargo-tarpaulin
+    - name: Run coverage
+      run: cargo tarpaulin --out xml --skip-clean -- --test-threads=1
+    - name: Check coverage threshold
+      run: |
+        COVERAGE=$(cargo tarpaulin --skip-clean -- --test-threads=1 2>&1 | grep -oP '[\d.]+% coverage' | grep -oP '[\d.]+')
+        echo "Coverage: ${COVERAGE}%"
+        if [ "$(echo "$COVERAGE < 80" | bc)" -eq 1 ]; then
+          echo "Coverage ${COVERAGE}% is below 80% threshold"
+          exit 1
+        fi

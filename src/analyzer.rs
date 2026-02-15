@@ -2,6 +2,9 @@ use ratatui::style::Color;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
+use std::sync::Arc;
+
+use crate::db::{Database, FilterStore, LogStore};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum LogLevel {
@@ -13,8 +16,20 @@ pub enum LogLevel {
     Unknown,
 }
 
+impl LogLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LogLevel::Info => "INFO",
+            LogLevel::Warning => "WARN",
+            LogLevel::Error => "ERROR",
+            LogLevel::Debug => "DEBUG",
+            LogLevel::Unknown => "",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
-pub struct LogEntry<'a> {
+pub struct LogEntry {
     pub id: usize,
     pub timestamp: Option<String>,
     pub hostname: Option<String>,
@@ -23,7 +38,33 @@ pub struct LogEntry<'a> {
     pub level: LogLevel,
     pub message: String,
     pub marked: bool,
-    pub file: Option<&'a str>,
+    pub source_file: Option<String>,
+}
+
+impl LogEntry {
+    /// Returns the full display representation of this log entry,
+    /// matching what is shown in the UI.
+    pub fn display_line(&self) -> String {
+        let mut line = String::new();
+        if let Some(timestamp) = &self.timestamp {
+            line.push_str(timestamp);
+            line.push(' ');
+        }
+        if let Some(hostname) = &self.hostname {
+            line.push_str(hostname);
+            line.push(' ');
+        }
+        if let Some(process_name) = &self.process_name {
+            line.push_str(process_name);
+            line.push_str(": ");
+        }
+        if self.level != LogLevel::Unknown {
+            line.push_str(self.level.as_str());
+            line.push_str(": ");
+        }
+        line.push_str(&self.message);
+        line
+    }
 }
 
 #[derive(Debug)]
@@ -46,18 +87,15 @@ impl LogParser {
         Self { regexes }
     }
 
-    pub fn parse<'a>(&self, id: usize, log_content: &str) -> LogEntry<'a> {
+    pub fn parse(&self, id: usize, log_content: &str) -> LogEntry {
         for re in &self.regexes {
             if let Some(caps) = re.captures(log_content) {
-                let level = caps.name("level").map_or(LogLevel::Unknown, |m| {
-                    match m.as_str().to_lowercase().as_str() {
-                        "info" => LogLevel::Info,
-                        "warn" | "warning" => LogLevel::Warning,
-                        "error" => LogLevel::Error,
-                        "debug" => LogLevel::Debug,
-                        _ => LogLevel::Unknown,
-                    }
+                let mut level = caps.name("level").map_or(LogLevel::Unknown, |m| {
+                    Self::parse_level_str(m.as_str())
                 });
+                if level == LogLevel::Unknown {
+                    level = Self::detect_level_from_content(log_content);
+                }
 
                 return LogEntry {
                     id,
@@ -70,7 +108,7 @@ impl LogParser {
                         .name("message")
                         .map_or(log_content.to_string(), |m| m.as_str().to_string()),
                     marked: false,
-                    file: None, // Default, will be set by ingest_file/ingest_reader
+                    source_file: None,
                 };
             }
         }
@@ -81,10 +119,35 @@ impl LogParser {
             hostname: None,
             process_name: None,
             pid: None,
-            level: LogLevel::Unknown,
+            level: Self::detect_level_from_content(log_content),
             message: log_content.to_string(),
             marked: false,
-            file: None,
+            source_file: None,
+        }
+    }
+
+    fn parse_level_str(s: &str) -> LogLevel {
+        match s.to_lowercase().as_str() {
+            "info" => LogLevel::Info,
+            "warn" | "warning" => LogLevel::Warning,
+            "error" | "err" => LogLevel::Error,
+            "debug" => LogLevel::Debug,
+            _ => LogLevel::Unknown,
+        }
+    }
+
+    fn detect_level_from_content(content: &str) -> LogLevel {
+        let upper = content.to_uppercase();
+        if upper.contains("ERROR") || upper.contains(" ERR ") {
+            LogLevel::Error
+        } else if upper.contains("WARN") {
+            LogLevel::Warning
+        } else if upper.contains("INFO") {
+            LogLevel::Info
+        } else if upper.contains("DEBUG") {
+            LogLevel::Debug
+        } else {
+            LogLevel::Unknown
         }
     }
 }
@@ -122,86 +185,86 @@ pub struct ColorConfig {
 #[derive(Debug, PartialEq, Clone)]
 pub struct SearchResult {
     pub log_id: usize,
-    pub matches: Vec<(usize, usize)>, // (start_index, end_index) of the match
+    pub matches: Vec<(usize, usize)>,
 }
 
 #[derive(Debug)]
-pub struct LogAnalyzer<'a> {
-    pub entries: Vec<LogEntry<'a>>,
-    pub filters: Vec<Filter>,
-    next_filter_id: usize,
+pub struct LogAnalyzer {
+    db: Arc<Database>,
+    rt: Arc<tokio::runtime::Runtime>,
     log_parser: LogParser,
 }
 
-impl Default for LogAnalyzer<'_> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<'a> LogAnalyzer<'a> {
-    pub fn new() -> Self {
+impl LogAnalyzer {
+    pub fn new(db: Arc<Database>, rt: Arc<tokio::runtime::Runtime>) -> Self {
         LogAnalyzer {
-            entries: Vec::new(),
-            filters: Vec::new(),
-            next_filter_id: 0,
+            db,
+            rt,
             log_parser: LogParser::new(),
         }
     }
 
-    pub fn toggle_mark(&mut self, id: usize) {
-        if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
-            entry.marked = !entry.marked;
-        }
+    pub fn clear_logs(&self) {
+        let _ = self.rt.block_on(self.db.clear_logs());
     }
 
-    pub fn ingest_file(&mut self, path: &'a str) -> anyhow::Result<()> {
+    pub fn toggle_mark(&self, id: usize) {
+        let _ = self.rt.block_on(self.db.toggle_mark(id as i64));
+    }
+
+    pub fn ingest_file(&self, path: &str) -> anyhow::Result<()> {
         use std::fs::File;
         use std::io::{self, BufRead};
 
         let file = File::open(path)?;
         let reader = io::BufReader::new(file);
 
-        let file_name = Some(path);
+        let source = Some(path.to_string());
+        let mut entries = Vec::new();
+
         for (id, line) in reader.lines().enumerate() {
             let content = line?;
             let mut entry = self.log_parser.parse(id, &content);
-            entry.file = file_name;
-            self.entries.push(entry);
+            entry.source_file = source.clone();
+            entries.push(entry);
         }
+
+        self.rt.block_on(self.db.insert_logs_batch(&entries))?;
         Ok(())
     }
 
-    pub fn ingest_reader<R: std::io::Read>(&mut self, reader: R) -> anyhow::Result<()> {
+    pub fn ingest_reader<R: std::io::Read>(&self, reader: R) -> anyhow::Result<()> {
         use std::io::{self, BufRead};
 
         let reader = io::BufReader::new(reader);
+        let mut entries = Vec::new();
+
         for (id, line) in reader.lines().enumerate() {
             let content = line?;
-            let mut entry = self.log_parser.parse(id, &content);
-            entry.file = None; // stdin or unknown
-            self.entries.push(entry);
+            let entry = self.log_parser.parse(id, &content);
+            entries.push(entry);
         }
+
+        self.rt.block_on(self.db.insert_logs_batch(&entries))?;
         Ok(())
     }
 
-    pub fn get_logs(&self) -> &Vec<LogEntry> {
-        &self.entries
+    pub fn get_logs(&self) -> Vec<LogEntry> {
+        self.rt.block_on(self.db.get_all_logs()).unwrap_or_default()
     }
 
-    pub fn add_filter(&mut self, pattern: String, filter_type: FilterType) {
-        self.filters.push(Filter {
-            id: self.next_filter_id,
-            pattern,
-            filter_type,
-            enabled: true,
-            color_config: None,
-        });
-        self.next_filter_id += 1;
+    pub fn get_filters(&self) -> Vec<Filter> {
+        self.rt.block_on(self.db.get_filters()).unwrap_or_default()
+    }
+
+    pub fn add_filter(&self, pattern: String, filter_type: FilterType) {
+        let _ = self
+            .rt
+            .block_on(self.db.insert_filter(&pattern, &filter_type, true, None));
     }
 
     pub fn add_filter_with_color(
-        &mut self,
+        &self,
         pattern: String,
         filter_type: FilterType,
         fg: Option<&str>,
@@ -222,40 +285,35 @@ impl<'a> LogAnalyzer<'a> {
             },
             FilterType::Exclude => None,
         };
-        self.filters.push(Filter {
-            id: self.next_filter_id,
-            pattern,
-            filter_type,
-            enabled: true,
-            color_config,
-        });
-        self.next_filter_id += 1;
+        let _ = self.rt.block_on(self.db.insert_filter(
+            &pattern,
+            &filter_type,
+            true,
+            color_config.as_ref(),
+        ));
     }
 
-    pub fn toggle_filter(&mut self, id: usize) {
-        if let Some(filter) = self.filters.iter_mut().find(|f| f.id == id) {
-            filter.enabled = !filter.enabled;
-        }
+    pub fn toggle_filter(&self, id: usize) {
+        let _ = self.rt.block_on(self.db.toggle_filter(id as i64));
     }
 
-    pub fn remove_filter(&mut self, id: usize) {
-        self.filters.retain(|f| f.id != id);
+    pub fn remove_filter(&self, id: usize) {
+        let _ = self.rt.block_on(self.db.delete_filter(id as i64));
     }
 
-    pub fn clear_filters(&mut self) {
-        self.filters.clear();
+    pub fn clear_filters(&self) {
+        let _ = self.rt.block_on(self.db.clear_filters());
     }
 
-    pub fn edit_filter(&mut self, id: usize, new_pattern: String) {
-        if let Some(filter) = self.filters.iter_mut().find(|f| f.id == id) {
-            filter.pattern = new_pattern;
-        }
+    pub fn edit_filter(&self, id: usize, new_pattern: String) {
+        let _ = self
+            .rt
+            .block_on(self.db.update_filter_pattern(id as i64, &new_pattern));
     }
 
-    pub fn apply_filters(&self, logs: &[LogEntry<'a>]) -> anyhow::Result<Vec<LogEntry<'a>>> {
-        use regex::Regex;
-
-        let enabled_filters: Vec<&Filter> = self.filters.iter().filter(|f| f.enabled).collect();
+    pub fn apply_filters(&self, logs: &[LogEntry]) -> anyhow::Result<Vec<LogEntry>> {
+        let filters = self.get_filters();
+        let enabled_filters: Vec<&Filter> = filters.iter().filter(|f| f.enabled).collect();
 
         let include_filters: Vec<Regex> = enabled_filters
             .iter()
@@ -299,13 +357,14 @@ impl<'a> LogAnalyzer<'a> {
     }
 
     pub fn search(&self, pattern: &str) -> anyhow::Result<Vec<SearchResult>> {
-        use regex::Regex;
         let re = Regex::new(pattern)?;
+        let entries = self.get_logs();
         let mut results = Vec::new();
 
-        for entry in &self.entries {
+        for entry in &entries {
+            let display = entry.display_line();
             let mut matches = Vec::new();
-            for mat in re.find_iter(&entry.message) {
+            for mat in re.find_iter(&display) {
                 matches.push((mat.start(), mat.end()));
             }
             if !matches.is_empty() {
@@ -318,50 +377,74 @@ impl<'a> LogAnalyzer<'a> {
         Ok(results)
     }
 
-    pub fn move_filter_up(&mut self, id: usize) {
-        if let Some(index) = self.filters.iter().position(|f| f.id == id) {
-            if index > 0 {
-                self.filters.swap(index, index - 1);
-            }
+    pub fn move_filter_up(&self, id: usize) {
+        let filters = self.get_filters();
+        if let Some(index) = filters.iter().position(|f| f.id == id)
+            && index > 0
+        {
+            let other_id = filters[index - 1].id;
+            let _ = self
+                .rt
+                .block_on(self.db.swap_filter_order(id as i64, other_id as i64));
         }
     }
 
-    pub fn move_filter_down(&mut self, id: usize) {
-        if let Some(index) = self.filters.iter().position(|f| f.id == id) {
-            if index < self.filters.len() - 1 {
-                self.filters.swap(index, index + 1);
-            }
+    pub fn move_filter_down(&self, id: usize) {
+        let filters = self.get_filters();
+        if let Some(index) = filters.iter().position(|f| f.id == id)
+            && index < filters.len() - 1
+        {
+            let other_id = filters[index + 1].id;
+            let _ = self
+                .rt
+                .block_on(self.db.swap_filter_order(id as i64, other_id as i64));
         }
     }
 
     pub fn save_filters(&self, path: &str) -> anyhow::Result<()> {
-        let json = serde_json::to_string_pretty(&self.filters)?;
+        let filters = self.get_filters();
+        let json = serde_json::to_string_pretty(&filters)?;
         std::fs::write(path, json)?;
         Ok(())
     }
 
-    pub fn load_filters(&mut self, path: &str) -> anyhow::Result<()> {
+    pub fn load_filters(&self, path: &str) -> anyhow::Result<()> {
         let json = std::fs::read_to_string(path)?;
-        self.filters = serde_json::from_str(&json)?;
-        self.next_filter_id = self.filters.iter().map(|f| f.id).max().unwrap_or(0) + 1;
+        let filters: Vec<Filter> = serde_json::from_str(&json)?;
+        self.rt.block_on(self.db.replace_all_filters(&filters))?;
         Ok(())
     }
 
-    pub fn set_color_config(&mut self, pattern: &str, fg: Option<&str>, bg: Option<&str>) {
+    pub fn set_color_config(&self, pattern: &str, fg: Option<&str>, bg: Option<&str>) {
         if let (Some(fg), Some(bg)) = (fg, bg) {
             let fg_color = self.parse_color(fg);
             let bg_color = self.parse_color(bg);
-            if let Some(filter) = self
-                .filters
-                .iter_mut()
+            let filters = self.get_filters();
+            if let Some(filter) = filters
+                .iter()
                 .find(|f| f.pattern == pattern && f.filter_type == FilterType::Include)
             {
-                filter.color_config = Some(ColorConfig {
-                    bg: fg_color,
-                    fg: bg_color,
-                });
+                let cc = ColorConfig {
+                    fg: fg_color,
+                    bg: bg_color,
+                };
+                let _ = self
+                    .rt
+                    .block_on(self.db.update_filter_color(filter.id as i64, Some(&cc)));
             }
         }
+    }
+
+    pub fn get_marked_logs(&self) -> Vec<LogEntry> {
+        self.rt
+            .block_on(self.db.get_marked_logs())
+            .unwrap_or_default()
+    }
+
+    pub fn has_logs_for_source(&self, source: &str) -> bool {
+        self.rt
+            .block_on(self.db.has_logs_for_source(source))
+            .unwrap_or(false)
     }
 
     pub fn parse_fg_bg_args(args: &str) -> (Option<String>, Option<String>) {
@@ -404,7 +487,7 @@ impl std::fmt::Display for FilterType {
     }
 }
 
-impl std::fmt::Display for LogEntry<'_> {
+impl std::fmt::Display for LogEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)
     }
@@ -416,6 +499,12 @@ mod tests {
     use std::io::Cursor;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    fn setup_analyzer() -> LogAnalyzer {
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let db = rt.block_on(Database::in_memory()).unwrap();
+        LogAnalyzer::new(Arc::new(db), rt)
+    }
 
     #[test]
     fn test_log_parser() {
@@ -441,10 +530,9 @@ mod tests {
 
     #[test]
     fn test_default_log_analyzer() {
-        let analyzer = LogAnalyzer::default();
-        assert!(analyzer.entries.is_empty());
-        assert!(analyzer.filters.is_empty());
-        assert_eq!(analyzer.next_filter_id, 0);
+        let analyzer = setup_analyzer();
+        assert!(analyzer.get_logs().is_empty());
+        assert!(analyzer.get_filters().is_empty());
     }
 
     #[test]
@@ -455,19 +543,20 @@ mod tests {
         writeln!(file, "log line 3")?;
         let path = file.path().to_str().unwrap();
 
-        let mut analyzer = LogAnalyzer::new();
+        let analyzer = setup_analyzer();
         analyzer.ingest_file(path)?;
 
-        assert_eq!(analyzer.entries.len(), 3);
-        assert_eq!(analyzer.entries[0].id, 0);
-        assert_eq!(analyzer.entries[0].message, "log line 1");
-        assert!(!analyzer.entries[0].marked);
-        assert_eq!(analyzer.entries[1].id, 1);
-        assert_eq!(analyzer.entries[1].message, "log line 2");
-        assert!(!analyzer.entries[1].marked);
-        assert_eq!(analyzer.entries[2].id, 2);
-        assert_eq!(analyzer.entries[2].message, "log line 3");
-        assert!(!analyzer.entries[2].marked);
+        let entries = analyzer.get_logs();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].id, 0);
+        assert_eq!(entries[0].message, "log line 1");
+        assert!(!entries[0].marked);
+        assert_eq!(entries[1].id, 1);
+        assert_eq!(entries[1].message, "log line 2");
+        assert!(!entries[1].marked);
+        assert_eq!(entries[2].id, 2);
+        assert_eq!(entries[2].message, "log line 3");
+        assert!(!entries[2].marked);
 
         Ok(())
     }
@@ -477,99 +566,86 @@ mod tests {
         let input = "stdin line 1\nstdin line 2\nstdin line 3\n";
         let cursor = Cursor::new(input.as_bytes());
 
-        let mut analyzer = LogAnalyzer::new();
+        let analyzer = setup_analyzer();
         analyzer.ingest_reader(cursor)?;
 
-        assert_eq!(analyzer.entries.len(), 3);
-        assert_eq!(analyzer.entries[0].id, 0);
-        assert_eq!(analyzer.entries[0].message, "stdin line 1");
-        assert!(!analyzer.entries[0].marked);
-        assert_eq!(analyzer.entries[1].id, 1);
-        assert_eq!(analyzer.entries[1].message, "stdin line 2");
-        assert!(!analyzer.entries[1].marked);
-        assert_eq!(analyzer.entries[2].id, 2);
-        assert_eq!(analyzer.entries[2].message, "stdin line 3");
-        assert!(!analyzer.entries[2].marked);
+        let entries = analyzer.get_logs();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].id, 0);
+        assert_eq!(entries[0].message, "stdin line 1");
+        assert!(!entries[0].marked);
+        assert_eq!(entries[1].id, 1);
+        assert_eq!(entries[1].message, "stdin line 2");
+        assert!(!entries[1].marked);
+        assert_eq!(entries[2].id, 2);
+        assert_eq!(entries[2].message, "stdin line 3");
+        assert!(!entries[2].marked);
 
         Ok(())
     }
 
     #[test]
     fn test_toggle_mark() {
-        let mut analyzer = LogAnalyzer::new();
-        analyzer.entries.push(LogEntry {
-            id: 0,
-            message: "line 1".to_string(),
-            level: LogLevel::Info,
-            marked: false,
-            ..Default::default()
-        });
-        analyzer.entries.push(LogEntry {
-            id: 1,
-            message: "line 2".to_string(),
-            level: LogLevel::Info,
-            marked: false,
-            ..Default::default()
-        });
+        let analyzer = setup_analyzer();
+        let entries = vec![
+            LogEntry {
+                id: 0,
+                message: "line 1".to_string(),
+                level: LogLevel::Info,
+                ..Default::default()
+            },
+            LogEntry {
+                id: 1,
+                message: "line 2".to_string(),
+                level: LogLevel::Info,
+                ..Default::default()
+            },
+        ];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
 
-        assert!(!analyzer.entries[0].marked);
-        assert!(!analyzer.entries[1].marked);
+        let logs = analyzer.get_logs();
+        assert!(!logs[0].marked);
+        assert!(!logs[1].marked);
 
         analyzer.toggle_mark(0);
-        assert!(analyzer.entries[0].marked);
-        assert!(!analyzer.entries[1].marked);
+        let logs = analyzer.get_logs();
+        assert!(logs[0].marked);
+        assert!(!logs[1].marked);
 
         analyzer.toggle_mark(0);
-        assert!(!analyzer.entries[0].marked);
-        assert!(!analyzer.entries[1].marked);
+        let logs = analyzer.get_logs();
+        assert!(!logs[0].marked);
+        assert!(!logs[1].marked);
 
         analyzer.toggle_mark(1);
-        assert!(!analyzer.entries[0].marked);
-        assert!(analyzer.entries[1].marked);
-    }
-
-    #[test]
-    fn test_regex_direct_match() -> anyhow::Result<()> {
-        use regex::Regex;
-        let re = Regex::new("test")?;
-        let content = "This is a test line";
-        let mut matches = Vec::new();
-        for mat in re.find_iter(content) {
-            matches.push((mat.start(), mat.end()));
-        }
-        assert_eq!(matches, vec![(10, 14)]);
-        Ok(())
-    }
-
-    #[test]
-    fn test_regex_crate_behavior_direct() -> anyhow::Result<()> {
-        use regex::Regex;
-        let re = Regex::new("test")?;
-        let content = "This is a test line";
-        let mut matches = Vec::new();
-        for mat in re.find_iter(content) {
-            matches.push((mat.start(), mat.end()));
-        }
-        assert_eq!(matches, vec![(10, 14)]);
-        Ok(())
+        let logs = analyzer.get_logs();
+        assert!(!logs[0].marked);
+        assert!(logs[1].marked);
     }
 
     #[test]
     fn test_search_basic() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
-        analyzer.entries.push(LogEntry {
-            id: 0,
-            message: "This is a test line".to_string(),
-            marked: false,
-            ..Default::default()
-        });
-        analyzer.entries.push(LogEntry {
-            id: 1,
-            message: "Another line".to_string(),
-            level: LogLevel::Info,
-            marked: false,
-            ..Default::default()
-        });
+        let analyzer = setup_analyzer();
+        let entries = vec![
+            LogEntry {
+                id: 0,
+                message: "This is a test line".to_string(),
+                ..Default::default()
+            },
+            LogEntry {
+                id: 1,
+                message: "Another line".to_string(),
+                level: LogLevel::Info,
+                ..Default::default()
+            },
+        ];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
 
         let results = analyzer.search("test")?;
         assert_eq!(results.len(), 1);
@@ -580,32 +656,38 @@ mod tests {
 
     #[test]
     fn test_search_multiple_matches_in_one_line() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
-        analyzer.entries.push(LogEntry {
+        let analyzer = setup_analyzer();
+        let entries = vec![LogEntry {
             id: 0,
             message: "test test test".to_string(),
             level: LogLevel::Info,
-            marked: false,
             ..Default::default()
-        });
+        }];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
 
         let results = analyzer.search("test")?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].log_id, 0);
-        assert_eq!(results[0].matches, vec![(0, 4), (5, 9), (10, 14)]);
+        assert_eq!(results[0].matches, vec![(6, 10), (11, 15), (16, 20)]);
         Ok(())
     }
 
     #[test]
     fn test_search_no_match() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
-        analyzer.entries.push(LogEntry {
+        let analyzer = setup_analyzer();
+        let entries = vec![LogEntry {
             id: 0,
             message: "This is a line".to_string(),
             level: LogLevel::Info,
-            marked: false,
             ..Default::default()
-        });
+        }];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
 
         let results = analyzer.search("nomatch")?;
         assert!(results.is_empty());
@@ -614,139 +696,151 @@ mod tests {
 
     #[test]
     fn test_search_case_insensitive() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
-        analyzer.entries.push(LogEntry {
+        let analyzer = setup_analyzer();
+        let entries = vec![LogEntry {
             id: 0,
             message: "Test line test".to_string(),
             level: LogLevel::Info,
-            marked: false,
             ..Default::default()
-        });
+        }];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
 
         let results = analyzer.search("(?i)test")?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].log_id, 0);
-        assert_eq!(results[0].matches, vec![(0, 4), (10, 14)]);
+        assert_eq!(results[0].matches, vec![(6, 10), (16, 20)]);
         Ok(())
     }
 
     #[test]
     fn test_search_regex_special_chars() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
-        analyzer.entries.push(LogEntry {
+        let analyzer = setup_analyzer();
+        let entries = vec![LogEntry {
             id: 0,
             message: "line with .*".to_string(),
             level: LogLevel::Info,
-            marked: false,
             ..Default::default()
-        });
+        }];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
 
         let results = analyzer.search(r".*")?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].log_id, 0);
-        assert_eq!(results[0].matches, vec![(0, 12)]);
+        assert_eq!(results[0].matches, vec![(0, 18)]);
         Ok(())
     }
 
     #[test]
     fn test_filter_management() {
-        let mut analyzer = LogAnalyzer::new();
-        assert_eq!(analyzer.filters.len(), 0);
+        let analyzer = setup_analyzer();
+        assert_eq!(analyzer.get_filters().len(), 0);
 
         // Add
         analyzer.add_filter("error".to_string(), FilterType::Include);
-        assert_eq!(analyzer.filters.len(), 1);
-        assert_eq!(analyzer.filters[0].id, 0);
-        assert_eq!(analyzer.filters[0].pattern, "error");
-        assert_eq!(analyzer.filters[0].filter_type, FilterType::Include);
-        assert!(analyzer.filters[0].enabled);
+        let filters = analyzer.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].pattern, "error");
+        assert_eq!(filters[0].filter_type, FilterType::Include);
+        assert!(filters[0].enabled);
 
         analyzer.add_filter("info".to_string(), FilterType::Exclude);
-        assert_eq!(analyzer.filters.len(), 2);
-        assert_eq!(analyzer.filters[1].id, 1);
+        let filters = analyzer.get_filters();
+        assert_eq!(filters.len(), 2);
 
         // Toggle
-        analyzer.toggle_filter(0);
-        assert!(!analyzer.filters[0].enabled);
-        analyzer.toggle_filter(0);
-        assert!(analyzer.filters[0].enabled);
+        let id = filters[0].id;
+        analyzer.toggle_filter(id);
+        let filters = analyzer.get_filters();
+        assert!(!filters[0].enabled);
+        analyzer.toggle_filter(id);
+        let filters = analyzer.get_filters();
+        assert!(filters[0].enabled);
 
         // Edit
-        analyzer.edit_filter(1, "debug".to_string());
-        assert_eq!(analyzer.filters[1].pattern, "debug");
+        let id2 = filters[1].id;
+        analyzer.edit_filter(id2, "debug".to_string());
+        let filters = analyzer.get_filters();
+        assert_eq!(filters[1].pattern, "debug");
 
         // Remove
-        analyzer.remove_filter(0);
-        assert_eq!(analyzer.filters.len(), 1);
-        assert_eq!(analyzer.filters[0].id, 1);
+        analyzer.remove_filter(id);
+        let filters = analyzer.get_filters();
+        assert_eq!(filters.len(), 1);
 
         // Clear
         analyzer.clear_filters();
-        assert_eq!(analyzer.filters.len(), 0);
+        let filters = analyzer.get_filters();
+        assert_eq!(filters.len(), 0);
     }
 
     #[test]
     fn test_apply_filters() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
-        analyzer.entries.push(LogEntry {
-            id: 0,
-            message: "error: critical issue ".to_string(),
-            level: LogLevel::Info,
-            marked: false,
-            ..Default::default()
-        });
-        analyzer.entries.push(LogEntry {
-            id: 1,
-            message: "info: user logged in ".to_string(),
-            level: LogLevel::Info,
-            marked: false,
-            ..Default::default()
-        });
-        analyzer.entries.push(LogEntry {
-            id: 2,
-            message: "error: minor issue ".to_string(),
-            level: LogLevel::Info,
-            marked: false,
-            ..Default::default()
-        });
-        analyzer.entries.push(LogEntry {
-            id: 3,
-            message: "debug: value is 5".to_string(),
-            level: LogLevel::Info,
-            marked: false,
-            ..Default::default()
-        });
-        analyzer.entries.push(LogEntry {
-            id: 4,
-            message: "info: user logged out ".to_string(),
-            level: LogLevel::Info,
-            marked: false,
-            ..Default::default()
-        });
+        let analyzer = setup_analyzer();
+        let entries = vec![
+            LogEntry {
+                id: 0,
+                message: "error: critical issue ".to_string(),
+                ..Default::default()
+            },
+            LogEntry {
+                id: 1,
+                message: "info: user logged in ".to_string(),
+                ..Default::default()
+            },
+            LogEntry {
+                id: 2,
+                message: "error: minor issue ".to_string(),
+                ..Default::default()
+            },
+            LogEntry {
+                id: 3,
+                message: "debug: value is 5".to_string(),
+                ..Default::default()
+            },
+            LogEntry {
+                id: 4,
+                message: "info: user logged out ".to_string(),
+                ..Default::default()
+            },
+        ];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
 
         // Scenario 1: No filters
-        let filtered = analyzer.apply_filters(&analyzer.entries)?;
+        let all_logs = analyzer.get_logs();
+        let filtered = analyzer.apply_filters(&all_logs)?;
         assert_eq!(filtered.len(), 5, "Scenario 1 Failed: No filters ");
 
         // Scenario 2: Only include filters
-        analyzer.add_filter("error".to_string(), FilterType::Include); // id 0
-        let filtered = analyzer.apply_filters(&analyzer.entries)?;
+        analyzer.add_filter("error".to_string(), FilterType::Include);
+        let all_logs = analyzer.get_logs();
+        let filtered = analyzer.apply_filters(&all_logs)?;
         assert_eq!(filtered.len(), 2, "Scenario 2 Failed: Only include ");
         assert!(filtered.iter().any(|l| l.id == 0));
         assert!(filtered.iter().any(|l| l.id == 2));
 
         // Scenario 3: Only exclude filters
         analyzer.clear_filters();
-        analyzer.add_filter("info".to_string(), FilterType::Exclude); // id 1
-        let filtered = analyzer.apply_filters(&analyzer.entries)?;
+        analyzer.add_filter("info".to_string(), FilterType::Exclude);
+        let all_logs = analyzer.get_logs();
+        let filtered = analyzer.apply_filters(&all_logs)?;
         assert_eq!(filtered.len(), 3, "Scenario 3 Failed: Only exclude ");
         assert!(!filtered.iter().any(|l| l.id == 1 || l.id == 4));
 
         // Scenario 4: Include and Exclude, no overlap
         analyzer.clear_filters();
-        analyzer.add_filter("error".to_string(), FilterType::Include); // id 2
-        analyzer.add_filter("info".to_string(), FilterType::Exclude); // id 3
-        let filtered = analyzer.apply_filters(&analyzer.entries)?;
+        analyzer.add_filter("error".to_string(), FilterType::Include);
+        analyzer.add_filter("info".to_string(), FilterType::Exclude);
+        let all_logs = analyzer.get_logs();
+        let filtered = analyzer.apply_filters(&all_logs)?;
         assert_eq!(
             filtered.len(),
             2,
@@ -757,9 +851,10 @@ mod tests {
 
         // Scenario 5: Include and Exclude, with overlap
         analyzer.clear_filters();
-        analyzer.add_filter("error".to_string(), FilterType::Include); // id 4
-        analyzer.add_filter("critical".to_string(), FilterType::Exclude); // id 5
-        let filtered = analyzer.apply_filters(&analyzer.entries)?;
+        analyzer.add_filter("error".to_string(), FilterType::Include);
+        analyzer.add_filter("critical".to_string(), FilterType::Exclude);
+        let all_logs = analyzer.get_logs();
+        let filtered = analyzer.apply_filters(&all_logs)?;
         assert_eq!(
             filtered.len(),
             1,
@@ -768,15 +863,21 @@ mod tests {
         assert_eq!(filtered[0].id, 2);
 
         // Scenario 6: Disabled include filter
-        analyzer.toggle_filter(4); // disable 'error' include
-        let filtered = analyzer.apply_filters(&analyzer.entries)?;
+        let filters = analyzer.get_filters();
+        let include_id = filters.iter().find(|f| f.pattern == "error").unwrap().id;
+        analyzer.toggle_filter(include_id);
+        let all_logs = analyzer.get_logs();
+        let filtered = analyzer.apply_filters(&all_logs)?;
         assert_eq!(filtered.len(), 4, "Scenario 6 Failed: Disabled include");
-        assert!(!filtered.iter().any(|l| l.id == 0)); // critical is excluded
+        assert!(!filtered.iter().any(|l| l.id == 0));
 
         // Scenario 7: Disabled exclude filter
-        analyzer.toggle_filter(4); // enable 'error' include
-        analyzer.toggle_filter(5); // disable 'critical' exclude
-        let filtered = analyzer.apply_filters(&analyzer.entries)?;
+        analyzer.toggle_filter(include_id); // re-enable
+        let filters = analyzer.get_filters();
+        let exclude_id = filters.iter().find(|f| f.pattern == "critical").unwrap().id;
+        analyzer.toggle_filter(exclude_id);
+        let all_logs = analyzer.get_logs();
+        let filtered = analyzer.apply_filters(&all_logs)?;
         assert_eq!(filtered.len(), 2, "Scenario 7 Failed: Disabled exclude");
         assert!(filtered.iter().any(|l| l.id == 0));
         assert!(filtered.iter().any(|l| l.id == 2));
@@ -800,67 +901,79 @@ mod tests {
 
     #[test]
     fn test_move_filter_up() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
+        let analyzer = setup_analyzer();
         analyzer.add_filter("filter1".to_string(), FilterType::Include);
         analyzer.add_filter("filter2".to_string(), FilterType::Exclude);
         analyzer.add_filter("filter3".to_string(), FilterType::Include);
 
-        // Move filter2 up (id 1)
-        analyzer.move_filter_up(1); // filter with id 1 (filter2) moves up
-        assert_eq!(analyzer.filters[0].id, 1); // filter2 is now at index 0
-        assert_eq!(analyzer.filters[1].id, 0); // filter1 is now at index 1
-        assert_eq!(analyzer.filters[2].id, 2); // filter3 remains at index 2
+        let filters = analyzer.get_filters();
+        let id2 = filters[1].id;
+
+        analyzer.move_filter_up(id2);
+        let filters = analyzer.get_filters();
+        assert_eq!(filters[0].pattern, "filter2");
+        assert_eq!(filters[1].pattern, "filter1");
+        assert_eq!(filters[2].pattern, "filter3");
 
         Ok(())
     }
 
     #[test]
     fn test_move_filter_up_at_top() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
+        let analyzer = setup_analyzer();
         analyzer.add_filter("filter1".to_string(), FilterType::Include);
         analyzer.add_filter("filter2".to_string(), FilterType::Exclude);
 
-        // Try to move filter1 up (id 0), which is already at the top
-        analyzer.move_filter_up(0);
-        assert_eq!(analyzer.filters[0].id, 0);
-        assert_eq!(analyzer.filters[1].id, 1);
+        let filters = analyzer.get_filters();
+        let id1 = filters[0].id;
+
+        analyzer.move_filter_up(id1);
+        let filters = analyzer.get_filters();
+        assert_eq!(filters[0].pattern, "filter1");
+        assert_eq!(filters[1].pattern, "filter2");
 
         Ok(())
     }
 
     #[test]
     fn test_move_filter_down() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
+        let analyzer = setup_analyzer();
         analyzer.add_filter("filter1".to_string(), FilterType::Include);
         analyzer.add_filter("filter2".to_string(), FilterType::Exclude);
         analyzer.add_filter("filter3".to_string(), FilterType::Include);
 
-        // Move filter2 down (id 1)
-        analyzer.move_filter_down(1); // filter with id 1 (filter2) moves down
-        assert_eq!(analyzer.filters[0].id, 0); // filter1 remains at index 0
-        assert_eq!(analyzer.filters[1].id, 2); // filter3 is now at index 1
-        assert_eq!(analyzer.filters[2].id, 1); // filter2 is now at index 2
+        let filters = analyzer.get_filters();
+        let id2 = filters[1].id;
+
+        analyzer.move_filter_down(id2);
+        let filters = analyzer.get_filters();
+        assert_eq!(filters[0].pattern, "filter1");
+        assert_eq!(filters[1].pattern, "filter3");
+        assert_eq!(filters[2].pattern, "filter2");
 
         Ok(())
     }
 
     #[test]
     fn test_move_filter_down_at_bottom() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
+        let analyzer = setup_analyzer();
         analyzer.add_filter("filter1".to_string(), FilterType::Include);
         analyzer.add_filter("filter2".to_string(), FilterType::Exclude);
 
-        // Try to move filter2 down (id 1), which is already at the bottom
-        analyzer.move_filter_down(1);
-        assert_eq!(analyzer.filters[0].id, 0);
-        assert_eq!(analyzer.filters[1].id, 1);
+        let filters = analyzer.get_filters();
+        let id2 = filters[1].id;
+
+        analyzer.move_filter_down(id2);
+        let filters = analyzer.get_filters();
+        assert_eq!(filters[0].pattern, "filter1");
+        assert_eq!(filters[1].pattern, "filter2");
 
         Ok(())
     }
 
     #[test]
     fn test_save_and_load_filters() -> anyhow::Result<()> {
-        let mut analyzer = LogAnalyzer::new();
+        let analyzer = setup_analyzer();
         analyzer.add_filter("error".to_string(), FilterType::Include);
         analyzer.add_filter("info".to_string(), FilterType::Exclude);
 
@@ -869,15 +982,334 @@ mod tests {
 
         analyzer.save_filters(path)?;
 
-        let mut new_analyzer = LogAnalyzer::new();
-        new_analyzer.load_filters(path)?;
+        // Create a new analyzer and load filters
+        let analyzer2 = setup_analyzer();
+        analyzer2.load_filters(path)?;
 
-        assert_eq!(new_analyzer.filters.len(), 2);
-        assert_eq!(new_analyzer.filters[0].pattern, "error");
-        assert_eq!(new_analyzer.filters[0].filter_type, FilterType::Include);
-        assert_eq!(new_analyzer.filters[1].pattern, "info");
-        assert_eq!(new_analyzer.filters[1].filter_type, FilterType::Exclude);
+        let filters = analyzer2.get_filters();
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].pattern, "error");
+        assert_eq!(filters[0].filter_type, FilterType::Include);
+        assert_eq!(filters[1].pattern, "info");
+        assert_eq!(filters[1].filter_type, FilterType::Exclude);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_has_logs_for_source() {
+        let analyzer = setup_analyzer();
+        let entries = vec![LogEntry {
+            id: 0,
+            message: "test".to_string(),
+            source_file: Some("myfile.log".to_string()),
+            ..Default::default()
+        }];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
+
+        assert!(analyzer.has_logs_for_source("myfile.log"));
+        assert!(!analyzer.has_logs_for_source("other.log"));
+    }
+
+    #[test]
+    fn test_get_marked_logs() {
+        let analyzer = setup_analyzer();
+        let entries = vec![
+            LogEntry {
+                id: 0,
+                message: "line 1".to_string(),
+                ..Default::default()
+            },
+            LogEntry {
+                id: 1,
+                message: "line 2".to_string(),
+                ..Default::default()
+            },
+        ];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
+
+        analyzer.toggle_mark(0);
+        let marked = analyzer.get_marked_logs();
+        assert_eq!(marked.len(), 1);
+        assert_eq!(marked[0].id, 0);
+    }
+
+    #[test]
+    fn test_clear_logs() {
+        let analyzer = setup_analyzer();
+        let entries = vec![
+            LogEntry {
+                id: 0,
+                message: "line 1".to_string(),
+                ..Default::default()
+            },
+            LogEntry {
+                id: 1,
+                message: "line 2".to_string(),
+                ..Default::default()
+            },
+        ];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
+        assert_eq!(analyzer.get_logs().len(), 2);
+
+        analyzer.clear_logs();
+        assert_eq!(analyzer.get_logs().len(), 0);
+    }
+
+    #[test]
+    fn test_clear_logs_preserves_filters() {
+        let analyzer = setup_analyzer();
+        let entries = vec![LogEntry {
+            id: 0,
+            message: "line 1".to_string(),
+            ..Default::default()
+        }];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))
+            .unwrap();
+        analyzer.add_filter("error".to_string(), FilterType::Include);
+        analyzer.add_filter("debug".to_string(), FilterType::Exclude);
+
+        analyzer.clear_logs();
+
+        assert_eq!(analyzer.get_logs().len(), 0);
+        let filters = analyzer.get_filters();
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].pattern, "error");
+        assert_eq!(filters[1].pattern, "debug");
+    }
+
+    #[test]
+    fn test_clear_logs_then_reingest() -> anyhow::Result<()> {
+        let analyzer = setup_analyzer();
+
+        // Ingest first batch with ids 0, 1
+        let entries1 = vec![
+            LogEntry {
+                id: 0,
+                message: "file1 line 1".to_string(),
+                source_file: Some("file1.log".to_string()),
+                ..Default::default()
+            },
+            LogEntry {
+                id: 1,
+                message: "file1 line 2".to_string(),
+                source_file: Some("file1.log".to_string()),
+                ..Default::default()
+            },
+        ];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries1))?;
+        assert_eq!(analyzer.get_logs().len(), 2);
+
+        // Clear and re-ingest with same ids (simulates opening a different file)
+        analyzer.clear_logs();
+
+        let entries2 = vec![
+            LogEntry {
+                id: 0,
+                message: "file2 line 1".to_string(),
+                source_file: Some("file2.log".to_string()),
+                ..Default::default()
+            },
+            LogEntry {
+                id: 1,
+                message: "file2 line 2".to_string(),
+                source_file: Some("file2.log".to_string()),
+                ..Default::default()
+            },
+        ];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries2))?;
+
+        let logs = analyzer.get_logs();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].message, "file2 line 1");
+        assert_eq!(logs[1].message, "file2 line 2");
+        Ok(())
+    }
+
+    #[test]
+    fn test_display_line_all_fields() {
+        let entry = LogEntry {
+            id: 0,
+            timestamp: Some("Jun 28 10:00:03".to_string()),
+            hostname: Some("myhost".to_string()),
+            process_name: Some("myapp".to_string()),
+            pid: Some(1234),
+            level: LogLevel::Info,
+            message: "Application started".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            entry.display_line(),
+            "Jun 28 10:00:03 myhost myapp: INFO: Application started"
+        );
+    }
+
+    #[test]
+    fn test_display_line_message_only() {
+        let entry = LogEntry {
+            id: 0,
+            message: "plain log line".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(entry.display_line(), "plain log line");
+    }
+
+    #[test]
+    fn test_display_line_partial_fields() {
+        let entry = LogEntry {
+            id: 0,
+            timestamp: Some("Jun 28 10:00:03".to_string()),
+            message: "some message".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(entry.display_line(), "Jun 28 10:00:03 some message");
+    }
+
+    #[test]
+    fn test_search_matches_timestamp() -> anyhow::Result<()> {
+        let analyzer = setup_analyzer();
+        let entries = vec![LogEntry {
+            id: 0,
+            timestamp: Some("Jun 28 10:00:03".to_string()),
+            hostname: Some("myhost".to_string()),
+            process_name: Some("myapp".to_string()),
+            message: "Application started".to_string(),
+            ..Default::default()
+        }];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))?;
+
+        let results = analyzer.search("Jun 28")?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].log_id, 0);
+        assert_eq!(results[0].matches[0], (0, 6));
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_matches_hostname() -> anyhow::Result<()> {
+        let analyzer = setup_analyzer();
+        let entries = vec![LogEntry {
+            id: 0,
+            timestamp: Some("Jun 28 10:00:03".to_string()),
+            hostname: Some("myhost".to_string()),
+            message: "Application started".to_string(),
+            ..Default::default()
+        }];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))?;
+
+        let results = analyzer.search("myhost")?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].log_id, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_matches_process_name() -> anyhow::Result<()> {
+        let analyzer = setup_analyzer();
+        let entries = vec![LogEntry {
+            id: 0,
+            hostname: Some("myhost".to_string()),
+            process_name: Some("myapp".to_string()),
+            message: "Application started".to_string(),
+            ..Default::default()
+        }];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))?;
+
+        let results = analyzer.search("myapp")?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].log_id, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_spans_across_fields() -> anyhow::Result<()> {
+        let analyzer = setup_analyzer();
+        let entries = vec![LogEntry {
+            id: 0,
+            hostname: Some("server1".to_string()),
+            process_name: Some("nginx".to_string()),
+            message: "200 OK".to_string(),
+            ..Default::default()
+        }];
+        analyzer
+            .rt
+            .block_on(analyzer.db.insert_logs_batch(&entries))?;
+
+        // Search a pattern that spans hostname and process_name boundary
+        let results = analyzer.search("server1 nginx")?;
+        assert_eq!(results.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_level_from_message_content() {
+        let parser = LogParser::new();
+
+        // Plain lines with level keywords in the message
+        let entry = parser.parse(0, "ERROR: something failed");
+        assert_eq!(entry.level, LogLevel::Error);
+
+        let entry = parser.parse(1, "WARN: disk space low");
+        assert_eq!(entry.level, LogLevel::Warning);
+
+        let entry = parser.parse(2, "INFO: service started");
+        assert_eq!(entry.level, LogLevel::Info);
+
+        let entry = parser.parse(3, "DEBUG: dumping state");
+        assert_eq!(entry.level, LogLevel::Debug);
+
+        let entry = parser.parse(4, "just a plain log line");
+        assert_eq!(entry.level, LogLevel::Unknown);
+    }
+
+    #[test]
+    fn test_detect_level_fallback_in_syslog_format() {
+        let parser = LogParser::new();
+
+        // Syslog format where the regex captures a non-level word as "level",
+        // but the message contains the actual level keyword
+        let entry = parser.parse(
+            0,
+            "Jun 28 10:00:03 myhost kernel: ERROR: something broke",
+        );
+        assert_eq!(entry.level, LogLevel::Error);
+
+        let entry = parser.parse(
+            1,
+            "Jun 28 10:00:03 myhost app: WARNING: disk full",
+        );
+        assert_eq!(entry.level, LogLevel::Warning);
+    }
+
+    #[test]
+    fn test_detect_level_case_insensitive() {
+        let parser = LogParser::new();
+
+        let entry = parser.parse(0, "error happened here");
+        assert_eq!(entry.level, LogLevel::Error);
+
+        let entry = parser.parse(1, "Warning: check this");
+        assert_eq!(entry.level, LogLevel::Warning);
     }
 }

@@ -4,6 +4,8 @@
   "border_title": [131, 148, 150],
   "text": [131, 148, 150],
   "text_highlight": [181, 137, 0],
+  "error_fg": [220, 50, 47],
+  "warning_fg": [203, 75, 22],
   "process_colors": [
     [220, 50, 47],
     [133, 153, 0],

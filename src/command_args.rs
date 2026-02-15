@@ -36,4 +36,6 @@ pub enum Commands {
     Wrap,
     /// Set the theme
     SetTheme { theme_name: String },
+    /// Toggle log level color highlighting
+    LevelColors,
 }

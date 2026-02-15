@@ -21,11 +21,11 @@ impl Search {
             pattern: None,
             results: Vec::new(),
             current_match_index: 0,
-            case_sensitive: true, // Default to case-sensitive
+            case_sensitive: true,
         }
     }
 
-    pub fn search(&mut self, pattern_str: &str, logs: &[LogEntry<'_>]) -> anyhow::Result<()> {
+    pub fn search(&mut self, pattern_str: &str, logs: &[LogEntry]) -> anyhow::Result<()> {
         let pattern = if self.case_sensitive {
             Regex::new(pattern_str)?
         } else {
@@ -36,8 +36,9 @@ impl Search {
         self.current_match_index = 0;
 
         for entry in logs {
+            let display = entry.display_line();
             let mut matches = Vec::new();
-            for mat in pattern.find_iter(&entry.message) {
+            for mat in pattern.find_iter(&display) {
                 matches.push((mat.start(), mat.end()));
             }
             if !matches.is_empty() {
@@ -92,51 +93,31 @@ mod tests {
     use super::*;
     use crate::analyzer::{LogEntry, LogLevel};
 
-    fn create_test_logs<'a>() -> Vec<LogEntry<'a>> {
+    fn create_test_logs() -> Vec<LogEntry> {
         vec![
             LogEntry {
                 id: 0,
-                timestamp: None,
-                hostname: None,
-                process_name: None,
-                pid: None,
                 level: LogLevel::Info,
                 message: "This is a test line".to_string(),
-                marked: false,
-                file: None,
+                ..Default::default()
             },
             LogEntry {
                 id: 1,
-                timestamp: None,
-                hostname: None,
-                process_name: None,
-                pid: None,
                 level: LogLevel::Info,
                 message: "Another line with Test".to_string(),
-                marked: false,
-                file: None,
+                ..Default::default()
             },
             LogEntry {
                 id: 2,
-                timestamp: None,
-                hostname: None,
-                process_name: None,
-                pid: None,
                 level: LogLevel::Info,
                 message: "No match here".to_string(),
-                marked: false,
-                file: None,
+                ..Default::default()
             },
             LogEntry {
                 id: 3,
-                timestamp: None,
-                hostname: None,
-                process_name: None,
-                pid: None,
                 level: LogLevel::Info,
                 message: "test test test".to_string(),
-                marked: false,
-                file: None,
+                ..Default::default()
             },
         ]
     }
@@ -150,9 +131,9 @@ mod tests {
         let results = search.get_results();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].log_id, 0);
-        assert_eq!(results[0].matches, vec![(10, 14)]);
+        assert_eq!(results[0].matches, vec![(16, 20)]);
         assert_eq!(results[1].log_id, 3);
-        assert_eq!(results[1].matches, vec![(0, 4), (5, 9), (10, 14)]);
+        assert_eq!(results[1].matches, vec![(6, 10), (11, 15), (16, 20)]);
         Ok(())
     }
 
@@ -166,11 +147,11 @@ mod tests {
         let results = search.get_results();
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].log_id, 0);
-        assert_eq!(results[0].matches, vec![(10, 14)]);
+        assert_eq!(results[0].matches, vec![(16, 20)]);
         assert_eq!(results[1].log_id, 1);
-        assert_eq!(results[1].matches, vec![(18, 22)]);
+        assert_eq!(results[1].matches, vec![(24, 28)]);
         assert_eq!(results[2].log_id, 3);
-        assert_eq!(results[2].matches, vec![(0, 4), (5, 9), (10, 14)]);
+        assert_eq!(results[2].matches, vec![(6, 10), (11, 15), (16, 20)]);
         Ok(())
     }
 
@@ -189,19 +170,16 @@ mod tests {
         let logs = create_test_logs();
         search.search("test", &logs)?;
 
-        // Initial state, current_match_index is 0
         assert_eq!(search.get_current_match().unwrap().log_id, 0);
 
-        // Next
         search.next_match();
         assert_eq!(search.get_current_match().unwrap().log_id, 3);
-        search.next_match(); // Wraps around
+        search.next_match();
         assert_eq!(search.get_current_match().unwrap().log_id, 0);
 
-        // Previous
         search.previous_match();
         assert_eq!(search.get_current_match().unwrap().log_id, 3);
-        search.previous_match(); // Wraps around
+        search.previous_match();
         assert_eq!(search.get_current_match().unwrap().log_id, 0);
         Ok(())
     }
@@ -221,5 +199,68 @@ mod tests {
         assert!(search.results.is_empty());
         assert_eq!(search.current_match_index, 0);
         assert!(search.case_sensitive);
+    }
+
+    #[test]
+    fn test_search_matches_all_fields() -> anyhow::Result<()> {
+        let mut search = Search::new();
+        let logs = vec![
+            LogEntry {
+                id: 0,
+                timestamp: Some("Jun 28 10:00:03".to_string()),
+                hostname: Some("webserver".to_string()),
+                process_name: Some("nginx".to_string()),
+                message: "200 OK".to_string(),
+                ..Default::default()
+            },
+            LogEntry {
+                id: 1,
+                message: "plain log line".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        // Search by timestamp
+        search.search("Jun 28", &logs)?;
+        assert_eq!(search.get_results().len(), 1);
+        assert_eq!(search.get_results()[0].log_id, 0);
+
+        // Search by hostname
+        search.search("webserver", &logs)?;
+        assert_eq!(search.get_results().len(), 1);
+        assert_eq!(search.get_results()[0].log_id, 0);
+
+        // Search by process name
+        search.search("nginx", &logs)?;
+        assert_eq!(search.get_results().len(), 1);
+        assert_eq!(search.get_results()[0].log_id, 0);
+
+        // Search by message
+        search.search("200 OK", &logs)?;
+        assert_eq!(search.get_results().len(), 1);
+        assert_eq!(search.get_results()[0].log_id, 0);
+
+        // Search term that doesn't exist anywhere
+        search.search("apache", &logs)?;
+        assert!(search.get_results().is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_across_field_boundaries() -> anyhow::Result<()> {
+        let mut search = Search::new();
+        let logs = vec![LogEntry {
+            id: 0,
+            hostname: Some("server1".to_string()),
+            process_name: Some("app".to_string()),
+            message: "started".to_string(),
+            ..Default::default()
+        }];
+
+        // "server1 app" spans hostname and process_name
+        search.search("server1 app", &logs)?;
+        assert_eq!(search.get_results().len(), 1);
+        Ok(())
     }
 }

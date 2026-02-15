@@ -1,10 +1,10 @@
+use anyhow::Context;
 use ratatui::style::Color;
+use serde::de::Error;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use anyhow::Context;
-use serde::de::Error;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Theme {
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
@@ -17,10 +17,16 @@ pub struct Theme {
     pub text: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
     pub text_highlight: Color,
-    #[serde(serialize_with = "colors_to_str_vec", deserialize_with = "colors_from_str_vec")]
+    #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
+    pub error_fg: Color,
+    #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
+    pub warning_fg: Color,
+    #[serde(
+        serialize_with = "colors_to_str_vec",
+        deserialize_with = "colors_from_str_vec"
+    )]
     pub process_colors: Vec<Color>,
 }
-
 
 fn color_to_str<S>(color: &Color, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -53,9 +59,15 @@ where
         where
             A: serde::de::SeqAccess<'de>,
         {
-            let r = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(0, &self))?;
-            let g = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(1, &self))?;
-            let b = seq.next_element()?.ok_or_else(|| A::Error::invalid_length(2, &self))?;
+            let r = seq
+                .next_element()?
+                .ok_or_else(|| A::Error::invalid_length(0, &self))?;
+            let g = seq
+                .next_element()?
+                .ok_or_else(|| A::Error::invalid_length(1, &self))?;
+            let b = seq
+                .next_element()?
+                .ok_or_else(|| A::Error::invalid_length(2, &self))?;
             Ok(Color::Rgb(r, g, b))
         }
     }
@@ -114,18 +126,22 @@ impl<'de> serde::de::DeserializeSeed<'de> for ColorDeserializer {
 
 impl Theme {
     pub fn from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?
-            .join("logsmith-rs")
-            .join("themes");
-        let config_path = config_dir.join(&path);
+        let config_path = dirs::config_dir()
+            .map(|d| d.join("logsmith-rs").join("themes").join(&path));
+        let local_path = Path::new("themes").join(&path);
 
-        let data = if config_path.exists() {
-            fs::read_to_string(&config_path)
-                .with_context(|| format!("Failed to read theme from {:?}", config_path))?
+        let data = if config_path.as_ref().is_some_and(|p| p.exists()) {
+            let cp = config_path.unwrap();
+            fs::read_to_string(&cp)
+                .with_context(|| format!("Failed to read theme from {:?}", cp))?
+        } else if local_path.exists() {
+            fs::read_to_string(&local_path)
+                .with_context(|| format!("Failed to read theme from {:?}", local_path))?
         } else {
-            fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read theme from {:?}", path.as_ref()))?
+            anyhow::bail!(
+                "Theme {:?} not found in config dir or local themes/",
+                path.as_ref()
+            );
         };
         let config: Theme = serde_json::from_str(&data)?;
         Ok(config)
@@ -134,12 +150,14 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Theme::from_file("themes/dracula.json").unwrap_or_else(|_| Theme {
+        Theme::from_file("dracula.json").unwrap_or_else(|_| Theme {
             root_bg: Color::Rgb(40, 42, 54),
             border: Color::Rgb(98, 114, 164),
             border_title: Color::Rgb(248, 248, 242),
             text: Color::Rgb(248, 248, 242),
             text_highlight: Color::Rgb(255, 184, 108),
+            error_fg: Color::Rgb(255, 85, 85),
+            warning_fg: Color::Rgb(241, 250, 140),
             process_colors: vec![
                 Color::Rgb(255, 85, 85),
                 Color::Rgb(80, 250, 123),
@@ -155,10 +173,12 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use tempfile::tempdir;
     use crate::analyzer::LogAnalyzer;
+    use crate::db::Database;
     use crate::ui::App;
+    use std::env;
+    use std::sync::Arc;
+    use tempfile::tempdir;
 
     #[test]
     fn test_theme_loading_from_config_dir() {
@@ -173,7 +193,10 @@ mod tests {
         let theme_path = themes_dir.join("mytheme.json");
         fs::write(&theme_path, "{}").unwrap();
 
-        let app = App::new(LogAnalyzer::new(), Theme::default());
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let db = rt.block_on(Database::in_memory()).unwrap();
+        let analyzer = LogAnalyzer::new(Arc::new(db), rt);
+        let app = App::new(analyzer, Theme::default());
 
         assert!(app.available_themes.contains(&"mytheme".to_string()));
 
