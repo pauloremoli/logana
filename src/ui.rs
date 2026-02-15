@@ -5,9 +5,11 @@ use ratatui::{
     style::Modifier,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::analyzer::{FilterType, LogAnalyzer, LogEntry, LogLevel};
+use crate::analyzer::{FilterType, LogAnalyzer, LogEntry, LogLevel, apply_filters_to_logs};
+use crate::db::{FilterStore, LogStore};
 use crate::search::Search;
 use crate::theme::Theme;
 use std::collections::HashSet;
@@ -117,7 +119,30 @@ pub enum AppMode {
     },
 }
 
-#[derive(Debug)]
+const BACKGROUND_BATCH_SIZE: usize = 5000;
+
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+struct BackgroundLoadState {
+    receiver: mpsc::Receiver<Result<usize, String>>,
+    lines_loaded: usize,
+    spinner_frame: usize,
+}
+
+impl std::fmt::Debug for BackgroundLoadState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackgroundLoadState")
+            .field("lines_loaded", &self.lines_loaded)
+            .field("spinner_frame", &self.spinner_frame)
+            .finish()
+    }
+}
+
+struct CacheResult {
+    all_logs: Vec<LogEntry>,
+    filtered_logs: Vec<LogEntry>,
+}
+
 pub struct App {
     pub analyzer: LogAnalyzer,
     pub mode: AppMode,
@@ -133,6 +158,23 @@ pub struct App {
     pub tab_completion_index: Option<usize>,
     pub command_error: Option<String>,
     pub level_colors: bool,
+    pub visible_height: usize,
+    cached_logs: Vec<LogEntry>,
+    cached_filtered_logs: Vec<LogEntry>,
+    logs_dirty: bool,
+    filters_dirty: bool,
+    cache_refresh_rx: Option<mpsc::Receiver<CacheResult>>,
+    cache_refresh_pending: bool,
+    background_loading: Option<BackgroundLoadState>,
+}
+
+impl std::fmt::Debug for App {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("App")
+            .field("mode", &self.mode)
+            .field("scroll_offset", &self.scroll_offset)
+            .finish()
+    }
 }
 
 impl App {
@@ -182,6 +224,14 @@ impl App {
             tab_completion_index: None,
             command_error: None,
             level_colors: true,
+            visible_height: 0,
+            cached_logs: Vec::new(),
+            cached_filtered_logs: Vec::new(),
+            logs_dirty: true,
+            filters_dirty: true,
+            cache_refresh_rx: None,
+            cache_refresh_pending: false,
+            background_loading: None,
         }
     }
 
@@ -189,13 +239,24 @@ impl App {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(250);
 
+        // Kick off initial async cache load
+        self.schedule_cache_refresh();
+
         loop {
             terminal.draw(|frame| self.ui(frame))?;
 
-            let timeout = tick_rate
-                .checked_sub(last_tick.elapsed())
-                .unwrap_or_else(|| Duration::from_secs(0));
-            if event::poll(timeout)?
+            // Use a short poll timeout while async work is in progress
+            let has_async_work =
+                self.background_loading.is_some() || self.cache_refresh_pending;
+            let poll_timeout = if has_async_work {
+                Duration::from_millis(16) // ~60fps while loading
+            } else {
+                tick_rate
+                    .checked_sub(last_tick.elapsed())
+                    .unwrap_or_else(|| Duration::from_secs(0))
+            };
+
+            if event::poll(poll_timeout)?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
@@ -204,7 +265,7 @@ impl App {
                         if key.code == KeyCode::Char('q') {
                             return Ok(());
                         }
-                        self.handle_normal_mode_key(key.code)
+                        self.handle_normal_mode_key(key.code, key.modifiers)
                     }
                     AppMode::Command { .. } => self.handle_command_mode_key(key.code),
                     AppMode::FilterManagement { .. } => {
@@ -215,14 +276,45 @@ impl App {
                 }
             }
 
+            // Poll async results (non-blocking)
+            self.process_background_loading();
+            self.poll_cache_refresh();
+
+            // Schedule refresh if dirty flags were set by loading or key handlers
+            self.schedule_cache_refresh();
+
             if last_tick.elapsed() >= tick_rate {
                 last_tick = Instant::now();
             }
         }
     }
 
-    fn handle_normal_mode_key(&mut self, key_code: KeyCode) {
+    fn handle_normal_mode_key(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
+        // Ctrl+d: half page down
+        if key_code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
+            let half = (self.visible_height / 2).max(1);
+            self.scroll_offset = self.scroll_offset.saturating_add(half);
+            self.g_key_pressed = false;
+            return;
+        }
+        // Ctrl+u: half page up
+        if key_code == KeyCode::Char('u') && modifiers.contains(KeyModifiers::CONTROL) {
+            let half = (self.visible_height / 2).max(1);
+            self.scroll_offset = self.scroll_offset.saturating_sub(half);
+            self.g_key_pressed = false;
+            return;
+        }
         match key_code {
+            KeyCode::PageDown => {
+                let page = self.visible_height.max(1);
+                self.scroll_offset = self.scroll_offset.saturating_add(page);
+                self.g_key_pressed = false;
+            }
+            KeyCode::PageUp => {
+                let page = self.visible_height.max(1);
+                self.scroll_offset = self.scroll_offset.saturating_sub(page);
+                self.g_key_pressed = false;
+            }
             KeyCode::Char('q') => {} // handled in run()
             KeyCode::Char(':') => {
                 self.mode = AppMode::Command {
@@ -263,7 +355,7 @@ impl App {
                 self.g_key_pressed = false;
             }
             KeyCode::Char('G') => {
-                let num_logs = self.get_filtered_logs().len();
+                let num_logs = self.cached_filtered_logs.len();
                 if num_logs > 0 {
                     self.scroll_offset = num_logs - 1;
                 }
@@ -286,9 +378,24 @@ impl App {
                 self.g_key_pressed = false;
             }
             KeyCode::Char('m') => {
-                let logs_to_display = self.get_filtered_logs();
-                if let Some(log) = logs_to_display.get(self.scroll_offset) {
-                    self.analyzer.toggle_mark(log.id);
+                if let Some(log) = self.cached_filtered_logs.get(self.scroll_offset) {
+                    let id = log.id;
+                    let new_marked = !log.marked;
+
+                    // Optimistic update: toggle in both caches immediately
+                    if let Some(entry) = self.cached_filtered_logs.iter_mut().find(|e| e.id == id)
+                    {
+                        entry.marked = new_marked;
+                    }
+                    if let Some(entry) = self.cached_logs.iter_mut().find(|e| e.id == id) {
+                        entry.marked = new_marked;
+                    }
+
+                    // Fire-and-forget DB write on the tokio runtime
+                    let db = self.analyzer.db.clone();
+                    self.analyzer.rt.spawn(async move {
+                        let _ = db.toggle_mark(id as i64).await;
+                    });
                 }
                 self.g_key_pressed = false;
             }
@@ -501,12 +608,14 @@ impl App {
                     let filters = self.analyzer.get_filters();
                     if let Some(filter) = filters.get(*selected_filter_index) {
                         self.analyzer.toggle_filter(filter.id);
+                        self.filters_dirty = true;
                     }
                 }
                 KeyCode::Char('d') => {
                     let filters = self.analyzer.get_filters();
                     if let Some(filter) = filters.get(*selected_filter_index) {
                         self.analyzer.remove_filter(filter.id);
+                        self.filters_dirty = true;
                         let remaining = self.analyzer.get_filters();
                         if *selected_filter_index >= remaining.len() && !remaining.is_empty() {
                             *selected_filter_index = remaining.len() - 1;
@@ -618,12 +727,11 @@ impl App {
                         AppMode::Search { input, forward } => (input.clone(), *forward),
                         _ => return,
                     };
-                    let logs = self.analyzer.get_logs();
                     let search_result = if forward_val {
-                        self.search.search(&search_input, &logs).ok();
+                        self.search.search(&search_input, &self.cached_logs).ok();
                         self.search.next_match()
                     } else {
-                        self.search.search(&search_input, &logs).ok();
+                        self.search.search(&search_input, &self.cached_logs).ok();
                         self.search.previous_match()
                     };
                     if let Some(result) = search_result {
@@ -651,8 +759,12 @@ impl App {
     }
 
     pub fn handle_key_event(&mut self, key_code: KeyCode) {
+        self.handle_key_event_with_modifiers(key_code, KeyModifiers::NONE);
+    }
+
+    pub fn handle_key_event_with_modifiers(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
         match self.mode {
-            AppMode::Normal => self.handle_normal_mode_key(key_code),
+            AppMode::Normal => self.handle_normal_mode_key(key_code, modifiers),
             AppMode::Command { .. } => self.handle_command_mode_key(key_code),
             AppMode::FilterManagement { .. } => self.handle_filter_management_mode_key(key_code),
             AppMode::FilterEdit { .. } => self.handle_filter_edit_mode_key(key_code),
@@ -687,11 +799,11 @@ impl App {
             (chunks[0], None)
         };
 
-        let logs_to_display = self.get_filtered_logs();
-        let num_logs = logs_to_display.len();
+        let num_logs = self.cached_filtered_logs.len();
 
         // Inner height excludes the border (2 lines for top+bottom border)
         let visible_height = (logs_area.height as usize).saturating_sub(2);
+        self.visible_height = visible_height;
 
         // Clamp scroll_offset
         if num_logs > 0 && self.scroll_offset >= num_logs {
@@ -708,11 +820,14 @@ impl App {
 
         let start = self.viewport_offset;
         let end = (start + visible_height).min(num_logs);
-        let visible_logs = &logs_to_display[start..end];
+        let visible_logs = &self.cached_filtered_logs[start..end];
 
         let filters = self.analyzer.get_filters();
 
         let search_results = self.search.get_results();
+        // Build a lookup map for search results of visible logs
+        let search_map: std::collections::HashMap<usize, &crate::analyzer::SearchResult> =
+            search_results.iter().map(|r| (r.log_id, r)).collect();
         let log_lines: Vec<Line> = visible_logs
             .iter()
             .enumerate()
@@ -729,7 +844,7 @@ impl App {
                         (offset, offset + needle.len(), color)
                     });
 
-                let search_match = search_results.iter().find(|r| r.log_id == log.id);
+                let search_match = search_map.get(&log.id).copied();
 
                 // Build styled spans for the full display line
                 let mut base_style = Style::default().fg(self.theme.text);
@@ -769,12 +884,19 @@ impl App {
             })
             .collect();
 
+        let logs_title = if let Some(state) = &self.background_loading {
+            let spinner = SPINNER_FRAMES[state.spinner_frame];
+            format!("Logs {} Loading... ({} lines)", spinner, state.lines_loaded)
+        } else {
+            format!("Logs ({})", num_logs)
+        };
+
         let mut paragraph = Paragraph::new(log_lines)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(self.theme.border))
-                    .title("Logs")
+                    .title(logs_title)
                     .title_style(Style::default().fg(self.theme.border_title)),
             )
             .scroll((0, self.horizontal_scroll as u16));
@@ -915,11 +1037,13 @@ impl App {
                     bg.as_deref(),
                 );
                 self.scroll_offset = 0;
+                self.filters_dirty = true;
             }
             Some(Commands::Exclude { pattern }) => {
                 self.analyzer
                     .add_filter_with_color(pattern, FilterType::Exclude, None, None);
                 self.scroll_offset = 0;
+                self.filters_dirty = true;
             }
             Some(Commands::SetColor { fg, bg }) => {
                 let selected_filter_index = match &self.mode {
@@ -935,6 +1059,7 @@ impl App {
                     let pattern = filter.pattern.clone();
                     self.analyzer
                         .set_color_config(&pattern, fg.as_deref(), bg.as_deref());
+                    self.filters_dirty = true;
                 }
             }
             Some(Commands::ExportMarked { path }) => {
@@ -957,6 +1082,7 @@ impl App {
             Some(Commands::LoadFilters { path }) => {
                 if !path.is_empty() {
                     let _ = self.analyzer.load_filters(&path);
+                    self.filters_dirty = true;
                 }
             }
             Some(Commands::Wrap) => {
@@ -982,7 +1108,7 @@ impl App {
     fn get_command_list(&self) -> String {
         match self.mode {
             AppMode::Normal => {
-                "[NORMAL] [q]uit | : => command Mode | [f]ilter mode | [s]idebar | [m]ark Line | / => search | ? => search backward | [n]ext match | N => previous match".to_string()
+                "[NORMAL] [q]uit | : => command Mode | [f]ilter mode | [s]idebar | [m]ark Line | / => search | ? => search backward | [n]ext match | N => prev match | PgDn/Ctrl+d PgUp/Ctrl+u".to_string()
             },
             AppMode::Command { .. } => {
                 "[COMMAND] filter | exclude | set-color | export-marked | save-filters | load-filters | wrap | set-theme | level-colors | Esc | Enter".to_string()
@@ -999,14 +1125,157 @@ impl App {
         }
     }
 
-    fn get_filtered_logs(&self) -> Vec<LogEntry> {
-        let logs = self.analyzer.get_logs();
-        self.analyzer.apply_filters(&logs).unwrap_or(logs)
+    /// Schedule an async cache refresh on the tokio runtime.
+    /// Does nothing if one is already in flight.
+    fn schedule_cache_refresh(&mut self) {
+        if self.cache_refresh_pending {
+            return;
+        }
+        if !self.logs_dirty && !self.filters_dirty {
+            return;
+        }
+
+        let db = self.analyzer.db.clone();
+        let rt = self.analyzer.rt.clone();
+        let needs_logs = self.logs_dirty;
+
+        // If only filters changed, we can reuse cached_logs from the main thread
+        let existing_logs = if !needs_logs {
+            Some(self.cached_logs.clone())
+        } else {
+            None
+        };
+
+        self.logs_dirty = false;
+        self.filters_dirty = false;
+        self.cache_refresh_pending = true;
+
+        let (tx, rx) = mpsc::channel();
+        self.cache_refresh_rx = Some(rx);
+
+        rt.spawn(async move {
+            let all_logs = if let Some(logs) = existing_logs {
+                logs
+            } else {
+                db.get_all_logs().await.unwrap_or_default()
+            };
+
+            let filters = db.get_filters().await.unwrap_or_default();
+            let filtered_logs = apply_filters_to_logs(&all_logs, &filters)
+                .unwrap_or_else(|_| all_logs.clone());
+
+            let _ = tx.send(CacheResult {
+                all_logs,
+                filtered_logs,
+            });
+        });
+    }
+
+    /// Non-blocking poll for completed cache refresh results.
+    fn poll_cache_refresh(&mut self) {
+        let rx = match &self.cache_refresh_rx {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        match rx.try_recv() {
+            Ok(result) => {
+                self.cached_logs = result.all_logs;
+                self.cached_filtered_logs = result.filtered_logs;
+                self.cache_refresh_pending = false;
+                self.cache_refresh_rx = None;
+
+                // If dirty flags were set while the refresh was in flight, re-schedule
+                if self.logs_dirty || self.filters_dirty {
+                    self.schedule_cache_refresh();
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {} // still in progress
+            Err(mpsc::TryRecvError::Disconnected) => {
+                // Task panicked or was dropped — reset state
+                self.cache_refresh_pending = false;
+                self.cache_refresh_rx = None;
+            }
+        }
+    }
+
+    /// Synchronous cache refresh for use in tests only.
+    #[cfg(test)]
+    pub fn refresh_caches(&mut self) {
+        if self.logs_dirty {
+            self.cached_logs = self.analyzer.get_logs();
+            self.logs_dirty = false;
+            self.filters_dirty = true;
+        }
+        if self.filters_dirty {
+            self.cached_filtered_logs = self
+                .analyzer
+                .apply_filters(&self.cached_logs)
+                .unwrap_or_else(|_| self.cached_logs.clone());
+            self.filters_dirty = false;
+        }
+    }
+
+    pub fn invalidate_logs(&mut self) {
+        self.logs_dirty = true;
+    }
+
+    pub fn invalidate_filters(&mut self) {
+        self.filters_dirty = true;
+    }
+
+    pub fn start_background_loading(&mut self, path: String, lines_loaded: usize) {
+        let receiver = self.analyzer.start_file_stream(
+            path,
+            lines_loaded,
+            BACKGROUND_BATCH_SIZE,
+        );
+        self.background_loading = Some(BackgroundLoadState {
+            receiver,
+            lines_loaded,
+            spinner_frame: 0,
+        });
+    }
+
+    fn process_background_loading(&mut self) {
+        let state = match &mut self.background_loading {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Drain all available progress notifications (non-blocking, no DB work here)
+        let mut got_updates = false;
+        loop {
+            match state.receiver.try_recv() {
+                Ok(Ok(count)) => {
+                    state.lines_loaded += count;
+                    state.spinner_frame = (state.spinner_frame + 1) % SPINNER_FRAMES.len();
+                    got_updates = true;
+                }
+                Ok(Err(_)) => {
+                    // Background thread hit an error
+                    self.background_loading = None;
+                    return;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // Thread finished — all data inserted
+                    self.background_loading = None;
+                    if got_updates {
+                        self.logs_dirty = true;
+                    }
+                    return;
+                }
+            }
+        }
+
+        if got_updates {
+            self.logs_dirty = true;
+        }
     }
 
     fn scroll_to_log_entry(&mut self, log_id: usize) {
-        let logs = self.analyzer.get_logs();
-        if let Some(index) = logs.iter().position(|e| e.id == log_id) {
+        if let Some(index) = self.cached_filtered_logs.iter().position(|e| e.id == log_id) {
             self.scroll_offset = index;
         }
     }
@@ -1232,7 +1501,8 @@ mod tests {
     #[test]
     fn test_mark_line() {
         let mut app = App::new(mock_analyzer(), Theme::default());
-        app.handle_normal_mode_key(KeyCode::Char('m'));
+        app.refresh_caches();
+        app.handle_key_event(KeyCode::Char('m'));
         let logs = app.analyzer.get_logs();
         assert!(logs[0].marked);
     }
@@ -1240,16 +1510,16 @@ mod tests {
     #[test]
     fn test_scroll_offset_j_k() {
         let mut app = App::new(mock_analyzer(), Theme::default());
-        app.handle_normal_mode_key(KeyCode::Char('j'));
+        app.handle_key_event(KeyCode::Char('j'));
         assert_eq!(app.scroll_offset, 1);
-        app.handle_normal_mode_key(KeyCode::Char('k'));
+        app.handle_key_event(KeyCode::Char('k'));
         assert_eq!(app.scroll_offset, 0);
     }
 
     #[test]
     fn test_mode_switching() {
         let mut app = App::new(mock_analyzer(), Theme::default());
-        app.handle_normal_mode_key(KeyCode::Char(':'));
+        app.handle_key_event(KeyCode::Char(':'));
         assert!(matches!(app.mode, AppMode::Command { .. }));
         app.handle_command_mode_key(KeyCode::Esc);
         assert!(matches!(app.mode, AppMode::Normal));
@@ -1278,9 +1548,9 @@ mod tests {
     fn test_toggle_sidebar() {
         let mut app = App::new(mock_analyzer(), Theme::default());
         assert!(!app.show_sidebar);
-        app.handle_normal_mode_key(KeyCode::Char('s'));
+        app.handle_key_event(KeyCode::Char('s'));
         assert!(app.show_sidebar);
-        app.handle_normal_mode_key(KeyCode::Char('s'));
+        app.handle_key_event(KeyCode::Char('s'));
         assert!(!app.show_sidebar);
     }
 
@@ -1356,7 +1626,7 @@ mod tests {
     #[test]
     fn test_search_mode_and_input() {
         let mut app = App::new(mock_analyzer(), Theme::default());
-        app.handle_normal_mode_key(KeyCode::Char('/'));
+        app.handle_key_event(KeyCode::Char('/'));
         assert!(matches!(app.mode, AppMode::Search { .. }));
         app.handle_search_mode_key(KeyCode::Char('t'));
         match &app.mode {
@@ -1393,6 +1663,7 @@ mod tests {
     #[test]
     fn test_scroll_to_log_entry() {
         let mut app = App::new(mock_analyzer(), Theme::default());
+        app.refresh_caches();
         app.scroll_to_log_entry(2);
         assert_eq!(app.scroll_offset, 2);
     }
@@ -1463,6 +1734,7 @@ mod tests {
     #[test]
     fn test_vim_g_key() {
         let mut app = setup_test_app_for_vim_motions();
+        app.refresh_caches();
         app.scroll_offset = 50;
         app.handle_key_event(KeyCode::Char('G'));
         assert_eq!(app.scroll_offset, 99);
@@ -1534,6 +1806,7 @@ mod tests {
     #[test]
     fn test_big_g_moves_cursor_to_last_line() {
         let mut app = setup_test_app_for_vim_motions();
+        app.refresh_caches();
         app.scroll_offset = 0;
 
         app.handle_key_event(KeyCode::Char('G'));
@@ -1572,6 +1845,7 @@ mod tests {
     #[test]
     fn test_search_populates_results_and_navigates() {
         let mut app = App::new(mock_analyzer(), Theme::default());
+        app.refresh_caches();
 
         // Enter search mode
         app.handle_key_event(KeyCode::Char('/'));
@@ -1603,6 +1877,7 @@ mod tests {
     #[test]
     fn test_search_results_persist_for_highlighting() {
         let mut app = App::new(mock_analyzer(), Theme::default());
+        app.refresh_caches();
 
         // Perform a search
         app.handle_key_event(KeyCode::Char('/'));
@@ -1652,6 +1927,7 @@ mod tests {
         ];
         rt.block_on(db.insert_logs_batch(&entries)).unwrap();
         let mut app = App::new(analyzer, Theme::default());
+        app.refresh_caches();
 
         // Search for "match"
         app.handle_key_event(KeyCode::Char('/'));
@@ -1679,6 +1955,7 @@ mod tests {
     #[test]
     fn test_mark_preserves_with_cursor_highlight() {
         let mut app = setup_test_app_for_vim_motions();
+        app.refresh_caches();
 
         // Mark line 0
         app.handle_key_event(KeyCode::Char('m'));
@@ -1784,6 +2061,7 @@ mod tests {
         ];
         rt.block_on(db.insert_logs_batch(&entries)).unwrap();
         let mut app = App::new(analyzer, Theme::default());
+        app.refresh_caches();
 
         // Search for timestamp
         app.handle_key_event(KeyCode::Char('/'));
@@ -1820,6 +2098,7 @@ mod tests {
         ];
         rt.block_on(db.insert_logs_batch(&entries)).unwrap();
         let mut app = App::new(analyzer, Theme::default());
+        app.refresh_caches();
 
         // Search for hostname
         app.handle_key_event(KeyCode::Char('/'));
@@ -2039,5 +2318,127 @@ mod tests {
         // Marked style should be applied (text_highlight fg + bold), not error_fg
         assert_eq!(spans[0].style.fg, Some(theme.text_highlight));
         assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn test_page_down() {
+        let mut app = setup_test_app_for_vim_motions();
+        app.visible_height = 20;
+        app.handle_key_event(KeyCode::PageDown);
+        assert_eq!(app.scroll_offset, 20);
+        app.handle_key_event(KeyCode::PageDown);
+        assert_eq!(app.scroll_offset, 40);
+    }
+
+    #[test]
+    fn test_page_up() {
+        let mut app = setup_test_app_for_vim_motions();
+        app.visible_height = 20;
+        app.scroll_offset = 50;
+        app.handle_key_event(KeyCode::PageUp);
+        assert_eq!(app.scroll_offset, 30);
+        app.handle_key_event(KeyCode::PageUp);
+        assert_eq!(app.scroll_offset, 10);
+    }
+
+    #[test]
+    fn test_page_up_at_top() {
+        let mut app = setup_test_app_for_vim_motions();
+        app.visible_height = 20;
+        app.scroll_offset = 5;
+        app.handle_key_event(KeyCode::PageUp);
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_ctrl_d_half_page_down() {
+        use crossterm::event::KeyModifiers;
+        let mut app = setup_test_app_for_vim_motions();
+        app.visible_height = 20;
+        app.handle_key_event_with_modifiers(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(app.scroll_offset, 10);
+        app.handle_key_event_with_modifiers(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(app.scroll_offset, 20);
+    }
+
+    #[test]
+    fn test_ctrl_u_half_page_up() {
+        use crossterm::event::KeyModifiers;
+        let mut app = setup_test_app_for_vim_motions();
+        app.visible_height = 20;
+        app.scroll_offset = 50;
+        app.handle_key_event_with_modifiers(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(app.scroll_offset, 40);
+        app.handle_key_event_with_modifiers(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(app.scroll_offset, 30);
+    }
+
+    #[test]
+    fn test_ctrl_u_at_top() {
+        use crossterm::event::KeyModifiers;
+        let mut app = setup_test_app_for_vim_motions();
+        app.visible_height = 20;
+        app.scroll_offset = 3;
+        app.handle_key_event_with_modifiers(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_background_loading_state() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        for i in 0..10 {
+            writeln!(file, "line {}", i).unwrap();
+        }
+        let path = file.path().to_str().unwrap().to_string();
+
+        let mut app = App::new(mock_empty_analyzer(), Theme::default());
+        assert!(app.background_loading.is_none());
+
+        app.start_background_loading(path, 0);
+        assert!(app.background_loading.is_some());
+        let state = app.background_loading.as_ref().unwrap();
+        assert_eq!(state.lines_loaded, 0);
+        assert_eq!(state.spinner_frame, 0);
+    }
+
+    #[test]
+    fn test_background_loading_completes_on_missing_file() {
+        let mut app = App::new(mock_empty_analyzer(), Theme::default());
+        app.start_background_loading("/nonexistent/file.log".to_string(), 0);
+        // Give the thread a moment to finish
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        app.process_background_loading();
+        // Should clear background_loading when thread disconnects
+        assert!(app.background_loading.is_none());
+    }
+
+    #[test]
+    fn test_background_loading_processes_chunk() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        for i in 0..50 {
+            writeln!(file, "line {}", i).unwrap();
+        }
+        let path = file.path().to_str().unwrap().to_string();
+
+        let mut app = App::new(mock_empty_analyzer(), Theme::default());
+        // Ingest first 10 lines synchronously
+        app.analyzer.ingest_file_chunk(&path, 0, 10).unwrap();
+        app.logs_dirty = true;
+
+        // Start background loading from line 10
+        app.start_background_loading(path, 10);
+
+        // Give the background thread time to read and send
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Process batches from channel
+        app.process_background_loading();
+        assert!(app.logs_dirty);
+
+        // After refresh, should have more logs
+        app.refresh_caches();
+        assert!(app.cached_logs.len() > 10);
     }
 }

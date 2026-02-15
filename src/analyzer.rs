@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use std::sync::Arc;
 
+use std::sync::mpsc;
+
 use crate::db::{Database, FilterStore, LogStore};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -188,10 +190,58 @@ pub struct SearchResult {
     pub matches: Vec<(usize, usize)>,
 }
 
+/// Standalone filter application — can be called from async tasks without &self.
+pub fn apply_filters_to_logs(
+    logs: &[LogEntry],
+    filters: &[Filter],
+) -> anyhow::Result<Vec<LogEntry>> {
+    let enabled_filters: Vec<&Filter> = filters.iter().filter(|f| f.enabled).collect();
+
+    let include_filters: Vec<Regex> = enabled_filters
+        .iter()
+        .filter(|f| f.filter_type == FilterType::Include)
+        .map(|f| Regex::new(&f.pattern))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let exclude_filters: Vec<Regex> = enabled_filters
+        .iter()
+        .filter(|f| f.filter_type == FilterType::Exclude)
+        .map(|f| Regex::new(&f.pattern))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let potentially_included_logs: Vec<LogEntry> = if include_filters.is_empty() {
+        logs.to_vec()
+    } else {
+        logs.iter()
+            .filter(|log_entry| {
+                include_filters
+                    .iter()
+                    .any(|re| re.is_match(&log_entry.message))
+            })
+            .cloned()
+            .collect()
+    };
+
+    if exclude_filters.is_empty() {
+        return Ok(potentially_included_logs);
+    }
+
+    let final_logs = potentially_included_logs
+        .into_iter()
+        .filter(|log_entry| {
+            !exclude_filters
+                .iter()
+                .any(|re| re.is_match(&log_entry.message))
+        })
+        .collect();
+
+    Ok(final_logs)
+}
+
 #[derive(Debug)]
 pub struct LogAnalyzer {
-    db: Arc<Database>,
-    rt: Arc<tokio::runtime::Runtime>,
+    pub(crate) db: Arc<Database>,
+    pub(crate) rt: Arc<tokio::runtime::Runtime>,
     log_parser: LogParser,
 }
 
@@ -231,6 +281,105 @@ impl LogAnalyzer {
 
         self.rt.block_on(self.db.insert_logs_batch(&entries))?;
         Ok(())
+    }
+
+    /// Ingest a chunk of lines from a file, starting at `start_line`, up to `max_lines`.
+    /// Returns the number of lines actually ingested (0 means EOF or past end).
+    pub fn ingest_file_chunk(
+        &self,
+        path: &str,
+        start_line: usize,
+        max_lines: usize,
+    ) -> anyhow::Result<usize> {
+        use std::fs::File;
+        use std::io::{self, BufRead};
+
+        let file = File::open(path)?;
+        let reader = io::BufReader::new(file);
+
+        let source = Some(path.to_string());
+        let mut entries = Vec::new();
+
+        for (id, line) in reader.lines().enumerate().skip(start_line).take(max_lines) {
+            let content = line?;
+            let mut entry = self.log_parser.parse(id, &content);
+            entry.source_file = source.clone();
+            entries.push(entry);
+        }
+
+        let count = entries.len();
+        if count > 0 {
+            self.rt.block_on(self.db.insert_logs_batch(&entries))?;
+        }
+        Ok(count)
+    }
+
+    /// Spawn a background thread that reads the file sequentially (starting at `start_line`),
+    /// parses lines, and inserts them into the database — all off the main thread.
+    /// Returns a receiver of progress updates: `Ok(count)` for each batch inserted,
+    /// or `Err(msg)` on failure. The channel disconnects when loading is complete.
+    pub fn start_file_stream(
+        &self,
+        path: String,
+        start_line: usize,
+        batch_size: usize,
+    ) -> mpsc::Receiver<Result<usize, String>> {
+        let (tx, rx) = mpsc::channel();
+        let parser = LogParser::new();
+        let source = Some(path.clone());
+        let db = self.db.clone();
+        let rt = self.rt.clone();
+
+        std::thread::spawn(move || {
+            use std::fs::File;
+            use std::io::{self, BufRead};
+
+            let file = match File::open(&path) {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string()));
+                    return;
+                }
+            };
+            let reader = io::BufReader::new(file);
+            let mut batch = Vec::with_capacity(batch_size);
+
+            for (id, line) in reader.lines().enumerate().skip(start_line) {
+                let content = match line {
+                    Ok(c) => c,
+                    Err(_) => break,
+                };
+                let mut entry = parser.parse(id, &content);
+                entry.source_file = source.clone();
+                batch.push(entry);
+
+                if batch.len() >= batch_size {
+                    let count = batch.len();
+                    let to_insert =
+                        std::mem::replace(&mut batch, Vec::with_capacity(batch_size));
+                    if let Err(e) = rt.block_on(db.insert_logs_batch(&to_insert)) {
+                        let _ = tx.send(Err(e.to_string()));
+                        return;
+                    }
+                    if tx.send(Ok(count)).is_err() {
+                        return; // receiver dropped
+                    }
+                }
+            }
+
+            // Insert and send remaining entries
+            if !batch.is_empty() {
+                let count = batch.len();
+                if let Err(e) = rt.block_on(db.insert_logs_batch(&batch)) {
+                    let _ = tx.send(Err(e.to_string()));
+                    return;
+                }
+                let _ = tx.send(Ok(count));
+            }
+            // tx drops here, signaling completion
+        });
+
+        rx
     }
 
     pub fn ingest_reader<R: std::io::Read>(&self, reader: R) -> anyhow::Result<()> {
@@ -313,47 +462,7 @@ impl LogAnalyzer {
 
     pub fn apply_filters(&self, logs: &[LogEntry]) -> anyhow::Result<Vec<LogEntry>> {
         let filters = self.get_filters();
-        let enabled_filters: Vec<&Filter> = filters.iter().filter(|f| f.enabled).collect();
-
-        let include_filters: Vec<Regex> = enabled_filters
-            .iter()
-            .filter(|f| f.filter_type == FilterType::Include)
-            .map(|f| Regex::new(&f.pattern))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let exclude_filters: Vec<Regex> = enabled_filters
-            .iter()
-            .filter(|f| f.filter_type == FilterType::Exclude)
-            .map(|f| Regex::new(&f.pattern))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let potentially_included_logs: Vec<LogEntry> = if include_filters.is_empty() {
-            logs.to_vec()
-        } else {
-            logs.iter()
-                .filter(|log_entry| {
-                    include_filters
-                        .iter()
-                        .any(|re| re.is_match(&log_entry.message))
-                })
-                .cloned()
-                .collect()
-        };
-
-        if exclude_filters.is_empty() {
-            return Ok(potentially_included_logs);
-        }
-
-        let final_logs = potentially_included_logs
-            .into_iter()
-            .filter(|log_entry| {
-                !exclude_filters
-                    .iter()
-                    .any(|re| re.is_match(&log_entry.message))
-            })
-            .collect();
-
-        Ok(final_logs)
+        apply_filters_to_logs(logs, &filters)
     }
 
     pub fn search(&self, pattern: &str) -> anyhow::Result<Vec<SearchResult>> {
@@ -1311,5 +1420,61 @@ mod tests {
 
         let entry = parser.parse(1, "Warning: check this");
         assert_eq!(entry.level, LogLevel::Warning);
+    }
+
+    #[test]
+    fn test_ingest_file_chunk_first_chunk() -> anyhow::Result<()> {
+        let mut file = NamedTempFile::new()?;
+        for i in 0..100 {
+            writeln!(file, "line {}", i)?;
+        }
+        let path = file.path().to_str().unwrap();
+
+        let analyzer = setup_analyzer();
+        let count = analyzer.ingest_file_chunk(path, 0, 10)?;
+        assert_eq!(count, 10);
+        let logs = analyzer.get_logs();
+        assert_eq!(logs.len(), 10);
+        assert_eq!(logs[0].message, "line 0");
+        assert_eq!(logs[9].message, "line 9");
+        Ok(())
+    }
+
+    #[test]
+    fn test_ingest_file_chunk_subsequent_chunk() -> anyhow::Result<()> {
+        let mut file = NamedTempFile::new()?;
+        for i in 0..100 {
+            writeln!(file, "line {}", i)?;
+        }
+        let path = file.path().to_str().unwrap();
+
+        let analyzer = setup_analyzer();
+        let count1 = analyzer.ingest_file_chunk(path, 0, 10)?;
+        assert_eq!(count1, 10);
+        let count2 = analyzer.ingest_file_chunk(path, 10, 10)?;
+        assert_eq!(count2, 10);
+        let logs = analyzer.get_logs();
+        assert_eq!(logs.len(), 20);
+        assert_eq!(logs[10].message, "line 10");
+        assert_eq!(logs[19].message, "line 19");
+        Ok(())
+    }
+
+    #[test]
+    fn test_ingest_file_chunk_past_eof() -> anyhow::Result<()> {
+        let mut file = NamedTempFile::new()?;
+        for i in 0..5 {
+            writeln!(file, "line {}", i)?;
+        }
+        let path = file.path().to_str().unwrap();
+
+        let analyzer = setup_analyzer();
+        let count = analyzer.ingest_file_chunk(path, 0, 100)?;
+        assert_eq!(count, 5);
+
+        // Past end returns 0
+        let count2 = analyzer.ingest_file_chunk(path, 5, 100)?;
+        assert_eq!(count2, 0);
+        Ok(())
     }
 }

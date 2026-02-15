@@ -41,8 +41,16 @@ fn main() -> anyhow::Result<()> {
     // Always clear logs from previous sessions - only filters are persisted
     analyzer.clear_logs();
 
+    const INITIAL_CHUNK: usize = 200;
+
+    let mut pending_file: Option<(String, usize)> = None;
+
     if let Some(ref path) = file_path {
-        analyzer.ingest_file(path)?;
+        let loaded = analyzer.ingest_file_chunk(path, 0, INITIAL_CHUNK)?;
+        if loaded == INITIAL_CHUNK {
+            // There may be more lines to load
+            pending_file = Some((path.clone(), loaded));
+        }
     } else if !stdin().is_terminal() {
         analyzer.ingest_reader(stdin())?;
     }
@@ -54,6 +62,9 @@ fn main() -> anyhow::Result<()> {
         terminal.clear()?;
 
         let mut app = App::new(analyzer, Theme::default());
+        if let Some((path, lines_loaded)) = pending_file {
+            app.start_background_loading(path, lines_loaded);
+        }
         let app_result = app.run(&mut terminal);
 
         disable_raw_mode()?;
