@@ -23,8 +23,8 @@ struct CommandInfo {
 const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "filter",
-        usage: "filter [--fg <color>] [--bg <color>] <pattern>",
-        description: "Add an include filter. e.g. filter --fg Red error",
+        usage: "filter [-m] [--fg <color>] [--bg <color>] <pattern>",
+        description: "Add an include filter. -m colors match only. e.g. filter -m --fg Red error",
     },
     CommandInfo {
         name: "exclude",
@@ -33,8 +33,8 @@ const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "set-color",
-        usage: "set-color --fg <color> --bg <color>",
-        description: "Set color for the selected filter. e.g. set-color --fg Green --bg Black",
+        usage: "set-color [-m] --fg <color> --bg <color>",
+        description: "Set color for the selected filter. -m colors match only. e.g. set-color --fg Green",
     },
     CommandInfo {
         name: "export-marked",
@@ -104,6 +104,67 @@ fn find_command_completions(prefix: &str) -> Vec<&'static str> {
         .iter()
         .filter(|c| c.name.starts_with(trimmed))
         .map(|c| c.name)
+        .collect()
+}
+
+const COLOR_NAMES: &[&str] = &[
+    "Black",
+    "Red",
+    "Green",
+    "Yellow",
+    "Blue",
+    "Magenta",
+    "Cyan",
+    "Gray",
+    "DarkGray",
+    "LightRed",
+    "LightGreen",
+    "LightYellow",
+    "LightBlue",
+    "LightMagenta",
+    "LightCyan",
+    "White",
+    "Reset",
+];
+
+/// If the input ends with `--fg <partial>` or `--bg <partial>`, returns the partial color prefix.
+/// Works for commands that accept color flags (filter, set-color).
+fn extract_color_partial(input: &str) -> Option<&str> {
+    let color_commands = ["filter", "set-color"];
+    let trimmed = input.trim();
+    let cmd = trimmed.split_whitespace().next().unwrap_or("");
+    if !color_commands.iter().any(|c| *c == cmd) {
+        return None;
+    }
+
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    // Check if the last complete flag is --fg or --bg
+    let last = tokens[tokens.len() - 1];
+    let second_last = tokens[tokens.len() - 2];
+
+    if second_last == "--fg" || second_last == "--bg" {
+        // User is typing a color value
+        return Some(last);
+    }
+
+    // Cursor right after --fg or --bg with no value yet
+    if (last == "--fg" || last == "--bg") && input.ends_with(' ') {
+        return Some("");
+    }
+
+    None
+}
+
+fn complete_color(partial: &str) -> Vec<&'static str> {
+    let lower = partial.to_lowercase();
+    COLOR_NAMES
+        .iter()
+        .filter(|c| c.to_lowercase().starts_with(&lower))
+        .copied()
         .collect()
 }
 
@@ -241,6 +302,7 @@ pub struct TabState {
     pub command_error: Option<String>,
     pub level_colors: bool,
     pub filter_context: Option<usize>,
+    pub editing_filter_id: Option<usize>,
     pub visible_height: usize,
     pub title: String,
     pub(crate) cached_logs: Vec<LogEntry>,
@@ -272,6 +334,7 @@ impl TabState {
             command_error: None,
             level_colors: true,
             filter_context: None,
+            editing_filter_id: None,
             visible_height: 0,
             title,
             cached_logs: Vec::new(),
@@ -467,14 +530,47 @@ impl TabState {
                         }
                     }
                 }
+                KeyCode::Char('K') => {
+                    let filters = self.analyzer.get_filters();
+                    if let Some(filter) = filters.get(*selected_filter_index) {
+                        self.analyzer.move_filter_up(filter.id);
+                        *selected_filter_index = selected_filter_index.saturating_sub(1);
+                        self.filters_dirty = true;
+                    }
+                }
+                KeyCode::Char('J') => {
+                    let filters = self.analyzer.get_filters();
+                    if let Some(filter) = filters.get(*selected_filter_index) {
+                        self.analyzer.move_filter_down(filter.id);
+                        let new_filters = self.analyzer.get_filters();
+                        if *selected_filter_index + 1 < new_filters.len() {
+                            *selected_filter_index += 1;
+                        }
+                        self.filters_dirty = true;
+                    }
+                }
                 KeyCode::Char('e') => {
                     let filters = self.analyzer.get_filters();
                     if let Some(filter) = filters.get(*selected_filter_index) {
-                        let mut cmd = String::from("filter");
-                        if filter.filter_type == FilterType::Include
-                            && let Some(cfg) = &filter.color_config
-                        {
-                            cmd.push_str(&format!(" --fg {:?} --bg {:?}", cfg.fg, cfg.bg));
+                        self.editing_filter_id = Some(filter.id);
+                        self.filter_context = Some(*selected_filter_index);
+                        let mut cmd = if filter.filter_type == FilterType::Include {
+                            String::from("filter")
+                        } else {
+                            String::from("exclude")
+                        };
+                        if filter.filter_type == FilterType::Include {
+                            if let Some(cfg) = &filter.color_config {
+                                if let Some(fg) = cfg.fg {
+                                    cmd.push_str(&format!(" --fg {:?}", fg));
+                                }
+                                if let Some(bg) = cfg.bg {
+                                    cmd.push_str(&format!(" --bg {:?}", bg));
+                                }
+                                if cfg.match_only {
+                                    cmd.push_str(" -m");
+                                }
+                            }
                         }
                         cmd.push(' ');
                         cmd.push_str(&filter.pattern);
@@ -616,7 +712,7 @@ impl TabState {
                 "[COMMAND] filter | exclude | set-color | export-marked | save-filters | load-filters | wrap | set-theme | level-colors | open | close-tab | Esc | Enter".to_string()
             },
             AppMode::FilterManagement { .. } => {
-                "[FILTER] [i]nclude | e[x]clude | Space => toggle | [d]elete | [e]dit | set [c]olor | Esc => normal mode".to_string()
+                "[FILTER] [i]nclude | e[x]clude | Space => toggle | [d]elete | [e]dit | set [c]olor | [J/K] move down/up | Esc => normal mode".to_string()
             },
             AppMode::FilterEdit { .. } => {
                 "[FILTER EDIT] Esc => cancel | Enter => save".to_string()
@@ -1217,6 +1313,7 @@ impl App {
                     *history_index = None;
                 }
                 tab.filter_context = None;
+                tab.editing_filter_id = None;
                 tab.mode = AppMode::Normal;
             }
             KeyCode::Backspace => {
@@ -1312,6 +1409,28 @@ impl App {
                 let tab = &mut self.tabs[self.active_tab];
                 if let AppMode::Command { input, .. } = &mut tab.mode {
                     let trimmed = input.trim().to_string();
+
+                    // Color completion for --fg/--bg arguments
+                    if let Some(partial) = extract_color_partial(&trimmed) {
+                        let completions = complete_color(partial);
+                        if !completions.is_empty() {
+                            let tab = &mut self.tabs[self.active_tab];
+                            let idx = tab.tab_completion_index.unwrap_or(0) % completions.len();
+                            let color_name = completions[idx];
+                            // Replace the partial color value in the input
+                            let prefix = if partial.is_empty() {
+                                trimmed.clone()
+                            } else {
+                                trimmed[..trimmed.len() - partial.len()].to_string()
+                            };
+                            if let AppMode::Command { input, cursor, .. } = &mut tab.mode {
+                                *input = format!("{}{}", prefix, color_name);
+                                *cursor = input.len();
+                            }
+                            tab.tab_completion_index = Some(idx + 1);
+                            return;
+                        }
+                    }
 
                     // Commands that take a file path argument
                     let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
@@ -1529,14 +1648,33 @@ impl App {
                 let filter_color = get_matching_filter_color(&display, &filters);
 
                 let mut base_style = Style::default().fg(theme.text);
-                if let Some((fg, bg)) = filter_color {
-                    if let Some(fg) = fg {
-                        base_style = base_style.fg(fg);
+                let mut filter_match_style: Option<Style> = None;
+                let filter_spans_storage;
+
+                if let Some(ref fcm) = filter_color {
+                    if fcm.match_only {
+                        let mut ms = Style::default().fg(theme.text);
+                        if let Some(fg) = fcm.fg {
+                            ms = ms.fg(fg);
+                        }
+                        if let Some(bg) = fcm.bg {
+                            ms = ms.bg(bg);
+                        }
+                        filter_match_style = Some(ms);
+                        filter_spans_storage = fcm.match_spans.clone();
+                    } else {
+                        if let Some(fg) = fcm.fg {
+                            base_style = base_style.fg(fg);
+                        }
+                        if let Some(bg) = fcm.bg {
+                            base_style = base_style.bg(bg);
+                        }
+                        filter_spans_storage = Vec::new();
                     }
-                    if let Some(bg) = bg {
-                        base_style = base_style.bg(bg);
-                    }
+                } else {
+                    filter_spans_storage = Vec::new();
                 }
+
                 if level_colors {
                     match log.level {
                         LogLevel::Error => {
@@ -1569,6 +1707,8 @@ impl App {
                     highlight_style,
                     search_match.map(|r| r.matches.as_slice()),
                     process_segment,
+                    filter_match_style,
+                    &filter_spans_storage,
                 );
 
                 Line::from(spans).style(render_style)
@@ -1659,6 +1799,27 @@ impl App {
                 let error_paragraph = Paragraph::new(err.as_str())
                     .style(Style::default().fg(Color::Red).bg(self.theme.root_bg));
                 frame.render_widget(error_paragraph, hint_area);
+            } else if let Some(partial) = extract_color_partial(input_text) {
+                // Show color completions for --fg/--bg arguments
+                let completions = complete_color(partial);
+                if !completions.is_empty() {
+                    let hint_spans: Vec<Span> = completions
+                        .iter()
+                        .flat_map(|name| {
+                            let color = name.parse::<Color>().unwrap_or(Color::White);
+                            vec![
+                                Span::styled(
+                                    format!(" {} ", name),
+                                    Style::default().fg(color).bg(self.theme.root_bg),
+                                ),
+                                Span::raw(" "),
+                            ]
+                        })
+                        .collect();
+                    let hint = Paragraph::new(Line::from(hint_spans))
+                        .style(Style::default().bg(self.theme.root_bg));
+                    frame.render_widget(hint, hint_area);
+                }
             } else {
                 // Check if we're in a file-path command to show file completions
                 let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
@@ -1809,27 +1970,35 @@ impl App {
             }
         };
         match args.command {
-            Some(Commands::Filter { pattern, fg, bg }) => {
+            Some(Commands::Filter { pattern, fg, bg, m }) => {
+                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
+                    self.tabs[self.active_tab].analyzer.remove_filter(old_id);
+                }
                 self.tabs[self.active_tab].analyzer.add_filter_with_color(
                     pattern,
                     FilterType::Include,
                     fg.as_deref(),
                     bg.as_deref(),
+                    m,
                 );
                 self.tabs[self.active_tab].scroll_offset = 0;
                 self.tabs[self.active_tab].filters_dirty = true;
             }
             Some(Commands::Exclude { pattern }) => {
+                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
+                    self.tabs[self.active_tab].analyzer.remove_filter(old_id);
+                }
                 self.tabs[self.active_tab].analyzer.add_filter_with_color(
                     pattern,
                     FilterType::Exclude,
                     None,
                     None,
+                    false,
                 );
                 self.tabs[self.active_tab].scroll_offset = 0;
                 self.tabs[self.active_tab].filters_dirty = true;
             }
-            Some(Commands::SetColor { fg, bg }) => {
+            Some(Commands::SetColor { fg, bg, m }) => {
                 let selected_filter_index = self.tabs[self.active_tab].filter_context.unwrap_or(0);
                 let filters = self.tabs[self.active_tab].analyzer.get_filters();
                 if let Some(filter) = filters.get(selected_filter_index)
@@ -1840,6 +2009,7 @@ impl App {
                         &pattern,
                         fg.as_deref(),
                         bg.as_deref(),
+                        m,
                     );
                     self.tabs[self.active_tab].filters_dirty = true;
                 }
@@ -1920,76 +2090,89 @@ fn build_highlighted_spans<'a>(
     highlight_style: Style,
     search_matches: Option<&[(usize, usize)]>,
     process_segment: Option<(usize, usize, Color)>,
+    filter_match_style: Option<Style>,
+    filter_match_spans: &[(usize, usize)],
 ) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
     let mut pos = 0;
 
-    // Merge search matches into a sorted list of (start, end, is_highlight)
-    // We iterate character by character through segments
-    let matches = search_matches.unwrap_or(&[]);
+    let search = search_matches.unwrap_or(&[]);
+
+    /// Determine the style for a position, considering filter match-only highlighting.
+    fn style_at(
+        pos: usize,
+        base: Style,
+        process_segment: Option<(usize, usize, Color)>,
+        filter_match_style: Option<Style>,
+        filter_spans: &[(usize, usize)],
+    ) -> Style {
+        // Filter match-only takes precedence over process color
+        if let Some(fms) = filter_match_style {
+            if filter_spans.iter().any(|&(s, e)| s <= pos && pos < e) {
+                return fms;
+            }
+        }
+        if let Some((ps, pe, color)) = process_segment {
+            if pos >= ps && pos < pe {
+                return base.fg(color);
+            }
+        }
+        base
+    }
 
     while pos < display.len() {
         // Check if we're at a search match boundary
-        if let Some(&(m_start, m_end)) = matches.iter().find(|&&(s, e)| s <= pos && pos < e) {
-            let segment = &display[m_start.max(pos)..m_end];
+        if let Some(&(_, m_end)) = search.iter().find(|&&(s, e)| s <= pos && pos < e) {
+            let segment = &display[pos..m_end];
             spans.push(Span::styled(segment.to_string(), highlight_style));
             pos = m_end;
             continue;
         }
 
-        // Find the next search match start
-        let next_match_start = matches
-            .iter()
-            .filter(|&&(s, _)| s > pos)
-            .map(|&(s, _)| s)
-            .min()
-            .unwrap_or(display.len());
+        // Collect all boundary points ahead of pos
+        let mut boundaries: Vec<usize> = Vec::new();
 
-        // Emit text from pos to next_match_start, applying process color if in range
-        let end = next_match_start;
+        // Next search match start
+        for &(s, _) in search.iter() {
+            if s > pos {
+                boundaries.push(s);
+                break;
+            }
+        }
+
+        // Filter match boundaries
+        for &(s, e) in filter_match_spans {
+            if s > pos {
+                boundaries.push(s);
+            }
+            if e > pos {
+                boundaries.push(e);
+            }
+        }
+
+        // Process segment boundaries
+        if let Some((ps, pe, _)) = process_segment {
+            if ps > pos {
+                boundaries.push(ps);
+            }
+            if pe > pos {
+                boundaries.push(pe);
+            }
+        }
+
+        let end = boundaries.into_iter().min().unwrap_or(display.len());
         if pos >= end {
+            // Emit remaining
+            if pos < display.len() {
+                let s = style_at(pos, base_style, process_segment, filter_match_style, filter_match_spans);
+                spans.push(Span::styled(display[pos..].to_string(), s));
+            }
             break;
         }
 
-        if let Some((ps, pe, color)) = process_segment {
-            // Split around the process segment if it overlaps
-            if pos < ps && end > pos {
-                let seg_end = ps.min(end);
-                if seg_end > pos {
-                    spans.push(Span::styled(display[pos..seg_end].to_string(), base_style));
-                }
-                pos = seg_end;
-                if pos < pe && pos < end {
-                    let seg_end = pe.min(end);
-                    spans.push(Span::styled(
-                        display[pos..seg_end].to_string(),
-                        base_style.fg(color),
-                    ));
-                    pos = seg_end;
-                }
-                if pos < end {
-                    spans.push(Span::styled(display[pos..end].to_string(), base_style));
-                    pos = end;
-                }
-            } else if pos >= ps && pos < pe {
-                let seg_end = pe.min(end);
-                spans.push(Span::styled(
-                    display[pos..seg_end].to_string(),
-                    base_style.fg(color),
-                ));
-                pos = seg_end;
-                if pos < end {
-                    spans.push(Span::styled(display[pos..end].to_string(), base_style));
-                    pos = end;
-                }
-            } else {
-                spans.push(Span::styled(display[pos..end].to_string(), base_style));
-                pos = end;
-            }
-        } else {
-            spans.push(Span::styled(display[pos..end].to_string(), base_style));
-            pos = end;
-        }
+        let s = style_at(pos, base_style, process_segment, filter_match_style, filter_match_spans);
+        spans.push(Span::styled(display[pos..end].to_string(), s));
+        pos = end;
     }
 
     spans
@@ -2013,19 +2196,44 @@ fn get_process_color(
 }
 
 /// Returns the (fg, bg) color from the first matching Include filter with a color config.
+struct FilterColorMatch {
+    fg: Option<Color>,
+    bg: Option<Color>,
+    match_only: bool,
+    /// Match spans (start, end) when match_only is true.
+    match_spans: Vec<(usize, usize)>,
+}
+
 fn get_matching_filter_color(
     display_line: &str,
     filters: &[crate::analyzer::Filter],
-) -> Option<(Option<Color>, Option<Color>)> {
+) -> Option<FilterColorMatch> {
     for filter in filters {
         if filter.filter_type == FilterType::Include
             && filter.enabled
             && filter.color_config.is_some()
             && let Ok(re) = regex::Regex::new(&filter.pattern)
-            && re.is_match(display_line)
         {
             let cc = filter.color_config.as_ref().unwrap();
-            return Some((cc.fg, cc.bg));
+            if cc.match_only {
+                let spans: Vec<(usize, usize)> =
+                    re.find_iter(display_line).map(|m| (m.start(), m.end())).collect();
+                if !spans.is_empty() {
+                    return Some(FilterColorMatch {
+                        fg: cc.fg,
+                        bg: cc.bg,
+                        match_only: true,
+                        match_spans: spans,
+                    });
+                }
+            } else if re.is_match(display_line) {
+                return Some(FilterColorMatch {
+                    fg: cc.fg,
+                    bg: cc.bg,
+                    match_only: false,
+                    match_spans: Vec::new(),
+                });
+            }
         }
     }
     None
@@ -2593,7 +2801,7 @@ mod tests {
     fn test_build_highlighted_spans_no_matches() {
         let base = Style::default().fg(Color::White);
         let hl = Style::default().fg(Color::Black).bg(Color::Yellow);
-        let spans = super::build_highlighted_spans("hello world", base, hl, None, None);
+        let spans = super::build_highlighted_spans("hello world", base, hl, None, None, None, &[]);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].content, "hello world");
     }
@@ -2603,7 +2811,7 @@ mod tests {
         let base = Style::default().fg(Color::White);
         let hl = Style::default().fg(Color::Black).bg(Color::Yellow);
         let matches = vec![(6, 11)]; // "world"
-        let spans = super::build_highlighted_spans("hello world", base, hl, Some(&matches), None);
+        let spans = super::build_highlighted_spans("hello world", base, hl, Some(&matches), None, None, &[]);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, "hello ");
         assert_eq!(spans[1].content, "world");
@@ -2617,7 +2825,7 @@ mod tests {
         // "myhost nginx: 200 OK" -> process segment at "nginx: " (7..15)
         let process_seg = Some((7, 15, Color::Green));
         let spans =
-            super::build_highlighted_spans("myhost nginx: 200 OK", base, hl, None, process_seg);
+            super::build_highlighted_spans("myhost nginx: 200 OK", base, hl, None, process_seg, None, &[]);
         // Should have: "myhost " (base), "nginx: " (green), "200 OK" (base)
         assert!(spans.len() >= 3);
         let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
@@ -2640,6 +2848,8 @@ mod tests {
             hl,
             Some(&matches),
             process_seg,
+            None,
+            &[],
         );
         let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts.join(""), "myhost nginx: 200 OK");
@@ -2822,7 +3032,7 @@ mod tests {
             .fg(Color::Rgb(255, 184, 108))
             .add_modifier(Modifier::BOLD);
         let hl = Style::default().fg(Color::Black).bg(Color::Yellow);
-        let spans = super::build_highlighted_spans("marked line text", base_marked, hl, None, None);
+        let spans = super::build_highlighted_spans("marked line text", base_marked, hl, None, None, None, &[]);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].style, base_marked);
     }
@@ -2877,7 +3087,7 @@ mod tests {
         let error_fg = theme.error_fg;
         let base = Style::default().fg(error_fg);
         let hl = Style::default().fg(Color::Black).bg(Color::Yellow);
-        let spans = super::build_highlighted_spans("ERROR something failed", base, hl, None, None);
+        let spans = super::build_highlighted_spans("ERROR something failed", base, hl, None, None, None, &[]);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].style.fg, Some(error_fg));
     }
@@ -2888,7 +3098,7 @@ mod tests {
         let warning_fg = theme.warning_fg;
         let base = Style::default().fg(warning_fg);
         let hl = Style::default().fg(Color::Black).bg(Color::Yellow);
-        let spans = super::build_highlighted_spans("WARN something happened", base, hl, None, None);
+        let spans = super::build_highlighted_spans("WARN something happened", base, hl, None, None, None, &[]);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].style.fg, Some(warning_fg));
     }
@@ -2913,7 +3123,7 @@ mod tests {
             .add_modifier(Modifier::BOLD);
         let hl = Style::default().fg(Color::Black).bg(Color::Yellow);
         let spans =
-            super::build_highlighted_spans("ERROR critical failure", base_marked, hl, None, None);
+            super::build_highlighted_spans("ERROR critical failure", base_marked, hl, None, None, None, &[]);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].style.fg, Some(theme.text_highlight));
         assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));

@@ -16,6 +16,9 @@ pub enum Commands {
         fg: Option<String>,
         #[arg(long)]
         bg: Option<String>,
+        /// Apply color only to the matched text instead of the whole line
+        #[arg(short)]
+        m: bool,
     },
     /// Add an exclude filter
     Exclude { pattern: String },
@@ -25,6 +28,9 @@ pub enum Commands {
         fg: Option<String>,
         #[arg(long)]
         bg: Option<String>,
+        /// Apply color only to the matched text instead of the whole line
+        #[arg(short)]
+        m: bool,
     },
     /// Export marked logs
     ExportMarked { path: String },

@@ -12,7 +12,7 @@ use std::io::{IsTerminal, stdin, stdout};
 use std::sync::Arc;
 use tracing_appender::rolling;
 
-use tracing::{error, info, warn};
+use tracing::error;
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Parser, Debug)]
@@ -40,8 +40,11 @@ fn main() -> anyhow::Result<()> {
 
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let subscriber = fmt().with_env_filter(env_filter);
-    subscriber.json().init();
+    fmt()
+        .with_env_filter(env_filter)
+        .with_writer(non_blocking)
+        .json()
+        .init();
 
     let rt = Arc::new(tokio::runtime::Runtime::new()?);
     let db_path = get_db_path();

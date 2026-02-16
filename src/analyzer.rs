@@ -184,6 +184,8 @@ pub struct ColorConfig {
     pub fg: Option<Color>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub bg: Option<Color>,
+    #[serde(default)]
+    pub match_only: bool,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -437,15 +439,17 @@ impl LogAnalyzer {
         filter_type: FilterType,
         fg: Option<&str>,
         bg: Option<&str>,
+        match_only: bool,
     ) {
         let color_config = match filter_type {
             FilterType::Include => {
                 let fg_color = fg.and_then(|s| self.parse_color(s));
                 let bg_color = bg.and_then(|s| self.parse_color(s));
-                if fg_color.is_some() || bg_color.is_some() {
+                if fg_color.is_some() || bg_color.is_some() || match_only {
                     Some(ColorConfig {
                         fg: fg_color,
                         bg: bg_color,
+                        match_only,
                     })
                 } else {
                     None
@@ -547,10 +551,16 @@ impl LogAnalyzer {
         Ok(())
     }
 
-    pub fn set_color_config(&self, pattern: &str, fg: Option<&str>, bg: Option<&str>) {
+    pub fn set_color_config(
+        &self,
+        pattern: &str,
+        fg: Option<&str>,
+        bg: Option<&str>,
+        match_only: bool,
+    ) {
         let fg_color = fg.and_then(|s| self.parse_color(s));
         let bg_color = bg.and_then(|s| self.parse_color(s));
-        if fg_color.is_none() && bg_color.is_none() {
+        if fg_color.is_none() && bg_color.is_none() && !match_only {
             return;
         }
         let filters = self.get_filters();
@@ -561,6 +571,7 @@ impl LogAnalyzer {
             let cc = ColorConfig {
                 fg: fg_color,
                 bg: bg_color,
+                match_only,
             };
             let _ = self
                 .rt

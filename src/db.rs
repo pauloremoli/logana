@@ -140,7 +140,8 @@ impl Database {
                 fg_color TEXT,
                 bg_color TEXT,
                 display_order INTEGER NOT NULL DEFAULT 0,
-                source_file TEXT NOT NULL DEFAULT ''
+                source_file TEXT NOT NULL DEFAULT '',
+                match_only INTEGER NOT NULL DEFAULT 0
             )",
         )
         .execute(&self.pool)
@@ -150,6 +151,12 @@ impl Database {
         let _ = sqlx::query("ALTER TABLE filters ADD COLUMN source_file TEXT NOT NULL DEFAULT ''")
             .execute(&self.pool)
             .await;
+
+        // Migration: add match_only column if it doesn't exist (for existing databases)
+        let _ =
+            sqlx::query("ALTER TABLE filters ADD COLUMN match_only INTEGER NOT NULL DEFAULT 0")
+                .execute(&self.pool)
+                .await;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS file_context (
@@ -244,12 +251,14 @@ fn row_to_log_entry(row: &sqlx::sqlite::SqliteRow) -> LogEntry {
 fn row_to_filter(row: &sqlx::sqlite::SqliteRow) -> Filter {
     let fg_str: Option<String> = row.get("fg_color");
     let bg_str: Option<String> = row.get("bg_color");
+    let match_only = row.get::<i32, _>("match_only") != 0;
 
     let color_config = match (fg_str, bg_str) {
-        (None, None) => None,
+        (None, None) if !match_only => None,
         (fg, bg) => Some(ColorConfig {
             fg: fg.and_then(|s| s.parse().ok()),
             bg: bg.and_then(|s| s.parse().ok()),
+            match_only,
         }),
     };
 
@@ -380,14 +389,18 @@ impl FilterStore for Database {
 
         let next_order = max_order.unwrap_or(-1) + 1;
 
-        let (fg, bg) = match color_config {
-            Some(cc) => (cc.fg.map(|c| c.to_string()), cc.bg.map(|c| c.to_string())),
-            None => (None, None),
+        let (fg, bg, match_only) = match color_config {
+            Some(cc) => (
+                cc.fg.map(|c| c.to_string()),
+                cc.bg.map(|c| c.to_string()),
+                cc.match_only,
+            ),
+            None => (None, None, false),
         };
 
         let result = sqlx::query(
-            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(pattern)
         .bind(filter_type_to_str(filter_type))
@@ -396,6 +409,7 @@ impl FilterStore for Database {
         .bind(&bg)
         .bind(next_order)
         .bind(source)
+        .bind(match_only as i32)
         .execute(&self.pool)
         .await?;
 
@@ -430,14 +444,19 @@ impl FilterStore for Database {
     }
 
     async fn update_filter_color(&self, id: i64, color_config: Option<&ColorConfig>) -> Result<()> {
-        let (fg, bg) = match color_config {
-            Some(cc) => (cc.fg.map(|c| c.to_string()), cc.bg.map(|c| c.to_string())),
-            None => (None, None),
+        let (fg, bg, match_only) = match color_config {
+            Some(cc) => (
+                cc.fg.map(|c| c.to_string()),
+                cc.bg.map(|c| c.to_string()),
+                cc.match_only,
+            ),
+            None => (None, None, false),
         };
 
-        sqlx::query("UPDATE filters SET fg_color = ?, bg_color = ? WHERE id = ?")
+        sqlx::query("UPDATE filters SET fg_color = ?, bg_color = ?, match_only = ? WHERE id = ?")
             .bind(&fg)
             .bind(&bg)
+            .bind(match_only as i32)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -517,14 +536,18 @@ impl FilterStore for Database {
             .await?;
 
         for (order, filter) in filters.iter().enumerate() {
-            let (fg, bg) = match &filter.color_config {
-                Some(cc) => (cc.fg.map(|c| c.to_string()), cc.bg.map(|c| c.to_string())),
-                None => (None, None),
+            let (fg, bg, match_only) = match &filter.color_config {
+                Some(cc) => (
+                    cc.fg.map(|c| c.to_string()),
+                    cc.bg.map(|c| c.to_string()),
+                    cc.match_only,
+                ),
+                None => (None, None, false),
             };
 
             sqlx::query(
-                "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&filter.pattern)
             .bind(filter_type_to_str(&filter.filter_type))
@@ -533,6 +556,7 @@ impl FilterStore for Database {
             .bind(&bg)
             .bind(order as i64)
             .bind(source)
+            .bind(match_only as i32)
             .execute(&mut *tx)
             .await?;
         }
@@ -805,6 +829,7 @@ mod tests {
         let color = ColorConfig {
             fg: Some(ratatui::style::Color::Red),
             bg: Some(ratatui::style::Color::Blue),
+            match_only: false,
         };
 
         db.insert_filter("error", &FilterType::Include, true, Some(&color), None)
@@ -829,6 +854,7 @@ mod tests {
         let color = ColorConfig {
             fg: Some(ratatui::style::Color::Green),
             bg: None,
+            match_only: false,
         };
         db.update_filter_color(id, Some(&color)).await.unwrap();
 
