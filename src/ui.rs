@@ -116,25 +116,26 @@ fn complete_file_path(partial: &str) -> Vec<String> {
     let path = Path::new(partial);
 
     // Determine the directory to list and the prefix to match within it
-    let (dir, name_prefix) = if partial.ends_with('/') || partial.ends_with(std::path::MAIN_SEPARATOR) {
-        // User typed "somedir/" — list contents of that directory
-        (path.to_path_buf(), String::new())
-    } else if let Some(parent) = path.parent() {
-        let prefix = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-        let dir = if parent.as_os_str().is_empty() {
-            Path::new(".").to_path_buf()
+    let (dir, name_prefix) =
+        if partial.ends_with('/') || partial.ends_with(std::path::MAIN_SEPARATOR) {
+            // User typed "somedir/" — list contents of that directory
+            (path.to_path_buf(), String::new())
+        } else if let Some(parent) = path.parent() {
+            let prefix = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let dir = if parent.as_os_str().is_empty() {
+                Path::new(".").to_path_buf()
+            } else {
+                parent.to_path_buf()
+            };
+            (dir, prefix)
         } else {
-            parent.to_path_buf()
+            // No parent — list current directory
+            (Path::new(".").to_path_buf(), partial.to_string())
         };
-        (dir, prefix)
-    } else {
-        // No parent — list current directory
-        (Path::new(".").to_path_buf(), partial.to_string())
-    };
 
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -378,8 +379,7 @@ impl TabState {
                     let new_marked = !log.marked;
 
                     // Optimistic update: toggle in both caches immediately
-                    if let Some(entry) = self.cached_filtered_logs.iter_mut().find(|e| e.id == id)
-                    {
+                    if let Some(entry) = self.cached_filtered_logs.iter_mut().find(|e| e.id == id) {
                         entry.marked = new_marked;
                     }
                     if let Some(entry) = self.cached_logs.iter_mut().find(|e| e.id == id) {
@@ -491,14 +491,15 @@ impl TabState {
                         let mut cmd = String::from("set-color");
                         let filters = self.analyzer.get_filters();
                         if let Some(filter) = filters.get(self.filter_context.unwrap_or(0))
-                            && let Some(cfg) = &filter.color_config {
-                                if let Some(fg) = cfg.fg {
-                                    cmd.push_str(&format!(" --fg {:?}", fg));
-                                }
-                                if let Some(bg) = cfg.bg {
-                                    cmd.push_str(&format!(" --bg {:?}", bg));
-                                }
+                            && let Some(cfg) = &filter.color_config
+                        {
+                            if let Some(fg) = cfg.fg {
+                                cmd.push_str(&format!(" --fg {:?}", fg));
                             }
+                            if let Some(bg) = cfg.bg {
+                                cmd.push_str(&format!(" --bg {:?}", bg));
+                            }
+                        }
                         let len = cmd.len();
                         self.mode = AppMode::Command {
                             input: cmd,
@@ -659,8 +660,8 @@ impl TabState {
             };
 
             let filters = db.get_filters().await.unwrap_or_default();
-            let filtered_logs = apply_filters_to_logs(&all_logs, &filters)
-                .unwrap_or_else(|_| all_logs.clone());
+            let filtered_logs =
+                apply_filters_to_logs(&all_logs, &filters).unwrap_or_else(|_| all_logs.clone());
 
             let _ = tx.send(CacheResult {
                 all_logs,
@@ -735,11 +736,9 @@ impl TabState {
     }
 
     pub fn start_background_loading(&mut self, path: String, lines_loaded: usize) {
-        let receiver = self.analyzer.start_file_stream(
-            path,
-            lines_loaded,
-            BACKGROUND_BATCH_SIZE,
-        );
+        let receiver = self
+            .analyzer
+            .start_file_stream(path, lines_loaded, BACKGROUND_BATCH_SIZE);
         self.background_loading = Some(BackgroundLoadState {
             receiver,
             lines_loaded,
@@ -788,7 +787,11 @@ impl TabState {
     }
 
     fn scroll_to_log_entry(&mut self, log_id: usize) {
-        if let Some(index) = self.cached_filtered_logs.iter().position(|e| e.id == log_id) {
+        if let Some(index) = self
+            .cached_filtered_logs
+            .iter()
+            .position(|e| e.id == log_id)
+        {
             self.scroll_offset = index;
         }
     }
@@ -821,11 +824,7 @@ impl TabState {
         Some(FileContext {
             source_file: source.to_string(),
             scroll_offset: self.scroll_offset,
-            search_query: self
-                .search
-                .get_pattern()
-                .unwrap_or_default()
-                .to_string(),
+            search_query: self.search.get_pattern().unwrap_or_default().to_string(),
             wrap: self.wrap,
             level_colors: self.level_colors,
             show_sidebar: self.show_sidebar,
@@ -1029,9 +1028,10 @@ impl App {
             terminal.draw(|frame| self.ui(frame))?;
 
             // Use a short poll timeout while async work is in progress
-            let has_async_work = self.tabs.iter().any(|t| {
-                t.background_loading.is_some() || t.cache_refresh_pending
-            });
+            let has_async_work = self
+                .tabs
+                .iter()
+                .any(|t| t.background_loading.is_some() || t.cache_refresh_pending);
             let poll_timeout = if has_async_work {
                 Duration::from_millis(16)
             } else {
@@ -1094,22 +1094,20 @@ impl App {
                     AppMode::Search { .. } => {
                         self.tabs[self.active_tab].handle_search_mode_key(key.code);
                     }
-                    AppMode::ConfirmRestore { .. } => {
-                        match key.code {
-                            KeyCode::Char('y') => {
-                                let tab = &mut self.tabs[self.active_tab];
-                                if let AppMode::ConfirmRestore { context } =
-                                    std::mem::replace(&mut tab.mode, AppMode::Normal)
-                                {
-                                    tab.apply_file_context(&context);
-                                }
+                    AppMode::ConfirmRestore { .. } => match key.code {
+                        KeyCode::Char('y') => {
+                            let tab = &mut self.tabs[self.active_tab];
+                            if let AppMode::ConfirmRestore { context } =
+                                std::mem::replace(&mut tab.mode, AppMode::Normal)
+                            {
+                                tab.apply_file_context(&context);
                             }
-                            KeyCode::Char('n') | KeyCode::Esc => {
-                                self.tabs[self.active_tab].mode = AppMode::Normal;
-                            }
-                            _ => {}
                         }
-                    }
+                        KeyCode::Char('n') | KeyCode::Esc => {
+                            self.tabs[self.active_tab].mode = AppMode::Normal;
+                        }
+                        _ => {}
+                    },
                 }
             }
 
@@ -1267,9 +1265,7 @@ impl App {
                     let trimmed = input.trim().to_string();
 
                     // Commands that take a file path argument
-                    let file_commands = [
-                        "open", "load-filters", "save-filters", "export-marked",
-                    ];
+                    let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
                     let file_cmd = file_commands
                         .iter()
                         .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
@@ -1304,8 +1300,7 @@ impl App {
                             *input = format!("set-theme {}", theme_name);
                             *cursor = input.len();
                         }
-                        tab.tab_completion_index =
-                            Some((idx + 1) % self.available_themes.len());
+                        tab.tab_completion_index = Some((idx + 1) % self.available_themes.len());
                         return;
                     }
 
@@ -1334,7 +1329,9 @@ impl App {
     pub fn handle_key_event_with_modifiers(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
         let mode = &self.tabs[self.active_tab].mode;
         match mode {
-            AppMode::Normal => self.tabs[self.active_tab].handle_normal_mode_key(key_code, modifiers),
+            AppMode::Normal => {
+                self.tabs[self.active_tab].handle_normal_mode_key(key_code, modifiers)
+            }
             AppMode::Command { .. } => self.handle_command_mode_key(key_code),
             AppMode::FilterManagement { .. } => {
                 self.tabs[self.active_tab].handle_filter_management_mode_key(key_code);
@@ -1510,13 +1507,9 @@ impl App {
                         .fg(theme.text_highlight)
                         .add_modifier(Modifier::BOLD);
                 }
-                let highlight_style = Style::default()
-                    .fg(Color::Black)
-                    .bg(theme.text_highlight);
+                let highlight_style = Style::default().fg(Color::Black).bg(theme.text_highlight);
 
-                let current_line_style = Style::default()
-                    .fg(theme.text)
-                    .bg(theme.border);
+                let current_line_style = Style::default().fg(theme.text).bg(theme.border);
 
                 let render_style = if is_current {
                     current_line_style
@@ -1560,17 +1553,15 @@ impl App {
         frame.render_widget(paragraph, logs_area);
 
         if let Some(sidebar_area) = sidebar_area {
-            let selected_idx = self.tabs[self.active_tab].get_selected_filter_index().unwrap_or(0);
+            let selected_idx = self.tabs[self.active_tab]
+                .get_selected_filter_index()
+                .unwrap_or(0);
             let filters_text: Vec<Line> = filters
                 .iter()
                 .enumerate()
                 .map(|(i, filter)| {
                     let status = if filter.enabled { "[x]" } else { "[ ]" };
-                    let selected_prefix = if i == selected_idx {
-                        ">"
-                    } else {
-                        " "
-                    };
+                    let selected_prefix = if i == selected_idx { ">" } else { " " };
                     let filter_type_str = match filter.filter_type {
                         FilterType::Include => "In",
                         FilterType::Exclude => "Out",
@@ -1641,25 +1632,41 @@ impl App {
                                 std::path::Path::new(c)
                                     .file_name()
                                     .and_then(|n| n.to_str())
-                                    .map(|n| if c.ends_with('/') { format!("{}/", n.trim_end_matches('/')) } else { n.to_string() })
+                                    .map(|n| {
+                                        if c.ends_with('/') {
+                                            format!("{}/", n.trim_end_matches('/'))
+                                        } else {
+                                            n.to_string()
+                                        }
+                                    })
                                     .unwrap_or_else(|| c.clone())
                             })
                             .collect::<Vec<_>>()
                             .join("  ");
-                        let hint = Paragraph::new(hint_text)
-                            .style(Style::default().fg(self.theme.border).bg(self.theme.root_bg));
+                        let hint = Paragraph::new(hint_text).style(
+                            Style::default()
+                                .fg(self.theme.border)
+                                .bg(self.theme.root_bg),
+                        );
                         frame.render_widget(hint, hint_area);
                     }
                 } else if let Some(cmd) = find_matching_command(input_text) {
                     let hint = Paragraph::new(format!("  {} - {}", cmd.usage, cmd.description))
-                        .style(Style::default().fg(self.theme.border).bg(self.theme.root_bg));
+                        .style(
+                            Style::default()
+                                .fg(self.theme.border)
+                                .bg(self.theme.root_bg),
+                        );
                     frame.render_widget(hint, hint_area);
                 } else {
                     let completions = find_command_completions(input_text.trim());
                     if !completions.is_empty() {
                         let hint_text = completions.join("  ");
-                        let hint = Paragraph::new(hint_text)
-                            .style(Style::default().fg(self.theme.border).bg(self.theme.root_bg));
+                        let hint = Paragraph::new(hint_text).style(
+                            Style::default()
+                                .fg(self.theme.border)
+                                .bg(self.theme.root_bg),
+                        );
                         frame.render_widget(hint, hint_area);
                     }
                 }
@@ -1686,18 +1693,23 @@ impl App {
             } else {
                 "  Type pattern and press Enter to search".to_string()
             };
-            let hint = Paragraph::new(hint_text)
-                .style(Style::default().fg(self.theme.border).bg(self.theme.root_bg));
+            let hint = Paragraph::new(hint_text).style(
+                Style::default()
+                    .fg(self.theme.border)
+                    .bg(self.theme.root_bg),
+            );
             frame.render_widget(hint, hint_area);
         }
 
-        if matches!(self.tabs[self.active_tab].mode, AppMode::ConfirmRestore { .. }) {
-            let confirm_line = Paragraph::new("Restore previous session? [y]es / [n]o")
-                .style(
-                    Style::default()
-                        .fg(self.theme.text_highlight)
-                        .bg(self.theme.border),
-                );
+        if matches!(
+            self.tabs[self.active_tab].mode,
+            AppMode::ConfirmRestore { .. }
+        ) {
+            let confirm_line = Paragraph::new("Restore previous session? [y]es / [n]o").style(
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .bg(self.theme.border),
+            );
             let confirm_area = chunks[chunk_idx];
             frame.render_widget(confirm_line, confirm_area);
         }
@@ -1727,8 +1739,7 @@ impl App {
         let args = match CommandLine::try_parse_from(input.split_whitespace()) {
             Ok(args) => args,
             Err(e) => {
-                self.tabs[self.active_tab].command_error =
-                    Some(format!("Invalid command: {}", e));
+                self.tabs[self.active_tab].command_error = Some(format!("Invalid command: {}", e));
                 return;
             }
         };
@@ -1744,23 +1755,27 @@ impl App {
                 self.tabs[self.active_tab].filters_dirty = true;
             }
             Some(Commands::Exclude { pattern }) => {
-                self.tabs[self.active_tab]
-                    .analyzer
-                    .add_filter_with_color(pattern, FilterType::Exclude, None, None);
+                self.tabs[self.active_tab].analyzer.add_filter_with_color(
+                    pattern,
+                    FilterType::Exclude,
+                    None,
+                    None,
+                );
                 self.tabs[self.active_tab].scroll_offset = 0;
                 self.tabs[self.active_tab].filters_dirty = true;
             }
             Some(Commands::SetColor { fg, bg }) => {
-                let selected_filter_index =
-                    self.tabs[self.active_tab].filter_context.unwrap_or(0);
+                let selected_filter_index = self.tabs[self.active_tab].filter_context.unwrap_or(0);
                 let filters = self.tabs[self.active_tab].analyzer.get_filters();
                 if let Some(filter) = filters.get(selected_filter_index)
                     && filter.filter_type == FilterType::Include
                 {
                     let pattern = filter.pattern.clone();
-                    self.tabs[self.active_tab]
-                        .analyzer
-                        .set_color_config(&pattern, fg.as_deref(), bg.as_deref());
+                    self.tabs[self.active_tab].analyzer.set_color_config(
+                        &pattern,
+                        fg.as_deref(),
+                        bg.as_deref(),
+                    );
                     self.tabs[self.active_tab].filters_dirty = true;
                 }
             }
@@ -1791,8 +1806,7 @@ impl App {
                 self.tabs[self.active_tab].wrap = !self.tabs[self.active_tab].wrap;
             }
             Some(Commands::LevelColors) => {
-                self.tabs[self.active_tab].level_colors =
-                    !self.tabs[self.active_tab].level_colors;
+                self.tabs[self.active_tab].level_colors = !self.tabs[self.active_tab].level_colors;
             }
             Some(Commands::SetTheme { theme_name }) => {
                 let theme_filename = format!("{}.json", theme_name.to_lowercase());
@@ -1877,10 +1891,7 @@ fn build_highlighted_spans<'a>(
             if pos < ps && end > pos {
                 let seg_end = ps.min(end);
                 if seg_end > pos {
-                    spans.push(Span::styled(
-                        display[pos..seg_end].to_string(),
-                        base_style,
-                    ));
+                    spans.push(Span::styled(display[pos..seg_end].to_string(), base_style));
                 }
                 pos = seg_end;
                 if pos < pe && pos < end {
@@ -1946,10 +1957,11 @@ fn get_matching_filter_color(
             && filter.enabled
             && filter.color_config.is_some()
             && let Ok(re) = regex::Regex::new(&filter.pattern)
-                && re.is_match(message) {
-                    let cc = filter.color_config.as_ref().unwrap();
-                    return Some((cc.fg, cc.bg));
-                }
+            && re.is_match(message)
+        {
+            let cc = filter.color_config.as_ref().unwrap();
+            return Some((cc.fg, cc.bg));
+        }
     }
     None
 }
@@ -1960,8 +1972,8 @@ mod tests {
     use crate::db::{Database, LogStore};
     use crate::ui::Theme;
     use crate::ui::{App, AppMode};
-    use ratatui::prelude::{Color, Modifier, Style};
     use crossterm::event::KeyCode;
+    use ratatui::prelude::{Color, Modifier, Style};
     use std::sync::Arc;
 
     fn mock_analyzer() -> LogAnalyzer {
@@ -2124,7 +2136,8 @@ mod tests {
             .analyzer
             .add_filter("bar".to_string(), FilterType::Exclude);
 
-        app.tab_mut().handle_filter_management_mode_key(KeyCode::Down);
+        app.tab_mut()
+            .handle_filter_management_mode_key(KeyCode::Down);
 
         match app.tab().mode {
             AppMode::FilterManagement {
@@ -2157,10 +2170,12 @@ mod tests {
             .add_filter("foo".to_string(), FilterType::Include);
         let filters = app.tab().analyzer.get_filters();
         assert!(filters[0].enabled);
-        app.tab_mut().handle_filter_management_mode_key(KeyCode::Char(' '));
+        app.tab_mut()
+            .handle_filter_management_mode_key(KeyCode::Char(' '));
         let filters = app.tab().analyzer.get_filters();
         assert!(!filters[0].enabled);
-        app.tab_mut().handle_filter_management_mode_key(KeyCode::Char('d'));
+        app.tab_mut()
+            .handle_filter_management_mode_key(KeyCode::Char('d'));
         let filters = app.tab().analyzer.get_filters();
         assert!(filters.is_empty());
     }
@@ -2174,7 +2189,8 @@ mod tests {
         app.tab_mut()
             .analyzer
             .add_filter("foo".to_string(), FilterType::Include);
-        app.tab_mut().handle_filter_management_mode_key(KeyCode::Char('e'));
+        app.tab_mut()
+            .handle_filter_management_mode_key(KeyCode::Char('e'));
         match &app.tab().mode {
             AppMode::Command { input, .. } => {
                 assert!(input.starts_with("filter"));
@@ -2522,8 +2538,7 @@ mod tests {
         let base = Style::default().fg(Color::White);
         let hl = Style::default().fg(Color::Black).bg(Color::Yellow);
         let matches = vec![(6, 11)]; // "world"
-        let spans =
-            super::build_highlighted_spans("hello world", base, hl, Some(&matches), None);
+        let spans = super::build_highlighted_spans("hello world", base, hl, Some(&matches), None);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, "hello ");
         assert_eq!(spans[1].content, "world");
@@ -2536,13 +2551,8 @@ mod tests {
         let hl = Style::default().fg(Color::Black).bg(Color::Yellow);
         // "myhost nginx: 200 OK" -> process segment at "nginx: " (7..15)
         let process_seg = Some((7, 15, Color::Green));
-        let spans = super::build_highlighted_spans(
-            "myhost nginx: 200 OK",
-            base,
-            hl,
-            None,
-            process_seg,
-        );
+        let spans =
+            super::build_highlighted_spans("myhost nginx: 200 OK", base, hl, None, process_seg);
         // Should have: "myhost " (base), "nginx: " (green), "200 OK" (base)
         assert!(spans.len() >= 3);
         let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
@@ -2747,8 +2757,7 @@ mod tests {
             .fg(Color::Rgb(255, 184, 108))
             .add_modifier(Modifier::BOLD);
         let hl = Style::default().fg(Color::Black).bg(Color::Yellow);
-        let spans =
-            super::build_highlighted_spans("marked line text", base_marked, hl, None, None);
+        let spans = super::build_highlighted_spans("marked line text", base_marked, hl, None, None);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].style, base_marked);
     }
@@ -2930,7 +2939,8 @@ mod tests {
     #[test]
     fn test_background_loading_completes_on_missing_file() {
         let mut app = App::new(mock_empty_analyzer(), Theme::default());
-        app.tab_mut().start_background_loading("/nonexistent/file.log".to_string(), 0);
+        app.tab_mut()
+            .start_background_loading("/nonexistent/file.log".to_string(), 0);
         std::thread::sleep(std::time::Duration::from_millis(50));
         app.tab_mut().process_background_loading();
         assert!(app.tab().background_loading.is_none());
@@ -2946,7 +2956,10 @@ mod tests {
         let path = file.path().to_str().unwrap().to_string();
 
         let mut app = App::new(mock_empty_analyzer(), Theme::default());
-        app.tab_mut().analyzer.ingest_file_chunk(&path, 0, 10).unwrap();
+        app.tab_mut()
+            .analyzer
+            .ingest_file_chunk(&path, 0, 10)
+            .unwrap();
         app.tab_mut().logs_dirty = true;
 
         app.tab_mut().start_background_loading(path, 10);

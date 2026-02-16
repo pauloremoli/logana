@@ -92,9 +92,9 @@ impl LogParser {
     pub fn parse(&self, id: usize, log_content: &str) -> LogEntry {
         for re in &self.regexes {
             if let Some(caps) = re.captures(log_content) {
-                let mut level = caps.name("level").map_or(LogLevel::Unknown, |m| {
-                    Self::parse_level_str(m.as_str())
-                });
+                let mut level = caps
+                    .name("level")
+                    .map_or(LogLevel::Unknown, |m| Self::parse_level_str(m.as_str()));
                 if level == LogLevel::Unknown {
                     level = Self::detect_level_from_content(log_content);
                 }
@@ -365,8 +365,7 @@ impl LogAnalyzer {
 
                 if batch.len() >= batch_size {
                     let count = batch.len();
-                    let to_insert =
-                        std::mem::replace(&mut batch, Vec::with_capacity(batch_size));
+                    let to_insert = std::mem::replace(&mut batch, Vec::with_capacity(batch_size));
                     if let Err(e) = rt.block_on(db.insert_logs_batch(&to_insert)) {
                         let _ = tx.send(Err(e.to_string()));
                         return;
@@ -444,7 +443,10 @@ impl LogAnalyzer {
                 let fg_color = fg.and_then(|s| self.parse_color(s));
                 let bg_color = bg.and_then(|s| self.parse_color(s));
                 if fg_color.is_some() || bg_color.is_some() {
-                    Some(ColorConfig { fg: fg_color, bg: bg_color })
+                    Some(ColorConfig {
+                        fg: fg_color,
+                        bg: bg_color,
+                    })
                 } else {
                     None
                 }
@@ -538,8 +540,10 @@ impl LogAnalyzer {
     pub fn load_filters(&self, path: &str) -> anyhow::Result<()> {
         let json = std::fs::read_to_string(path)?;
         let filters: Vec<Filter> = serde_json::from_str(&json)?;
-        self.rt
-            .block_on(self.db.replace_all_filters(&filters, self.source_file.as_deref()))?;
+        self.rt.block_on(
+            self.db
+                .replace_all_filters(&filters, self.source_file.as_deref()),
+        )?;
         Ok(())
     }
 
@@ -1418,16 +1422,10 @@ mod tests {
 
         // Syslog format where the regex captures a non-level word as "level",
         // but the message contains the actual level keyword
-        let entry = parser.parse(
-            0,
-            "Jun 28 10:00:03 myhost kernel: ERROR: something broke",
-        );
+        let entry = parser.parse(0, "Jun 28 10:00:03 myhost kernel: ERROR: something broke");
         assert_eq!(entry.level, LogLevel::Error);
 
-        let entry = parser.parse(
-            1,
-            "Jun 28 10:00:03 myhost app: WARNING: disk full",
-        );
+        let entry = parser.parse(1, "Jun 28 10:00:03 myhost app: WARNING: disk full");
         assert_eq!(entry.level, LogLevel::Warning);
     }
 

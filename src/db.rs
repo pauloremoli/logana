@@ -34,7 +34,11 @@ pub trait FilterStore: Send + Sync {
     async fn toggle_filter(&self, id: i64) -> Result<()>;
     async fn swap_filter_order(&self, id1: i64, id2: i64) -> Result<()>;
     async fn clear_filters(&self) -> Result<()>;
-    async fn replace_all_filters(&self, filters: &[Filter], source_file: Option<&str>) -> Result<()>;
+    async fn replace_all_filters(
+        &self,
+        filters: &[Filter],
+        source_file: Option<&str>,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -162,9 +166,11 @@ impl Database {
         .await?;
 
         // Migration: add marked_lines column if it doesn't exist (for existing databases)
-        let _ = sqlx::query("ALTER TABLE file_context ADD COLUMN marked_lines TEXT NOT NULL DEFAULT '[]'")
-            .execute(&self.pool)
-            .await;
+        let _ = sqlx::query(
+            "ALTER TABLE file_context ADD COLUMN marked_lines TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&self.pool)
+        .await;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_log_level ON log_entries(level)")
             .execute(&self.pool)
@@ -357,12 +363,13 @@ impl FilterStore for Database {
         source_file: Option<&str>,
     ) -> Result<i64> {
         let source = source_file.unwrap_or("");
-        let max_order: Option<i64> =
-            sqlx::query("SELECT MAX(display_order) as max_order FROM filters WHERE source_file = ?")
-                .bind(source)
-                .fetch_one(&self.pool)
-                .await?
-                .get("max_order");
+        let max_order: Option<i64> = sqlx::query(
+            "SELECT MAX(display_order) as max_order FROM filters WHERE source_file = ?",
+        )
+        .bind(source)
+        .fetch_one(&self.pool)
+        .await?
+        .get("max_order");
 
         let next_order = max_order.unwrap_or(-1) + 1;
 
@@ -397,10 +404,11 @@ impl FilterStore for Database {
     }
 
     async fn get_filters_for_source(&self, source_file: &str) -> Result<Vec<Filter>> {
-        let rows = sqlx::query("SELECT * FROM filters WHERE source_file = ? ORDER BY display_order")
-            .bind(source_file)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows =
+            sqlx::query("SELECT * FROM filters WHERE source_file = ? ORDER BY display_order")
+                .bind(source_file)
+                .fetch_all(&self.pool)
+                .await?;
 
         Ok(rows.iter().map(row_to_filter).collect())
     }
@@ -488,7 +496,11 @@ impl FilterStore for Database {
         Ok(())
     }
 
-    async fn replace_all_filters(&self, filters: &[Filter], source_file: Option<&str>) -> Result<()> {
+    async fn replace_all_filters(
+        &self,
+        filters: &[Filter],
+        source_file: Option<&str>,
+    ) -> Result<()> {
         let source = source_file.unwrap_or("");
         let mut tx = self.pool.begin().await?;
 
@@ -526,8 +538,8 @@ impl FilterStore for Database {
 #[async_trait]
 impl FileContextStore for Database {
     async fn save_file_context(&self, ctx: &FileContext) -> Result<()> {
-        let marked_json = serde_json::to_string(&ctx.marked_lines)
-            .unwrap_or_else(|_| "[]".to_string());
+        let marked_json =
+            serde_json::to_string(&ctx.marked_lines).unwrap_or_else(|_| "[]".to_string());
         sqlx::query(
             "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -564,8 +576,7 @@ impl FileContextStore for Database {
 
         Ok(row.map(|r| {
             let marked_json: String = r.get("marked_lines");
-            let marked_lines: Vec<usize> = serde_json::from_str(&marked_json)
-                .unwrap_or_default();
+            let marked_lines: Vec<usize> = serde_json::from_str(&marked_json).unwrap_or_default();
             FileContext {
                 source_file: r.get::<String, _>("source_file"),
                 scroll_offset: r.get::<i64, _>("scroll_offset") as usize,

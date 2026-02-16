@@ -126,8 +126,8 @@ impl<'de> serde::de::DeserializeSeed<'de> for ColorDeserializer {
 
 impl Theme {
     pub fn from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let config_path = dirs::config_dir()
-            .map(|d| d.join("logsmith-rs").join("themes").join(&path));
+        let config_path =
+            dirs::config_dir().map(|d| d.join("logsmith-rs").join("themes").join(&path));
         let local_path = Path::new("themes").join(&path);
 
         let data = if config_path.as_ref().is_some_and(|p| p.exists()) {
