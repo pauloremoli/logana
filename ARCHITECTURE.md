@@ -13,7 +13,7 @@ src/
   ui.rs           - Ratatui TUI (App, TabState, AppMode, rendering, keybindings)
   search.rs       - Regex search with match positions and navigation
   theme.rs        - JSON-based theme loading and color management
-  command_args.rs - Clap CLI argument parsing
+  commands.rs     - Commands that can be used to control the application
 tests/
   integration.rs  - End-to-end flows (ingestion, filtering, marks, persistence)
   stdin.rs        - Stdin reading tests

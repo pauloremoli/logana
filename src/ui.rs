@@ -490,8 +490,8 @@ impl TabState {
                         self.filter_context = Some(*selected_filter_index);
                         let mut cmd = String::from("set-color");
                         let filters = self.analyzer.get_filters();
-                        if let Some(filter) = filters.get(self.filter_context.unwrap_or(0)) {
-                            if let Some(cfg) = &filter.color_config {
+                        if let Some(filter) = filters.get(self.filter_context.unwrap_or(0))
+                            && let Some(cfg) = &filter.color_config {
                                 if let Some(fg) = cfg.fg {
                                     cmd.push_str(&format!(" --fg {:?}", fg));
                                 }
@@ -499,7 +499,6 @@ impl TabState {
                                     cmd.push_str(&format!(" --bg {:?}", bg));
                                 }
                             }
-                        }
                         let len = cmd.len();
                         self.mode = AppMode::Command {
                             input: cmd,
@@ -1719,7 +1718,7 @@ impl App {
     }
 
     fn handle_command(&mut self) {
-        use crate::command_args::{CommandLine, Commands};
+        use crate::commands::{CommandLine, Commands};
         use clap::Parser;
         let input = match &self.tabs[self.active_tab].mode {
             AppMode::Command { input, .. } => input.trim().to_string(),
@@ -1946,14 +1945,11 @@ fn get_matching_filter_color(
         if filter.filter_type == FilterType::Include
             && filter.enabled
             && filter.color_config.is_some()
-        {
-            if let Ok(re) = regex::Regex::new(&filter.pattern) {
-                if re.is_match(message) {
+            && let Ok(re) = regex::Regex::new(&filter.pattern)
+                && re.is_match(message) {
                     let cc = filter.color_config.as_ref().unwrap();
                     return Some((cc.fg, cc.bg));
                 }
-            }
-        }
     }
     None
 }
