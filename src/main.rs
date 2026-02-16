@@ -36,7 +36,10 @@ fn main() -> anyhow::Result<()> {
     let db = rt.block_on(Database::new(&db_path))?;
     let db = Arc::new(db);
 
-    let analyzer = LogAnalyzer::new(db.clone(), rt.clone());
+    let mut analyzer = LogAnalyzer::new(db.clone(), rt.clone());
+
+    // Set source file for per-file filter persistence
+    analyzer.set_source_file(file_path.clone());
 
     // Always clear logs from previous sessions - only filters are persisted
     analyzer.clear_logs();
@@ -46,6 +49,15 @@ fn main() -> anyhow::Result<()> {
     let mut pending_file: Option<(String, usize)> = None;
 
     if let Some(ref path) = file_path {
+        let file_path_obj = std::path::Path::new(path);
+        if !file_path_obj.exists() {
+            eprintln!("Error: File '{}' not found.", path);
+            std::process::exit(1);
+        }
+        if file_path_obj.is_dir() {
+            eprintln!("Error: '{}' is a directory, not a file.", path);
+            std::process::exit(1);
+        }
         let loaded = analyzer.ingest_file_chunk(path, 0, INITIAL_CHUNK)?;
         if loaded == INITIAL_CHUNK {
             // There may be more lines to load
@@ -63,7 +75,7 @@ fn main() -> anyhow::Result<()> {
 
         let mut app = App::new(analyzer, Theme::default());
         if let Some((path, lines_loaded)) = pending_file {
-            app.start_background_loading(path, lines_loaded);
+            app.tab_mut().start_background_loading(path, lines_loaded);
         }
         let app_result = app.run(&mut terminal);
 

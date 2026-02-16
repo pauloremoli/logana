@@ -24,15 +24,17 @@ pub trait FilterStore: Send + Sync {
         filter_type: &FilterType,
         enabled: bool,
         color_config: Option<&ColorConfig>,
+        source_file: Option<&str>,
     ) -> Result<i64>;
     async fn get_filters(&self) -> Result<Vec<Filter>>;
+    async fn get_filters_for_source(&self, source_file: &str) -> Result<Vec<Filter>>;
     async fn update_filter_pattern(&self, id: i64, new_pattern: &str) -> Result<()>;
     async fn update_filter_color(&self, id: i64, color_config: Option<&ColorConfig>) -> Result<()>;
     async fn delete_filter(&self, id: i64) -> Result<()>;
     async fn toggle_filter(&self, id: i64) -> Result<()>;
     async fn swap_filter_order(&self, id1: i64, id2: i64) -> Result<()>;
     async fn clear_filters(&self) -> Result<()>;
-    async fn replace_all_filters(&self, filters: &[Filter]) -> Result<()>;
+    async fn replace_all_filters(&self, filters: &[Filter], source_file: Option<&str>) -> Result<()>;
 }
 
 pub struct Database {
@@ -99,11 +101,17 @@ impl Database {
                 enabled INTEGER NOT NULL DEFAULT 1,
                 fg_color TEXT,
                 bg_color TEXT,
-                display_order INTEGER NOT NULL DEFAULT 0
+                display_order INTEGER NOT NULL DEFAULT 0,
+                source_file TEXT NOT NULL DEFAULT ''
             )",
         )
         .execute(&self.pool)
         .await?;
+
+        // Migration: add source_file column if it doesn't exist (for existing databases)
+        let _ = sqlx::query("ALTER TABLE filters ADD COLUMN source_file TEXT NOT NULL DEFAULT ''")
+            .execute(&self.pool)
+            .await;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_log_level ON log_entries(level)")
             .execute(&self.pool)
@@ -278,9 +286,12 @@ impl FilterStore for Database {
         filter_type: &FilterType,
         enabled: bool,
         color_config: Option<&ColorConfig>,
+        source_file: Option<&str>,
     ) -> Result<i64> {
+        let source = source_file.unwrap_or("");
         let max_order: Option<i64> =
-            sqlx::query("SELECT MAX(display_order) as max_order FROM filters")
+            sqlx::query("SELECT MAX(display_order) as max_order FROM filters WHERE source_file = ?")
+                .bind(source)
                 .fetch_one(&self.pool)
                 .await?
                 .get("max_order");
@@ -293,8 +304,8 @@ impl FilterStore for Database {
         };
 
         let result = sqlx::query(
-            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(pattern)
         .bind(filter_type_to_str(filter_type))
@@ -302,6 +313,7 @@ impl FilterStore for Database {
         .bind(&fg)
         .bind(&bg)
         .bind(next_order)
+        .bind(source)
         .execute(&self.pool)
         .await?;
 
@@ -310,6 +322,15 @@ impl FilterStore for Database {
 
     async fn get_filters(&self) -> Result<Vec<Filter>> {
         let rows = sqlx::query("SELECT * FROM filters ORDER BY display_order")
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.iter().map(row_to_filter).collect())
+    }
+
+    async fn get_filters_for_source(&self, source_file: &str) -> Result<Vec<Filter>> {
+        let rows = sqlx::query("SELECT * FROM filters WHERE source_file = ? ORDER BY display_order")
+            .bind(source_file)
             .fetch_all(&self.pool)
             .await?;
 
@@ -399,10 +420,14 @@ impl FilterStore for Database {
         Ok(())
     }
 
-    async fn replace_all_filters(&self, filters: &[Filter]) -> Result<()> {
+    async fn replace_all_filters(&self, filters: &[Filter], source_file: Option<&str>) -> Result<()> {
+        let source = source_file.unwrap_or("");
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query("DELETE FROM filters").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM filters WHERE source_file = ?")
+            .bind(source)
+            .execute(&mut *tx)
+            .await?;
 
         for (order, filter) in filters.iter().enumerate() {
             let (fg, bg) = match &filter.color_config {
@@ -411,8 +436,8 @@ impl FilterStore for Database {
             };
 
             sqlx::query(
-                "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&filter.pattern)
             .bind(filter_type_to_str(&filter.filter_type))
@@ -420,6 +445,7 @@ impl FilterStore for Database {
             .bind(&fg)
             .bind(&bg)
             .bind(order as i64)
+            .bind(source)
             .execute(&mut *tx)
             .await?;
         }
@@ -586,11 +612,11 @@ mod tests {
 
         // Insert
         let id1 = db
-            .insert_filter("error", &FilterType::Include, true, None)
+            .insert_filter("error", &FilterType::Include, true, None, None)
             .await
             .unwrap();
         let id2 = db
-            .insert_filter("debug", &FilterType::Exclude, true, None)
+            .insert_filter("debug", &FilterType::Exclude, true, None, None)
             .await
             .unwrap();
 
@@ -635,7 +661,7 @@ mod tests {
             bg: Some(ratatui::style::Color::Blue),
         };
 
-        db.insert_filter("error", &FilterType::Include, true, Some(&color))
+        db.insert_filter("error", &FilterType::Include, true, Some(&color), None)
             .await
             .unwrap();
 
@@ -650,7 +676,7 @@ mod tests {
     async fn test_update_filter_color() {
         let db = setup_db().await;
         let id = db
-            .insert_filter("error", &FilterType::Include, true, None)
+            .insert_filter("error", &FilterType::Include, true, None, None)
             .await
             .unwrap();
 
@@ -670,11 +696,11 @@ mod tests {
     async fn test_swap_filter_order() {
         let db = setup_db().await;
         let id1 = db
-            .insert_filter("first", &FilterType::Include, true, None)
+            .insert_filter("first", &FilterType::Include, true, None, None)
             .await
             .unwrap();
         let id2 = db
-            .insert_filter("second", &FilterType::Exclude, true, None)
+            .insert_filter("second", &FilterType::Exclude, true, None, None)
             .await
             .unwrap();
 
@@ -693,10 +719,10 @@ mod tests {
     #[tokio::test]
     async fn test_replace_all_filters() {
         let db = setup_db().await;
-        db.insert_filter("old1", &FilterType::Include, true, None)
+        db.insert_filter("old1", &FilterType::Include, true, None, None)
             .await
             .unwrap();
-        db.insert_filter("old2", &FilterType::Exclude, true, None)
+        db.insert_filter("old2", &FilterType::Exclude, true, None, None)
             .await
             .unwrap();
 
@@ -717,7 +743,7 @@ mod tests {
             },
         ];
 
-        db.replace_all_filters(&new_filters).await.unwrap();
+        db.replace_all_filters(&new_filters, None).await.unwrap();
         let filters = db.get_filters().await.unwrap();
         assert_eq!(filters.len(), 2);
         assert_eq!(filters[0].pattern, "new1");

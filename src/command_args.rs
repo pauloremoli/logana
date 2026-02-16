@@ -38,4 +38,8 @@ pub enum Commands {
     SetTheme { theme_name: String },
     /// Toggle log level color highlighting
     LevelColors,
+    /// Open a file in a new tab
+    Open { path: String },
+    /// Close the current tab
+    CloseTab,
 }

@@ -243,6 +243,7 @@ pub struct LogAnalyzer {
     pub(crate) db: Arc<Database>,
     pub(crate) rt: Arc<tokio::runtime::Runtime>,
     log_parser: LogParser,
+    source_file: Option<String>,
 }
 
 impl LogAnalyzer {
@@ -251,7 +252,16 @@ impl LogAnalyzer {
             db,
             rt,
             log_parser: LogParser::new(),
+            source_file: None,
         }
+    }
+
+    pub fn set_source_file(&mut self, source: Option<String>) {
+        self.source_file = source;
+    }
+
+    pub fn source_file(&self) -> Option<&str> {
+        self.source_file.as_deref()
     }
 
     pub fn clear_logs(&self) {
@@ -403,13 +413,23 @@ impl LogAnalyzer {
     }
 
     pub fn get_filters(&self) -> Vec<Filter> {
-        self.rt.block_on(self.db.get_filters()).unwrap_or_default()
+        if let Some(source) = &self.source_file {
+            self.rt
+                .block_on(self.db.get_filters_for_source(source))
+                .unwrap_or_default()
+        } else {
+            self.rt.block_on(self.db.get_filters()).unwrap_or_default()
+        }
     }
 
     pub fn add_filter(&self, pattern: String, filter_type: FilterType) {
-        let _ = self
-            .rt
-            .block_on(self.db.insert_filter(&pattern, &filter_type, true, None));
+        let _ = self.rt.block_on(self.db.insert_filter(
+            &pattern,
+            &filter_type,
+            true,
+            None,
+            self.source_file.as_deref(),
+        ));
     }
 
     pub fn add_filter_with_color(
@@ -420,18 +440,15 @@ impl LogAnalyzer {
         bg: Option<&str>,
     ) {
         let color_config = match filter_type {
-            FilterType::Include => match (fg, bg) {
-                (Some(fg), Some(bg)) => {
-                    let fg = self.parse_color(fg);
-                    let bg = self.parse_color(bg);
-                    if fg.is_some() || bg.is_some() {
-                        Some(ColorConfig { fg, bg })
-                    } else {
-                        None
-                    }
+            FilterType::Include => {
+                let fg_color = fg.and_then(|s| self.parse_color(s));
+                let bg_color = bg.and_then(|s| self.parse_color(s));
+                if fg_color.is_some() || bg_color.is_some() {
+                    Some(ColorConfig { fg: fg_color, bg: bg_color })
+                } else {
+                    None
                 }
-                _ => None,
-            },
+            }
             FilterType::Exclude => None,
         };
         let _ = self.rt.block_on(self.db.insert_filter(
@@ -439,6 +456,7 @@ impl LogAnalyzer {
             &filter_type,
             true,
             color_config.as_ref(),
+            self.source_file.as_deref(),
         ));
     }
 
@@ -520,27 +538,29 @@ impl LogAnalyzer {
     pub fn load_filters(&self, path: &str) -> anyhow::Result<()> {
         let json = std::fs::read_to_string(path)?;
         let filters: Vec<Filter> = serde_json::from_str(&json)?;
-        self.rt.block_on(self.db.replace_all_filters(&filters))?;
+        self.rt
+            .block_on(self.db.replace_all_filters(&filters, self.source_file.as_deref()))?;
         Ok(())
     }
 
     pub fn set_color_config(&self, pattern: &str, fg: Option<&str>, bg: Option<&str>) {
-        if let (Some(fg), Some(bg)) = (fg, bg) {
-            let fg_color = self.parse_color(fg);
-            let bg_color = self.parse_color(bg);
-            let filters = self.get_filters();
-            if let Some(filter) = filters
-                .iter()
-                .find(|f| f.pattern == pattern && f.filter_type == FilterType::Include)
-            {
-                let cc = ColorConfig {
-                    fg: fg_color,
-                    bg: bg_color,
-                };
-                let _ = self
-                    .rt
-                    .block_on(self.db.update_filter_color(filter.id as i64, Some(&cc)));
-            }
+        let fg_color = fg.and_then(|s| self.parse_color(s));
+        let bg_color = bg.and_then(|s| self.parse_color(s));
+        if fg_color.is_none() && bg_color.is_none() {
+            return;
+        }
+        let filters = self.get_filters();
+        if let Some(filter) = filters
+            .iter()
+            .find(|f| f.pattern == pattern && f.filter_type == FilterType::Include)
+        {
+            let cc = ColorConfig {
+                fg: fg_color,
+                bg: bg_color,
+            };
+            let _ = self
+                .rt
+                .block_on(self.db.update_filter_color(filter.id as i64, Some(&cc)));
         }
     }
 
