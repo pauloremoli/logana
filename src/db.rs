@@ -79,6 +79,7 @@ impl Database {
             .await?;
 
         let db = Self { pool };
+        db.configure_pragmas().await?;
         db.run_migrations().await?;
         Ok(db)
     }
@@ -90,8 +91,22 @@ impl Database {
             .await?;
 
         let db = Self { pool };
+        db.configure_pragmas().await?;
         db.run_migrations().await?;
         Ok(db)
+    }
+
+    async fn configure_pragmas(&self) -> Result<()> {
+        sqlx::query("PRAGMA journal_mode = WAL")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("PRAGMA synchronous = NORMAL")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("PRAGMA cache_size = -64000")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     async fn run_migrations(&self) -> Result<()> {
@@ -237,27 +252,42 @@ fn row_to_filter(row: &sqlx::sqlite::SqliteRow) -> Filter {
 #[async_trait]
 impl LogStore for Database {
     async fn insert_logs_batch(&self, entries: &[LogEntry]) -> Result<()> {
-        const BATCH_SIZE: usize = 500;
+        // 9 columns per row, SQLite limit is 999 bound params → max 111 rows per statement.
+        // Use 50 for a safe margin and good performance.
+        const ROWS_PER_STMT: usize = 80;
+        // Group statements into larger transactions to reduce commit overhead.
+        const TX_SIZE: usize = 10000;
 
-        for chunk in entries.chunks(BATCH_SIZE) {
+        for tx_chunk in entries.chunks(TX_SIZE) {
             let mut tx = self.pool.begin().await?;
 
-            for entry in chunk {
-                sqlx::query(
-                    "INSERT INTO log_entries (id, timestamp, hostname, process_name, pid, level, message, marked, source_file)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind(entry.id as i64)
-                .bind(&entry.timestamp)
-                .bind(&entry.hostname)
-                .bind(&entry.process_name)
-                .bind(entry.pid.map(|p| p as i64))
-                .bind(log_level_to_str(&entry.level))
-                .bind(&entry.message)
-                .bind(entry.marked as i32)
-                .bind(&entry.source_file)
-                .execute(&mut *tx)
-                .await?;
+            for stmt_chunk in tx_chunk.chunks(ROWS_PER_STMT) {
+                let placeholders: String = stmt_chunk
+                    .iter()
+                    .map(|_| "(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                let sql = format!(
+                    "INSERT INTO log_entries (id, timestamp, hostname, process_name, pid, level, message, marked, source_file) VALUES {}",
+                    placeholders
+                );
+
+                let mut query = sqlx::query(&sql);
+                for entry in stmt_chunk {
+                    query = query
+                        .bind(entry.id as i64)
+                        .bind(&entry.timestamp)
+                        .bind(&entry.hostname)
+                        .bind(&entry.process_name)
+                        .bind(entry.pid.map(|p| p as i64))
+                        .bind(log_level_to_str(&entry.level))
+                        .bind(&entry.message)
+                        .bind(entry.marked as i32)
+                        .bind(&entry.source_file);
+                }
+
+                query.execute(&mut *tx).await?;
             }
 
             tx.commit().await?;

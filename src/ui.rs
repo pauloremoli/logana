@@ -202,7 +202,7 @@ pub enum AppMode {
     },
 }
 
-const BACKGROUND_BATCH_SIZE: usize = 5000;
+const BACKGROUND_BATCH_SIZE: usize = 10000;
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
