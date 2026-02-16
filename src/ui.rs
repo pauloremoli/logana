@@ -252,6 +252,8 @@ pub struct TabState {
     pub(crate) background_loading: Option<BackgroundLoadState>,
     pub pending_scroll_offset: Option<usize>,
     pub pending_marked_lines: Option<Vec<usize>>,
+    /// Set when file read was skipped (hash matched). If user declines restore, we need to read the file.
+    pub pending_file_load: Option<String>,
 }
 
 impl TabState {
@@ -281,6 +283,7 @@ impl TabState {
             background_loading: None,
             pending_scroll_offset: None,
             pending_marked_lines: None,
+            pending_file_load: None,
         }
     }
 
@@ -821,6 +824,7 @@ impl TabState {
             .filter(|(_, e)| e.marked)
             .map(|(i, _)| i)
             .collect();
+        let file_hash = LogAnalyzer::compute_file_hash(source);
         Some(FileContext {
             source_file: source.to_string(),
             scroll_offset: self.scroll_offset,
@@ -830,6 +834,7 @@ impl TabState {
             show_sidebar: self.show_sidebar,
             horizontal_scroll: self.horizontal_scroll,
             marked_lines,
+            file_hash,
         })
     }
 
@@ -933,6 +938,7 @@ impl App {
             }
         }
 
+
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -962,12 +968,6 @@ impl App {
 
         let mut analyzer = LogAnalyzer::new(self.db.clone(), self.rt.clone());
         analyzer.set_source_file(Some(path.to_string()));
-        analyzer.clear_logs();
-
-        const INITIAL_CHUNK: usize = 200;
-        let loaded = analyzer
-            .ingest_file_chunk(path, 0, INITIAL_CHUNK)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
 
         let title = file_path_obj
             .file_name()
@@ -975,12 +975,37 @@ impl App {
             .unwrap_or(path)
             .to_string();
 
+        // Check if we can reuse cached data from a previous session
+        let current_hash = LogAnalyzer::compute_file_hash(path);
+        if let Some(ref hash) = current_hash {
+            if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(path)) {
+                if ctx.file_hash.as_deref() == Some(hash.as_str())
+                    && analyzer.has_logs_for_source(path)
+                {
+                    // File unchanged and logs are in DB — skip reading
+                    let mut tab = TabState::new(analyzer, title);
+                    tab.mode = AppMode::ConfirmRestore { context: ctx };
+                    tab.pending_file_load = Some(path.to_string());
+                    self.tabs.push(tab);
+                    self.active_tab = self.tabs.len() - 1;
+                    return Ok(());
+                }
+            }
+        }
+
+        analyzer.clear_logs();
+
+        const INITIAL_CHUNK: usize = 200;
+        let loaded = analyzer
+            .ingest_file_chunk(path, 0, INITIAL_CHUNK)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+
         let mut tab = TabState::new(analyzer, title);
         if loaded == INITIAL_CHUNK {
             tab.start_background_loading(path.to_string(), loaded);
         }
 
-        // Check for saved context and prompt to restore
+        // Check for saved context (hash didn't match but context exists — offer restore of UI state)
         if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(path)) {
             tab.mode = AppMode::ConfirmRestore { context: ctx };
         }
@@ -1101,10 +1126,34 @@ impl App {
                                 std::mem::replace(&mut tab.mode, AppMode::Normal)
                             {
                                 tab.apply_file_context(&context);
+                                tab.pending_file_load = None;
+                                tab.schedule_cache_refresh();
                             }
                         }
                         KeyCode::Char('n') | KeyCode::Esc => {
-                            self.tabs[self.active_tab].mode = AppMode::Normal;
+                            let tab = &mut self.tabs[self.active_tab];
+                            tab.mode = AppMode::Normal;
+                            tab.analyzer.clear_logs();
+                            tab.analyzer.clear_filters();
+
+                            // Clear stale cached data immediately so old marks don't linger
+                            tab.cached_logs.clear();
+                            tab.cached_filtered_logs.clear();
+                            tab.logs_dirty = true;
+                            tab.filters_dirty = true;
+
+                            // If file read was skipped (hash matched), read it now
+                            if let Some(path) = tab.pending_file_load.take() {
+                                const INITIAL_CHUNK: usize = 200;
+                                if let Ok(loaded) =
+                                    tab.analyzer.ingest_file_chunk(&path, 0, INITIAL_CHUNK)
+                                {
+                                    if loaded == INITIAL_CHUNK {
+                                        tab.start_background_loading(path, loaded);
+                                    }
+                                }
+                            }
+                            tab.schedule_cache_refresh();
                         }
                         _ => {}
                     },
@@ -1362,12 +1411,9 @@ impl App {
         let tab = &self.tabs[self.active_tab];
         let has_input_bar = matches!(tab.mode, AppMode::Command { .. })
             || matches!(tab.mode, AppMode::Search { .. });
-        let has_confirm_bar = matches!(tab.mode, AppMode::ConfirmRestore { .. });
         if has_input_bar {
             constraints.push(Constraint::Length(1)); // input line
             constraints.push(Constraint::Length(1)); // hint line
-        } else if has_confirm_bar {
-            constraints.push(Constraint::Length(1)); // confirm prompt
         }
         constraints.push(Constraint::Length(3)); // command list
         let chunks = Layout::default()
@@ -1480,7 +1526,7 @@ impl App {
 
                 let search_match = search_map.get(&log.id).copied();
 
-                let filter_color = get_matching_filter_color(&log.message, &filters);
+                let filter_color = get_matching_filter_color(&display, &filters);
 
                 let mut base_style = Style::default().fg(theme.text);
                 if let Some((fg, bg)) = filter_color {
@@ -1705,13 +1751,32 @@ impl App {
             self.tabs[self.active_tab].mode,
             AppMode::ConfirmRestore { .. }
         ) {
-            let confirm_line = Paragraph::new("Restore previous session? [y]es / [n]o").style(
-                Style::default()
-                    .fg(self.theme.text_highlight)
-                    .bg(self.theme.border),
-            );
-            let confirm_area = chunks[chunk_idx];
-            frame.render_widget(confirm_line, confirm_area);
+            let modal_width = 44_u16;
+            let modal_height = 5_u16;
+            let area = frame.size();
+            let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
+            let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
+            let modal_area = ratatui::layout::Rect::new(x, y, modal_width, modal_height);
+
+            frame.render_widget(ratatui::widgets::Clear, modal_area);
+            let modal = Paragraph::new(Line::from(vec![
+                Span::styled(" [y]", Style::default().fg(self.theme.text_highlight).add_modifier(Modifier::BOLD)),
+                Span::styled("es  ", Style::default().fg(self.theme.text)),
+                Span::styled("[n]", Style::default().fg(self.theme.text_highlight).add_modifier(Modifier::BOLD)),
+                Span::styled("o ", Style::default().fg(self.theme.text)),
+            ]))
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.border_title))
+                    .title(" Restore previous session? ")
+                    .title_style(Style::default().fg(self.theme.text_highlight).add_modifier(Modifier::BOLD))
+                    .title_alignment(ratatui::layout::Alignment::Center)
+                    .padding(ratatui::widgets::Padding::new(0, 0, 1, 0)),
+            )
+            .style(Style::default().bg(self.theme.root_bg));
+            frame.render_widget(modal, modal_area);
         }
 
         let command_list = Paragraph::new(self.tabs[self.active_tab].get_command_list())
@@ -1949,7 +2014,7 @@ fn get_process_color(
 
 /// Returns the (fg, bg) color from the first matching Include filter with a color config.
 fn get_matching_filter_color(
-    message: &str,
+    display_line: &str,
     filters: &[crate::analyzer::Filter],
 ) -> Option<(Option<Color>, Option<Color>)> {
     for filter in filters {
@@ -1957,7 +2022,7 @@ fn get_matching_filter_color(
             && filter.enabled
             && filter.color_config.is_some()
             && let Ok(re) = regex::Regex::new(&filter.pattern)
-            && re.is_match(message)
+            && re.is_match(display_line)
         {
             let cc = filter.color_config.as_ref().unwrap();
             return Some((cc.fg, cc.bg));

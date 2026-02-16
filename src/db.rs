@@ -51,6 +51,7 @@ pub struct FileContext {
     pub show_sidebar: bool,
     pub horizontal_scroll: usize,
     pub marked_lines: Vec<usize>,
+    pub file_hash: Option<String>,
 }
 
 #[async_trait]
@@ -159,7 +160,8 @@ impl Database {
                 level_colors INTEGER NOT NULL DEFAULT 1,
                 show_sidebar INTEGER NOT NULL DEFAULT 1,
                 horizontal_scroll INTEGER NOT NULL DEFAULT 0,
-                marked_lines TEXT NOT NULL DEFAULT '[]'
+                marked_lines TEXT NOT NULL DEFAULT '[]',
+                file_hash TEXT
             )",
         )
         .execute(&self.pool)
@@ -171,6 +173,11 @@ impl Database {
         )
         .execute(&self.pool)
         .await;
+
+        // Migration: add file_hash column if it doesn't exist (for existing databases)
+        let _ = sqlx::query("ALTER TABLE file_context ADD COLUMN file_hash TEXT")
+            .execute(&self.pool)
+            .await;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_log_level ON log_entries(level)")
             .execute(&self.pool)
@@ -541,8 +548,8 @@ impl FileContextStore for Database {
         let marked_json =
             serde_json::to_string(&ctx.marked_lines).unwrap_or_else(|_| "[]".to_string());
         sqlx::query(
-            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_file) DO UPDATE SET
                 scroll_offset = excluded.scroll_offset,
                 search_query = excluded.search_query,
@@ -550,7 +557,8 @@ impl FileContextStore for Database {
                 level_colors = excluded.level_colors,
                 show_sidebar = excluded.show_sidebar,
                 horizontal_scroll = excluded.horizontal_scroll,
-                marked_lines = excluded.marked_lines",
+                marked_lines = excluded.marked_lines,
+                file_hash = excluded.file_hash",
         )
         .bind(&ctx.source_file)
         .bind(ctx.scroll_offset as i64)
@@ -560,6 +568,7 @@ impl FileContextStore for Database {
         .bind(ctx.show_sidebar as i32)
         .bind(ctx.horizontal_scroll as i64)
         .bind(&marked_json)
+        .bind(&ctx.file_hash)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -567,7 +576,7 @@ impl FileContextStore for Database {
 
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
         let row = sqlx::query(
-            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines
+            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash
              FROM file_context WHERE source_file = ?",
         )
         .bind(source_file)
@@ -586,6 +595,7 @@ impl FileContextStore for Database {
                 show_sidebar: r.get::<i32, _>("show_sidebar") != 0,
                 horizontal_scroll: r.get::<i64, _>("horizontal_scroll") as usize,
                 marked_lines,
+                file_hash: r.get::<Option<String>, _>("file_hash"),
             }
         }))
     }
@@ -907,6 +917,7 @@ mod tests {
             show_sidebar: false,
             horizontal_scroll: 10,
             marked_lines: vec![1, 5, 10],
+            file_hash: Some("abc123".to_string()),
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -922,6 +933,7 @@ mod tests {
         assert!(!loaded.show_sidebar);
         assert_eq!(loaded.horizontal_scroll, 10);
         assert_eq!(loaded.marked_lines, vec![1, 5, 10]);
+        assert_eq!(loaded.file_hash, Some("abc123".to_string()));
     }
 
     #[tokio::test]
@@ -937,6 +949,7 @@ mod tests {
             show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![0, 3],
+            file_hash: Some("hash1".to_string()),
         };
         db.save_file_context(&ctx1).await.unwrap();
 
@@ -949,6 +962,7 @@ mod tests {
             show_sidebar: false,
             horizontal_scroll: 5,
             marked_lines: vec![2, 7],
+            file_hash: Some("hash2".to_string()),
         };
         db.save_file_context(&ctx2).await.unwrap();
 

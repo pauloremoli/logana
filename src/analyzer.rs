@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use std::sync::Arc;
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::mpsc;
 
 use crate::db::{Database, FilterStore, LogStore};
@@ -214,9 +216,8 @@ pub fn apply_filters_to_logs(
     } else {
         logs.iter()
             .filter(|log_entry| {
-                include_filters
-                    .iter()
-                    .any(|re| re.is_match(&log_entry.message))
+                let display = log_entry.display_line();
+                include_filters.iter().any(|re| re.is_match(&display))
             })
             .cloned()
             .collect()
@@ -229,9 +230,8 @@ pub fn apply_filters_to_logs(
     let final_logs = potentially_included_logs
         .into_iter()
         .filter(|log_entry| {
-            !exclude_filters
-                .iter()
-                .any(|re| re.is_match(&log_entry.message))
+            let display = log_entry.display_line();
+            !exclude_filters.iter().any(|re| re.is_match(&display))
         })
         .collect();
 
@@ -572,6 +572,23 @@ impl LogAnalyzer {
         self.rt
             .block_on(self.db.get_marked_logs())
             .unwrap_or_default()
+    }
+
+    /// Compute a hash of the file based on its metadata (size + modification time).
+    /// This is fast and avoids reading the entire file just for comparison.
+    pub fn compute_file_hash(path: &str) -> Option<String> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let size = metadata.len();
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        let mut hasher = DefaultHasher::new();
+        size.hash(&mut hasher);
+        modified.hash(&mut hasher);
+        Some(format!("{:x}", hasher.finish()))
     }
 
     pub fn has_logs_for_source(&self, source: &str) -> bool {
