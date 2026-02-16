@@ -86,6 +86,10 @@ impl Search {
     pub fn set_case_sensitive(&mut self, case_sensitive: bool) {
         self.case_sensitive = case_sensitive;
     }
+
+    pub fn get_pattern(&self) -> Option<&str> {
+        self.pattern.as_ref().map(|p| p.as_str())
+    }
 }
 
 #[cfg(test)]

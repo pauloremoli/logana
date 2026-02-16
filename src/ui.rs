@@ -9,7 +9,7 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::analyzer::{FilterType, LogAnalyzer, LogEntry, LogLevel, apply_filters_to_logs};
-use crate::db::{FilterStore, LogStore};
+use crate::db::{FileContext, FileContextStore, FilterStore, LogStore};
 use crate::search::Search;
 use crate::theme::Theme;
 use std::collections::HashSet;
@@ -197,6 +197,9 @@ pub enum AppMode {
         input: String,
         forward: bool,
     },
+    ConfirmRestore {
+        context: FileContext,
+    },
 }
 
 const BACKGROUND_BATCH_SIZE: usize = 5000;
@@ -246,6 +249,8 @@ pub struct TabState {
     cache_refresh_rx: Option<mpsc::Receiver<CacheResult>>,
     cache_refresh_pending: bool,
     pub(crate) background_loading: Option<BackgroundLoadState>,
+    pub pending_scroll_offset: Option<usize>,
+    pub pending_marked_lines: Option<Vec<usize>>,
 }
 
 impl TabState {
@@ -273,10 +278,13 @@ impl TabState {
             cache_refresh_rx: None,
             cache_refresh_pending: false,
             background_loading: None,
+            pending_scroll_offset: None,
+            pending_marked_lines: None,
         }
     }
 
     fn handle_normal_mode_key(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
+        self.pending_scroll_offset = None;
         // Ctrl+d: half page down
         if key_code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
             let half = (self.visible_height / 2).max(1);
@@ -613,6 +621,9 @@ impl TabState {
             AppMode::Search { .. } => {
                 "[SEARCH] Esc => cancel | Enter => search".to_string()
             },
+            AppMode::ConfirmRestore { .. } => {
+                "[RESTORE] Restore previous session? [y]es / [n]o".to_string()
+            },
         }
     }
 
@@ -690,6 +701,22 @@ impl TabState {
             self.cached_logs = self.analyzer.get_logs();
             self.logs_dirty = false;
             self.filters_dirty = true;
+
+            // Apply pending marks once loading is complete
+            if self.background_loading.is_none() {
+                if let Some(marked) = self.pending_marked_lines.take() {
+                    for &line_idx in &marked {
+                        if let Some(entry) = self.cached_logs.get_mut(line_idx) {
+                            entry.marked = true;
+                            let id = entry.id;
+                            let db = self.analyzer.db.clone();
+                            self.analyzer.rt.spawn(async move {
+                                let _ = db.toggle_mark(id as i64).await;
+                            });
+                        }
+                    }
+                }
+            }
         }
         if self.filters_dirty {
             self.cached_filtered_logs = self
@@ -737,6 +764,9 @@ impl TabState {
                 }
                 Ok(Err(_)) => {
                     self.background_loading = None;
+                    if let Some(offset) = self.pending_scroll_offset.take() {
+                        self.scroll_offset = offset;
+                    }
                     return;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -744,6 +774,9 @@ impl TabState {
                     self.background_loading = None;
                     if got_updates {
                         self.logs_dirty = true;
+                    }
+                    if let Some(offset) = self.pending_scroll_offset.take() {
+                        self.scroll_offset = offset;
                     }
                     return;
                 }
@@ -774,6 +807,46 @@ impl TabState {
         match &self.mode {
             AppMode::Command { input, cursor, .. } => Some((input.as_str(), *cursor)),
             _ => None,
+        }
+    }
+
+    pub fn to_file_context(&self) -> Option<FileContext> {
+        let source = self.analyzer.source_file()?;
+        let marked_lines: Vec<usize> = self
+            .cached_logs
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.marked)
+            .map(|(i, _)| i)
+            .collect();
+        Some(FileContext {
+            source_file: source.to_string(),
+            scroll_offset: self.scroll_offset,
+            search_query: self
+                .search
+                .get_pattern()
+                .unwrap_or_default()
+                .to_string(),
+            wrap: self.wrap,
+            level_colors: self.level_colors,
+            show_sidebar: self.show_sidebar,
+            horizontal_scroll: self.horizontal_scroll,
+            marked_lines,
+        })
+    }
+
+    fn apply_file_context(&mut self, ctx: &FileContext) {
+        self.scroll_offset = ctx.scroll_offset;
+        self.pending_scroll_offset = Some(ctx.scroll_offset);
+        self.wrap = ctx.wrap;
+        self.level_colors = ctx.level_colors;
+        self.show_sidebar = ctx.show_sidebar;
+        self.horizontal_scroll = ctx.horizontal_scroll;
+        if !ctx.marked_lines.is_empty() {
+            self.pending_marked_lines = Some(ctx.marked_lines.clone());
+        }
+        if !ctx.search_query.is_empty() {
+            let _ = self.search.search(&ctx.search_query, &self.cached_logs);
         }
     }
 }
@@ -852,7 +925,15 @@ impl App {
             })
             .unwrap_or_else(|| "stdin".to_string());
 
-        let tab = TabState::new(analyzer, title);
+        let mut tab = TabState::new(analyzer, title);
+
+        // Check for saved context for the initial file
+        if let Some(source) = tab.analyzer.source_file() {
+            let source = source.to_string();
+            if let Ok(Some(ctx)) = rt.block_on(db.load_file_context(&source)) {
+                tab.mode = AppMode::ConfirmRestore { context: ctx };
+            }
+        }
 
         App {
             tabs: vec![tab],
@@ -901,12 +982,33 @@ impl App {
             tab.start_background_loading(path.to_string(), loaded);
         }
 
+        // Check for saved context and prompt to restore
+        if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(path)) {
+            tab.mode = AppMode::ConfirmRestore { context: ctx };
+        }
+
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
         Ok(())
     }
 
+    fn save_tab_context(&self, tab: &TabState) {
+        if let Some(ctx) = tab.to_file_context() {
+            let db = self.db.clone();
+            self.rt.spawn(async move {
+                let _ = db.save_file_context(&ctx).await;
+            });
+        }
+    }
+
+    fn save_all_contexts(&self) {
+        for tab in &self.tabs {
+            self.save_tab_context(tab);
+        }
+    }
+
     pub fn close_tab(&mut self) -> bool {
+        self.save_tab_context(&self.tabs[self.active_tab]);
         if self.tabs.len() <= 1 {
             return true; // signal to quit
         }
@@ -947,6 +1049,7 @@ impl App {
                 match tab.mode {
                     AppMode::Normal => {
                         if key.code == KeyCode::Char('q') {
+                            self.save_all_contexts();
                             return Ok(());
                         }
                         // Tab navigation in normal mode
@@ -991,6 +1094,22 @@ impl App {
                     }
                     AppMode::Search { .. } => {
                         self.tabs[self.active_tab].handle_search_mode_key(key.code);
+                    }
+                    AppMode::ConfirmRestore { .. } => {
+                        match key.code {
+                            KeyCode::Char('y') => {
+                                let tab = &mut self.tabs[self.active_tab];
+                                if let AppMode::ConfirmRestore { context } =
+                                    std::mem::replace(&mut tab.mode, AppMode::Normal)
+                                {
+                                    tab.apply_file_context(&context);
+                                }
+                            }
+                            KeyCode::Char('n') | KeyCode::Esc => {
+                                self.tabs[self.active_tab].mode = AppMode::Normal;
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -1227,6 +1346,9 @@ impl App {
             AppMode::Search { .. } => {
                 self.tabs[self.active_tab].handle_search_mode_key(key_code);
             }
+            AppMode::ConfirmRestore { .. } => {
+                // Handled in run() loop directly
+            }
         }
     }
 
@@ -1244,9 +1366,12 @@ impl App {
         let tab = &self.tabs[self.active_tab];
         let has_input_bar = matches!(tab.mode, AppMode::Command { .. })
             || matches!(tab.mode, AppMode::Search { .. });
+        let has_confirm_bar = matches!(tab.mode, AppMode::ConfirmRestore { .. });
         if has_input_bar {
             constraints.push(Constraint::Length(1)); // input line
             constraints.push(Constraint::Length(1)); // hint line
+        } else if has_confirm_bar {
+            constraints.push(Constraint::Length(1)); // confirm prompt
         }
         constraints.push(Constraint::Length(3)); // command list
         let chunks = Layout::default()
@@ -1565,6 +1690,17 @@ impl App {
             let hint = Paragraph::new(hint_text)
                 .style(Style::default().fg(self.theme.border).bg(self.theme.root_bg));
             frame.render_widget(hint, hint_area);
+        }
+
+        if matches!(self.tabs[self.active_tab].mode, AppMode::ConfirmRestore { .. }) {
+            let confirm_line = Paragraph::new("Restore previous session? [y]es / [n]o")
+                .style(
+                    Style::default()
+                        .fg(self.theme.text_highlight)
+                        .bg(self.theme.border),
+                );
+            let confirm_area = chunks[chunk_idx];
+            frame.render_widget(confirm_line, confirm_area);
         }
 
         let command_list = Paragraph::new(self.tabs[self.active_tab].get_command_list())

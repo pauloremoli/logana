@@ -37,6 +37,24 @@ pub trait FilterStore: Send + Sync {
     async fn replace_all_filters(&self, filters: &[Filter], source_file: Option<&str>) -> Result<()>;
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileContext {
+    pub source_file: String,
+    pub scroll_offset: usize,
+    pub search_query: String,
+    pub wrap: bool,
+    pub level_colors: bool,
+    pub show_sidebar: bool,
+    pub horizontal_scroll: usize,
+    pub marked_lines: Vec<usize>,
+}
+
+#[async_trait]
+pub trait FileContextStore: Send + Sync {
+    async fn save_file_context(&self, ctx: &FileContext) -> Result<()>;
+    async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>>;
+}
+
 pub struct Database {
     pool: SqlitePool,
 }
@@ -110,6 +128,26 @@ impl Database {
 
         // Migration: add source_file column if it doesn't exist (for existing databases)
         let _ = sqlx::query("ALTER TABLE filters ADD COLUMN source_file TEXT NOT NULL DEFAULT ''")
+            .execute(&self.pool)
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS file_context (
+                source_file TEXT PRIMARY KEY,
+                scroll_offset INTEGER NOT NULL DEFAULT 0,
+                search_query TEXT NOT NULL DEFAULT '',
+                wrap INTEGER NOT NULL DEFAULT 1,
+                level_colors INTEGER NOT NULL DEFAULT 1,
+                show_sidebar INTEGER NOT NULL DEFAULT 1,
+                horizontal_scroll INTEGER NOT NULL DEFAULT 0,
+                marked_lines TEXT NOT NULL DEFAULT '[]'
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Migration: add marked_lines column if it doesn't exist (for existing databases)
+        let _ = sqlx::query("ALTER TABLE file_context ADD COLUMN marked_lines TEXT NOT NULL DEFAULT '[]'")
             .execute(&self.pool)
             .await;
 
@@ -455,6 +493,63 @@ impl FilterStore for Database {
     }
 }
 
+#[async_trait]
+impl FileContextStore for Database {
+    async fn save_file_context(&self, ctx: &FileContext) -> Result<()> {
+        let marked_json = serde_json::to_string(&ctx.marked_lines)
+            .unwrap_or_else(|_| "[]".to_string());
+        sqlx::query(
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(source_file) DO UPDATE SET
+                scroll_offset = excluded.scroll_offset,
+                search_query = excluded.search_query,
+                wrap = excluded.wrap,
+                level_colors = excluded.level_colors,
+                show_sidebar = excluded.show_sidebar,
+                horizontal_scroll = excluded.horizontal_scroll,
+                marked_lines = excluded.marked_lines",
+        )
+        .bind(&ctx.source_file)
+        .bind(ctx.scroll_offset as i64)
+        .bind(&ctx.search_query)
+        .bind(ctx.wrap as i32)
+        .bind(ctx.level_colors as i32)
+        .bind(ctx.show_sidebar as i32)
+        .bind(ctx.horizontal_scroll as i64)
+        .bind(&marked_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
+        let row = sqlx::query(
+            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines
+             FROM file_context WHERE source_file = ?",
+        )
+        .bind(source_file)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| {
+            let marked_json: String = r.get("marked_lines");
+            let marked_lines: Vec<usize> = serde_json::from_str(&marked_json)
+                .unwrap_or_default();
+            FileContext {
+                source_file: r.get::<String, _>("source_file"),
+                scroll_offset: r.get::<i64, _>("scroll_offset") as usize,
+                search_query: r.get::<String, _>("search_query"),
+                wrap: r.get::<i32, _>("wrap") != 0,
+                level_colors: r.get::<i32, _>("level_colors") != 0,
+                show_sidebar: r.get::<i32, _>("show_sidebar") != 0,
+                horizontal_scroll: r.get::<i64, _>("horizontal_scroll") as usize,
+                marked_lines,
+            }
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -756,5 +851,81 @@ mod tests {
         let db = setup_db().await;
         db.insert_logs_batch(&[]).await.unwrap();
         assert_eq!(db.get_log_count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_save_and_load_file_context() {
+        let db = setup_db().await;
+
+        let ctx = FileContext {
+            source_file: "/tmp/test.log".to_string(),
+            scroll_offset: 42,
+            search_query: "ERROR".to_string(),
+            wrap: false,
+            level_colors: true,
+            show_sidebar: false,
+            horizontal_scroll: 10,
+            marked_lines: vec![1, 5, 10],
+        };
+        db.save_file_context(&ctx).await.unwrap();
+
+        let loaded = db
+            .load_file_context("/tmp/test.log")
+            .await
+            .unwrap()
+            .expect("should find context");
+        assert_eq!(loaded.scroll_offset, 42);
+        assert_eq!(loaded.search_query, "ERROR");
+        assert!(!loaded.wrap);
+        assert!(loaded.level_colors);
+        assert!(!loaded.show_sidebar);
+        assert_eq!(loaded.horizontal_scroll, 10);
+        assert_eq!(loaded.marked_lines, vec![1, 5, 10]);
+    }
+
+    #[tokio::test]
+    async fn test_file_context_upsert() {
+        let db = setup_db().await;
+
+        let ctx1 = FileContext {
+            source_file: "/tmp/test.log".to_string(),
+            scroll_offset: 10,
+            search_query: "".to_string(),
+            wrap: true,
+            level_colors: true,
+            show_sidebar: true,
+            horizontal_scroll: 0,
+            marked_lines: vec![0, 3],
+        };
+        db.save_file_context(&ctx1).await.unwrap();
+
+        let ctx2 = FileContext {
+            source_file: "/tmp/test.log".to_string(),
+            scroll_offset: 99,
+            search_query: "WARN".to_string(),
+            wrap: false,
+            level_colors: false,
+            show_sidebar: false,
+            horizontal_scroll: 5,
+            marked_lines: vec![2, 7],
+        };
+        db.save_file_context(&ctx2).await.unwrap();
+
+        let loaded = db
+            .load_file_context("/tmp/test.log")
+            .await
+            .unwrap()
+            .expect("should find context");
+        assert_eq!(loaded.scroll_offset, 99);
+        assert_eq!(loaded.search_query, "WARN");
+        assert!(!loaded.wrap);
+        assert_eq!(loaded.marked_lines, vec![2, 7]);
+    }
+
+    #[tokio::test]
+    async fn test_file_context_not_found() {
+        let db = setup_db().await;
+        let result = db.load_file_context("/nonexistent").await.unwrap();
+        assert!(result.is_none());
     }
 }
