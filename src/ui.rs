@@ -96,6 +96,27 @@ fn find_matching_command(input: &str) -> Option<&'static CommandInfo> {
     COMMANDS.iter().find(|c| c.name == cmd_word)
 }
 
+fn shell_split(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for ch in input.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            c if c.is_whitespace() && !in_quotes => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
 fn find_command_completions(prefix: &str) -> Vec<&'static str> {
     let trimmed = prefix.trim();
     if trimmed.is_empty() {
@@ -1987,7 +2008,7 @@ impl App {
             AppMode::Command { input, .. } => input.trim().to_string(),
             _ => return,
         };
-        let args = match CommandLine::try_parse_from(input.split_whitespace()) {
+        let args = match CommandLine::try_parse_from(shell_split(&input)) {
             Ok(args) => args,
             Err(e) => {
                 self.tabs[self.active_tab].command_error = Some(format!("Invalid command: {}", e));
@@ -2273,7 +2294,7 @@ mod tests {
     use crate::analyzer::{FilterType, LogAnalyzer, LogEntry, LogLevel};
     use crate::db::{Database, LogStore};
     use crate::ui::Theme;
-    use crate::ui::{App, AppMode};
+    use crate::ui::{shell_split, App, AppMode};
     use crossterm::event::KeyCode;
     use ratatui::prelude::{Color, Modifier, Style};
     use std::sync::Arc;
@@ -2365,6 +2386,65 @@ mod tests {
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].filter_type, FilterType::Exclude);
         assert_eq!(filters[0].pattern, "bar");
+    }
+
+    #[test]
+    fn test_shell_split_basic() {
+        assert_eq!(shell_split("filter foo"), vec!["filter", "foo"]);
+        assert_eq!(shell_split("  filter  foo  "), vec!["filter", "foo"]);
+        assert_eq!(shell_split(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_shell_split_quoted() {
+        assert_eq!(
+            shell_split(r#"filter "hello world""#),
+            vec!["filter", "hello world"]
+        );
+        assert_eq!(
+            shell_split(r#"exclude "foo bar baz""#),
+            vec!["exclude", "foo bar baz"]
+        );
+    }
+
+    #[test]
+    fn test_shell_split_mixed_args() {
+        assert_eq!(
+            shell_split(r#"filter "my pattern" --fg Red --bg Blue"#),
+            vec!["filter", "my pattern", "--fg", "Red", "--bg", "Blue"]
+        );
+    }
+
+    #[test]
+    fn test_filter_command_with_quoted_pattern() {
+        let mut app = App::new(mock_analyzer(), Theme::default());
+        app.tab_mut().mode = AppMode::Command {
+            input: r#"filter "hello world""#.to_string(),
+            cursor: 20,
+            history: Vec::new(),
+            history_index: None,
+        };
+        app.handle_command();
+        let filters = app.tab().analyzer.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].pattern, "hello world");
+        assert_eq!(filters[0].filter_type, FilterType::Include);
+    }
+
+    #[test]
+    fn test_exclude_command_with_quoted_pattern() {
+        let mut app = App::new(mock_analyzer(), Theme::default());
+        app.tab_mut().mode = AppMode::Command {
+            input: r#"exclude "error in module""#.to_string(),
+            cursor: 25,
+            history: Vec::new(),
+            history_index: None,
+        };
+        app.handle_command();
+        let filters = app.tab().analyzer.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].pattern, "error in module");
+        assert_eq!(filters[0].filter_type, FilterType::Exclude);
     }
 
     #[test]
