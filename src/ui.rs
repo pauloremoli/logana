@@ -76,6 +76,11 @@ const COMMANDS: &[CommandInfo] = &[
         usage: "close-tab",
         description: "Close the current tab (quits if last tab)",
     },
+    CommandInfo {
+        name: "line-numbers",
+        usage: "line-numbers",
+        description: "Toggle line numbers on/off",
+    },
 ];
 
 fn command_names() -> Vec<&'static str> {
@@ -296,6 +301,7 @@ pub struct TabState {
     pub show_sidebar: bool,
     pub g_key_pressed: bool,
     pub wrap: bool,
+    pub show_line_numbers: bool,
     pub horizontal_scroll: usize,
     pub search: Search,
     pub tab_completion_index: Option<usize>,
@@ -328,6 +334,7 @@ impl TabState {
             show_sidebar: true,
             g_key_pressed: false,
             wrap: true,
+            show_line_numbers: true,
             horizontal_scroll: 0,
             search: Search::new(),
             tab_completion_index: None,
@@ -931,6 +938,7 @@ impl TabState {
             horizontal_scroll: self.horizontal_scroll,
             marked_lines,
             file_hash,
+            show_line_numbers: self.show_line_numbers,
         })
     }
 
@@ -940,6 +948,7 @@ impl TabState {
         self.wrap = ctx.wrap;
         self.level_colors = ctx.level_colors;
         self.show_sidebar = ctx.show_sidebar;
+        self.show_line_numbers = ctx.show_line_numbers;
         self.horizontal_scroll = ctx.horizontal_scroll;
         if !ctx.marked_lines.is_empty() {
             self.pending_marked_lines = Some(ctx.marked_lines.clone());
@@ -1627,6 +1636,12 @@ impl App {
         let theme = &self.theme;
         let level_colors = self.tabs[self.active_tab].level_colors;
         let current_scroll = self.tabs[self.active_tab].scroll_offset;
+        let show_line_numbers = self.tabs[self.active_tab].show_line_numbers;
+        let line_number_width = if show_line_numbers {
+            num_logs.max(1).to_string().len()
+        } else {
+            0
+        };
 
         let log_lines: Vec<Line> = visible_logs
             .iter()
@@ -1711,7 +1726,17 @@ impl App {
                     &filter_spans_storage,
                 );
 
-                Line::from(spans).style(render_style)
+                if show_line_numbers {
+                    let line_num = start + vis_idx + 1;
+                    let line_num_str =
+                        format!("{:>width$} ", line_num, width = line_number_width);
+                    let line_num_style = Style::default().fg(theme.border).add_modifier(Modifier::DIM);
+                    let mut all_spans = vec![Span::styled(line_num_str, line_num_style)];
+                    all_spans.extend(spans);
+                    Line::from(all_spans).style(render_style)
+                } else {
+                    Line::from(spans).style(render_style)
+                }
             })
             .collect();
 
@@ -2039,6 +2064,10 @@ impl App {
             }
             Some(Commands::Wrap) => {
                 self.tabs[self.active_tab].wrap = !self.tabs[self.active_tab].wrap;
+            }
+            Some(Commands::LineNumbers) => {
+                self.tabs[self.active_tab].show_line_numbers =
+                    !self.tabs[self.active_tab].show_line_numbers;
             }
             Some(Commands::LevelColors) => {
                 self.tabs[self.active_tab].level_colors = !self.tabs[self.active_tab].level_colors;

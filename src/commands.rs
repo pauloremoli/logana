@@ -40,6 +40,8 @@ pub enum Commands {
     LoadFilters { path: String },
     /// Toggle line wrapping
     Wrap,
+    /// Toggle line numbers
+    LineNumbers,
     /// Set the theme
     SetTheme { theme_name: String },
     /// Toggle log level color highlighting
