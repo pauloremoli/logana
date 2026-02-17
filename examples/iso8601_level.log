@@ -1,0 +1,5 @@
+2024-01-15T10:30:00.123Z INFO myapp: User login succeeded
+2024-01-15T10:31:01.456Z WARN myapp: Slow query detected
+2024-01-15T10:32:02.789Z ERROR myapp: Connection failed
+2024-01-15T10:33:03.012Z INFO myapp: Cache hit
+2024-01-15T10:34:04.345Z DEBUG myapp: Request received

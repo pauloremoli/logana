@@ -1,0 +1,5 @@
+time=2024-01-15T10:30:00Z level=info msg="User login succeeded" user=alice
+time=2024-01-15T10:31:01Z level=warn msg="Slow query detected" query_id=42
+time=2024-01-15T10:32:02Z level=error msg="Connection failed" host=db1
+time=2024-01-15T10:33:03Z level=info msg="Cache hit" key=session123
+time=2024-01-15T10:34:04Z level=debug msg="Request received" endpoint=/api

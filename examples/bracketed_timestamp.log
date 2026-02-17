@@ -1,0 +1,5 @@
+[2024-01-15 10:30:00] [INFO] User login succeeded
+[2024-01-15 10:31:01] [WARN] Slow query detected
+[2024-01-15 10:32:02] [ERROR] Connection failed
+[2024-01-15 10:33:03] [INFO] Cache hit
+[2024-01-15 10:34:04] [DEBUG] Request received
