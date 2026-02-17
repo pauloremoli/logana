@@ -1,0 +1,10 @@
+Jul  1 10:00:01 myhost systemd[1]: Starting User Manager for UID 1000...
+Jul  1 10:00:02 myhost kernel: Linux version 6.8.0-31-generic (buildd@lcy02-amd64-070) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.2.0-4ubuntu3) 13.2.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #31-Ubuntu SMP PREEMPT_DYNAMIC Mon Apr 22 14:00:00 UTC 2024
+Jul  1 10:00:03.123 myhost myapp[1234]: INFO: Application started successfully.
+Jul  1 10:00:04.789 myhost myapp[1234]: DEBUG: Processing request for user 'testuser'.
+Jul  1 10:00:05.000 myhost systemd[1]: Started User Manager for UID 1000.
+Jul  1 10:00:06.321 myhost myapp[1234]: ERROR: Failed to connect to database: Connection refused.
+Jul  1 10:00:07.654 myhost myapp[1234]: INFO: User 'admin' logged in from 192.168.1.100.
+Jul  1 10:00:08.111 myhost CRON[5678]: (root) CMD (command -v debian-sa1 > /dev/null && debian-sa1 1 1)
+Jul  1 10:00:09.999 myhost myapp[1234]: WARNING: Disk space low on /var/log.
+Jul  1 10:00:10.555 myhost systemd[1]: Reached target Graphical Interface.
