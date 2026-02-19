@@ -17,300 +17,543 @@ use crate::auto_complete::{
 };
 use crate::db::{FileContext, FileContextStore};
 use crate::file_reader::FileReader;
-use crate::filters::{render_line, SEARCH_STYLE_ID};
+use crate::filters::{SEARCH_STYLE_ID, render_line};
 use crate::log_manager::LogManager;
 use crate::search::Search;
-use crate::theme::Theme;
+use crate::theme::{Theme, fuzzy_match};
 use crate::types::{FilterType, LogLevel};
 
-#[derive(Debug, PartialEq)]
-pub enum AppMode {
-    Normal,
-    Command {
-        input: String,
-        cursor: usize,
-        history: Vec<String>,
-        history_index: Option<usize>,
-    },
-    FilterManagement {
-        selected_filter_index: usize,
-    },
-    FilterEdit {
-        filter_id: Option<usize>,
-        filter_input: String,
-    },
-    Search {
-        input: String,
-        forward: bool,
-    },
-    ConfirmRestore {
-        context: FileContext,
-    },
+// ---------------------------------------------------------------------------
+// KeyResult
+// ---------------------------------------------------------------------------
+
+pub enum KeyResult {
+    Handled,
+    Ignored,
+    ExecuteCommand(String),
 }
 
-pub struct TabState {
-    pub file_reader: FileReader,
-    pub log_manager: LogManager,
-    /// Indices into `file_reader` of lines currently visible under the active filters.
-    pub visible_indices: Vec<usize>,
-    pub mode: AppMode,
-    pub scroll_offset: usize,
-    pub viewport_offset: usize,
-    pub show_sidebar: bool,
-    pub g_key_pressed: bool,
-    pub wrap: bool,
-    pub show_line_numbers: bool,
-    pub horizontal_scroll: usize,
-    pub search: Search,
-    pub tab_completion_index: Option<usize>,
-    pub command_error: Option<String>,
-    pub level_colors: bool,
-    pub filter_context: Option<usize>,
-    pub editing_filter_id: Option<usize>,
-    pub visible_height: usize,
-    pub title: String,
+// ---------------------------------------------------------------------------
+// Mode trait
+// ---------------------------------------------------------------------------
+
+pub trait Mode: std::fmt::Debug {
+    fn handle_key(
+        self: Box<Self>,
+        tab: &mut TabState,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult);
+
+    fn status_line(&self) -> &str;
+
+    fn selected_filter_index(&self) -> Option<usize> {
+        None
+    }
+    fn command_state(&self) -> Option<(&str, usize)> {
+        None
+    }
+    fn search_state(&self) -> Option<(&str, bool)> {
+        None
+    }
+    fn needs_input_bar(&self) -> bool {
+        false
+    }
+    fn confirm_restore_context(&self) -> Option<&FileContext> {
+        None
+    }
 }
 
-impl TabState {
-    pub fn new(file_reader: FileReader, log_manager: LogManager, title: String) -> Self {
-        let mut tab = TabState {
-            file_reader,
-            log_manager,
-            visible_indices: Vec::new(),
-            mode: AppMode::Normal,
-            scroll_offset: 0,
-            viewport_offset: 0,
-            show_sidebar: true,
-            g_key_pressed: false,
-            wrap: true,
-            show_line_numbers: true,
-            horizontal_scroll: 0,
-            search: Search::new(),
-            tab_completion_index: None,
-            command_error: None,
-            level_colors: true,
-            filter_context: None,
-            editing_filter_id: None,
-            visible_height: 0,
-            title,
-        };
-        tab.refresh_visible();
-        tab
-    }
+// ---------------------------------------------------------------------------
+// NormalMode
+// ---------------------------------------------------------------------------
 
-    /// Recompute which file lines are visible under the current filters.
-    pub fn refresh_visible(&mut self) {
-        let (fm, _) = self.log_manager.build_filter_manager();
-        self.visible_indices = fm.compute_visible(&self.file_reader);
-    }
+#[derive(Debug)]
+pub struct NormalMode;
 
-    fn handle_normal_mode_key(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
+impl Mode for NormalMode {
+    fn handle_key(
+        self: Box<Self>,
+        tab: &mut TabState,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        // Pass these to the global handler
+        if key == KeyCode::Char('q') && modifiers.is_empty() {
+            return (self, KeyResult::Ignored);
+        }
+        if matches!(key, KeyCode::Tab | KeyCode::BackTab) {
+            return (self, KeyResult::Ignored);
+        }
+        if key == KeyCode::Char('w') && modifiers.contains(KeyModifiers::CONTROL) {
+            return (self, KeyResult::Ignored);
+        }
+        if key == KeyCode::Char('t') && modifiers.contains(KeyModifiers::CONTROL) {
+            return (self, KeyResult::Ignored);
+        }
+
         // Ctrl+d: half page down
-        if key_code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
-            let half = (self.visible_height / 2).max(1);
-            self.scroll_offset = self.scroll_offset.saturating_add(half);
-            self.g_key_pressed = false;
-            return;
+        if key == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
+            let half = (tab.visible_height / 2).max(1);
+            tab.scroll_offset = tab.scroll_offset.saturating_add(half);
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
         }
         // Ctrl+u: half page up
-        if key_code == KeyCode::Char('u') && modifiers.contains(KeyModifiers::CONTROL) {
-            let half = (self.visible_height / 2).max(1);
-            self.scroll_offset = self.scroll_offset.saturating_sub(half);
-            self.g_key_pressed = false;
-            return;
+        if key == KeyCode::Char('u') && modifiers.contains(KeyModifiers::CONTROL) {
+            let half = (tab.visible_height / 2).max(1);
+            tab.scroll_offset = tab.scroll_offset.saturating_sub(half);
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
         }
-        match key_code {
+
+        match key {
             KeyCode::PageDown => {
-                let page = self.visible_height.max(1);
-                self.scroll_offset = self.scroll_offset.saturating_add(page);
-                self.g_key_pressed = false;
+                let page = tab.visible_height.max(1);
+                tab.scroll_offset = tab.scroll_offset.saturating_add(page);
+                tab.g_key_pressed = false;
             }
             KeyCode::PageUp => {
-                let page = self.visible_height.max(1);
-                self.scroll_offset = self.scroll_offset.saturating_sub(page);
-                self.g_key_pressed = false;
+                let page = tab.visible_height.max(1);
+                tab.scroll_offset = tab.scroll_offset.saturating_sub(page);
+                tab.g_key_pressed = false;
             }
-            KeyCode::Char('q') => {} // handled in run()
             KeyCode::Char(':') => {
-                self.mode = AppMode::Command {
-                    input: String::new(),
-                    cursor: 0,
-                    history: Vec::new(),
-                    history_index: None,
-                }
+                let history = tab.command_history.clone();
+                return (
+                    Box::new(CommandMode::with_history(String::new(), 0, history)),
+                    KeyResult::Handled,
+                );
             }
             KeyCode::Char('f') => {
-                self.mode = AppMode::FilterManagement {
-                    selected_filter_index: 0,
-                }
+                return (
+                    Box::new(FilterManagementMode {
+                        selected_filter_index: 0,
+                    }),
+                    KeyResult::Handled,
+                );
             }
-            KeyCode::Char('s') => self.show_sidebar = !self.show_sidebar,
-            KeyCode::Char('j') => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
-                self.g_key_pressed = false;
+            KeyCode::Char('s') => {
+                tab.show_sidebar = !tab.show_sidebar;
+                tab.g_key_pressed = false;
             }
-            KeyCode::Char('k') => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                self.g_key_pressed = false;
+            KeyCode::Char('j') | KeyCode::Down => {
+                tab.scroll_offset = tab.scroll_offset.saturating_add(1);
+                tab.g_key_pressed = false;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                tab.scroll_offset = tab.scroll_offset.saturating_sub(1);
+                tab.g_key_pressed = false;
             }
             KeyCode::Char('h') => {
-                if !self.wrap {
-                    self.horizontal_scroll = self.horizontal_scroll.saturating_sub(1);
+                if !tab.wrap {
+                    tab.horizontal_scroll = tab.horizontal_scroll.saturating_sub(1);
                 }
-                self.g_key_pressed = false;
+                tab.g_key_pressed = false;
             }
             KeyCode::Char('l') => {
-                if !self.wrap {
-                    self.horizontal_scroll = self.horizontal_scroll.saturating_add(1);
+                if !tab.wrap {
+                    tab.horizontal_scroll = tab.horizontal_scroll.saturating_add(1);
                 }
-                self.g_key_pressed = false;
+                tab.g_key_pressed = false;
             }
             KeyCode::Char('w') => {
-                self.wrap = !self.wrap;
-                self.g_key_pressed = false;
+                tab.wrap = !tab.wrap;
+                tab.g_key_pressed = false;
             }
             KeyCode::Char('G') => {
-                let n = self.visible_indices.len();
+                let n = tab.visible_indices.len();
                 if n > 0 {
-                    self.scroll_offset = n - 1;
+                    tab.scroll_offset = n - 1;
                 }
-                self.g_key_pressed = false;
+                tab.g_key_pressed = false;
             }
             KeyCode::Char('g') => {
-                if self.g_key_pressed {
-                    self.scroll_offset = 0;
-                    self.g_key_pressed = false;
+                if tab.g_key_pressed {
+                    tab.scroll_offset = 0;
+                    tab.g_key_pressed = false;
                 } else {
-                    self.g_key_pressed = true;
+                    tab.g_key_pressed = true;
                 }
-            }
-            KeyCode::Down => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
-                self.g_key_pressed = false;
-            }
-            KeyCode::Up => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                self.g_key_pressed = false;
             }
             KeyCode::Char('m') => {
-                if let Some(&line_idx) = self.visible_indices.get(self.scroll_offset) {
-                    self.log_manager.toggle_mark(line_idx);
+                if let Some(&line_idx) = tab.visible_indices.get(tab.scroll_offset) {
+                    tab.log_manager.toggle_mark(line_idx);
                 }
-                self.g_key_pressed = false;
+                tab.g_key_pressed = false;
             }
             KeyCode::Char('/') => {
-                self.mode = AppMode::Search {
-                    input: String::new(),
-                    forward: true,
-                };
-                self.g_key_pressed = false;
+                tab.g_key_pressed = false;
+                return (
+                    Box::new(SearchMode {
+                        input: String::new(),
+                        forward: true,
+                    }),
+                    KeyResult::Handled,
+                );
             }
             KeyCode::Char('?') => {
-                self.mode = AppMode::Search {
-                    input: String::new(),
-                    forward: false,
-                };
-                self.g_key_pressed = false;
+                tab.g_key_pressed = false;
+                return (
+                    Box::new(SearchMode {
+                        input: String::new(),
+                        forward: false,
+                    }),
+                    KeyResult::Handled,
+                );
             }
             KeyCode::Char('n') => {
-                if let Some(result) = self.search.next_match() {
+                if let Some(result) = tab.search.next_match() {
                     let line_idx = result.line_idx;
-                    self.scroll_to_line_idx(line_idx);
+                    tab.scroll_to_line_idx(line_idx);
                 }
-                self.g_key_pressed = false;
+                tab.g_key_pressed = false;
             }
             KeyCode::Char('N') => {
-                if let Some(result) = self.search.previous_match() {
+                if let Some(result) = tab.search.previous_match() {
                     let line_idx = result.line_idx;
-                    self.scroll_to_line_idx(line_idx);
+                    tab.scroll_to_line_idx(line_idx);
                 }
-                self.g_key_pressed = false;
+                tab.g_key_pressed = false;
             }
             _ => {
-                self.g_key_pressed = false;
+                tab.g_key_pressed = false;
             }
         }
+        (self, KeyResult::Handled)
     }
 
-    fn handle_filter_management_mode_key(&mut self, key_code: KeyCode) {
-        // Extract the current selected index (Copy type) to avoid holding a &mut self.mode
-        // borrow while calling methods that need &mut self.
-        let selected = match self.mode {
-            AppMode::FilterManagement { selected_filter_index } => selected_filter_index,
-            _ => return,
-        };
+    fn status_line(&self) -> &str {
+        "[NORMAL] [q]uit | : => command Mode | [f]ilter mode | [s]idebar | [m]ark Line | / => search | ? => search backward | [n]ext match | N => prev match | PgDn/Ctrl+d PgUp/Ctrl+u | Tab/Shift+Tab => switch tab"
+    }
+}
 
-        match key_code {
+// ---------------------------------------------------------------------------
+// CommandMode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct CommandMode {
+    pub input: String,
+    pub cursor: usize,
+    pub history: Vec<String>,
+    pub history_index: Option<usize>,
+    pub completion_index: Option<usize>,
+}
+
+impl CommandMode {
+    pub fn with_history(input: String, cursor: usize, history: Vec<String>) -> Self {
+        CommandMode {
+            input,
+            cursor,
+            history,
+            history_index: None,
+            completion_index: None,
+        }
+    }
+}
+
+impl Mode for CommandMode {
+    fn handle_key(
+        mut self: Box<Self>,
+        tab: &mut TabState,
+        key: KeyCode,
+        _modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        match key {
+            KeyCode::Enter => {
+                let cmd = self.input.trim().to_string();
+                return (Box::new(NormalMode), KeyResult::ExecuteCommand(cmd));
+            }
             KeyCode::Esc => {
-                self.mode = AppMode::Normal;
+                tab.filter_context = None;
+                tab.editing_filter_id = None;
+                return (Box::new(NormalMode), KeyResult::Handled);
+            }
+            KeyCode::Backspace => {
+                if self.cursor > 0 && !self.input.is_empty() {
+                    self.input.remove(self.cursor - 1);
+                    self.cursor -= 1;
+                    self.completion_index = None;
+                }
+            }
+            KeyCode::Char(c) => {
+                self.input.insert(self.cursor, c);
+                self.cursor += 1;
+                tab.command_error = None;
+                self.completion_index = None;
+                self.history_index = None;
+            }
+            KeyCode::Left => {
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                if self.cursor < self.input.len() {
+                    self.cursor += 1;
+                }
             }
             KeyCode::Up => {
-                let new_idx = selected.saturating_sub(1);
-                self.mode = AppMode::FilterManagement { selected_filter_index: new_idx };
+                if self.history.is_empty() {
+                    return (self, KeyResult::Handled);
+                }
+                let new_index = match self.history_index {
+                    None => Some(self.history.len() - 1),
+                    Some(0) => Some(0),
+                    Some(i) => Some(i - 1),
+                };
+                if let Some(i) = new_index {
+                    self.input = self.history[i].clone();
+                    self.cursor = self.input.len();
+                    self.history_index = Some(i);
+                }
             }
             KeyCode::Down => {
-                let num_filters = self.log_manager.get_filters().len();
+                if self.history.is_empty() {
+                    return (self, KeyResult::Handled);
+                }
+                let new_index = match self.history_index {
+                    None => return (self, KeyResult::Handled),
+                    Some(i) if i + 1 >= self.history.len() => {
+                        self.input = String::new();
+                        self.cursor = 0;
+                        self.history_index = None;
+                        return (self, KeyResult::Handled);
+                    }
+                    Some(i) => Some(i + 1),
+                };
+                if let Some(i) = new_index {
+                    self.input = self.history[i].clone();
+                    self.cursor = self.input.len();
+                    self.history_index = Some(i);
+                }
+            }
+            KeyCode::Tab => {
+                let trimmed = self.input.trim().to_string();
+
+                // Color completion for --fg/--bg arguments
+                if let Some(partial) = extract_color_partial(&trimmed) {
+                    let completions = complete_color(partial);
+                    if !completions.is_empty() {
+                        let idx = self.completion_index.unwrap_or(0) % completions.len();
+                        let color_name = completions[idx];
+                        let prefix = if partial.is_empty() {
+                            trimmed.clone()
+                        } else {
+                            trimmed[..trimmed.len() - partial.len()].to_string()
+                        };
+                        self.input = format!("{}{}", prefix, color_name);
+                        self.cursor = self.input.len();
+                        self.completion_index = Some(idx + 1);
+                        return (self, KeyResult::Handled);
+                    }
+                }
+
+                // File path completion
+                let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
+                let file_cmd = file_commands
+                    .iter()
+                    .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
+                if let Some(&cmd) = file_cmd {
+                    let partial = trimmed[cmd.len()..].trim_start();
+                    let completions = complete_file_path(partial);
+                    if !completions.is_empty() {
+                        let idx = self.completion_index.unwrap_or(0) % completions.len();
+                        let completed = completions[idx].clone();
+                        self.input = format!("{} {}", cmd, completed);
+                        self.cursor = self.input.len();
+                        self.completion_index = Some(idx + 1);
+                    }
+                    return (self, KeyResult::Handled);
+                }
+
+                // set-theme completion with fuzzy match
+                if let Some(after_prefix) = trimmed.strip_prefix("set-theme") {
+                    let partial = after_prefix.trim_start();
+                    let mut themes = Theme::list_available_themes();
+                    if !partial.is_empty() {
+                        themes.retain(|t| fuzzy_match(partial, t));
+                    }
+                    if !themes.is_empty() {
+                        let idx = self.completion_index.unwrap_or(0) % themes.len();
+                        let theme_name = themes[idx].clone();
+                        self.input = format!("set-theme {}", theme_name);
+                        self.cursor = self.input.len();
+                        self.completion_index = Some(idx + 1);
+                    }
+                    return (self, KeyResult::Handled);
+                }
+
+                // Command name completion
+                let completions = find_command_completions(&trimmed);
+                if !completions.is_empty() {
+                    let idx = self.completion_index.unwrap_or(0) % completions.len();
+                    self.input = completions[idx].to_string();
+                    self.cursor = self.input.len();
+                    self.completion_index = Some(idx + 1);
+                }
+            }
+            _ => {}
+        }
+        (self, KeyResult::Handled)
+    }
+
+    fn status_line(&self) -> &str {
+        "[COMMAND] filter | exclude | set-color | export-marked | save-filters | load-filters | wrap | set-theme | level-colors | open | close-tab | Esc | Enter"
+    }
+
+    fn command_state(&self) -> Option<(&str, usize)> {
+        Some((&self.input, self.cursor))
+    }
+
+    fn needs_input_bar(&self) -> bool {
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FilterManagementMode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct FilterManagementMode {
+    pub selected_filter_index: usize,
+}
+
+impl Mode for FilterManagementMode {
+    fn handle_key(
+        self: Box<Self>,
+        tab: &mut TabState,
+        key: KeyCode,
+        _modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        if matches!(key, KeyCode::Tab | KeyCode::BackTab) {
+            return (self, KeyResult::Ignored);
+        }
+
+        let selected = self.selected_filter_index;
+
+        match key {
+            KeyCode::Esc => (Box::new(NormalMode), KeyResult::Handled),
+            KeyCode::Up => (
+                Box::new(FilterManagementMode {
+                    selected_filter_index: selected.saturating_sub(1),
+                }),
+                KeyResult::Handled,
+            ),
+            KeyCode::Down => {
+                let num_filters = tab.log_manager.get_filters().len();
                 let new_idx = if num_filters > 0 {
                     (selected + 1).min(num_filters - 1)
                 } else {
                     0
                 };
-                self.mode = AppMode::FilterManagement { selected_filter_index: new_idx };
+                (
+                    Box::new(FilterManagementMode {
+                        selected_filter_index: new_idx,
+                    }),
+                    KeyResult::Handled,
+                )
             }
             KeyCode::Char(' ') => {
-                let filter_id = self.log_manager.get_filters().get(selected).map(|f| f.id);
+                let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
                 if let Some(id) = filter_id {
-                    self.log_manager.toggle_filter(id);
-                    self.refresh_visible();
+                    tab.log_manager.toggle_filter(id);
+                    tab.refresh_visible();
                 }
-                self.mode = AppMode::FilterManagement { selected_filter_index: selected };
+                (
+                    Box::new(FilterManagementMode {
+                        selected_filter_index: selected,
+                    }),
+                    KeyResult::Handled,
+                )
             }
             KeyCode::Char('d') => {
-                let filter_id = self.log_manager.get_filters().get(selected).map(|f| f.id);
+                let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
                 if let Some(id) = filter_id {
-                    self.log_manager.remove_filter(id);
-                    self.refresh_visible();
-                    let remaining_len = self.log_manager.get_filters().len();
+                    tab.log_manager.remove_filter(id);
+                    tab.refresh_visible();
+                    let remaining_len = tab.log_manager.get_filters().len();
                     let new_idx = if remaining_len > 0 && selected >= remaining_len {
                         remaining_len - 1
                     } else {
                         selected
                     };
-                    self.mode = AppMode::FilterManagement { selected_filter_index: new_idx };
+                    (
+                        Box::new(FilterManagementMode {
+                            selected_filter_index: new_idx,
+                        }),
+                        KeyResult::Handled,
+                    )
                 } else {
-                    self.mode = AppMode::FilterManagement { selected_filter_index: selected };
+                    (
+                        Box::new(FilterManagementMode {
+                            selected_filter_index: selected,
+                        }),
+                        KeyResult::Handled,
+                    )
                 }
             }
             KeyCode::Char('K') => {
-                let filter_id = self.log_manager.get_filters().get(selected).map(|f| f.id);
+                let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
                 if let Some(id) = filter_id {
-                    self.log_manager.move_filter_up(id);
-                    self.refresh_visible();
+                    tab.log_manager.move_filter_up(id);
+                    tab.refresh_visible();
                     let new_idx = selected.saturating_sub(1);
-                    self.mode = AppMode::FilterManagement { selected_filter_index: new_idx };
+                    (
+                        Box::new(FilterManagementMode {
+                            selected_filter_index: new_idx,
+                        }),
+                        KeyResult::Handled,
+                    )
                 } else {
-                    self.mode = AppMode::FilterManagement { selected_filter_index: selected };
+                    (
+                        Box::new(FilterManagementMode {
+                            selected_filter_index: selected,
+                        }),
+                        KeyResult::Handled,
+                    )
                 }
             }
             KeyCode::Char('J') => {
-                let filter_id = self.log_manager.get_filters().get(selected).map(|f| f.id);
+                let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
                 if let Some(id) = filter_id {
-                    self.log_manager.move_filter_down(id);
-                    self.refresh_visible();
-                    let total = self.log_manager.get_filters().len();
-                    let new_idx = if selected + 1 < total { selected + 1 } else { selected };
-                    self.mode = AppMode::FilterManagement { selected_filter_index: new_idx };
+                    tab.log_manager.move_filter_down(id);
+                    tab.refresh_visible();
+                    let total = tab.log_manager.get_filters().len();
+                    let new_idx = if selected + 1 < total {
+                        selected + 1
+                    } else {
+                        selected
+                    };
+                    (
+                        Box::new(FilterManagementMode {
+                            selected_filter_index: new_idx,
+                        }),
+                        KeyResult::Handled,
+                    )
                 } else {
-                    self.mode = AppMode::FilterManagement { selected_filter_index: selected };
+                    (
+                        Box::new(FilterManagementMode {
+                            selected_filter_index: selected,
+                        }),
+                        KeyResult::Handled,
+                    )
                 }
             }
             KeyCode::Char('e') => {
-                let filter_info = self.log_manager.get_filters().get(selected).map(|f| {
-                    (f.id, f.filter_type.clone(), f.color_config.clone(), f.pattern.clone())
+                let filter_info = tab.log_manager.get_filters().get(selected).map(|f| {
+                    (
+                        f.id,
+                        f.filter_type.clone(),
+                        f.color_config.clone(),
+                        f.pattern.clone(),
+                    )
                 });
                 if let Some((id, ft, cc, pattern)) = filter_info {
-                    self.editing_filter_id = Some(id);
-                    self.filter_context = Some(selected);
+                    tab.editing_filter_id = Some(id);
+                    tab.filter_context = Some(selected);
                     let mut cmd = if ft == FilterType::Include {
                         String::from("filter")
                     } else {
@@ -332,19 +575,27 @@ impl TabState {
                     cmd.push(' ');
                     cmd.push_str(&pattern);
                     let len = cmd.len();
-                    self.mode = AppMode::Command {
-                        input: cmd,
-                        cursor: len,
-                        history: Vec::new(),
-                        history_index: None,
-                    };
+                    let history = tab.command_history.clone();
+                    (
+                        Box::new(CommandMode::with_history(cmd, len, history)),
+                        KeyResult::Handled,
+                    )
                 } else {
-                    self.mode = AppMode::FilterManagement { selected_filter_index: selected };
+                    (
+                        Box::new(FilterManagementMode {
+                            selected_filter_index: selected,
+                        }),
+                        KeyResult::Handled,
+                    )
                 }
             }
             KeyCode::Char('c') => {
-                let color_config = self.log_manager.get_filters().get(selected).and_then(|f| f.color_config.clone());
-                self.filter_context = Some(selected);
+                let color_config = tab
+                    .log_manager
+                    .get_filters()
+                    .get(selected)
+                    .and_then(|f| f.color_config.clone());
+                tab.filter_context = Some(selected);
                 let mut cmd = String::from("set-color");
                 if let Some(cfg) = color_config {
                     if let Some(fg) = cfg.fg {
@@ -355,145 +606,285 @@ impl TabState {
                     }
                 }
                 let len = cmd.len();
-                self.mode = AppMode::Command {
-                    input: cmd,
-                    cursor: len,
-                    history: Vec::new(),
-                    history_index: None,
-                };
+                let history = tab.command_history.clone();
+                (
+                    Box::new(CommandMode::with_history(cmd, len, history)),
+                    KeyResult::Handled,
+                )
             }
             KeyCode::Char('i') => {
-                self.mode = AppMode::Command {
-                    input: "filter ".to_string(),
-                    cursor: 7,
-                    history: Vec::new(),
-                    history_index: None,
-                };
+                let history = tab.command_history.clone();
+                (
+                    Box::new(CommandMode::with_history("filter ".to_string(), 7, history)),
+                    KeyResult::Handled,
+                )
             }
             KeyCode::Char('x') => {
-                self.mode = AppMode::Command {
-                    input: "exclude ".to_string(),
-                    cursor: 8,
-                    history: Vec::new(),
-                    history_index: None,
-                };
+                let history = tab.command_history.clone();
+                (
+                    Box::new(CommandMode::with_history(
+                        "exclude ".to_string(),
+                        8,
+                        history,
+                    )),
+                    KeyResult::Handled,
+                )
             }
-            _ => {
-                self.mode = AppMode::FilterManagement { selected_filter_index: selected };
-            }
+            _ => (
+                Box::new(FilterManagementMode {
+                    selected_filter_index: selected,
+                }),
+                KeyResult::Handled,
+            ),
         }
     }
 
-    fn handle_filter_edit_mode_key(&mut self, key_code: KeyCode) {
-        let (current_id, current_input) = match &self.mode {
-            AppMode::FilterEdit { filter_id, filter_input } => (*filter_id, filter_input.clone()),
-            _ => return,
-        };
+    fn status_line(&self) -> &str {
+        "[FILTER] [i]nclude | e[x]clude | Space => toggle | [d]elete | [e]dit | set [c]olor | [J/K] move down/up | Esc => normal mode"
+    }
 
-        match key_code {
+    fn selected_filter_index(&self) -> Option<usize> {
+        Some(self.selected_filter_index)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FilterEditMode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct FilterEditMode {
+    pub filter_id: Option<usize>,
+    pub filter_input: String,
+}
+
+impl Mode for FilterEditMode {
+    fn handle_key(
+        self: Box<Self>,
+        tab: &mut TabState,
+        key: KeyCode,
+        _modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        if matches!(key, KeyCode::Tab | KeyCode::BackTab) {
+            return (self, KeyResult::Ignored);
+        }
+        match key {
             KeyCode::Enter => {
-                if let Some(id) = current_id {
-                    self.log_manager.edit_filter(id, current_input);
-                    self.refresh_visible();
-                    self.mode = AppMode::FilterManagement { selected_filter_index: 0 };
+                if let Some(id) = self.filter_id {
+                    tab.log_manager.edit_filter(id, self.filter_input);
+                    tab.refresh_visible();
                 }
+                (
+                    Box::new(FilterManagementMode {
+                        selected_filter_index: 0,
+                    }),
+                    KeyResult::Handled,
+                )
             }
-            KeyCode::Esc => {
-                self.mode = AppMode::FilterManagement { selected_filter_index: 0 };
-            }
+            KeyCode::Esc => (
+                Box::new(FilterManagementMode {
+                    selected_filter_index: 0,
+                }),
+                KeyResult::Handled,
+            ),
             KeyCode::Backspace => {
-                let mut input = current_input;
+                let mut input = self.filter_input;
                 input.pop();
-                self.mode = AppMode::FilterEdit { filter_id: current_id, filter_input: input };
+                (
+                    Box::new(FilterEditMode {
+                        filter_id: self.filter_id,
+                        filter_input: input,
+                    }),
+                    KeyResult::Handled,
+                )
             }
             KeyCode::Char(c) => {
-                let mut input = current_input;
+                let mut input = self.filter_input;
                 input.push(c);
-                self.mode = AppMode::FilterEdit { filter_id: current_id, filter_input: input };
+                (
+                    Box::new(FilterEditMode {
+                        filter_id: self.filter_id,
+                        filter_input: input,
+                    }),
+                    KeyResult::Handled,
+                )
             }
-            _ => {}
+            _ => (self, KeyResult::Handled),
         }
     }
 
-    fn handle_search_mode_key(&mut self, key_code: KeyCode) {
-        if let AppMode::Search { input, forward: _ } = &mut self.mode {
-            match key_code {
-                KeyCode::Enter => {
-                    let (search_input, forward_val) = match &mut self.mode {
-                        AppMode::Search { input, forward } => (input.clone(), *forward),
-                        _ => return,
-                    };
-                    let _ = self
-                        .search
-                        .search(&search_input, &self.visible_indices, &self.file_reader);
-                    let search_result = if forward_val {
-                        self.search.next_match()
-                    } else {
-                        self.search.previous_match()
-                    };
-                    if let Some(result) = search_result {
-                        let line_idx = result.line_idx;
-                        self.scroll_to_line_idx(line_idx);
-                    }
-                    self.mode = AppMode::Normal;
+    fn status_line(&self) -> &str {
+        "[FILTER EDIT] Esc => cancel | Enter => save"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SearchMode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct SearchMode {
+    pub input: String,
+    pub forward: bool,
+}
+
+impl Mode for SearchMode {
+    fn handle_key(
+        mut self: Box<Self>,
+        tab: &mut TabState,
+        key: KeyCode,
+        _modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        if matches!(key, KeyCode::Tab | KeyCode::BackTab) {
+            return (self, KeyResult::Ignored);
+        }
+        match key {
+            KeyCode::Enter => {
+                let visible = tab.visible_indices.clone();
+                let _ = tab.search.search(&self.input, &visible, &tab.file_reader);
+                let result = if self.forward {
+                    tab.search.next_match()
+                } else {
+                    tab.search.previous_match()
+                };
+                if let Some(r) = result {
+                    let line_idx = r.line_idx;
+                    tab.scroll_to_line_idx(line_idx);
                 }
-                KeyCode::Esc => {
-                    *input = String::new();
-                    self.mode = AppMode::Normal;
-                }
-                KeyCode::Backspace => {
-                    input.pop();
-                }
-                KeyCode::Char(c) => {
-                    input.push(c);
-                }
-                _ => {}
+                (Box::new(NormalMode), KeyResult::Handled)
             }
+            KeyCode::Esc => {
+                self.input.clear();
+                (Box::new(NormalMode), KeyResult::Handled)
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+                (self, KeyResult::Handled)
+            }
+            KeyCode::Char(c) => {
+                self.input.push(c);
+                (self, KeyResult::Handled)
+            }
+            _ => (self, KeyResult::Handled),
         }
     }
 
-    fn get_command_list(&self) -> String {
-        match self.mode {
-            AppMode::Normal => {
-                "[NORMAL] [q]uit | : => command Mode | [f]ilter mode | [s]idebar | [m]ark Line | / => search | ? => search backward | [n]ext match | N => prev match | PgDn/Ctrl+d PgUp/Ctrl+u | Tab/Shift+Tab => switch tab".to_string()
-            },
-            AppMode::Command { .. } => {
-                "[COMMAND] filter | exclude | set-color | export-marked | save-filters | load-filters | wrap | set-theme | level-colors | open | close-tab | Esc | Enter".to_string()
-            },
-            AppMode::FilterManagement { .. } => {
-                "[FILTER] [i]nclude | e[x]clude | Space => toggle | [d]elete | [e]dit | set [c]olor | [J/K] move down/up | Esc => normal mode".to_string()
-            },
-            AppMode::FilterEdit { .. } => {
-                "[FILTER EDIT] Esc => cancel | Enter => save".to_string()
-            },
-            AppMode::Search { .. } => {
-                "[SEARCH] Esc => cancel | Enter => search".to_string()
-            },
-            AppMode::ConfirmRestore { .. } => {
-                "[RESTORE] Restore previous session? [y]es / [n]o".to_string()
-            },
+    fn status_line(&self) -> &str {
+        "[SEARCH] Esc => cancel | Enter => search"
+    }
+
+    fn search_state(&self) -> Option<(&str, bool)> {
+        Some((&self.input, self.forward))
+    }
+
+    fn needs_input_bar(&self) -> bool {
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConfirmRestoreMode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct ConfirmRestoreMode {
+    pub context: FileContext,
+}
+
+impl Mode for ConfirmRestoreMode {
+    fn handle_key(
+        self: Box<Self>,
+        tab: &mut TabState,
+        key: KeyCode,
+        _modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        match key {
+            KeyCode::Char('y') => {
+                tab.apply_file_context(&self.context);
+                (Box::new(NormalMode), KeyResult::Handled)
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                tab.log_manager.clear_filters();
+                tab.log_manager.set_marks(vec![]);
+                tab.refresh_visible();
+                (Box::new(NormalMode), KeyResult::Handled)
+            }
+            _ => (self, KeyResult::Handled),
         }
     }
 
-    fn scroll_to_line_idx(&mut self, line_idx: usize) {
+    fn status_line(&self) -> &str {
+        "[RESTORE] Restore previous session? [y]es / [n]o"
+    }
+
+    fn confirm_restore_context(&self) -> Option<&FileContext> {
+        Some(&self.context)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TabState
+// ---------------------------------------------------------------------------
+
+pub struct TabState {
+    pub file_reader: FileReader,
+    pub log_manager: LogManager,
+    /// Indices into `file_reader` of lines currently visible under the active filters.
+    pub visible_indices: Vec<usize>,
+    pub mode: Box<dyn Mode>,
+    pub scroll_offset: usize,
+    pub viewport_offset: usize,
+    pub show_sidebar: bool,
+    pub g_key_pressed: bool,
+    pub wrap: bool,
+    pub show_line_numbers: bool,
+    pub horizontal_scroll: usize,
+    pub search: Search,
+    pub command_error: Option<String>,
+    pub level_colors: bool,
+    pub filter_context: Option<usize>,
+    pub editing_filter_id: Option<usize>,
+    pub visible_height: usize,
+    pub title: String,
+    pub command_history: Vec<String>,
+}
+
+impl TabState {
+    pub fn new(file_reader: FileReader, log_manager: LogManager, title: String) -> Self {
+        let mut tab = TabState {
+            file_reader,
+            log_manager,
+            visible_indices: Vec::new(),
+            mode: Box::new(NormalMode),
+            scroll_offset: 0,
+            viewport_offset: 0,
+            show_sidebar: true,
+            g_key_pressed: false,
+            wrap: true,
+            show_line_numbers: true,
+            horizontal_scroll: 0,
+            search: Search::new(),
+            command_error: None,
+            level_colors: true,
+            filter_context: None,
+            editing_filter_id: None,
+            visible_height: 0,
+            title,
+            command_history: Vec::new(),
+        };
+        tab.refresh_visible();
+        tab
+    }
+
+    /// Recompute which file lines are visible under the current filters.
+    pub fn refresh_visible(&mut self) {
+        let (fm, _) = self.log_manager.build_filter_manager();
+        self.visible_indices = fm.compute_visible(&self.file_reader);
+    }
+
+    pub fn scroll_to_line_idx(&mut self, line_idx: usize) {
         if let Some(index) = self.visible_indices.iter().position(|&i| i == line_idx) {
             self.scroll_offset = index;
-        }
-    }
-
-    fn get_selected_filter_index(&self) -> Option<usize> {
-        match &self.mode {
-            AppMode::FilterManagement {
-                selected_filter_index,
-            } => Some(*selected_filter_index),
-            _ => None,
-        }
-    }
-
-    fn get_command_input_and_cursor(&self) -> Option<(&str, usize)> {
-        match &self.mode {
-            AppMode::Command { input, cursor, .. } => Some((input.as_str(), *cursor)),
-            _ => None,
         }
     }
 
@@ -515,7 +906,7 @@ impl TabState {
         })
     }
 
-    fn apply_file_context(&mut self, ctx: &FileContext) {
+    pub fn apply_file_context(&mut self, ctx: &FileContext) {
         self.scroll_offset = ctx.scroll_offset;
         self.wrap = ctx.wrap;
         self.level_colors = ctx.level_colors;
@@ -543,13 +934,17 @@ impl std::fmt::Debug for TabState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
 pub struct App {
     pub tabs: Vec<TabState>,
     pub active_tab: usize,
     pub theme: Theme,
-    pub available_themes: Vec<String>,
     pub db: Arc<crate::db::Database>,
     pub rt: Arc<tokio::runtime::Runtime>,
+    pub should_quit: bool,
 }
 
 impl std::fmt::Debug for App {
@@ -565,32 +960,6 @@ impl App {
     pub fn new(log_manager: LogManager, file_reader: FileReader, theme: Theme) -> App {
         let db = log_manager.db.clone();
         let rt = log_manager.rt.clone();
-
-        let mut theme_paths = vec![];
-        if let Ok(entries) = std::fs::read_dir("themes") {
-            for entry in entries.flatten() {
-                theme_paths.push(entry.path());
-            }
-        }
-        if let Some(config_dir) = dirs::config_dir() {
-            let user_themes_path = config_dir.join("logsmith-rs/themes");
-            if let Ok(entries) = std::fs::read_dir(user_themes_path) {
-                for entry in entries.flatten() {
-                    theme_paths.push(entry.path());
-                }
-            }
-        }
-
-        let mut available_themes_set = std::collections::HashSet::new();
-        for path in theme_paths {
-            if path.extension().and_then(|ext| ext.to_str()) == Some("json")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-            {
-                available_themes_set.insert(stem.to_string());
-            }
-        }
-        let mut available_themes: Vec<String> = available_themes_set.into_iter().collect();
-        available_themes.sort();
 
         let title = log_manager
             .source_file()
@@ -609,7 +978,7 @@ impl App {
         if let Some(source) = tab.log_manager.source_file() {
             let source = source.to_string();
             if let Ok(Some(ctx)) = rt.block_on(db.load_file_context(&source)) {
-                tab.mode = AppMode::ConfirmRestore { context: ctx };
+                tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
             }
         }
 
@@ -617,9 +986,9 @@ impl App {
             tabs: vec![tab],
             active_tab: 0,
             theme,
-            available_themes,
             db,
             rt,
+            should_quit: false,
         }
     }
 
@@ -640,7 +1009,8 @@ impl App {
             return Err(format!("'{}' is a directory, not a file.", path));
         }
 
-        let file_reader = FileReader::new(path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
+        let file_reader =
+            FileReader::new(path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
         let log_manager = LogManager::new(self.db.clone(), self.rt.clone(), Some(path.to_string()));
 
         let title = file_path_obj
@@ -651,9 +1021,8 @@ impl App {
 
         let mut tab = TabState::new(file_reader, log_manager, title);
 
-        // Check for saved context
         if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(path)) {
-            tab.mode = AppMode::ConfirmRestore { context: ctx };
+            tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
         }
 
         self.tabs.push(tab);
@@ -688,6 +1057,184 @@ impl App {
         false
     }
 
+    fn handle_global_key(&mut self, key: KeyCode, modifiers: KeyModifiers) {
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+        match key {
+            KeyCode::Char('q') if modifiers.is_empty() => {
+                self.save_all_contexts();
+                self.should_quit = true;
+            }
+            KeyCode::Tab => {
+                if self.tabs.len() > 1 {
+                    self.active_tab = (self.active_tab + 1) % self.tabs.len();
+                }
+            }
+            KeyCode::BackTab => {
+                if self.tabs.len() > 1 {
+                    self.active_tab = if self.active_tab == 0 {
+                        self.tabs.len() - 1
+                    } else {
+                        self.active_tab - 1
+                    };
+                }
+            }
+            KeyCode::Char('w') if ctrl => {
+                if self.close_tab() {
+                    self.should_quit = true;
+                }
+            }
+            KeyCode::Char('t') if ctrl => {
+                let history = self.tabs[self.active_tab].command_history.clone();
+                self.tabs[self.active_tab].mode =
+                    Box::new(CommandMode::with_history("open ".to_string(), 5, history));
+            }
+            _ => {}
+        }
+    }
+
+    /// Execute a command string, transitioning mode on success/failure.
+    pub fn execute_command_str(&mut self, cmd: String) {
+        let result = self.run_command(&cmd);
+        let tab = &mut self.tabs[self.active_tab];
+        match result {
+            Ok(()) => {
+                if !cmd.trim().is_empty() {
+                    tab.command_history.push(cmd.trim().to_string());
+                }
+                if let Some(idx) = tab.filter_context.take() {
+                    tab.mode = Box::new(FilterManagementMode {
+                        selected_filter_index: idx,
+                    });
+                } else {
+                    tab.mode = Box::new(NormalMode);
+                }
+            }
+            Err(msg) => {
+                tab.command_error = Some(msg);
+                let history = tab.command_history.clone();
+                let cmd_len = cmd.len();
+                tab.mode = Box::new(CommandMode {
+                    input: cmd,
+                    cursor: cmd_len,
+                    history,
+                    history_index: None,
+                    completion_index: None,
+                });
+            }
+        }
+    }
+
+    fn run_command(&mut self, input: &str) -> Result<(), String> {
+        use crate::commands::{CommandLine, Commands};
+        use clap::Parser;
+
+        let args = CommandLine::try_parse_from(shell_split(input))
+            .map_err(|e| format!("Invalid command: {}", e))?;
+
+        match args.command {
+            Some(Commands::Filter { pattern, fg, bg, m }) => {
+                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
+                    self.tabs[self.active_tab].log_manager.remove_filter(old_id);
+                }
+                self.tabs[self.active_tab]
+                    .log_manager
+                    .add_filter_with_color(
+                        pattern,
+                        FilterType::Include,
+                        fg.as_deref(),
+                        bg.as_deref(),
+                        m,
+                    );
+                self.tabs[self.active_tab].scroll_offset = 0;
+                self.tabs[self.active_tab].refresh_visible();
+            }
+            Some(Commands::Exclude { pattern }) => {
+                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
+                    self.tabs[self.active_tab].log_manager.remove_filter(old_id);
+                }
+                self.tabs[self.active_tab]
+                    .log_manager
+                    .add_filter_with_color(pattern, FilterType::Exclude, None, None, false);
+                self.tabs[self.active_tab].scroll_offset = 0;
+                self.tabs[self.active_tab].refresh_visible();
+            }
+            Some(Commands::SetColor { fg, bg, m }) => {
+                let selected_filter_index = self.tabs[self.active_tab].filter_context.unwrap_or(0);
+                let filters = self.tabs[self.active_tab].log_manager.get_filters();
+                if let Some(filter) = filters.get(selected_filter_index)
+                    && filter.filter_type == FilterType::Include
+                {
+                    let filter_id = filter.id;
+                    self.tabs[self.active_tab].log_manager.set_color_config(
+                        filter_id,
+                        fg.as_deref(),
+                        bg.as_deref(),
+                        m,
+                    );
+                    self.tabs[self.active_tab].refresh_visible();
+                }
+            }
+            Some(Commands::ExportMarked { path }) => {
+                if !path.is_empty() {
+                    let tab = &self.tabs[self.active_tab];
+                    let marked_lines = tab.log_manager.get_marked_lines(&tab.file_reader);
+                    let mut content: Vec<u8> = Vec::new();
+                    for line in marked_lines {
+                        content.extend_from_slice(line);
+                        content.push(b'\n');
+                    }
+                    let _ = std::fs::write(path, content);
+                }
+            }
+            Some(Commands::SaveFilters { path }) => {
+                if !path.is_empty() {
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .save_filters(&path)
+                        .map_err(|e| format!("Failed to save filters: {}", e))?;
+                }
+            }
+            Some(Commands::LoadFilters { path }) => {
+                if !path.is_empty() {
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .load_filters(&path)
+                        .map_err(|e| format!("Failed to load filters: {}", e))?;
+                    self.tabs[self.active_tab].refresh_visible();
+                }
+            }
+            Some(Commands::Wrap) => {
+                self.tabs[self.active_tab].wrap = !self.tabs[self.active_tab].wrap;
+            }
+            Some(Commands::LineNumbers) => {
+                self.tabs[self.active_tab].show_line_numbers =
+                    !self.tabs[self.active_tab].show_line_numbers;
+            }
+            Some(Commands::LevelColors) => {
+                self.tabs[self.active_tab].level_colors = !self.tabs[self.active_tab].level_colors;
+            }
+            Some(Commands::SetTheme { theme_name }) => {
+                let theme_filename = format!("{}.json", theme_name.to_lowercase());
+                self.theme = Theme::from_file(&theme_filename)
+                    .map_err(|e| format!("Failed to load theme '{}': {}", theme_name, e))?;
+            }
+            Some(Commands::Open { path }) => {
+                self.open_file(&path)?;
+            }
+            Some(Commands::CloseTab) => {
+                if self.tabs.len() <= 1 {
+                    return Err("Cannot close last tab. Use 'q' to quit.".to_string());
+                }
+                self.tabs.remove(self.active_tab);
+                if self.active_tab >= self.tabs.len() {
+                    self.active_tab = self.tabs.len() - 1;
+                }
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
     pub fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> anyhow::Result<()> {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(250);
@@ -703,74 +1250,19 @@ impl App {
                 && let crossterm::event::Event::Key(key) = crossterm::event::read()?
                 && key.kind == crossterm::event::KeyEventKind::Press
             {
-                let tab = &self.tabs[self.active_tab];
-                match tab.mode {
-                    AppMode::Normal => {
-                        if key.code == KeyCode::Char('q') {
-                            self.save_all_contexts();
-                            return Ok(());
-                        }
-                        if key.code == KeyCode::Tab {
-                            if self.tabs.len() > 1 {
-                                self.active_tab = (self.active_tab + 1) % self.tabs.len();
-                            }
-                        } else if key.code == KeyCode::BackTab {
-                            if self.tabs.len() > 1 {
-                                self.active_tab = if self.active_tab == 0 {
-                                    self.tabs.len() - 1
-                                } else {
-                                    self.active_tab - 1
-                                };
-                            }
-                        } else if key.code == KeyCode::Char('w')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            if self.close_tab() {
-                                return Ok(());
-                            }
-                        } else if key.code == KeyCode::Char('t')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            self.tabs[self.active_tab].mode = AppMode::Command {
-                                input: "open ".to_string(),
-                                cursor: 5,
-                                history: Vec::new(),
-                                history_index: None,
-                            };
-                        } else {
-                            self.tabs[self.active_tab]
-                                .handle_normal_mode_key(key.code, key.modifiers);
-                        }
-                    }
-                    AppMode::Command { .. } => self.handle_command_mode_key(key.code),
-                    AppMode::FilterManagement { .. } => {
-                        self.tabs[self.active_tab].handle_filter_management_mode_key(key.code);
-                    }
-                    AppMode::FilterEdit { .. } => {
-                        self.tabs[self.active_tab].handle_filter_edit_mode_key(key.code);
-                    }
-                    AppMode::Search { .. } => {
-                        self.tabs[self.active_tab].handle_search_mode_key(key.code);
-                    }
-                    AppMode::ConfirmRestore { .. } => match key.code {
-                        KeyCode::Char('y') => {
-                            let tab = &mut self.tabs[self.active_tab];
-                            if let AppMode::ConfirmRestore { context } =
-                                std::mem::replace(&mut tab.mode, AppMode::Normal)
-                            {
-                                tab.apply_file_context(&context);
-                            }
-                        }
-                        KeyCode::Char('n') | KeyCode::Esc => {
-                            let tab = &mut self.tabs[self.active_tab];
-                            tab.mode = AppMode::Normal;
-                            tab.log_manager.clear_filters();
-                            tab.log_manager.set_marks(vec![]);
-                            tab.refresh_visible();
-                        }
-                        _ => {}
-                    },
+                let tab = &mut self.tabs[self.active_tab];
+                let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode));
+                let (next_mode, result) = mode.handle_key(tab, key.code, key.modifiers);
+                tab.mode = next_mode;
+                match result {
+                    KeyResult::Handled => {}
+                    KeyResult::Ignored => self.handle_global_key(key.code, key.modifiers),
+                    KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd),
                 }
+            }
+
+            if self.should_quit {
+                return Ok(());
             }
 
             if last_tick.elapsed() >= tick_rate {
@@ -779,247 +1271,19 @@ impl App {
         }
     }
 
-    pub fn handle_command_mode_key(&mut self, key_code: KeyCode) {
-        match key_code {
-            KeyCode::Enter => {
-                self.handle_command();
-                let tab = &mut self.tabs[self.active_tab];
-                if tab.command_error.is_none() {
-                    if let AppMode::Command {
-                        input,
-                        cursor,
-                        history,
-                        history_index,
-                    } = &mut tab.mode
-                    {
-                        if !input.is_empty() {
-                            history.push(input.clone());
-                        }
-                        *input = String::new();
-                        *cursor = 0;
-                        *history_index = None;
-                    }
-                    if let Some(idx) = tab.filter_context.take() {
-                        tab.mode = AppMode::FilterManagement {
-                            selected_filter_index: idx,
-                        };
-                    } else {
-                        tab.mode = AppMode::Normal;
-                    }
-                }
-            }
-            KeyCode::Esc => {
-                let tab = &mut self.tabs[self.active_tab];
-                if let AppMode::Command {
-                    input,
-                    cursor,
-                    history_index,
-                    ..
-                } = &mut tab.mode
-                {
-                    *input = String::new();
-                    *cursor = 0;
-                    *history_index = None;
-                }
-                tab.filter_context = None;
-                tab.editing_filter_id = None;
-                tab.mode = AppMode::Normal;
-            }
-            KeyCode::Backspace => {
-                let tab = &mut self.tabs[self.active_tab];
-                if let AppMode::Command { input, cursor, .. } = &mut tab.mode
-                    && *cursor > 0
-                    && !input.is_empty()
-                {
-                    input.remove(*cursor - 1);
-                    *cursor -= 1;
-                }
-            }
-            KeyCode::Char(c) => {
-                let tab = &mut self.tabs[self.active_tab];
-                if let AppMode::Command { input, cursor, .. } = &mut tab.mode {
-                    input.insert(*cursor, c);
-                    *cursor += 1;
-                    tab.command_error = None;
-                    tab.tab_completion_index = None;
-                }
-            }
-            KeyCode::Left => {
-                let tab = &mut self.tabs[self.active_tab];
-                if let AppMode::Command { cursor, .. } = &mut tab.mode
-                    && *cursor > 0
-                {
-                    *cursor -= 1;
-                }
-            }
-            KeyCode::Right => {
-                let tab = &mut self.tabs[self.active_tab];
-                if let AppMode::Command { input, cursor, .. } = &mut tab.mode
-                    && *cursor < input.len()
-                {
-                    *cursor += 1;
-                }
-            }
-            KeyCode::Up => {
-                let tab = &mut self.tabs[self.active_tab];
-                if let AppMode::Command {
-                    input,
-                    cursor,
-                    history,
-                    history_index,
-                } = &mut tab.mode
-                {
-                    if history.is_empty() {
-                        return;
-                    }
-                    let new_index = match history_index {
-                        None => Some(history.len() - 1),
-                        Some(0) => Some(0),
-                        Some(i) => Some(*i - 1),
-                    };
-                    if let Some(i) = new_index {
-                        *input = history[i].clone();
-                        *cursor = input.len();
-                        *history_index = Some(i);
-                    }
-                }
-            }
-            KeyCode::Down => {
-                let tab = &mut self.tabs[self.active_tab];
-                if let AppMode::Command {
-                    input,
-                    cursor,
-                    history,
-                    history_index,
-                } = &mut tab.mode
-                {
-                    if history.is_empty() {
-                        return;
-                    }
-                    let new_index = match history_index {
-                        None => return,
-                        Some(i) if *i + 1 >= history.len() => {
-                            *input = String::new();
-                            *cursor = 0;
-                            *history_index = None;
-                            return;
-                        }
-                        Some(i) => Some(*i + 1),
-                    };
-                    if let Some(i) = new_index {
-                        *input = history[i].clone();
-                        *cursor = input.len();
-                        *history_index = Some(i);
-                    }
-                }
-            }
-            KeyCode::Tab => {
-                let tab = &mut self.tabs[self.active_tab];
-                if let AppMode::Command { input, .. } = &mut tab.mode {
-                    let trimmed = input.trim().to_string();
-
-                    // Color completion for --fg/--bg arguments
-                    if let Some(partial) = extract_color_partial(&trimmed) {
-                        let completions = complete_color(partial);
-                        if !completions.is_empty() {
-                            let tab = &mut self.tabs[self.active_tab];
-                            let idx = tab.tab_completion_index.unwrap_or(0) % completions.len();
-                            let color_name = completions[idx];
-                            let prefix = if partial.is_empty() {
-                                trimmed.clone()
-                            } else {
-                                trimmed[..trimmed.len() - partial.len()].to_string()
-                            };
-                            if let AppMode::Command { input, cursor, .. } = &mut tab.mode {
-                                *input = format!("{}{}", prefix, color_name);
-                                *cursor = input.len();
-                            }
-                            tab.tab_completion_index = Some(idx + 1);
-                            return;
-                        }
-                    }
-
-                    // Commands that take a file path argument
-                    let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
-                    let file_cmd = file_commands
-                        .iter()
-                        .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
-
-                    if let Some(&cmd) = file_cmd {
-                        let partial = trimmed[cmd.len()..].trim_start();
-                        let completions = complete_file_path(partial);
-                        if completions.is_empty() {
-                            return;
-                        }
-                        let tab = &mut self.tabs[self.active_tab];
-                        let idx = tab.tab_completion_index.unwrap_or(0) % completions.len();
-                        let completed = completions[idx].clone();
-                        if let AppMode::Command { input, cursor, .. } = &mut tab.mode {
-                            *input = format!("{} {}", cmd, completed);
-                            *cursor = input.len();
-                        }
-                        tab.tab_completion_index = Some(idx + 1);
-                        return;
-                    }
-
-                    // set-theme completion
-                    if trimmed.starts_with("set-theme ") {
-                        let themes = &self.available_themes;
-                        if themes.is_empty() {
-                            return;
-                        }
-                        let tab = &mut self.tabs[self.active_tab];
-                        let idx = tab.tab_completion_index.unwrap_or(0);
-                        let theme_name = self.available_themes[idx % self.available_themes.len()].clone();
-                        if let AppMode::Command { input, cursor, .. } = &mut tab.mode {
-                            *input = format!("set-theme {}", theme_name);
-                            *cursor = input.len();
-                        }
-                        tab.tab_completion_index = Some((idx + 1) % self.available_themes.len());
-                        return;
-                    }
-
-                    // Command name completion
-                    let completions = find_command_completions(&trimmed);
-                    if completions.is_empty() {
-                        return;
-                    }
-                    let tab = &mut self.tabs[self.active_tab];
-                    let idx = tab.tab_completion_index.unwrap_or(0) % completions.len();
-                    if let AppMode::Command { input, cursor, .. } = &mut tab.mode {
-                        *input = completions[idx].to_string();
-                        *cursor = input.len();
-                    }
-                    tab.tab_completion_index = Some(idx + 1);
-                }
-            }
-            _ => {}
-        }
-    }
-
     pub fn handle_key_event(&mut self, key_code: KeyCode) {
         self.handle_key_event_with_modifiers(key_code, KeyModifiers::NONE);
     }
 
     pub fn handle_key_event_with_modifiers(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
-        let mode = &self.tabs[self.active_tab].mode;
-        match mode {
-            AppMode::Normal => {
-                self.tabs[self.active_tab].handle_normal_mode_key(key_code, modifiers)
-            }
-            AppMode::Command { .. } => self.handle_command_mode_key(key_code),
-            AppMode::FilterManagement { .. } => {
-                self.tabs[self.active_tab].handle_filter_management_mode_key(key_code);
-            }
-            AppMode::FilterEdit { .. } => {
-                self.tabs[self.active_tab].handle_filter_edit_mode_key(key_code);
-            }
-            AppMode::Search { .. } => {
-                self.tabs[self.active_tab].handle_search_mode_key(key_code);
-            }
-            AppMode::ConfirmRestore { .. } => {
-                // Handled in run() loop directly
-            }
+        let tab = &mut self.tabs[self.active_tab];
+        let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode));
+        let (next_mode, result) = mode.handle_key(tab, key_code, modifiers);
+        tab.mode = next_mode;
+        match result {
+            KeyResult::Handled => {}
+            KeyResult::Ignored => self.handle_global_key(key_code, modifiers),
+            KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd),
         }
     }
 
@@ -1029,14 +1293,31 @@ impl App {
 
         let has_multiple_tabs = self.tabs.len() > 1;
 
+        // Extract mode-derived state up front to avoid holding a borrow over the rest of rendering
+        let has_input_bar = self.tabs[self.active_tab].mode.needs_input_bar();
+        let command_input: Option<(String, usize)> = self.tabs[self.active_tab]
+            .mode
+            .command_state()
+            .map(|(s, c)| (s.to_string(), c));
+        let search_input: Option<(String, bool)> = self.tabs[self.active_tab]
+            .mode
+            .search_state()
+            .map(|(s, f)| (s.to_string(), f));
+        let is_confirm_restore = self.tabs[self.active_tab]
+            .mode
+            .confirm_restore_context()
+            .is_some();
+        let selected_filter_idx = self.tabs[self.active_tab]
+            .mode
+            .selected_filter_index()
+            .unwrap_or(0);
+        let status_line = self.tabs[self.active_tab].mode.status_line().to_string();
+
         let mut constraints = vec![];
         if has_multiple_tabs {
             constraints.push(Constraint::Length(1)); // Tab bar
         }
         constraints.push(Constraint::Min(1)); // Main content
-        let tab = &self.tabs[self.active_tab];
-        let has_input_bar = matches!(tab.mode, AppMode::Command { .. })
-            || matches!(tab.mode, AppMode::Search { .. });
         if has_input_bar {
             constraints.push(Constraint::Length(1)); // input line
             constraints.push(Constraint::Length(1)); // hint line
@@ -1102,7 +1383,6 @@ impl App {
         let visible_height = (logs_area.height as usize).saturating_sub(2);
         self.tabs[self.active_tab].visible_height = visible_height;
 
-        // Line-number width needed early for inner_width (used in wrap calculations).
         let show_line_numbers = self.tabs[self.active_tab].show_line_numbers;
         let line_number_width = if show_line_numbers {
             num_visible.max(1).to_string().len()
@@ -1110,8 +1390,11 @@ impl App {
             0
         };
 
-        // Inner content width: subtract block borders (2) and line-number prefix.
-        let ln_prefix_width = if show_line_numbers { line_number_width + 1 } else { 0 };
+        let ln_prefix_width = if show_line_numbers {
+            line_number_width + 1
+        } else {
+            0
+        };
         let inner_width = (logs_area.width as usize).saturating_sub(2 + ln_prefix_width);
 
         let wrap = self.tabs[self.active_tab].wrap;
@@ -1121,37 +1404,42 @@ impl App {
             self.tabs[self.active_tab].scroll_offset = num_visible - 1;
         }
 
-        // Adjust viewport so cursor stays visible (wrap-aware).
         let scroll_offset = self.tabs[self.active_tab].scroll_offset;
         let viewport_offset = self.tabs[self.active_tab].viewport_offset;
 
         let new_viewport = if scroll_offset < viewport_offset {
-            // Cursor moved above viewport → snap viewport up.
             scroll_offset
         } else if wrap && inner_width > 0 && num_visible > 0 {
-            // Count terminal rows from viewport_offset to scroll_offset (inclusive).
             let rows_used: usize = (viewport_offset..=scroll_offset)
                 .map(|i| {
                     let li = self.tabs[self.active_tab].visible_indices[i];
-                    line_row_count(self.tabs[self.active_tab].file_reader.get_line(li), inner_width)
+                    line_row_count(
+                        self.tabs[self.active_tab].file_reader.get_line(li),
+                        inner_width,
+                    )
                 })
                 .sum();
             if rows_used > visible_height {
-                // Cursor is below the viewport; walk backward from scroll_offset
-                // to find the first line that still keeps the cursor on-screen.
                 let mut rows = 0usize;
                 let mut new_vp = scroll_offset + 1;
                 loop {
-                    if new_vp == 0 { break; }
+                    if new_vp == 0 {
+                        break;
+                    }
                     new_vp -= 1;
                     let li = self.tabs[self.active_tab].visible_indices[new_vp];
-                    let h = line_row_count(self.tabs[self.active_tab].file_reader.get_line(li), inner_width);
+                    let h = line_row_count(
+                        self.tabs[self.active_tab].file_reader.get_line(li),
+                        inner_width,
+                    );
                     if rows + h > visible_height {
-                        new_vp += 1; // this line doesn't fit; start at the next one
+                        new_vp += 1;
                         break;
                     }
                     rows += h;
-                    if new_vp == 0 { break; }
+                    if new_vp == 0 {
+                        break;
+                    }
                 }
                 new_vp.min(scroll_offset)
             } else {
@@ -1166,36 +1454,38 @@ impl App {
         self.tabs[self.active_tab].viewport_offset = new_viewport;
         let start = new_viewport;
 
-        // Compute end: include lines until their rows fill visible_height (wrap-aware).
         let end = if wrap && inner_width > 0 {
             let mut rows = 0usize;
             let mut e = start;
             while e < num_visible {
                 let li = self.tabs[self.active_tab].visible_indices[e];
-                let h = line_row_count(self.tabs[self.active_tab].file_reader.get_line(li), inner_width);
+                let h = line_row_count(
+                    self.tabs[self.active_tab].file_reader.get_line(li),
+                    inner_width,
+                );
                 if rows + h > visible_height {
                     break;
                 }
                 rows += h;
                 e += 1;
             }
-            // Always render at least one line so the cursor is never invisible.
-            if e == start && start < num_visible { e = start + 1; }
+            if e == start && start < num_visible {
+                e = start + 1;
+            }
             e
         } else {
             (start + visible_height).min(num_visible)
         };
 
-        // Build filter manager and styles array (256 slots: filter styles + search at index 255)
-        let (filter_manager, mut styles) =
-            self.tabs[self.active_tab].log_manager.build_filter_manager();
+        let (filter_manager, mut styles) = self.tabs[self.active_tab]
+            .log_manager
+            .build_filter_manager();
         let search_style = Style::default()
             .fg(Color::Black)
             .bg(self.theme.text_highlight);
         styles.resize(256, Style::default());
         styles[255] = search_style;
 
-        // Build search result lookup: line_idx → &SearchResult
         let search_results = self.tabs[self.active_tab].search.get_results();
         let search_map: HashMap<usize, &crate::types::SearchResult> =
             search_results.iter().map(|r| (r.line_idx, r)).collect();
@@ -1212,10 +1502,8 @@ impl App {
                 let is_current = start + vis_idx == current_scroll;
                 let is_marked = self.tabs[self.active_tab].log_manager.is_marked(line_idx);
 
-                // Evaluate filters to collect match spans
                 let mut collector = filter_manager.evaluate_line(line_bytes);
 
-                // Add search highlights with higher priority
                 if let Some(sr) = search_map.get(&line_idx) {
                     collector.with_priority(1000);
                     for &(s, e) in &sr.matches {
@@ -1223,7 +1511,6 @@ impl App {
                     }
                 }
 
-                // Base style from level colors and marks
                 let mut base_style = Style::default().fg(theme.text);
                 if level_colors {
                     match LogLevel::detect_from_bytes(line_bytes) {
@@ -1249,8 +1536,7 @@ impl App {
 
                 if show_line_numbers {
                     let line_num = line_idx + 1;
-                    let line_num_str =
-                        format!("{:>width$} ", line_num, width = line_number_width);
+                    let line_num_str = format!("{:>width$} ", line_num, width = line_number_width);
                     let line_num_style = Style::default()
                         .fg(theme.border)
                         .add_modifier(Modifier::DIM);
@@ -1282,16 +1568,13 @@ impl App {
         frame.render_widget(paragraph, logs_area);
 
         if let Some(sidebar_area) = sidebar_area {
-            let selected_idx = self.tabs[self.active_tab]
-                .get_selected_filter_index()
-                .unwrap_or(0);
             let filters = self.tabs[self.active_tab].log_manager.get_filters();
             let filters_text: Vec<Line> = filters
                 .iter()
                 .enumerate()
                 .map(|(i, filter)| {
                     let status = if filter.enabled { "[x]" } else { "[ ]" };
-                    let selected_prefix = if i == selected_idx { ">" } else { " " };
+                    let selected_prefix = if i == selected_filter_idx { ">" } else { " " };
                     let filter_type_str = match filter.filter_type {
                         FilterType::Include => "In",
                         FilterType::Exclude => "Out",
@@ -1323,11 +1606,9 @@ impl App {
             frame.render_widget(sidebar, sidebar_area);
         }
 
-        if matches!(self.tabs[self.active_tab].mode, AppMode::Command { .. }) {
+        // Command input bar
+        if let Some((input_text, cursor_pos)) = command_input {
             let input_prefix = ":";
-            let (input_text, cursor_pos) = self.tabs[self.active_tab]
-                .get_command_input_and_cursor()
-                .unwrap_or(("", 0));
             let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
                 .style(Style::default().fg(self.theme.text).bg(self.theme.border))
                 .wrap(Wrap { trim: false });
@@ -1343,7 +1624,7 @@ impl App {
                 let error_paragraph = Paragraph::new(err.as_str())
                     .style(Style::default().fg(Color::Red).bg(self.theme.root_bg));
                 frame.render_widget(error_paragraph, hint_area);
-            } else if let Some(partial) = extract_color_partial(input_text) {
+            } else if let Some(partial) = extract_color_partial(&input_text) {
                 let completions = complete_color(partial);
                 if !completions.is_empty() {
                     let hint_spans: Vec<Span> = completions
@@ -1398,7 +1679,7 @@ impl App {
                         );
                         frame.render_widget(hint, hint_area);
                     }
-                } else if let Some(cmd) = find_matching_command(input_text) {
+                } else if let Some(cmd) = find_matching_command(&input_text) {
                     let hint = Paragraph::new(format!("  {} - {}", cmd.usage, cmd.description))
                         .style(
                             Style::default()
@@ -1421,22 +1702,22 @@ impl App {
             }
         }
 
-        if let AppMode::Search { input, forward } = &self.tabs[self.active_tab].mode {
-            let prefix = if *forward { "/" } else { "?" };
-            let input_clone = input.clone();
-            let search_line = Paragraph::new(format!("{}{}", prefix, input_clone))
+        // Search input bar
+        if let Some((input_str, forward)) = search_input {
+            let prefix = if forward { "/" } else { "?" };
+            let search_line = Paragraph::new(format!("{}{}", prefix, input_str))
                 .style(Style::default().fg(self.theme.text).bg(self.theme.border))
                 .wrap(Wrap { trim: false });
             let input_area = chunks[chunk_idx];
             frame.render_widget(search_line, input_area);
-            let cursor_x = input_area.x + 1 + input_clone.len() as u16;
+            let cursor_x = input_area.x + 1 + input_str.len() as u16;
             if cursor_x < input_area.x + input_area.width {
                 frame.set_cursor(cursor_x, input_area.y);
             }
 
             let hint_area = chunks[chunk_idx + 1];
             let match_count = self.tabs[self.active_tab].search.get_results().len();
-            let hint_text = if !input_clone.is_empty() {
+            let hint_text = if !input_str.is_empty() {
                 format!("  {} matches", match_count)
             } else {
                 "  Type pattern and press Enter to search".to_string()
@@ -1449,10 +1730,8 @@ impl App {
             frame.render_widget(hint, hint_area);
         }
 
-        if matches!(
-            self.tabs[self.active_tab].mode,
-            AppMode::ConfirmRestore { .. }
-        ) {
+        // ConfirmRestore modal
+        if is_confirm_restore {
             let modal_width = 44_u16;
             let modal_height = 5_u16;
             let area = frame.size();
@@ -1495,7 +1774,7 @@ impl App {
             frame.render_widget(modal, modal_area);
         }
 
-        let command_list = Paragraph::new(self.tabs[self.active_tab].get_command_list())
+        let command_list = Paragraph::new(status_line)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -1508,140 +1787,6 @@ impl App {
             area.height = 5;
         }
         frame.render_widget(command_list, area);
-    }
-
-    fn handle_command(&mut self) {
-        use crate::commands::{CommandLine, Commands};
-        use clap::Parser;
-        let input = match &self.tabs[self.active_tab].mode {
-            AppMode::Command { input, .. } => input.trim().to_string(),
-            _ => return,
-        };
-        let args = match CommandLine::try_parse_from(shell_split(&input)) {
-            Ok(args) => args,
-            Err(e) => {
-                self.tabs[self.active_tab].command_error = Some(format!("Invalid command: {}", e));
-                return;
-            }
-        };
-        match args.command {
-            Some(Commands::Filter { pattern, fg, bg, m }) => {
-                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
-                    self.tabs[self.active_tab].log_manager.remove_filter(old_id);
-                }
-                self.tabs[self.active_tab].log_manager.add_filter_with_color(
-                    pattern,
-                    FilterType::Include,
-                    fg.as_deref(),
-                    bg.as_deref(),
-                    m,
-                );
-                self.tabs[self.active_tab].scroll_offset = 0;
-                self.tabs[self.active_tab].refresh_visible();
-            }
-            Some(Commands::Exclude { pattern }) => {
-                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
-                    self.tabs[self.active_tab].log_manager.remove_filter(old_id);
-                }
-                self.tabs[self.active_tab].log_manager.add_filter_with_color(
-                    pattern,
-                    FilterType::Exclude,
-                    None,
-                    None,
-                    false,
-                );
-                self.tabs[self.active_tab].scroll_offset = 0;
-                self.tabs[self.active_tab].refresh_visible();
-            }
-            Some(Commands::SetColor { fg, bg, m }) => {
-                let selected_filter_index = self.tabs[self.active_tab].filter_context.unwrap_or(0);
-                let filters = self.tabs[self.active_tab].log_manager.get_filters();
-                if let Some(filter) = filters.get(selected_filter_index)
-                    && filter.filter_type == FilterType::Include
-                {
-                    let filter_id = filter.id;
-                    self.tabs[self.active_tab].log_manager.set_color_config(
-                        filter_id,
-                        fg.as_deref(),
-                        bg.as_deref(),
-                        m,
-                    );
-                    self.tabs[self.active_tab].refresh_visible();
-                }
-            }
-            Some(Commands::ExportMarked { path }) => {
-                if !path.is_empty() {
-                    let tab = &self.tabs[self.active_tab];
-                    let marked_lines = tab.log_manager.get_marked_lines(&tab.file_reader);
-                    let mut content: Vec<u8> = Vec::new();
-                    for line in marked_lines {
-                        content.extend_from_slice(line);
-                        content.push(b'\n');
-                    }
-                    let _ = std::fs::write(path, content);
-                }
-            }
-            Some(Commands::SaveFilters { path }) => {
-                if !path.is_empty() {
-                    if let Err(e) = self.tabs[self.active_tab].log_manager.save_filters(&path) {
-                        self.tabs[self.active_tab].command_error =
-                            Some(format!("Failed to save filters: {}", e));
-                    }
-                }
-            }
-            Some(Commands::LoadFilters { path }) => {
-                if !path.is_empty() {
-                    match self.tabs[self.active_tab].log_manager.load_filters(&path) {
-                        Ok(()) => self.tabs[self.active_tab].refresh_visible(),
-                        Err(e) => {
-                            self.tabs[self.active_tab].command_error =
-                                Some(format!("Failed to load filters: {}", e));
-                        }
-                    }
-                }
-            }
-            Some(Commands::Wrap) => {
-                self.tabs[self.active_tab].wrap = !self.tabs[self.active_tab].wrap;
-            }
-            Some(Commands::LineNumbers) => {
-                self.tabs[self.active_tab].show_line_numbers =
-                    !self.tabs[self.active_tab].show_line_numbers;
-            }
-            Some(Commands::LevelColors) => {
-                self.tabs[self.active_tab].level_colors =
-                    !self.tabs[self.active_tab].level_colors;
-            }
-            Some(Commands::SetTheme { theme_name }) => {
-                let theme_filename = format!("{}.json", theme_name.to_lowercase());
-                match Theme::from_file(&theme_filename) {
-                    Ok(theme) => self.theme = theme,
-                    Err(e) => {
-                        self.tabs[self.active_tab].command_error =
-                            Some(format!("Failed to load theme '{}': {}", theme_name, e))
-                    }
-                }
-            }
-            Some(Commands::Open { path }) => {
-                let old_tab = self.active_tab;
-                if let Err(e) = self.open_file(&path) {
-                    self.tabs[self.active_tab].command_error = Some(e);
-                } else {
-                    self.tabs[old_tab].mode = AppMode::Normal;
-                }
-            }
-            Some(Commands::CloseTab) => {
-                if self.tabs.len() <= 1 {
-                    self.tabs[self.active_tab].command_error =
-                        Some("Cannot close last tab. Use 'q' to quit.".to_string());
-                } else {
-                    self.tabs.remove(self.active_tab);
-                    if self.active_tab >= self.tabs.len() {
-                        self.active_tab = self.tabs.len() - 1;
-                    }
-                }
-            }
-            None => {}
-        }
     }
 }
 
@@ -1658,10 +1803,10 @@ fn line_row_count(bytes: &[u8], inner_width: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auto_complete::shell_split;
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
-    use crate::auto_complete::shell_split;
     use std::sync::Arc;
 
     fn make_tab(lines: &[&str]) -> (FileReader, LogManager) {
@@ -1681,34 +1826,16 @@ mod tests {
     #[test]
     fn test_toggle_wrap_command() {
         let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]);
-        app.tab_mut().mode = AppMode::Command {
-            input: "wrap".to_string(),
-            cursor: 4,
-            history: Vec::new(),
-            history_index: None,
-        };
-        app.handle_command();
+        app.execute_command_str("wrap".to_string());
         assert!(!app.tab().wrap);
-        app.tab_mut().mode = AppMode::Command {
-            input: "wrap".to_string(),
-            cursor: 4,
-            history: Vec::new(),
-            history_index: None,
-        };
-        app.handle_command();
+        app.execute_command_str("wrap".to_string());
         assert!(app.tab().wrap);
     }
 
     #[test]
     fn test_add_filter_command() {
         let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]);
-        app.tab_mut().mode = AppMode::Command {
-            input: "filter foo".to_string(),
-            cursor: 10,
-            history: Vec::new(),
-            history_index: None,
-        };
-        app.handle_command();
+        app.execute_command_str("filter foo".to_string());
         let filters = app.tab().log_manager.get_filters();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].filter_type, FilterType::Include);
@@ -1718,13 +1845,7 @@ mod tests {
     #[test]
     fn test_add_exclude_command() {
         let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]);
-        app.tab_mut().mode = AppMode::Command {
-            input: "exclude bar".to_string(),
-            cursor: 11,
-            history: Vec::new(),
-            history_index: None,
-        };
-        app.handle_command();
+        app.execute_command_str("exclude bar".to_string());
         let filters = app.tab().log_manager.get_filters();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].filter_type, FilterType::Exclude);
@@ -1753,13 +1874,7 @@ mod tests {
     #[test]
     fn test_filter_command_with_quoted_pattern() {
         let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]);
-        app.tab_mut().mode = AppMode::Command {
-            input: r#"filter "hello world""#.to_string(),
-            cursor: 20,
-            history: Vec::new(),
-            history_index: None,
-        };
-        app.handle_command();
+        app.execute_command_str(r#"filter "hello world""#.to_string());
         let filters = app.tab().log_manager.get_filters();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].pattern, "hello world");
@@ -1772,19 +1887,10 @@ mod tests {
         let (file_reader, log_manager) = make_tab(&lines);
         let mut app = App::new(log_manager, file_reader, Theme::default());
 
-        // All lines visible initially
         assert_eq!(app.tab().visible_indices.len(), 3);
 
-        // Add include filter for "INFO"
-        app.tab_mut().mode = AppMode::Command {
-            input: "filter INFO".to_string(),
-            cursor: 11,
-            history: Vec::new(),
-            history_index: None,
-        };
-        app.handle_command();
+        app.execute_command_str("filter INFO".to_string());
 
-        // Only INFO line visible
         assert_eq!(app.tab().visible_indices.len(), 1);
     }
 
@@ -1795,10 +1901,10 @@ mod tests {
         let mut app = App::new(log_manager, file_reader, Theme::default());
 
         app.tab_mut().scroll_offset = 0;
-        app.tab_mut().handle_normal_mode_key(KeyCode::Char('m'), KeyModifiers::NONE);
+        app.handle_key_event_with_modifiers(KeyCode::Char('m'), KeyModifiers::NONE);
         assert!(app.tab().log_manager.is_marked(0));
 
-        app.tab_mut().handle_normal_mode_key(KeyCode::Char('m'), KeyModifiers::NONE);
+        app.handle_key_event_with_modifiers(KeyCode::Char('m'), KeyModifiers::NONE);
         assert!(!app.tab().log_manager.is_marked(0));
     }
 
@@ -1809,19 +1915,18 @@ mod tests {
         let mut app = App::new(log_manager, file_reader, Theme::default());
 
         // 'G' goes to end
-        app.tab_mut().handle_normal_mode_key(KeyCode::Char('G'), KeyModifiers::NONE);
+        app.handle_key_event_with_modifiers(KeyCode::Char('G'), KeyModifiers::NONE);
         assert_eq!(app.tab().scroll_offset, 19);
 
         // 'gg' goes to top
-        app.tab_mut().handle_normal_mode_key(KeyCode::Char('g'), KeyModifiers::NONE);
-        app.tab_mut().handle_normal_mode_key(KeyCode::Char('g'), KeyModifiers::NONE);
+        app.handle_key_event_with_modifiers(KeyCode::Char('g'), KeyModifiers::NONE);
+        app.handle_key_event_with_modifiers(KeyCode::Char('g'), KeyModifiers::NONE);
         assert_eq!(app.tab().scroll_offset, 0);
     }
 
     #[test]
     fn test_to_file_context_none_without_source() {
         let app = make_app(&["line"]);
-        // No source_file set → to_file_context returns None
         assert!(app.tab().to_file_context().is_none());
     }
 }

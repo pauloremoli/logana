@@ -95,7 +95,7 @@ Byte positions within the line.
 
 ### UI (ui.rs)
 
-- **`App`** owns a `Vec<TabState>` plus global theme and available themes list.
+- **`App`** owns a `Vec<TabState>` plus the global theme.
 - **`TabState`** owns:
   - `file_reader: FileReader` — the backing log data
   - `log_manager: LogManager` — filter defs and marks
@@ -103,8 +103,9 @@ Byte positions within the line.
   - `scroll_offset: usize` — selected line (index into `visible_indices`)
   - `viewport_offset: usize` — first rendered line (index into `visible_indices`)
   - `visible_height: usize` — content rows available (updated each render frame)
-  - `mode: AppMode`, `search: Search`, plus display flags (wrap, show_sidebar, level_colors, show_line_numbers, horizontal_scroll)
-- **`AppMode`**: `Normal | Command | FilterManagement | FilterEdit | Search | ConfirmRestore`
+  - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
+- **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
+- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`. Rendering data is exposed through trait methods: `status_line()`, `selected_filter_index()`, `command_state()`, `search_state()`, `needs_input_bar()`, `confirm_restore_context()`.
 - **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`.
 
 **Rendering pipeline (per frame)**:
@@ -128,6 +129,8 @@ Byte positions within the line.
 - Colors: hex `"#RRGGBB"` or RGB array `[r, g, b]`
 - Default: Dracula theme (hardcoded)
 - Fields: `root_bg`, `border`, `border_title`, `text`, `text_highlight`, `error_fg`, `warning_fg`
+- **`Theme::list_available_themes() -> Vec<String>`**: Scans both theme directories, returns sorted names (no extension).
+- **`fuzzy_match(needle, haystack) -> bool`**: Case-insensitive subsequence check; used for `set-theme` tab completion.
 
 ## Key Patterns
 

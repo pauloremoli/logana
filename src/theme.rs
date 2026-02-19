@@ -125,6 +125,36 @@ impl<'de> serde::de::DeserializeSeed<'de> for ColorDeserializer {
 }
 
 impl Theme {
+    /// Returns the names of all available themes found in the local `themes/` directory
+    /// and in `~/.config/logsmith-rs/themes/`.
+    pub fn list_available_themes() -> Vec<String> {
+        let mut theme_paths = vec![];
+        if let Ok(entries) = std::fs::read_dir("themes") {
+            for entry in entries.flatten() {
+                theme_paths.push(entry.path());
+            }
+        }
+        if let Some(config_dir) = dirs::config_dir() {
+            let user_themes_path = config_dir.join("logsmith-rs/themes");
+            if let Ok(entries) = std::fs::read_dir(user_themes_path) {
+                for entry in entries.flatten() {
+                    theme_paths.push(entry.path());
+                }
+            }
+        }
+        let mut set = std::collections::HashSet::new();
+        for path in theme_paths {
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                set.insert(stem.to_string());
+            }
+        }
+        let mut themes: Vec<String> = set.into_iter().collect();
+        themes.sort();
+        themes
+    }
+
     pub fn from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let config_path =
             dirs::config_dir().map(|d| d.join("logsmith-rs").join("themes").join(&path));
@@ -170,15 +200,32 @@ impl Default for Theme {
     }
 }
 
+/// Returns true if all characters of `needle` appear in `haystack` in order (subsequence check),
+/// case-insensitive.
+pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let needle_lc = needle.to_lowercase();
+    let haystack_lc = haystack.to_lowercase();
+    let mut needle_chars = needle_lc.chars();
+    let mut current = needle_chars.next();
+    for c in haystack_lc.chars() {
+        if let Some(nc) = current {
+            if c == nc {
+                current = needle_chars.next();
+            }
+        } else {
+            break;
+        }
+    }
+    current.is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Database;
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
-    use crate::ui::App;
     use std::env;
-    use std::sync::Arc;
     use tempfile::tempdir;
 
     #[test]
@@ -194,16 +241,19 @@ mod tests {
         let theme_path = themes_dir.join("mytheme.json");
         fs::write(&theme_path, "{}").unwrap();
 
-        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        let db = Arc::new(rt.block_on(Database::in_memory()).unwrap());
-        let log_manager = LogManager::new(db, rt, None);
-        let file_reader = FileReader::from_bytes(vec![]);
-        let app = App::new(log_manager, file_reader, Theme::default());
-
-        assert!(app.available_themes.contains(&"mytheme".to_string()));
+        assert!(Theme::list_available_themes().contains(&"mytheme".to_string()));
 
         unsafe {
             env::remove_var("XDG_CONFIG_HOME");
         }
+    }
+
+    #[test]
+    fn test_fuzzy_match() {
+        assert!(fuzzy_match("dra", "dracula"));
+        assert!(fuzzy_match("dul", "dracula"));
+        assert!(fuzzy_match("DRA", "dracula"));
+        assert!(fuzzy_match("", "anything"));
+        assert!(!fuzzy_match("xyz", "dracula"));
     }
 }
