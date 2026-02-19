@@ -1,3 +1,7 @@
+- make the application a trait, pass the key event to the application mode if there is no handler fallback to a handler for global state (e.g quiting the app could be done from all modes)
+
+- when opening without a file ask if the user wants to restore last session (aka reopen last tabs)
+
 - support ingesting all kinds of common log formats from linux to webserver patterns (rust, python, node common loggers included) and structured logging
 
 - for structured logging a view could be created grouping based on some specific field (e.g by request_id, user_id) or for some specific value for that field (only request_id=10)
@@ -23,3 +27,5 @@ File name: <FILENAME>
 ```more MARKED_LINES```
 
 - command to preview analysis export
+
+- make all shortcuts configurable
