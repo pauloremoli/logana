@@ -3,18 +3,7 @@ use async_trait::async_trait;
 use sqlx::Row;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
-use crate::analyzer::{ColorConfig, Filter, FilterType, LogEntry, LogLevel};
-
-#[async_trait]
-pub trait LogStore: Send + Sync {
-    async fn insert_logs_batch(&self, entries: &[LogEntry]) -> Result<()>;
-    async fn get_all_logs(&self) -> Result<Vec<LogEntry>>;
-    async fn get_log_count(&self) -> Result<i64>;
-    async fn toggle_mark(&self, id: i64) -> Result<()>;
-    async fn get_marked_logs(&self) -> Result<Vec<LogEntry>>;
-    async fn has_logs_for_source(&self, source: &str) -> Result<bool>;
-    async fn clear_logs(&self) -> Result<()>;
-}
+use crate::types::{ColorConfig, FilterDef, FilterType};
 
 #[async_trait]
 pub trait FilterStore: Send + Sync {
@@ -26,17 +15,18 @@ pub trait FilterStore: Send + Sync {
         color_config: Option<&ColorConfig>,
         source_file: Option<&str>,
     ) -> Result<i64>;
-    async fn get_filters(&self) -> Result<Vec<Filter>>;
-    async fn get_filters_for_source(&self, source_file: &str) -> Result<Vec<Filter>>;
+    async fn get_filters(&self) -> Result<Vec<FilterDef>>;
+    async fn get_filters_for_source(&self, source_file: &str) -> Result<Vec<FilterDef>>;
     async fn update_filter_pattern(&self, id: i64, new_pattern: &str) -> Result<()>;
     async fn update_filter_color(&self, id: i64, color_config: Option<&ColorConfig>) -> Result<()>;
     async fn delete_filter(&self, id: i64) -> Result<()>;
     async fn toggle_filter(&self, id: i64) -> Result<()>;
     async fn swap_filter_order(&self, id1: i64, id2: i64) -> Result<()>;
     async fn clear_filters(&self) -> Result<()>;
+    async fn clear_filters_for_source(&self, source_file: &str) -> Result<()>;
     async fn replace_all_filters(
         &self,
-        filters: &[Filter],
+        filters: &[FilterDef],
         source_file: Option<&str>,
     ) -> Result<()>;
 }
@@ -73,7 +63,6 @@ impl std::fmt::Debug for Database {
 
 impl Database {
     pub async fn new(path: &str) -> Result<Self> {
-        // Ensure parent directory exists
         if let Some(parent) = std::path::Path::new(path).parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -117,22 +106,6 @@ impl Database {
 
     async fn run_migrations(&self) -> Result<()> {
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS log_entries (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT,
-                hostname TEXT,
-                process_name TEXT,
-                pid INTEGER,
-                level TEXT NOT NULL DEFAULT 'Unknown',
-                message TEXT NOT NULL,
-                marked INTEGER NOT NULL DEFAULT 0,
-                source_file TEXT
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
             "CREATE TABLE IF NOT EXISTS filters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 pattern TEXT NOT NULL,
@@ -154,10 +127,9 @@ impl Database {
             .await;
 
         // Migration: add match_only column if it doesn't exist (for existing databases)
-        let _ =
-            sqlx::query("ALTER TABLE filters ADD COLUMN match_only INTEGER NOT NULL DEFAULT 0")
-                .execute(&self.pool)
-                .await;
+        let _ = sqlx::query("ALTER TABLE filters ADD COLUMN match_only INTEGER NOT NULL DEFAULT 0")
+            .execute(&self.pool)
+            .await;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS file_context (
@@ -175,56 +147,26 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
-        // Migration: add marked_lines column if it doesn't exist (for existing databases)
+        // Migration: add marked_lines column if it doesn't exist
         let _ = sqlx::query(
             "ALTER TABLE file_context ADD COLUMN marked_lines TEXT NOT NULL DEFAULT '[]'",
         )
         .execute(&self.pool)
         .await;
 
-        // Migration: add file_hash column if it doesn't exist (for existing databases)
+        // Migration: add file_hash column if it doesn't exist
         let _ = sqlx::query("ALTER TABLE file_context ADD COLUMN file_hash TEXT")
             .execute(&self.pool)
             .await;
 
-        // Migration: add show_line_numbers column if it doesn't exist (for existing databases)
+        // Migration: add show_line_numbers column if it doesn't exist
         let _ = sqlx::query(
             "ALTER TABLE file_context ADD COLUMN show_line_numbers INTEGER NOT NULL DEFAULT 1",
         )
         .execute(&self.pool)
         .await;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_log_level ON log_entries(level)")
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_log_process ON log_entries(process_name)")
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_log_source ON log_entries(source_file)")
-            .execute(&self.pool)
-            .await?;
-
         Ok(())
-    }
-}
-
-fn log_level_to_str(level: &LogLevel) -> &'static str {
-    match level {
-        LogLevel::Info => "Info",
-        LogLevel::Warning => "Warning",
-        LogLevel::Error => "Error",
-        LogLevel::Debug => "Debug",
-        LogLevel::Unknown => "Unknown",
-    }
-}
-
-fn str_to_log_level(s: &str) -> LogLevel {
-    match s {
-        "Info" => LogLevel::Info,
-        "Warning" => LogLevel::Warning,
-        "Error" => LogLevel::Error,
-        "Debug" => LogLevel::Debug,
-        _ => LogLevel::Unknown,
     }
 }
 
@@ -242,21 +184,7 @@ fn str_to_filter_type(s: &str) -> FilterType {
     }
 }
 
-fn row_to_log_entry(row: &sqlx::sqlite::SqliteRow) -> LogEntry {
-    LogEntry {
-        id: row.get::<i64, _>("id") as usize,
-        timestamp: row.get("timestamp"),
-        hostname: row.get("hostname"),
-        process_name: row.get("process_name"),
-        pid: row.get::<Option<i64>, _>("pid").map(|p| p as u32),
-        level: str_to_log_level(row.get::<&str, _>("level")),
-        message: row.get("message"),
-        marked: row.get::<i32, _>("marked") != 0,
-        source_file: row.get("source_file"),
-    }
-}
-
-fn row_to_filter(row: &sqlx::sqlite::SqliteRow) -> Filter {
+fn row_to_filter_def(row: &sqlx::sqlite::SqliteRow) -> FilterDef {
     let fg_str: Option<String> = row.get("fg_color");
     let bg_str: Option<String> = row.get("bg_color");
     let match_only = row.get::<i32, _>("match_only") != 0;
@@ -270,109 +198,12 @@ fn row_to_filter(row: &sqlx::sqlite::SqliteRow) -> Filter {
         }),
     };
 
-    Filter {
+    FilterDef {
         id: row.get::<i64, _>("id") as usize,
         pattern: row.get("pattern"),
         filter_type: str_to_filter_type(row.get::<&str, _>("filter_type")),
         enabled: row.get::<i32, _>("enabled") != 0,
         color_config,
-    }
-}
-
-#[async_trait]
-impl LogStore for Database {
-    async fn insert_logs_batch(&self, entries: &[LogEntry]) -> Result<()> {
-        // 9 columns per row, SQLite limit is 999 bound params → max 111 rows per statement.
-        // Use 50 for a safe margin and good performance.
-        const ROWS_PER_STMT: usize = 80;
-        // Group statements into larger transactions to reduce commit overhead.
-        const TX_SIZE: usize = 10000;
-
-        for tx_chunk in entries.chunks(TX_SIZE) {
-            let mut tx = self.pool.begin().await?;
-
-            for stmt_chunk in tx_chunk.chunks(ROWS_PER_STMT) {
-                let placeholders: String = stmt_chunk
-                    .iter()
-                    .map(|_| "(?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                let sql = format!(
-                    "INSERT INTO log_entries (id, timestamp, hostname, process_name, pid, level, message, marked, source_file) VALUES {}",
-                    placeholders
-                );
-
-                let mut query = sqlx::query(&sql);
-                for entry in stmt_chunk {
-                    query = query
-                        .bind(entry.id as i64)
-                        .bind(&entry.timestamp)
-                        .bind(&entry.hostname)
-                        .bind(&entry.process_name)
-                        .bind(entry.pid.map(|p| p as i64))
-                        .bind(log_level_to_str(&entry.level))
-                        .bind(&entry.message)
-                        .bind(entry.marked as i32)
-                        .bind(&entry.source_file);
-                }
-
-                query.execute(&mut *tx).await?;
-            }
-
-            tx.commit().await?;
-        }
-
-        Ok(())
-    }
-
-    async fn get_all_logs(&self) -> Result<Vec<LogEntry>> {
-        let rows = sqlx::query("SELECT * FROM log_entries ORDER BY id")
-            .fetch_all(&self.pool)
-            .await?;
-
-        Ok(rows.iter().map(row_to_log_entry).collect())
-    }
-
-    async fn get_log_count(&self) -> Result<i64> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM log_entries")
-            .fetch_one(&self.pool)
-            .await?;
-        Ok(row.get("count"))
-    }
-
-    async fn toggle_mark(&self, id: i64) -> Result<()> {
-        sqlx::query(
-            "UPDATE log_entries SET marked = CASE WHEN marked = 0 THEN 1 ELSE 0 END WHERE id = ?",
-        )
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn get_marked_logs(&self) -> Result<Vec<LogEntry>> {
-        let rows = sqlx::query("SELECT * FROM log_entries WHERE marked = 1 ORDER BY id")
-            .fetch_all(&self.pool)
-            .await?;
-
-        Ok(rows.iter().map(row_to_log_entry).collect())
-    }
-
-    async fn has_logs_for_source(&self, source: &str) -> Result<bool> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM log_entries WHERE source_file = ?")
-            .bind(source)
-            .fetch_one(&self.pool)
-            .await?;
-        let count: i64 = row.get("count");
-        Ok(count > 0)
-    }
-
-    async fn clear_logs(&self) -> Result<()> {
-        sqlx::query("DELETE FROM log_entries")
-            .execute(&self.pool)
-            .await?;
-        Ok(())
     }
 }
 
@@ -424,22 +255,19 @@ impl FilterStore for Database {
         Ok(result.last_insert_rowid())
     }
 
-    async fn get_filters(&self) -> Result<Vec<Filter>> {
-        let rows = sqlx::query("SELECT * FROM filters ORDER BY display_order")
-            .fetch_all(&self.pool)
-            .await?;
-
-        Ok(rows.iter().map(row_to_filter).collect())
+    async fn get_filters(&self) -> Result<Vec<FilterDef>> {
+        // Returns "global" filters (source_file = '').
+        self.get_filters_for_source("").await
     }
 
-    async fn get_filters_for_source(&self, source_file: &str) -> Result<Vec<Filter>> {
+    async fn get_filters_for_source(&self, source_file: &str) -> Result<Vec<FilterDef>> {
         let rows =
             sqlx::query("SELECT * FROM filters WHERE source_file = ? ORDER BY display_order")
                 .bind(source_file)
                 .fetch_all(&self.pool)
                 .await?;
 
-        Ok(rows.iter().map(row_to_filter).collect())
+        Ok(rows.iter().map(row_to_filter_def).collect())
     }
 
     async fn update_filter_pattern(&self, id: i64, new_pattern: &str) -> Result<()> {
@@ -530,9 +358,17 @@ impl FilterStore for Database {
         Ok(())
     }
 
+    async fn clear_filters_for_source(&self, source_file: &str) -> Result<()> {
+        sqlx::query("DELETE FROM filters WHERE source_file = ?")
+            .bind(source_file)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn replace_all_filters(
         &self,
-        filters: &[Filter],
+        filters: &[FilterDef],
         source_file: Option<&str>,
     ) -> Result<()> {
         let source = source_file.unwrap_or("");
@@ -644,154 +480,10 @@ mod tests {
         Database::in_memory().await.unwrap()
     }
 
-    fn sample_log_entries() -> Vec<LogEntry> {
-        vec![
-            LogEntry {
-                id: 0,
-                timestamp: Some("Jun 28 10:00:03".to_string()),
-                hostname: Some("myhost".to_string()),
-                process_name: Some("myapp".to_string()),
-                pid: Some(1234),
-                level: LogLevel::Info,
-                message: "Application started".to_string(),
-                marked: false,
-                source_file: Some("test.log".to_string()),
-            },
-            LogEntry {
-                id: 1,
-                timestamp: Some("Jun 28 10:00:04".to_string()),
-                hostname: Some("myhost".to_string()),
-                process_name: Some("myapp".to_string()),
-                pid: Some(1234),
-                level: LogLevel::Error,
-                message: "Something went wrong".to_string(),
-                marked: false,
-                source_file: Some("test.log".to_string()),
-            },
-            LogEntry {
-                id: 2,
-                timestamp: None,
-                hostname: None,
-                process_name: None,
-                pid: None,
-                level: LogLevel::Unknown,
-                message: "Plain text log line".to_string(),
-                marked: false,
-                source_file: Some("test.log".to_string()),
-            },
-        ]
-    }
-
-    #[tokio::test]
-    async fn test_schema_creation() {
-        let db = setup_db().await;
-        let count = db.get_log_count().await.unwrap();
-        assert_eq!(count, 0);
-    }
-
-    #[tokio::test]
-    async fn test_insert_and_get_logs() {
-        let db = setup_db().await;
-        let entries = sample_log_entries();
-        db.insert_logs_batch(&entries).await.unwrap();
-
-        let logs = db.get_all_logs().await.unwrap();
-        assert_eq!(logs.len(), 3);
-        assert_eq!(logs[0].id, 0);
-        assert_eq!(logs[0].message, "Application started");
-        assert_eq!(logs[0].level, LogLevel::Info);
-        assert_eq!(logs[0].hostname, Some("myhost".to_string()));
-        assert_eq!(logs[0].pid, Some(1234));
-        assert_eq!(logs[1].level, LogLevel::Error);
-        assert_eq!(logs[2].timestamp, None);
-        assert_eq!(logs[2].hostname, None);
-    }
-
-    #[tokio::test]
-    async fn test_log_count() {
-        let db = setup_db().await;
-        let entries = sample_log_entries();
-        db.insert_logs_batch(&entries).await.unwrap();
-
-        let count = db.get_log_count().await.unwrap();
-        assert_eq!(count, 3);
-    }
-
-    #[tokio::test]
-    async fn test_toggle_mark() {
-        let db = setup_db().await;
-        let entries = sample_log_entries();
-        db.insert_logs_batch(&entries).await.unwrap();
-
-        // Toggle mark on
-        db.toggle_mark(0).await.unwrap();
-        let logs = db.get_all_logs().await.unwrap();
-        assert!(logs[0].marked);
-        assert!(!logs[1].marked);
-
-        // Toggle mark off
-        db.toggle_mark(0).await.unwrap();
-        let logs = db.get_all_logs().await.unwrap();
-        assert!(!logs[0].marked);
-    }
-
-    #[tokio::test]
-    async fn test_get_marked_logs() {
-        let db = setup_db().await;
-        let entries = sample_log_entries();
-        db.insert_logs_batch(&entries).await.unwrap();
-
-        db.toggle_mark(0).await.unwrap();
-        db.toggle_mark(2).await.unwrap();
-
-        let marked = db.get_marked_logs().await.unwrap();
-        assert_eq!(marked.len(), 2);
-        assert_eq!(marked[0].id, 0);
-        assert_eq!(marked[1].id, 2);
-    }
-
-    #[tokio::test]
-    async fn test_has_logs_for_source() {
-        let db = setup_db().await;
-        let entries = sample_log_entries();
-        db.insert_logs_batch(&entries).await.unwrap();
-
-        assert!(db.has_logs_for_source("test.log").await.unwrap());
-        assert!(!db.has_logs_for_source("other.log").await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_clear_logs() {
-        let db = setup_db().await;
-        let entries = sample_log_entries();
-        db.insert_logs_batch(&entries).await.unwrap();
-        assert_eq!(db.get_log_count().await.unwrap(), 3);
-
-        db.clear_logs().await.unwrap();
-        assert_eq!(db.get_log_count().await.unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_insert_large_batch() {
-        let db = setup_db().await;
-        let entries: Vec<LogEntry> = (0..1500)
-            .map(|i| LogEntry {
-                id: i,
-                message: format!("Log line {}", i),
-                level: LogLevel::Info,
-                ..Default::default()
-            })
-            .collect();
-
-        db.insert_logs_batch(&entries).await.unwrap();
-        assert_eq!(db.get_log_count().await.unwrap(), 1500);
-    }
-
     #[tokio::test]
     async fn test_filter_crud() {
         let db = setup_db().await;
 
-        // Insert
         let id1 = db
             .insert_filter("error", &FilterType::Include, true, None, None)
             .await
@@ -887,12 +579,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Before swap: first(order=0), second(order=1)
         let filters = db.get_filters().await.unwrap();
         assert_eq!(filters[0].pattern, "first");
         assert_eq!(filters[1].pattern, "second");
 
-        // After swap
         db.swap_filter_order(id1, id2).await.unwrap();
         let filters = db.get_filters().await.unwrap();
         assert_eq!(filters[0].pattern, "second");
@@ -910,14 +600,14 @@ mod tests {
             .unwrap();
 
         let new_filters = vec![
-            Filter {
+            FilterDef {
                 id: 0,
                 pattern: "new1".to_string(),
                 filter_type: FilterType::Include,
                 enabled: true,
                 color_config: None,
             },
-            Filter {
+            FilterDef {
                 id: 0,
                 pattern: "new2".to_string(),
                 filter_type: FilterType::Exclude,
@@ -935,10 +625,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_empty_batch_insert() {
+    async fn test_clear_filters_for_source() {
         let db = setup_db().await;
-        db.insert_logs_batch(&[]).await.unwrap();
-        assert_eq!(db.get_log_count().await.unwrap(), 0);
+        db.insert_filter("global", &FilterType::Include, true, None, None)
+            .await
+            .unwrap();
+        db.insert_filter("file-specific", &FilterType::Include, true, None, Some("test.log"))
+            .await
+            .unwrap();
+
+        db.clear_filters_for_source("test.log").await.unwrap();
+        let global = db.get_filters().await.unwrap();
+        let file_filters = db.get_filters_for_source("test.log").await.unwrap();
+        assert_eq!(global.len(), 1);
+        assert_eq!(file_filters.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_filters_for_source() {
+        let db = setup_db().await;
+        db.insert_filter("global", &FilterType::Include, true, None, None)
+            .await
+            .unwrap();
+        db.insert_filter("file1", &FilterType::Exclude, true, None, Some("/var/log/syslog"))
+            .await
+            .unwrap();
+        db.insert_filter("file2", &FilterType::Include, true, None, Some("/var/log/syslog"))
+            .await
+            .unwrap();
+
+        let global = db.get_filters().await.unwrap();
+        assert_eq!(global.len(), 1);
+        assert_eq!(global[0].pattern, "global");
+
+        let syslog_filters = db.get_filters_for_source("/var/log/syslog").await.unwrap();
+        assert_eq!(syslog_filters.len(), 2);
     }
 
     #[tokio::test]

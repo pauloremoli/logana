@@ -1,18 +1,19 @@
+use anyhow::Result;
 use clap::Parser;
 use crossterm::{
     ExecutableCommand,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use logsmith_rs::analyzer::LogAnalyzer;
-use logsmith_rs::db::{Database, FileContextStore};
+use logsmith_rs::db::Database;
+use logsmith_rs::file_reader::FileReader;
+use logsmith_rs::log_manager::LogManager;
 use logsmith_rs::theme::Theme;
 use logsmith_rs::ui::App;
 use ratatui::prelude::*;
-use std::io::{IsTerminal, stdin, stdout};
+use std::io::{IsTerminal, Read, stdin, stdout};
 use std::sync::Arc;
-use tracing_appender::rolling;
-
 use tracing::error;
+use tracing_appender::rolling;
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Parser, Debug)]
@@ -31,7 +32,7 @@ fn get_db_path() -> String {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
     let file_path = args.file;
 
@@ -53,17 +54,8 @@ fn main() -> anyhow::Result<()> {
     })?;
     let db = Arc::new(db);
 
-    let mut analyzer = LogAnalyzer::new(db.clone(), rt.clone());
-
-    // Set source file for per-file filter persistence
-    analyzer.set_source_file(file_path.clone());
-
-    const INITIAL_CHUNK: usize = 200;
-
-    let mut pending_file: Option<(String, usize)> = None;
-    let mut skip_file_read = false;
-
-    if let Some(ref path) = file_path {
+    // Build FileReader from file path or stdin bytes
+    let (file_reader, source_path) = if let Some(ref path) = file_path {
         let file_path_obj = std::path::Path::new(path);
         if !file_path_obj.exists() {
             eprintln!("Error: File '{}' not found.", path);
@@ -73,34 +65,19 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Error: '{}' is a directory, not a file.", path);
             std::process::exit(1);
         }
-
-        // Check if we can reuse cached data from a previous session
-        let current_hash = LogAnalyzer::compute_file_hash(path);
-        if let Some(ref hash) = current_hash {
-            if let Ok(Some(ctx)) = rt.block_on(db.load_file_context(path)) {
-                if ctx.file_hash.as_deref() == Some(hash.as_str())
-                    && analyzer.has_logs_for_source(path)
-                {
-                    // File unchanged and logs are in DB — skip reading
-                    skip_file_read = true;
-                }
-            }
-        }
-
-        if !skip_file_read {
-            analyzer.clear_logs();
-            let loaded = analyzer.ingest_file_chunk(path, 0, INITIAL_CHUNK)?;
-            if loaded == INITIAL_CHUNK {
-                // There may be more lines to load
-                pending_file = Some((path.clone(), loaded));
-            }
-        }
+        let reader = FileReader::new(path)
+            .map_err(|e| anyhow::anyhow!("Failed to open '{}': {}", path, e))?;
+        (reader, Some(path.clone()))
     } else {
-        analyzer.clear_logs();
+        // Read stdin into memory
+        let mut data = Vec::new();
         if !stdin().is_terminal() {
-            analyzer.ingest_reader(stdin())?;
+            stdin().lock().read_to_end(&mut data)?;
         }
-    }
+        (FileReader::from_bytes(data), None)
+    };
+
+    let log_manager = LogManager::new(db.clone(), rt.clone(), source_path);
 
     let res = {
         enable_raw_mode()?;
@@ -108,14 +85,7 @@ fn main() -> anyhow::Result<()> {
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
         terminal.clear()?;
 
-        let mut app = App::new(analyzer, Theme::default());
-        if skip_file_read {
-            if let Some(ref path) = file_path {
-                app.tab_mut().pending_file_load = Some(path.clone());
-            }
-        } else if let Some((path, lines_loaded)) = pending_file {
-            app.tab_mut().start_background_loading(path, lines_loaded);
-        }
+        let mut app = App::new(log_manager, file_reader, Theme::default());
         let app_result = app.run(&mut terminal);
 
         disable_raw_mode()?;

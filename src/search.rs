@@ -1,4 +1,5 @@
-use crate::analyzer::{LogEntry, SearchResult};
+use crate::file_reader::FileReader;
+use crate::types::SearchResult;
 use regex::Regex;
 
 #[derive(Debug, Clone)]
@@ -25,7 +26,13 @@ impl Search {
         }
     }
 
-    pub fn search(&mut self, pattern_str: &str, logs: &[LogEntry]) -> anyhow::Result<()> {
+    /// Search `visible_indices` lines in `reader` for `pattern_str`.
+    pub fn search(
+        &mut self,
+        pattern_str: &str,
+        visible_indices: &[usize],
+        reader: &FileReader,
+    ) -> anyhow::Result<()> {
         let pattern = if self.case_sensitive {
             Regex::new(pattern_str)?
         } else {
@@ -35,17 +42,18 @@ impl Search {
         self.results.clear();
         self.current_match_index = 0;
 
-        for entry in logs {
-            let display = entry.display_line();
+        for &line_idx in visible_indices {
+            let line = reader.get_line(line_idx);
+            let text = match std::str::from_utf8(line) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
             let mut matches = Vec::new();
-            for mat in pattern.find_iter(&display) {
+            for mat in pattern.find_iter(text) {
                 matches.push((mat.start(), mat.end()));
             }
             if !matches.is_empty() {
-                self.results.push(SearchResult {
-                    log_id: entry.id,
-                    matches,
-                });
+                self.results.push(SearchResult { line_idx, matches });
             }
         }
         Ok(())
@@ -79,7 +87,7 @@ impl Search {
         }
     }
 
-    pub fn get_results(&self) -> &Vec<SearchResult> {
+    pub fn get_results(&self) -> &[SearchResult] {
         &self.results
     }
 
@@ -95,96 +103,113 @@ impl Search {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyzer::{LogEntry, LogLevel};
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
-    fn create_test_logs() -> Vec<LogEntry> {
-        vec![
-            LogEntry {
-                id: 0,
-                level: LogLevel::Info,
-                message: "This is a test line".to_string(),
-                ..Default::default()
-            },
-            LogEntry {
-                id: 1,
-                level: LogLevel::Info,
-                message: "Another line with Test".to_string(),
-                ..Default::default()
-            },
-            LogEntry {
-                id: 2,
-                level: LogLevel::Info,
-                message: "No match here".to_string(),
-                ..Default::default()
-            },
-            LogEntry {
-                id: 3,
-                level: LogLevel::Info,
-                message: "test test test".to_string(),
-                ..Default::default()
-            },
-        ]
+    fn make_reader(lines: &[&str]) -> (NamedTempFile, FileReader) {
+        let mut f = NamedTempFile::new().unwrap();
+        for line in lines {
+            writeln!(f, "{}", line).unwrap();
+        }
+        let path = f.path().to_str().unwrap().to_string();
+        let reader = FileReader::new(&path).unwrap();
+        (f, reader)
     }
 
     #[test]
     fn test_search_basic() -> anyhow::Result<()> {
+        let (_f, reader) = make_reader(&[
+            "This is a test line",
+            "Another line with Test",
+            "No match here",
+            "test test test",
+        ]);
+        let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        let logs = create_test_logs();
-        search.search("test", &logs)?;
+        search.search("test", &all, &reader)?;
 
         let results = search.get_results();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].log_id, 0);
-        assert_eq!(results[0].matches, vec![(16, 20)]);
-        assert_eq!(results[1].log_id, 3);
-        assert_eq!(results[1].matches, vec![(6, 10), (11, 15), (16, 20)]);
+        assert_eq!(results.len(), 2); // lines 0 and 3
+        assert_eq!(results[0].line_idx, 0);
+        assert_eq!(results[0].matches, vec![(10, 14)]);
+        assert_eq!(results[1].line_idx, 3);
+        assert_eq!(results[1].matches, vec![(0, 4), (5, 9), (10, 14)]);
         Ok(())
     }
 
     #[test]
     fn test_search_case_insensitive() -> anyhow::Result<()> {
+        let (_f, reader) = make_reader(&[
+            "This is a test line",
+            "Another line with Test",
+            "No match here",
+            "test test test",
+        ]);
+        let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
         search.set_case_sensitive(false);
-        let logs = create_test_logs();
-        search.search("test", &logs)?;
+        search.search("test", &all, &reader)?;
 
         let results = search.get_results();
-        assert_eq!(results.len(), 3);
-        assert_eq!(results[0].log_id, 0);
-        assert_eq!(results[0].matches, vec![(16, 20)]);
-        assert_eq!(results[1].log_id, 1);
-        assert_eq!(results[1].matches, vec![(24, 28)]);
-        assert_eq!(results[2].log_id, 3);
-        assert_eq!(results[2].matches, vec![(6, 10), (11, 15), (16, 20)]);
+        assert_eq!(results.len(), 3); // lines 0, 1, 3
+        assert_eq!(results[0].line_idx, 0);
+        assert_eq!(results[1].line_idx, 1);
+        assert_eq!(results[2].line_idx, 3);
         Ok(())
     }
 
     #[test]
     fn test_search_no_match() -> anyhow::Result<()> {
+        let (_f, reader) = make_reader(&["This is a line"]);
+        let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        let logs = create_test_logs();
-        search.search("nomatch", &logs)?;
+        search.search("nomatch", &all, &reader)?;
         assert!(search.get_results().is_empty());
         Ok(())
     }
 
     #[test]
     fn test_next_previous_match() -> anyhow::Result<()> {
+        let (_f, reader) = make_reader(&[
+            "test line",
+            "nothing",
+            "another test",
+        ]);
+        let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        let logs = create_test_logs();
-        search.search("test", &logs)?;
+        search.search("test", &all, &reader)?;
 
-        assert_eq!(search.get_current_match().unwrap().log_id, 0);
+        // starts at index 0 → line_idx 0
+        assert_eq!(search.get_current_match().unwrap().line_idx, 0);
 
         search.next_match();
-        assert_eq!(search.get_current_match().unwrap().log_id, 3);
+        assert_eq!(search.get_current_match().unwrap().line_idx, 2);
+
+        // wrap around
         search.next_match();
-        assert_eq!(search.get_current_match().unwrap().log_id, 0);
+        assert_eq!(search.get_current_match().unwrap().line_idx, 0);
 
         search.previous_match();
-        assert_eq!(search.get_current_match().unwrap().log_id, 3);
-        search.previous_match();
-        assert_eq!(search.get_current_match().unwrap().log_id, 0);
+        assert_eq!(search.get_current_match().unwrap().line_idx, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_only_visible() -> anyhow::Result<()> {
+        let (_f, reader) = make_reader(&[
+            "ERROR: bad",
+            "INFO: good",
+            "ERROR: also bad",
+        ]);
+        // Only search visible lines (0 and 2 pass the filter)
+        let visible = vec![0usize, 2];
+        let mut search = Search::new();
+        search.search("bad", &visible, &reader)?;
+
+        let results = search.get_results();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].line_idx, 0);
+        assert_eq!(results[1].line_idx, 2);
         Ok(())
     }
 
@@ -203,68 +228,5 @@ mod tests {
         assert!(search.results.is_empty());
         assert_eq!(search.current_match_index, 0);
         assert!(search.case_sensitive);
-    }
-
-    #[test]
-    fn test_search_matches_all_fields() -> anyhow::Result<()> {
-        let mut search = Search::new();
-        let logs = vec![
-            LogEntry {
-                id: 0,
-                timestamp: Some("Jun 28 10:00:03".to_string()),
-                hostname: Some("webserver".to_string()),
-                process_name: Some("nginx".to_string()),
-                message: "200 OK".to_string(),
-                ..Default::default()
-            },
-            LogEntry {
-                id: 1,
-                message: "plain log line".to_string(),
-                ..Default::default()
-            },
-        ];
-
-        // Search by timestamp
-        search.search("Jun 28", &logs)?;
-        assert_eq!(search.get_results().len(), 1);
-        assert_eq!(search.get_results()[0].log_id, 0);
-
-        // Search by hostname
-        search.search("webserver", &logs)?;
-        assert_eq!(search.get_results().len(), 1);
-        assert_eq!(search.get_results()[0].log_id, 0);
-
-        // Search by process name
-        search.search("nginx", &logs)?;
-        assert_eq!(search.get_results().len(), 1);
-        assert_eq!(search.get_results()[0].log_id, 0);
-
-        // Search by message
-        search.search("200 OK", &logs)?;
-        assert_eq!(search.get_results().len(), 1);
-        assert_eq!(search.get_results()[0].log_id, 0);
-
-        // Search term that doesn't exist anywhere
-        search.search("apache", &logs)?;
-        assert!(search.get_results().is_empty());
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_search_across_field_boundaries() -> anyhow::Result<()> {
-        let mut search = Search::new();
-        let logs = vec![LogEntry {
-            id: 0,
-            hostname: Some("server1".to_string()),
-            process_name: Some("app".to_string()),
-            message: "started".to_string(),
-            ..Default::default()
-        }];
-
-        // "server1 app" spans hostname and process_name
-        search.search("server1 app", &logs)?;
-        assert_eq!(search.get_results().len(), 1);
-        Ok(())
     }
 }

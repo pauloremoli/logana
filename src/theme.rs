@@ -173,8 +173,9 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyzer::LogAnalyzer;
     use crate::db::Database;
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
     use crate::ui::App;
     use std::env;
     use std::sync::Arc;
@@ -194,9 +195,10 @@ mod tests {
         fs::write(&theme_path, "{}").unwrap();
 
         let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        let db = rt.block_on(Database::in_memory()).unwrap();
-        let analyzer = LogAnalyzer::new(Arc::new(db), rt);
-        let app = App::new(analyzer, Theme::default());
+        let db = Arc::new(rt.block_on(Database::in_memory()).unwrap());
+        let log_manager = LogManager::new(db, rt, None);
+        let file_reader = FileReader::from_bytes(vec![]);
+        let app = App::new(log_manager, file_reader, Theme::default());
 
         assert!(app.available_themes.contains(&"mytheme".to_string()));
 

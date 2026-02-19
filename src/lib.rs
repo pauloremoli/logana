@@ -1,6 +1,11 @@
-pub mod analyzer;
+pub mod auto_complete;
 pub mod commands;
 pub mod db;
+pub mod file_reader;
+pub mod filters;
+pub mod log_line;
+pub mod log_manager;
 pub mod search;
 pub mod theme;
+pub mod types;
 pub mod ui;

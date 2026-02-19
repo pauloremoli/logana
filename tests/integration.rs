@@ -1,15 +1,18 @@
-use logsmith_rs::analyzer::{FilterType, LogAnalyzer, LogLevel};
 use logsmith_rs::db::Database;
+use logsmith_rs::file_reader::FileReader;
+use logsmith_rs::filters::FilterManager;
+use logsmith_rs::log_manager::LogManager;
+use logsmith_rs::types::FilterType;
 use std::io::Write;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
 
-fn setup() -> (Arc<tokio::runtime::Runtime>, Arc<Database>, LogAnalyzer) {
+fn setup() -> (Arc<tokio::runtime::Runtime>, Arc<Database>, LogManager) {
     let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
     let db = rt.block_on(Database::in_memory()).unwrap();
     let db = Arc::new(db);
-    let analyzer = LogAnalyzer::new(db.clone(), rt.clone());
-    (rt, db, analyzer)
+    let manager = LogManager::new(db.clone(), rt.clone(), None);
+    (rt, db, manager)
 }
 
 fn create_sample_log_file() -> NamedTempFile {
@@ -49,233 +52,245 @@ fn create_sample_log_file() -> NamedTempFile {
 }
 
 #[test]
-fn test_full_ingestion_and_query_flow() {
-    let (_rt, _db, analyzer) = setup();
+fn test_file_reader_line_count() {
     let file = create_sample_log_file();
     let path = file.path().to_str().unwrap();
-
-    analyzer.ingest_file(path).unwrap();
-
-    let logs = analyzer.get_logs();
-    assert_eq!(logs.len(), 7);
-
-    // Verify parsed fields
-    assert_eq!(logs[0].timestamp, Some("Jun 28 10:00:01".to_string()));
-    assert_eq!(logs[0].hostname, Some("myhost".to_string()));
-    assert_eq!(logs[0].process_name, Some("myapp".to_string()));
-    assert_eq!(logs[0].pid, Some(1234));
-    assert_eq!(logs[0].level, LogLevel::Info);
-    assert_eq!(logs[0].message, "Application started");
-
-    // Check error level
-    assert_eq!(logs[1].level, LogLevel::Error);
-
-    // Check kernel log (no PID)
-    assert_eq!(logs[2].process_name, Some("kernel".to_string()));
-    assert_eq!(logs[2].pid, None);
-
-    // Check plain text line
-    assert_eq!(logs[6].message, "plain text log line with no format");
-    assert_eq!(logs[6].level, LogLevel::Unknown);
+    let reader = FileReader::new(path).unwrap();
+    assert_eq!(reader.line_count(), 7);
 }
 
 #[test]
-fn test_filter_include_exclude_flow() {
-    let (_rt, _db, analyzer) = setup();
-    let file = create_sample_log_file();
-    analyzer.ingest_file(file.path().to_str().unwrap()).unwrap();
-
-    // Include only logs with "Connection" in the message
-    analyzer.add_filter("Connection".to_string(), FilterType::Include);
-    let logs = analyzer.get_logs();
-    let filtered = analyzer.apply_filters(&logs).unwrap();
-    assert_eq!(filtered.len(), 2);
-    assert!(
-        filtered
-            .iter()
-            .any(|l| l.message.contains("Connection failed"))
-    );
-    assert!(
-        filtered
-            .iter()
-            .any(|l| l.message.contains("Connection established"))
-    );
-
-    // Clear and test exclude
-    analyzer.clear_filters();
-    analyzer.add_filter("Linux".to_string(), FilterType::Exclude);
-    let logs = analyzer.get_logs();
-    let filtered = analyzer.apply_filters(&logs).unwrap();
-    assert_eq!(filtered.len(), 6);
-    assert!(!filtered.iter().any(|l| l.message.contains("Linux")));
-}
-
-#[test]
-fn test_mark_and_export_flow() {
-    let (_rt, _db, analyzer) = setup();
-    let file = create_sample_log_file();
-    analyzer.ingest_file(file.path().to_str().unwrap()).unwrap();
-
-    // Mark some entries
-    analyzer.toggle_mark(0);
-    analyzer.toggle_mark(2);
-
-    let marked = analyzer.get_marked_logs();
-    assert_eq!(marked.len(), 2);
-    assert_eq!(marked[0].id, 0);
-    assert_eq!(marked[1].id, 2);
-
-    // Unmark one
-    analyzer.toggle_mark(0);
-    let marked = analyzer.get_marked_logs();
-    assert_eq!(marked.len(), 1);
-    assert_eq!(marked[0].id, 2);
-}
-
-#[test]
-fn test_search_flow() {
-    let (_rt, _db, analyzer) = setup();
-    let file = create_sample_log_file();
-    analyzer.ingest_file(file.path().to_str().unwrap()).unwrap();
-
-    let results = analyzer.search("Connection").unwrap();
-    assert_eq!(results.len(), 2); // "Connection failed" and "Connection established"
-
-    // Case-insensitive search for "started"
-    let results = analyzer.search("(?i)started").unwrap();
-    assert_eq!(results.len(), 1);
-}
-
-#[test]
-fn test_filter_json_roundtrip_with_db() {
-    let (_rt, _db, analyzer) = setup();
-
-    // Add filters with different types
-    analyzer.add_filter("error".to_string(), FilterType::Include);
-    analyzer.add_filter("debug".to_string(), FilterType::Exclude);
-
-    // Save to JSON
-    let temp = NamedTempFile::new().unwrap();
-    let path = temp.path().to_str().unwrap();
-    analyzer.save_filters(path).unwrap();
-
-    // Create new analyzer and load from JSON
-    let (_, _, analyzer2) = setup();
-    analyzer2.load_filters(path).unwrap();
-
-    let filters = analyzer2.get_filters();
-    assert_eq!(filters.len(), 2);
-    assert_eq!(filters[0].pattern, "error");
-    assert_eq!(filters[0].filter_type, FilterType::Include);
-    assert_eq!(filters[1].pattern, "debug");
-    assert_eq!(filters[1].filter_type, FilterType::Exclude);
-}
-
-#[test]
-fn test_persistence_check() {
-    let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
-    let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("test.db");
-    let db_path_str = db_path.to_str().unwrap();
-
-    // First session: ingest data
-    {
-        let db = rt.block_on(Database::new(db_path_str)).unwrap();
-        let db = Arc::new(db);
-        let analyzer = LogAnalyzer::new(db.clone(), rt.clone());
-
-        let file = create_sample_log_file();
-        analyzer.ingest_file(file.path().to_str().unwrap()).unwrap();
-
-        analyzer.add_filter("error".to_string(), FilterType::Include);
-
-        let logs = analyzer.get_logs();
-        assert_eq!(logs.len(), 7);
-    }
-
-    // Second session: data persists
-    {
-        let db = rt.block_on(Database::new(db_path_str)).unwrap();
-        let db = Arc::new(db);
-        let analyzer = LogAnalyzer::new(db.clone(), rt.clone());
-
-        let logs = analyzer.get_logs();
-        assert_eq!(logs.len(), 7);
-
-        let filters = analyzer.get_filters();
-        assert_eq!(filters.len(), 1);
-        assert_eq!(filters[0].pattern, "error");
-    }
-}
-
-#[test]
-fn test_has_logs_for_source_prevents_duplicate_ingestion() {
-    let (_rt, _db, analyzer) = setup();
+fn test_file_reader_get_line() {
     let file = create_sample_log_file();
     let path = file.path().to_str().unwrap();
+    let reader = FileReader::new(path).unwrap();
 
-    assert!(!analyzer.has_logs_for_source(path));
-    analyzer.ingest_file(path).unwrap();
-    assert!(analyzer.has_logs_for_source(path));
+    let line0 = std::str::from_utf8(reader.get_line(0)).unwrap();
+    assert!(line0.contains("INFO"));
+    assert!(line0.contains("Application started"));
 
-    let logs = analyzer.get_logs();
-    assert_eq!(logs.len(), 7);
+    let line1 = std::str::from_utf8(reader.get_line(1)).unwrap();
+    assert!(line1.contains("ERROR"));
+    assert!(line1.contains("Connection failed"));
+
+    let line6 = std::str::from_utf8(reader.get_line(6)).unwrap();
+    assert_eq!(line6, "plain text log line with no format");
 }
 
 #[test]
-fn test_reader_ingestion() {
-    let (_rt, _db, analyzer) = setup();
+fn test_filter_include_reduces_visible() {
+    let (_rt, _db, mut manager) = setup();
+    let file = create_sample_log_file();
+    let path = file.path().to_str().unwrap();
+    let reader = FileReader::new(path).unwrap();
 
-    let input = "line 1\nline 2\nline 3\n";
-    let cursor = std::io::Cursor::new(input.as_bytes());
-    analyzer.ingest_reader(cursor).unwrap();
+    // No filters → all lines visible
+    let (fm, _) = manager.build_filter_manager();
+    let visible = fm.compute_visible(&reader);
+    assert_eq!(visible.len(), 7);
 
-    let logs = analyzer.get_logs();
-    assert_eq!(logs.len(), 3);
-    assert_eq!(logs[0].message, "line 1");
-    assert_eq!(logs[2].message, "line 3");
+    // Include only lines containing "Connection"
+    manager.add_filter_with_color("Connection".into(), FilterType::Include, None, None, false);
+    let (fm, _) = manager.build_filter_manager();
+    let visible = fm.compute_visible(&reader);
+    assert_eq!(visible.len(), 2);
+    // Lines 1 and 4 contain "Connection"
+    assert!(visible.contains(&1));
+    assert!(visible.contains(&4));
 }
 
 #[test]
-fn test_filter_reorder() {
-    let (_rt, _db, analyzer) = setup();
+fn test_filter_exclude_removes_lines() {
+    let (_rt, _db, mut manager) = setup();
+    let file = create_sample_log_file();
+    let path = file.path().to_str().unwrap();
+    let reader = FileReader::new(path).unwrap();
 
-    analyzer.add_filter("first".to_string(), FilterType::Include);
-    analyzer.add_filter("second".to_string(), FilterType::Include);
-    analyzer.add_filter("third".to_string(), FilterType::Include);
+    // Exclude lines containing "INFO"
+    manager.add_filter_with_color("INFO".into(), FilterType::Exclude, None, None, false);
+    let (fm, _) = manager.build_filter_manager();
+    let visible = fm.compute_visible(&reader);
 
-    let filters = analyzer.get_filters();
-    assert_eq!(filters[0].pattern, "first");
-    assert_eq!(filters[1].pattern, "second");
-    assert_eq!(filters[2].pattern, "third");
+    // Lines 0 and 4 contain "INFO"; 7 total - 2 = 5
+    assert_eq!(visible.len(), 5);
+    assert!(!visible.contains(&0));
+    assert!(!visible.contains(&4));
+}
 
-    // Move second up
-    let id = filters[1].id;
-    analyzer.move_filter_up(id);
+#[test]
+fn test_filter_include_and_exclude() {
+    let (_rt, _db, mut manager) = setup();
+    let file = create_sample_log_file();
+    let path = file.path().to_str().unwrap();
+    let reader = FileReader::new(path).unwrap();
 
-    let filters = analyzer.get_filters();
+    // Include lines with "Connection", then exclude lines with "failed"
+    manager.add_filter_with_color("Connection".into(), FilterType::Include, None, None, false);
+    manager.add_filter_with_color("failed".into(), FilterType::Exclude, None, None, false);
+    let (fm, _) = manager.build_filter_manager();
+    let visible = fm.compute_visible(&reader);
+
+    // Line 1: "Connection failed" — included by "Connection" but excluded by "failed"
+    // Line 4: "Connection established" — included and not excluded
+    assert_eq!(visible.len(), 1);
+    assert!(visible.contains(&4));
+}
+
+#[test]
+fn test_disabled_filter_is_ignored() {
+    let (_rt, _db, mut manager) = setup();
+    let file = create_sample_log_file();
+    let path = file.path().to_str().unwrap();
+    let reader = FileReader::new(path).unwrap();
+
+    manager.add_filter_with_color("INFO".into(), FilterType::Include, None, None, false);
+    let id = manager.get_filters()[0].id;
+    manager.toggle_filter(id); // disable it
+
+    // Disabled → no active include filters → all lines visible
+    let (fm, _) = manager.build_filter_manager();
+    let visible = fm.compute_visible(&reader);
+    assert_eq!(visible.len(), 7);
+}
+
+#[test]
+fn test_filter_manager_no_filters_shows_all() {
+    let fm = FilterManager::empty();
+    let data = b"line1\nline2\nline3\n";
+    let reader = FileReader::from_bytes(data.to_vec());
+    let visible = fm.compute_visible(&reader);
+    assert_eq!(visible, vec![0, 1, 2]);
+}
+
+#[test]
+fn test_marks_persistence() {
+    let (_rt, _db, mut manager) = setup();
+
+    manager.toggle_mark(0);
+    manager.toggle_mark(2);
+    manager.toggle_mark(5);
+
+    assert!(manager.is_marked(0));
+    assert!(manager.is_marked(2));
+    assert!(manager.is_marked(5));
+    assert!(!manager.is_marked(1));
+    assert!(!manager.is_marked(3));
+
+    let indices = manager.get_marked_indices();
+    assert_eq!(indices, vec![0, 2, 5]);
+
+    // Toggle off
+    manager.toggle_mark(2);
+    assert!(!manager.is_marked(2));
+    assert_eq!(manager.get_marked_indices(), vec![0, 5]);
+}
+
+#[test]
+fn test_get_marked_lines() {
+    let (_rt, _db, mut manager) = setup();
+
+    let data = b"alpha\nbeta\ngamma\n";
+    let reader = FileReader::from_bytes(data.to_vec());
+
+    manager.toggle_mark(0);
+    manager.toggle_mark(2);
+
+    let lines = manager.get_marked_lines(&reader);
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0], b"alpha");
+    assert_eq!(lines[1], b"gamma");
+}
+
+#[test]
+fn test_add_and_remove_filters() {
+    let (_rt, _db, mut manager) = setup();
+
+    manager.add_filter_with_color("error".into(), FilterType::Include, None, None, false);
+    manager.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, false);
+    assert_eq!(manager.get_filters().len(), 2);
+
+    let id = manager.get_filters()[0].id;
+    manager.remove_filter(id);
+    assert_eq!(manager.get_filters().len(), 1);
+    assert_eq!(manager.get_filters()[0].pattern, "debug");
+}
+
+#[test]
+fn test_move_filter_up_down() {
+    let (_rt, _db, mut manager) = setup();
+
+    manager.add_filter_with_color("first".into(), FilterType::Include, None, None, false);
+    manager.add_filter_with_color("second".into(), FilterType::Include, None, None, false);
+    manager.add_filter_with_color("third".into(), FilterType::Include, None, None, false);
+
+    let id_second = manager.get_filters()[1].id;
+    manager.move_filter_up(id_second);
+
+    let filters = manager.get_filters();
     assert_eq!(filters[0].pattern, "second");
     assert_eq!(filters[1].pattern, "first");
     assert_eq!(filters[2].pattern, "third");
 }
 
 #[test]
-fn test_combined_filters_and_search() {
-    let (_rt, _db, analyzer) = setup();
+fn test_filter_regex_pattern() {
+    let (_rt, _db, mut manager) = setup();
+    let file = create_sample_log_file();
+    let path = file.path().to_str().unwrap();
+    let reader = FileReader::new(path).unwrap();
 
-    let input = "ERROR: database connection timeout\nINFO: user login successful\nERROR: authentication failed\nDEBUG: cache miss for key xyz\n";
-    let cursor = std::io::Cursor::new(input.as_bytes());
-    analyzer.ingest_reader(cursor).unwrap();
+    // Regex pattern matching either INFO or ERROR
+    manager.add_filter_with_color("INFO|ERROR".into(), FilterType::Include, None, None, false);
+    let (fm, _) = manager.build_filter_manager();
+    let visible = fm.compute_visible(&reader);
 
-    // Add include filter for ERROR
-    analyzer.add_filter("ERROR".to_string(), FilterType::Include);
+    // Lines 0 (INFO), 1 (ERROR), 4 (INFO) → 3 lines
+    assert_eq!(visible.len(), 3);
+    assert!(visible.contains(&0));
+    assert!(visible.contains(&1));
+    assert!(visible.contains(&4));
+}
 
-    let logs = analyzer.get_logs();
-    let filtered = analyzer.apply_filters(&logs).unwrap();
-    assert_eq!(filtered.len(), 2);
+#[test]
+fn test_file_reader_from_bytes() {
+    let data = b"line one\nline two\nline three\n";
+    let reader = FileReader::from_bytes(data.to_vec());
+    assert_eq!(reader.line_count(), 3);
+    assert_eq!(reader.get_line(0), b"line one");
+    assert_eq!(reader.get_line(1), b"line two");
+    assert_eq!(reader.get_line(2), b"line three");
+}
 
-    // Search within all logs
-    let results = analyzer.search("connection").unwrap();
+#[test]
+fn test_clear_filters() {
+    let (_rt, _db, mut manager) = setup();
+    manager.add_filter_with_color("error".into(), FilterType::Include, None, None, false);
+    manager.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, false);
+    assert_eq!(manager.get_filters().len(), 2);
+
+    manager.clear_filters();
+    assert!(manager.get_filters().is_empty());
+}
+
+#[test]
+fn test_search_on_visible_lines() {
+    use logsmith_rs::search::Search;
+
+    let (_rt, _db, mut manager) = setup();
+    let file = create_sample_log_file();
+    let path = file.path().to_str().unwrap();
+    let reader = FileReader::new(path).unwrap();
+
+    // Include only INFO lines
+    manager.add_filter_with_color("INFO".into(), FilterType::Include, None, None, false);
+    let (fm, _) = manager.build_filter_manager();
+    let visible = fm.compute_visible(&reader);
+    assert_eq!(visible.len(), 2);
+
+    // Search for "Application" within visible lines only
+    let mut search = Search::new();
+    search.search("Application", &visible, &reader).unwrap();
+    let results = search.get_results();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].log_id, 0);
+    assert_eq!(results[0].line_idx, 0);
 }
