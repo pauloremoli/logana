@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::auto_complete::{
     complete_color, complete_file_path, extract_color_partial, find_command_completions,
     find_matching_command, shell_split,
@@ -1100,22 +1102,89 @@ impl App {
         let visible_height = (logs_area.height as usize).saturating_sub(2);
         self.tabs[self.active_tab].visible_height = visible_height;
 
+        // Line-number width needed early for inner_width (used in wrap calculations).
+        let show_line_numbers = self.tabs[self.active_tab].show_line_numbers;
+        let line_number_width = if show_line_numbers {
+            num_visible.max(1).to_string().len()
+        } else {
+            0
+        };
+
+        // Inner content width: subtract block borders (2) and line-number prefix.
+        let ln_prefix_width = if show_line_numbers { line_number_width + 1 } else { 0 };
+        let inner_width = (logs_area.width as usize).saturating_sub(2 + ln_prefix_width);
+
+        let wrap = self.tabs[self.active_tab].wrap;
+
         // Clamp scroll_offset
         if num_visible > 0 && self.tabs[self.active_tab].scroll_offset >= num_visible {
             self.tabs[self.active_tab].scroll_offset = num_visible - 1;
         }
 
-        // Adjust viewport so cursor stays visible
+        // Adjust viewport so cursor stays visible (wrap-aware).
         let scroll_offset = self.tabs[self.active_tab].scroll_offset;
         let viewport_offset = self.tabs[self.active_tab].viewport_offset;
-        if scroll_offset < viewport_offset {
-            self.tabs[self.active_tab].viewport_offset = scroll_offset;
-        } else if visible_height > 0 && scroll_offset >= viewport_offset + visible_height {
-            self.tabs[self.active_tab].viewport_offset = scroll_offset - visible_height + 1;
-        }
 
-        let start = self.tabs[self.active_tab].viewport_offset;
-        let end = (start + visible_height).min(num_visible);
+        let new_viewport = if scroll_offset < viewport_offset {
+            // Cursor moved above viewport → snap viewport up.
+            scroll_offset
+        } else if wrap && inner_width > 0 && num_visible > 0 {
+            // Count terminal rows from viewport_offset to scroll_offset (inclusive).
+            let rows_used: usize = (viewport_offset..=scroll_offset)
+                .map(|i| {
+                    let li = self.tabs[self.active_tab].visible_indices[i];
+                    line_row_count(self.tabs[self.active_tab].file_reader.get_line(li), inner_width)
+                })
+                .sum();
+            if rows_used > visible_height {
+                // Cursor is below the viewport; walk backward from scroll_offset
+                // to find the first line that still keeps the cursor on-screen.
+                let mut rows = 0usize;
+                let mut new_vp = scroll_offset + 1;
+                loop {
+                    if new_vp == 0 { break; }
+                    new_vp -= 1;
+                    let li = self.tabs[self.active_tab].visible_indices[new_vp];
+                    let h = line_row_count(self.tabs[self.active_tab].file_reader.get_line(li), inner_width);
+                    if rows + h > visible_height {
+                        new_vp += 1; // this line doesn't fit; start at the next one
+                        break;
+                    }
+                    rows += h;
+                    if new_vp == 0 { break; }
+                }
+                new_vp.min(scroll_offset)
+            } else {
+                viewport_offset
+            }
+        } else if visible_height > 0 && scroll_offset >= viewport_offset + visible_height {
+            scroll_offset - visible_height + 1
+        } else {
+            viewport_offset
+        };
+
+        self.tabs[self.active_tab].viewport_offset = new_viewport;
+        let start = new_viewport;
+
+        // Compute end: include lines until their rows fill visible_height (wrap-aware).
+        let end = if wrap && inner_width > 0 {
+            let mut rows = 0usize;
+            let mut e = start;
+            while e < num_visible {
+                let li = self.tabs[self.active_tab].visible_indices[e];
+                let h = line_row_count(self.tabs[self.active_tab].file_reader.get_line(li), inner_width);
+                if rows + h > visible_height {
+                    break;
+                }
+                rows += h;
+                e += 1;
+            }
+            // Always render at least one line so the cursor is never invisible.
+            if e == start && start < num_visible { e = start + 1; }
+            e
+        } else {
+            (start + visible_height).min(num_visible)
+        };
 
         // Build filter manager and styles array (256 slots: filter styles + search at index 255)
         let (filter_manager, mut styles) =
@@ -1134,12 +1203,6 @@ impl App {
         let theme = &self.theme;
         let level_colors = self.tabs[self.active_tab].level_colors;
         let current_scroll = self.tabs[self.active_tab].scroll_offset;
-        let show_line_numbers = self.tabs[self.active_tab].show_line_numbers;
-        let line_number_width = if show_line_numbers {
-            num_visible.max(1).to_string().len()
-        } else {
-            0
-        };
 
         let log_lines: Vec<Line> = self.tabs[self.active_tab].visible_indices[start..end]
             .iter()
@@ -1580,6 +1643,16 @@ impl App {
             None => {}
         }
     }
+}
+
+/// Number of terminal rows a line occupies when wrapped to `inner_width` columns.
+/// Returns 1 when `inner_width` is 0 or the line is empty.
+fn line_row_count(bytes: &[u8], inner_width: usize) -> usize {
+    if inner_width == 0 {
+        return 1;
+    }
+    let w = UnicodeWidthStr::width(std::str::from_utf8(bytes).unwrap_or(""));
+    if w == 0 { 1 } else { w.div_ceil(inner_width) }
 }
 
 #[cfg(test)]
