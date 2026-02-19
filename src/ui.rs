@@ -533,6 +533,11 @@ impl App {
             .unwrap_or(0);
         let status_line = self.tabs[self.active_tab].mode.status_line().to_string();
 
+        if is_confirm_restore {
+            self.render_confirm_restore_modal(frame);
+            return;
+        }
+
         let mut constraints = vec![];
         if has_multiple_tabs {
             constraints.push(Constraint::Length(1)); // Tab bar
@@ -550,44 +555,13 @@ impl App {
 
         let mut chunk_idx = 0;
 
-        // Render tab bar
-        if has_multiple_tabs {
-            let tab_bar_area = chunks[chunk_idx];
-            chunk_idx += 1;
-
-            let tab_spans: Vec<Span> = self
-                .tabs
-                .iter()
-                .enumerate()
-                .flat_map(|(i, t)| {
-                    let is_active = i == self.active_tab;
-                    let label = format!(" {} ", t.title);
-                    let style = if is_active {
-                        Style::default()
-                            .fg(self.theme.text)
-                            .bg(self.theme.text_highlight)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                            .fg(self.theme.border)
-                            .bg(self.theme.root_bg)
-                    };
-                    vec![
-                        Span::styled(label, style),
-                        Span::styled(" ", Style::default().bg(self.theme.root_bg)),
-                    ]
-                })
-                .collect();
-
-            let tab_bar = Paragraph::new(Line::from(tab_spans))
-                .style(Style::default().bg(self.theme.root_bg));
-            frame.render_widget(tab_bar, tab_bar_area);
-        }
+        self.render_tab_bar(frame, has_multiple_tabs, &chunks, &mut chunk_idx);
 
         let main_chunk = chunks[chunk_idx];
         chunk_idx += 1;
 
         let tab = &self.tabs[self.active_tab];
+
         let (logs_area, sidebar_area) = if tab.show_sidebar {
             let horizontal = Layout::default()
                 .direction(Direction::Horizontal)
@@ -598,6 +572,30 @@ impl App {
             (main_chunk, None)
         };
 
+        self.render_logs_panel(frame, logs_area);
+
+        self.render_side_bar(frame, selected_filter_idx, sidebar_area);
+
+        self.render_command_bar(frame, command_input, &chunks, chunk_idx);
+
+        self.render_input_bar(frame, search_input, &chunks, chunk_idx);
+
+        let command_list = Paragraph::new(status_line)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.border)),
+            )
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(self.theme.text));
+        let mut area = *chunks.last().unwrap();
+        if area.height > 5 {
+            area.height = 5;
+        }
+        frame.render_widget(command_list, area);
+    }
+
+    fn render_logs_panel(&mut self, frame: &mut Frame<'_>, logs_area: Rect) {
         let num_visible = self.tabs[self.active_tab].visible_indices.len();
 
         let visible_height = (logs_area.height as usize).saturating_sub(2);
@@ -786,47 +784,93 @@ impl App {
         }
 
         frame.render_widget(paragraph, logs_area);
+    }
 
-        if let Some(sidebar_area) = sidebar_area {
-            let filters = self.tabs[self.active_tab].log_manager.get_filters();
-            let filters_text: Vec<Line> = filters
-                .iter()
-                .enumerate()
-                .map(|(i, filter)| {
-                    let status = if filter.enabled { "[x]" } else { "[ ]" };
-                    let selected_prefix = if i == selected_filter_idx { ">" } else { " " };
-                    let filter_type_str = match filter.filter_type {
-                        FilterType::Include => "In",
-                        FilterType::Exclude => "Out",
-                    };
-                    let mut style = Style::default().fg(self.theme.text);
-                    if let Some(cfg) = &filter.color_config {
-                        if let Some(fg) = cfg.fg {
-                            style = style.fg(fg);
-                        }
-                        if let Some(bg) = cfg.bg {
-                            style = style.bg(bg);
-                        }
-                    }
-                    Line::from(format!(
-                        "{}{} {}: {}",
-                        selected_prefix, status, filter_type_str, filter.pattern
-                    ))
-                    .style(style)
-                })
-                .collect();
+    fn render_input_bar(
+        &mut self,
+        frame: &mut Frame<'_>,
+        search_input: Option<(String, bool)>,
+        chunks: &std::rc::Rc<[Rect]>,
+        chunk_idx: usize,
+    ) {
+        if let Some((input_str, forward)) = search_input {
+            let prefix = if forward { "/" } else { "?" };
+            let search_line = Paragraph::new(format!("{}{}", prefix, input_str))
+                .style(Style::default().fg(self.theme.text).bg(self.theme.border))
+                .wrap(Wrap { trim: false });
+            let input_area = chunks[chunk_idx];
+            frame.render_widget(search_line, input_area);
+            let cursor_x = input_area.x + 1 + input_str.len() as u16;
+            if cursor_x < input_area.x + input_area.width {
+                frame.set_cursor(cursor_x, input_area.y);
+            }
 
-            let sidebar = Paragraph::new(filters_text).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.border))
-                    .title("Filters")
-                    .title_style(Style::default().fg(self.theme.border_title)),
+            let hint_area = chunks[chunk_idx + 1];
+            let match_count = self.tabs[self.active_tab].search.get_results().len();
+            let hint_text = if !input_str.is_empty() {
+                format!("  {} matches", match_count)
+            } else {
+                "  Type pattern and press Enter to search".to_string()
+            };
+            let hint = Paragraph::new(hint_text).style(
+                Style::default()
+                    .fg(self.theme.border)
+                    .bg(self.theme.root_bg),
             );
-            frame.render_widget(sidebar, sidebar_area);
+            frame.render_widget(hint, hint_area);
         }
+    }
 
-        // Command input bar
+    fn render_confirm_restore_modal(&mut self, frame: &mut Frame<'_>) {
+        let modal_width = 44_u16;
+        let modal_height = 5_u16;
+        let area = frame.size();
+        let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
+        let modal_area = ratatui::layout::Rect::new(x, y, modal_width, modal_height);
+
+        frame.render_widget(ratatui::widgets::Clear, modal_area);
+        let modal = Paragraph::new(Line::from(vec![
+            Span::styled(
+                " [y]",
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("es  ", Style::default().fg(self.theme.text)),
+            Span::styled(
+                "[n]",
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("o ", Style::default().fg(self.theme.text)),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.theme.border_title))
+                .title(" Restore previous session? ")
+                .title_style(
+                    Style::default()
+                        .fg(self.theme.text_highlight)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .title_alignment(ratatui::layout::Alignment::Center)
+                .padding(ratatui::widgets::Padding::new(0, 0, 1, 0)),
+        )
+        .style(Style::default().bg(self.theme.root_bg));
+        frame.render_widget(modal, modal_area);
+    }
+
+    fn render_command_bar(
+        &mut self,
+        frame: &mut Frame<'_>,
+        command_input: Option<(String, usize)>,
+        chunks: &std::rc::Rc<[Rect]>,
+        chunk_idx: usize,
+    ) {
         if let Some((input_text, cursor_pos)) = command_input {
             let input_prefix = ":";
             let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
@@ -921,92 +965,93 @@ impl App {
                 }
             }
         }
+    }
 
-        // Search input bar
-        if let Some((input_str, forward)) = search_input {
-            let prefix = if forward { "/" } else { "?" };
-            let search_line = Paragraph::new(format!("{}{}", prefix, input_str))
-                .style(Style::default().fg(self.theme.text).bg(self.theme.border))
-                .wrap(Wrap { trim: false });
-            let input_area = chunks[chunk_idx];
-            frame.render_widget(search_line, input_area);
-            let cursor_x = input_area.x + 1 + input_str.len() as u16;
-            if cursor_x < input_area.x + input_area.width {
-                frame.set_cursor(cursor_x, input_area.y);
-            }
+    fn render_side_bar(
+        &mut self,
+        frame: &mut Frame<'_>,
+        selected_filter_idx: usize,
+        sidebar_area: Option<Rect>,
+    ) {
+        if let Some(sidebar_area) = sidebar_area {
+            let filters = self.tabs[self.active_tab].log_manager.get_filters();
+            let filters_text: Vec<Line> = filters
+                .iter()
+                .enumerate()
+                .map(|(i, filter)| {
+                    let status = if filter.enabled { "[x]" } else { "[ ]" };
+                    let selected_prefix = if i == selected_filter_idx { ">" } else { " " };
+                    let filter_type_str = match filter.filter_type {
+                        FilterType::Include => "In",
+                        FilterType::Exclude => "Out",
+                    };
+                    let mut style = Style::default().fg(self.theme.text);
+                    if let Some(cfg) = &filter.color_config {
+                        if let Some(fg) = cfg.fg {
+                            style = style.fg(fg);
+                        }
+                        if let Some(bg) = cfg.bg {
+                            style = style.bg(bg);
+                        }
+                    }
+                    Line::from(format!(
+                        "{}{} {}: {}",
+                        selected_prefix, status, filter_type_str, filter.pattern
+                    ))
+                    .style(style)
+                })
+                .collect();
 
-            let hint_area = chunks[chunk_idx + 1];
-            let match_count = self.tabs[self.active_tab].search.get_results().len();
-            let hint_text = if !input_str.is_empty() {
-                format!("  {} matches", match_count)
-            } else {
-                "  Type pattern and press Enter to search".to_string()
-            };
-            let hint = Paragraph::new(hint_text).style(
-                Style::default()
-                    .fg(self.theme.border)
-                    .bg(self.theme.root_bg),
+            let sidebar = Paragraph::new(filters_text).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.border))
+                    .title("Filters")
+                    .title_style(Style::default().fg(self.theme.border_title)),
             );
-            frame.render_widget(hint, hint_area);
+            frame.render_widget(sidebar, sidebar_area);
         }
+    }
 
-        // ConfirmRestore modal
-        if is_confirm_restore {
-            let modal_width = 44_u16;
-            let modal_height = 5_u16;
-            let area = frame.size();
-            let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
-            let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
-            let modal_area = ratatui::layout::Rect::new(x, y, modal_width, modal_height);
+    fn render_tab_bar(
+        &mut self,
+        frame: &mut Frame<'_>,
+        has_multiple_tabs: bool,
+        chunks: &std::rc::Rc<[Rect]>,
+        chunk_idx: &mut usize,
+    ) {
+        if has_multiple_tabs {
+            let tab_bar_area = chunks[*chunk_idx];
+            *chunk_idx += 1;
 
-            frame.render_widget(ratatui::widgets::Clear, modal_area);
-            let modal = Paragraph::new(Line::from(vec![
-                Span::styled(
-                    " [y]",
-                    Style::default()
-                        .fg(self.theme.text_highlight)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("es  ", Style::default().fg(self.theme.text)),
-                Span::styled(
-                    "[n]",
-                    Style::default()
-                        .fg(self.theme.text_highlight)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("o ", Style::default().fg(self.theme.text)),
-            ]))
-            .alignment(ratatui::layout::Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.border_title))
-                    .title(" Restore previous session? ")
-                    .title_style(
+            let tab_spans: Vec<Span> = self
+                .tabs
+                .iter()
+                .enumerate()
+                .flat_map(|(i, t)| {
+                    let is_active = i == self.active_tab;
+                    let label = format!(" {} ", t.title);
+                    let style = if is_active {
                         Style::default()
-                            .fg(self.theme.text_highlight)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                    .title_alignment(ratatui::layout::Alignment::Center)
-                    .padding(ratatui::widgets::Padding::new(0, 0, 1, 0)),
-            )
-            .style(Style::default().bg(self.theme.root_bg));
-            frame.render_widget(modal, modal_area);
-        }
+                            .fg(self.theme.text)
+                            .bg(self.theme.text_highlight)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                            .fg(self.theme.border)
+                            .bg(self.theme.root_bg)
+                    };
+                    vec![
+                        Span::styled(label, style),
+                        Span::styled(" ", Style::default().bg(self.theme.root_bg)),
+                    ]
+                })
+                .collect();
 
-        let command_list = Paragraph::new(status_line)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.border)),
-            )
-            .wrap(Wrap { trim: true })
-            .style(Style::default().fg(self.theme.text));
-        let mut area = *chunks.last().unwrap();
-        if area.height > 5 {
-            area.height = 5;
+            let tab_bar = Paragraph::new(Line::from(tab_spans))
+                .style(Style::default().bg(self.theme.root_bg));
+            frame.render_widget(tab_bar, tab_bar_area);
         }
-        frame.render_widget(command_list, area);
     }
 }
 

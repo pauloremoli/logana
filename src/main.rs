@@ -69,7 +69,7 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("Failed to open '{}': {}", path, e))?;
         (reader, Some(path.clone()))
     } else {
-        // Read stdin into memory
+        // TODO: stream data
         let mut data = Vec::new();
         if !stdin().is_terminal() {
             stdin().lock().read_to_end(&mut data)?;
