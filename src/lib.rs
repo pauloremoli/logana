@@ -5,6 +5,7 @@ pub mod file_reader;
 pub mod filters;
 pub mod log_line;
 pub mod log_manager;
+pub mod mode;
 pub mod search;
 pub mod theme;
 pub mod types;
