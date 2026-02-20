@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
@@ -5,7 +6,7 @@ use crate::{
         complete_color, complete_file_path, extract_color_partial, find_command_completions,
         fuzzy_match,
     },
-    mode::{app_mode::Mode, normal_mode::NormalMode},
+    mode::{app_mode::Mode, filter_mode::FilterManagementMode, normal_mode::NormalMode},
     theme::Theme,
     ui::{KeyResult, TabState},
 };
@@ -62,6 +63,20 @@ pub enum Commands {
     Open { path: String },
     /// Close the current tab
     CloseTab,
+    /// Remove all filter definitions
+    ClearFilters,
+    /// Disable all filters without removing them
+    DisableFilters,
+    /// Enable all filters
+    EnableFilters,
+    /// Toggle global filtering on/off
+    Filtering,
+    /// Hide a JSON field by name or 0-based index
+    HideField { field: String },
+    /// Show a hidden JSON field by name or 0-based index
+    ShowField { field: String },
+    /// Clear all hidden fields
+    ShowAllFields,
 }
 
 #[derive(Debug)]
@@ -85,8 +100,9 @@ impl CommandMode {
     }
 }
 
+#[async_trait]
 impl Mode for CommandMode {
-    fn handle_key(
+    async fn handle_key(
         mut self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
@@ -98,8 +114,15 @@ impl Mode for CommandMode {
                 return (Box::new(NormalMode), KeyResult::ExecuteCommand(cmd));
             }
             KeyCode::Esc => {
-                tab.filter_context = None;
                 tab.editing_filter_id = None;
+                if let Some(idx) = tab.filter_context.take() {
+                    return (
+                        Box::new(FilterManagementMode {
+                            selected_filter_index: idx,
+                        }),
+                        KeyResult::Handled,
+                    );
+                }
                 return (Box::new(NormalMode), KeyResult::Handled);
             }
             KeyCode::Backspace => {
@@ -182,14 +205,30 @@ impl Mode for CommandMode {
                     }
                 }
 
-                // File path completion
+                // File path completion — use the un-right-trimmed input so that a trailing
+                // space after the command name (e.g. "open ") is preserved for detection.
                 let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
+                let input_ltrimmed = self.input.trim_start();
                 let file_cmd = file_commands
                     .iter()
-                    .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
+                    .find(|cmd| input_ltrimmed.starts_with(&format!("{} ", cmd)));
                 if let Some(&cmd) = file_cmd {
-                    let partial = trimmed[cmd.len()..].trim_start();
-                    let completions = complete_file_path(partial);
+                    let partial = input_ltrimmed[cmd.len()..].trim_start();
+                    // When nothing is typed yet, default to the directory of the currently open file.
+                    let default_dir: String;
+                    let effective_partial: &str = if partial.is_empty() {
+                        default_dir = tab
+                            .log_manager
+                            .source_file()
+                            .and_then(|p| std::path::Path::new(p).parent())
+                            .and_then(|d| d.to_str())
+                            .map(|d| format!("{}/", d))
+                            .unwrap_or_default();
+                        &default_dir
+                    } else {
+                        partial
+                    };
+                    let completions = complete_file_path(effective_partial);
                     if !completions.is_empty() {
                         let idx = self.completion_index.unwrap_or(0) % completions.len();
                         let completed = completions[idx].clone();
@@ -253,11 +292,10 @@ mod tests {
     use crate::ui::{KeyResult, TabState};
     use std::sync::Arc;
 
-    fn make_tab() -> TabState {
+    async fn make_tab() -> TabState {
         let file_reader = FileReader::from_bytes(b"line1\nline2\n".to_vec());
-        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        let db = Arc::new(rt.block_on(Database::in_memory()).unwrap());
-        let log_manager = LogManager::new(db, rt, None);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
         TabState::new(file_reader, log_manager, "test".to_string())
     }
 
@@ -265,122 +303,142 @@ mod tests {
         CommandMode::with_history(String::new(), 0, vec![])
     }
 
-    fn press(mode: CommandMode, tab: &mut TabState, code: KeyCode) -> (Box<dyn Mode>, KeyResult) {
-        Box::new(mode).handle_key(tab, code, KeyModifiers::NONE)
+    async fn press(
+        mode: CommandMode,
+        tab: &mut TabState,
+        code: KeyCode,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        Box::new(mode)
+            .handle_key(tab, code, KeyModifiers::NONE)
+            .await
     }
 
-    #[test]
-    fn test_char_appends_to_input() {
-        let mut tab = make_tab();
-        let (mode, result) = press(empty_mode(), &mut tab, KeyCode::Char('f'));
+    #[tokio::test]
+    async fn test_char_appends_to_input() {
+        let mut tab = make_tab().await;
+        let (mode, result) = press(empty_mode(), &mut tab, KeyCode::Char('f')).await;
         assert!(matches!(result, KeyResult::Handled));
         assert_eq!(mode.command_state(), Some(("f", 1)));
     }
 
-    #[test]
-    fn test_char_appends_to_existing_input() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_char_appends_to_existing_input() {
+        let mut tab = make_tab().await;
         let mode = CommandMode::with_history("fil".to_string(), 3, vec![]);
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('t'));
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('t')).await;
         assert_eq!(mode2.command_state(), Some(("filt", 4)));
     }
 
-    #[test]
-    fn test_backspace_removes_last_char() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_backspace_removes_last_char() {
+        let mut tab = make_tab().await;
         let mode = CommandMode::with_history("filter".to_string(), 6, vec![]);
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Backspace);
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Backspace).await;
         assert_eq!(mode2.command_state(), Some(("filte", 5)));
     }
 
-    #[test]
-    fn test_backspace_at_start_no_change() {
-        let mut tab = make_tab();
-        let (mode2, _) = press(empty_mode(), &mut tab, KeyCode::Backspace);
+    #[tokio::test]
+    async fn test_backspace_at_start_no_change() {
+        let mut tab = make_tab().await;
+        let (mode2, _) = press(empty_mode(), &mut tab, KeyCode::Backspace).await;
         assert_eq!(mode2.command_state(), Some(("", 0)));
     }
 
-    #[test]
-    fn test_enter_returns_execute_command() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_enter_returns_execute_command() {
+        let mut tab = make_tab().await;
         let mode = CommandMode::with_history("filter foo".to_string(), 10, vec![]);
-        let (mode2, result) = press(mode, &mut tab, KeyCode::Enter);
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Enter).await;
         assert!(matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd == "filter foo"));
         assert!(mode2.command_state().is_none());
     }
 
-    #[test]
-    fn test_enter_trims_whitespace() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_enter_trims_whitespace() {
+        let mut tab = make_tab().await;
         let mode = CommandMode::with_history("  wrap  ".to_string(), 8, vec![]);
-        let (_, result) = press(mode, &mut tab, KeyCode::Enter);
+        let (_, result) = press(mode, &mut tab, KeyCode::Enter).await;
         assert!(matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd == "wrap"));
     }
 
-    #[test]
-    fn test_esc_returns_normal_mode() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_esc_without_filter_context_returns_normal_mode() {
+        let mut tab = make_tab().await;
         let mode = CommandMode::with_history("filter".to_string(), 6, vec![]);
-        let (mode2, result) = press(mode, &mut tab, KeyCode::Esc);
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.command_state().is_none());
+        assert!(mode2.status_line().contains("[NORMAL]"));
     }
 
-    #[test]
-    fn test_left_moves_cursor_back() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_esc_with_filter_context_returns_filter_management_mode() {
+        let mut tab = make_tab().await;
+        tab.filter_context = Some(2);
+        let mode = CommandMode::with_history("set-color --fg Red".to_string(), 18, vec![]);
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Esc).await;
+        assert!(matches!(result, KeyResult::Handled));
+        // filter_context consumed
+        assert!(tab.filter_context.is_none());
+        // returned to filter management mode, not normal mode
+        assert!(mode2.status_line().contains("[FILTER]"));
+    }
+
+    #[tokio::test]
+    async fn test_left_moves_cursor_back() {
+        let mut tab = make_tab().await;
         let mode = CommandMode::with_history("abc".to_string(), 3, vec![]);
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Left);
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Left).await;
         assert_eq!(mode2.command_state(), Some(("abc", 2)));
     }
 
-    #[test]
-    fn test_left_at_zero_no_change() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_left_at_zero_no_change() {
+        let mut tab = make_tab().await;
         let mode = CommandMode::with_history("abc".to_string(), 0, vec![]);
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Left);
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Left).await;
         assert_eq!(mode2.command_state(), Some(("abc", 0)));
     }
 
-    #[test]
-    fn test_right_moves_cursor_forward() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_right_moves_cursor_forward() {
+        let mut tab = make_tab().await;
         let mode = CommandMode::with_history("abc".to_string(), 2, vec![]);
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Right);
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Right).await;
         assert_eq!(mode2.command_state(), Some(("abc", 3)));
     }
 
-    #[test]
-    fn test_right_at_end_no_change() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_right_at_end_no_change() {
+        let mut tab = make_tab().await;
         let mode = CommandMode::with_history("abc".to_string(), 3, vec![]);
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Right);
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Right).await;
         assert_eq!(mode2.command_state(), Some(("abc", 3)));
     }
 
-    #[test]
-    fn test_up_navigates_to_last_history_entry() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_up_navigates_to_last_history_entry() {
+        let mut tab = make_tab().await;
         let history = vec!["cmd1".to_string(), "cmd2".to_string()];
         let mode = CommandMode::with_history(String::new(), 0, history);
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Up);
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Up).await;
         let (input, _) = mode2.command_state().unwrap();
         assert_eq!(input, "cmd2");
     }
 
-    #[test]
-    fn test_up_on_empty_history_no_change() {
-        let mut tab = make_tab();
-        let (mode2, _) = press(empty_mode(), &mut tab, KeyCode::Up);
+    #[tokio::test]
+    async fn test_up_on_empty_history_no_change() {
+        let mut tab = make_tab().await;
+        let (mode2, _) = press(empty_mode(), &mut tab, KeyCode::Up).await;
         assert_eq!(mode2.command_state(), Some(("", 0)));
     }
 
-    #[test]
-    fn test_up_then_down_restores_empty_input() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_up_then_down_restores_empty_input() {
+        let mut tab = make_tab().await;
         let history = vec!["cmd1".to_string()];
         let mode = CommandMode::with_history(String::new(), 0, history);
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Up);
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Up).await;
         let (input, _) = mode2.command_state().unwrap();
         assert_eq!(input, "cmd1");
 
@@ -392,25 +450,28 @@ mod tests {
             history_index: Some(0),
             completion_index: None,
         };
-        let (mode4, _) = press(mode3, &mut tab, KeyCode::Down);
+        let (mode4, _) = press(mode3, &mut tab, KeyCode::Down).await;
         let (input2, _) = mode4.command_state().unwrap();
         assert_eq!(input2, "");
     }
 
-    #[test]
-    fn test_tab_completes_command_name() {
-        let mut tab = make_tab();
+    #[tokio::test]
+    async fn test_tab_completes_command_name() {
+        let mut tab = make_tab().await;
         let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
-        let (mode2, _) = Box::new(mode).handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE);
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
         let (input, _) = mode2.command_state().unwrap();
         assert!(input.starts_with("fi") || input == "filter");
     }
 
-    #[test]
-    fn test_tab_empty_input_completes_to_first_command() {
-        let mut tab = make_tab();
-        let (mode2, _) =
-            Box::new(empty_mode()).handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE);
+    #[tokio::test]
+    async fn test_tab_empty_input_completes_to_first_command() {
+        let mut tab = make_tab().await;
+        let (mode2, _) = Box::new(empty_mode())
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
         let (input, _) = mode2.command_state().unwrap();
         assert!(!input.is_empty());
     }
@@ -429,5 +490,57 @@ mod tests {
     #[test]
     fn test_status_line_contains_command() {
         assert!(empty_mode().status_line().contains("[COMMAND]"));
+    }
+
+    #[tokio::test]
+    async fn test_tab_open_with_no_path_defaults_to_open_file_directory() {
+        use crate::log_manager::LogManager;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        std::fs::write(path.join("server.log"), b"data").unwrap();
+
+        // Tab with a source_file in the temp dir
+        let source = path.join("existing.log");
+        let file_reader = crate::file_reader::FileReader::from_bytes(b"line1\n".to_vec());
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, Some(source.to_str().unwrap().to_string())).await;
+        let mut tab = TabState::new(file_reader, log_manager, "existing.log".to_string());
+
+        // "open " with trailing space but no path → Tab should list files in source_file's directory
+        let mode = CommandMode::with_history("open ".to_string(), 5, vec![]);
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        let (input, _) = mode2.command_state().unwrap();
+        assert!(
+            input.starts_with("open "),
+            "Input should start with 'open '"
+        );
+        assert!(
+            input.contains(path.to_str().unwrap()),
+            "Should complete into the open file's directory, got: {input}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tab_open_with_fuzzy_path_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        std::fs::write(path.join("application.log"), b"data").unwrap();
+        std::fs::write(path.join("error.txt"), b"data").unwrap();
+
+        // "alog" fuzzy-matches "application.log" (a…l…o…g)
+        let partial = format!("{}/alog", path.to_str().unwrap());
+        let mode =
+            CommandMode::with_history(format!("open {}", partial), partial.len() + 5, vec![]);
+        let mut tab = make_tab().await;
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        let (input, _) = mode2.command_state().unwrap();
+        assert!(
+            input.ends_with("application.log"),
+            "Fuzzy 'alog' should match application.log, got: {input}"
+        );
     }
 }

@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
@@ -11,8 +12,9 @@ pub struct SearchMode {
     pub forward: bool,
 }
 
+#[async_trait]
 impl Mode for SearchMode {
-    fn handle_key(
+    async fn handle_key(
         mut self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
@@ -74,12 +76,11 @@ mod tests {
     use crate::ui::{KeyResult, TabState};
     use std::sync::Arc;
 
-    fn make_tab(lines: &[&str]) -> TabState {
+    async fn make_tab(lines: &[&str]) -> TabState {
         let data = lines.join("\n").into_bytes();
         let file_reader = FileReader::from_bytes(data);
-        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        let db = Arc::new(rt.block_on(Database::in_memory()).unwrap());
-        let log_manager = LogManager::new(db, rt, None);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
         TabState::new(file_reader, log_manager, "test".to_string())
     }
 
@@ -97,89 +98,100 @@ mod tests {
         }
     }
 
-    fn press(mode: SearchMode, tab: &mut TabState, code: KeyCode) -> (Box<dyn Mode>, KeyResult) {
-        Box::new(mode).handle_key(tab, code, KeyModifiers::NONE)
+    async fn press(
+        mode: SearchMode,
+        tab: &mut TabState,
+        code: KeyCode,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        Box::new(mode)
+            .handle_key(tab, code, KeyModifiers::NONE)
+            .await
     }
 
-    #[test]
-    fn test_char_appends_to_input() {
-        let mut tab = make_tab(&["line"]);
-        let (mode, result) = press(forward_mode(""), &mut tab, KeyCode::Char('e'));
+    #[tokio::test]
+    async fn test_char_appends_to_input() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, result) = press(forward_mode(""), &mut tab, KeyCode::Char('e')).await;
         assert!(matches!(result, KeyResult::Handled));
         let state = mode.search_state().unwrap();
         assert_eq!(state.0, "e");
     }
 
-    #[test]
-    fn test_multiple_chars_build_query() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_multiple_chars_build_query() {
+        let mut tab = make_tab(&["line"]).await;
         let mode = forward_mode("err");
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('o'));
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('o')).await;
         let state = mode2.search_state().unwrap();
         assert_eq!(state.0, "erro");
     }
 
-    #[test]
-    fn test_backspace_removes_last_char() {
-        let mut tab = make_tab(&["line"]);
-        let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Backspace);
+    #[tokio::test]
+    async fn test_backspace_removes_last_char() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Backspace).await;
         assert!(matches!(result, KeyResult::Handled));
         let state = mode2.search_state().unwrap();
         assert_eq!(state.0, "erro");
     }
 
-    #[test]
-    fn test_backspace_on_empty_no_panic() {
-        let mut tab = make_tab(&["line"]);
-        let (mode2, _) = press(forward_mode(""), &mut tab, KeyCode::Backspace);
+    #[tokio::test]
+    async fn test_backspace_on_empty_no_panic() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode2, _) = press(forward_mode(""), &mut tab, KeyCode::Backspace).await;
         let state = mode2.search_state().unwrap();
         assert_eq!(state.0, "");
     }
 
-    #[test]
-    fn test_esc_clears_input_and_returns_normal_mode() {
-        let mut tab = make_tab(&["line"]);
-        let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Esc);
+    #[tokio::test]
+    async fn test_esc_clears_input_and_returns_normal_mode() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.search_state().is_none());
         assert!(mode2.command_state().is_none());
     }
 
-    #[test]
-    fn test_tab_returns_ignored() {
-        let mut tab = make_tab(&["line"]);
-        let (_, result) = press(forward_mode(""), &mut tab, KeyCode::Tab);
+    #[tokio::test]
+    async fn test_tab_returns_ignored() {
+        let mut tab = make_tab(&["line"]).await;
+        let (_, result) = press(forward_mode(""), &mut tab, KeyCode::Tab).await;
         assert!(matches!(result, KeyResult::Ignored));
     }
 
-    #[test]
-    fn test_backtab_returns_ignored() {
-        let mut tab = make_tab(&["line"]);
-        let (_, result) = press(forward_mode(""), &mut tab, KeyCode::BackTab);
+    #[tokio::test]
+    async fn test_backtab_returns_ignored() {
+        let mut tab = make_tab(&["line"]).await;
+        let (_, result) = press(forward_mode(""), &mut tab, KeyCode::BackTab).await;
         assert!(matches!(result, KeyResult::Ignored));
     }
 
-    #[test]
-    fn test_enter_executes_forward_search_and_returns_normal_mode() {
-        let mut tab = make_tab(&["error: file not found", "warn: low memory", "error: timeout"]);
-        let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Enter);
+    #[tokio::test]
+    async fn test_enter_executes_forward_search_and_returns_normal_mode() {
+        let mut tab = make_tab(&[
+            "error: file not found",
+            "warn: low memory",
+            "error: timeout",
+        ])
+        .await;
+        let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Enter).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.search_state().is_none());
     }
 
-    #[test]
-    fn test_enter_with_no_match_still_returns_normal_mode() {
-        let mut tab = make_tab(&["info: all good", "warn: minor issue"]);
-        let (mode2, result) = press(forward_mode("critical"), &mut tab, KeyCode::Enter);
+    #[tokio::test]
+    async fn test_enter_with_no_match_still_returns_normal_mode() {
+        let mut tab = make_tab(&["info: all good", "warn: minor issue"]).await;
+        let (mode2, result) = press(forward_mode("critical"), &mut tab, KeyCode::Enter).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.search_state().is_none());
     }
 
-    #[test]
-    fn test_enter_scrolls_to_matching_line() {
-        let mut tab = make_tab(&["line0", "line1", "error here", "line3"]);
+    #[tokio::test]
+    async fn test_enter_scrolls_to_matching_line() {
+        let mut tab = make_tab(&["line0", "line1", "error here", "line3"]).await;
         tab.visible_height = 10;
-        press(forward_mode("error"), &mut tab, KeyCode::Enter);
+        press(forward_mode("error"), &mut tab, KeyCode::Enter).await;
         assert_eq!(tab.scroll_offset, 2);
     }
 

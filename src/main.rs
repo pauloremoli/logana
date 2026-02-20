@@ -32,7 +32,8 @@ fn get_db_path() -> String {
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args = Args::parse();
     let file_path = args.file;
 
@@ -47,9 +48,8 @@ fn main() -> Result<()> {
         .json()
         .init();
 
-    let rt = Arc::new(tokio::runtime::Runtime::new()?);
     let db_path = get_db_path();
-    let db = rt.block_on(Database::new(&db_path)).inspect_err(|err| {
+    let db = Database::new(&db_path).await.inspect_err(|err| {
         error!("Failed to init database: {}", err);
     })?;
     let db = Arc::new(db);
@@ -79,7 +79,7 @@ fn main() -> Result<()> {
         (None, false)
     };
 
-    let log_manager = LogManager::new(db.clone(), rt.clone(), source_path.clone());
+    let log_manager = LogManager::new(db.clone(), source_path.clone()).await;
 
     let res = {
         enable_raw_mode()?;
@@ -87,18 +87,24 @@ fn main() -> Result<()> {
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
         terminal.clear()?;
 
-        let mut app = App::new(log_manager, FileReader::from_bytes(vec![]), Theme::default());
+        let mut app = App::new(
+            log_manager,
+            FileReader::from_bytes(vec![]),
+            Theme::default(),
+        )
+        .await;
 
         // Kick off the background file load now that the TUI is visible.
         if background_file_load {
             if let Some(path) = source_path {
-                app.begin_file_load(path, LoadContext::ReplaceInitialTab);
+                app.begin_file_load(path, LoadContext::ReplaceInitialTab)
+                    .await;
             }
         } else if stdin_is_piped {
-            app.begin_stdin_load();
+            app.begin_stdin_load().await;
         }
 
-        let app_result = app.run(&mut terminal);
+        let app_result = app.run(&mut terminal).await;
 
         disable_raw_mode()?;
         stdout().execute(LeaveAlternateScreen)?;

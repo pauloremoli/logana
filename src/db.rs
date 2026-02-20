@@ -511,7 +511,10 @@ impl SessionStore for Database {
         let rows = sqlx::query("SELECT source_file FROM session_tabs ORDER BY tab_order")
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.iter().map(|r| r.get::<String, _>("source_file")).collect())
+        Ok(rows
+            .iter()
+            .map(|r| r.get::<String, _>("source_file"))
+            .collect())
     }
 }
 
@@ -673,9 +676,15 @@ mod tests {
         db.insert_filter("global", &FilterType::Include, true, None, None)
             .await
             .unwrap();
-        db.insert_filter("file-specific", &FilterType::Include, true, None, Some("test.log"))
-            .await
-            .unwrap();
+        db.insert_filter(
+            "file-specific",
+            &FilterType::Include,
+            true,
+            None,
+            Some("test.log"),
+        )
+        .await
+        .unwrap();
 
         db.clear_filters_for_source("test.log").await.unwrap();
         let global = db.get_filters().await.unwrap();
@@ -690,12 +699,24 @@ mod tests {
         db.insert_filter("global", &FilterType::Include, true, None, None)
             .await
             .unwrap();
-        db.insert_filter("file1", &FilterType::Exclude, true, None, Some("/var/log/syslog"))
-            .await
-            .unwrap();
-        db.insert_filter("file2", &FilterType::Include, true, None, Some("/var/log/syslog"))
-            .await
-            .unwrap();
+        db.insert_filter(
+            "file1",
+            &FilterType::Exclude,
+            true,
+            None,
+            Some("/var/log/syslog"),
+        )
+        .await
+        .unwrap();
+        db.insert_filter(
+            "file2",
+            &FilterType::Include,
+            true,
+            None,
+            Some("/var/log/syslog"),
+        )
+        .await
+        .unwrap();
 
         let global = db.get_filters().await.unwrap();
         assert_eq!(global.len(), 1);

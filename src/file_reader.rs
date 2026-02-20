@@ -1,7 +1,11 @@
-use memchr::{memchr2, memchr_iter};
+use memchr::{memchr_iter, memchr2};
 use memmap2::Mmap;
-use tokio::sync::{oneshot, watch};
 use std::{fs::File, io};
+use tokio::{
+    spawn,
+    sync::{oneshot, watch},
+    task::spawn_blocking,
+};
 
 // ---------------------------------------------------------------------------
 // FileLoadHandle
@@ -55,10 +59,16 @@ impl FileReader {
         if memchr2(b'\x1b', b'\r', &mmap).is_some() {
             let stripped = strip_ansi_escapes(&mmap);
             let line_starts = compute_line_starts(&stripped);
-            Ok(FileReader { storage: Storage::Bytes(stripped), line_starts })
+            Ok(FileReader {
+                storage: Storage::Bytes(stripped),
+                line_starts,
+            })
         } else {
             let line_starts = compute_line_starts(&mmap);
-            Ok(FileReader { storage: Storage::Mmap(mmap), line_starts })
+            Ok(FileReader {
+                storage: Storage::Mmap(mmap),
+                line_starts,
+            })
         }
     }
 
@@ -84,10 +94,10 @@ impl FileReader {
     ///
     /// Only complete lines (up to the last `\n`) are flushed on each interval
     /// tick; any trailing partial line is held until EOF.
-    pub fn stream_stdin_async(rt_handle: &tokio::runtime::Handle) -> watch::Receiver<Vec<u8>> {
+    pub async fn stream_stdin() -> watch::Receiver<Vec<u8>> {
         let (snapshot_tx, snapshot_rx) = watch::channel(Vec::<u8>::new());
 
-        rt_handle.spawn(async move {
+        spawn(async move {
             use std::time::Duration;
             use tokio::io::AsyncReadExt;
 
@@ -133,19 +143,22 @@ impl FileReader {
     /// in the background.  The caller polls `handle.result_rx.try_recv()` each
     /// frame and reads `*handle.progress_rx.borrow()` for live progress.
     ///
-    /// Must be called while a tokio runtime is active (uses the `Handle`).
-    pub fn load_async(path: String, rt_handle: &tokio::runtime::Handle) -> io::Result<FileLoadHandle> {
+    pub async fn load(path: String) -> io::Result<FileLoadHandle> {
         let total_bytes = std::fs::metadata(&path)?.len();
         let (progress_tx, progress_rx) = watch::channel(0.0_f64);
         let (result_tx, result_rx) = oneshot::channel();
 
-        rt_handle.spawn_blocking(move || {
+        spawn_blocking(move || {
             let result = Self::index_chunked(&path, total_bytes, progress_tx);
             // Ignore send error — UI may have quit before we finish.
             let _ = result_tx.send(result);
         });
 
-        Ok(FileLoadHandle { progress_rx, result_rx, total_bytes })
+        Ok(FileLoadHandle {
+            progress_rx,
+            result_rx,
+            total_bytes,
+        })
     }
 
     /// Index the file in 4 MiB chunks, sending progress updates after each
@@ -165,7 +178,10 @@ impl FileReader {
             let stripped = strip_ansi_escapes(&mmap);
             let starts = compute_line_starts(&stripped);
             let _ = progress_tx.send(1.0);
-            return Ok(FileReader { storage: Storage::Bytes(stripped), line_starts: starts });
+            return Ok(FileReader {
+                storage: Storage::Bytes(stripped),
+                line_starts: starts,
+            });
         }
 
         const CHUNK: usize = 4 * 1024 * 1024; // 4 MiB
@@ -180,13 +196,20 @@ impl FileReader {
                     starts.push(abs);
                 }
             }
-            let progress = if total_bytes > 0 { end as f64 / total_bytes as f64 } else { 1.0 };
+            let progress = if total_bytes > 0 {
+                end as f64 / total_bytes as f64
+            } else {
+                1.0
+            };
             // Ignore send error — receiver may have been dropped.
             let _ = progress_tx.send(progress);
             offset = end;
         }
 
-        Ok(FileReader { storage: Storage::Mmap(mmap), line_starts: starts })
+        Ok(FileReader {
+            storage: Storage::Mmap(mmap),
+            line_starts: starts,
+        })
     }
 
     /// Total number of lines (including any final partial line without a trailing newline).
@@ -270,19 +293,13 @@ impl FileReader {
     ///
     /// The channel value is replaced on each new chunk.  When the background
     /// task stops (receiver dropped), the sender is also dropped.
-    pub fn spawn_file_watcher(
-        path: String,
-        initial_offset: u64,
-        rt_handle: &tokio::runtime::Handle,
-    ) -> watch::Receiver<Vec<u8>> {
+    pub async fn spawn_file_watcher(path: String, initial_offset: u64) -> watch::Receiver<Vec<u8>> {
         let (tx, rx) = watch::channel(Vec::<u8>::new());
-
-        rt_handle.spawn(async move {
+        tokio::spawn(async move {
             use tokio::time::MissedTickBehavior;
 
             let mut last_offset = initial_offset;
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_millis(500));
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             interval.tick().await; // skip initial immediate tick
 
@@ -290,21 +307,19 @@ impl FileReader {
                 interval.tick().await;
 
                 let path_clone = path.clone();
-                let result = tokio::task::spawn_blocking(
-                    move || -> io::Result<(u64, Vec<u8>)> {
-                        use std::io::{Read, Seek};
-                        let current_size = std::fs::metadata(&path_clone)?.len();
-                        if current_size <= last_offset {
-                            return Ok((current_size, vec![]));
-                        }
-                        let mut file = File::open(&path_clone)?;
-                        file.seek(std::io::SeekFrom::Start(last_offset))?;
-                        let new_len = (current_size - last_offset) as usize;
-                        let mut buf = vec![0u8; new_len];
-                        file.read_exact(&mut buf)?;
-                        Ok((current_size, buf))
-                    },
-                )
+                let result = tokio::task::spawn_blocking(move || -> io::Result<(u64, Vec<u8>)> {
+                    use std::io::{Read, Seek};
+                    let current_size = std::fs::metadata(&path_clone)?.len();
+                    if current_size <= last_offset {
+                        return Ok((current_size, vec![]));
+                    }
+                    let mut file = File::open(&path_clone)?;
+                    file.seek(std::io::SeekFrom::Start(last_offset))?;
+                    let new_len = (current_size - last_offset) as usize;
+                    let mut buf = vec![0u8; new_len];
+                    file.read_exact(&mut buf)?;
+                    Ok((current_size, buf))
+                })
                 .await;
 
                 match result {
@@ -349,7 +364,9 @@ fn strip_ansi_escapes(input: &[u8]) -> Vec<u8> {
         match input[i] {
             b'\x1b' => {
                 i += 1;
-                if i >= input.len() { break; }
+                if i >= input.len() {
+                    break;
+                }
                 match input[i] {
                     b'[' => {
                         // CSI: ESC [ {param/intermediate bytes} {final byte 0x40–0x7E}
@@ -357,7 +374,9 @@ fn strip_ansi_escapes(input: &[u8]) -> Vec<u8> {
                         while i < input.len() {
                             let b = input[i];
                             i += 1;
-                            if (0x40..=0x7E).contains(&b) { break; }
+                            if (0x40..=0x7E).contains(&b) {
+                                break;
+                            }
                         }
                     }
                     b']' => {
@@ -366,18 +385,27 @@ fn strip_ansi_escapes(input: &[u8]) -> Vec<u8> {
                         while i < input.len() {
                             let b = input[i];
                             i += 1;
-                            if b == b'\x07' { break; }
+                            if b == b'\x07' {
+                                break;
+                            }
                             if b == b'\x1b' && i < input.len() && input[i] == b'\\' {
                                 i += 1;
                                 break;
                             }
                         }
                     }
-                    _ => { i += 1; } // two-byte ESC sequence (e.g. ESC M, ESC =)
+                    _ => {
+                        i += 1;
+                    } // two-byte ESC sequence (e.g. ESC M, ESC =)
                 }
             }
-            b'\r' => { i += 1; } // strip CR so \r\n becomes \n
-            b => { out.push(b); i += 1; }
+            b'\r' => {
+                i += 1;
+            } // strip CR so \r\n becomes \n
+            b => {
+                out.push(b);
+                i += 1;
+            }
         }
     }
     out
@@ -393,7 +421,7 @@ fn strip_ansi_escapes(input: &[u8]) -> Vec<u8> {
 fn compute_line_starts(data: &[u8]) -> Vec<usize> {
     let mut starts = vec![0usize];
     for pos in memchr_iter(b'\n', data) {
-        if pos + 1 <= data.len() {
+        if pos < data.len() {
             starts.push(pos + 1);
         }
     }
@@ -508,7 +536,10 @@ mod tests {
         let input = b"\x1b[2m2026-02-20T15:06:28Z\x1b[0m \x1b[32m INFO\x1b[0m \x1b[2mtodo_app\x1b[0m: message\n";
         let r = make(input);
         assert_eq!(r.line_count(), 1);
-        assert_eq!(r.get_line(0), b"2026-02-20T15:06:28Z  INFO todo_app: message");
+        assert_eq!(
+            r.get_line(0),
+            b"2026-02-20T15:06:28Z  INFO todo_app: message"
+        );
     }
 
     #[test]

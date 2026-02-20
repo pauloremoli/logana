@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::mode::app_mode::Mode;
@@ -13,8 +14,9 @@ pub struct FilterManagementMode {
     pub selected_filter_index: usize,
 }
 
+#[async_trait]
 impl Mode for FilterManagementMode {
-    fn handle_key(
+    async fn handle_key(
         self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
@@ -51,7 +53,7 @@ impl Mode for FilterManagementMode {
             KeyCode::Char(' ') => {
                 let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
                 if let Some(id) = filter_id {
-                    tab.log_manager.toggle_filter(id);
+                    tab.log_manager.toggle_filter(id).await;
                     tab.refresh_visible();
                 }
                 (
@@ -64,7 +66,7 @@ impl Mode for FilterManagementMode {
             KeyCode::Char('d') => {
                 let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
                 if let Some(id) = filter_id {
-                    tab.log_manager.remove_filter(id);
+                    tab.log_manager.remove_filter(id).await;
                     tab.refresh_visible();
                     let remaining_len = tab.log_manager.get_filters().len();
                     let new_idx = if remaining_len > 0 && selected >= remaining_len {
@@ -90,7 +92,7 @@ impl Mode for FilterManagementMode {
             KeyCode::Char('K') => {
                 let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
                 if let Some(id) = filter_id {
-                    tab.log_manager.move_filter_up(id);
+                    tab.log_manager.move_filter_up(id).await;
                     tab.refresh_visible();
                     let new_idx = selected.saturating_sub(1);
                     (
@@ -111,7 +113,7 @@ impl Mode for FilterManagementMode {
             KeyCode::Char('J') => {
                 let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
                 if let Some(id) = filter_id {
-                    tab.log_manager.move_filter_down(id);
+                    tab.log_manager.move_filter_down(id).await;
                     tab.refresh_visible();
                     let total = tab.log_manager.get_filters().len();
                     let new_idx = if selected + 1 < total {
@@ -151,17 +153,17 @@ impl Mode for FilterManagementMode {
                     } else {
                         String::from("exclude")
                     };
-                    if ft == FilterType::Include {
-                        if let Some(cfg) = &cc {
-                            if let Some(fg) = cfg.fg {
-                                cmd.push_str(&format!(" --fg {:?}", fg));
-                            }
-                            if let Some(bg) = cfg.bg {
-                                cmd.push_str(&format!(" --bg {:?}", bg));
-                            }
-                            if cfg.match_only {
-                                cmd.push_str(" -m");
-                            }
+                    if ft == FilterType::Include
+                        && let Some(cfg) = &cc
+                    {
+                        if let Some(fg) = cfg.fg {
+                            cmd.push_str(&format!(" --fg {:?}", fg));
+                        }
+                        if let Some(bg) = cfg.bg {
+                            cmd.push_str(&format!(" --bg {:?}", bg));
+                        }
+                        if cfg.match_only {
+                            cmd.push_str(" -m");
                         }
                     }
                     cmd.push(' ');
@@ -204,6 +206,31 @@ impl Mode for FilterManagementMode {
                     KeyResult::Handled,
                 )
             }
+            KeyCode::Char('A') => {
+                let any_enabled = tab.log_manager.get_filters().iter().any(|f| f.enabled);
+                if any_enabled {
+                    tab.log_manager.disable_all_filters().await;
+                } else {
+                    tab.log_manager.enable_all_filters().await;
+                }
+                tab.refresh_visible();
+                (
+                    Box::new(FilterManagementMode {
+                        selected_filter_index: selected,
+                    }),
+                    KeyResult::Handled,
+                )
+            }
+            KeyCode::Char('C') => {
+                tab.log_manager.clear_filters().await;
+                tab.refresh_visible();
+                (
+                    Box::new(FilterManagementMode {
+                        selected_filter_index: 0,
+                    }),
+                    KeyResult::Handled,
+                )
+            }
             KeyCode::Char('i') => {
                 let history = tab.command_history.clone();
                 (
@@ -232,7 +259,7 @@ impl Mode for FilterManagementMode {
     }
 
     fn status_line(&self) -> &str {
-        "[FILTER] [i]nclude | e[x]clude | Space => toggle | [d]elete | [e]dit | set [c]olor | [J/K] move down/up | Esc => normal mode"
+        "[FILTER] [i]nclude | e[x]clude | Space => toggle | [d]elete | [e]dit | set [c]olor | [J/K] move | [A] toggle all | [C] clear all | Esc"
     }
 
     fn selected_filter_index(&self) -> Option<usize> {
@@ -250,8 +277,9 @@ pub struct FilterEditMode {
     pub filter_input: String,
 }
 
+#[async_trait]
 impl Mode for FilterEditMode {
-    fn handle_key(
+    async fn handle_key(
         self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
@@ -263,7 +291,7 @@ impl Mode for FilterEditMode {
         match key {
             KeyCode::Enter => {
                 if let Some(id) = self.filter_id {
-                    tab.log_manager.edit_filter(id, self.filter_input);
+                    tab.log_manager.edit_filter(id, self.filter_input).await;
                     tab.refresh_visible();
                 }
                 (
@@ -319,18 +347,18 @@ mod tests {
     use crate::ui::{KeyResult, TabState};
     use std::sync::Arc;
 
-    fn make_tab(lines: &[&str]) -> TabState {
+    async fn make_tab(lines: &[&str]) -> TabState {
         let data = lines.join("\n").into_bytes();
         let file_reader = FileReader::from_bytes(data);
-        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        let db = Arc::new(rt.block_on(Database::in_memory()).unwrap());
-        let log_manager = LogManager::new(db, rt, None);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
         TabState::new(file_reader, log_manager, "test".to_string())
     }
 
-    fn add_filter(tab: &mut TabState, pattern: &str, filter_type: FilterType) {
+    async fn add_filter(tab: &mut TabState, pattern: &str, filter_type: FilterType) {
         tab.log_manager
-            .add_filter_with_color(pattern.to_string(), filter_type, None, None, false);
+            .add_filter_with_color(pattern.to_string(), filter_type, None, None, false)
+            .await;
         tab.refresh_visible();
     }
 
@@ -340,167 +368,220 @@ mod tests {
         }
     }
 
-    fn press(
+    async fn press(
         mode: FilterManagementMode,
         tab: &mut TabState,
         code: KeyCode,
     ) -> (Box<dyn Mode>, KeyResult) {
-        Box::new(mode).handle_key(tab, code, KeyModifiers::NONE)
+        Box::new(mode)
+            .handle_key(tab, code, KeyModifiers::NONE)
+            .await
     }
 
-    #[test]
-    fn test_esc_transitions_to_normal_mode() {
-        let mut tab = make_tab(&["line"]);
-        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Esc);
+    #[tokio::test]
+    async fn test_esc_transitions_to_normal_mode() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode.command_state().is_none());
         assert!(mode.selected_filter_index().is_none());
     }
 
-    #[test]
-    fn test_tab_returns_ignored() {
-        let mut tab = make_tab(&["line"]);
-        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::Tab);
+    #[tokio::test]
+    async fn test_tab_returns_ignored() {
+        let mut tab = make_tab(&["line"]).await;
+        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::Tab).await;
         assert!(matches!(result, KeyResult::Ignored));
     }
 
-    #[test]
-    fn test_backtab_returns_ignored() {
-        let mut tab = make_tab(&["line"]);
-        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::BackTab);
+    #[tokio::test]
+    async fn test_backtab_returns_ignored() {
+        let mut tab = make_tab(&["line"]).await;
+        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::BackTab).await;
         assert!(matches!(result, KeyResult::Ignored));
     }
 
-    #[test]
-    fn test_up_decrements_selected_index() {
-        let mut tab = make_tab(&["a", "b"]);
-        add_filter(&mut tab, "a", FilterType::Include);
-        add_filter(&mut tab, "b", FilterType::Include);
-        let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Up);
+    #[tokio::test]
+    async fn test_up_decrements_selected_index() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        add_filter(&mut tab, "a", FilterType::Include).await;
+        add_filter(&mut tab, "b", FilterType::Include).await;
+        let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Up).await;
         assert_eq!(mode.selected_filter_index(), Some(0));
     }
 
-    #[test]
-    fn test_up_saturates_at_zero() {
-        let mut tab = make_tab(&["a"]);
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Up);
+    #[tokio::test]
+    async fn test_up_saturates_at_zero() {
+        let mut tab = make_tab(&["a"]).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Up).await;
         assert_eq!(mode.selected_filter_index(), Some(0));
     }
 
-    #[test]
-    fn test_down_increments_selected_index() {
-        let mut tab = make_tab(&["a", "b"]);
-        add_filter(&mut tab, "a", FilterType::Include);
-        add_filter(&mut tab, "b", FilterType::Include);
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Down);
+    #[tokio::test]
+    async fn test_down_increments_selected_index() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        add_filter(&mut tab, "a", FilterType::Include).await;
+        add_filter(&mut tab, "b", FilterType::Include).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Down).await;
         assert_eq!(mode.selected_filter_index(), Some(1));
     }
 
-    #[test]
-    fn test_down_clamps_at_last_filter() {
-        let mut tab = make_tab(&["a", "b"]);
-        add_filter(&mut tab, "a", FilterType::Include);
-        add_filter(&mut tab, "b", FilterType::Include);
-        let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Down);
+    #[tokio::test]
+    async fn test_down_clamps_at_last_filter() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        add_filter(&mut tab, "a", FilterType::Include).await;
+        add_filter(&mut tab, "b", FilterType::Include).await;
+        let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Down).await;
         assert_eq!(mode.selected_filter_index(), Some(1));
     }
 
-    #[test]
-    fn test_space_toggles_filter() {
-        let mut tab = make_tab(&["a", "b"]);
-        add_filter(&mut tab, "a", FilterType::Include);
+    #[tokio::test]
+    async fn test_space_toggles_filter() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        add_filter(&mut tab, "a", FilterType::Include).await;
         let id = tab.log_manager.get_filters()[0].id;
         assert!(tab.log_manager.get_filters()[0].enabled);
-        press(filter_mode(0), &mut tab, KeyCode::Char(' '));
-        assert!(!tab.log_manager.get_filters().iter().find(|f| f.id == id).unwrap().enabled);
+        press(filter_mode(0), &mut tab, KeyCode::Char(' ')).await;
+        assert!(
+            !tab.log_manager
+                .get_filters()
+                .iter()
+                .find(|f| f.id == id)
+                .unwrap()
+                .enabled
+        );
     }
 
-    #[test]
-    fn test_d_deletes_filter() {
-        let mut tab = make_tab(&["a", "b"]);
-        add_filter(&mut tab, "a", FilterType::Include);
+    #[tokio::test]
+    async fn test_d_deletes_filter() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        add_filter(&mut tab, "a", FilterType::Include).await;
         assert_eq!(tab.log_manager.get_filters().len(), 1);
-        press(filter_mode(0), &mut tab, KeyCode::Char('d'));
+        press(filter_mode(0), &mut tab, KeyCode::Char('d')).await;
         assert_eq!(tab.log_manager.get_filters().len(), 0);
     }
 
-    #[test]
-    fn test_d_with_no_filters_no_panic() {
-        let mut tab = make_tab(&["line"]);
-        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('d'));
+    #[tokio::test]
+    async fn test_d_with_no_filters_no_panic() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('d')).await;
         assert!(matches!(result, KeyResult::Handled));
         assert_eq!(mode.selected_filter_index(), Some(0));
     }
 
-    #[test]
-    fn test_i_opens_command_mode_with_filter_prefix() {
-        let mut tab = make_tab(&["line"]);
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('i'));
+    #[tokio::test]
+    async fn test_i_opens_command_mode_with_filter_prefix() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('i')).await;
         let state = mode.command_state();
         assert!(state.is_some());
         let (input, _) = state.unwrap();
         assert!(input.starts_with("filter "));
     }
 
-    #[test]
-    fn test_x_opens_command_mode_with_exclude_prefix() {
-        let mut tab = make_tab(&["line"]);
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('x'));
+    #[tokio::test]
+    async fn test_x_opens_command_mode_with_exclude_prefix() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('x')).await;
         let state = mode.command_state();
         assert!(state.is_some());
         let (input, _) = state.unwrap();
         assert!(input.starts_with("exclude "));
     }
 
-    #[test]
-    fn test_e_opens_command_mode_with_filter_pattern() {
-        let mut tab = make_tab(&["error", "warn"]);
-        add_filter(&mut tab, "error", FilterType::Include);
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e'));
+    #[tokio::test]
+    async fn test_e_opens_command_mode_with_filter_pattern() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        add_filter(&mut tab, "error", FilterType::Include).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
         let state = mode.command_state();
         assert!(state.is_some());
         let (input, _) = state.unwrap();
         assert!(input.contains("error"));
     }
 
-    #[test]
-    fn test_c_opens_set_color_command() {
-        let mut tab = make_tab(&["line"]);
-        add_filter(&mut tab, "error", FilterType::Include);
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('c'));
+    #[tokio::test]
+    async fn test_c_opens_set_color_command() {
+        let mut tab = make_tab(&["line"]).await;
+        add_filter(&mut tab, "error", FilterType::Include).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('c')).await;
         let state = mode.command_state();
         assert!(state.is_some());
         let (input, _) = state.unwrap();
         assert!(input.starts_with("set-color"));
     }
 
-    #[test]
-    fn test_capital_k_moves_filter_up() {
-        let mut tab = make_tab(&["a", "b"]);
-        add_filter(&mut tab, "first", FilterType::Include);
-        add_filter(&mut tab, "second", FilterType::Include);
-        let (mode, result) = press(filter_mode(1), &mut tab, KeyCode::Char('K'));
+    #[tokio::test]
+    async fn test_capital_k_moves_filter_up() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        add_filter(&mut tab, "first", FilterType::Include).await;
+        add_filter(&mut tab, "second", FilterType::Include).await;
+        let (mode, result) = press(filter_mode(1), &mut tab, KeyCode::Char('K')).await;
         assert!(matches!(result, KeyResult::Handled));
         assert_eq!(mode.selected_filter_index(), Some(0));
     }
 
-    #[test]
-    fn test_capital_j_moves_filter_down() {
-        let mut tab = make_tab(&["a", "b"]);
-        add_filter(&mut tab, "first", FilterType::Include);
-        add_filter(&mut tab, "second", FilterType::Include);
-        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('J'));
+    #[tokio::test]
+    async fn test_capital_j_moves_filter_down() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        add_filter(&mut tab, "first", FilterType::Include).await;
+        add_filter(&mut tab, "second", FilterType::Include).await;
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('J')).await;
         assert!(matches!(result, KeyResult::Handled));
         assert_eq!(mode.selected_filter_index(), Some(1));
     }
 
-    #[test]
-    fn test_status_line_contains_filter() {
+    #[tokio::test]
+    async fn test_capital_a_disables_all_when_some_enabled() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        add_filter(&mut tab, "error", FilterType::Include).await;
+        add_filter(&mut tab, "warn", FilterType::Include).await;
+        assert!(tab.log_manager.get_filters().iter().all(|f| f.enabled));
+
+        press(filter_mode(0), &mut tab, KeyCode::Char('A')).await;
+        assert!(tab.log_manager.get_filters().iter().all(|f| !f.enabled));
+    }
+
+    #[tokio::test]
+    async fn test_capital_a_enables_all_when_all_disabled() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        add_filter(&mut tab, "error", FilterType::Include).await;
+        add_filter(&mut tab, "warn", FilterType::Include).await;
+        tab.log_manager.disable_all_filters().await;
+        assert!(tab.log_manager.get_filters().iter().all(|f| !f.enabled));
+
+        press(filter_mode(0), &mut tab, KeyCode::Char('A')).await;
+        assert!(tab.log_manager.get_filters().iter().all(|f| f.enabled));
+    }
+
+    #[tokio::test]
+    async fn test_capital_c_clears_all_filters() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        add_filter(&mut tab, "error", FilterType::Include).await;
+        add_filter(&mut tab, "warn", FilterType::Include).await;
+        assert_eq!(tab.log_manager.get_filters().len(), 2);
+
+        press(filter_mode(0), &mut tab, KeyCode::Char('C')).await;
+        assert!(tab.log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_capital_c_resets_selected_index_to_zero() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        add_filter(&mut tab, "error", FilterType::Include).await;
+        add_filter(&mut tab, "warn", FilterType::Include).await;
+
+        let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Char('C')).await;
+        assert_eq!(mode.selected_filter_index(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_status_line_contains_filter() {
         assert!(filter_mode(0).status_line().contains("[FILTER]"));
     }
 
-    #[test]
-    fn test_selected_filter_index_returns_current() {
+    #[tokio::test]
+    async fn test_selected_filter_index_returns_current() {
         let mode = filter_mode(3);
         assert_eq!(mode.selected_filter_index(), Some(3));
     }
@@ -514,56 +595,61 @@ mod tests {
         }
     }
 
-    fn press_edit(
+    async fn press_edit(
         mode: FilterEditMode,
         tab: &mut TabState,
         code: KeyCode,
     ) -> (Box<dyn Mode>, KeyResult) {
-        Box::new(mode).handle_key(tab, code, KeyModifiers::NONE)
+        Box::new(mode)
+            .handle_key(tab, code, KeyModifiers::NONE)
+            .await
     }
 
-    #[test]
-    fn test_edit_char_appends_to_input() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_edit_char_appends_to_input() {
+        let mut tab = make_tab(&["line"]).await;
         let mode = edit_mode(None, "err");
-        let (mode2, _) = press_edit(mode, &mut tab, KeyCode::Char('o'));
-        assert_eq!(mode2.status_line(), "[FILTER EDIT] Esc => cancel | Enter => save");
+        let (mode2, _) = press_edit(mode, &mut tab, KeyCode::Char('o')).await;
+        assert_eq!(
+            mode2.status_line(),
+            "[FILTER EDIT] Esc => cancel | Enter => save"
+        );
     }
 
-    #[test]
-    fn test_edit_backspace_removes_char() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_edit_backspace_removes_char() {
+        let mut tab = make_tab(&["line"]).await;
         let mode = edit_mode(None, "error");
-        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Backspace);
+        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Backspace).await;
         assert!(matches!(result, KeyResult::Handled));
         // Mode should still be FilterEditMode
         assert!(mode2.status_line().contains("[FILTER EDIT]"));
     }
 
-    #[test]
-    fn test_edit_esc_transitions_to_filter_mode() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_edit_esc_transitions_to_filter_mode() {
+        let mut tab = make_tab(&["line"]).await;
         let mode = edit_mode(None, "error");
-        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Esc);
+        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.selected_filter_index().is_some());
     }
 
-    #[test]
-    fn test_edit_tab_returns_ignored() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_edit_tab_returns_ignored() {
+        let mut tab = make_tab(&["line"]).await;
         let mode = edit_mode(None, "err");
-        let (_, result) = press_edit(mode, &mut tab, KeyCode::Tab);
+        let (_, result) = press_edit(mode, &mut tab, KeyCode::Tab).await;
         assert!(matches!(result, KeyResult::Ignored));
     }
 
-    #[test]
-    fn test_edit_enter_applies_filter_change() {
-        let mut tab = make_tab(&["warn", "error"]);
-        add_filter(&mut tab, "warn", FilterType::Include);
+    #[tokio::test]
+    async fn test_edit_enter_applies_filter_change() {
+        let mut tab = make_tab(&["warn", "error"]).await;
+        add_filter(&mut tab, "warn", FilterType::Include).await;
         let id = tab.log_manager.get_filters()[0].id;
         let mode = edit_mode(Some(id), "error");
-        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Enter);
+        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Enter).await;
         assert!(matches!(result, KeyResult::Handled));
         // Should transition to FilterManagementMode
         assert!(mode2.selected_filter_index().is_some());

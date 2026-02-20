@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
@@ -6,8 +7,9 @@ use crate::{
     ui::{KeyResult, TabState},
 };
 
-pub trait Mode: std::fmt::Debug {
-    fn handle_key(
+#[async_trait]
+pub trait Mode: std::fmt::Debug + Send {
+    async fn handle_key(
         self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
@@ -41,8 +43,9 @@ pub struct ConfirmRestoreMode {
     pub context: FileContext,
 }
 
+#[async_trait]
 impl Mode for ConfirmRestoreMode {
-    fn handle_key(
+    async fn handle_key(
         self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
@@ -54,7 +57,7 @@ impl Mode for ConfirmRestoreMode {
                 (Box::new(NormalMode), KeyResult::Handled)
             }
             KeyCode::Char('n') | KeyCode::Esc => {
-                tab.log_manager.clear_filters();
+                tab.log_manager.clear_filters().await;
                 tab.log_manager.set_marks(vec![]);
                 tab.refresh_visible();
                 (Box::new(NormalMode), KeyResult::Handled)
@@ -81,8 +84,9 @@ pub struct ConfirmRestoreSessionMode {
     pub files: Vec<String>,
 }
 
+#[async_trait]
 impl Mode for ConfirmRestoreSessionMode {
-    fn handle_key(
+    async fn handle_key(
         self: Box<Self>,
         _tab: &mut TabState,
         key: KeyCode,
@@ -114,12 +118,11 @@ mod tests {
     use crate::ui::{KeyResult, TabState};
     use std::sync::Arc;
 
-    fn make_tab(lines: &[&str]) -> TabState {
+    async fn make_tab(lines: &[&str]) -> TabState {
         let data = lines.join("\n").into_bytes();
         let file_reader = FileReader::from_bytes(data);
-        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        let db = Arc::new(rt.block_on(Database::in_memory()).unwrap());
-        let log_manager = LogManager::new(db, rt, None);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
         TabState::new(file_reader, log_manager, "test".to_string())
     }
 
@@ -138,30 +141,34 @@ mod tests {
         }
     }
 
-    fn press_restore(
+    async fn press_restore(
         mode: ConfirmRestoreMode,
         tab: &mut TabState,
         code: KeyCode,
     ) -> (Box<dyn Mode>, KeyResult) {
-        Box::new(mode).handle_key(tab, code, KeyModifiers::NONE)
+        Box::new(mode)
+            .handle_key(tab, code, KeyModifiers::NONE)
+            .await
     }
 
-    fn press_session(
+    async fn press_session(
         mode: ConfirmRestoreSessionMode,
         tab: &mut TabState,
         code: KeyCode,
     ) -> (Box<dyn Mode>, KeyResult) {
-        Box::new(mode).handle_key(tab, code, KeyModifiers::NONE)
+        Box::new(mode)
+            .handle_key(tab, code, KeyModifiers::NONE)
+            .await
     }
 
     // ── ConfirmRestoreMode ───────────────────────────────────────────────────
 
-    #[test]
-    fn test_confirm_restore_y_applies_context() {
-        let mut tab = make_tab(&["line0", "line1"]);
+    #[tokio::test]
+    async fn test_confirm_restore_y_applies_context() {
+        let mut tab = make_tab(&["line0", "line1"]).await;
         let ctx = default_context();
         let mode = ConfirmRestoreMode { context: ctx };
-        let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Char('y'));
+        let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Char('y')).await;
         assert!(matches!(result, KeyResult::Handled));
         // Should transition to NormalMode
         assert!(mode2.confirm_restore_context().is_none());
@@ -174,61 +181,65 @@ mod tests {
         assert_eq!(tab.horizontal_scroll, 3);
     }
 
-    #[test]
-    fn test_confirm_restore_n_clears_filters_and_returns_normal() {
-        let mut tab = make_tab(&["error", "warn"]);
+    #[tokio::test]
+    async fn test_confirm_restore_n_clears_filters_and_returns_normal() {
+        let mut tab = make_tab(&["error", "warn"]).await;
         tab.log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, false);
+            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, false)
+            .await;
         tab.refresh_visible();
         assert_eq!(tab.log_manager.get_filters().len(), 1);
 
         let mode = ConfirmRestoreMode {
             context: default_context(),
         };
-        let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Char('n'));
+        let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Char('n')).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.confirm_restore_context().is_none());
         assert_eq!(tab.log_manager.get_filters().len(), 0);
     }
 
-    #[test]
-    fn test_confirm_restore_esc_clears_filters_and_returns_normal() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_confirm_restore_esc_clears_filters_and_returns_normal() {
+        let mut tab = make_tab(&["line"]).await;
         tab.log_manager
-            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, false);
+            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, false)
+            .await;
         tab.refresh_visible();
 
         let mode = ConfirmRestoreMode {
             context: default_context(),
         };
-        let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Esc);
+        let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.confirm_restore_context().is_none());
         assert_eq!(tab.log_manager.get_filters().len(), 0);
     }
 
-    #[test]
-    fn test_confirm_restore_other_key_stays_in_mode() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_confirm_restore_other_key_stays_in_mode() {
+        let mut tab = make_tab(&["line"]).await;
         let ctx = default_context();
         let mode = ConfirmRestoreMode { context: ctx };
-        let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Char('x'));
+        let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Char('x')).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.confirm_restore_context().is_some());
     }
 
-    #[test]
-    fn test_confirm_restore_status_line() {
+    #[tokio::test]
+    async fn test_confirm_restore_status_line() {
         let mode = ConfirmRestoreMode {
             context: default_context(),
         };
         assert!(mode.status_line().contains("[RESTORE]"));
     }
 
-    #[test]
-    fn test_confirm_restore_context_method() {
+    #[tokio::test]
+    async fn test_confirm_restore_context_method() {
         let ctx = default_context();
-        let mode = ConfirmRestoreMode { context: ctx.clone() };
+        let mode = ConfirmRestoreMode {
+            context: ctx.clone(),
+        };
         let returned = mode.confirm_restore_context().unwrap();
         assert_eq!(returned.source_file, ctx.source_file);
         assert_eq!(returned.scroll_offset, ctx.scroll_offset);
@@ -236,67 +247,71 @@ mod tests {
 
     // ── ConfirmRestoreSessionMode ────────────────────────────────────────────
 
-    #[test]
-    fn test_confirm_session_y_returns_restore_session() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_confirm_session_y_returns_restore_session() {
+        let mut tab = make_tab(&["line"]).await;
         let files = vec!["/var/log/a.log".to_string(), "/var/log/b.log".to_string()];
-        let mode = ConfirmRestoreSessionMode { files: files.clone() };
-        let (mode2, result) = press_session(mode, &mut tab, KeyCode::Char('y'));
+        let mode = ConfirmRestoreSessionMode {
+            files: files.clone(),
+        };
+        let (mode2, result) = press_session(mode, &mut tab, KeyCode::Char('y')).await;
         assert!(matches!(result, KeyResult::RestoreSession(ref f) if *f == files));
         assert!(mode2.confirm_restore_session_files().is_none());
     }
 
-    #[test]
-    fn test_confirm_session_n_returns_normal_mode() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_confirm_session_n_returns_normal_mode() {
+        let mut tab = make_tab(&["line"]).await;
         let mode = ConfirmRestoreSessionMode {
             files: vec!["file.log".to_string()],
         };
-        let (mode2, result) = press_session(mode, &mut tab, KeyCode::Char('n'));
+        let (mode2, result) = press_session(mode, &mut tab, KeyCode::Char('n')).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.confirm_restore_session_files().is_none());
     }
 
-    #[test]
-    fn test_confirm_session_esc_returns_normal_mode() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_confirm_session_esc_returns_normal_mode() {
+        let mut tab = make_tab(&["line"]).await;
         let mode = ConfirmRestoreSessionMode {
             files: vec!["file.log".to_string()],
         };
-        let (mode2, result) = press_session(mode, &mut tab, KeyCode::Esc);
+        let (mode2, result) = press_session(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.confirm_restore_session_files().is_none());
     }
 
-    #[test]
-    fn test_confirm_session_other_key_stays_in_mode() {
-        let mut tab = make_tab(&["line"]);
+    #[tokio::test]
+    async fn test_confirm_session_other_key_stays_in_mode() {
+        let mut tab = make_tab(&["line"]).await;
         let files = vec!["file.log".to_string()];
         let mode = ConfirmRestoreSessionMode { files };
-        let (mode2, result) = press_session(mode, &mut tab, KeyCode::Char('z'));
+        let (mode2, result) = press_session(mode, &mut tab, KeyCode::Char('z')).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(mode2.confirm_restore_session_files().is_some());
     }
 
-    #[test]
-    fn test_confirm_session_status_line() {
+    #[tokio::test]
+    async fn test_confirm_session_status_line() {
         let mode = ConfirmRestoreSessionMode {
             files: vec!["file.log".to_string()],
         };
         assert!(mode.status_line().contains("[RESTORE SESSION]"));
     }
 
-    #[test]
-    fn test_confirm_session_files_method() {
+    #[tokio::test]
+    async fn test_confirm_session_files_method() {
         let files = vec!["a.log".to_string(), "b.log".to_string()];
-        let mode = ConfirmRestoreSessionMode { files: files.clone() };
+        let mode = ConfirmRestoreSessionMode {
+            files: files.clone(),
+        };
         assert_eq!(mode.confirm_restore_session_files(), Some(files.as_slice()));
     }
 
     // ── Mode trait defaults ──────────────────────────────────────────────────
 
-    #[test]
-    fn test_confirm_restore_mode_default_methods() {
+    #[tokio::test]
+    async fn test_confirm_restore_mode_default_methods() {
         let mode = ConfirmRestoreMode {
             context: default_context(),
         };
@@ -307,11 +322,9 @@ mod tests {
         assert!(mode.confirm_restore_session_files().is_none());
     }
 
-    #[test]
-    fn test_confirm_session_mode_default_methods() {
-        let mode = ConfirmRestoreSessionMode {
-            files: vec![],
-        };
+    #[tokio::test]
+    async fn test_confirm_session_mode_default_methods() {
+        let mode = ConfirmRestoreSessionMode { files: vec![] };
         assert!(mode.selected_filter_index().is_none());
         assert!(mode.command_state().is_none());
         assert!(mode.search_state().is_none());

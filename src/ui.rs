@@ -6,7 +6,7 @@ use ratatui::{
     style::Modifier,
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -35,6 +35,7 @@ use crate::{
     mode::{command_mode::CommandMode, filter_mode::FilterManagementMode},
 };
 use crate::{
+    log_line::{build_display_json, parse_json_line},
     log_manager::LogManager,
     mode::command_mode::{CommandLine, Commands},
 };
@@ -70,6 +71,7 @@ pub struct TabState {
     pub search: Search,
     pub command_error: Option<String>,
     pub level_colors: bool,
+    pub filtering_enabled: bool,
     pub filter_context: Option<usize>,
     pub editing_filter_id: Option<usize>,
     pub visible_height: usize,
@@ -77,6 +79,10 @@ pub struct TabState {
     pub command_history: Vec<String>,
     /// Active file watcher for this tab (None for stdin tabs or tabs not yet watching).
     pub watch_state: Option<FileWatchState>,
+    /// JSON field names that should be hidden from display (filter evaluation still uses raw line).
+    pub hidden_fields: HashSet<String>,
+    /// JSON field 0-based indices that should be hidden from display.
+    pub hidden_field_indices: HashSet<usize>,
 }
 
 impl TabState {
@@ -96,12 +102,15 @@ impl TabState {
             search: Search::new(),
             command_error: None,
             level_colors: true,
+            filtering_enabled: true,
             filter_context: None,
             editing_filter_id: None,
             visible_height: 0,
             title,
             command_history: Vec::new(),
             watch_state: None,
+            hidden_fields: HashSet::new(),
+            hidden_field_indices: HashSet::new(),
         };
         tab.refresh_visible();
         tab
@@ -109,6 +118,10 @@ impl TabState {
 
     /// Recompute which file lines are visible under the current filters.
     pub fn refresh_visible(&mut self) {
+        if !self.filtering_enabled {
+            self.visible_indices = (0..self.file_reader.line_count()).collect();
+            return;
+        }
         let (fm, _) = self.log_manager.build_filter_manager();
         self.visible_indices = fm.compute_visible(&self.file_reader);
     }
@@ -215,7 +228,6 @@ pub struct App {
     pub active_tab: usize,
     pub theme: Theme,
     pub db: Arc<crate::db::Database>,
-    pub rt: Arc<tokio::runtime::Runtime>,
     pub should_quit: bool,
     /// In-progress background file load (startup or session restore).
     pub file_load_state: Option<FileLoadState>,
@@ -233,9 +245,8 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
-    pub fn new(log_manager: LogManager, file_reader: FileReader, theme: Theme) -> App {
+    pub async fn new(log_manager: LogManager, file_reader: FileReader, theme: Theme) -> App {
         let db = log_manager.db.clone();
-        let rt = log_manager.rt.clone();
 
         let title = log_manager
             .source_file()
@@ -258,13 +269,13 @@ impl App {
         if let Some(source) = tab.log_manager.source_file() {
             if tab.file_reader.line_count() > 0 {
                 let source = source.to_string();
-                if let Ok(Some(ctx)) = rt.block_on(db.load_file_context(&source)) {
+                if let Ok(Some(ctx)) = db.load_file_context(&source).await {
                     tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
                 }
             }
         } else if no_source && no_data {
             // No file argument and no piped data — offer to restore last session.
-            if let Ok(files) = rt.block_on(db.load_session())
+            if let Ok(files) = db.load_session().await
                 && !files.is_empty()
             {
                 tab.mode = Box::new(ConfirmRestoreSessionMode { files });
@@ -276,7 +287,6 @@ impl App {
             active_tab: 0,
             theme,
             db,
-            rt,
             should_quit: false,
             file_load_state: None,
             stdin_load_state: None,
@@ -291,7 +301,7 @@ impl App {
         &mut self.tabs[self.active_tab]
     }
 
-    pub fn open_file(&mut self, path: &str) -> Result<(), String> {
+    pub async fn open_file(&mut self, path: &str) -> Result<(), String> {
         let file_path_obj = std::path::Path::new(path);
         if !file_path_obj.exists() {
             return Err(format!("File '{}' not found.", path));
@@ -302,7 +312,7 @@ impl App {
 
         let file_reader =
             FileReader::new(path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
-        let log_manager = LogManager::new(self.db.clone(), self.rt.clone(), Some(path.to_string()));
+        let log_manager = LogManager::new(self.db.clone(), Some(path.to_string())).await;
 
         let title = file_path_obj
             .file_name()
@@ -313,12 +323,11 @@ impl App {
         let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         let mut tab = TabState::new(file_reader, log_manager, title);
 
-        if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(path)) {
+        if let Ok(Some(ctx)) = self.db.load_file_context(path).await {
             tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
         }
 
-        let watch_rx =
-            FileReader::spawn_file_watcher(path.to_string(), file_size, self.rt.handle());
+        let watch_rx = FileReader::spawn_file_watcher(path.to_string(), file_size).await;
         tab.watch_state = Some(FileWatchState {
             new_data_rx: watch_rx,
         });
@@ -333,30 +342,38 @@ impl App {
     /// Progress streams through `FileLoadState::progress_rx` (0.0–1.0);
     /// the completed `FileReader` arrives on `result_rx`.  `advance_file_load`
     /// must be called each frame to poll completion and drive the progress bar.
-    pub fn begin_file_load(&mut self, path: String, context: LoadContext) {
-        match FileReader::load_async(path.clone(), self.rt.handle()) {
-            Ok(handle) => {
-                self.file_load_state = Some(FileLoadState {
-                    path,
-                    progress_rx: handle.progress_rx,
-                    result_rx: handle.result_rx,
-                    total_bytes: handle.total_bytes,
-                    on_complete: context,
-                });
+    ///
+    /// Returns a boxed future to break the mutual recursion with `skip_or_fail_load`.
+    pub fn begin_file_load(
+        &mut self,
+        path: String,
+        context: LoadContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>> {
+        Box::pin(async move {
+            match FileReader::load(path.clone()).await {
+                Ok(handle) => {
+                    self.file_load_state = Some(FileLoadState {
+                        path,
+                        progress_rx: handle.progress_rx,
+                        result_rx: handle.result_rx,
+                        total_bytes: handle.total_bytes,
+                        on_complete: context,
+                    });
+                }
+                Err(_) => self.skip_or_fail_load(context).await,
             }
-            Err(_) => self.skip_or_fail_load(context),
-        }
+        })
     }
 
     /// Start streaming stdin in the background.  Stored in a dedicated slot so
     /// session-restore file loads cannot overwrite it.
-    pub fn begin_stdin_load(&mut self) {
-        let snapshot_rx = FileReader::stream_stdin_async(self.rt.handle());
+    pub async fn begin_stdin_load(&mut self) {
+        let snapshot_rx = FileReader::stream_stdin().await;
         self.stdin_load_state = Some(StdinLoadState { snapshot_rx });
     }
 
     /// Poll for new stdin data each frame and apply it to the stdin tab.
-    fn advance_stdin_load(&mut self) {
+    async fn advance_stdin_load(&mut self) {
         let status = self
             .stdin_load_state
             .as_mut()
@@ -371,7 +388,7 @@ impl App {
                     .snapshot_rx
                     .borrow_and_update()
                     .clone();
-                self.update_stdin_tab(data);
+                self.update_stdin_tab(data).await;
             }
             Some(Err(_)) => {
                 // Sender dropped — stdin closed.  Apply final snapshot and clean up.
@@ -383,7 +400,7 @@ impl App {
                     .borrow()
                     .clone();
                 self.stdin_load_state = None;
-                self.update_stdin_tab(data);
+                self.update_stdin_tab(data).await;
             }
             _ => {}
         }
@@ -395,7 +412,7 @@ impl App {
     /// in-place preserving its mode (e.g. session-restore modal).  Otherwise
     /// a new tab is pushed (session restore already claimed the placeholder).
     /// Follow mode: if the user was at the last line, stay there.
-    fn update_stdin_tab(&mut self, data: Vec<u8>) {
+    async fn update_stdin_tab(&mut self, data: Vec<u8>) {
         if data.is_empty() {
             return;
         }
@@ -418,7 +435,7 @@ impl App {
             // Placeholder was removed by session restore — push a new stdin tab.
             let file_reader = FileReader::from_bytes(data);
             if file_reader.line_count() > 0 {
-                let log_manager = LogManager::new(self.db.clone(), self.rt.clone(), None);
+                let log_manager = LogManager::new(self.db.clone(), None).await;
                 let mut tab = TabState::new(file_reader, log_manager, "stdin".to_string());
                 tab.scroll_offset = tab.visible_indices.len().saturating_sub(1);
                 self.tabs.push(tab);
@@ -427,7 +444,7 @@ impl App {
     }
 
     /// Poll for completion of the current background file load (called every frame).
-    fn advance_file_load(&mut self) {
+    async fn advance_file_load(&mut self) {
         // try_recv needs &mut, so we can't hold a shared borrow of file_load_state.
         let done_result = self
             .file_load_state
@@ -437,19 +454,22 @@ impl App {
         if let Some(load_result) = done_result {
             let state = self.file_load_state.take().unwrap();
             match load_result {
-                Ok(file_reader) => self.on_load_success(
-                    state.path,
-                    state.total_bytes,
-                    state.on_complete,
-                    file_reader,
-                ),
-                Err(_) => self.skip_or_fail_load(state.on_complete),
+                Ok(file_reader) => {
+                    self.on_load_success(
+                        state.path,
+                        state.total_bytes,
+                        state.on_complete,
+                        file_reader,
+                    )
+                    .await
+                }
+                Err(_) => self.skip_or_fail_load(state.on_complete).await,
             }
         }
     }
 
     /// Handle a completed successful load, then start a file watcher for the tab.
-    fn on_load_success(
+    async fn on_load_success(
         &mut self,
         path: String,
         total_bytes: u64,
@@ -463,10 +483,10 @@ impl App {
                 }
                 self.tabs[0].file_reader = file_reader;
                 self.tabs[0].refresh_visible();
-                if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(&path)) {
+                if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     self.tabs[0].mode = Box::new(ConfirmRestoreMode { context: ctx });
                 }
-                let watch_rx = FileReader::spawn_file_watcher(path, total_bytes, self.rt.handle());
+                let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
                 self.tabs[0].watch_state = Some(FileWatchState {
                     new_data_rx: watch_rx,
                 });
@@ -481,14 +501,12 @@ impl App {
                     .and_then(|n| n.to_str())
                     .unwrap_or(&path)
                     .to_string();
-                let log_manager =
-                    LogManager::new(self.db.clone(), self.rt.clone(), Some(path.clone()));
+                let log_manager = LogManager::new(self.db.clone(), Some(path.clone())).await;
                 let mut tab = TabState::new(file_reader, log_manager, title);
-                if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(&path)) {
+                if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     tab.apply_file_context(&ctx);
                 }
-                let watch_rx =
-                    FileReader::spawn_file_watcher(path.clone(), total_bytes, self.rt.handle());
+                let watch_rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
                 tab.watch_state = Some(FileWatchState {
                     new_data_rx: watch_rx,
                 });
@@ -502,7 +520,8 @@ impl App {
                             total,
                             initial_tab_idx,
                         },
-                    );
+                    )
+                    .await;
                 } else if self.tabs.len() > 1 {
                     let is_placeholder = self.tabs[initial_tab_idx]
                         .log_manager
@@ -565,7 +584,7 @@ impl App {
     }
 
     /// Called when a file load fails or the file cannot be opened.
-    fn skip_or_fail_load(&mut self, context: LoadContext) {
+    async fn skip_or_fail_load(&mut self, context: LoadContext) {
         if let LoadContext::SessionRestoreTab {
             mut remaining,
             total,
@@ -580,7 +599,8 @@ impl App {
                         total,
                         initial_tab_idx,
                     },
-                );
+                )
+                .await;
             } else if self.tabs.len() > 1 {
                 self.tabs.remove(initial_tab_idx);
                 self.active_tab = 0;
@@ -590,7 +610,7 @@ impl App {
     }
 
     /// Begin a session restore: kick off the first file load.
-    fn restore_session(&mut self, files: Vec<String>) {
+    async fn restore_session(&mut self, files: Vec<String>) {
         if files.is_empty() {
             return;
         }
@@ -606,19 +626,17 @@ impl App {
                 total,
                 initial_tab_idx,
             },
-        );
+        )
+        .await;
     }
 
-    fn save_tab_context(&self, tab: &TabState) {
+    async fn save_tab_context(&self, tab: &TabState) {
         if let Some(ctx) = tab.to_file_context() {
-            let db = self.db.clone();
-            self.rt.spawn(async move {
-                let _ = db.save_file_context(&ctx).await;
-            });
+            let _ = self.db.save_file_context(&ctx).await;
         }
     }
 
-    fn save_all_contexts(&self) {
+    async fn save_all_contexts(&self) {
         let source_files: Vec<String> = self
             .tabs
             .iter()
@@ -631,20 +649,16 @@ impl App {
             .filter_map(|t| t.to_file_context())
             .collect();
 
-        // Use block_on so all writes finish before the process exits.
-        let db = self.db.clone();
-        self.rt.block_on(async move {
-            if !source_files.is_empty() {
-                let _ = db.save_session(&source_files).await;
-            }
-            for ctx in &contexts {
-                let _ = db.save_file_context(ctx).await;
-            }
-        });
+        if !source_files.is_empty() {
+            let _ = self.db.save_session(&source_files).await;
+        }
+        for ctx in &contexts {
+            let _ = self.db.save_file_context(ctx).await;
+        }
     }
 
-    pub fn close_tab(&mut self) -> bool {
-        self.save_tab_context(&self.tabs[self.active_tab]);
+    pub async fn close_tab(&mut self) -> bool {
+        self.save_tab_context(&self.tabs[self.active_tab]).await;
         if self.tabs.len() <= 1 {
             return true; // signal to quit
         }
@@ -655,11 +669,11 @@ impl App {
         false
     }
 
-    fn handle_global_key(&mut self, key: KeyCode, modifiers: KeyModifiers) {
+    async fn handle_global_key(&mut self, key: KeyCode, modifiers: KeyModifiers) {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
         match key {
             KeyCode::Char('q') if modifiers.is_empty() => {
-                self.save_all_contexts();
+                self.save_all_contexts().await;
                 self.should_quit = true;
             }
             KeyCode::Tab => {
@@ -677,8 +691,8 @@ impl App {
                 }
             }
             KeyCode::Char('w') if ctrl => {
-                if self.close_tab() {
-                    self.save_all_contexts();
+                if self.close_tab().await {
+                    self.save_all_contexts().await;
                     self.should_quit = true;
                 }
             }
@@ -692,8 +706,8 @@ impl App {
     }
 
     /// Execute a command string, transitioning mode on success/failure.
-    pub fn execute_command_str(&mut self, cmd: String) {
-        let result = self.run_command(&cmd);
+    pub async fn execute_command_str(&mut self, cmd: String) {
+        let result = self.run_command(&cmd).await;
         let tab = &mut self.tabs[self.active_tab];
         match result {
             Ok(()) => {
@@ -723,14 +737,17 @@ impl App {
         }
     }
 
-    fn run_command(&mut self, input: &str) -> Result<(), String> {
+    async fn run_command(&mut self, input: &str) -> Result<(), String> {
         let args = CommandLine::try_parse_from(shell_split(input))
             .map_err(|e| format!("Invalid command: {}", e))?;
 
         match args.command {
             Some(Commands::Filter { pattern, fg, bg, m }) => {
                 if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
-                    self.tabs[self.active_tab].log_manager.remove_filter(old_id);
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .remove_filter(old_id)
+                        .await;
                 }
                 self.tabs[self.active_tab]
                     .log_manager
@@ -740,17 +757,22 @@ impl App {
                         fg.as_deref(),
                         bg.as_deref(),
                         m,
-                    );
+                    )
+                    .await;
                 self.tabs[self.active_tab].scroll_offset = 0;
                 self.tabs[self.active_tab].refresh_visible();
             }
             Some(Commands::Exclude { pattern }) => {
                 if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
-                    self.tabs[self.active_tab].log_manager.remove_filter(old_id);
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .remove_filter(old_id)
+                        .await;
                 }
                 self.tabs[self.active_tab]
                     .log_manager
-                    .add_filter_with_color(pattern, FilterType::Exclude, None, None, false);
+                    .add_filter_with_color(pattern, FilterType::Exclude, None, None, false)
+                    .await;
                 self.tabs[self.active_tab].scroll_offset = 0;
                 self.tabs[self.active_tab].refresh_visible();
             }
@@ -761,12 +783,10 @@ impl App {
                     && filter.filter_type == FilterType::Include
                 {
                     let filter_id = filter.id;
-                    self.tabs[self.active_tab].log_manager.set_color_config(
-                        filter_id,
-                        fg.as_deref(),
-                        bg.as_deref(),
-                        m,
-                    );
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .set_color_config(filter_id, fg.as_deref(), bg.as_deref(), m)
+                        .await;
                     self.tabs[self.active_tab].refresh_visible();
                 }
             }
@@ -795,6 +815,7 @@ impl App {
                     self.tabs[self.active_tab]
                         .log_manager
                         .load_filters(&path)
+                        .await
                         .map_err(|e| format!("Failed to load filters: {}", e))?;
                     self.tabs[self.active_tab].refresh_visible();
                 }
@@ -815,7 +836,7 @@ impl App {
                     .map_err(|e| format!("Failed to load theme '{}': {}", theme_name, e))?;
             }
             Some(Commands::Open { path }) => {
-                self.open_file(&path)?;
+                self.open_file(&path).await?;
             }
             Some(Commands::CloseTab) => {
                 if self.tabs.len() <= 1 {
@@ -826,12 +847,56 @@ impl App {
                     self.active_tab = self.tabs.len() - 1;
                 }
             }
+            Some(Commands::ClearFilters) => {
+                self.tabs[self.active_tab].log_manager.clear_filters().await;
+                self.tabs[self.active_tab].refresh_visible();
+            }
+            Some(Commands::DisableFilters) => {
+                self.tabs[self.active_tab]
+                    .log_manager
+                    .disable_all_filters()
+                    .await;
+                self.tabs[self.active_tab].refresh_visible();
+            }
+            Some(Commands::EnableFilters) => {
+                self.tabs[self.active_tab]
+                    .log_manager
+                    .enable_all_filters()
+                    .await;
+                self.tabs[self.active_tab].refresh_visible();
+            }
+            Some(Commands::Filtering) => {
+                let tab = &mut self.tabs[self.active_tab];
+                tab.filtering_enabled = !tab.filtering_enabled;
+                tab.refresh_visible();
+            }
+            Some(Commands::HideField { field }) => {
+                let tab = &mut self.tabs[self.active_tab];
+                if let Ok(idx) = field.parse::<usize>() {
+                    tab.hidden_field_indices.insert(idx);
+                } else {
+                    tab.hidden_fields.insert(field);
+                }
+            }
+            Some(Commands::ShowField { field }) => {
+                let tab = &mut self.tabs[self.active_tab];
+                if let Ok(idx) = field.parse::<usize>() {
+                    tab.hidden_field_indices.remove(&idx);
+                } else {
+                    tab.hidden_fields.remove(&field);
+                }
+            }
+            Some(Commands::ShowAllFields) => {
+                let tab = &mut self.tabs[self.active_tab];
+                tab.hidden_fields.clear();
+                tab.hidden_field_indices.clear();
+            }
             None => {}
         }
         Ok(())
     }
 
-    pub fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> anyhow::Result<()> {
+    pub async fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> anyhow::Result<()> {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(250);
 
@@ -839,8 +904,8 @@ impl App {
             terminal.draw(|frame| self.ui(frame))?;
 
             // Poll for background load completion and file watch updates each frame.
-            self.advance_file_load();
-            self.advance_stdin_load();
+            self.advance_file_load().await;
+            self.advance_stdin_load().await;
             self.advance_file_watches();
 
             let poll_timeout = tick_rate
@@ -853,13 +918,13 @@ impl App {
             {
                 let tab = &mut self.tabs[self.active_tab];
                 let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode));
-                let (next_mode, result) = mode.handle_key(tab, key.code, key.modifiers);
+                let (next_mode, result) = mode.handle_key(tab, key.code, key.modifiers).await;
                 tab.mode = next_mode;
                 match result {
                     KeyResult::Handled => {}
-                    KeyResult::Ignored => self.handle_global_key(key.code, key.modifiers),
-                    KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd),
-                    KeyResult::RestoreSession(files) => self.restore_session(files),
+                    KeyResult::Ignored => self.handle_global_key(key.code, key.modifiers).await,
+                    KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd).await,
+                    KeyResult::RestoreSession(files) => self.restore_session(files).await,
                 }
             }
 
@@ -873,20 +938,25 @@ impl App {
         }
     }
 
-    pub fn handle_key_event(&mut self, key_code: KeyCode) {
-        self.handle_key_event_with_modifiers(key_code, KeyModifiers::NONE);
+    pub async fn handle_key_event(&mut self, key_code: KeyCode) {
+        self.handle_key_event_with_modifiers(key_code, KeyModifiers::NONE)
+            .await;
     }
 
-    pub fn handle_key_event_with_modifiers(&mut self, key_code: KeyCode, modifiers: KeyModifiers) {
+    pub async fn handle_key_event_with_modifiers(
+        &mut self,
+        key_code: KeyCode,
+        modifiers: KeyModifiers,
+    ) {
         let tab = &mut self.tabs[self.active_tab];
         let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode));
-        let (next_mode, result) = mode.handle_key(tab, key_code, modifiers);
+        let (next_mode, result) = mode.handle_key(tab, key_code, modifiers).await;
         tab.mode = next_mode;
         match result {
             KeyResult::Handled => {}
-            KeyResult::Ignored => self.handle_global_key(key_code, modifiers),
-            KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd),
-            KeyResult::RestoreSession(files) => self.restore_session(files),
+            KeyResult::Ignored => self.handle_global_key(key_code, modifiers).await,
+            KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd).await,
+            KeyResult::RestoreSession(files) => self.restore_session(files).await,
         }
     }
 
@@ -925,6 +995,11 @@ impl App {
             return;
         }
 
+        // Compute how many rows the status bar needs so wrapped text is fully visible.
+        let inner_width = (size.width as usize).saturating_sub(2); // minus 2 for L/R borders
+        let content_lines = count_wrapped_lines(&status_line, inner_width);
+        let status_height = (content_lines + 2).min(6).max(3) as u16; // +2 for borders
+
         let mut constraints = vec![];
         if has_multiple_tabs {
             constraints.push(Constraint::Length(1)); // Tab bar
@@ -934,7 +1009,7 @@ impl App {
             constraints.push(Constraint::Length(1)); // input line
             constraints.push(Constraint::Length(1)); // hint line
         }
-        constraints.push(Constraint::Length(3)); // command list
+        constraints.push(Constraint::Length(status_height)); // command list
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
@@ -975,11 +1050,7 @@ impl App {
             )
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(self.theme.text));
-        let mut area = *chunks.last().unwrap();
-        if area.height > 5 {
-            area.height = 5;
-        }
-        frame.render_widget(command_list, area);
+        frame.render_widget(command_list, *chunks.last().unwrap());
 
         // Session restore modal renders on top of the full TUI so stdin content
         // is visible behind it.
@@ -1107,6 +1178,10 @@ impl App {
         let theme = &self.theme;
         let level_colors = self.tabs[self.active_tab].level_colors;
         let current_scroll = self.tabs[self.active_tab].scroll_offset;
+        // Clone the hidden-field sets so the closure doesn't borrow `self` while iterating.
+        let hidden_fields = self.tabs[self.active_tab].hidden_fields.clone();
+        let hidden_field_indices = self.tabs[self.active_tab].hidden_field_indices.clone();
+        let _any_hidden = !hidden_fields.is_empty() || !hidden_field_indices.is_empty();
 
         let log_lines: Vec<Line> = self.tabs[self.active_tab].visible_indices[start..end]
             .iter()
@@ -1115,15 +1190,6 @@ impl App {
                 let line_bytes = self.tabs[self.active_tab].file_reader.get_line(line_idx);
                 let is_current = start + vis_idx == current_scroll;
                 let is_marked = self.tabs[self.active_tab].log_manager.is_marked(line_idx);
-
-                let mut collector = filter_manager.evaluate_line(line_bytes);
-
-                if let Some(sr) = search_map.get(&line_idx) {
-                    collector.with_priority(1000);
-                    for &(s, e) in &sr.matches {
-                        collector.push(s, e, SEARCH_STYLE_ID);
-                    }
-                }
 
                 let mut base_style = Style::default().fg(theme.text);
                 if level_colors {
@@ -1145,7 +1211,26 @@ impl App {
                     base_style
                 };
 
-                let mut line = render_line(&collector, &styles);
+                // For JSON lines always render parsed key=value fields instead of raw JSON.
+                // Fields hidden by name or index are omitted from the display.
+                // Filter evaluation (include/exclude decisions) uses the raw bytes, so
+                // filtering is unaffected by field hiding.
+                let json_display: Option<String> = parse_json_line(line_bytes).map(|fields| {
+                    build_display_json(&fields, &hidden_fields, &hidden_field_indices)
+                });
+
+                let mut line = if let Some(display) = json_display {
+                    Line::from(display)
+                } else {
+                    let mut collector = filter_manager.evaluate_line(line_bytes);
+                    if let Some(sr) = search_map.get(&line_idx) {
+                        collector.with_priority(1000);
+                        for &(s, e) in &sr.matches {
+                            collector.push(s, e, SEARCH_STYLE_ID);
+                        }
+                    }
+                    render_line(&collector, &styles)
+                };
                 line = line.style(render_style);
 
                 if show_line_numbers {
@@ -1163,7 +1248,21 @@ impl App {
             })
             .collect();
 
-        let logs_title = format!("Logs ({})", num_visible);
+        let logs_title = format!(
+            "{} ({})",
+            self.tabs[self.active_tab]
+                .log_manager
+                .source_file()
+                .map(|s| {
+                    std::path::Path::new(s)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(s)
+                        .to_string()
+                })
+                .unwrap_or(String::from("Logs")),
+            num_visible
+        );
 
         let mut paragraph = Paragraph::new(log_lines)
             .block(
@@ -1548,11 +1647,16 @@ impl App {
                 })
                 .collect();
 
+            let sidebar_title = if self.tabs[self.active_tab].filtering_enabled {
+                "Filters"
+            } else {
+                "Filters [OFF]"
+            };
             let sidebar = Paragraph::new(filters_text).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(self.theme.border))
-                    .title("Filters")
+                    .title(sidebar_title)
                     .title_style(Style::default().fg(self.theme.border_title)),
             );
             frame.render_widget(sidebar, sidebar_area);
@@ -1611,6 +1715,28 @@ fn line_row_count(bytes: &[u8], inner_width: usize) -> usize {
     if w == 0 { 1 } else { w.div_ceil(inner_width) }
 }
 
+/// Simulate word-wrap of `text` into a box of `width` columns and return the
+/// number of lines that result. Used to size the status bar dynamically.
+fn count_wrapped_lines(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let mut lines = 1usize;
+    let mut col = 0usize;
+    for word in text.split_whitespace() {
+        let wl = word.len();
+        if col == 0 {
+            col = wl;
+        } else if col + 1 + wl > width {
+            lines += 1;
+            col = wl;
+        } else {
+            col += 1 + wl;
+        }
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1620,58 +1746,57 @@ mod tests {
     use crate::log_manager::LogManager;
     use std::sync::Arc;
 
-    fn make_tab(lines: &[&str]) -> (FileReader, LogManager) {
+    async fn make_tab(lines: &[&str]) -> (FileReader, LogManager) {
         let data: Vec<u8> = lines.join("\n").into_bytes();
         let file_reader = FileReader::from_bytes(data);
-        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        let db = Arc::new(rt.block_on(Database::in_memory()).unwrap());
-        let log_manager = LogManager::new(db, rt, None);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
         (file_reader, log_manager)
     }
 
-    fn make_app(lines: &[&str]) -> App {
-        let (file_reader, log_manager) = make_tab(lines);
-        App::new(log_manager, file_reader, Theme::default())
+    async fn make_app(lines: &[&str]) -> App {
+        let (file_reader, log_manager) = make_tab(lines).await;
+        App::new(log_manager, file_reader, Theme::default()).await
     }
 
-    #[test]
-    fn test_toggle_wrap_command() {
-        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]);
-        app.execute_command_str("wrap".to_string());
+    #[tokio::test]
+    async fn test_toggle_wrap_command() {
+        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
+        app.execute_command_str("wrap".to_string()).await;
         assert!(!app.tab().wrap);
-        app.execute_command_str("wrap".to_string());
+        app.execute_command_str("wrap".to_string()).await;
         assert!(app.tab().wrap);
     }
 
-    #[test]
-    fn test_add_filter_command() {
-        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]);
-        app.execute_command_str("filter foo".to_string());
+    #[tokio::test]
+    async fn test_add_filter_command() {
+        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
+        app.execute_command_str("filter foo".to_string()).await;
         let filters = app.tab().log_manager.get_filters();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].filter_type, FilterType::Include);
         assert_eq!(filters[0].pattern, "foo");
     }
 
-    #[test]
-    fn test_add_exclude_command() {
-        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]);
-        app.execute_command_str("exclude bar".to_string());
+    #[tokio::test]
+    async fn test_add_exclude_command() {
+        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
+        app.execute_command_str("exclude bar".to_string()).await;
         let filters = app.tab().log_manager.get_filters();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].filter_type, FilterType::Exclude);
         assert_eq!(filters[0].pattern, "bar");
     }
 
-    #[test]
-    fn test_shell_split_basic() {
+    #[tokio::test]
+    async fn test_shell_split_basic() {
         assert_eq!(shell_split("filter foo"), vec!["filter", "foo"]);
         assert_eq!(shell_split("  filter  foo  "), vec!["filter", "foo"]);
         assert_eq!(shell_split(""), Vec::<String>::new());
     }
 
-    #[test]
-    fn test_shell_split_quoted() {
+    #[tokio::test]
+    async fn test_shell_split_quoted() {
         assert_eq!(
             shell_split(r#"filter "hello world""#),
             vec!["filter", "hello world"]
@@ -1682,62 +1807,164 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_filter_command_with_quoted_pattern() {
-        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]);
-        app.execute_command_str(r#"filter "hello world""#.to_string());
+    #[tokio::test]
+    async fn test_filter_command_with_quoted_pattern() {
+        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
+        app.execute_command_str(r#"filter "hello world""#.to_string())
+            .await;
         let filters = app.tab().log_manager.get_filters();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].pattern, "hello world");
         assert_eq!(filters[0].filter_type, FilterType::Include);
     }
 
-    #[test]
-    fn test_filter_reduces_visible() {
+    #[tokio::test]
+    async fn test_filter_reduces_visible() {
         let lines = vec!["INFO something", "WARN warning", "ERROR error"];
-        let (file_reader, log_manager) = make_tab(&lines);
-        let mut app = App::new(log_manager, file_reader, Theme::default());
+        let (file_reader, log_manager) = make_tab(&lines).await;
+        let mut app = App::new(log_manager, file_reader, Theme::default()).await;
 
         assert_eq!(app.tab().visible_indices.len(), 3);
 
-        app.execute_command_str("filter INFO".to_string());
+        app.execute_command_str("filter INFO".to_string()).await;
 
         assert_eq!(app.tab().visible_indices.len(), 1);
     }
 
-    #[test]
-    fn test_mark_toggle() {
+    #[tokio::test]
+    async fn test_mark_toggle() {
         let lines = vec!["line0", "line1", "line2"];
-        let (file_reader, log_manager) = make_tab(&lines);
-        let mut app = App::new(log_manager, file_reader, Theme::default());
+        let (file_reader, log_manager) = make_tab(&lines).await;
+        let mut app = App::new(log_manager, file_reader, Theme::default()).await;
 
         app.tab_mut().scroll_offset = 0;
-        app.handle_key_event_with_modifiers(KeyCode::Char('m'), KeyModifiers::NONE);
+        app.handle_key_event_with_modifiers(KeyCode::Char('m'), KeyModifiers::NONE)
+            .await;
         assert!(app.tab().log_manager.is_marked(0));
 
-        app.handle_key_event_with_modifiers(KeyCode::Char('m'), KeyModifiers::NONE);
+        app.handle_key_event_with_modifiers(KeyCode::Char('m'), KeyModifiers::NONE)
+            .await;
         assert!(!app.tab().log_manager.is_marked(0));
     }
 
-    #[test]
-    fn test_scroll_g_key() {
+    #[tokio::test]
+    async fn test_scroll_g_key() {
         let lines: Vec<&str> = (0..20).map(|_| "line").collect();
-        let (file_reader, log_manager) = make_tab(&lines);
-        let mut app = App::new(log_manager, file_reader, Theme::default());
+        let (file_reader, log_manager) = make_tab(&lines).await;
+        let mut app = App::new(log_manager, file_reader, Theme::default()).await;
 
         // 'G' goes to end
-        app.handle_key_event_with_modifiers(KeyCode::Char('G'), KeyModifiers::NONE);
+        app.handle_key_event_with_modifiers(KeyCode::Char('G'), KeyModifiers::NONE)
+            .await;
         assert_eq!(app.tab().scroll_offset, 19);
 
         // 'gg' goes to top
-        app.handle_key_event_with_modifiers(KeyCode::Char('g'), KeyModifiers::NONE);
-        app.handle_key_event_with_modifiers(KeyCode::Char('g'), KeyModifiers::NONE);
+        app.handle_key_event_with_modifiers(KeyCode::Char('g'), KeyModifiers::NONE)
+            .await;
+        app.handle_key_event_with_modifiers(KeyCode::Char('g'), KeyModifiers::NONE)
+            .await;
         assert_eq!(app.tab().scroll_offset, 0);
     }
 
-    #[test]
-    fn test_to_file_context_none_without_source() {
-        let app = make_app(&["line"]);
+    #[tokio::test]
+    async fn test_to_file_context_none_without_source() {
+        let app = make_app(&["line"]).await;
         assert!(app.tab().to_file_context().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_clear_filters_command() {
+        let mut app = make_app(&["INFO a", "WARN b", "ERROR c"]).await;
+        app.execute_command_str("filter INFO".to_string()).await;
+        assert_eq!(app.tab().log_manager.get_filters().len(), 1);
+        app.execute_command_str("clear-filters".to_string()).await;
+        assert!(app.tab().log_manager.get_filters().is_empty());
+        assert_eq!(app.tab().visible_indices.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_disable_filters_command() {
+        let mut app = make_app(&["INFO a", "WARN b", "ERROR c"]).await;
+        app.execute_command_str("filter INFO".to_string()).await;
+        assert_eq!(app.tab().visible_indices.len(), 1);
+
+        app.execute_command_str("disable-filters".to_string()).await;
+        assert!(!app.tab().log_manager.get_filters()[0].enabled);
+        assert_eq!(app.tab().visible_indices.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_enable_filters_command() {
+        let mut app = make_app(&["INFO a", "WARN b", "ERROR c"]).await;
+        app.execute_command_str("filter INFO".to_string()).await;
+        app.execute_command_str("disable-filters".to_string()).await;
+        assert!(!app.tab().log_manager.get_filters()[0].enabled);
+
+        app.execute_command_str("enable-filters".to_string()).await;
+        assert!(app.tab().log_manager.get_filters()[0].enabled);
+        assert_eq!(app.tab().visible_indices.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_filtering_command_toggles_bypass() {
+        let mut app = make_app(&["INFO a", "WARN b", "ERROR c"]).await;
+        app.execute_command_str("filter INFO".to_string()).await;
+        assert_eq!(app.tab().visible_indices.len(), 1);
+        assert!(app.tab().filtering_enabled);
+
+        app.execute_command_str("filtering".to_string()).await;
+        assert!(!app.tab().filtering_enabled);
+        assert_eq!(app.tab().visible_indices.len(), 3);
+
+        app.execute_command_str("filtering".to_string()).await;
+        assert!(app.tab().filtering_enabled);
+        assert_eq!(app.tab().visible_indices.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_hide_field_by_name() {
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        assert!(app.tab().hidden_fields.is_empty());
+        app.execute_command_str("hide-field msg".to_string()).await;
+        assert!(app.tab().hidden_fields.contains("msg"));
+        assert!(!app.tab().hidden_fields.contains("level"));
+    }
+
+    #[tokio::test]
+    async fn test_hide_field_by_index() {
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        app.execute_command_str("hide-field 0".to_string()).await;
+        assert!(app.tab().hidden_field_indices.contains(&0));
+        assert!(!app.tab().hidden_field_indices.contains(&1));
+    }
+
+    #[tokio::test]
+    async fn test_show_field_removes_hidden_name() {
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        app.execute_command_str("hide-field msg".to_string()).await;
+        assert!(app.tab().hidden_fields.contains("msg"));
+        app.execute_command_str("show-field msg".to_string()).await;
+        assert!(!app.tab().hidden_fields.contains("msg"));
+    }
+
+    #[tokio::test]
+    async fn test_show_field_removes_hidden_index() {
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        app.execute_command_str("hide-field 1".to_string()).await;
+        assert!(app.tab().hidden_field_indices.contains(&1));
+        app.execute_command_str("show-field 1".to_string()).await;
+        assert!(!app.tab().hidden_field_indices.contains(&1));
+    }
+
+    #[tokio::test]
+    async fn test_show_all_fields_clears_everything() {
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        app.execute_command_str("hide-field msg".to_string()).await;
+        app.execute_command_str("hide-field 0".to_string()).await;
+        assert!(!app.tab().hidden_fields.is_empty());
+        assert!(!app.tab().hidden_field_indices.is_empty());
+        app.execute_command_str("show-all-fields".to_string()).await;
+        assert!(app.tab().hidden_fields.is_empty());
+        assert!(app.tab().hidden_field_indices.is_empty());
     }
 }

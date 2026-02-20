@@ -65,6 +65,41 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "line-numbers",
         description: "Toggle line numbers on/off",
     },
+    CommandInfo {
+        name: "clear-filters",
+        usage: "clear-filters",
+        description: "Remove all filter definitions",
+    },
+    CommandInfo {
+        name: "disable-filters",
+        usage: "disable-filters",
+        description: "Disable all filters without removing them",
+    },
+    CommandInfo {
+        name: "enable-filters",
+        usage: "enable-filters",
+        description: "Enable all disabled filters",
+    },
+    CommandInfo {
+        name: "filtering",
+        usage: "filtering",
+        description: "Toggle global filtering on/off (bypass all filters)",
+    },
+    CommandInfo {
+        name: "hide-field",
+        usage: "hide-field <name|index>",
+        description: "Hide a JSON field by name or 0-based index. e.g. hide-field MESSAGE or hide-field 0",
+    },
+    CommandInfo {
+        name: "show-field",
+        usage: "show-field <name|index>",
+        description: "Show a previously hidden JSON field. e.g. show-field MESSAGE",
+    },
+    CommandInfo {
+        name: "show-all-fields",
+        usage: "show-all-fields",
+        description: "Clear all hidden fields and show the complete JSON line",
+    },
 ];
 
 pub fn command_names() -> Vec<&'static str> {
@@ -112,7 +147,7 @@ pub fn find_command_completions(prefix: &str) -> Vec<&'static str> {
     }
     COMMANDS
         .iter()
-        .filter(|c| c.name.starts_with(trimmed))
+        .filter(|c| fuzzy_match(trimmed, c.name))
         .map(|c| c.name)
         .collect()
 }
@@ -134,7 +169,6 @@ pub const COLOR_NAMES: &[&str] = &[
     "LightMagenta",
     "LightCyan",
     "White",
-    "Reset",
 ];
 
 /// If the input ends with `--fg <partial>` or `--bg <partial>`, returns the partial color prefix.
@@ -142,7 +176,7 @@ pub fn extract_color_partial(input: &str) -> Option<&str> {
     let color_commands = ["filter", "set-color"];
     let trimmed = input.trim();
     let cmd = trimmed.split_whitespace().next().unwrap_or("");
-    if !color_commands.iter().any(|c| *c == cmd) {
+    if !color_commands.contains(&cmd) {
         return None;
     }
 
@@ -166,10 +200,12 @@ pub fn extract_color_partial(input: &str) -> Option<&str> {
 }
 
 pub fn complete_color(partial: &str) -> Vec<&'static str> {
-    let lower = partial.to_lowercase();
+    if partial.is_empty() {
+        return COLOR_NAMES.to_vec();
+    }
     COLOR_NAMES
         .iter()
-        .filter(|c| c.to_lowercase().starts_with(&lower))
+        .filter(|c| fuzzy_match(partial, c))
         .copied()
         .collect()
 }
@@ -213,7 +249,7 @@ pub fn complete_file_path(partial: &str) -> Vec<String> {
             if name.starts_with('.') && !name_prefix.starts_with('.') {
                 return None;
             }
-            if !name.starts_with(&name_prefix) {
+            if !name_prefix.is_empty() && !fuzzy_match(&name_prefix, &name) {
                 return None;
             }
             let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
@@ -413,22 +449,46 @@ mod tests {
     }
 
     #[test]
-    fn test_find_command_completions_prefix_multiple_matches() {
+    fn test_find_command_completions_prefix_matches() {
+        // Prefix is always a valid fuzzy match
         let results = find_command_completions("fi");
         assert!(results.contains(&"filter"));
+        assert!(results.contains(&"filtering"));
         assert!(!results.contains(&"exclude"));
     }
 
     #[test]
-    fn test_find_command_completions_prefix_single_match() {
-        let results = find_command_completions("wra");
-        assert_eq!(results, vec!["wrap"]);
+    fn test_find_command_completions_subsequence_match() {
+        // "flr" is not a prefix of "filter" but it is a subsequence: f-i-l-t-e-r
+        let results = find_command_completions("flr");
+        assert!(results.contains(&"filter"));
+        assert!(results.contains(&"filtering"));
+        assert!(results.contains(&"clear-filters"));
+        assert!(results.contains(&"disable-filters"));
+        assert!(results.contains(&"enable-filters"));
+        assert!(results.contains(&"load-filters"));
+        assert!(results.contains(&"save-filters"));
+    }
+
+    #[test]
+    fn test_find_command_completions_abbreviation_match() {
+        // "cf" matches "clear-filters" via c…f subsequence
+        let results = find_command_completions("cf");
+        assert!(results.contains(&"clear-filters"));
+    }
+
+    #[test]
+    fn test_find_command_completions_case_insensitive() {
+        let lower = find_command_completions("wrap");
+        let upper = find_command_completions("WRAP");
+        assert_eq!(lower, upper);
+        assert!(lower.contains(&"wrap"));
     }
 
     #[test]
     fn test_find_command_completions_exact_match() {
         let results = find_command_completions("wrap");
-        assert_eq!(results, vec!["wrap"]);
+        assert!(results.contains(&"wrap"));
     }
 
     #[test]
@@ -445,17 +505,18 @@ mod tests {
     }
 
     #[test]
-    fn test_find_command_completions_trailing_space_trims_to_exact_match() {
-        // Trailing space is trimmed so "filter " behaves like "filter"
+    fn test_find_command_completions_trailing_space_fuzzy_matches() {
+        // Trailing space is trimmed so "filter " fuzzy-matches "filter" and "filtering"
         let results = find_command_completions("filter ");
-        assert_eq!(results, vec!["filter"]);
+        assert!(results.contains(&"filter"));
+        assert!(results.contains(&"filtering"));
     }
 
     #[test]
-    fn test_find_command_completions_set_prefix() {
-        let results = find_command_completions("set-");
+    fn test_find_command_completions_set_subsequence() {
+        // "st" matches set-color and set-theme (s…t), but not "filter"
+        let results = find_command_completions("stc");
         assert!(results.contains(&"set-color"));
-        assert!(results.contains(&"set-theme"));
         assert!(!results.contains(&"filter"));
     }
 
@@ -523,11 +584,14 @@ mod tests {
     }
 
     #[test]
-    fn test_complete_color_prefix_uppercase() {
+    fn test_complete_color_fuzzy_re_matches_red_and_green() {
+        // "Re" as a fuzzy subsequence: r then e appears in Red, Green, LightRed, LightGreen
         let results = complete_color("Re");
-        assert!(results.contains(&"Red"));
-        assert!(results.contains(&"Reset"));
-        assert!(!results.contains(&"Blue"));
+        assert!(results.contains(&"Red"), "Red should match");
+        assert!(results.contains(&"Green"), "Green should fuzzy-match (g-r-e-e-n)");
+        assert!(results.contains(&"LightRed"), "LightRed should match");
+        assert!(results.contains(&"LightGreen"), "LightGreen should match");
+        assert!(!results.contains(&"Blue"), "Blue has no 'r' so should not match");
     }
 
     #[test]
@@ -587,12 +651,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
         std::fs::write(path.join("alpha.log"), b"").unwrap();
-        std::fs::write(path.join("beta.log"), b"").unwrap();
+        std::fs::write(path.join("zzz.log"), b"").unwrap();
 
+        // "al" fuzzy-matches "alpha.log" but not "zzz.log" (no 'a' then 'l' in sequence)
         let prefix = format!("{}/al", path.to_str().unwrap());
         let results = complete_file_path(&prefix);
-        assert_eq!(results.len(), 1);
-        assert!(results[0].ends_with("alpha.log"));
+        assert!(results.iter().any(|r| r.ends_with("alpha.log")));
+        assert!(!results.iter().any(|r| r.ends_with("zzz.log")));
+    }
+
+    #[test]
+    fn test_complete_file_path_fuzzy_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        std::fs::write(path.join("application.log"), b"").unwrap();
+        std::fs::write(path.join("access.log"), b"").unwrap();
+        std::fs::write(path.join("error.txt"), b"").unwrap();
+
+        // "ag" matches "application.log" (a…g) and "access.log" (a…g via a-c-c-e-s-s-.-l-o-g)
+        // but not "error.txt" (no 'a')
+        let prefix = format!("{}/ag", path.to_str().unwrap());
+        let results = complete_file_path(&prefix);
+        assert!(results.iter().any(|r| r.ends_with("application.log")), "application.log should match 'ag'");
+        assert!(results.iter().any(|r| r.ends_with("access.log")), "access.log should match 'ag'");
+        assert!(!results.iter().any(|r| r.ends_with("error.txt")), "error.txt should not match 'ag'");
     }
 
     #[test]

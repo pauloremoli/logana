@@ -40,16 +40,14 @@ impl LogLevel {
             if w4 == *b"WARN" {
                 return LogLevel::Warning;
             }
-            if w4 == *b"DEBU" {
-                if i + 5 <= line.len() && line[i + 4].to_ascii_uppercase() == b'G' {
+            if w4 == *b"DEBU"
+                && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'G') {
                     return LogLevel::Debug;
                 }
-            }
-            if w4 == *b"ERRO" {
-                if i + 5 <= line.len() && line[i + 4].to_ascii_uppercase() == b'R' {
+            if w4 == *b"ERRO"
+                && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'R') {
                     return LogLevel::Error;
                 }
-            }
             i += 1;
         }
         LogLevel::Unknown

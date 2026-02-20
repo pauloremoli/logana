@@ -7,12 +7,11 @@ use std::io::Write;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
 
-fn setup() -> (Arc<tokio::runtime::Runtime>, Arc<Database>, LogManager) {
-    let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
-    let db = rt.block_on(Database::in_memory()).unwrap();
+async fn setup() -> (Arc<Database>, LogManager) {
+    let db = Database::in_memory().await.unwrap();
     let db = Arc::new(db);
-    let manager = LogManager::new(db.clone(), rt.clone(), None);
-    (rt, db, manager)
+    let manager = LogManager::new(db.clone(), None).await;
+    (db, manager)
 }
 
 fn create_sample_log_file() -> NamedTempFile {
@@ -77,9 +76,9 @@ fn test_file_reader_get_line() {
     assert_eq!(line6, "plain text log line with no format");
 }
 
-#[test]
-fn test_filter_include_reduces_visible() {
-    let (_rt, _db, mut manager) = setup();
+#[tokio::test]
+async fn test_filter_include_reduces_visible() {
+    let (_db, mut manager) = setup().await;
     let file = create_sample_log_file();
     let path = file.path().to_str().unwrap();
     let reader = FileReader::new(path).unwrap();
@@ -90,7 +89,9 @@ fn test_filter_include_reduces_visible() {
     assert_eq!(visible.len(), 7);
 
     // Include only lines containing "Connection"
-    manager.add_filter_with_color("Connection".into(), FilterType::Include, None, None, false);
+    manager
+        .add_filter_with_color("Connection".into(), FilterType::Include, None, None, false)
+        .await;
     let (fm, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
     assert_eq!(visible.len(), 2);
@@ -99,15 +100,17 @@ fn test_filter_include_reduces_visible() {
     assert!(visible.contains(&4));
 }
 
-#[test]
-fn test_filter_exclude_removes_lines() {
-    let (_rt, _db, mut manager) = setup();
+#[tokio::test]
+async fn test_filter_exclude_removes_lines() {
+    let (_db, mut manager) = setup().await;
     let file = create_sample_log_file();
     let path = file.path().to_str().unwrap();
     let reader = FileReader::new(path).unwrap();
 
     // Exclude lines containing "INFO"
-    manager.add_filter_with_color("INFO".into(), FilterType::Exclude, None, None, false);
+    manager
+        .add_filter_with_color("INFO".into(), FilterType::Exclude, None, None, false)
+        .await;
     let (fm, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
 
@@ -117,16 +120,20 @@ fn test_filter_exclude_removes_lines() {
     assert!(!visible.contains(&4));
 }
 
-#[test]
-fn test_filter_include_and_exclude() {
-    let (_rt, _db, mut manager) = setup();
+#[tokio::test]
+async fn test_filter_include_and_exclude() {
+    let (_db, mut manager) = setup().await;
     let file = create_sample_log_file();
     let path = file.path().to_str().unwrap();
     let reader = FileReader::new(path).unwrap();
 
     // Include lines with "Connection", then exclude lines with "failed"
-    manager.add_filter_with_color("Connection".into(), FilterType::Include, None, None, false);
-    manager.add_filter_with_color("failed".into(), FilterType::Exclude, None, None, false);
+    manager
+        .add_filter_with_color("Connection".into(), FilterType::Include, None, None, false)
+        .await;
+    manager
+        .add_filter_with_color("failed".into(), FilterType::Exclude, None, None, false)
+        .await;
     let (fm, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
 
@@ -136,16 +143,18 @@ fn test_filter_include_and_exclude() {
     assert!(visible.contains(&4));
 }
 
-#[test]
-fn test_disabled_filter_is_ignored() {
-    let (_rt, _db, mut manager) = setup();
+#[tokio::test]
+async fn test_disabled_filter_is_ignored() {
+    let (_db, mut manager) = setup().await;
     let file = create_sample_log_file();
     let path = file.path().to_str().unwrap();
     let reader = FileReader::new(path).unwrap();
 
-    manager.add_filter_with_color("INFO".into(), FilterType::Include, None, None, false);
+    manager
+        .add_filter_with_color("INFO".into(), FilterType::Include, None, None, false)
+        .await;
     let id = manager.get_filters()[0].id;
-    manager.toggle_filter(id); // disable it
+    manager.toggle_filter(id).await; // disable it
 
     // Disabled → no active include filters → all lines visible
     let (fm, _) = manager.build_filter_manager();
@@ -162,9 +171,9 @@ fn test_filter_manager_no_filters_shows_all() {
     assert_eq!(visible, vec![0, 1, 2]);
 }
 
-#[test]
-fn test_marks_persistence() {
-    let (_rt, _db, mut manager) = setup();
+#[tokio::test]
+async fn test_marks_persistence() {
+    let (_db, mut manager) = setup().await;
 
     manager.toggle_mark(0);
     manager.toggle_mark(2);
@@ -185,9 +194,9 @@ fn test_marks_persistence() {
     assert_eq!(manager.get_marked_indices(), vec![0, 5]);
 }
 
-#[test]
-fn test_get_marked_lines() {
-    let (_rt, _db, mut manager) = setup();
+#[tokio::test]
+async fn test_get_marked_lines() {
+    let (_db, mut manager) = setup().await;
 
     let data = b"alpha\nbeta\ngamma\n";
     let reader = FileReader::from_bytes(data.to_vec());
@@ -201,30 +210,40 @@ fn test_get_marked_lines() {
     assert_eq!(lines[1], b"gamma");
 }
 
-#[test]
-fn test_add_and_remove_filters() {
-    let (_rt, _db, mut manager) = setup();
+#[tokio::test]
+async fn test_add_and_remove_filters() {
+    let (_db, mut manager) = setup().await;
 
-    manager.add_filter_with_color("error".into(), FilterType::Include, None, None, false);
-    manager.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, false);
+    manager
+        .add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        .await;
+    manager
+        .add_filter_with_color("debug".into(), FilterType::Exclude, None, None, false)
+        .await;
     assert_eq!(manager.get_filters().len(), 2);
 
     let id = manager.get_filters()[0].id;
-    manager.remove_filter(id);
+    manager.remove_filter(id).await;
     assert_eq!(manager.get_filters().len(), 1);
     assert_eq!(manager.get_filters()[0].pattern, "debug");
 }
 
-#[test]
-fn test_move_filter_up_down() {
-    let (_rt, _db, mut manager) = setup();
+#[tokio::test]
+async fn test_move_filter_up_down() {
+    let (_db, mut manager) = setup().await;
 
-    manager.add_filter_with_color("first".into(), FilterType::Include, None, None, false);
-    manager.add_filter_with_color("second".into(), FilterType::Include, None, None, false);
-    manager.add_filter_with_color("third".into(), FilterType::Include, None, None, false);
+    manager
+        .add_filter_with_color("first".into(), FilterType::Include, None, None, false)
+        .await;
+    manager
+        .add_filter_with_color("second".into(), FilterType::Include, None, None, false)
+        .await;
+    manager
+        .add_filter_with_color("third".into(), FilterType::Include, None, None, false)
+        .await;
 
     let id_second = manager.get_filters()[1].id;
-    manager.move_filter_up(id_second);
+    manager.move_filter_up(id_second).await;
 
     let filters = manager.get_filters();
     assert_eq!(filters[0].pattern, "second");
@@ -232,15 +251,17 @@ fn test_move_filter_up_down() {
     assert_eq!(filters[2].pattern, "third");
 }
 
-#[test]
-fn test_filter_regex_pattern() {
-    let (_rt, _db, mut manager) = setup();
+#[tokio::test]
+async fn test_filter_regex_pattern() {
+    let (_db, mut manager) = setup().await;
     let file = create_sample_log_file();
     let path = file.path().to_str().unwrap();
     let reader = FileReader::new(path).unwrap();
 
     // Regex pattern matching either INFO or ERROR
-    manager.add_filter_with_color("INFO|ERROR".into(), FilterType::Include, None, None, false);
+    manager
+        .add_filter_with_color("INFO|ERROR".into(), FilterType::Include, None, None, false)
+        .await;
     let (fm, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
 
@@ -261,28 +282,34 @@ fn test_file_reader_from_bytes() {
     assert_eq!(reader.get_line(2), b"line three");
 }
 
-#[test]
-fn test_clear_filters() {
-    let (_rt, _db, mut manager) = setup();
-    manager.add_filter_with_color("error".into(), FilterType::Include, None, None, false);
-    manager.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, false);
+#[tokio::test]
+async fn test_clear_filters() {
+    let (_db, mut manager) = setup().await;
+    manager
+        .add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        .await;
+    manager
+        .add_filter_with_color("debug".into(), FilterType::Exclude, None, None, false)
+        .await;
     assert_eq!(manager.get_filters().len(), 2);
 
-    manager.clear_filters();
+    manager.clear_filters().await;
     assert!(manager.get_filters().is_empty());
 }
 
-#[test]
-fn test_search_on_visible_lines() {
+#[tokio::test]
+async fn test_search_on_visible_lines() {
     use logsmith_rs::search::Search;
 
-    let (_rt, _db, mut manager) = setup();
+    let (_db, mut manager) = setup().await;
     let file = create_sample_log_file();
     let path = file.path().to_str().unwrap();
     let reader = FileReader::new(path).unwrap();
 
     // Include only INFO lines
-    manager.add_filter_with_color("INFO".into(), FilterType::Include, None, None, false);
+    manager
+        .add_filter_with_color("INFO".into(), FilterType::Include, None, None, false)
+        .await;
     let (fm, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
     assert_eq!(visible.len(), 2);
