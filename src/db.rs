@@ -51,6 +51,14 @@ pub trait FileContextStore: Send + Sync {
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>>;
 }
 
+#[async_trait]
+pub trait SessionStore: Send + Sync {
+    /// Persist the ordered list of open source files as the last session.
+    async fn save_session(&self, files: &[String]) -> Result<()>;
+    /// Load the ordered list of source files from the last saved session.
+    async fn load_session(&self) -> Result<Vec<String>>;
+}
+
 pub struct Database {
     pool: SqlitePool,
 }
@@ -165,6 +173,15 @@ impl Database {
         )
         .execute(&self.pool)
         .await;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS session_tabs (
+                source_file TEXT NOT NULL,
+                tab_order INTEGER NOT NULL DEFAULT 0
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -469,6 +486,32 @@ impl FileContextStore for Database {
                 show_line_numbers: r.get::<i32, _>("show_line_numbers") != 0,
             }
         }))
+    }
+}
+
+#[async_trait]
+impl SessionStore for Database {
+    async fn save_session(&self, files: &[String]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM session_tabs")
+            .execute(&mut *tx)
+            .await?;
+        for (order, file) in files.iter().enumerate() {
+            sqlx::query("INSERT INTO session_tabs (source_file, tab_order) VALUES (?, ?)")
+                .bind(file)
+                .bind(order as i64)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn load_session(&self) -> Result<Vec<String>> {
+        let rows = sqlx::query("SELECT source_file FROM session_tabs ORDER BY tab_order")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.iter().map(|r| r.get::<String, _>("source_file")).collect())
     }
 }
 

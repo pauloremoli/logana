@@ -31,6 +31,9 @@ pub trait Mode: std::fmt::Debug {
     fn confirm_restore_context(&self) -> Option<&FileContext> {
         None
     }
+    fn confirm_restore_session_files(&self) -> Option<&[String]> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -66,5 +69,37 @@ impl Mode for ConfirmRestoreMode {
 
     fn confirm_restore_context(&self) -> Option<&FileContext> {
         Some(&self.context)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConfirmRestoreSessionMode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct ConfirmRestoreSessionMode {
+    pub files: Vec<String>,
+}
+
+impl Mode for ConfirmRestoreSessionMode {
+    fn handle_key(
+        self: Box<Self>,
+        _tab: &mut TabState,
+        key: KeyCode,
+        _modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        match key {
+            KeyCode::Char('y') => (Box::new(NormalMode), KeyResult::RestoreSession(self.files)),
+            KeyCode::Char('n') | KeyCode::Esc => (Box::new(NormalMode), KeyResult::Handled),
+            _ => (self, KeyResult::Handled),
+        }
+    }
+
+    fn status_line(&self) -> &str {
+        "[RESTORE SESSION] Restore last session? [y]es / [n]o"
+    }
+
+    fn confirm_restore_session_files(&self) -> Option<&[String]> {
+        Some(&self.files)
     }
 }

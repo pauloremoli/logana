@@ -1,23 +1,28 @@
 use memchr::memchr_iter;
 use memmap2::Mmap;
+use tokio::sync::{oneshot, watch};
 use std::{fs::File, io};
 
-/// Computes the byte offsets of the start of every line in `data`.
-/// The first element is always `0`.  The last element points one past the
-/// final newline (i.e. to the beginning of a potential final partial line).
-fn compute_line_starts(data: &[u8]) -> Vec<usize> {
-    let mut starts = vec![0usize];
-    for pos in memchr_iter(b'\n', data) {
-        if pos + 1 <= data.len() {
-            starts.push(pos + 1);
-        }
-    }
-    // If the last byte is NOT a newline, the last element already points past
-    // the data, so no extra push is needed.  If it IS a newline, the starts vec
-    // ends with `data.len()`, and `get_line` will return an empty slice there —
-    // which is fine because we only iterate `0..line_count()`.
-    starts
+// ---------------------------------------------------------------------------
+// FileLoadHandle
+// ---------------------------------------------------------------------------
+
+/// Handle returned by [`FileReader::load_async`].
+///
+/// * `progress_rx` — watch channel carrying the current progress fraction
+///   (0.0 – 1.0).  Updated in ~4 MiB increments by the background task.
+/// * `result_rx`   — oneshot channel; receives the completed [`FileReader`]
+///   (or an IO error) when indexing finishes.
+/// * `total_bytes` — size of the file in bytes (for display).
+pub struct FileLoadHandle {
+    pub progress_rx: watch::Receiver<f64>,
+    pub result_rx: oneshot::Receiver<io::Result<FileReader>>,
+    pub total_bytes: u64,
 }
+
+// ---------------------------------------------------------------------------
+// FileReader internals
+// ---------------------------------------------------------------------------
 
 /// Backing storage for a `FileReader`: either a memory-mapped file or an
 /// in-memory buffer (used for stdin / test data).
@@ -43,7 +48,7 @@ pub struct FileReader {
 }
 
 impl FileReader {
-    /// Memory-map `path` and index all line starts.
+    /// Memory-map `path` and index all line starts synchronously.
     pub fn new(path: &str) -> io::Result<Self> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
@@ -61,6 +66,59 @@ impl FileReader {
             storage: Storage::Bytes(data),
             line_starts,
         }
+    }
+
+    /// Start loading `path` on tokio's blocking thread pool.
+    ///
+    /// Returns a [`FileLoadHandle`] immediately; the actual indexing happens
+    /// in the background.  The caller polls `handle.result_rx.try_recv()` each
+    /// frame and reads `*handle.progress_rx.borrow()` for live progress.
+    ///
+    /// Must be called while a tokio runtime is active (uses the `Handle`).
+    pub fn load_async(path: String, rt_handle: &tokio::runtime::Handle) -> io::Result<FileLoadHandle> {
+        let total_bytes = std::fs::metadata(&path)?.len();
+        let (progress_tx, progress_rx) = watch::channel(0.0_f64);
+        let (result_tx, result_rx) = oneshot::channel();
+
+        rt_handle.spawn_blocking(move || {
+            let result = Self::index_chunked(&path, total_bytes, progress_tx);
+            // Ignore send error — UI may have quit before we finish.
+            let _ = result_tx.send(result);
+        });
+
+        Ok(FileLoadHandle { progress_rx, result_rx, total_bytes })
+    }
+
+    /// Index the file in 4 MiB chunks, sending progress updates after each
+    /// chunk.  Produces the same `line_starts` as `compute_line_starts`.
+    fn index_chunked(
+        path: &str,
+        total_bytes: u64,
+        progress_tx: watch::Sender<f64>,
+    ) -> io::Result<Self> {
+        let file = File::open(path)?;
+        let mmap = unsafe { Mmap::map(&file)? };
+        let len = mmap.len();
+
+        const CHUNK: usize = 4 * 1024 * 1024; // 4 MiB
+        let mut starts = vec![0usize];
+
+        let mut offset = 0;
+        while offset < len {
+            let end = (offset + CHUNK).min(len);
+            for pos in memchr_iter(b'\n', &mmap[offset..end]) {
+                let abs = offset + pos + 1;
+                if abs <= len {
+                    starts.push(abs);
+                }
+            }
+            let progress = if total_bytes > 0 { end as f64 / total_bytes as f64 } else { 1.0 };
+            // Ignore send error — receiver may have been dropped.
+            let _ = progress_tx.send(progress);
+            offset = end;
+        }
+
+        Ok(FileReader { storage: Storage::Mmap(mmap), line_starts: starts })
     }
 
     /// Total number of lines (including any final partial line without a trailing newline).
@@ -105,6 +163,27 @@ impl FileReader {
     pub fn iter(&self) -> impl Iterator<Item = (usize, &[u8])> {
         (0..self.line_count()).map(move |i| (i, self.get_line(i)))
     }
+}
+
+// ---------------------------------------------------------------------------
+// compute_line_starts (used by synchronous constructors)
+// ---------------------------------------------------------------------------
+
+/// Computes the byte offsets of the start of every line in `data`.
+/// The first element is always `0`.  The last element points one past the
+/// final newline (i.e. to the beginning of a potential final partial line).
+fn compute_line_starts(data: &[u8]) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for pos in memchr_iter(b'\n', data) {
+        if pos + 1 <= data.len() {
+            starts.push(pos + 1);
+        }
+    }
+    // If the last byte is NOT a newline, the last element already points past
+    // the data, so no extra push is needed.  If it IS a newline, the starts vec
+    // ends with `data.len()`, and `get_line` will return an empty slice there —
+    // which is fine because we only iterate `0..line_count()`.
+    starts
 }
 
 #[cfg(test)]

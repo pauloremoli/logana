@@ -1,6 +1,9 @@
-- make the application a trait, pass the key event to the application mode if there is no handler fallback to a handler for global state (e.g quiting the app could be done from all modes)
 
-- when opening without a file ask if the user wants to restore last session (aka reopen last tabs)
+- implement a scrollbar 
+
+- watch for file changes (async)
+
+- streaming from stdin
 
 - support ingesting all kinds of common log formats from linux to webserver patterns (rust, python, node common loggers included) and structured logging
 

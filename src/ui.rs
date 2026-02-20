@@ -5,7 +5,7 @@ use ratatui::{
     style::Modifier,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,10 +23,13 @@ use crate::{
     mode::app_mode::Mode,
 };
 use crate::{
-    db::{FileContext, FileContextStore},
+    db::{FileContext, FileContextStore, SessionStore},
     mode::normal_mode::NormalMode,
 };
-use crate::{file_reader::FileReader, mode::app_mode::ConfirmRestoreMode};
+use crate::{
+    file_reader::FileReader,
+    mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode},
+};
 use crate::{
     filters::{SEARCH_STYLE_ID, render_line},
     mode::{command_mode::CommandMode, filter_mode::FilterManagementMode},
@@ -40,6 +43,7 @@ pub enum KeyResult {
     Handled,
     Ignored,
     ExecuteCommand(String),
+    RestoreSession(Vec<String>),
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +159,33 @@ impl std::fmt::Debug for TabState {
 }
 
 // ---------------------------------------------------------------------------
+// FileLoadState / LoadContext
+// ---------------------------------------------------------------------------
+
+/// What to do once a background file load completes.
+pub enum LoadContext {
+    /// Replace the placeholder file_reader in the initial tab (startup).
+    ReplaceInitialTab,
+    /// Open as a new tab; continue with any remaining session-restore files.
+    SessionRestoreTab {
+        remaining: VecDeque<String>,
+        total: usize,
+        initial_tab_idx: usize,
+    },
+}
+
+/// Tracks a single in-progress background file load.
+pub struct FileLoadState {
+    pub path: String,
+    /// Current progress fraction (0.0–1.0); updated by the background task.
+    pub progress_rx: tokio::sync::watch::Receiver<f64>,
+    /// Delivers the finished `FileReader` (or error) when indexing is done.
+    pub result_rx: tokio::sync::oneshot::Receiver<std::io::Result<FileReader>>,
+    pub total_bytes: u64,
+    pub on_complete: LoadContext,
+}
+
+// ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
 
@@ -165,6 +196,8 @@ pub struct App {
     pub db: Arc<crate::db::Database>,
     pub rt: Arc<tokio::runtime::Runtime>,
     pub should_quit: bool,
+    /// In-progress background file load (startup or session restore).
+    pub file_load_state: Option<FileLoadState>,
 }
 
 impl std::fmt::Debug for App {
@@ -192,13 +225,26 @@ impl App {
             })
             .unwrap_or_else(|| "stdin".to_string());
 
+        let no_source = log_manager.source_file().is_none();
+        let no_data = file_reader.line_count() == 0;
+
         let mut tab = TabState::new(file_reader, log_manager, title);
 
-        // Check for saved context for the initial file
+        // Check for saved context only when we have real data (not a placeholder
+        // that will be replaced by a background load started after App::new).
         if let Some(source) = tab.log_manager.source_file() {
-            let source = source.to_string();
-            if let Ok(Some(ctx)) = rt.block_on(db.load_file_context(&source)) {
-                tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
+            if tab.file_reader.line_count() > 0 {
+                let source = source.to_string();
+                if let Ok(Some(ctx)) = rt.block_on(db.load_file_context(&source)) {
+                    tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
+                }
+            }
+        } else if no_source && no_data {
+            // No file argument and no piped data — offer to restore last session.
+            if let Ok(files) = rt.block_on(db.load_session())
+                && !files.is_empty()
+            {
+                tab.mode = Box::new(ConfirmRestoreSessionMode { files });
             }
         }
 
@@ -209,6 +255,7 @@ impl App {
             db,
             rt,
             should_quit: false,
+            file_load_state: None,
         }
     }
 
@@ -250,6 +297,119 @@ impl App {
         Ok(())
     }
 
+    /// Start loading `path` in the background via tokio's blocking thread pool.
+    ///
+    /// Progress streams through `FileLoadState::progress_rx` (0.0–1.0);
+    /// the completed `FileReader` arrives on `result_rx`.  `advance_file_load`
+    /// must be called each frame to poll completion and drive the progress bar.
+    pub fn begin_file_load(&mut self, path: String, context: LoadContext) {
+        match FileReader::load_async(path.clone(), self.rt.handle()) {
+            Ok(handle) => {
+                self.file_load_state = Some(FileLoadState {
+                    path,
+                    progress_rx: handle.progress_rx,
+                    result_rx: handle.result_rx,
+                    total_bytes: handle.total_bytes,
+                    on_complete: context,
+                });
+            }
+            Err(_) => self.skip_or_fail_load(context),
+        }
+    }
+
+    /// Poll for completion of the current background file load (called every frame).
+    fn advance_file_load(&mut self) {
+        // try_recv needs &mut, so we can't hold a shared borrow of file_load_state.
+        let done_result = self
+            .file_load_state
+            .as_mut()
+            .and_then(|s| s.result_rx.try_recv().ok());
+
+        if let Some(load_result) = done_result {
+            let state = self.file_load_state.take().unwrap();
+            match load_result {
+                Ok(file_reader) => self.on_load_success(state.path, state.on_complete, file_reader),
+                Err(_) => self.skip_or_fail_load(state.on_complete),
+            }
+        }
+    }
+
+    /// Handle a completed successful load.
+    fn on_load_success(&mut self, path: String, context: LoadContext, file_reader: FileReader) {
+        match context {
+            LoadContext::ReplaceInitialTab => {
+                if self.tabs.is_empty() {
+                    return;
+                }
+                self.tabs[0].file_reader = file_reader;
+                self.tabs[0].refresh_visible();
+                if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(&path)) {
+                    self.tabs[0].mode = Box::new(ConfirmRestoreMode { context: ctx });
+                }
+            }
+            LoadContext::SessionRestoreTab { mut remaining, total, initial_tab_idx } => {
+                let title = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&path)
+                    .to_string();
+                let log_manager =
+                    LogManager::new(self.db.clone(), self.rt.clone(), Some(path.clone()));
+                let mut tab = TabState::new(file_reader, log_manager, title);
+                if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(&path)) {
+                    tab.apply_file_context(&ctx);
+                }
+                self.tabs.push(tab);
+                self.active_tab = self.tabs.len() - 1;
+
+                if let Some(next) = remaining.pop_front() {
+                    self.begin_file_load(next, LoadContext::SessionRestoreTab {
+                        remaining,
+                        total,
+                        initial_tab_idx,
+                    });
+                } else if self.tabs.len() > 1 {
+                    self.tabs.remove(initial_tab_idx);
+                    self.active_tab = 0;
+                }
+            }
+        }
+    }
+
+    /// Called when a file load fails or the file cannot be opened.
+    fn skip_or_fail_load(&mut self, context: LoadContext) {
+        if let LoadContext::SessionRestoreTab { mut remaining, total, initial_tab_idx } = context {
+            if let Some(next) = remaining.pop_front() {
+                self.begin_file_load(next, LoadContext::SessionRestoreTab {
+                    remaining,
+                    total,
+                    initial_tab_idx,
+                });
+            } else if self.tabs.len() > 1 {
+                self.tabs.remove(initial_tab_idx);
+                self.active_tab = 0;
+            }
+        }
+        // ReplaceInitialTab failure: stay with the empty initial tab.
+    }
+
+    /// Begin a session restore: kick off the first file load.
+    fn restore_session(&mut self, files: Vec<String>) {
+        if files.is_empty() {
+            return;
+        }
+        let total = files.len();
+        let mut queue: VecDeque<String> = files.into_iter().collect();
+        let first = queue.pop_front().unwrap();
+        let initial_tab_idx = self.active_tab;
+        self.tabs[self.active_tab].mode = Box::new(NormalMode);
+        self.begin_file_load(first, LoadContext::SessionRestoreTab {
+            remaining: queue,
+            total,
+            initial_tab_idx,
+        });
+    }
+
     fn save_tab_context(&self, tab: &TabState) {
         if let Some(ctx) = tab.to_file_context() {
             let db = self.db.clone();
@@ -260,9 +420,28 @@ impl App {
     }
 
     fn save_all_contexts(&self) {
-        for tab in &self.tabs {
-            self.save_tab_context(tab);
-        }
+        let source_files: Vec<String> = self
+            .tabs
+            .iter()
+            .filter_map(|t| t.log_manager.source_file().map(|s| s.to_string()))
+            .collect();
+
+        let contexts: Vec<FileContext> = self
+            .tabs
+            .iter()
+            .filter_map(|t| t.to_file_context())
+            .collect();
+
+        // Use block_on so all writes finish before the process exits.
+        let db = self.db.clone();
+        self.rt.block_on(async move {
+            if !source_files.is_empty() {
+                let _ = db.save_session(&source_files).await;
+            }
+            for ctx in &contexts {
+                let _ = db.save_file_context(ctx).await;
+            }
+        });
     }
 
     pub fn close_tab(&mut self) -> bool {
@@ -300,6 +479,7 @@ impl App {
             }
             KeyCode::Char('w') if ctrl => {
                 if self.close_tab() {
+                    self.save_all_contexts();
                     self.should_quit = true;
                 }
             }
@@ -462,6 +642,9 @@ impl App {
         loop {
             terminal.draw(|frame| self.ui(frame))?;
 
+            // Poll for background file load completion each frame.
+            self.advance_file_load();
+
             let poll_timeout = tick_rate
                 .checked_sub(last_tick.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
@@ -478,6 +661,7 @@ impl App {
                     KeyResult::Handled => {}
                     KeyResult::Ignored => self.handle_global_key(key.code, key.modifiers),
                     KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd),
+                    KeyResult::RestoreSession(files) => self.restore_session(files),
                 }
             }
 
@@ -504,12 +688,37 @@ impl App {
             KeyResult::Handled => {}
             KeyResult::Ignored => self.handle_global_key(key_code, modifiers),
             KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd),
+            KeyResult::RestoreSession(files) => self.restore_session(files),
         }
     }
 
     fn ui(&mut self, frame: &mut Frame) {
         let size = frame.size();
         frame.render_widget(Block::default().bg(self.theme.root_bg), size);
+
+        // Show progress overlay while a background file load is in progress.
+        if self.file_load_state.is_some() {
+            let (progress, path, total_bytes, subtitle) = {
+                let s = self.file_load_state.as_ref().unwrap();
+                let progress = *s.progress_rx.borrow();
+                let subtitle = match &s.on_complete {
+                    LoadContext::SessionRestoreTab { remaining, total, .. } => {
+                        let current = total - remaining.len();
+                        format!("({} of {}) {}", current, total,
+                            std::path::Path::new(&s.path)
+                                .file_name().and_then(|n| n.to_str()).unwrap_or(&s.path))
+                    }
+                    LoadContext::ReplaceInitialTab => {
+                        std::path::Path::new(&s.path)
+                            .file_name().and_then(|n| n.to_str()).unwrap_or(&s.path)
+                            .to_string()
+                    }
+                };
+                (progress, s.path.clone(), s.total_bytes, subtitle)
+            };
+            self.render_file_loading_overlay(frame, progress, &path, total_bytes, &subtitle);
+            return;
+        }
 
         let has_multiple_tabs = self.tabs.len() > 1;
 
@@ -527,6 +736,10 @@ impl App {
             .mode
             .confirm_restore_context()
             .is_some();
+        let session_files: Option<Vec<String>> = self.tabs[self.active_tab]
+            .mode
+            .confirm_restore_session_files()
+            .map(|f| f.to_vec());
         let selected_filter_idx = self.tabs[self.active_tab]
             .mode
             .selected_filter_index()
@@ -535,6 +748,11 @@ impl App {
 
         if is_confirm_restore {
             self.render_confirm_restore_modal(frame);
+            return;
+        }
+
+        if let Some(files) = session_files {
+            self.render_confirm_restore_session_modal(frame, &files);
             return;
         }
 
@@ -861,6 +1079,129 @@ impl App {
                 .padding(ratatui::widgets::Padding::new(0, 0, 1, 0)),
         )
         .style(Style::default().bg(self.theme.root_bg));
+        frame.render_widget(modal, modal_area);
+    }
+
+    fn render_file_loading_overlay(
+        &mut self,
+        frame: &mut Frame<'_>,
+        progress: f64,
+        _path: &str,
+        _total_bytes: u64,
+        subtitle: &str,
+    ) {
+        let bar_width = 30_usize;
+        let filled = ((progress * bar_width as f64) as usize).min(bar_width);
+        let bar = format!(
+            "{}{}",
+            "\u{2588}".repeat(filled),
+            "\u{2591}".repeat(bar_width - filled),
+        );
+        let pct = (progress * 100.0) as usize;
+
+        let modal_width = 52_u16;
+        let modal_height = 7_u16;
+        let area = frame.size();
+        let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
+        let modal_area = ratatui::layout::Rect::new(x, y, modal_width, modal_height);
+
+        frame.render_widget(ratatui::widgets::Clear, modal_area);
+
+        let lines = vec![
+            Line::from(Span::styled(
+                format!(" {}", subtitle),
+                Style::default().fg(self.theme.text),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(" {} {}%", bar, pct),
+                Style::default().fg(self.theme.text_highlight),
+            )),
+        ];
+
+        let modal = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.border_title))
+                    .title(" Loading... ")
+                    .title_style(
+                        Style::default()
+                            .fg(self.theme.text_highlight)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .title_alignment(ratatui::layout::Alignment::Center)
+                    .padding(ratatui::widgets::Padding::new(0, 0, 1, 0)),
+            )
+            .style(Style::default().bg(self.theme.root_bg));
+        frame.render_widget(modal, modal_area);
+    }
+
+    fn render_confirm_restore_session_modal(&mut self, frame: &mut Frame<'_>, files: &[String]) {
+        let file_names: Vec<&str> = files
+            .iter()
+            .map(|f| {
+                std::path::Path::new(f)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(f.as_str())
+            })
+            .collect();
+
+        let modal_width = 50_u16;
+        // borders(2) + blank(1) + header(1) + files + blank(1) + y/n(1)
+        let modal_height = (file_names.len() as u16 + 6).min(frame.size().height);
+        let area = frame.size();
+        let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
+        let modal_area = ratatui::layout::Rect::new(x, y, modal_width, modal_height);
+
+        frame.render_widget(ratatui::widgets::Clear, modal_area);
+
+        let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+            " Files:",
+            Style::default().fg(self.theme.border),
+        ))];
+        for name in &file_names {
+            lines.push(Line::from(Span::styled(
+                format!("  • {}", name),
+                Style::default().fg(self.theme.text),
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                " [y]",
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("es  ", Style::default().fg(self.theme.text)),
+            Span::styled(
+                "[n]",
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("o", Style::default().fg(self.theme.text)),
+        ]));
+
+        let modal = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.border_title))
+                    .title(" Restore last session? ")
+                    .title_style(
+                        Style::default()
+                            .fg(self.theme.text_highlight)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .title_alignment(ratatui::layout::Alignment::Center)
+                    .padding(ratatui::widgets::Padding::new(0, 0, 1, 0)),
+            )
+            .style(Style::default().bg(self.theme.root_bg));
         frame.render_widget(modal, modal_area);
     }
 

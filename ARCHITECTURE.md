@@ -79,10 +79,11 @@ Byte positions within the line.
 
 ### Database (db.rs)
 
-- **Two trait abstractions**: `FilterStore`, `FileContextStore` (LogStore removed).
-- **Tables**: `filters` (per `source_file`), `file_context` (PK: `source_file`).
+- **Three trait abstractions**: `FilterStore`, `FileContextStore`, `SessionStore`.
+- **Tables**: `filters` (per `source_file`), `file_context` (PK: `source_file`), `session_tabs` (ordered list of last-open source files).
 - **`FilterStore`**: `get_filters`, `get_filters_for_source`, `clear_filters_for_source`, `replace_all_filters`, `insert_filter`, `delete_filter`, `toggle_filter`, `update_filter_pattern`, `update_filter_color`, `swap_filter_order`.
-- **`FileContextStore`**: `get_file_context`, `upsert_file_context`.
+- **`FileContextStore`**: `save_file_context`, `load_file_context`.
+- **`SessionStore`**: `save_session(&[String])`, `load_session() -> Vec<String>` — persists the ordered list of open tabs across runs.
 - In-memory mode (`Database::in_memory()`) for tests; migration support.
 - Shared via `Arc<Database>` with `Arc<tokio::runtime::Runtime>` for async–sync bridging.
 
@@ -105,7 +106,7 @@ Byte positions within the line.
   - `visible_height: usize` — content rows available (updated each render frame)
   - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
-- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`. Rendering data is exposed through trait methods: `status_line()`, `selected_filter_index()`, `command_state()`, `search_state()`, `needs_input_bar()`, `confirm_restore_context()`.
+- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`. Rendering data is exposed through trait methods: `status_line()`, `selected_filter_index()`, `command_state()`, `search_state()`, `needs_input_bar()`, `confirm_restore_context()`, `confirm_restore_session_files()`.
 - **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`.
 
 **Rendering pipeline (per frame)**:
@@ -150,9 +151,9 @@ Byte positions within the line.
 3. Build `FileReader` from file path (mmap) or stdin (bytes).
 4. Build `LogManager` — loads filters from DB for this source.
 5. Enter terminal raw mode, create `App` with theme.
-6. Check for saved `FileContext`, prompt restore (`ConfirmRestore` mode).
+6. If a file was opened: check for saved `FileContext`, prompt per-file restore (`ConfirmRestoreMode`). If no file and no piped data: check for a saved session (`session_tabs`), prompt session restore (`ConfirmRestoreSessionMode`). On confirm, all session files are opened and their per-file contexts auto-applied without additional prompts.
 7. **Event loop** (250ms poll): render frame → wait for key event → handle key → repeat.
-8. On exit: save `FileContext`, restore terminal.
+8. On exit: save `FileContext` for each tab + save the session (list of open source files), restore terminal.
 
 ## Dependencies
 
