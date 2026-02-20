@@ -309,3 +309,264 @@ impl Mode for FilterEditMode {
         "[FILTER EDIT] Esc => cancel | Enter => save"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::ui::{KeyResult, TabState};
+    use std::sync::Arc;
+
+    fn make_tab(lines: &[&str]) -> TabState {
+        let data = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let db = Arc::new(rt.block_on(Database::in_memory()).unwrap());
+        let log_manager = LogManager::new(db, rt, None);
+        TabState::new(file_reader, log_manager, "test".to_string())
+    }
+
+    fn add_filter(tab: &mut TabState, pattern: &str, filter_type: FilterType) {
+        tab.log_manager
+            .add_filter_with_color(pattern.to_string(), filter_type, None, None, false);
+        tab.refresh_visible();
+    }
+
+    fn filter_mode(idx: usize) -> FilterManagementMode {
+        FilterManagementMode {
+            selected_filter_index: idx,
+        }
+    }
+
+    fn press(
+        mode: FilterManagementMode,
+        tab: &mut TabState,
+        code: KeyCode,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        Box::new(mode).handle_key(tab, code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn test_esc_transitions_to_normal_mode() {
+        let mut tab = make_tab(&["line"]);
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Esc);
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(mode.command_state().is_none());
+        assert!(mode.selected_filter_index().is_none());
+    }
+
+    #[test]
+    fn test_tab_returns_ignored() {
+        let mut tab = make_tab(&["line"]);
+        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::Tab);
+        assert!(matches!(result, KeyResult::Ignored));
+    }
+
+    #[test]
+    fn test_backtab_returns_ignored() {
+        let mut tab = make_tab(&["line"]);
+        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::BackTab);
+        assert!(matches!(result, KeyResult::Ignored));
+    }
+
+    #[test]
+    fn test_up_decrements_selected_index() {
+        let mut tab = make_tab(&["a", "b"]);
+        add_filter(&mut tab, "a", FilterType::Include);
+        add_filter(&mut tab, "b", FilterType::Include);
+        let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Up);
+        assert_eq!(mode.selected_filter_index(), Some(0));
+    }
+
+    #[test]
+    fn test_up_saturates_at_zero() {
+        let mut tab = make_tab(&["a"]);
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Up);
+        assert_eq!(mode.selected_filter_index(), Some(0));
+    }
+
+    #[test]
+    fn test_down_increments_selected_index() {
+        let mut tab = make_tab(&["a", "b"]);
+        add_filter(&mut tab, "a", FilterType::Include);
+        add_filter(&mut tab, "b", FilterType::Include);
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Down);
+        assert_eq!(mode.selected_filter_index(), Some(1));
+    }
+
+    #[test]
+    fn test_down_clamps_at_last_filter() {
+        let mut tab = make_tab(&["a", "b"]);
+        add_filter(&mut tab, "a", FilterType::Include);
+        add_filter(&mut tab, "b", FilterType::Include);
+        let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Down);
+        assert_eq!(mode.selected_filter_index(), Some(1));
+    }
+
+    #[test]
+    fn test_space_toggles_filter() {
+        let mut tab = make_tab(&["a", "b"]);
+        add_filter(&mut tab, "a", FilterType::Include);
+        let id = tab.log_manager.get_filters()[0].id;
+        assert!(tab.log_manager.get_filters()[0].enabled);
+        press(filter_mode(0), &mut tab, KeyCode::Char(' '));
+        assert!(!tab.log_manager.get_filters().iter().find(|f| f.id == id).unwrap().enabled);
+    }
+
+    #[test]
+    fn test_d_deletes_filter() {
+        let mut tab = make_tab(&["a", "b"]);
+        add_filter(&mut tab, "a", FilterType::Include);
+        assert_eq!(tab.log_manager.get_filters().len(), 1);
+        press(filter_mode(0), &mut tab, KeyCode::Char('d'));
+        assert_eq!(tab.log_manager.get_filters().len(), 0);
+    }
+
+    #[test]
+    fn test_d_with_no_filters_no_panic() {
+        let mut tab = make_tab(&["line"]);
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('d'));
+        assert!(matches!(result, KeyResult::Handled));
+        assert_eq!(mode.selected_filter_index(), Some(0));
+    }
+
+    #[test]
+    fn test_i_opens_command_mode_with_filter_prefix() {
+        let mut tab = make_tab(&["line"]);
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('i'));
+        let state = mode.command_state();
+        assert!(state.is_some());
+        let (input, _) = state.unwrap();
+        assert!(input.starts_with("filter "));
+    }
+
+    #[test]
+    fn test_x_opens_command_mode_with_exclude_prefix() {
+        let mut tab = make_tab(&["line"]);
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('x'));
+        let state = mode.command_state();
+        assert!(state.is_some());
+        let (input, _) = state.unwrap();
+        assert!(input.starts_with("exclude "));
+    }
+
+    #[test]
+    fn test_e_opens_command_mode_with_filter_pattern() {
+        let mut tab = make_tab(&["error", "warn"]);
+        add_filter(&mut tab, "error", FilterType::Include);
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e'));
+        let state = mode.command_state();
+        assert!(state.is_some());
+        let (input, _) = state.unwrap();
+        assert!(input.contains("error"));
+    }
+
+    #[test]
+    fn test_c_opens_set_color_command() {
+        let mut tab = make_tab(&["line"]);
+        add_filter(&mut tab, "error", FilterType::Include);
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('c'));
+        let state = mode.command_state();
+        assert!(state.is_some());
+        let (input, _) = state.unwrap();
+        assert!(input.starts_with("set-color"));
+    }
+
+    #[test]
+    fn test_capital_k_moves_filter_up() {
+        let mut tab = make_tab(&["a", "b"]);
+        add_filter(&mut tab, "first", FilterType::Include);
+        add_filter(&mut tab, "second", FilterType::Include);
+        let (mode, result) = press(filter_mode(1), &mut tab, KeyCode::Char('K'));
+        assert!(matches!(result, KeyResult::Handled));
+        assert_eq!(mode.selected_filter_index(), Some(0));
+    }
+
+    #[test]
+    fn test_capital_j_moves_filter_down() {
+        let mut tab = make_tab(&["a", "b"]);
+        add_filter(&mut tab, "first", FilterType::Include);
+        add_filter(&mut tab, "second", FilterType::Include);
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('J'));
+        assert!(matches!(result, KeyResult::Handled));
+        assert_eq!(mode.selected_filter_index(), Some(1));
+    }
+
+    #[test]
+    fn test_status_line_contains_filter() {
+        assert!(filter_mode(0).status_line().contains("[FILTER]"));
+    }
+
+    #[test]
+    fn test_selected_filter_index_returns_current() {
+        let mode = filter_mode(3);
+        assert_eq!(mode.selected_filter_index(), Some(3));
+    }
+
+    // FilterEditMode tests
+
+    fn edit_mode(filter_id: Option<usize>, input: &str) -> FilterEditMode {
+        FilterEditMode {
+            filter_id,
+            filter_input: input.to_string(),
+        }
+    }
+
+    fn press_edit(
+        mode: FilterEditMode,
+        tab: &mut TabState,
+        code: KeyCode,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        Box::new(mode).handle_key(tab, code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn test_edit_char_appends_to_input() {
+        let mut tab = make_tab(&["line"]);
+        let mode = edit_mode(None, "err");
+        let (mode2, _) = press_edit(mode, &mut tab, KeyCode::Char('o'));
+        assert_eq!(mode2.status_line(), "[FILTER EDIT] Esc => cancel | Enter => save");
+    }
+
+    #[test]
+    fn test_edit_backspace_removes_char() {
+        let mut tab = make_tab(&["line"]);
+        let mode = edit_mode(None, "error");
+        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Backspace);
+        assert!(matches!(result, KeyResult::Handled));
+        // Mode should still be FilterEditMode
+        assert!(mode2.status_line().contains("[FILTER EDIT]"));
+    }
+
+    #[test]
+    fn test_edit_esc_transitions_to_filter_mode() {
+        let mut tab = make_tab(&["line"]);
+        let mode = edit_mode(None, "error");
+        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Esc);
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(mode2.selected_filter_index().is_some());
+    }
+
+    #[test]
+    fn test_edit_tab_returns_ignored() {
+        let mut tab = make_tab(&["line"]);
+        let mode = edit_mode(None, "err");
+        let (_, result) = press_edit(mode, &mut tab, KeyCode::Tab);
+        assert!(matches!(result, KeyResult::Ignored));
+    }
+
+    #[test]
+    fn test_edit_enter_applies_filter_change() {
+        let mut tab = make_tab(&["warn", "error"]);
+        add_filter(&mut tab, "warn", FilterType::Include);
+        let id = tab.log_manager.get_filters()[0].id;
+        let mode = edit_mode(Some(id), "error");
+        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Enter);
+        assert!(matches!(result, KeyResult::Handled));
+        // Should transition to FilterManagementMode
+        assert!(mode2.selected_filter_index().is_some());
+        assert_eq!(tab.log_manager.get_filters()[0].pattern, "error");
+    }
+}

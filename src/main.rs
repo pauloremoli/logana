@@ -10,7 +10,7 @@ use logsmith_rs::log_manager::LogManager;
 use logsmith_rs::theme::Theme;
 use logsmith_rs::ui::{App, LoadContext};
 use ratatui::prelude::*;
-use std::io::{IsTerminal, Read, stdin, stdout};
+use std::io::{IsTerminal, stdin, stdout};
 use std::sync::Arc;
 use tracing::error;
 use tracing_appender::rolling;
@@ -67,18 +67,16 @@ fn main() -> Result<()> {
         }
     }
 
+    // Detect piped stdin before entering the TUI.
+    let stdin_is_piped = file_path.is_none() && !stdin().is_terminal();
+
     // For a file argument use an empty placeholder — the real FileReader is
     // loaded in the background after the TUI starts so the progress bar is shown.
-    // For stdin, read synchronously (it is already buffered in memory).
-    let (file_reader, source_path, background_load) = if let Some(ref path) = file_path {
-        (FileReader::from_bytes(vec![]), Some(path.clone()), true)
+    // For stdin, also use an empty placeholder; reading happens in the background.
+    let (source_path, background_file_load) = if let Some(ref path) = file_path {
+        (Some(path.clone()), true)
     } else {
-        // TODO: stream data
-        let mut data = Vec::new();
-        if !stdin().is_terminal() {
-            stdin().lock().read_to_end(&mut data)?;
-        }
-        (FileReader::from_bytes(data), None, false)
+        (None, false)
     };
 
     let log_manager = LogManager::new(db.clone(), rt.clone(), source_path.clone());
@@ -89,13 +87,15 @@ fn main() -> Result<()> {
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
         terminal.clear()?;
 
-        let mut app = App::new(log_manager, file_reader, Theme::default());
+        let mut app = App::new(log_manager, FileReader::from_bytes(vec![]), Theme::default());
 
         // Kick off the background file load now that the TUI is visible.
-        if background_load {
+        if background_file_load {
             if let Some(path) = source_path {
                 app.begin_file_load(path, LoadContext::ReplaceInitialTab);
             }
+        } else if stdin_is_piped {
+            app.begin_stdin_load();
         }
 
         let app_result = app.run(&mut terminal);

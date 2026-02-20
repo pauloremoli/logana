@@ -1,9 +1,10 @@
+use clap::Parser;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
     Frame, Terminal,
     prelude::*,
     style::Modifier,
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -11,9 +12,8 @@ use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::log_manager::LogManager;
 use crate::search::Search;
-use crate::theme::Theme;
+use crate::theme::{Theme, complete_theme};
 use crate::types::{FilterType, LogLevel};
 use crate::{
     auto_complete::{
@@ -33,6 +33,10 @@ use crate::{
 use crate::{
     filters::{SEARCH_STYLE_ID, render_line},
     mode::{command_mode::CommandMode, filter_mode::FilterManagementMode},
+};
+use crate::{
+    log_manager::LogManager,
+    mode::command_mode::{CommandLine, Commands},
 };
 
 // ---------------------------------------------------------------------------
@@ -71,6 +75,8 @@ pub struct TabState {
     pub visible_height: usize,
     pub title: String,
     pub command_history: Vec<String>,
+    /// Active file watcher for this tab (None for stdin tabs or tabs not yet watching).
+    pub watch_state: Option<FileWatchState>,
 }
 
 impl TabState {
@@ -95,6 +101,7 @@ impl TabState {
             visible_height: 0,
             title,
             command_history: Vec::new(),
+            watch_state: None,
         };
         tab.refresh_visible();
         tab
@@ -185,6 +192,20 @@ pub struct FileLoadState {
     pub on_complete: LoadContext,
 }
 
+/// Tracks an in-progress stdin stream.  Kept separate from `file_load_state`
+/// so session-restore loads cannot overwrite it.
+pub struct StdinLoadState {
+    /// Receives snapshots of all complete lines accumulated so far.
+    /// Updated every second.  When the sender is dropped stdin has closed.
+    pub snapshot_rx: tokio::sync::watch::Receiver<Vec<u8>>,
+}
+
+/// Per-tab state for watching a file for new appended content.
+pub struct FileWatchState {
+    /// Receives stripped byte chunks whenever new lines are appended to the file.
+    pub new_data_rx: tokio::sync::watch::Receiver<Vec<u8>>,
+}
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -198,6 +219,8 @@ pub struct App {
     pub should_quit: bool,
     /// In-progress background file load (startup or session restore).
     pub file_load_state: Option<FileLoadState>,
+    /// In-progress stdin read — separate slot so session-restore cannot overwrite it.
+    pub stdin_load_state: Option<StdinLoadState>,
 }
 
 impl std::fmt::Debug for App {
@@ -256,6 +279,7 @@ impl App {
             rt,
             should_quit: false,
             file_load_state: None,
+            stdin_load_state: None,
         }
     }
 
@@ -286,11 +310,18 @@ impl App {
             .unwrap_or(path)
             .to_string();
 
+        let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         let mut tab = TabState::new(file_reader, log_manager, title);
 
         if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(path)) {
             tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
         }
+
+        let watch_rx =
+            FileReader::spawn_file_watcher(path.to_string(), file_size, self.rt.handle());
+        tab.watch_state = Some(FileWatchState {
+            new_data_rx: watch_rx,
+        });
 
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -317,6 +348,84 @@ impl App {
         }
     }
 
+    /// Start streaming stdin in the background.  Stored in a dedicated slot so
+    /// session-restore file loads cannot overwrite it.
+    pub fn begin_stdin_load(&mut self) {
+        let snapshot_rx = FileReader::stream_stdin_async(self.rt.handle());
+        self.stdin_load_state = Some(StdinLoadState { snapshot_rx });
+    }
+
+    /// Poll for new stdin data each frame and apply it to the stdin tab.
+    fn advance_stdin_load(&mut self) {
+        let status = self
+            .stdin_load_state
+            .as_mut()
+            .map(|s| s.snapshot_rx.has_changed());
+
+        match status {
+            Some(Ok(true)) => {
+                let data = self
+                    .stdin_load_state
+                    .as_mut()
+                    .unwrap()
+                    .snapshot_rx
+                    .borrow_and_update()
+                    .clone();
+                self.update_stdin_tab(data);
+            }
+            Some(Err(_)) => {
+                // Sender dropped — stdin closed.  Apply final snapshot and clean up.
+                let data = self
+                    .stdin_load_state
+                    .as_mut()
+                    .unwrap()
+                    .snapshot_rx
+                    .borrow()
+                    .clone();
+                self.stdin_load_state = None;
+                self.update_stdin_tab(data);
+            }
+            _ => {}
+        }
+    }
+
+    /// Apply a stdin data snapshot to the stdin tab.
+    ///
+    /// If the placeholder tab (no source, empty) still exists it is updated
+    /// in-place preserving its mode (e.g. session-restore modal).  Otherwise
+    /// a new tab is pushed (session restore already claimed the placeholder).
+    /// Follow mode: if the user was at the last line, stay there.
+    fn update_stdin_tab(&mut self, data: Vec<u8>) {
+        if data.is_empty() {
+            return;
+        }
+        if let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| t.log_manager.source_file().is_none())
+        {
+            let last_count = self.tabs[idx].visible_indices.len();
+            let at_end = last_count == 0 || self.tabs[idx].scroll_offset + 1 >= last_count;
+
+            self.tabs[idx].file_reader = FileReader::from_bytes(data);
+            self.tabs[idx].refresh_visible();
+
+            if at_end {
+                let new_count = self.tabs[idx].visible_indices.len();
+                self.tabs[idx].scroll_offset = new_count.saturating_sub(1);
+            }
+        } else {
+            // Placeholder was removed by session restore — push a new stdin tab.
+            let file_reader = FileReader::from_bytes(data);
+            if file_reader.line_count() > 0 {
+                let log_manager = LogManager::new(self.db.clone(), self.rt.clone(), None);
+                let mut tab = TabState::new(file_reader, log_manager, "stdin".to_string());
+                tab.scroll_offset = tab.visible_indices.len().saturating_sub(1);
+                self.tabs.push(tab);
+            }
+        }
+    }
+
     /// Poll for completion of the current background file load (called every frame).
     fn advance_file_load(&mut self) {
         // try_recv needs &mut, so we can't hold a shared borrow of file_load_state.
@@ -328,14 +437,25 @@ impl App {
         if let Some(load_result) = done_result {
             let state = self.file_load_state.take().unwrap();
             match load_result {
-                Ok(file_reader) => self.on_load_success(state.path, state.on_complete, file_reader),
+                Ok(file_reader) => self.on_load_success(
+                    state.path,
+                    state.total_bytes,
+                    state.on_complete,
+                    file_reader,
+                ),
                 Err(_) => self.skip_or_fail_load(state.on_complete),
             }
         }
     }
 
-    /// Handle a completed successful load.
-    fn on_load_success(&mut self, path: String, context: LoadContext, file_reader: FileReader) {
+    /// Handle a completed successful load, then start a file watcher for the tab.
+    fn on_load_success(
+        &mut self,
+        path: String,
+        total_bytes: u64,
+        context: LoadContext,
+        file_reader: FileReader,
+    ) {
         match context {
             LoadContext::ReplaceInitialTab => {
                 if self.tabs.is_empty() {
@@ -346,8 +466,16 @@ impl App {
                 if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(&path)) {
                     self.tabs[0].mode = Box::new(ConfirmRestoreMode { context: ctx });
                 }
+                let watch_rx = FileReader::spawn_file_watcher(path, total_bytes, self.rt.handle());
+                self.tabs[0].watch_state = Some(FileWatchState {
+                    new_data_rx: watch_rx,
+                });
             }
-            LoadContext::SessionRestoreTab { mut remaining, total, initial_tab_idx } => {
+            LoadContext::SessionRestoreTab {
+                mut remaining,
+                total,
+                initial_tab_idx,
+            } => {
                 let title = std::path::Path::new(&path)
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -359,32 +487,100 @@ impl App {
                 if let Ok(Some(ctx)) = self.rt.block_on(self.db.load_file_context(&path)) {
                     tab.apply_file_context(&ctx);
                 }
+                let watch_rx =
+                    FileReader::spawn_file_watcher(path.clone(), total_bytes, self.rt.handle());
+                tab.watch_state = Some(FileWatchState {
+                    new_data_rx: watch_rx,
+                });
                 self.tabs.push(tab);
-                self.active_tab = self.tabs.len() - 1;
 
                 if let Some(next) = remaining.pop_front() {
-                    self.begin_file_load(next, LoadContext::SessionRestoreTab {
-                        remaining,
-                        total,
-                        initial_tab_idx,
-                    });
+                    self.begin_file_load(
+                        next,
+                        LoadContext::SessionRestoreTab {
+                            remaining,
+                            total,
+                            initial_tab_idx,
+                        },
+                    );
                 } else if self.tabs.len() > 1 {
-                    self.tabs.remove(initial_tab_idx);
-                    self.active_tab = 0;
+                    let is_placeholder = self.tabs[initial_tab_idx]
+                        .log_manager
+                        .source_file()
+                        .is_none()
+                        && self.tabs[initial_tab_idx].file_reader.line_count() == 0;
+                    if is_placeholder {
+                        self.tabs.remove(initial_tab_idx);
+                        self.active_tab = 0;
+                    }
+                    // If the tab was populated by stdin, leave active_tab as-is so
+                    // the user stays on the stdin content.
                 }
+            }
+        }
+    }
+
+    /// Poll each tab's file watcher for new appended content (called every frame).
+    ///
+    /// If the user's scroll position is at the last visible line (follow mode),
+    /// it is advanced to stay at the new last line after content is appended.
+    fn advance_file_watches(&mut self) {
+        for i in 0..self.tabs.len() {
+            let status = self.tabs[i]
+                .watch_state
+                .as_mut()
+                .map(|ws| ws.new_data_rx.has_changed());
+
+            match status {
+                Some(Ok(true)) => {
+                    let new_data = self.tabs[i]
+                        .watch_state
+                        .as_mut()
+                        .unwrap()
+                        .new_data_rx
+                        .borrow_and_update()
+                        .clone();
+                    if new_data.is_empty() {
+                        continue;
+                    }
+                    let at_end = {
+                        let tab = &self.tabs[i];
+                        tab.visible_indices.is_empty()
+                            || tab.scroll_offset + 1 >= tab.visible_indices.len()
+                    };
+                    self.tabs[i].file_reader.append_bytes(&new_data);
+                    self.tabs[i].refresh_visible();
+                    if at_end {
+                        let new_count = self.tabs[i].visible_indices.len();
+                        self.tabs[i].scroll_offset = new_count.saturating_sub(1);
+                    }
+                }
+                Some(Err(_)) => {
+                    // Sender dropped — background watcher task stopped.
+                    self.tabs[i].watch_state = None;
+                }
+                _ => {}
             }
         }
     }
 
     /// Called when a file load fails or the file cannot be opened.
     fn skip_or_fail_load(&mut self, context: LoadContext) {
-        if let LoadContext::SessionRestoreTab { mut remaining, total, initial_tab_idx } = context {
+        if let LoadContext::SessionRestoreTab {
+            mut remaining,
+            total,
+            initial_tab_idx,
+        } = context
+        {
             if let Some(next) = remaining.pop_front() {
-                self.begin_file_load(next, LoadContext::SessionRestoreTab {
-                    remaining,
-                    total,
-                    initial_tab_idx,
-                });
+                self.begin_file_load(
+                    next,
+                    LoadContext::SessionRestoreTab {
+                        remaining,
+                        total,
+                        initial_tab_idx,
+                    },
+                );
             } else if self.tabs.len() > 1 {
                 self.tabs.remove(initial_tab_idx);
                 self.active_tab = 0;
@@ -403,11 +599,14 @@ impl App {
         let first = queue.pop_front().unwrap();
         let initial_tab_idx = self.active_tab;
         self.tabs[self.active_tab].mode = Box::new(NormalMode);
-        self.begin_file_load(first, LoadContext::SessionRestoreTab {
-            remaining: queue,
-            total,
-            initial_tab_idx,
-        });
+        self.begin_file_load(
+            first,
+            LoadContext::SessionRestoreTab {
+                remaining: queue,
+                total,
+                initial_tab_idx,
+            },
+        );
     }
 
     fn save_tab_context(&self, tab: &TabState) {
@@ -525,9 +724,6 @@ impl App {
     }
 
     fn run_command(&mut self, input: &str) -> Result<(), String> {
-        use crate::commands::{CommandLine, Commands};
-        use clap::Parser;
-
         let args = CommandLine::try_parse_from(shell_split(input))
             .map_err(|e| format!("Invalid command: {}", e))?;
 
@@ -642,8 +838,10 @@ impl App {
         loop {
             terminal.draw(|frame| self.ui(frame))?;
 
-            // Poll for background file load completion each frame.
+            // Poll for background load completion and file watch updates each frame.
             self.advance_file_load();
+            self.advance_stdin_load();
+            self.advance_file_watches();
 
             let poll_timeout = tick_rate
                 .checked_sub(last_tick.elapsed())
@@ -696,30 +894,6 @@ impl App {
         let size = frame.size();
         frame.render_widget(Block::default().bg(self.theme.root_bg), size);
 
-        // Show progress overlay while a background file load is in progress.
-        if self.file_load_state.is_some() {
-            let (progress, path, total_bytes, subtitle) = {
-                let s = self.file_load_state.as_ref().unwrap();
-                let progress = *s.progress_rx.borrow();
-                let subtitle = match &s.on_complete {
-                    LoadContext::SessionRestoreTab { remaining, total, .. } => {
-                        let current = total - remaining.len();
-                        format!("({} of {}) {}", current, total,
-                            std::path::Path::new(&s.path)
-                                .file_name().and_then(|n| n.to_str()).unwrap_or(&s.path))
-                    }
-                    LoadContext::ReplaceInitialTab => {
-                        std::path::Path::new(&s.path)
-                            .file_name().and_then(|n| n.to_str()).unwrap_or(&s.path)
-                            .to_string()
-                    }
-                };
-                (progress, s.path.clone(), s.total_bytes, subtitle)
-            };
-            self.render_file_loading_overlay(frame, progress, &path, total_bytes, &subtitle);
-            return;
-        }
-
         let has_multiple_tabs = self.tabs.len() > 1;
 
         // Extract mode-derived state up front to avoid holding a borrow over the rest of rendering
@@ -748,11 +922,6 @@ impl App {
 
         if is_confirm_restore {
             self.render_confirm_restore_modal(frame);
-            return;
-        }
-
-        if let Some(files) = session_files {
-            self.render_confirm_restore_session_modal(frame, &files);
             return;
         }
 
@@ -811,6 +980,15 @@ impl App {
             area.height = 5;
         }
         frame.render_widget(command_list, area);
+
+        // Session restore modal renders on top of the full TUI so stdin content
+        // is visible behind it.
+        if let Some(files) = session_files {
+            self.render_confirm_restore_session_modal(frame, &files);
+        }
+
+        // Loading status bar renders last, on top of everything.
+        self.render_loading_status_bar(frame);
     }
 
     fn render_logs_panel(&mut self, frame: &mut Frame<'_>, logs_area: Rect) {
@@ -1002,6 +1180,17 @@ impl App {
         }
 
         frame.render_widget(paragraph, logs_area);
+
+        if num_visible > 0 {
+            let mut scrollbar_state = ScrollbarState::new(num_visible)
+                .position(start)
+                .viewport_content_length(end.saturating_sub(start));
+            frame.render_stateful_widget(
+                Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
+                logs_area,
+                &mut scrollbar_state,
+            );
+        }
     }
 
     fn render_input_bar(
@@ -1082,15 +1271,35 @@ impl App {
         frame.render_widget(modal, modal_area);
     }
 
-    fn render_file_loading_overlay(
-        &mut self,
-        frame: &mut Frame<'_>,
-        progress: f64,
-        _path: &str,
-        _total_bytes: u64,
-        subtitle: &str,
-    ) {
-        let bar_width = 30_usize;
+    fn render_loading_status_bar(&mut self, frame: &mut Frame<'_>) {
+        let s = match self.file_load_state.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+        let progress = *s.progress_rx.borrow();
+        let subtitle = match &s.on_complete {
+            LoadContext::SessionRestoreTab {
+                remaining, total, ..
+            } => {
+                let current = total - remaining.len();
+                format!(
+                    "({}/{}) {}",
+                    current,
+                    total,
+                    std::path::Path::new(&s.path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&s.path)
+                )
+            }
+            LoadContext::ReplaceInitialTab => std::path::Path::new(&s.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&s.path)
+                .to_string(),
+        };
+
+        let bar_width = 20_usize;
         let filled = ((progress * bar_width as f64) as usize).min(bar_width);
         let bar = format!(
             "{}{}",
@@ -1098,44 +1307,27 @@ impl App {
             "\u{2591}".repeat(bar_width - filled),
         );
         let pct = (progress * 100.0) as usize;
+        let text = format!(" Loading {}  {} {}% ", subtitle, bar, pct);
 
-        let modal_width = 52_u16;
-        let modal_height = 7_u16;
         let area = frame.size();
-        let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
-        let modal_area = ratatui::layout::Rect::new(x, y, modal_width, modal_height);
-
-        frame.render_widget(ratatui::widgets::Clear, modal_area);
-
-        let lines = vec![
-            Line::from(Span::styled(
-                format!(" {}", subtitle),
-                Style::default().fg(self.theme.text),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!(" {} {}%", bar, pct),
-                Style::default().fg(self.theme.text_highlight),
-            )),
-        ];
-
-        let modal = Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.border_title))
-                    .title(" Loading... ")
-                    .title_style(
-                        Style::default()
-                            .fg(self.theme.text_highlight)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                    .title_alignment(ratatui::layout::Alignment::Center)
-                    .padding(ratatui::widgets::Padding::new(0, 0, 1, 0)),
-            )
-            .style(Style::default().bg(self.theme.root_bg));
-        frame.render_widget(modal, modal_area);
+        if area.height == 0 {
+            return;
+        }
+        let bar_rect = ratatui::layout::Rect::new(
+            area.x,
+            area.y + area.height.saturating_sub(1),
+            area.width,
+            1,
+        );
+        frame.render_widget(ratatui::widgets::Clear, bar_rect);
+        frame.render_widget(
+            Paragraph::new(text).style(
+                Style::default()
+                    .fg(self.theme.root_bg)
+                    .bg(self.theme.text_highlight),
+            ),
+            bar_rect,
+        );
     }
 
     fn render_confirm_restore_session_modal(&mut self, frame: &mut Frame<'_>, files: &[String]) {
@@ -1277,6 +1469,19 @@ impl App {
                             })
                             .collect::<Vec<_>>()
                             .join("  ");
+                        let hint = Paragraph::new(hint_text).style(
+                            Style::default()
+                                .fg(self.theme.border)
+                                .bg(self.theme.root_bg),
+                        );
+                        frame.render_widget(hint, hint_area);
+                    }
+                } else if let Some(partial_raw) = input_text.trim_start().strip_prefix("set-theme ")
+                {
+                    let partial = partial_raw.trim_start();
+                    let completions = complete_theme(partial);
+                    if !completions.is_empty() {
+                        let hint_text = completions.join("  ");
                         let hint = Paragraph::new(hint_text).style(
                             Style::default()
                                 .fg(self.theme.border)

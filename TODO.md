@@ -1,10 +1,3 @@
-
-- implement a scrollbar 
-
-- watch for file changes (async)
-
-- streaming from stdin
-
 - support ingesting all kinds of common log formats from linux to webserver patterns (rust, python, node common loggers included) and structured logging
 
 - for structured logging a view could be created grouping based on some specific field (e.g by request_id, user_id) or for some specific value for that field (only request_id=10)

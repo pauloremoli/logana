@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
+
+use crate::auto_complete::fuzzy_match;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Theme {
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
@@ -200,26 +202,17 @@ impl Default for Theme {
     }
 }
 
-/// Returns true if all characters of `needle` appear in `haystack` in order (subsequence check),
-/// case-insensitive.
-pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
-    if needle.is_empty() {
-        return true;
+/// Complete a partial theme name using fuzzy matching against themes found on the filesystem.
+pub fn complete_theme(partial: &str) -> Vec<String> {
+    let themes = Theme::list_available_themes();
+    if partial.is_empty() {
+        themes
+    } else {
+        themes
+            .into_iter()
+            .filter(|t| fuzzy_match(partial, t))
+            .collect()
     }
-    let needle_lc = needle.to_lowercase();
-    let haystack_lc = haystack.to_lowercase();
-    let mut needle_chars = needle_lc.chars();
-    let mut current = needle_chars.next();
-    for c in haystack_lc.chars() {
-        if let Some(nc) = current {
-            if c == nc {
-                current = needle_chars.next();
-            }
-        } else {
-            break;
-        }
-    }
-    current.is_none()
 }
 
 #[cfg(test)]
@@ -249,11 +242,19 @@ mod tests {
     }
 
     #[test]
-    fn test_fuzzy_match() {
-        assert!(fuzzy_match("dra", "dracula"));
-        assert!(fuzzy_match("dul", "dracula"));
-        assert!(fuzzy_match("DRA", "dracula"));
-        assert!(fuzzy_match("", "anything"));
-        assert!(!fuzzy_match("xyz", "dracula"));
+    fn test_complete_theme_empty_returns_available_themes() {
+        // Result depends on filesystem but must not panic
+        let themes = complete_theme("");
+        // All returned entries must be non-empty strings
+        for t in &themes {
+            assert!(!t.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_complete_theme_no_match_returns_empty() {
+        // An unlikely prefix that won't match any theme name
+        let results = complete_theme("zzznomatch9999");
+        assert!(results.is_empty());
     }
 }

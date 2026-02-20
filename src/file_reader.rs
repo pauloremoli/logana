@@ -1,4 +1,4 @@
-use memchr::memchr_iter;
+use memchr::{memchr2, memchr_iter};
 use memmap2::Mmap;
 use tokio::sync::{oneshot, watch};
 use std::{fs::File, io};
@@ -52,20 +52,79 @@ impl FileReader {
     pub fn new(path: &str) -> io::Result<Self> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
-        let line_starts = compute_line_starts(&mmap);
-        Ok(FileReader {
-            storage: Storage::Mmap(mmap),
-            line_starts,
-        })
+        if memchr2(b'\x1b', b'\r', &mmap).is_some() {
+            let stripped = strip_ansi_escapes(&mmap);
+            let line_starts = compute_line_starts(&stripped);
+            Ok(FileReader { storage: Storage::Bytes(stripped), line_starts })
+        } else {
+            let line_starts = compute_line_starts(&mmap);
+            Ok(FileReader { storage: Storage::Mmap(mmap), line_starts })
+        }
     }
 
     /// Build a `FileReader` from an in-memory byte buffer (e.g. stdin content).
     pub fn from_bytes(data: Vec<u8>) -> Self {
+        let data = if memchr2(b'\x1b', b'\r', &data).is_some() {
+            strip_ansi_escapes(&data)
+        } else {
+            data
+        };
         let line_starts = compute_line_starts(&data);
         FileReader {
             storage: Storage::Bytes(data),
             line_starts,
         }
+    }
+
+    /// Stream stdin asynchronously, flushing complete lines every second.
+    ///
+    /// Returns a `watch::Receiver<Vec<u8>>` whose value is replaced each time a
+    /// batch of complete lines is ready.  When stdin closes the sender is
+    /// dropped, which callers can detect via `has_changed() == Err(_)`.
+    ///
+    /// Only complete lines (up to the last `\n`) are flushed on each interval
+    /// tick; any trailing partial line is held until EOF.
+    pub fn stream_stdin_async(rt_handle: &tokio::runtime::Handle) -> watch::Receiver<Vec<u8>> {
+        let (snapshot_tx, snapshot_rx) = watch::channel(Vec::<u8>::new());
+
+        rt_handle.spawn(async move {
+            use std::time::Duration;
+            use tokio::io::AsyncReadExt;
+
+            let mut stdin = tokio::io::stdin();
+            let mut accumulated: Vec<u8> = Vec::new();
+            let mut partial: Vec<u8> = Vec::new();
+            let mut buf = vec![0u8; 4096];
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await; // skip the initial immediate tick
+
+            loop {
+                tokio::select! {
+                    result = stdin.read(&mut buf) => {
+                        match result {
+                            Ok(0) | Err(_) => {
+                                // EOF or error — flush everything including any partial line.
+                                accumulated.extend_from_slice(&partial);
+                                let _ = snapshot_tx.send(accumulated);
+                                return;
+                            }
+                            Ok(n) => partial.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    _ = interval.tick() => {
+                        // Flush only complete lines (up to the last '\n').
+                        if let Some(last_nl) = partial.iter().rposition(|&b| b == b'\n') {
+                            accumulated.extend_from_slice(&partial[..=last_nl]);
+                            partial.drain(..=last_nl);
+                            let _ = snapshot_tx.send(accumulated.clone());
+                        }
+                    }
+                }
+            }
+        });
+
+        snapshot_rx
     }
 
     /// Start loading `path` on tokio's blocking thread pool.
@@ -99,6 +158,15 @@ impl FileReader {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
         let len = mmap.len();
+
+        // If the file contains ANSI escape sequences or CR characters, strip them
+        // and re-index the clean bytes in one pass (stripping is O(n) anyway).
+        if memchr2(b'\x1b', b'\r', &mmap).is_some() {
+            let stripped = strip_ansi_escapes(&mmap);
+            let starts = compute_line_starts(&stripped);
+            let _ = progress_tx.send(1.0);
+            return Ok(FileReader { storage: Storage::Bytes(stripped), line_starts: starts });
+        }
 
         const CHUNK: usize = 4 * 1024 * 1024; // 4 MiB
         let mut starts = vec![0usize];
@@ -163,6 +231,156 @@ impl FileReader {
     pub fn iter(&self) -> impl Iterator<Item = (usize, &[u8])> {
         (0..self.line_count()).map(move |i| (i, self.get_line(i)))
     }
+
+    /// Append pre-stripped bytes to this reader, extending the line index.
+    ///
+    /// The caller is responsible for stripping ANSI escape sequences before
+    /// calling this (e.g. [`spawn_file_watcher`] does it automatically).
+    /// Converting an mmap-backed reader to heap-owned bytes on first call is
+    /// unavoidable but cheap relative to the file I/O that precedes it.
+    pub fn append_bytes(&mut self, new_data: &[u8]) {
+        if new_data.is_empty() {
+            return;
+        }
+        // Convert mmap to owned bytes before extending.
+        let old_storage = std::mem::replace(&mut self.storage, Storage::Bytes(Vec::new()));
+        let mut data = match old_storage {
+            Storage::Bytes(v) => v,
+            Storage::Mmap(m) => m.to_vec(),
+        };
+        let offset = data.len();
+        data.extend_from_slice(new_data);
+        // Extend line_starts incrementally — only scan the new bytes.
+        for pos in memchr_iter(b'\n', &data[offset..]) {
+            let abs = offset + pos + 1;
+            if abs <= data.len() {
+                self.line_starts.push(abs);
+            }
+        }
+        self.storage = Storage::Bytes(data);
+    }
+
+    /// Spawn a background task that polls `path` for new bytes every 500 ms.
+    ///
+    /// `initial_offset` must be the **original** (unstripped) file size in
+    /// bytes at the time the file was first loaded (from
+    /// `std::fs::metadata(path)?.len()`).  The watcher reads from that offset
+    /// onwards, strips ANSI escape sequences, and delivers each chunk via the
+    /// returned watch channel.
+    ///
+    /// The channel value is replaced on each new chunk.  When the background
+    /// task stops (receiver dropped), the sender is also dropped.
+    pub fn spawn_file_watcher(
+        path: String,
+        initial_offset: u64,
+        rt_handle: &tokio::runtime::Handle,
+    ) -> watch::Receiver<Vec<u8>> {
+        let (tx, rx) = watch::channel(Vec::<u8>::new());
+
+        rt_handle.spawn(async move {
+            use tokio::time::MissedTickBehavior;
+
+            let mut last_offset = initial_offset;
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_millis(500));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            interval.tick().await; // skip initial immediate tick
+
+            loop {
+                interval.tick().await;
+
+                let path_clone = path.clone();
+                let result = tokio::task::spawn_blocking(
+                    move || -> io::Result<(u64, Vec<u8>)> {
+                        use std::io::{Read, Seek};
+                        let current_size = std::fs::metadata(&path_clone)?.len();
+                        if current_size <= last_offset {
+                            return Ok((current_size, vec![]));
+                        }
+                        let mut file = File::open(&path_clone)?;
+                        file.seek(std::io::SeekFrom::Start(last_offset))?;
+                        let new_len = (current_size - last_offset) as usize;
+                        let mut buf = vec![0u8; new_len];
+                        file.read_exact(&mut buf)?;
+                        Ok((current_size, buf))
+                    },
+                )
+                .await;
+
+                match result {
+                    Ok(Ok((new_size, buf))) => {
+                        if new_size < last_offset {
+                            // File was truncated (e.g. log rotation) — reset offset.
+                            last_offset = new_size;
+                        } else if !buf.is_empty() {
+                            last_offset = new_size;
+                            let stripped = strip_ansi_escapes(&buf);
+                            if tx.send(stripped).is_err() {
+                                break; // Receiver dropped — stop watching.
+                            }
+                        }
+                    }
+                    _ => {} // Transient I/O error or task panic — retry next tick.
+                }
+            }
+        });
+
+        rx
+    }
+}
+
+// ---------------------------------------------------------------------------
+// strip_ansi_escapes
+// ---------------------------------------------------------------------------
+
+/// Strip ANSI/VT escape sequences and bare `\r` characters from `input`.
+///
+/// Handles:
+/// * CSI sequences  (`ESC [` … final_byte in 0x40–0x7E)
+/// * OSC sequences  (`ESC ]` … BEL or `ESC \`)
+/// * All other two-byte ESC sequences (`ESC` + one byte)
+/// * Bare `\r` (so `\r\n` line endings become `\n`)
+///
+/// Returns a new `Vec<u8>` with the sequences removed.
+fn strip_ansi_escapes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        match input[i] {
+            b'\x1b' => {
+                i += 1;
+                if i >= input.len() { break; }
+                match input[i] {
+                    b'[' => {
+                        // CSI: ESC [ {param/intermediate bytes} {final byte 0x40–0x7E}
+                        i += 1;
+                        while i < input.len() {
+                            let b = input[i];
+                            i += 1;
+                            if (0x40..=0x7E).contains(&b) { break; }
+                        }
+                    }
+                    b']' => {
+                        // OSC: ESC ] … BEL  or  ESC ] … ESC \
+                        i += 1;
+                        while i < input.len() {
+                            let b = input[i];
+                            i += 1;
+                            if b == b'\x07' { break; }
+                            if b == b'\x1b' && i < input.len() && input[i] == b'\\' {
+                                i += 1;
+                                break;
+                            }
+                        }
+                    }
+                    _ => { i += 1; } // two-byte ESC sequence (e.g. ESC M, ESC =)
+                }
+            }
+            b'\r' => { i += 1; } // strip CR so \r\n becomes \n
+            b => { out.push(b); i += 1; }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -267,5 +485,64 @@ mod tests {
         assert_eq!(r.get_line(0), b"first");
         assert_eq!(r.get_line(1), b"");
         assert_eq!(r.get_line(2), b"third");
+    }
+
+    #[test]
+    fn test_strip_ansi_csi_color_codes() {
+        let r = make(b"\x1b[32m INFO\x1b[0m message\n");
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0), b" INFO message");
+    }
+
+    #[test]
+    fn test_strip_carriage_return() {
+        let r = make(b"line1\r\nline2\r\n");
+        assert_eq!(r.line_count(), 2);
+        assert_eq!(r.get_line(0), b"line1");
+        assert_eq!(r.get_line(1), b"line2");
+    }
+
+    #[test]
+    fn test_strip_ansi_real_log_line() {
+        // Simulates a tracing-subscriber log line with dim/color codes
+        let input = b"\x1b[2m2026-02-20T15:06:28Z\x1b[0m \x1b[32m INFO\x1b[0m \x1b[2mtodo_app\x1b[0m: message\n";
+        let r = make(input);
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0), b"2026-02-20T15:06:28Z  INFO todo_app: message");
+    }
+
+    #[test]
+    fn test_no_ansi_unchanged() {
+        let r = make(b"plain log line\n");
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0), b"plain log line");
+    }
+
+    #[test]
+    fn test_append_bytes_basic() {
+        let mut r = make(b"line1\nline2\n");
+        assert_eq!(r.line_count(), 2);
+        r.append_bytes(b"line3\nline4\n");
+        assert_eq!(r.line_count(), 4);
+        assert_eq!(r.get_line(2), b"line3");
+        assert_eq!(r.get_line(3), b"line4");
+    }
+
+    #[test]
+    fn test_append_bytes_extends_partial_last_line() {
+        let mut r = make(b"partial");
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0), b"partial");
+        r.append_bytes(b"ly done\nnext\n");
+        assert_eq!(r.line_count(), 2);
+        assert_eq!(r.get_line(0), b"partially done");
+        assert_eq!(r.get_line(1), b"next");
+    }
+
+    #[test]
+    fn test_append_bytes_empty_is_noop() {
+        let mut r = make(b"line1\n");
+        r.append_bytes(b"");
+        assert_eq!(r.line_count(), 1);
     }
 }
