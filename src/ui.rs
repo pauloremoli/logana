@@ -37,7 +37,7 @@ use crate::{
     mode::{command_mode::CommandMode, filter_mode::FilterManagementMode},
 };
 use crate::{
-    log_line::{build_display_json, parse_json_line},
+    log_line::{classify_json_fields, parse_json_line},
     log_manager::LogManager,
     mode::command_mode::{CommandLine, Commands},
 };
@@ -1313,9 +1313,7 @@ impl App {
                     }
                 }
                 if is_marked {
-                    base_style = base_style
-                        .fg(theme.text_highlight)
-                        .add_modifier(Modifier::BOLD);
+                    base_style = base_style.bg(Color::Rgb(70, 60, 15));
                 }
                 if is_visual_selected {
                     base_style = visual_style;
@@ -1327,29 +1325,59 @@ impl App {
                     base_style
                 };
 
-                // For JSON lines always render parsed key=value fields instead of raw JSON.
-                // Fields hidden by name or index are omitted from the display.
-                // Filter evaluation (include/exclude decisions) uses the raw bytes, so
-                // filtering is unaffected by field hiding.
-                let json_display: Option<String> = parse_json_line(line_bytes).map(|fields| {
-                    build_display_json(&fields, &hidden_fields, &hidden_field_indices)
-                });
+                // For JSON lines render structured columns (no per-field colours):
+                //   timestamp  level  target  span_name: k=v, k=v  extra=val  message
+                // Known-field values are shown without their key names. Unknown fields
+                // and span context are rendered as key=value before the message.
+                // Filter evaluation uses the raw bytes so filtering is unaffected.
+                let json_line: Option<Line<'static>> =
+                    parse_json_line(line_bytes).map(|fields| {
+                        let p =
+                            classify_json_fields(&fields, &hidden_fields, &hidden_field_indices);
+                        let mut cols: Vec<String> = Vec::new();
 
-                let mut line = if let Some(display) = json_display {
-                    Line::from(display)
-                } else if is_marked {
-                    // Marked lines: skip filter coloring so the mark style covers the
-                    // whole line. Search highlights still show through.
-                    if let Some(sr) = search_map.get(&line_idx) {
-                        let mut collector = MatchCollector::new(line_bytes);
-                        collector.with_priority(1000);
-                        for &(s, e) in &sr.matches {
-                            collector.push(s, e, SEARCH_STYLE_ID);
+                        if let Some(ts) = p.timestamp {
+                            cols.push(ts);
                         }
-                        render_line(&collector, &styles)
-                    } else {
-                        Line::from(std::str::from_utf8(line_bytes).unwrap_or("").to_string())
-                    }
+                        if let Some(lvl) = p.level {
+                            cols.push(format!("{:<5}", lvl));
+                        }
+                        if let Some(tgt) = p.target {
+                            cols.push(tgt);
+                        }
+                        if let Some(span) = p.span {
+                            let mut s = span.name;
+                            if !span.fields.is_empty() {
+                                s.push_str(": ");
+                                s.push_str(
+                                    &span
+                                        .fields
+                                        .iter()
+                                        .map(|(k, v)| format!("{}={}", k, v))
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                );
+                            }
+                            cols.push(s);
+                        }
+                        for (key, value) in p.extra_fields {
+                            cols.push(format!("{}={}", key, value));
+                        }
+                        if let Some(msg) = p.message {
+                            cols.push(msg);
+                        }
+
+                        if cols.is_empty() {
+                            Line::from(
+                                std::str::from_utf8(line_bytes).unwrap_or("").to_string(),
+                            )
+                        } else {
+                            Line::from(cols.join("  "))
+                        }
+                    });
+
+                let mut line = if let Some(json_line) = json_line {
+                    json_line
                 } else {
                     let mut collector = filter_manager.evaluate_line(line_bytes);
                     if let Some(sr) = search_map.get(&line_idx) {

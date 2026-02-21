@@ -168,6 +168,136 @@ pub fn build_display_json(
 }
 
 // ---------------------------------------------------------------------------
+// Structured JSON display
+// ---------------------------------------------------------------------------
+
+const TIMESTAMP_KEYS: &[&str] = &[
+    "timestamp",
+    "time",
+    "ts",
+    "@timestamp",
+    "datetime",
+    "_SOURCE_REALTIME_TIMESTAMP",
+    "__REALTIME_TIMESTAMP",
+];
+const LEVEL_KEYS: &[&str] = &["level", "lvl", "severity", "PRIORITY", "log_level"];
+const TARGET_KEYS: &[&str] = &[
+    "target",
+    "module",
+    "logger",
+    "source",
+    "component",
+    "service",
+    "name",
+    "SYSLOG_IDENTIFIER",
+    "_COMM",
+    "caller",
+];
+const MESSAGE_KEYS: &[&str] =
+    &["message", "msg", "log", "text", "MESSAGE", "body"];
+
+/// Span context extracted from a `span` field of a tracing JSON log line.
+#[derive(Debug)]
+pub struct SpanInfo {
+    /// Value of the `name` key inside the span object.
+    pub name: String,
+    /// All other span fields in document order: `(key, value)`.
+    pub fields: Vec<(String, String)>,
+}
+
+/// Structured representation of a parsed JSON log line, ready for display.
+/// Known fields are extracted into typed slots; all other visible fields land
+/// in `extra_fields` and are rendered before the message.
+#[derive(Debug)]
+pub struct JsonDisplayParts {
+    pub timestamp: Option<String>,
+    pub level: Option<String>,
+    pub target: Option<String>,
+    /// Current span context (from a `span` nested object), if present.
+    pub span: Option<SpanInfo>,
+    /// Unknown fields in original document order: `(key, value)`.
+    pub extra_fields: Vec<(String, String)>,
+    pub message: Option<String>,
+}
+
+/// Classify `fields` into known slots and extra fields, honouring hidden-field
+/// rules. Fields in `hidden_names` or at a 0-based index in `hidden_indices`
+/// are omitted entirely. When a known category already has a value, subsequent
+/// fields with the same category key are silently dropped (not added to extras).
+///
+/// Special containers:
+/// - `fields` (nested object) — tracing-subscriber format; its contents are
+///   inlined: `message`-keyed sub-fields fill the message slot, others go to
+///   `extra_fields`.
+/// - `span` (nested object) — tracing span context; `name` becomes
+///   `SpanInfo::name`, all other sub-fields become `SpanInfo::fields`.
+/// - `spans` (array) — parent span stack; skipped (duplicates `span`).
+pub fn classify_json_fields(
+    fields: &[JsonField<'_>],
+    hidden_names: &HashSet<String>,
+    hidden_indices: &HashSet<usize>,
+) -> JsonDisplayParts {
+    let mut parts = JsonDisplayParts {
+        timestamp: None,
+        level: None,
+        target: None,
+        span: None,
+        extra_fields: Vec::new(),
+        message: None,
+    };
+
+    for (idx, field) in fields.iter().enumerate() {
+        if hidden_indices.contains(&idx) || hidden_names.contains(field.key) {
+            continue;
+        }
+
+        let key = field.key;
+        let val = || field.value.to_string();
+
+        if key == "fields" && !field.value_is_string {
+            // tracing-subscriber JSON: "fields" holds message + event-level fields.
+            if let Some(sub_fields) = parse_json_line(field.value.as_bytes()) {
+                for sub in &sub_fields {
+                    if MESSAGE_KEYS.contains(&sub.key) {
+                        parts.message.get_or_insert_with(|| sub.value.to_string());
+                    } else {
+                        parts.extra_fields.push((sub.key.to_string(), sub.value.to_string()));
+                    }
+                }
+            }
+        } else if key == "span" && !field.value_is_string {
+            // Span context: extract "name" as the span label, rest as span fields.
+            if let Some(sub_fields) = parse_json_line(field.value.as_bytes()) {
+                let mut span_name = String::new();
+                let mut span_fields: Vec<(String, String)> = Vec::new();
+                for sub in &sub_fields {
+                    if sub.key == "name" {
+                        span_name = sub.value.to_string();
+                    } else {
+                        span_fields.push((sub.key.to_string(), sub.value.to_string()));
+                    }
+                }
+                parts.span = Some(SpanInfo { name: span_name, fields: span_fields });
+            }
+        } else if key == "spans" {
+            // Parent span stack — skip; the current span is already in "span".
+        } else if TIMESTAMP_KEYS.contains(&key) {
+            parts.timestamp.get_or_insert_with(val);
+        } else if LEVEL_KEYS.contains(&key) {
+            parts.level.get_or_insert_with(val);
+        } else if TARGET_KEYS.contains(&key) {
+            parts.target.get_or_insert_with(val);
+        } else if MESSAGE_KEYS.contains(&key) {
+            parts.message.get_or_insert_with(val);
+        } else {
+            parts.extra_fields.push((key.to_string(), field.value.to_string()));
+        }
+    }
+
+    parts
+}
+
+// ---------------------------------------------------------------------------
 // Parser helpers (private)
 // ---------------------------------------------------------------------------
 
@@ -534,5 +664,135 @@ mod tests {
         assert!(!display.contains("__REALTIME_TIMESTAMP"));
         assert!(display.contains("MESSAGE=hello"));
         assert!(display.contains("PRIORITY=6"));
+    }
+
+    // ── classify_json_fields ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_classify_known_fields_extracted() {
+        let line = br#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","target":"myapp","message":"hello"}"#;
+        let fields = parse_json_line(line).unwrap();
+        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        assert_eq!(parts.timestamp.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(parts.level.as_deref(), Some("INFO"));
+        assert_eq!(parts.target.as_deref(), Some("myapp"));
+        assert_eq!(parts.message.as_deref(), Some("hello"));
+        assert!(parts.extra_fields.is_empty());
+    }
+
+    #[test]
+    fn test_classify_unknown_fields_go_to_extra() {
+        let line = br#"{"level":"WARN","request_id":"abc","msg":"hi"}"#;
+        let fields = parse_json_line(line).unwrap();
+        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        assert_eq!(parts.level.as_deref(), Some("WARN"));
+        assert_eq!(parts.message.as_deref(), Some("hi"));
+        assert_eq!(parts.extra_fields.len(), 1);
+        assert_eq!(parts.extra_fields[0], ("request_id".to_string(), "abc".to_string()));
+    }
+
+    #[test]
+    fn test_classify_extra_fields_preserve_order() {
+        let line = br#"{"msg":"hi","z_field":"z","a_field":"a","level":"INFO"}"#;
+        let fields = parse_json_line(line).unwrap();
+        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        assert_eq!(parts.extra_fields[0].0, "z_field");
+        assert_eq!(parts.extra_fields[1].0, "a_field");
+    }
+
+    #[test]
+    fn test_classify_hidden_by_name_excluded() {
+        let line = br#"{"level":"INFO","request_id":"abc","msg":"hi"}"#;
+        let fields = parse_json_line(line).unwrap();
+        let mut hidden = HashSet::new();
+        hidden.insert("request_id".to_string());
+        let parts = classify_json_fields(&fields, &hidden, &HashSet::new());
+        assert!(parts.extra_fields.is_empty());
+        assert_eq!(parts.message.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn test_classify_hidden_by_index_excluded() {
+        let line = br#"{"level":"INFO","request_id":"abc","msg":"hi"}"#;
+        let fields = parse_json_line(line).unwrap();
+        let mut hidden_idx = HashSet::new();
+        hidden_idx.insert(1usize); // "request_id"
+        let parts = classify_json_fields(&fields, &HashSet::new(), &hidden_idx);
+        assert!(parts.extra_fields.is_empty());
+    }
+
+    #[test]
+    fn test_classify_journalctl_format() {
+        let line = br#"{"__REALTIME_TIMESTAMP":"1699999999","PRIORITY":"6","SYSLOG_IDENTIFIER":"sshd","MESSAGE":"Accepted"}"#;
+        let fields = parse_json_line(line).unwrap();
+        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        assert_eq!(parts.timestamp.as_deref(), Some("1699999999"));
+        assert_eq!(parts.level.as_deref(), Some("6"));
+        assert_eq!(parts.target.as_deref(), Some("sshd"));
+        assert_eq!(parts.message.as_deref(), Some("Accepted"));
+    }
+
+    #[test]
+    fn test_classify_duplicate_known_key_drops_second() {
+        // "time" and "ts" both match timestamp — only the first fills the slot
+        let line = br#"{"time":"t1","ts":"t2","msg":"hi"}"#;
+        let fields = parse_json_line(line).unwrap();
+        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        assert_eq!(parts.timestamp.as_deref(), Some("t1"));
+        assert!(parts.extra_fields.is_empty()); // "ts" is silently dropped
+    }
+
+    #[test]
+    fn test_classify_all_unknown_fields_only() {
+        let line = br#"{"foo":"bar","baz":42}"#;
+        let fields = parse_json_line(line).unwrap();
+        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        assert!(parts.timestamp.is_none());
+        assert!(parts.level.is_none());
+        assert!(parts.target.is_none());
+        assert!(parts.message.is_none());
+        assert_eq!(parts.extra_fields.len(), 2);
+    }
+
+    #[test]
+    fn test_classify_fields_container_extracts_message() {
+        // tracing-subscriber JSON format: message inside "fields" object
+        let line = br#"{"level":"INFO","target":"todo_app","fields":{"message":"Listening on 0.0.0.0:3000"}}"#;
+        let fields = parse_json_line(line).unwrap();
+        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        assert_eq!(parts.message.as_deref(), Some("Listening on 0.0.0.0:3000"));
+        assert!(parts.extra_fields.is_empty());
+    }
+
+    #[test]
+    fn test_classify_fields_container_extracts_extras_too() {
+        let line = br#"{"level":"INFO","fields":{"message":"todos listed","count":9}}"#;
+        let fields = parse_json_line(line).unwrap();
+        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        assert_eq!(parts.message.as_deref(), Some("todos listed"));
+        assert_eq!(parts.extra_fields.len(), 1);
+        assert_eq!(parts.extra_fields[0], ("count".to_string(), "9".to_string()));
+    }
+
+    #[test]
+    fn test_classify_span_extracts_name_and_fields() {
+        let line = br#"{"level":"INFO","span":{"name":"request","method":"GET","uri":"/todos"},"fields":{"message":"ok"}}"#;
+        let fields = parse_json_line(line).unwrap();
+        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        let span = parts.span.unwrap();
+        assert_eq!(span.name, "request");
+        assert_eq!(span.fields.len(), 2);
+        assert!(span.fields.iter().any(|(k, v)| k == "method" && v == "GET"));
+        assert!(span.fields.iter().any(|(k, v)| k == "uri" && v == "/todos"));
+    }
+
+    #[test]
+    fn test_classify_spans_array_is_skipped() {
+        let line = br#"{"level":"INFO","spans":[{"name":"root"}],"msg":"hi"}"#;
+        let fields = parse_json_line(line).unwrap();
+        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        // "spans" key must not appear in extra_fields
+        assert!(parts.extra_fields.is_empty());
+        assert!(parts.span.is_none());
     }
 }
