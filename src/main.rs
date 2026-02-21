@@ -4,6 +4,7 @@ use crossterm::{
     ExecutableCommand,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use logsmith_rs::config::Config;
 use logsmith_rs::db::Database;
 use logsmith_rs::file_reader::FileReader;
 use logsmith_rs::log_manager::LogManager;
@@ -81,6 +82,20 @@ async fn main() -> Result<()> {
 
     let log_manager = LogManager::new(db.clone(), source_path.clone()).await;
 
+    let config = Config::load();
+    let theme = config
+        .theme
+        .as_deref()
+        .and_then(|name| Theme::from_file(format!("{}.json", name)).ok())
+        .unwrap_or_default();
+
+    for conflict in config.keybindings.validate() {
+        tracing::warn!("{}", conflict);
+        eprintln!("Warning: {}", conflict);
+    }
+
+    let keybindings = Arc::new(config.keybindings);
+
     let res = {
         enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
@@ -90,7 +105,8 @@ async fn main() -> Result<()> {
         let mut app = App::new(
             log_manager,
             FileReader::from_bytes(vec![]),
-            Theme::default(),
+            theme,
+            keybindings,
         )
         .await;
 

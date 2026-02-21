@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use sqlx::Row;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
-use crate::types::{ColorConfig, FilterDef, FilterType};
+use crate::types::{Annotation, ColorConfig, FilterDef, FilterType};
 
 #[async_trait]
 pub trait FilterStore: Send + Sync {
@@ -43,6 +43,7 @@ pub struct FileContext {
     pub marked_lines: Vec<usize>,
     pub file_hash: Option<String>,
     pub show_line_numbers: bool,
+    pub annotations: Vec<Annotation>,
 }
 
 #[async_trait]
@@ -174,6 +175,13 @@ impl Database {
         .execute(&self.pool)
         .await;
 
+        // Migration: add annotations_json column if it doesn't exist
+        let _ = sqlx::query(
+            "ALTER TABLE file_context ADD COLUMN annotations_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&self.pool)
+        .await;
+
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS session_tabs (
                 source_file TEXT NOT NULL,
@@ -235,15 +243,15 @@ impl FilterStore for Database {
         source_file: Option<&str>,
     ) -> Result<i64> {
         let source = source_file.unwrap_or("");
-        let max_order: Option<i64> = sqlx::query(
-            "SELECT MAX(display_order) as max_order FROM filters WHERE source_file = ?",
+        let min_order: Option<i64> = sqlx::query(
+            "SELECT MIN(display_order) as min_order FROM filters WHERE source_file = ?",
         )
         .bind(source)
         .fetch_one(&self.pool)
         .await?
-        .get("max_order");
+        .get("min_order");
 
-        let next_order = max_order.unwrap_or(-1) + 1;
+        let next_order = min_order.unwrap_or(1) - 1;
 
         let (fg, bg, match_only) = match color_config {
             Some(cc) => (
@@ -432,9 +440,11 @@ impl FileContextStore for Database {
     async fn save_file_context(&self, ctx: &FileContext) -> Result<()> {
         let marked_json =
             serde_json::to_string(&ctx.marked_lines).unwrap_or_else(|_| "[]".to_string());
+        let annotations_json =
+            serde_json::to_string(&ctx.annotations).unwrap_or_else(|_| "[]".to_string());
         sqlx::query(
-            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_file) DO UPDATE SET
                 scroll_offset = excluded.scroll_offset,
                 search_query = excluded.search_query,
@@ -444,7 +454,8 @@ impl FileContextStore for Database {
                 horizontal_scroll = excluded.horizontal_scroll,
                 marked_lines = excluded.marked_lines,
                 file_hash = excluded.file_hash,
-                show_line_numbers = excluded.show_line_numbers",
+                show_line_numbers = excluded.show_line_numbers,
+                annotations_json = excluded.annotations_json",
         )
         .bind(&ctx.source_file)
         .bind(ctx.scroll_offset as i64)
@@ -456,6 +467,7 @@ impl FileContextStore for Database {
         .bind(&marked_json)
         .bind(&ctx.file_hash)
         .bind(ctx.show_line_numbers as i32)
+        .bind(&annotations_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -463,7 +475,7 @@ impl FileContextStore for Database {
 
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
         let row = sqlx::query(
-            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers
+            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json
              FROM file_context WHERE source_file = ?",
         )
         .bind(source_file)
@@ -473,6 +485,9 @@ impl FileContextStore for Database {
         Ok(row.map(|r| {
             let marked_json: String = r.get("marked_lines");
             let marked_lines: Vec<usize> = serde_json::from_str(&marked_json).unwrap_or_default();
+            let annotations_json: String = r.try_get("annotations_json").unwrap_or_default();
+            let annotations: Vec<Annotation> =
+                serde_json::from_str(&annotations_json).unwrap_or_default();
             FileContext {
                 source_file: r.get::<String, _>("source_file"),
                 scroll_offset: r.get::<i64, _>("scroll_offset") as usize,
@@ -484,6 +499,7 @@ impl FileContextStore for Database {
                 marked_lines,
                 file_hash: r.get::<Option<String>, _>("file_hash"),
                 show_line_numbers: r.get::<i32, _>("show_line_numbers") != 0,
+                annotations,
             }
         }))
     }
@@ -541,25 +557,26 @@ mod tests {
 
         let filters = db.get_filters().await.unwrap();
         assert_eq!(filters.len(), 2);
-        assert_eq!(filters[0].pattern, "error");
-        assert_eq!(filters[0].filter_type, FilterType::Include);
+        // Newest first: "debug" was inserted second, so it has the lower display_order
+        assert_eq!(filters[0].pattern, "debug");
+        assert_eq!(filters[0].filter_type, FilterType::Exclude);
         assert!(filters[0].enabled);
-        assert_eq!(filters[1].pattern, "debug");
-        assert_eq!(filters[1].filter_type, FilterType::Exclude);
+        assert_eq!(filters[1].pattern, "error");
+        assert_eq!(filters[1].filter_type, FilterType::Include);
 
-        // Toggle
+        // Toggle id1 ("error", now at index 1)
         db.toggle_filter(id1).await.unwrap();
         let filters = db.get_filters().await.unwrap();
-        assert!(!filters[0].enabled);
+        assert!(!filters[1].enabled);
 
         db.toggle_filter(id1).await.unwrap();
         let filters = db.get_filters().await.unwrap();
-        assert!(filters[0].enabled);
+        assert!(filters[1].enabled);
 
-        // Update pattern
+        // Update pattern of id1 ("error" → "warning", still at index 1)
         db.update_filter_pattern(id1, "warning").await.unwrap();
         let filters = db.get_filters().await.unwrap();
-        assert_eq!(filters[0].pattern, "warning");
+        assert_eq!(filters[1].pattern, "warning");
 
         // Delete
         db.delete_filter(id2).await.unwrap();
@@ -626,13 +643,14 @@ mod tests {
             .unwrap();
 
         let filters = db.get_filters().await.unwrap();
-        assert_eq!(filters[0].pattern, "first");
-        assert_eq!(filters[1].pattern, "second");
+        // Newest first: "second" was inserted last so it has the lower display_order
+        assert_eq!(filters[0].pattern, "second");
+        assert_eq!(filters[1].pattern, "first");
 
         db.swap_filter_order(id1, id2).await.unwrap();
         let filters = db.get_filters().await.unwrap();
-        assert_eq!(filters[0].pattern, "second");
-        assert_eq!(filters[1].pattern, "first");
+        assert_eq!(filters[0].pattern, "first");
+        assert_eq!(filters[1].pattern, "second");
     }
 
     #[tokio::test]
@@ -741,6 +759,7 @@ mod tests {
             marked_lines: vec![1, 5, 10],
             file_hash: Some("abc123".to_string()),
             show_line_numbers: true,
+            annotations: vec![],
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -775,6 +794,7 @@ mod tests {
             marked_lines: vec![0, 3],
             file_hash: Some("hash1".to_string()),
             show_line_numbers: true,
+            annotations: vec![],
         };
         db.save_file_context(&ctx1).await.unwrap();
 
@@ -789,6 +809,7 @@ mod tests {
             marked_lines: vec![2, 7],
             file_hash: Some("hash2".to_string()),
             show_line_numbers: false,
+            annotations: vec![],
         };
         db.save_file_context(&ctx2).await.unwrap();
 
@@ -808,5 +829,47 @@ mod tests {
         let db = setup_db().await;
         let result = db.load_file_context("/nonexistent").await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_file_context_saves_and_loads_annotations() {
+        use crate::types::Annotation;
+        let db = setup_db().await;
+
+        let ctx = FileContext {
+            source_file: "/tmp/annotated.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            wrap: true,
+            level_colors: true,
+            show_sidebar: true,
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            show_line_numbers: true,
+            annotations: vec![
+                Annotation {
+                    text: "First annotation\nspanning two lines".to_string(),
+                    line_indices: vec![1, 2, 3],
+                },
+                Annotation {
+                    text: "Second annotation".to_string(),
+                    line_indices: vec![10],
+                },
+            ],
+        };
+        db.save_file_context(&ctx).await.unwrap();
+
+        let loaded = db
+            .load_file_context("/tmp/annotated.log")
+            .await
+            .unwrap()
+            .expect("context should exist");
+
+        assert_eq!(loaded.annotations.len(), 2);
+        assert_eq!(loaded.annotations[0].text, "First annotation\nspanning two lines");
+        assert_eq!(loaded.annotations[0].line_indices, vec![1, 2, 3]);
+        assert_eq!(loaded.annotations[1].text, "Second annotation");
+        assert_eq!(loaded.annotations[1].line_indices, vec![10]);
     }
 }

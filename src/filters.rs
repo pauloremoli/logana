@@ -283,17 +283,20 @@ impl FilterManager {
     }
 
     /// Returns true if `line` should be visible under the current filter set.
+    ///
+    /// Filters are evaluated top-to-bottom (index 0 = highest precedence).
+    /// The first filter that matches (Include or Exclude) determines the outcome.
+    /// If no filter matches, the line is visible only when there are no Include filters.
     pub fn is_visible(&self, line: &[u8]) -> bool {
         let mut dummy = MatchCollector::new(line);
-        let mut included = !self.has_include_filters;
         for filter in &self.filters {
             match filter.evaluate(line, &mut dummy) {
-                FilterDecision::Include => included = true,
+                FilterDecision::Include => return true,
                 FilterDecision::Exclude => return false,
                 FilterDecision::Neutral => {}
             }
         }
-        included
+        !self.has_include_filters
     }
 
     /// Run all filters on `line` and collect styling spans for rendering.
@@ -318,15 +321,14 @@ impl FilterManager {
             .filter(|&idx| {
                 let line = reader.get_line(idx);
                 let mut dummy = MatchCollector::new(line);
-                let mut included = !has_include;
                 for filter in filters.iter() {
                     match filter.evaluate(line, &mut dummy) {
-                        FilterDecision::Include => included = true,
+                        FilterDecision::Include => return true,
                         FilterDecision::Exclude => return false,
                         FilterDecision::Neutral => {}
                     }
                 }
-                included
+                !has_include
             })
             .collect();
 
@@ -444,13 +446,16 @@ mod tests {
 
     #[test]
     fn test_filter_manager_include_then_exclude() {
-        let inc = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0);
+        // Exclude "minor" at top (higher precedence), Include "ERROR" below.
+        // First-match-wins: a line matching the top Exclude is hidden even if
+        // a lower Include filter also matches it.
         let exc = SubstringFilter::new("minor", FilterDecision::Exclude, false, 1);
-        let fm = FilterManager::new(vec![Box::new(inc), Box::new(exc)], true);
+        let inc = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0);
+        let fm = FilterManager::new(vec![Box::new(exc), Box::new(inc)], true);
 
-        assert!(fm.is_visible(b"ERROR: critical failure"));
-        assert!(!fm.is_visible(b"ERROR: minor issue")); // excluded by second filter
-        assert!(!fm.is_visible(b"INFO: unrelated")); // not included
+        assert!(fm.is_visible(b"ERROR: critical failure")); // no exclude match → include matches
+        assert!(!fm.is_visible(b"ERROR: minor issue")); // exclude at top wins
+        assert!(!fm.is_visible(b"INFO: unrelated")); // no match at all → has include filters → hidden
     }
 
     #[test]

@@ -127,7 +127,9 @@ async fn test_filter_include_and_exclude() {
     let path = file.path().to_str().unwrap();
     let reader = FileReader::new(path).unwrap();
 
-    // Include lines with "Connection", then exclude lines with "failed"
+    // Add "Connection" (Include) first, then "failed" (Exclude) second.
+    // With newest-first ordering, "failed" Exclude ends up at index 0 (highest precedence).
+    // First-match-wins: "Connection failed" matches the top Exclude and is hidden.
     manager
         .add_filter_with_color("Connection".into(), FilterType::Include, None, None, false)
         .await;
@@ -137,8 +139,8 @@ async fn test_filter_include_and_exclude() {
     let (fm, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
 
-    // Line 1: "Connection failed" — included by "Connection" but excluded by "failed"
-    // Line 4: "Connection established" — included and not excluded
+    // Line 1: "Connection failed" — top Exclude wins → hidden
+    // Line 4: "Connection established" — no Exclude match → Include matches → visible
     assert_eq!(visible.len(), 1);
     assert!(visible.contains(&4));
 }
@@ -222,10 +224,11 @@ async fn test_add_and_remove_filters() {
         .await;
     assert_eq!(manager.get_filters().len(), 2);
 
+    // Newest first: "debug" is at index 0; removing it leaves "error"
     let id = manager.get_filters()[0].id;
     manager.remove_filter(id).await;
     assert_eq!(manager.get_filters().len(), 1);
-    assert_eq!(manager.get_filters()[0].pattern, "debug");
+    assert_eq!(manager.get_filters()[0].pattern, "error");
 }
 
 #[tokio::test]
@@ -242,13 +245,16 @@ async fn test_move_filter_up_down() {
         .add_filter_with_color("third".into(), FilterType::Include, None, None, false)
         .await;
 
+    // After three inserts (newest first): ["third", "second", "first"]
+    // "second" is at index 1; move_filter_up swaps [0] and [1]
     let id_second = manager.get_filters()[1].id;
     manager.move_filter_up(id_second).await;
 
+    // Result: ["second", "third", "first"]
     let filters = manager.get_filters();
     assert_eq!(filters[0].pattern, "second");
-    assert_eq!(filters[1].pattern, "first");
-    assert_eq!(filters[2].pattern, "third");
+    assert_eq!(filters[1].pattern, "third");
+    assert_eq!(filters[2].pattern, "first");
 }
 
 #[tokio::test]

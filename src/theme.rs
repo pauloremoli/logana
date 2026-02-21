@@ -19,6 +19,14 @@ pub struct Theme {
     pub text: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
     pub text_highlight: Color,
+    /// Foreground colour used for the currently-selected (cursor) line.
+    /// Should contrast well against the `border` colour used as the cursor background.
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_cursor_fg"
+    )]
+    pub cursor_fg: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
     pub error_fg: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
@@ -126,6 +134,10 @@ impl<'de> serde::de::DeserializeSeed<'de> for ColorDeserializer {
     }
 }
 
+fn default_cursor_fg() -> Color {
+    Color::Rgb(28, 28, 28)
+}
+
 impl Theme {
     /// Returns the names of all available themes found in the local `themes/` directory
     /// and in `~/.config/logsmith-rs/themes/`.
@@ -188,6 +200,7 @@ impl Default for Theme {
             border_title: Color::Rgb(248, 248, 242),
             text: Color::Rgb(248, 248, 242),
             text_highlight: Color::Rgb(255, 184, 108),
+            cursor_fg: Color::Rgb(28, 28, 28),
             error_fg: Color::Rgb(255, 85, 85),
             warning_fg: Color::Rgb(241, 250, 140),
             process_colors: vec![

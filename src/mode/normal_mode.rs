@@ -2,9 +2,11 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
+    config::Keybindings,
     mode::{
         app_mode::Mode, command_mode::CommandMode, filter_mode::FilterManagementMode,
-        search_mode::SearchMode,
+        keybindings_help_mode::KeybindingsHelpMode, search_mode::SearchMode,
+        visual_mode::VisualLineMode,
     },
     ui::{KeyResult, TabState},
 };
@@ -20,158 +22,233 @@ impl Mode for NormalMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        // Pass these to the global handler
-        if key == KeyCode::Char('q') && modifiers.is_empty() {
+        // Clone the Arc so we can mutate `tab` freely in each branch.
+        let kb = tab.keybindings.clone();
+
+        // ── Global key passthrough ──────────────────────────────────────────
+        if kb.global.quit.matches(key, modifiers) {
             return (self, KeyResult::Ignored);
         }
-        if matches!(key, KeyCode::Tab | KeyCode::BackTab) {
+        if kb.global.next_tab.matches(key, modifiers)
+            || kb.global.prev_tab.matches(key, modifiers)
+        {
             return (self, KeyResult::Ignored);
         }
-        if key == KeyCode::Char('w') && modifiers.contains(KeyModifiers::CONTROL) {
+        if kb.global.close_tab.matches(key, modifiers) {
             return (self, KeyResult::Ignored);
         }
-        if key == KeyCode::Char('t') && modifiers.contains(KeyModifiers::CONTROL) {
+        if kb.global.new_tab.matches(key, modifiers) {
             return (self, KeyResult::Ignored);
         }
 
-        // Ctrl+d: half page down
-        if key == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
+        // ── Normal-mode actions ─────────────────────────────────────────────
+
+        if kb.normal.half_page_down.matches(key, modifiers) {
             let half = (tab.visible_height / 2).max(1);
             tab.scroll_offset = tab.scroll_offset.saturating_add(half);
             tab.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
-        // Ctrl+u: half page up
-        if key == KeyCode::Char('u') && modifiers.contains(KeyModifiers::CONTROL) {
+
+        if kb.normal.half_page_up.matches(key, modifiers) {
             let half = (tab.visible_height / 2).max(1);
             tab.scroll_offset = tab.scroll_offset.saturating_sub(half);
             tab.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
 
-        match key {
-            KeyCode::PageDown => {
-                let page = tab.visible_height.max(1);
-                tab.scroll_offset = tab.scroll_offset.saturating_add(page);
-                tab.g_key_pressed = false;
-            }
-            KeyCode::PageUp => {
-                let page = tab.visible_height.max(1);
-                tab.scroll_offset = tab.scroll_offset.saturating_sub(page);
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char(':') => {
-                let history = tab.command_history.clone();
-                return (
-                    Box::new(CommandMode::with_history(String::new(), 0, history)),
-                    KeyResult::Handled,
-                );
-            }
-            KeyCode::Char('f') => {
-                return (
-                    Box::new(FilterManagementMode {
-                        selected_filter_index: 0,
-                    }),
-                    KeyResult::Handled,
-                );
-            }
-            KeyCode::Char('F') => {
-                tab.filtering_enabled = !tab.filtering_enabled;
-                tab.refresh_visible();
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char('s') => {
-                tab.show_sidebar = !tab.show_sidebar;
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                tab.scroll_offset = tab.scroll_offset.saturating_add(1);
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                tab.scroll_offset = tab.scroll_offset.saturating_sub(1);
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char('h') => {
-                if !tab.wrap {
-                    tab.horizontal_scroll = tab.horizontal_scroll.saturating_sub(1);
-                }
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char('l') => {
-                if !tab.wrap {
-                    tab.horizontal_scroll = tab.horizontal_scroll.saturating_add(1);
-                }
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char('w') => {
-                tab.wrap = !tab.wrap;
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char('G') => {
-                let n = tab.visible_indices.len();
-                if n > 0 {
-                    tab.scroll_offset = n - 1;
-                }
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char('g') => {
-                if tab.g_key_pressed {
-                    tab.scroll_offset = 0;
-                    tab.g_key_pressed = false;
-                } else {
-                    tab.g_key_pressed = true;
-                }
-            }
-            KeyCode::Char('m') => {
-                if let Some(&line_idx) = tab.visible_indices.get(tab.scroll_offset) {
-                    tab.log_manager.toggle_mark(line_idx);
-                }
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char('/') => {
-                tab.g_key_pressed = false;
-                return (
-                    Box::new(SearchMode {
-                        input: String::new(),
-                        forward: true,
-                    }),
-                    KeyResult::Handled,
-                );
-            }
-            KeyCode::Char('?') => {
-                tab.g_key_pressed = false;
-                return (
-                    Box::new(SearchMode {
-                        input: String::new(),
-                        forward: false,
-                    }),
-                    KeyResult::Handled,
-                );
-            }
-            KeyCode::Char('n') => {
-                if let Some(result) = tab.search.next_match() {
-                    let line_idx = result.line_idx;
-                    tab.scroll_to_line_idx(line_idx);
-                }
-                tab.g_key_pressed = false;
-            }
-            KeyCode::Char('N') => {
-                if let Some(result) = tab.search.previous_match() {
-                    let line_idx = result.line_idx;
-                    tab.scroll_to_line_idx(line_idx);
-                }
-                tab.g_key_pressed = false;
-            }
-            _ => {
-                tab.g_key_pressed = false;
-            }
+        if kb.normal.page_down.matches(key, modifiers) {
+            let page = tab.visible_height.max(1);
+            tab.scroll_offset = tab.scroll_offset.saturating_add(page);
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
         }
+
+        if kb.normal.page_up.matches(key, modifiers) {
+            let page = tab.visible_height.max(1);
+            tab.scroll_offset = tab.scroll_offset.saturating_sub(page);
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.command_mode.matches(key, modifiers) {
+            let history = tab.command_history.clone();
+            tab.g_key_pressed = false;
+            return (
+                Box::new(CommandMode::with_history(String::new(), 0, history)),
+                KeyResult::Handled,
+            );
+        }
+
+        if kb.normal.filter_mode.matches(key, modifiers) {
+            tab.g_key_pressed = false;
+            return (
+                Box::new(FilterManagementMode {
+                    selected_filter_index: 0,
+                }),
+                KeyResult::Handled,
+            );
+        }
+
+        if kb.normal.toggle_filtering.matches(key, modifiers) {
+            tab.filtering_enabled = !tab.filtering_enabled;
+            tab.refresh_visible();
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.toggle_sidebar.matches(key, modifiers) {
+            tab.show_sidebar = !tab.show_sidebar;
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.scroll_down.matches(key, modifiers) {
+            tab.scroll_offset = tab.scroll_offset.saturating_add(1);
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.scroll_up.matches(key, modifiers) {
+            tab.scroll_offset = tab.scroll_offset.saturating_sub(1);
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.scroll_left.matches(key, modifiers) {
+            if !tab.wrap {
+                tab.horizontal_scroll = tab.horizontal_scroll.saturating_sub(1);
+            }
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.scroll_right.matches(key, modifiers) {
+            if !tab.wrap {
+                tab.horizontal_scroll = tab.horizontal_scroll.saturating_add(1);
+            }
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.toggle_wrap.matches(key, modifiers) {
+            tab.wrap = !tab.wrap;
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.go_to_bottom.matches(key, modifiers) {
+            let n = tab.visible_indices.len();
+            if n > 0 {
+                tab.scroll_offset = n - 1;
+            }
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        // gg chord: first press sets the flag; second press jumps to top.
+        if kb.normal.go_to_top_chord.matches(key, modifiers) {
+            if tab.g_key_pressed {
+                tab.scroll_offset = 0;
+                tab.g_key_pressed = false;
+            } else {
+                tab.g_key_pressed = true;
+            }
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.mark_line.matches(key, modifiers) {
+            if let Some(&line_idx) = tab.visible_indices.get(tab.scroll_offset) {
+                tab.log_manager.toggle_mark(line_idx);
+            }
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.toggle_marks_only.matches(key, modifiers) {
+            tab.show_marks_only = !tab.show_marks_only;
+            tab.refresh_visible();
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.visual_mode.matches(key, modifiers) {
+            let anchor = tab.scroll_offset;
+            tab.g_key_pressed = false;
+            return (Box::new(VisualLineMode { anchor }), KeyResult::Handled);
+        }
+
+        if kb.normal.search_forward.matches(key, modifiers) {
+            tab.g_key_pressed = false;
+            return (
+                Box::new(SearchMode {
+                    input: String::new(),
+                    forward: true,
+                }),
+                KeyResult::Handled,
+            );
+        }
+
+        if kb.normal.search_backward.matches(key, modifiers) {
+            tab.g_key_pressed = false;
+            return (
+                Box::new(SearchMode {
+                    input: String::new(),
+                    forward: false,
+                }),
+                KeyResult::Handled,
+            );
+        }
+
+        if kb.normal.next_match.matches(key, modifiers) {
+            if let Some(result) = tab.search.next_match() {
+                let line_idx = result.line_idx;
+                tab.scroll_to_line_idx(line_idx);
+            }
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.prev_match.matches(key, modifiers) {
+            if let Some(result) = tab.search.previous_match() {
+                let line_idx = result.line_idx;
+                tab.scroll_to_line_idx(line_idx);
+            }
+            tab.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.show_keybindings.matches(key, modifiers) {
+            tab.g_key_pressed = false;
+            return (
+                Box::new(KeybindingsHelpMode::new()),
+                KeyResult::Handled,
+            );
+        }
+
+        // Unrecognised key — consume it, reset the gg-chord state.
+        tab.g_key_pressed = false;
         (self, KeyResult::Handled)
     }
 
     fn status_line(&self) -> &str {
-        "[NORMAL] [q]uit | [f]ilter mode | [F] toggle filtering | [s]idebar | [m]ark | Tab/Shift+Tab => switch tab"
+        "[NORMAL] [q]uit | [f]ilter mode | [F] toggle filtering | [m]ark | [M] marks only | [s]idebar | [V]isual select | Tab/Shift+Tab switch tab | [F1] help"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings) -> String {
+        format!(
+            "[NORMAL] [{}]uit | [{}]ilter | [{}] tog.filter | [{}]ark | [{}] marks only | [{}]idebar | [{}]isual | [{}] help | {}/{} tabs",
+            kb.global.quit.display(),
+            kb.normal.filter_mode.display(),
+            kb.normal.toggle_filtering.display(),
+            kb.normal.mark_line.display(),
+            kb.normal.toggle_marks_only.display(),
+            kb.normal.toggle_sidebar.display(),
+            kb.normal.visual_mode.display(),
+            kb.normal.show_keybindings.display(),
+            kb.global.next_tab.display(),
+            kb.global.prev_tab.display(),
+        )
     }
 }
 
@@ -471,8 +548,53 @@ mod tests {
         assert_eq!(tab.visible_indices.len(), 3);
     }
 
+    #[tokio::test]
+    async fn test_capital_m_toggles_marks_only() {
+        let mut tab = make_tab(&["a", "b", "c"]).await;
+        assert!(!tab.show_marks_only);
+        press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
+        assert!(tab.show_marks_only);
+        press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
+        assert!(!tab.show_marks_only);
+    }
+
+    #[tokio::test]
+    async fn test_marks_only_shows_only_marked_lines() {
+        let mut tab = make_tab(&["line0", "line1", "line2"]).await;
+        // Mark lines 0 and 2
+        tab.log_manager.toggle_mark(0);
+        tab.log_manager.toggle_mark(2);
+
+        press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
+
+        assert_eq!(tab.visible_indices, vec![0, 2]);
+    }
+
+    #[tokio::test]
+    async fn test_marks_only_off_restores_all_lines() {
+        let mut tab = make_tab(&["line0", "line1", "line2"]).await;
+        tab.log_manager.toggle_mark(1);
+        press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
+        assert_eq!(tab.visible_indices.len(), 1);
+
+        press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
+        assert_eq!(tab.visible_indices.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_marks_only_empty_when_no_marks() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
+        assert!(tab.visible_indices.is_empty());
+    }
+
     #[test]
     fn test_status_line_contains_normal() {
         assert!(NormalMode.status_line().contains("[NORMAL]"));
+    }
+
+    #[test]
+    fn test_status_line_contains_marks_only_hint() {
+        assert!(NormalMode.status_line().contains("[M] marks only"));
     }
 }

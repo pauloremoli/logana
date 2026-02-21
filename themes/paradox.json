@@ -4,6 +4,7 @@
   "border_title": [238, 238, 238],
   "text": [238, 238, 238],
   "text_highlight": [0, 173, 181],
+  "cursor_fg": [28, 28, 28],
   "error_fg": [255, 87, 87],
   "warning_fg": [255, 193, 7],
   "process_colors": [

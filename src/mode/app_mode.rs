@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
+    config::Keybindings,
     db::FileContext,
     mode::normal_mode::NormalMode,
     ui::{KeyResult, TabState},
@@ -17,6 +18,22 @@ pub trait Mode: std::fmt::Debug + Send {
     ) -> (Box<dyn Mode>, KeyResult);
 
     fn status_line(&self) -> &str;
+
+    /// Like `status_line` but may substitute actual configured keybinding strings.
+    /// Default implementation just converts `status_line()` to `String`.
+    fn dynamic_status_line(&self, _kb: &Keybindings) -> String {
+        self.status_line().to_string()
+    }
+
+    /// Returns `Some(scroll_offset)` when a keybindings help popup is active.
+    fn keybindings_help_scroll(&self) -> Option<usize> {
+        None
+    }
+
+    /// Returns `Some(search_query)` when the keybindings help popup is active.
+    fn keybindings_help_search(&self) -> Option<&str> {
+        None
+    }
 
     fn selected_filter_index(&self) -> Option<usize> {
         None
@@ -34,6 +51,16 @@ pub trait Mode: std::fmt::Debug + Send {
         None
     }
     fn confirm_restore_session_files(&self) -> Option<&[String]> {
+        None
+    }
+    /// Returns the visual-line-selection anchor (index into `visible_indices`).
+    /// `None` when not in visual mode.
+    fn visual_selection_anchor(&self) -> Option<usize> {
+        None
+    }
+    /// Returns `(lines, cursor_row, cursor_col, annotated_line_count)` when the
+    /// annotation popup editor is active.
+    fn annotation_popup(&self) -> Option<(Vec<String>, usize, usize, usize)> {
         None
     }
 }
@@ -59,6 +86,7 @@ impl Mode for ConfirmRestoreMode {
             KeyCode::Char('n') | KeyCode::Esc => {
                 tab.log_manager.clear_filters().await;
                 tab.log_manager.set_marks(vec![]);
+                tab.log_manager.set_annotations(vec![]);
                 tab.refresh_visible();
                 (Box::new(NormalMode), KeyResult::Handled)
             }
@@ -138,6 +166,7 @@ mod tests {
             marked_lines: vec![],
             file_hash: None,
             show_line_numbers: false,
+            annotations: vec![],
         }
     }
 

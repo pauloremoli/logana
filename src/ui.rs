@@ -10,6 +10,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::config::Keybindings;
+
 use unicode_width::UnicodeWidthStr;
 
 use crate::search::Search;
@@ -31,7 +33,7 @@ use crate::{
     mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode},
 };
 use crate::{
-    filters::{SEARCH_STYLE_ID, render_line},
+    filters::{MatchCollector, SEARCH_STYLE_ID, render_line},
     mode::{command_mode::CommandMode, filter_mode::FilterManagementMode},
 };
 use crate::{
@@ -72,6 +74,7 @@ pub struct TabState {
     pub command_error: Option<String>,
     pub level_colors: bool,
     pub filtering_enabled: bool,
+    pub show_marks_only: bool,
     pub filter_context: Option<usize>,
     pub editing_filter_id: Option<usize>,
     pub visible_height: usize,
@@ -83,6 +86,8 @@ pub struct TabState {
     pub hidden_fields: HashSet<String>,
     /// JSON field 0-based indices that should be hidden from display.
     pub hidden_field_indices: HashSet<usize>,
+    /// Active keybindings for this tab (shared with App, overwritten after TabState::new).
+    pub keybindings: Arc<Keybindings>,
 }
 
 impl TabState {
@@ -103,6 +108,7 @@ impl TabState {
             command_error: None,
             level_colors: true,
             filtering_enabled: true,
+            show_marks_only: false,
             filter_context: None,
             editing_filter_id: None,
             visible_height: 0,
@@ -111,6 +117,7 @@ impl TabState {
             watch_state: None,
             hidden_fields: HashSet::new(),
             hidden_field_indices: HashSet::new(),
+            keybindings: Arc::new(Keybindings::default()),
         };
         tab.refresh_visible();
         tab
@@ -118,12 +125,22 @@ impl TabState {
 
     /// Recompute which file lines are visible under the current filters.
     pub fn refresh_visible(&mut self) {
-        if !self.filtering_enabled {
+        if self.show_marks_only {
+            let mut indices = self.log_manager.get_marked_indices();
+            indices.retain(|&i| i < self.file_reader.line_count());
+            self.visible_indices = indices;
+        } else if !self.filtering_enabled {
             self.visible_indices = (0..self.file_reader.line_count()).collect();
-            return;
+        } else {
+            let (fm, _) = self.log_manager.build_filter_manager();
+            self.visible_indices = fm.compute_visible(&self.file_reader);
         }
-        let (fm, _) = self.log_manager.build_filter_manager();
-        self.visible_indices = fm.compute_visible(&self.file_reader);
+        // Clamp scroll_offset so it never points past the end of the new visible set.
+        if self.visible_indices.is_empty() {
+            self.scroll_offset = 0;
+        } else {
+            self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
+        }
     }
 
     pub fn scroll_to_line_idx(&mut self, line_idx: usize) {
@@ -135,6 +152,7 @@ impl TabState {
     pub fn to_file_context(&self) -> Option<FileContext> {
         let source = self.log_manager.source_file()?;
         let marked_lines = self.log_manager.get_marked_indices();
+        let annotations = self.log_manager.get_annotations().to_vec();
         let file_hash = LogManager::compute_file_hash(source);
         Some(FileContext {
             source_file: source.to_string(),
@@ -147,6 +165,7 @@ impl TabState {
             marked_lines,
             file_hash,
             show_line_numbers: self.show_line_numbers,
+            annotations,
         })
     }
 
@@ -159,6 +178,9 @@ impl TabState {
         self.horizontal_scroll = ctx.horizontal_scroll;
         if !ctx.marked_lines.is_empty() {
             self.log_manager.set_marks(ctx.marked_lines.clone());
+        }
+        if !ctx.annotations.is_empty() {
+            self.log_manager.set_annotations(ctx.annotations.clone());
         }
         if !ctx.search_query.is_empty() {
             let _ = self
@@ -233,6 +255,8 @@ pub struct App {
     pub file_load_state: Option<FileLoadState>,
     /// In-progress stdin read — separate slot so session-restore cannot overwrite it.
     pub stdin_load_state: Option<StdinLoadState>,
+    /// Shared keybindings — propagated to every new tab.
+    pub keybindings: Arc<Keybindings>,
 }
 
 impl std::fmt::Debug for App {
@@ -245,7 +269,12 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
-    pub async fn new(log_manager: LogManager, file_reader: FileReader, theme: Theme) -> App {
+    pub async fn new(
+        log_manager: LogManager,
+        file_reader: FileReader,
+        theme: Theme,
+        keybindings: Arc<Keybindings>,
+    ) -> App {
         let db = log_manager.db.clone();
 
         let title = log_manager
@@ -263,6 +292,7 @@ impl App {
         let no_data = file_reader.line_count() == 0;
 
         let mut tab = TabState::new(file_reader, log_manager, title);
+        tab.keybindings = keybindings.clone();
 
         // Check for saved context only when we have real data (not a placeholder
         // that will be replaced by a background load started after App::new).
@@ -290,6 +320,7 @@ impl App {
             should_quit: false,
             file_load_state: None,
             stdin_load_state: None,
+            keybindings,
         }
     }
 
@@ -322,6 +353,7 @@ impl App {
 
         let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         let mut tab = TabState::new(file_reader, log_manager, title);
+        tab.keybindings = self.keybindings.clone();
 
         if let Ok(Some(ctx)) = self.db.load_file_context(path).await {
             tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
@@ -437,6 +469,7 @@ impl App {
             if file_reader.line_count() > 0 {
                 let log_manager = LogManager::new(self.db.clone(), None).await;
                 let mut tab = TabState::new(file_reader, log_manager, "stdin".to_string());
+                tab.keybindings = self.keybindings.clone();
                 tab.scroll_offset = tab.visible_indices.len().saturating_sub(1);
                 self.tabs.push(tab);
             }
@@ -503,6 +536,7 @@ impl App {
                     .to_string();
                 let log_manager = LogManager::new(self.db.clone(), Some(path.clone())).await;
                 let mut tab = TabState::new(file_reader, log_manager, title);
+                tab.keybindings = self.keybindings.clone();
                 if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     tab.apply_file_context(&ctx);
                 }
@@ -670,38 +704,31 @@ impl App {
     }
 
     async fn handle_global_key(&mut self, key: KeyCode, modifiers: KeyModifiers) {
-        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
-        match key {
-            KeyCode::Char('q') if modifiers.is_empty() => {
+        let kb = self.keybindings.clone();
+        if kb.global.quit.matches(key, modifiers) {
+            self.save_all_contexts().await;
+            self.should_quit = true;
+        } else if kb.global.next_tab.matches(key, modifiers) {
+            if self.tabs.len() > 1 {
+                self.active_tab = (self.active_tab + 1) % self.tabs.len();
+            }
+        } else if kb.global.prev_tab.matches(key, modifiers) {
+            if self.tabs.len() > 1 {
+                self.active_tab = if self.active_tab == 0 {
+                    self.tabs.len() - 1
+                } else {
+                    self.active_tab - 1
+                };
+            }
+        } else if kb.global.close_tab.matches(key, modifiers) {
+            if self.close_tab().await {
                 self.save_all_contexts().await;
                 self.should_quit = true;
             }
-            KeyCode::Tab => {
-                if self.tabs.len() > 1 {
-                    self.active_tab = (self.active_tab + 1) % self.tabs.len();
-                }
-            }
-            KeyCode::BackTab => {
-                if self.tabs.len() > 1 {
-                    self.active_tab = if self.active_tab == 0 {
-                        self.tabs.len() - 1
-                    } else {
-                        self.active_tab - 1
-                    };
-                }
-            }
-            KeyCode::Char('w') if ctrl => {
-                if self.close_tab().await {
-                    self.save_all_contexts().await;
-                    self.should_quit = true;
-                }
-            }
-            KeyCode::Char('t') if ctrl => {
-                let history = self.tabs[self.active_tab].command_history.clone();
-                self.tabs[self.active_tab].mode =
-                    Box::new(CommandMode::with_history("open ".to_string(), 5, history));
-            }
-            _ => {}
+        } else if kb.global.new_tab.matches(key, modifiers) {
+            let history = self.tabs[self.active_tab].command_history.clone();
+            self.tabs[self.active_tab].mode =
+                Box::new(CommandMode::with_history("open ".to_string(), 5, history));
         }
     }
 
@@ -988,7 +1015,26 @@ impl App {
             .mode
             .selected_filter_index()
             .unwrap_or(0);
-        let status_line = self.tabs[self.active_tab].mode.status_line().to_string();
+        let keybindings = self.tabs[self.active_tab].keybindings.clone();
+        let status_line = self.tabs[self.active_tab]
+            .mode
+            .dynamic_status_line(&keybindings);
+        let visual_anchor: Option<usize> = self.tabs[self.active_tab]
+            .mode
+            .visual_selection_anchor();
+        let annotation_popup: Option<(Vec<String>, usize, usize, usize)> =
+            self.tabs[self.active_tab].mode.annotation_popup();
+        let help_state: Option<(usize, String)> = self.tabs[self.active_tab]
+            .mode
+            .keybindings_help_scroll()
+            .map(|scroll| {
+                let search = self.tabs[self.active_tab]
+                    .mode
+                    .keybindings_help_search()
+                    .unwrap_or("")
+                    .to_string();
+                (scroll, search)
+            });
 
         if is_confirm_restore {
             self.render_confirm_restore_modal(frame);
@@ -1034,7 +1080,7 @@ impl App {
             (main_chunk, None)
         };
 
-        self.render_logs_panel(frame, logs_area);
+        self.render_logs_panel(frame, logs_area, visual_anchor);
 
         self.render_side_bar(frame, selected_filter_idx, sidebar_area);
 
@@ -1058,11 +1104,26 @@ impl App {
             self.render_confirm_restore_session_modal(frame, &files);
         }
 
+        // Annotation popup renders over everything except the loading bar.
+        if let Some((lines, cursor_row, cursor_col, line_count)) = annotation_popup {
+            self.render_annotation_popup(frame, &lines, cursor_row, cursor_col, line_count);
+        }
+
+        // Keybindings help popup renders over everything except the loading bar.
+        if let Some((scroll, search)) = help_state {
+            self.render_keybindings_help_popup(frame, &keybindings, scroll, &search);
+        }
+
         // Loading status bar renders last, on top of everything.
         self.render_loading_status_bar(frame);
     }
 
-    fn render_logs_panel(&mut self, frame: &mut Frame<'_>, logs_area: Rect) {
+    fn render_logs_panel(
+        &mut self,
+        frame: &mut Frame<'_>,
+        logs_area: Rect,
+        visual_anchor: Option<usize>,
+    ) {
         let num_visible = self.tabs[self.active_tab].visible_indices.len();
 
         let visible_height = (logs_area.height as usize).saturating_sub(2);
@@ -1076,7 +1137,8 @@ impl App {
         };
 
         let ln_prefix_width = if show_line_numbers {
-            line_number_width + 1
+            // "{number}{annot_marker}{space}" = line_number_width + 1 (marker) + 1 (space)
+            line_number_width + 2
         } else {
             0
         };
@@ -1182,14 +1244,64 @@ impl App {
         let hidden_fields = self.tabs[self.active_tab].hidden_fields.clone();
         let hidden_field_indices = self.tabs[self.active_tab].hidden_field_indices.clone();
         let _any_hidden = !hidden_fields.is_empty() || !hidden_field_indices.is_empty();
+        // Pre-compute visual selection range (indices into visible_indices space).
+        let visual_range: Option<(usize, usize)> = visual_anchor.map(|anchor| {
+            let lo = anchor.min(current_scroll);
+            let hi = anchor.max(current_scroll);
+            (lo, hi)
+        });
+        // Visual selection highlight colour (same as border bg, distinct from cursor).
+        let visual_style = Style::default()
+            .fg(theme.text)
+            .bg(Color::Rgb(68, 71, 90));
+
+        // Clone annotation data before borrowing visible_indices for iteration.
+        let annotations_for_render: Vec<(Vec<usize>, String)> = self.tabs[self.active_tab]
+            .log_manager
+            .get_annotations()
+            .iter()
+            .map(|a| (a.line_indices.clone(), a.text.clone()))
+            .collect();
+
+        // Two maps built in one pass over annotations × visible window:
+        //   banner_at:         abs_vis_idx → ann_idx  (where a banner header is injected)
+        //   vis_annotation_map: abs_vis_idx → ann_idx  (every visible annotated line)
+        // The latter drives the tree characters (│ / └) on log lines.
+        let mut banner_at: HashMap<usize, usize> = HashMap::new();
+        let mut vis_annotation_map: HashMap<usize, usize> = HashMap::new();
+        for (ann_idx, (line_indices, _)) in annotations_for_render.iter().enumerate() {
+            let ann_set: HashSet<usize> = line_indices.iter().cloned().collect();
+            let mut first_for_ann: Option<usize> = None;
+            for abs_vi in start..end {
+                let li = self.tabs[self.active_tab].visible_indices[abs_vi];
+                if ann_set.contains(&li) {
+                    // First annotation wins when a line belongs to multiple groups.
+                    vis_annotation_map.entry(abs_vi).or_insert(ann_idx);
+                    if first_for_ann.is_none() {
+                        first_for_ann = Some(abs_vi);
+                        banner_at.insert(abs_vi, ann_idx);
+                    }
+                }
+            }
+        }
+
+        // Annotation banner styles.
+        let banner_prefix_style = Style::default()
+            .fg(theme.text_highlight)
+            .add_modifier(Modifier::BOLD);
+        let banner_text_style = Style::default().fg(theme.text);
 
         let log_lines: Vec<Line> = self.tabs[self.active_tab].visible_indices[start..end]
             .iter()
             .enumerate()
-            .map(|(vis_idx, &line_idx)| {
+            .flat_map(|(vis_idx, &line_idx)| {
+                let abs_vis_idx = start + vis_idx;
                 let line_bytes = self.tabs[self.active_tab].file_reader.get_line(line_idx);
-                let is_current = start + vis_idx == current_scroll;
+                let is_current = abs_vis_idx == current_scroll;
                 let is_marked = self.tabs[self.active_tab].log_manager.is_marked(line_idx);
+                let is_visual_selected = visual_range
+                    .map(|(lo, hi)| abs_vis_idx >= lo && abs_vis_idx <= hi)
+                    .unwrap_or(false);
 
                 let mut base_style = Style::default().fg(theme.text);
                 if level_colors {
@@ -1204,9 +1316,12 @@ impl App {
                         .fg(theme.text_highlight)
                         .add_modifier(Modifier::BOLD);
                 }
+                if is_visual_selected {
+                    base_style = visual_style;
+                }
 
                 let render_style = if is_current {
-                    Style::default().fg(theme.text).bg(theme.border)
+                    Style::default().fg(theme.cursor_fg).bg(theme.border)
                 } else {
                     base_style
                 };
@@ -1221,6 +1336,19 @@ impl App {
 
                 let mut line = if let Some(display) = json_display {
                     Line::from(display)
+                } else if is_marked {
+                    // Marked lines: skip filter coloring so the mark style covers the
+                    // whole line. Search highlights still show through.
+                    if let Some(sr) = search_map.get(&line_idx) {
+                        let mut collector = MatchCollector::new(line_bytes);
+                        collector.with_priority(1000);
+                        for &(s, e) in &sr.matches {
+                            collector.push(s, e, SEARCH_STYLE_ID);
+                        }
+                        render_line(&collector, &styles)
+                    } else {
+                        Line::from(std::str::from_utf8(line_bytes).unwrap_or("").to_string())
+                    }
                 } else {
                     let mut collector = filter_manager.evaluate_line(line_bytes);
                     if let Some(sr) = search_map.get(&line_idx) {
@@ -1235,16 +1363,61 @@ impl App {
 
                 if show_line_numbers {
                     let line_num = line_idx + 1;
-                    let line_num_str = format!("{:>width$} ", line_num, width = line_number_width);
-                    let line_num_style = Style::default()
-                        .fg(theme.border)
-                        .add_modifier(Modifier::DIM);
+                    // Tree character: │ for mid-group lines, └ for the last line of a group,
+                    // space for non-annotated lines.
+                    let (tree_char, ln_fg) =
+                        if let Some(&ann_idx) = vis_annotation_map.get(&abs_vis_idx) {
+                            let next_same =
+                                vis_annotation_map.get(&(abs_vis_idx + 1)) == Some(&ann_idx);
+                            let ch = if next_same { "│" } else { "└" };
+                            (ch, theme.text_highlight)
+                        } else {
+                            (" ", theme.border)
+                        };
+                    // Format: {tree_char}{line_num right-aligned}{space}
+                    // Total width = 1 + line_number_width + 1 = ln_prefix_width ✓
+                    let line_num_str =
+                        format!("{}{:>width$} ", tree_char, line_num, width = line_number_width);
+                    let line_num_style =
+                        Style::default().fg(ln_fg).add_modifier(Modifier::DIM);
                     let mut all_spans = vec![Span::styled(line_num_str, line_num_style)];
+                    // Extra indent padding for lines nested under an annotation banner.
+                    if vis_annotation_map.contains_key(&abs_vis_idx) {
+                        all_spans.push(Span::raw("  "));
+                    }
                     all_spans.extend(line.spans);
-                    Line::from(all_spans).style(render_style)
-                } else {
-                    line
+                    line = Line::from(all_spans).style(render_style);
                 }
+
+                // Optionally prepend an annotation banner before the first annotated line in view.
+                // Tree-prefix strings are ln_prefix_width wide so annotation text aligns with
+                // log content:  "├" + "─"*(w-2) + " "  and  "│" + " "*(w-2) + " "
+                let mut result: Vec<Line> = Vec::new();
+                if let Some(&ann_idx) = banner_at.get(&abs_vis_idx) {
+                    let (_, text) = &annotations_for_render[ann_idx];
+                    let (first_prefix, cont_prefix) = if show_line_numbers && ln_prefix_width >= 2 {
+                        (
+                            format!("├{} ", "─".repeat(ln_prefix_width - 2)),
+                            format!("│{} ", " ".repeat(ln_prefix_width - 2)),
+                        )
+                    } else {
+                        ("├── ".to_string(), "│   ".to_string())
+                    };
+                    for (i, text_line) in text.lines().enumerate() {
+                        let (prefix, p_style) = if i == 0 {
+                            (first_prefix.clone(), banner_prefix_style)
+                        } else {
+                            (cont_prefix.clone(), banner_text_style)
+                        };
+                        let spans = vec![
+                            Span::styled(prefix, p_style),
+                            Span::styled(text_line.to_string(), banner_text_style),
+                        ];
+                        result.push(Line::from(spans).style(banner_text_style));
+                    }
+                }
+                result.push(line);
+                result
             })
             .collect();
 
@@ -1368,6 +1541,160 @@ impl App {
         )
         .style(Style::default().bg(self.theme.root_bg));
         frame.render_widget(modal, modal_area);
+    }
+
+    fn render_keybindings_help_popup(
+        &mut self,
+        frame: &mut Frame<'_>,
+        keybindings: &Keybindings,
+        scroll: usize,
+        search: &str,
+    ) {
+        use crate::mode::keybindings_help_mode::{HelpRow, build_help_rows, filter_rows};
+
+        let area = frame.size();
+        let popup_width = (area.width.saturating_sub(4)).min(72).max(40);
+        // height: up to 80% of screen, min 10
+        let popup_height = (area.height * 4 / 5).max(10).min(area.height.saturating_sub(2));
+        let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        // Inner area: popup minus borders (2) minus search bar (1) minus search separator (1)
+        let inner_h = popup_height.saturating_sub(4) as usize; // 2 borders + 1 search + 1 sep
+        let col_w = (popup_width.saturating_sub(2)) as usize; // inside left/right borders
+
+        // Build and filter rows
+        let all_rows = build_help_rows(keybindings);
+        let rows = filter_rows(&all_rows, search);
+
+        // Clamp scroll
+        let total = rows.len();
+        let scroll = scroll.min(total.saturating_sub(inner_h));
+
+        let visible: Vec<&HelpRow> = rows.iter().skip(scroll).take(inner_h).collect();
+
+        // Render each row as a ratatui Line
+        let key_col = 16usize; // width reserved for the key string on the right
+        let action_col = col_w.saturating_sub(key_col + 2);
+
+        let mut lines: Vec<Line> = Vec::new();
+        for row in &visible {
+            match row {
+                HelpRow::Header(title) => {
+                    let bar = "─".repeat(col_w.saturating_sub(title.len() + 3));
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("── {} {}", title, bar),
+                            Style::default()
+                                .fg(self.theme.text_highlight)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                }
+                HelpRow::Entry { action, keys } => {
+                    // Truncate if necessary
+                    let action_str = if action.len() > action_col {
+                        &action[..action_col]
+                    } else {
+                        action.as_str()
+                    };
+                    let keys_str = if keys.len() > key_col {
+                        &keys[..key_col]
+                    } else {
+                        keys.as_str()
+                    };
+                    let padding = action_col.saturating_sub(action_str.len());
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  {}{} ", action_str, " ".repeat(padding)),
+                            Style::default().fg(self.theme.text),
+                        ),
+                        Span::styled(
+                            keys_str.to_string(),
+                            Style::default()
+                                .fg(self.theme.text_highlight)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                }
+            }
+        }
+
+        // Pad remaining lines
+        while lines.len() < inner_h {
+            lines.push(Line::from(""));
+        }
+
+        // Build the outer block (with scrollbar if needed)
+        let title = if search.is_empty() {
+            " Keybindings Help (?/q/Esc to close) ".to_string()
+        } else {
+            format!(" Keybindings Help  /{}█ ", search)
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.border_title))
+            .title(title)
+            .title_style(
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .title_alignment(Alignment::Center)
+            .style(Style::default().bg(self.theme.root_bg));
+
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        // Split inner into search bar, separator, content
+        let vsplit = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // search bar
+                Constraint::Length(1), // separator
+                Constraint::Min(1),    // content
+            ])
+            .split(inner);
+
+        // Search bar
+        let search_display = if search.is_empty() {
+            Span::styled(
+                "  type to filter…",
+                Style::default().fg(self.theme.border),
+            )
+        } else {
+            Span::styled(
+                format!("  /{}", search),
+                Style::default().fg(self.theme.text),
+            )
+        };
+        frame.render_widget(Paragraph::new(Line::from(search_display)), vsplit[0]);
+
+        // Separator
+        let sep = "─".repeat(vsplit[1].width as usize);
+        frame.render_widget(
+            Paragraph::new(sep).style(Style::default().fg(self.theme.border)),
+            vsplit[1],
+        );
+
+        // Content paragraph + scrollbar
+        let content_area = vsplit[2];
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(self.theme.root_bg)),
+            content_area,
+        );
+
+        if total > inner_h {
+            let mut sb_state = ScrollbarState::new(total.saturating_sub(inner_h)).position(scroll);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                content_area,
+                &mut sb_state,
+            );
+        }
     }
 
     fn render_loading_status_bar(&mut self, frame: &mut Frame<'_>) {
@@ -1647,7 +1974,9 @@ impl App {
                 })
                 .collect();
 
-            let sidebar_title = if self.tabs[self.active_tab].filtering_enabled {
+            let sidebar_title = if self.tabs[self.active_tab].show_marks_only {
+                "Filters [MARKS ONLY]"
+            } else if self.tabs[self.active_tab].filtering_enabled {
                 "Filters"
             } else {
                 "Filters [OFF]"
@@ -1703,6 +2032,97 @@ impl App {
             frame.render_widget(tab_bar, tab_bar_area);
         }
     }
+
+    fn render_annotation_popup(
+        &mut self,
+        frame: &mut Frame<'_>,
+        lines: &[String],
+        cursor_row: usize,
+        cursor_col: usize,
+        line_count: usize,
+    ) {
+        let area = frame.size();
+        let popup_width = area.width.saturating_sub(8).min(70).max(40);
+        let text_rows = lines.len().max(1) as u16;
+        // borders(2) + text editor rows + separator(1) + footer(1)
+        let popup_height = (text_rows + 4).min(area.height.saturating_sub(4)).max(6);
+        let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.border_title))
+            .title(format!(" Annotation ({} lines) ", line_count))
+            .title_style(
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .title_alignment(Alignment::Center)
+            .style(Style::default().bg(self.theme.root_bg));
+
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        // Split inner into: [text editor (growable), separator (1 row), footer (1 row)]
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+
+        // Text editor
+        let text_lines: Vec<Line> = lines.iter().map(|l| Line::from(l.as_str())).collect();
+        frame.render_widget(
+            Paragraph::new(text_lines)
+                .style(Style::default().fg(self.theme.text).bg(self.theme.root_bg)),
+            chunks[0],
+        );
+
+        // Separator
+        let sep_text = "─".repeat(chunks[1].width as usize);
+        frame.render_widget(
+            Paragraph::new(sep_text)
+                .style(Style::default().fg(self.theme.border).bg(self.theme.root_bg)),
+            chunks[1],
+        );
+
+        // Footer hints
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "[Ctrl+S]",
+                    Style::default()
+                        .fg(self.theme.text_highlight)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" Save  ", Style::default().fg(self.theme.text)),
+                Span::styled(
+                    "[Esc]",
+                    Style::default()
+                        .fg(self.theme.text_highlight)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" Cancel", Style::default().fg(self.theme.text)),
+            ]))
+            .style(Style::default().bg(self.theme.root_bg)),
+            chunks[2],
+        );
+
+        // Position cursor inside the text editor area
+        let text_area = chunks[0];
+        let cur_x = text_area.x + cursor_col as u16;
+        let cur_y = text_area.y + cursor_row as u16;
+        if cur_x < text_area.x + text_area.width && cur_y < text_area.y + text_area.height {
+            frame.set_cursor(cur_x, cur_y);
+        }
+    }
 }
 
 /// Number of terminal rows a line occupies when wrapped to `inner_width` columns.
@@ -1741,6 +2161,7 @@ fn count_wrapped_lines(text: &str, width: usize) -> usize {
 mod tests {
     use super::*;
     use crate::auto_complete::shell_split;
+    use crate::config::Keybindings;
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
@@ -1756,7 +2177,13 @@ mod tests {
 
     async fn make_app(lines: &[&str]) -> App {
         let (file_reader, log_manager) = make_tab(lines).await;
-        App::new(log_manager, file_reader, Theme::default()).await
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await
     }
 
     #[tokio::test]
@@ -1822,7 +2249,9 @@ mod tests {
     async fn test_filter_reduces_visible() {
         let lines = vec!["INFO something", "WARN warning", "ERROR error"];
         let (file_reader, log_manager) = make_tab(&lines).await;
-        let mut app = App::new(log_manager, file_reader, Theme::default()).await;
+        let mut app =
+            App::new(log_manager, file_reader, Theme::default(), Arc::new(Keybindings::default()))
+                .await;
 
         assert_eq!(app.tab().visible_indices.len(), 3);
 
@@ -1835,7 +2264,9 @@ mod tests {
     async fn test_mark_toggle() {
         let lines = vec!["line0", "line1", "line2"];
         let (file_reader, log_manager) = make_tab(&lines).await;
-        let mut app = App::new(log_manager, file_reader, Theme::default()).await;
+        let mut app =
+            App::new(log_manager, file_reader, Theme::default(), Arc::new(Keybindings::default()))
+                .await;
 
         app.tab_mut().scroll_offset = 0;
         app.handle_key_event_with_modifiers(KeyCode::Char('m'), KeyModifiers::NONE)
@@ -1851,7 +2282,9 @@ mod tests {
     async fn test_scroll_g_key() {
         let lines: Vec<&str> = (0..20).map(|_| "line").collect();
         let (file_reader, log_manager) = make_tab(&lines).await;
-        let mut app = App::new(log_manager, file_reader, Theme::default()).await;
+        let mut app =
+            App::new(log_manager, file_reader, Theme::default(), Arc::new(Keybindings::default()))
+                .await;
 
         // 'G' goes to end
         app.handle_key_event_with_modifiers(KeyCode::Char('G'), KeyModifiers::NONE)

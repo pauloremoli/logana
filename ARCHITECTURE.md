@@ -16,6 +16,7 @@ src/
   search.rs       - Regex search with match positions and wrapping navigation
   ui.rs           - Ratatui TUI (App, TabState, AppMode, rendering, keybindings)
   theme.rs        - JSON-based theme loading and color management
+  config.rs       - JSON config file loading (Config, Keybindings, KeyBinding)
   log_line.rs     - Syslog/journalctl line parser (LogLine)
   auto_complete.rs - Tab completion for commands, colors, and file paths
   commands.rs     - Clap-based command definitions for the command bar
@@ -41,7 +42,10 @@ Persisted to SQLite. Renamed from `Filter` to avoid conflict with the `Filter` t
 **SearchResult**: `{ line_idx: usize, matches: Vec<(start, end)> }`
 Byte positions within the line.
 
-**FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll).
+**Annotation**: `{ text: String, line_indices: Vec<usize> }`
+A multiline comment attached to a group of log lines. Multiple annotations can exist per session. `text` is newline-joined and `line_indices` are raw file-line indices (same space as `visible_indices`).
+
+**FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll, annotations).
 
 ## Architecture Layers
 
@@ -70,10 +74,11 @@ Byte positions within the line.
 
 ### Log Manager (log_manager.rs)
 
-- **`LogManager`**: Owns `filter_defs: Vec<FilterDef>` (in-memory, DB-backed) and `marks: HashSet<usize>` (in-memory only). Does **not** own the `FileReader`.
+- **`LogManager`**: Owns `filter_defs: Vec<FilterDef>` (in-memory, DB-backed), `marks: HashSet<usize>` (in-memory only), and `annotations: Vec<Annotation>` (in-memory only). Does **not** own the `FileReader`.
 - **Filter CRUD**: `add_filter_with_color`, `remove_filter`, `toggle_filter`, `edit_filter`, `move_filter_up/down`, `set_color_config`, `clear_filters`, `save_filters` (JSON), `load_filters` (JSON).
 - **`build_filter_manager() -> (FilterManager, Vec<Style>)`**: Converts enabled `FilterDef`s into a renderable `FilterManager` + parallel style palette (one `Style` per enabled filter, indexed by `StyleId`).
 - **Marks**: `toggle_mark`, `is_marked`, `get_marked_indices`, `get_marked_lines(&FileReader)`.
+- **Annotations**: `add_annotation(text, line_indices)`, `get_annotations() -> &[Annotation]`, `has_annotation(line_idx) -> bool`, `set_annotations(Vec<Annotation>)`. Multiple annotation groups can share the same log lines.
 - **DB bridge**: Filter mutations write to SQLite via `rt.block_on()` (inserts) or `rt.spawn()` (fire-and-forget updates/deletes). On construction, filters are loaded from DB via `reload_filters_from_db()`.
 - **File hash**: `compute_file_hash(path)` hashes file size + mtime for change detection.
 
@@ -96,7 +101,7 @@ Byte positions within the line.
 
 ### UI (ui.rs)
 
-- **`App`** owns a `Vec<TabState>` plus the global theme.
+- **`App`** owns a `Vec<TabState>`, the global theme, and an `Arc<Keybindings>` shared across all tabs.
 - **`TabState`** owns:
   - `file_reader: FileReader` — the backing log data
   - `log_manager: LogManager` — filter defs and marks
@@ -104,9 +109,10 @@ Byte positions within the line.
   - `scroll_offset: usize` — selected line (index into `visible_indices`)
   - `viewport_offset: usize` — first rendered line (index into `visible_indices`)
   - `visible_height: usize` — content rows available (updated each render frame)
+  - `keybindings: Arc<Keybindings>` — shared keybinding config (cloned from `App` on tab creation)
   - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
-- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`. Rendering data is exposed through trait methods: `status_line()`, `selected_filter_index()`, `command_state()`, `search_state()`, `needs_input_bar()`, `confirm_restore_context()`, `confirm_restore_session_files()`.
+- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `VisualLineMode`, `AnnotationMode`, `KeybindingsHelpMode`. Rendering data is exposed through trait methods: `status_line()`, `dynamic_status_line(&Keybindings)`, `selected_filter_index()`, `command_state()`, `search_state()`, `needs_input_bar()`, `confirm_restore_context()`, `confirm_restore_session_files()`, `visual_selection_anchor()`, `annotation_popup()`, `keybindings_help_scroll()`, `keybindings_help_search()`.
 - **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`.
 
 **Rendering pipeline (per frame)**:
@@ -118,11 +124,37 @@ Byte positions within the line.
 6. For each line in `[start..end]`: evaluate filters (`evaluate_line`), overlay search spans at priority 1000, apply level colours and mark styles, compose final `Line` via `render_line`.
 7. `line_row_count(bytes, inner_width)` uses `unicode_width` to compute `ceil(display_width / inner_width)`, keeping wrap-aware viewport math precise.
 
-**Vim keybindings**: j/k, gg/G, Ctrl+d/u (half page), PageUp/Down, /, ?, n/N, m (mark)
+**Vim keybindings**: j/k, gg/G, Ctrl+d/u (half page), PageUp/Down, /, ?, n/N, m (mark), V (visual select)
+**Visual line mode** (`V`): anchor at current line, j/k extend selection, `c` opens annotation editor, Esc cancel. Selected range highlighted in the log panel.
+**Annotation mode**: multiline text editor (Enter = newline, Backspace = delete/merge, Left/Right wrap lines, Up/Down move rows, Shift+Enter = save (configurable), Esc = cancel). Rendered as a floating popup. Annotated lines show a `◆` indicator in the line-number margin.
+**Keybindings help** (`F1`): floating popup listing all configured keybindings grouped by mode. Type to fuzzy-search, j/k scroll, Esc/q/F1 close. The status bar reflects the actual configured keybinding strings.
+**Conflict validation**: at startup `Keybindings::validate()` checks for overlapping bindings within each mode scope; conflicts are printed to stderr and logged as warnings.
 **Multi-tab**: Tab/Shift+Tab switch, Ctrl+t open, Ctrl+w close
 **Command mode** (`:`) with tab completion, history, live hints
 **Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`
 **Filter management mode** (`f`): navigate, toggle, delete, edit, set color, add include/exclude
+
+### Config (config.rs)
+
+- **Config file**: `~/.config/logsmith-rs/config.json` (loaded at startup; falls back to defaults on parse/IO error — never prevents startup).
+- **`Config`**: `{ theme: Option<String>, keybindings: Keybindings }`. `theme` is a theme name without the `.json` extension (e.g. `"dracula"`).
+- **`Keybindings`**: groups `NormalKeybindings`, `FilterKeybindings`, `GlobalKeybindings`, `AnnotationKeybindings` — each with `#[serde(default)]` so any absent field uses its built-in default.
+- **`KeyBindings`** (per action): a `Vec<KeyBinding>` — each action supports multiple alternative keys (e.g. `"j"` and `"Down"` for scroll down). Accepts a single JSON string or an array of strings.
+- **`KeyBinding`**: parsed from strings like `"j"`, `"Ctrl+d"`, `"Shift+Tab"`, `"F1"`, `"PageDown"`, `"Space"`, `"Esc"`. `"Shift+Tab"` maps to `KeyCode::BackTab`. `matches(key, modifiers)`: for `Char` keys accepts `NONE` or `SHIFT` (terminals vary); for non-`Char` keys (Enter, F-keys, etc.) requires an exact SHIFT match so `"Shift+Enter"` ≠ plain `"Enter"`.
+- **`Keybindings::validate() -> Vec<String>`**: checks all (action, keybinding) pairs within each mode scope (normal + global, filter + global) for overlaps and returns human-readable conflict descriptions. Called at startup; conflicts are printed to stderr and logged.
+- **Sharing**: `Arc<Keybindings>` is held by `App` and cloned into each `TabState` when tabs are created (including session restores and new tabs opened via commands).
+- **Default keybindings** exactly match the previously hardcoded key assignments, so the config file is fully optional. Default for `annotation.save` is `Shift+Enter`; `normal.show_keybindings` is `F1`.
+
+Example `~/.config/logsmith-rs/config.json`:
+```json
+{
+  "theme": "dracula",
+  "keybindings": {
+    "normal": { "scroll_down": ["j", "Down"], "half_page_down": "Ctrl+d" },
+    "global": { "quit": "q" }
+  }
+}
+```
 
 ### Theme (theme.rs)
 
@@ -148,12 +180,13 @@ Byte positions within the line.
 
 1. Parse CLI args (optional file path).
 2. Init tokio runtime + SQLite DB (`~/.local/share/logsmith-rs/logsmith.db`).
-3. Build `FileReader` from file path (mmap) or stdin (bytes).
-4. Build `LogManager` — loads filters from DB for this source.
-5. Enter terminal raw mode, create `App` with theme.
-6. If a file was opened: check for saved `FileContext`, prompt per-file restore (`ConfirmRestoreMode`). If no file and no piped data: check for a saved session (`session_tabs`), prompt session restore (`ConfirmRestoreSessionMode`). On confirm, all session files are opened and their per-file contexts auto-applied without additional prompts.
-7. **Event loop** (250ms poll): render frame → wait for key event → handle key → repeat.
-8. On exit: save `FileContext` for each tab + save the session (list of open source files), restore terminal.
+3. Load `Config` from `~/.config/logsmith-rs/config.json` (or defaults on missing/parse error).
+4. Build `FileReader` from file path (mmap) or stdin (bytes).
+5. Build `LogManager` — loads filters from DB for this source.
+6. Enter terminal raw mode, create `App` with theme and `Arc<Keybindings>`.
+7. If a file was opened: check for saved `FileContext`, prompt per-file restore (`ConfirmRestoreMode`). If no file and no piped data: check for a saved session (`session_tabs`), prompt session restore (`ConfirmRestoreSessionMode`). On confirm, all session files are opened and their per-file contexts auto-applied without additional prompts.
+8. **Event loop** (250ms poll): render frame → wait for key event → handle key → repeat.
+9. On exit: save `FileContext` for each tab + save the session (list of open source files), restore terminal.
 
 ## Dependencies
 
@@ -161,7 +194,7 @@ anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, se
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui.rs, auto_complete.rs — 82 tests total
+- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui.rs, auto_complete.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs — 322 tests total
 - **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
 - **Stdin test** (tests/stdin.rs): pipe input end-to-end — 1 test
 - **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)

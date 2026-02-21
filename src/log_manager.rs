@@ -8,7 +8,7 @@ use ratatui::style::{Color, Style};
 use crate::db::{Database, FilterStore};
 use crate::file_reader::FileReader;
 use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter};
-use crate::types::{ColorConfig, FilterDef, FilterType};
+use crate::types::{Annotation, ColorConfig, FilterDef, FilterType};
 
 /// Manages filter definitions (persisted to SQLite), marks (in-memory), and
 /// the mapping to a renderable `FilterManager` + style palette.
@@ -20,6 +20,7 @@ pub struct LogManager {
     source_file: Option<String>,
     filter_defs: Vec<FilterDef>,
     marks: HashSet<usize>,
+    annotations: Vec<Annotation>,
 }
 
 impl LogManager {
@@ -29,6 +30,7 @@ impl LogManager {
             source_file,
             filter_defs: Vec::new(),
             marks: HashSet::new(),
+            annotations: Vec::new(),
         };
         mgr.reload_filters_from_db().await;
         mgr
@@ -98,7 +100,7 @@ impl LogManager {
             self.filter_defs.iter().map(|f| f.id).max().unwrap_or(0) + 1
         };
 
-        self.filter_defs.push(FilterDef {
+        self.filter_defs.insert(0, FilterDef {
             id: next_id,
             pattern,
             filter_type,
@@ -263,6 +265,30 @@ impl LogManager {
             .collect()
     }
 
+    // ── Annotations ──────────────────────────────────────────────────────────
+
+    /// Append a new annotation for the given line indices.
+    pub fn add_annotation(&mut self, text: String, line_indices: Vec<usize>) {
+        if !line_indices.is_empty() {
+            self.annotations.push(Annotation { text, line_indices });
+        }
+    }
+
+    pub fn get_annotations(&self) -> &[Annotation] {
+        &self.annotations
+    }
+
+    /// Returns true if `line_idx` belongs to at least one annotation.
+    pub fn has_annotation(&self, line_idx: usize) -> bool {
+        self.annotations
+            .iter()
+            .any(|a| a.line_indices.contains(&line_idx))
+    }
+
+    pub fn set_annotations(&mut self, annotations: Vec<Annotation>) {
+        self.annotations = annotations;
+    }
+
     // ── Filter-manager construction ──────────────────────────────────────────
 
     /// Build a `FilterManager` and its associated `Vec<Style>` from the current
@@ -369,10 +395,11 @@ mod tests {
 
         let filters = mgr.get_filters();
         assert_eq!(filters.len(), 2);
-        assert_eq!(filters[0].pattern, "error");
-        assert_eq!(filters[0].filter_type, FilterType::Include);
-        assert_eq!(filters[1].pattern, "debug");
-        assert_eq!(filters[1].filter_type, FilterType::Exclude);
+        // Newest first: "debug" was added second so it sits at index 0
+        assert_eq!(filters[0].pattern, "debug");
+        assert_eq!(filters[0].filter_type, FilterType::Exclude);
+        assert_eq!(filters[1].pattern, "error");
+        assert_eq!(filters[1].filter_type, FilterType::Include);
     }
 
     #[tokio::test]
@@ -398,9 +425,10 @@ mod tests {
             .await;
         let id = mgr.get_filters()[0].id;
 
+        // "debug" was added second → it is at index 0; removing it leaves "error"
         mgr.remove_filter(id).await;
         assert_eq!(mgr.get_filters().len(), 1);
-        assert_eq!(mgr.get_filters()[0].pattern, "debug");
+        assert_eq!(mgr.get_filters()[0].pattern, "error");
     }
 
     #[tokio::test]
@@ -424,20 +452,26 @@ mod tests {
         mgr.add_filter_with_color("third".into(), FilterType::Include, None, None, false)
             .await;
 
+        // After three inserts (newest first): ["third", "second", "first"]
+        // "second" is at index 1
         let id_second = mgr.get_filters()[1].id;
         mgr.move_filter_up(id_second).await;
 
-        let filters = mgr.get_filters();
-        assert_eq!(filters[0].pattern, "second");
-        assert_eq!(filters[1].pattern, "first");
-
-        let id_first = mgr.get_filters()[1].id;
-        mgr.move_filter_down(id_first).await;
-
+        // Swaps [1] and [0]: ["second", "third", "first"]
         let filters = mgr.get_filters();
         assert_eq!(filters[0].pattern, "second");
         assert_eq!(filters[1].pattern, "third");
         assert_eq!(filters[2].pattern, "first");
+
+        // "third" is now at index 1
+        let id_third = mgr.get_filters()[1].id;
+        mgr.move_filter_down(id_third).await;
+
+        // Swaps [1] and [2]: ["second", "first", "third"]
+        let filters = mgr.get_filters();
+        assert_eq!(filters[0].pattern, "second");
+        assert_eq!(filters[1].pattern, "first");
+        assert_eq!(filters[2].pattern, "third");
     }
 
     #[tokio::test]
@@ -523,8 +557,10 @@ mod tests {
 
         let filters = mgr2.get_filters();
         assert_eq!(filters.len(), 2);
-        assert_eq!(filters[0].pattern, "error");
-        assert_eq!(filters[1].pattern, "debug");
+        // save_filters preserves in-memory order (newest first): ["debug", "error"]
+        // replace_all_filters assigns display_order 0, 1 to that slice → same order on reload
+        assert_eq!(filters[0].pattern, "debug");
+        assert_eq!(filters[1].pattern, "error");
     }
 
     #[tokio::test]
