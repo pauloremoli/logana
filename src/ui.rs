@@ -1018,7 +1018,7 @@ impl App {
         let keybindings = self.tabs[self.active_tab].keybindings.clone();
         let status_line = self.tabs[self.active_tab]
             .mode
-            .dynamic_status_line(&keybindings);
+            .dynamic_status_line(&keybindings, &self.theme);
         let visual_anchor: Option<usize> = self.tabs[self.active_tab]
             .mode
             .visual_selection_anchor();
@@ -1043,7 +1043,8 @@ impl App {
 
         // Compute how many rows the status bar needs so wrapped text is fully visible.
         let inner_width = (size.width as usize).saturating_sub(2); // minus 2 for L/R borders
-        let content_lines = count_wrapped_lines(&status_line, inner_width);
+        let status_text: String = status_line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let content_lines = count_wrapped_lines(&status_text, inner_width);
         let status_height = (content_lines + 2).min(6).max(3) as u16; // +2 for borders
 
         let mut constraints = vec![];
@@ -1095,7 +1096,7 @@ impl App {
                     .border_style(Style::default().fg(self.theme.border)),
             )
             .wrap(Wrap { trim: true })
-            .style(Style::default().fg(self.theme.text));
+            .style(Style::default().bg(self.theme.root_bg));
         frame.render_widget(command_list, *chunks.last().unwrap());
 
         // Session restore modal renders on top of the full TUI so stdin content
@@ -1577,47 +1578,47 @@ impl App {
         let visible: Vec<&HelpRow> = rows.iter().skip(scroll).take(inner_h).collect();
 
         // Render each row as a ratatui Line
-        let key_col = 16usize; // width reserved for the key string on the right
-        let action_col = col_w.saturating_sub(key_col + 2);
+        // Layout: " <KEY>  ACTION"
+        //   1 space + "<" + key (up to key_col) + ">" + gap + action
+        let key_col = 14usize;
+        let action_col = col_w.saturating_sub(key_col + 5);
 
         let mut lines: Vec<Line> = Vec::new();
         for row in &visible {
             match row {
                 HelpRow::Header(title) => {
                     let bar = "─".repeat(col_w.saturating_sub(title.len() + 3));
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("── {} {}", title, bar),
-                            Style::default()
-                                .fg(self.theme.text_highlight)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("── {} {}", title, bar),
+                        Style::default()
+                            .fg(self.theme.text_highlight)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
                 }
                 HelpRow::Entry { action, keys } => {
-                    // Truncate if necessary
-                    let action_str = if action.len() > action_col {
-                        &action[..action_col]
-                    } else {
-                        action.as_str()
-                    };
                     let keys_str = if keys.len() > key_col {
                         &keys[..key_col]
                     } else {
                         keys.as_str()
                     };
-                    let padding = action_col.saturating_sub(action_str.len());
+                    let action_str = if action.len() > action_col {
+                        &action[..action_col]
+                    } else {
+                        action.as_str()
+                    };
+                    let gap = " ".repeat(key_col.saturating_sub(keys_str.len()));
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("  {}{} ", action_str, " ".repeat(padding)),
-                            Style::default().fg(self.theme.text),
-                        ),
+                        Span::raw(" "),
+                        Span::styled("<", Style::default().fg(self.theme.border)),
                         Span::styled(
                             keys_str.to_string(),
                             Style::default()
                                 .fg(self.theme.text_highlight)
                                 .add_modifier(Modifier::BOLD),
                         ),
+                        Span::styled(">", Style::default().fg(self.theme.border)),
+                        Span::raw(format!("{}  ", gap)),
+                        Span::styled(action_str.to_string(), Style::default().fg(self.theme.text)),
                     ]));
                 }
             }

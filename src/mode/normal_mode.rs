@@ -1,13 +1,19 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 use crate::{
     config::Keybindings,
     mode::{
-        app_mode::Mode, command_mode::CommandMode, filter_mode::FilterManagementMode,
-        keybindings_help_mode::KeybindingsHelpMode, search_mode::SearchMode,
+        app_mode::{status_entry, Mode},
+        command_mode::CommandMode,
+        filter_mode::FilterManagementMode,
+        keybindings_help_mode::KeybindingsHelpMode,
+        search_mode::SearchMode,
         visual_mode::VisualLineMode,
     },
+    theme::Theme,
     ui::{KeyResult, TabState},
 };
 
@@ -235,20 +241,34 @@ impl Mode for NormalMode {
         "[NORMAL] [q]uit | [f]ilter mode | [F] toggle filtering | [m]ark | [M] marks only | [s]idebar | [V]isual select | Tab/Shift+Tab switch tab | [F1] help"
     }
 
-    fn dynamic_status_line(&self, kb: &Keybindings) -> String {
-        format!(
-            "[NORMAL] [{}]uit | [{}]ilter | [{}] tog.filter | [{}]ark | [{}] marks only | [{}]idebar | [{}]isual | [{}] help | {}/{} tabs",
-            kb.global.quit.display(),
-            kb.normal.filter_mode.display(),
-            kb.normal.toggle_filtering.display(),
-            kb.normal.mark_line.display(),
-            kb.normal.toggle_marks_only.display(),
-            kb.normal.toggle_sidebar.display(),
-            kb.normal.visual_mode.display(),
-            kb.normal.show_keybindings.display(),
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[NORMAL]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        status_entry(&mut spans, kb.global.quit.display(), "quit", theme);
+        status_entry(&mut spans, kb.normal.filter_mode.display(), "filter", theme);
+        status_entry(&mut spans, kb.normal.toggle_filtering.display(), "tog.filter", theme);
+        status_entry(&mut spans, kb.normal.mark_line.display(), "mark", theme);
+        status_entry(&mut spans, kb.normal.toggle_marks_only.display(), "marks only", theme);
+        status_entry(&mut spans, kb.normal.toggle_sidebar.display(), "sidebar", theme);
+        status_entry(&mut spans, kb.normal.visual_mode.display(), "visual", theme);
+        status_entry(&mut spans, kb.normal.show_keybindings.display(), "help", theme);
+        // Tab switching: <next/prev> tabs
+        spans.push(Span::styled("<", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
             kb.global.next_tab.display(),
+            Style::default().fg(theme.text_highlight).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
             kb.global.prev_tab.display(),
-        )
+            Style::default().fg(theme.text_highlight).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("> tabs", Style::default().fg(theme.text)));
+        Line::from(spans)
     }
 }
 

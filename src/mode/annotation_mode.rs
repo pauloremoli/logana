@@ -1,9 +1,12 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 use crate::{
     config::Keybindings,
-    mode::{app_mode::Mode, normal_mode::NormalMode},
+    mode::{app_mode::{status_entry, Mode}, normal_mode::NormalMode},
+    theme::Theme,
     ui::{KeyResult, TabState},
 };
 
@@ -134,11 +137,19 @@ impl Mode for AnnotationMode {
         "[ANNOTATION] Type annotation text | [Shift+Enter] Save | [Esc] Cancel"
     }
 
-    fn dynamic_status_line(&self, kb: &Keybindings) -> String {
-        format!(
-            "[ANNOTATION] Type annotation text | [{}] Save | [Esc] Cancel",
-            kb.annotation.save.display()
-        )
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![
+            Span::styled(
+                "[ANNOTATION]  ",
+                Style::default()
+                    .fg(theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("type text  ", Style::default().fg(theme.text)),
+        ];
+        status_entry(&mut spans, kb.annotation.save.display(), "save", theme);
+        status_entry(&mut spans, "Esc".to_string(), "cancel", theme);
+        Line::from(spans)
     }
 
     fn annotation_popup(&self) -> Option<(Vec<String>, usize, usize, usize)> {

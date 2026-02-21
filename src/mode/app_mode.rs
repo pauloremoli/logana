@@ -1,10 +1,13 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 use crate::{
     config::Keybindings,
     db::FileContext,
     mode::normal_mode::NormalMode,
+    theme::Theme,
     ui::{KeyResult, TabState},
 };
 
@@ -19,10 +22,13 @@ pub trait Mode: std::fmt::Debug + Send {
 
     fn status_line(&self) -> &str;
 
-    /// Like `status_line` but may substitute actual configured keybinding strings.
-    /// Default implementation just converts `status_line()` to `String`.
-    fn dynamic_status_line(&self, _kb: &Keybindings) -> String {
-        self.status_line().to_string()
+    /// Like `status_line` but returns a styled `Line` with `<KEY> action` spans.
+    /// Default implementation wraps the static status string in theme text color.
+    fn dynamic_status_line(&self, _kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        Line::from(Span::styled(
+            self.status_line().to_string(),
+            Style::default().fg(theme.text),
+        ))
     }
 
     /// Returns `Some(scroll_offset)` when a keybindings help popup is active.
@@ -63,6 +69,28 @@ pub trait Mode: std::fmt::Debug + Send {
     fn annotation_popup(&self) -> Option<(Vec<String>, usize, usize, usize)> {
         None
     }
+}
+
+/// Appends a styled `<key> action  ` entry to `spans`.
+/// Used by mode implementations to build the status bar line.
+pub fn status_entry(
+    spans: &mut Vec<Span<'static>>,
+    key: String,
+    action: &'static str,
+    theme: &Theme,
+) {
+    spans.push(Span::styled("<", Style::default().fg(theme.border)));
+    spans.push(Span::styled(
+        key,
+        Style::default()
+            .fg(theme.text_highlight)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(">", Style::default().fg(theme.border)));
+    spans.push(Span::styled(
+        format!(" {}  ", action),
+        Style::default().fg(theme.text),
+    ));
 }
 
 #[derive(Debug)]

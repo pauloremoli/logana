@@ -1,10 +1,13 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 use crate::config::Keybindings;
-use crate::mode::app_mode::Mode;
+use crate::mode::app_mode::{status_entry, Mode};
 use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
+use crate::theme::Theme;
 use crate::types::FilterType;
 
 use crate::ui::KeyResult;
@@ -281,21 +284,35 @@ impl Mode for FilterManagementMode {
         "[FILTER] [i]nclude | e[x]clude | Space => toggle | [d]elete | [e]dit | set [c]olor | [J/K] move | [A] toggle all | [C] clear all | Esc"
     }
 
-    fn dynamic_status_line(&self, kb: &Keybindings) -> String {
-        format!(
-            "[FILTER] [{}]incl | [{}]excl | [{}] toggle | [{}]elete | [{}]dit | [{}]olor | [{}/{}] move | [{}] tog.all | [{}] clear | [{}] exit",
-            kb.filter.add_include.display(),
-            kb.filter.add_exclude.display(),
-            kb.filter.toggle_filter.display(),
-            kb.filter.delete_filter.display(),
-            kb.filter.edit_filter.display(),
-            kb.filter.set_color.display(),
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[FILTER]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        status_entry(&mut spans, kb.filter.add_include.display(), "include", theme);
+        status_entry(&mut spans, kb.filter.add_exclude.display(), "exclude", theme);
+        status_entry(&mut spans, kb.filter.toggle_filter.display(), "toggle", theme);
+        status_entry(&mut spans, kb.filter.delete_filter.display(), "delete", theme);
+        status_entry(&mut spans, kb.filter.edit_filter.display(), "edit", theme);
+        status_entry(&mut spans, kb.filter.set_color.display(), "color", theme);
+        // Move up/down: <K/J>
+        spans.push(Span::styled("<", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
             kb.filter.move_filter_up.display(),
+            Style::default().fg(theme.text_highlight).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
             kb.filter.move_filter_down.display(),
-            kb.filter.toggle_all_filters.display(),
-            kb.filter.clear_all_filters.display(),
-            kb.filter.exit_mode.display(),
-        )
+            Style::default().fg(theme.text_highlight).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("> move  ", Style::default().fg(theme.text)));
+        status_entry(&mut spans, kb.filter.toggle_all_filters.display(), "tog.all", theme);
+        status_entry(&mut spans, kb.filter.clear_all_filters.display(), "clear", theme);
+        status_entry(&mut spans, kb.filter.exit_mode.display(), "exit", theme);
+        Line::from(spans)
     }
 
     fn selected_filter_index(&self) -> Option<usize> {

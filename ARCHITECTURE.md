@@ -79,7 +79,7 @@ A multiline comment attached to a group of log lines. Multiple annotations can e
 - **`build_filter_manager() -> (FilterManager, Vec<Style>)`**: Converts enabled `FilterDef`s into a renderable `FilterManager` + parallel style palette (one `Style` per enabled filter, indexed by `StyleId`).
 - **Marks**: `toggle_mark`, `is_marked`, `get_marked_indices`, `get_marked_lines(&FileReader)`.
 - **Annotations**: `add_annotation(text, line_indices)`, `get_annotations() -> &[Annotation]`, `has_annotation(line_idx) -> bool`, `set_annotations(Vec<Annotation>)`. Multiple annotation groups can share the same log lines.
-- **DB bridge**: Filter mutations write to SQLite via `rt.block_on()` (inserts) or `rt.spawn()` (fire-and-forget updates/deletes). On construction, filters are loaded from DB via `reload_filters_from_db()`.
+- **DB bridge**: Filter mutations are fully `async` — all methods on `LogManager` are `async fn` and `await` their DB calls directly. On construction, filters are loaded from DB via `reload_filters_from_db().await`.
 - **File hash**: `compute_file_hash(path)` hashes file size + mtime for change detection.
 
 ### Database (db.rs)
@@ -90,7 +90,7 @@ A multiline comment attached to a group of log lines. Multiple annotations can e
 - **`FileContextStore`**: `save_file_context`, `load_file_context`.
 - **`SessionStore`**: `save_session(&[String])`, `load_session() -> Vec<String>` — persists the ordered list of open tabs across runs.
 - In-memory mode (`Database::in_memory()`) for tests; migration support.
-- Shared via `Arc<Database>` with `Arc<tokio::runtime::Runtime>` for async–sync bridging.
+- Shared via `Arc<Database>`; callers use `.await` directly within the tokio runtime.
 
 ### Search (search.rs)
 
@@ -172,7 +172,7 @@ Example `~/.config/logsmith-rs/config.json`:
 - **Dual filter backends**: Aho-Corasick for literals (O(n) multi-pattern), Regex fallback for metacharacter patterns. Selected automatically by `build_filter`.
 - **StyleId dispatch**: 256-slot `Vec<Style>` indexed by `u8` avoids per-span HashMap lookups at render time.
 - **Wrap-aware viewport**: `line_row_count` (unicode_width) drives both the scroll trigger and the `[start..end]` window, so the selected line is always on-screen regardless of line length.
-- **Async/sync bridge**: `rt.block_on()` for synchronous callers (inserts, startup loads); `rt.spawn()` for fire-and-forget DB writes (toggle, delete, update).
+- **Async DB access**: All `LogManager` methods are `async fn` and `await` DB calls directly. No `block_on` or manual runtime bridging.
 - **Repository pattern**: `FilterStore` / `FileContextStore` traits enable in-memory SQLite for tests.
 - **Session persistence**: Filters + UI context saved per `source_file`; hash-verified restore prompt on reopen.
 
