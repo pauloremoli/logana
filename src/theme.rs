@@ -240,6 +240,36 @@ pub struct Theme {
     )]
     pub fatal_fg: Color,
     #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_search_fg"
+    )]
+    pub search_fg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_visual_select_bg"
+    )]
+    pub visual_select_bg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_visual_select_fg"
+    )]
+    pub visual_select_fg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_mark_bg"
+    )]
+    pub mark_bg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_mark_fg"
+    )]
+    pub mark_fg: Color,
+    #[serde(
         serialize_with = "colors_to_str_vec",
         deserialize_with = "colors_from_str_vec"
     )]
@@ -359,6 +389,21 @@ fn default_fatal_fg() -> Color {
 fn default_cursor_fg() -> Color {
     Color::Rgb(28, 28, 28)
 }
+fn default_search_fg() -> Color {
+    Color::Rgb(28, 28, 28)
+}
+fn default_visual_select_bg() -> Color {
+    Color::Rgb(68, 71, 90)
+}
+fn default_visual_select_fg() -> Color {
+    Color::Rgb(248, 248, 242)
+}
+fn default_mark_bg() -> Color {
+    Color::Rgb(70, 60, 15)
+}
+fn default_mark_fg() -> Color {
+    Color::Rgb(248, 248, 242)
+}
 
 impl Theme {
     /// Returns the names of all available themes found in the local `themes/` directory
@@ -429,6 +474,11 @@ impl Default for Theme {
             error_fg: Color::Rgb(255, 85, 85),
             warning_fg: Color::Rgb(241, 250, 140),
             fatal_fg: default_fatal_fg(),
+            search_fg: default_search_fg(),
+            visual_select_bg: default_visual_select_bg(),
+            visual_select_fg: default_visual_select_fg(),
+            mark_bg: default_mark_bg(),
+            mark_fg: default_mark_fg(),
             process_colors: vec![
                 Color::Rgb(255, 85, 85),
                 Color::Rgb(80, 250, 123),
@@ -583,6 +633,11 @@ mod tests {
         assert_eq!(theme.notice_fg, Color::Rgb(248, 248, 242));
         assert_eq!(theme.fatal_fg, Color::Rgb(255, 85, 85));
         assert_eq!(theme.cursor_fg, Color::Rgb(28, 28, 28));
+        assert_eq!(theme.search_fg, Color::Rgb(28, 28, 28));
+        assert_eq!(theme.visual_select_bg, Color::Rgb(68, 71, 90));
+        assert_eq!(theme.visual_select_fg, Color::Rgb(248, 248, 242));
+        assert_eq!(theme.mark_bg, Color::Rgb(70, 60, 15));
+        assert_eq!(theme.mark_fg, Color::Rgb(248, 248, 242));
     }
 
     #[test]
@@ -640,6 +695,11 @@ mod tests {
         assert_eq!(theme.notice_fg, default_notice_fg());
         assert_eq!(theme.fatal_fg, default_fatal_fg());
         assert_eq!(theme.cursor_fg, default_cursor_fg());
+        assert_eq!(theme.search_fg, default_search_fg());
+        assert_eq!(theme.visual_select_bg, default_visual_select_bg());
+        assert_eq!(theme.visual_select_fg, default_visual_select_fg());
+        assert_eq!(theme.mark_bg, default_mark_bg());
+        assert_eq!(theme.mark_fg, default_mark_fg());
         assert_eq!(theme.value_colors, ValueColors::default());
     }
 

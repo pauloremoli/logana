@@ -1,11 +1,15 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 use crate::{
-    mode::app_mode::{Mode, ModeRenderState},
+    config::Keybindings,
+    mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::comment_mode::CommentMode,
     mode::normal_mode::NormalMode,
-    ui::{KeyResult, TabState},
+    theme::Theme,
+    ui::{KeyResult, TabState, field_layout::apply_field_layout},
 };
 
 /// Visual line selection mode, entered by pressing `V` in NormalMode.
@@ -13,6 +17,7 @@ use crate::{
 /// The line under the cursor at the time `V` is pressed becomes the anchor.
 /// Moving up/down with j/k (or arrow keys) extends/shrinks the selection.
 /// Pressing `c` opens `CommentMode` for the selected range.
+/// Pressing `y` yanks (copies) selected lines to the system clipboard.
 /// `Esc` cancels and returns to NormalMode.
 #[derive(Debug)]
 pub struct VisualLineMode {
@@ -26,39 +31,96 @@ impl Mode for VisualLineMode {
         self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        match key {
-            KeyCode::Char('j') | KeyCode::Down => {
-                tab.scroll_offset = tab.scroll_offset.saturating_add(1);
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                tab.scroll_offset = tab.scroll_offset.saturating_sub(1);
-            }
+        let kb = &tab.keybindings.visual_line;
+
+        if kb.scroll_down.matches(key, modifiers) {
+            tab.scroll_offset = tab.scroll_offset.saturating_add(1);
+        } else if kb.scroll_up.matches(key, modifiers) {
+            tab.scroll_offset = tab.scroll_offset.saturating_sub(1);
+        } else if kb.comment.matches(key, modifiers) {
             // Comment the selected range
-            KeyCode::Char('c') => {
-                if tab.visible_indices.is_empty() {
-                    return (Box::new(NormalMode), KeyResult::Handled);
-                }
-                let max_idx = tab.visible_indices.len() - 1;
-                let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
-                let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
-                let line_indices: Vec<usize> = tab.visible_indices[lo..=hi].to_vec();
-                if !line_indices.is_empty() {
-                    return (Box::new(CommentMode::new(line_indices)), KeyResult::Handled);
-                }
+            if tab.visible_indices.is_empty() {
                 return (Box::new(NormalMode), KeyResult::Handled);
             }
-            KeyCode::Esc => {
+            let max_idx = tab.visible_indices.len() - 1;
+            let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
+            let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
+            let line_indices: Vec<usize> = tab.visible_indices[lo..=hi].to_vec();
+            if !line_indices.is_empty() {
+                return (Box::new(CommentMode::new(line_indices)), KeyResult::Handled);
+            }
+            return (Box::new(NormalMode), KeyResult::Handled);
+        } else if kb.yank.matches(key, modifiers) {
+            // Yank (copy) selected lines to clipboard
+            if tab.visible_indices.is_empty() {
+                tab.command_error = Some("No lines to copy".to_string());
                 return (Box::new(NormalMode), KeyResult::Handled);
             }
-            _ => {}
+            let max_idx = tab.visible_indices.len() - 1;
+            let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
+            let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
+            let line_indices = &tab.visible_indices[lo..=hi];
+            let text: String = line_indices
+                .iter()
+                .map(|&idx| {
+                    let bytes = tab.file_reader.get_line(idx);
+                    tab.detected_format
+                        .as_ref()
+                        .and_then(|parser| parser.parse_line(bytes))
+                        .map(|parts| {
+                            apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields)
+                                .join(" ")
+                        })
+                        .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            return (Box::new(NormalMode), KeyResult::CopyToClipboard(text));
+        } else if kb.exit.matches(key, modifiers) {
+            return (Box::new(NormalMode), KeyResult::Handled);
         }
+
         (self, KeyResult::Handled)
     }
 
     fn status_line(&self) -> &str {
-        "[VISUAL] j/k to extend selection | [c] comment selection | [Esc] cancel"
+        "[VISUAL] <j/k> extend  <c> comment  <y> yank  <Esc> cancel"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[VISUAL]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        // Extend up/down
+        spans.push(Span::styled("<", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
+            kb.visual_line.scroll_up.display(),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
+            kb.visual_line.scroll_down.display(),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("> extend  ", Style::default().fg(theme.text)));
+        status_entry(
+            &mut spans,
+            kb.visual_line.comment.display(),
+            "comment",
+            theme,
+        );
+        status_entry(&mut spans, kb.visual_line.yank.display(), "yank", theme);
+        status_entry(&mut spans, kb.visual_line.exit.display(), "cancel", theme);
+        Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {
@@ -183,5 +245,65 @@ mod tests {
     fn test_status_line_contains_visual() {
         let mode = VisualLineMode { anchor: 0 };
         assert!(mode.status_line().contains("[VISUAL]"));
+    }
+
+    #[test]
+    fn test_status_line_contains_yank() {
+        let mode = VisualLineMode { anchor: 0 };
+        assert!(mode.status_line().contains("yank"));
+    }
+
+    #[tokio::test]
+    async fn test_y_yanks_and_returns_normal() {
+        let mut tab = make_tab(&["line one", "line two", "line three"]).await;
+        tab.scroll_offset = 0;
+        let mode = VisualLineMode { anchor: 2 };
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Char('y')).await;
+        // Should return to normal mode
+        assert!(mode2.status_line().contains("[NORMAL]"));
+        // Should return the selected text for clipboard via App
+        match result {
+            KeyResult::CopyToClipboard(text) => {
+                assert_eq!(text, "line one\nline two\nline three");
+            }
+            other => panic!("expected CopyToClipboard, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_y_yanks_structured_lines_as_displayed() {
+        // JSON log lines — the parser should detect them and format columns.
+        let mut tab = make_tab(&[
+            r#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","message":"hello"}"#,
+            r#"{"timestamp":"2024-01-01T00:00:01Z","level":"WARN","message":"world"}"#,
+        ])
+        .await;
+        // Ensure the parser was detected.
+        assert!(
+            tab.detected_format.is_some(),
+            "expected a format parser to be detected"
+        );
+        tab.scroll_offset = 0;
+        let mode = VisualLineMode { anchor: 1 };
+        let (_, result) = press(mode, &mut tab, KeyCode::Char('y')).await;
+        match result {
+            KeyResult::CopyToClipboard(text) => {
+                // Should contain the formatted columns, not raw JSON.
+                assert!(!text.contains('{'), "expected formatted text, got raw JSON");
+                assert!(text.contains("hello"));
+                assert!(text.contains("world"));
+            }
+            other => panic!("expected CopyToClipboard, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_y_empty_visible_indices_returns_normal() {
+        let mut tab = make_tab(&[]).await;
+        tab.scroll_offset = 0;
+        let mode = VisualLineMode { anchor: 0 };
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('y')).await;
+        assert!(mode2.status_line().contains("[NORMAL]"));
+        assert_eq!(tab.command_error.as_deref(), Some("No lines to copy"));
     }
 }

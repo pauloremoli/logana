@@ -328,6 +328,9 @@ fn default_visual_mode() -> KeyBindings {
 fn default_toggle_marks_only() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('M'), KeyModifiers::NONE)])
 }
+fn default_yank_marked() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('y'), KeyModifiers::NONE)])
+}
 fn default_show_keybindings() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::F(1), KeyModifiers::NONE)])
 }
@@ -382,6 +385,8 @@ pub struct NormalKeybindings {
     pub visual_mode: KeyBindings,
     #[serde(default = "default_toggle_marks_only")]
     pub toggle_marks_only: KeyBindings,
+    #[serde(default = "default_yank_marked")]
+    pub yank_marked: KeyBindings,
     #[serde(default = "default_show_keybindings")]
     pub show_keybindings: KeyBindings,
 }
@@ -411,6 +416,7 @@ impl Default for NormalKeybindings {
             toggle_wrap: default_toggle_wrap(),
             visual_mode: default_visual_mode(),
             toggle_marks_only: default_toggle_marks_only(),
+            yank_marked: default_yank_marked(),
             show_keybindings: default_show_keybindings(),
         }
     }
@@ -571,18 +577,440 @@ impl Default for GlobalKeybindings {
 fn default_comment_save() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('s'), KeyModifiers::CONTROL)])
 }
+fn default_comment_cancel() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommentKeybindings {
     /// Key to save the comment and return to Normal mode.
     #[serde(default = "default_comment_save")]
     pub save: KeyBindings,
+    /// Key to cancel the comment and return to Normal mode.
+    #[serde(default = "default_comment_cancel")]
+    pub cancel: KeyBindings,
 }
 
 impl Default for CommentKeybindings {
     fn default() -> Self {
         Self {
             save: default_comment_save(),
+            cancel: default_comment_cancel(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VisualLineKeybindings — defaults
+// ---------------------------------------------------------------------------
+
+fn default_visual_scroll_down() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Down, KeyModifiers::NONE),
+    ])
+}
+fn default_visual_scroll_up() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Up, KeyModifiers::NONE),
+    ])
+}
+fn default_visual_comment() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('c'), KeyModifiers::NONE)])
+}
+fn default_visual_yank() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('y'), KeyModifiers::NONE)])
+}
+fn default_visual_exit() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
+
+// ---------------------------------------------------------------------------
+// VisualLineKeybindings
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisualLineKeybindings {
+    #[serde(default = "default_visual_scroll_down")]
+    pub scroll_down: KeyBindings,
+    #[serde(default = "default_visual_scroll_up")]
+    pub scroll_up: KeyBindings,
+    #[serde(default = "default_visual_comment")]
+    pub comment: KeyBindings,
+    #[serde(default = "default_visual_yank")]
+    pub yank: KeyBindings,
+    #[serde(default = "default_visual_exit")]
+    pub exit: KeyBindings,
+}
+
+impl Default for VisualLineKeybindings {
+    fn default() -> Self {
+        Self {
+            scroll_down: default_visual_scroll_down(),
+            scroll_up: default_visual_scroll_up(),
+            comment: default_visual_comment(),
+            yank: default_visual_yank(),
+            exit: default_visual_exit(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SearchKeybindings — defaults
+// ---------------------------------------------------------------------------
+
+fn default_search_cancel() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
+fn default_search_confirm() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchKeybindings {
+    #[serde(default = "default_search_cancel")]
+    pub cancel: KeyBindings,
+    #[serde(default = "default_search_confirm")]
+    pub confirm: KeyBindings,
+}
+
+impl Default for SearchKeybindings {
+    fn default() -> Self {
+        Self {
+            cancel: default_search_cancel(),
+            confirm: default_search_confirm(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FilterEditKeybindings — defaults
+// ---------------------------------------------------------------------------
+
+fn default_filter_edit_cancel() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
+fn default_filter_edit_confirm() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilterEditKeybindings {
+    #[serde(default = "default_filter_edit_cancel")]
+    pub cancel: KeyBindings,
+    #[serde(default = "default_filter_edit_confirm")]
+    pub confirm: KeyBindings,
+}
+
+impl Default for FilterEditKeybindings {
+    fn default() -> Self {
+        Self {
+            cancel: default_filter_edit_cancel(),
+            confirm: default_filter_edit_confirm(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CommandModeKeybindings — defaults
+// ---------------------------------------------------------------------------
+
+fn default_command_cancel() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
+fn default_command_confirm() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandModeKeybindings {
+    #[serde(default = "default_command_cancel")]
+    pub cancel: KeyBindings,
+    #[serde(default = "default_command_confirm")]
+    pub confirm: KeyBindings,
+}
+
+impl Default for CommandModeKeybindings {
+    fn default() -> Self {
+        Self {
+            cancel: default_command_cancel(),
+            confirm: default_command_confirm(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DockerSelectKeybindings — defaults
+// ---------------------------------------------------------------------------
+
+fn default_docker_navigate_up() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Up, KeyModifiers::NONE),
+    ])
+}
+fn default_docker_navigate_down() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Down, KeyModifiers::NONE),
+    ])
+}
+fn default_docker_confirm() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
+}
+fn default_docker_cancel() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerSelectKeybindings {
+    #[serde(default = "default_docker_navigate_up")]
+    pub navigate_up: KeyBindings,
+    #[serde(default = "default_docker_navigate_down")]
+    pub navigate_down: KeyBindings,
+    #[serde(default = "default_docker_confirm")]
+    pub confirm: KeyBindings,
+    #[serde(default = "default_docker_cancel")]
+    pub cancel: KeyBindings,
+}
+
+impl Default for DockerSelectKeybindings {
+    fn default() -> Self {
+        Self {
+            navigate_up: default_docker_navigate_up(),
+            navigate_down: default_docker_navigate_down(),
+            confirm: default_docker_confirm(),
+            cancel: default_docker_cancel(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ValueColorsKeybindings — defaults
+// ---------------------------------------------------------------------------
+
+fn default_vc_navigate_up() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Up, KeyModifiers::NONE),
+    ])
+}
+fn default_vc_navigate_down() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Down, KeyModifiers::NONE),
+    ])
+}
+fn default_vc_toggle() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)])
+}
+fn default_vc_all() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('a'), KeyModifiers::NONE)])
+}
+fn default_vc_none() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('n'), KeyModifiers::NONE)])
+}
+fn default_vc_apply() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
+}
+fn default_vc_cancel() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValueColorsKeybindings {
+    #[serde(default = "default_vc_navigate_up")]
+    pub navigate_up: KeyBindings,
+    #[serde(default = "default_vc_navigate_down")]
+    pub navigate_down: KeyBindings,
+    #[serde(default = "default_vc_toggle")]
+    pub toggle: KeyBindings,
+    #[serde(default = "default_vc_all")]
+    pub all: KeyBindings,
+    #[serde(default = "default_vc_none")]
+    pub none: KeyBindings,
+    #[serde(default = "default_vc_apply")]
+    pub apply: KeyBindings,
+    #[serde(default = "default_vc_cancel")]
+    pub cancel: KeyBindings,
+}
+
+impl Default for ValueColorsKeybindings {
+    fn default() -> Self {
+        Self {
+            navigate_up: default_vc_navigate_up(),
+            navigate_down: default_vc_navigate_down(),
+            toggle: default_vc_toggle(),
+            all: default_vc_all(),
+            none: default_vc_none(),
+            apply: default_vc_apply(),
+            cancel: default_vc_cancel(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SelectFieldsKeybindings — defaults
+// ---------------------------------------------------------------------------
+
+fn default_sf_navigate_up() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Up, KeyModifiers::NONE),
+    ])
+}
+fn default_sf_navigate_down() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Down, KeyModifiers::NONE),
+    ])
+}
+fn default_sf_toggle() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)])
+}
+fn default_sf_move_up() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('K'), KeyModifiers::NONE)])
+}
+fn default_sf_move_down() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('J'), KeyModifiers::NONE)])
+}
+fn default_sf_all() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('a'), KeyModifiers::NONE)])
+}
+fn default_sf_none() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('n'), KeyModifiers::NONE)])
+}
+fn default_sf_apply() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
+}
+fn default_sf_cancel() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelectFieldsKeybindings {
+    #[serde(default = "default_sf_navigate_up")]
+    pub navigate_up: KeyBindings,
+    #[serde(default = "default_sf_navigate_down")]
+    pub navigate_down: KeyBindings,
+    #[serde(default = "default_sf_toggle")]
+    pub toggle: KeyBindings,
+    #[serde(default = "default_sf_move_up")]
+    pub move_up: KeyBindings,
+    #[serde(default = "default_sf_move_down")]
+    pub move_down: KeyBindings,
+    #[serde(default = "default_sf_all")]
+    pub all: KeyBindings,
+    #[serde(default = "default_sf_none")]
+    pub none: KeyBindings,
+    #[serde(default = "default_sf_apply")]
+    pub apply: KeyBindings,
+    #[serde(default = "default_sf_cancel")]
+    pub cancel: KeyBindings,
+}
+
+impl Default for SelectFieldsKeybindings {
+    fn default() -> Self {
+        Self {
+            navigate_up: default_sf_navigate_up(),
+            navigate_down: default_sf_navigate_down(),
+            toggle: default_sf_toggle(),
+            move_up: default_sf_move_up(),
+            move_down: default_sf_move_down(),
+            all: default_sf_all(),
+            none: default_sf_none(),
+            apply: default_sf_apply(),
+            cancel: default_sf_cancel(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HelpKeybindings — defaults
+// ---------------------------------------------------------------------------
+
+fn default_help_scroll_down() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Down, KeyModifiers::NONE),
+    ])
+}
+fn default_help_scroll_up() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Up, KeyModifiers::NONE),
+    ])
+}
+fn default_help_fast_down() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL)])
+}
+fn default_help_fast_up() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('u'), KeyModifiers::CONTROL)])
+}
+fn default_help_close() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('q'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Esc, KeyModifiers::NONE),
+    ])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HelpKeybindings {
+    #[serde(default = "default_help_scroll_down")]
+    pub scroll_down: KeyBindings,
+    #[serde(default = "default_help_scroll_up")]
+    pub scroll_up: KeyBindings,
+    #[serde(default = "default_help_fast_down")]
+    pub fast_down: KeyBindings,
+    #[serde(default = "default_help_fast_up")]
+    pub fast_up: KeyBindings,
+    #[serde(default = "default_help_close")]
+    pub close: KeyBindings,
+}
+
+impl Default for HelpKeybindings {
+    fn default() -> Self {
+        Self {
+            scroll_down: default_help_scroll_down(),
+            scroll_up: default_help_scroll_up(),
+            fast_down: default_help_fast_down(),
+            fast_up: default_help_fast_up(),
+            close: default_help_close(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConfirmKeybindings — defaults
+// ---------------------------------------------------------------------------
+
+fn default_confirm_yes() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('y'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Enter, KeyModifiers::NONE),
+    ])
+}
+fn default_confirm_no() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('n'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Esc, KeyModifiers::NONE),
+    ])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfirmKeybindings {
+    #[serde(default = "default_confirm_yes")]
+    pub yes: KeyBindings,
+    #[serde(default = "default_confirm_no")]
+    pub no: KeyBindings,
+}
+
+impl Default for ConfirmKeybindings {
+    fn default() -> Self {
+        Self {
+            yes: default_confirm_yes(),
+            no: default_confirm_no(),
         }
     }
 }
@@ -601,6 +1029,24 @@ pub struct Keybindings {
     pub global: GlobalKeybindings,
     #[serde(default)]
     pub comment: CommentKeybindings,
+    #[serde(default)]
+    pub visual_line: VisualLineKeybindings,
+    #[serde(default)]
+    pub search: SearchKeybindings,
+    #[serde(default)]
+    pub filter_edit: FilterEditKeybindings,
+    #[serde(default)]
+    pub command: CommandModeKeybindings,
+    #[serde(default)]
+    pub docker_select: DockerSelectKeybindings,
+    #[serde(default)]
+    pub value_colors: ValueColorsKeybindings,
+    #[serde(default)]
+    pub select_fields: SelectFieldsKeybindings,
+    #[serde(default)]
+    pub help: HelpKeybindings,
+    #[serde(default)]
+    pub confirm: ConfirmKeybindings,
 }
 
 impl KeyBindings {
@@ -645,6 +1091,7 @@ impl Keybindings {
             ("normal.go_to_bottom", &self.normal.go_to_bottom),
             ("normal.mark_line", &self.normal.mark_line),
             ("normal.toggle_marks_only", &self.normal.toggle_marks_only),
+            ("normal.yank_marked", &self.normal.yank_marked),
             ("normal.visual_mode", &self.normal.visual_mode),
             ("normal.search_forward", &self.normal.search_forward),
             ("normal.search_backward", &self.normal.search_backward),
@@ -678,8 +1125,67 @@ impl Keybindings {
             ("global.prev_tab", &self.global.prev_tab),
         ];
 
+        let visual_line_actions: &[(&str, &KeyBindings)] = &[
+            ("visual_line.scroll_down", &self.visual_line.scroll_down),
+            ("visual_line.scroll_up", &self.visual_line.scroll_up),
+            ("visual_line.comment", &self.visual_line.comment),
+            ("visual_line.yank", &self.visual_line.yank),
+            ("visual_line.exit", &self.visual_line.exit),
+        ];
+
+        let docker_select_actions: &[(&str, &KeyBindings)] = &[
+            ("docker_select.navigate_up", &self.docker_select.navigate_up),
+            (
+                "docker_select.navigate_down",
+                &self.docker_select.navigate_down,
+            ),
+            ("docker_select.confirm", &self.docker_select.confirm),
+            ("docker_select.cancel", &self.docker_select.cancel),
+        ];
+
+        let value_colors_actions: &[(&str, &KeyBindings)] = &[
+            ("value_colors.navigate_up", &self.value_colors.navigate_up),
+            (
+                "value_colors.navigate_down",
+                &self.value_colors.navigate_down,
+            ),
+            ("value_colors.toggle", &self.value_colors.toggle),
+            ("value_colors.all", &self.value_colors.all),
+            ("value_colors.none", &self.value_colors.none),
+            ("value_colors.apply", &self.value_colors.apply),
+            ("value_colors.cancel", &self.value_colors.cancel),
+        ];
+
+        let select_fields_actions: &[(&str, &KeyBindings)] = &[
+            ("select_fields.navigate_up", &self.select_fields.navigate_up),
+            (
+                "select_fields.navigate_down",
+                &self.select_fields.navigate_down,
+            ),
+            ("select_fields.toggle", &self.select_fields.toggle),
+            ("select_fields.move_up", &self.select_fields.move_up),
+            ("select_fields.move_down", &self.select_fields.move_down),
+            ("select_fields.all", &self.select_fields.all),
+            ("select_fields.none", &self.select_fields.none),
+            ("select_fields.apply", &self.select_fields.apply),
+            ("select_fields.cancel", &self.select_fields.cancel),
+        ];
+
+        let help_actions: &[(&str, &KeyBindings)] = &[
+            ("help.scroll_down", &self.help.scroll_down),
+            ("help.scroll_up", &self.help.scroll_up),
+            ("help.fast_down", &self.help.fast_down),
+            ("help.fast_up", &self.help.fast_up),
+            ("help.close", &self.help.close),
+        ];
+
         check_conflicts(normal_actions, &mut conflicts);
         check_conflicts(filter_actions, &mut conflicts);
+        check_conflicts(visual_line_actions, &mut conflicts);
+        check_conflicts(docker_select_actions, &mut conflicts);
+        check_conflicts(value_colors_actions, &mut conflicts);
+        check_conflicts(select_fields_actions, &mut conflicts);
+        check_conflicts(help_actions, &mut conflicts);
 
         conflicts
     }
@@ -1528,6 +2034,10 @@ mod tests {
                 .matches(KeyCode::Char('M'), KeyModifiers::NONE)
         );
         assert!(
+            kb.yank_marked
+                .matches(KeyCode::Char('y'), KeyModifiers::NONE)
+        );
+        assert!(
             kb.show_keybindings
                 .matches(KeyCode::F(1), KeyModifiers::NONE)
         );
@@ -1598,6 +2108,118 @@ mod tests {
     fn test_comment_keybindings_default() {
         let kb = CommentKeybindings::default();
         assert!(kb.save.matches(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_search_keybindings_default() {
+        let kb = SearchKeybindings::default();
+        assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(kb.confirm.matches(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_filter_edit_keybindings_default() {
+        let kb = FilterEditKeybindings::default();
+        assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(kb.confirm.matches(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_command_keybindings_default() {
+        let kb = CommandModeKeybindings::default();
+        assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(kb.confirm.matches(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_docker_select_keybindings_default() {
+        let kb = DockerSelectKeybindings::default();
+        assert!(
+            kb.navigate_up
+                .matches(KeyCode::Char('k'), KeyModifiers::NONE)
+        );
+        assert!(kb.navigate_up.matches(KeyCode::Up, KeyModifiers::NONE));
+        assert!(
+            kb.navigate_down
+                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
+        );
+        assert!(kb.navigate_down.matches(KeyCode::Down, KeyModifiers::NONE));
+        assert!(kb.confirm.matches(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_value_colors_keybindings_default() {
+        let kb = ValueColorsKeybindings::default();
+        assert!(
+            kb.navigate_up
+                .matches(KeyCode::Char('k'), KeyModifiers::NONE)
+        );
+        assert!(kb.navigate_up.matches(KeyCode::Up, KeyModifiers::NONE));
+        assert!(
+            kb.navigate_down
+                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
+        );
+        assert!(kb.navigate_down.matches(KeyCode::Down, KeyModifiers::NONE));
+        assert!(kb.toggle.matches(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(kb.all.matches(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(kb.none.matches(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(kb.apply.matches(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_select_fields_keybindings_default() {
+        let kb = SelectFieldsKeybindings::default();
+        assert!(
+            kb.navigate_up
+                .matches(KeyCode::Char('k'), KeyModifiers::NONE)
+        );
+        assert!(kb.navigate_up.matches(KeyCode::Up, KeyModifiers::NONE));
+        assert!(
+            kb.navigate_down
+                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
+        );
+        assert!(kb.navigate_down.matches(KeyCode::Down, KeyModifiers::NONE));
+        assert!(kb.toggle.matches(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(kb.move_up.matches(KeyCode::Char('K'), KeyModifiers::NONE));
+        assert!(kb.move_down.matches(KeyCode::Char('J'), KeyModifiers::NONE));
+        assert!(kb.all.matches(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(kb.none.matches(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(kb.apply.matches(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_help_keybindings_default() {
+        let kb = HelpKeybindings::default();
+        assert!(
+            kb.scroll_down
+                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
+        );
+        assert!(kb.scroll_down.matches(KeyCode::Down, KeyModifiers::NONE));
+        assert!(kb.scroll_up.matches(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert!(kb.scroll_up.matches(KeyCode::Up, KeyModifiers::NONE));
+        assert!(
+            kb.fast_down
+                .matches(KeyCode::Char('d'), KeyModifiers::CONTROL)
+        );
+        assert!(
+            kb.fast_up
+                .matches(KeyCode::Char('u'), KeyModifiers::CONTROL)
+        );
+        assert!(kb.close.matches(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(kb.close.matches(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_confirm_keybindings_default() {
+        let kb = ConfirmKeybindings::default();
+        assert!(kb.yes.matches(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(kb.yes.matches(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(kb.no.matches(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(kb.no.matches(KeyCode::Esc, KeyModifiers::NONE));
     }
 
     // ── Config ──────────────────────────────────────────────────────────

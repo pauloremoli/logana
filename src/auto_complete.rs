@@ -115,6 +115,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "value-colors",
         description: "Toggle value-based color coding (HTTP methods, status codes, IPs, UUIDs)",
     },
+    CommandInfo {
+        name: "export",
+        usage: "export [-t <template>] <path>",
+        description: "Export analysis (comments + marked lines) to a file. -t sets the template (default: markdown). e.g. export /tmp/report.md",
+    },
 ];
 
 pub fn command_names() -> Vec<&'static str> {

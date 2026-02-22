@@ -13,7 +13,7 @@ use crate::types::FieldLayout;
 
 mod app;
 mod commands;
-mod field_layout;
+pub(crate) mod field_layout;
 mod loading;
 mod render;
 mod render_popups;
@@ -22,6 +22,7 @@ mod render_popups;
 // KeyResult
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub enum KeyResult {
     Handled,
     Ignored,
@@ -29,6 +30,7 @@ pub enum KeyResult {
     RestoreSession(Vec<String>),
     DockerAttach(String, String),
     ApplyValueColors(std::collections::HashSet<String>),
+    CopyToClipboard(String),
 }
 
 // ---------------------------------------------------------------------------

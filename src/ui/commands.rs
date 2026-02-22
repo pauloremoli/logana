@@ -87,6 +87,24 @@ impl App {
                     let _ = std::fs::write(path, content);
                 }
             }
+            Some(Commands::Export { path, template }) => {
+                if path.is_empty() {
+                    return Err("Path is required".to_string());
+                }
+                let tpl = crate::export::load_template(&template).map_err(|e| e.to_string())?;
+                let tab = &self.tabs[self.active_tab];
+                let data = crate::export::ExportData {
+                    filename: tab.log_manager.source_file().unwrap_or("stdin"),
+                    comments: tab.log_manager.get_comments(),
+                    marked_indices: tab.log_manager.get_marked_indices(),
+                    file_reader: &tab.file_reader,
+                    parser: tab.detected_format.as_deref(),
+                    field_layout: &tab.field_layout,
+                    hidden_fields: &tab.hidden_fields,
+                };
+                let output = crate::export::render_export(&tpl, &data);
+                std::fs::write(&path, output).map_err(|e| format!("Failed to write: {}", e))?;
+            }
             Some(Commands::SaveFilters { path }) => {
                 if !path.is_empty() {
                     self.tabs[self.active_tab]
@@ -650,5 +668,66 @@ mod tests {
         let mut app = make_app(&["line"]).await;
         let result = app.run_command("open /nonexistent/path/xyz.log").await;
         assert!(result.is_err());
+    }
+
+    // ── export ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_export_writes_file() {
+        let mut app = make_app(&["line0", "line1", "line2"]).await;
+        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[0].log_manager.toggle_mark(2);
+        app.tabs[0]
+            .log_manager
+            .add_comment("My analysis".to_string(), vec![1]);
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("export {}", path)).await.unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("My analysis"));
+        assert!(content.contains("2: line1"));
+        // Orphan marks (0 and 2 not in any comment)
+        assert!(content.contains("1: line0"));
+        assert!(content.contains("3: line2"));
+    }
+
+    #[tokio::test]
+    async fn test_export_jira_template() {
+        let mut app = make_app(&["line0", "line1"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_comment("Jira note".to_string(), vec![0]);
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("export {} -t jira", path))
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("h1. Log Analysis"));
+        assert!(content.contains("{noformat}"));
+        assert!(content.contains("Jira note"));
+    }
+
+    #[tokio::test]
+    async fn test_export_empty_path_error() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("export \"\"").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_export_unknown_template_error() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let result = app
+            .run_command(&format!("export {} -t nonexistent_xyz", path))
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
     }
 }

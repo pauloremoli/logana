@@ -126,26 +126,41 @@ impl Mode for ConfirmRestoreMode {
         self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        match key {
-            KeyCode::Char('y') => {
-                tab.apply_file_context(&self.context);
-                (Box::new(NormalMode), KeyResult::Handled)
-            }
-            KeyCode::Char('n') | KeyCode::Esc => {
-                tab.log_manager.clear_filters().await;
-                tab.log_manager.set_marks(vec![]);
-                tab.log_manager.set_comments(vec![]);
-                tab.refresh_visible();
-                (Box::new(NormalMode), KeyResult::Handled)
-            }
-            _ => (self, KeyResult::Handled),
+        let kb = &tab.keybindings.confirm;
+        if kb.yes.matches(key, modifiers) {
+            tab.apply_file_context(&self.context);
+            (Box::new(NormalMode), KeyResult::Handled)
+        } else if kb.no.matches(key, modifiers) {
+            tab.log_manager.clear_filters().await;
+            tab.log_manager.set_marks(vec![]);
+            tab.log_manager.set_comments(vec![]);
+            tab.refresh_visible();
+            (Box::new(NormalMode), KeyResult::Handled)
+        } else {
+            (self, KeyResult::Handled)
         }
     }
 
     fn status_line(&self) -> &str {
-        "[RESTORE] Restore previous session? [y]es / [n]o"
+        "[RESTORE] Restore previous session?  <y> yes  <n> no"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[RESTORE]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        spans.push(Span::styled(
+            "Restore previous session?  ",
+            Style::default().fg(theme.text),
+        ));
+        status_entry(&mut spans, kb.confirm.yes.display(), "yes", theme);
+        status_entry(&mut spans, kb.confirm.no.display(), "no", theme);
+        Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {
@@ -166,19 +181,38 @@ pub struct ConfirmRestoreSessionMode {
 impl Mode for ConfirmRestoreSessionMode {
     async fn handle_key(
         self: Box<Self>,
-        _tab: &mut TabState,
+        tab: &mut TabState,
         key: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        match key {
-            KeyCode::Char('y') => (Box::new(NormalMode), KeyResult::RestoreSession(self.files)),
-            KeyCode::Char('n') | KeyCode::Esc => (Box::new(NormalMode), KeyResult::Handled),
-            _ => (self, KeyResult::Handled),
+        let kb = &tab.keybindings.confirm;
+        if kb.yes.matches(key, modifiers) {
+            (Box::new(NormalMode), KeyResult::RestoreSession(self.files))
+        } else if kb.no.matches(key, modifiers) {
+            (Box::new(NormalMode), KeyResult::Handled)
+        } else {
+            (self, KeyResult::Handled)
         }
     }
 
     fn status_line(&self) -> &str {
-        "[RESTORE SESSION] Restore last session? [y]es / [n]o"
+        "[RESTORE SESSION] Restore last session?  <y> yes  <n> no"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[RESTORE SESSION]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        spans.push(Span::styled(
+            "Restore last session?  ",
+            Style::default().fg(theme.text),
+        ));
+        status_entry(&mut spans, kb.confirm.yes.display(), "yes", theme);
+        status_entry(&mut spans, kb.confirm.no.display(), "no", theme);
+        Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {

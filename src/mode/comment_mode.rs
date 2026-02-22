@@ -56,20 +56,21 @@ impl Mode for CommentMode {
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
-        let save_kb = tab.keybindings.comment.save.clone();
+        let comment_kb = tab.keybindings.comment.clone();
 
         // Save (configurable, default Ctrl+S)
-        if save_kb.matches(key, modifiers) {
+        if comment_kb.save.matches(key, modifiers) {
             let text = self.lines.join("\n");
             tab.log_manager.add_comment(text, self.line_indices);
             return (Box::new(NormalMode), KeyResult::Handled);
         }
 
+        // Cancel (configurable, default Esc)
+        if comment_kb.cancel.matches(key, modifiers) {
+            return (Box::new(NormalMode), KeyResult::Handled);
+        }
+
         match key {
-            // Cancel
-            KeyCode::Esc => {
-                return (Box::new(NormalMode), KeyResult::Handled);
-            }
             // Insert newline: split current line at cursor
             KeyCode::Enter => {
                 let rest = self.lines[self.cursor_row][self.cursor_col..].to_string();
@@ -135,7 +136,7 @@ impl Mode for CommentMode {
     }
 
     fn status_line(&self) -> &str {
-        "[COMMENT] Type comment text | [Ctrl+S] Save | [Esc] Cancel"
+        "[COMMENT] type text  <Ctrl+S> save  <Esc> cancel"
     }
 
     fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -149,7 +150,7 @@ impl Mode for CommentMode {
             Span::styled("type text  ", Style::default().fg(theme.text)),
         ];
         status_entry(&mut spans, kb.comment.save.display(), "save", theme);
-        status_entry(&mut spans, "Esc".to_string(), "cancel", theme);
+        status_entry(&mut spans, kb.comment.cancel.display(), "cancel", theme);
         Line::from(spans)
     }
 

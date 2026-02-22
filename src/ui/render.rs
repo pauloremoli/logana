@@ -173,7 +173,9 @@ impl App {
             )
             .wrap(Wrap { trim: true })
             .style(Style::default().bg(self.theme.root_bg));
-        frame.render_widget(command_list, *chunks.last().unwrap());
+        if let Some(&status_area) = chunks.last() {
+            frame.render_widget(command_list, status_area);
+        }
 
         // Session restore modal renders on top of the full TUI so stdin content
         // is visible behind it.
@@ -323,7 +325,7 @@ impl App {
             .log_manager
             .build_filter_manager();
         let search_style = Style::default()
-            .fg(Color::Black)
+            .fg(self.theme.search_fg)
             .bg(self.theme.text_highlight);
         styles.resize(256, Style::default());
         styles[255] = search_style;
@@ -351,7 +353,9 @@ impl App {
             (lo, hi)
         });
         // Visual selection highlight colour (same as border bg, distinct from cursor).
-        let visual_style = Style::default().fg(theme.text).bg(Color::Rgb(68, 71, 90));
+        let visual_style = Style::default()
+            .fg(theme.visual_select_fg)
+            .bg(theme.visual_select_bg);
 
         // Clone comment data before borrowing visible_indices for iteration.
         let comments_for_render: Vec<(Vec<usize>, String)> = self.tabs[self.active_tab]
@@ -414,7 +418,7 @@ impl App {
                     }
                 }
                 if is_marked {
-                    base_style = base_style.bg(Color::Rgb(70, 60, 15));
+                    base_style = base_style.fg(theme.mark_fg).bg(theme.mark_bg);
                 }
                 if is_visual_selected {
                     base_style = visual_style;
@@ -478,7 +482,19 @@ impl App {
                     render_line(&collector, &styles)
                 };
                 line = colorize_known_values(line, &theme.value_colors);
-                line = line.style(render_style);
+                if is_current {
+                    // Strip all per-span fg/bg so the cursor line uses
+                    // a uniform cursor style without filter/search colors.
+                    let cursor_style = Style::default().fg(theme.cursor_fg).bg(theme.border);
+                    line = Line::from(
+                        line.spans
+                            .into_iter()
+                            .map(|s| Span::styled(s.content, cursor_style))
+                            .collect::<Vec<_>>(),
+                    );
+                } else {
+                    line = line.style(render_style);
+                }
 
                 if show_line_numbers {
                     let line_num = line_idx + 1;
@@ -690,8 +706,7 @@ impl App {
     ) -> u16 {
         let text = match command_input {
             Some((input_text, _)) => {
-                if self.tabs[self.active_tab].command_error.is_some() {
-                    let err = self.tabs[self.active_tab].command_error.as_ref().unwrap();
+                if let Some(err) = &self.tabs[self.active_tab].command_error {
                     err.clone()
                 } else if let Some(partial) = extract_color_partial(input_text) {
                     let completions = complete_color(partial);
@@ -701,7 +716,13 @@ impl App {
                         .collect::<Vec<_>>()
                         .join(" ")
                 } else {
-                    let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
+                    let file_commands = [
+                        "open",
+                        "load-filters",
+                        "save-filters",
+                        "export-marked",
+                        "export",
+                    ];
                     let trimmed = input_text.trim();
                     let file_cmd = file_commands
                         .iter()

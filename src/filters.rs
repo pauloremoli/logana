@@ -172,17 +172,20 @@ impl SubstringFilter {
         decision: FilterDecision,
         match_only: bool,
         style_id: StyleId,
-    ) -> Self {
+    ) -> Option<Self> {
         let ac = AhoCorasick::builder()
             .ascii_case_insensitive(false)
             .build([pattern])
-            .expect("valid AC pattern");
-        SubstringFilter {
+            .inspect_err(|e| {
+                tracing::error!("Failed to build Aho-Corasick automaton: {}", e);
+            })
+            .ok()?;
+        Some(SubstringFilter {
             ac,
             decision,
             style_id,
             match_only,
-        }
+        })
     }
 }
 
@@ -267,9 +270,8 @@ pub fn build_filter(
         RegexFilter::new(pattern, decision, match_only, style_id)
             .map(|f| Box::new(f) as Box<dyn Filter>)
     } else {
-        Some(Box::new(SubstringFilter::new(
-            pattern, decision, match_only, style_id,
-        )))
+        SubstringFilter::new(pattern, decision, match_only, style_id)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
     }
 }
 
@@ -369,7 +371,7 @@ mod tests {
     #[test]
     fn test_substring_filter_include() {
         let line = b"ERROR: connection refused";
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0);
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
         let mut col = MatchCollector::new(line);
         assert_eq!(f.evaluate(line, &mut col), FilterDecision::Include);
 
@@ -381,7 +383,7 @@ mod tests {
     #[test]
     fn test_substring_filter_exclude() {
         let line = b"DEBUG: verbose output";
-        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0);
+        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0).unwrap();
         let mut col = MatchCollector::new(line);
         assert_eq!(f.evaluate(line, &mut col), FilterDecision::Exclude);
 
@@ -393,7 +395,7 @@ mod tests {
     #[test]
     fn test_substring_filter_match_only_spans() {
         let line = b"ERROR: something went wrong";
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 1);
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 1).unwrap();
         let mut col = MatchCollector::new(line);
         f.evaluate(line, &mut col);
         assert_eq!(col.spans.len(), 1);
@@ -441,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_filter_manager_include_filter() {
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0);
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], true);
 
         assert!(fm.is_visible(b"ERROR: bad things"));
@@ -450,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_filter_manager_exclude_filter() {
-        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0);
+        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], false);
 
         assert!(fm.is_visible(b"INFO: something"));
@@ -462,8 +464,8 @@ mod tests {
         // Exclude "minor" at top (higher precedence), Include "ERROR" below.
         // First-match-wins: a line matching the top Exclude is hidden even if
         // a lower Include filter also matches it.
-        let exc = SubstringFilter::new("minor", FilterDecision::Exclude, false, 1);
-        let inc = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0);
+        let exc = SubstringFilter::new("minor", FilterDecision::Exclude, false, 1).unwrap();
+        let inc = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(exc), Box::new(inc)], true);
 
         assert!(fm.is_visible(b"ERROR: critical failure")); // no exclude match → include matches
@@ -480,7 +482,7 @@ mod tests {
             "DEBUG: verbose",
         ]);
 
-        let inc = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0);
+        let inc = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(inc)], true);
         let visible = fm.compute_visible(&reader);
 
@@ -491,7 +493,7 @@ mod tests {
     fn test_filter_manager_compute_visible_exclude() {
         let (_f, reader) = make_reader(&["ERROR: bad", "DEBUG: verbose", "INFO: good"]);
 
-        let exc = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0);
+        let exc = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(exc)], false);
         let visible = fm.compute_visible(&reader);
 
@@ -523,7 +525,7 @@ mod tests {
     #[test]
     fn test_evaluate_line_collects_spans() {
         let line = b"ERROR: connection refused to host";
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 0);
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], true);
         let col = fm.evaluate_line(line);
         assert!(!col.spans.is_empty());

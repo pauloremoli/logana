@@ -1,18 +1,23 @@
 {
-  "root_bg": [39, 40, 34],
-  "border": [249, 38, 114],
-  "border_title": [248, 248, 242],
-  "text": [248, 248, 242],
-  "text_highlight": [166, 226, 46],
-  "cursor_fg": [248, 248, 242],
-  "error_fg": [249, 38, 114],
-  "warning_fg": [253, 151, 31],
+  "root_bg": "#272822",
+  "border": "#f92672",
+  "border_title": "#f8f8f2",
+  "text": "#f8f8f2",
+  "text_highlight": "#a6e22e",
+  "cursor_fg": "#f8f8f2",
+  "error_fg": "#f92672",
+  "warning_fg": "#fd971f",
+  "search_fg": "#272822",
+  "visual_select_bg": "#49483e",
+  "visual_select_fg": "#f8f8f2",
+  "mark_bg": "#4a3c0f",
+  "mark_fg": "#f8f8f2",
   "process_colors": [
-    [249, 38, 114],
-    [166, 226, 46],
-    [253, 151, 31],
-    [102, 217, 239],
-    [174, 129, 255],
-    [255, 85, 85]
+    "#f92672",
+    "#a6e22e",
+    "#fd971f",
+    "#66d9ef",
+    "#ae81ff",
+    "#ff5555"
   ]
 }

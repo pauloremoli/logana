@@ -2,6 +2,7 @@ pub mod auto_complete;
 pub mod commands;
 pub mod config;
 pub mod db;
+pub mod export;
 pub mod file_reader;
 pub mod filters;
 pub mod log_manager;

@@ -35,11 +35,15 @@ src/
     render.rs      - Main render: ui(), render_logs_panel, tab bar, sidebar, command bar, input bar
     render_popups.rs - Popup/modal renders: confirm restore, select fields, value colors, docker, keybindings help, comment editor
     field_layout.rs  - Standalone helpers: get_col, default_cols, apply_field_layout, line_row_count, count_wrapped_lines
+  export.rs       - Template-based export of analysis (comments + marked lines) to Markdown, Jira, etc.
   theme.rs        - JSON-based theme loading and color management (Theme, ValueColors)
   value_colors.rs - Per-token color coding for HTTP methods, status codes, IP addresses
   config.rs       - JSON config file loading (Config, Keybindings, KeyBinding)
   auto_complete.rs - Tab completion for commands, colors, and file paths
   commands.rs     - Clap-based command definitions for the command bar
+templates/
+  markdown.txt    - Bundled Markdown export template
+  jira.txt        - Bundled Jira wiki export template
 tests/
   integration.rs  - End-to-end flows (file reading, filtering, marks, search, filter CRUD)
   stdin.rs        - Stdin reading tests
@@ -242,6 +246,20 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - Wrapping `next_match()` / `previous_match()` navigation.
 - Case sensitivity toggle (`set_case_sensitive`).
 
+### Export (export.rs)
+
+- **Template-based export** of analysis (comments + marked lines) to formatted documents (Markdown, Jira wiki, or custom).
+- **Template syntax**: Section markers `{{#name}}...{{/name}}` with recognized sections: `header` (once), `comment_group` (per comment/mark entry), and optional `footer` (once). Placeholders: `{{filename}}`, `{{date}}`, `{{commentary}}`, `{{lines}}`, `{{line_numbers}}`.
+- **`ExportTemplate`**: Parsed template with `header`, `comment_group`, and optional `marked_lines`/`footer` sections.
+- **`ExportData`**: Bundles filename, comments, marked indices, and file reader for rendering.
+- **`parse_template(raw)`**: Extracts sections from raw template text.
+- **`load_template(name)`**: Resolves template files — checks `~/.config/logsmith-rs/templates/{name}.txt` first, falls back to `./templates/{name}.txt` (same pattern as `Theme::from_file`).
+- **`list_templates()`**: Scans both directories for `.txt` files, dedupes, sorts (same pattern as `Theme::list_available_themes`).
+- **`render_export(template, data)`**: Renders the full document — header with filename/date, then comments and standalone marked lines interleaved in log order (consecutive standalone marks are grouped). Lines are rendered through the detected format parser (same as the TUI display) when available; falls back to raw bytes for plain text logs.
+- **`complete_template(partial)`**: Fuzzy-match completion for template names.
+- **Bundled templates**: `templates/markdown.txt` (Markdown with fenced code blocks), `templates/jira.txt` (Jira wiki with `{noformat}` blocks).
+- **`:export <path> [-t <template>]`** command: default template is `markdown`. Tab-completes both file paths and template names (`-t`/`--template` flag).
+
 ### UI (ui/)
 
 - **`App`** owns a `Vec<TabState>`, the global theme, and an `Arc<Keybindings>` shared across all tabs.
@@ -275,20 +293,20 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 **Select-fields mode** (`:select-fields`): floating popup showing all discovered structured fields with checkboxes. `j`/`k` navigate, `Space` toggle, `J`/`K` reorder, `a`/`n` enable/disable all, `Enter` apply, `Esc` cancel. Implemented by `SelectFieldsMode` in `src/mode/select_fields_mode.rs`.
 **Vim keybindings**: j/k, gg/G, Ctrl+d/u (half page), PageUp/Down, /, ?, n/N, m (mark), V (visual select)
 **Docker logs** (`:docker`): runs `docker ps` to list running containers, opens a `DockerSelectMode` popup (j/k navigate, Enter attach, Esc cancel). On selection, spawns `docker logs -f <id>` via `FileReader::spawn_process_stream()` and opens a new streaming tab. `DockerContainer { id, name, image, status }` in `types.rs`. Docker tabs persist across sessions via `source_file = "docker:name"`; on session restore, the `"docker:"` prefix is detected and `restore_docker_tab()` re-spawns the stream by container name instead of attempting a file load.
-**Visual line mode** (`V`): anchor at current line, j/k extend selection, `c` opens comment editor, Esc cancel. Selected range highlighted in the log panel.
+**Visual line mode** (`V`): anchor at current line, j/k extend selection, `c` opens comment editor, `y` yanks (copies) selected lines to system clipboard via `arboard`, Esc cancel. All keys are configurable via `VisualLineKeybindings`. Selected range highlighted in the log panel.
 **Comment mode**: multiline text editor (Enter = newline, Backspace = delete/merge, Left/Right wrap lines, Up/Down move rows, Shift+Enter = save (configurable), Esc = cancel). Rendered as a floating popup. Commented lines show a `◆` indicator in the line-number margin.
 **Keybindings help** (`F1`): floating popup listing all configured keybindings grouped by mode. Type to fuzzy-search, j/k scroll, Esc/q/F1 close. The status bar reflects the actual configured keybinding strings.
 **Conflict validation**: at startup `Keybindings::validate()` checks for overlapping bindings within each mode scope; conflicts are printed to stderr and logged as warnings.
 **Multi-tab**: Tab/Shift+Tab switch, Ctrl+t open, Ctrl+w close
-**Command mode** (`:`) with highlight-then-accept tab completion, history, live hints. Tab/BackTab cycle a highlight over completions in the hint area without changing input; Enter accepts the highlighted completion into the input (single match = accept+execute immediately). `CommandMode::compute_completions()` encapsulates the 4-tier completion logic (color → file path → theme → command name). `completion_index()` trait method exposes the active highlight to the renderer.
-**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`, `docker`, `value-colors`
+**Command mode** (`:`) with highlight-then-accept tab completion, history, live hints. Tab/BackTab cycle a highlight over completions in the hint area without changing input; Enter accepts the highlighted completion into the input (single match = accept+execute immediately). `CommandMode::compute_completions()` encapsulates the 5-tier completion logic (color → template → file path → theme → command name). `completion_index()` trait method exposes the active highlight to the renderer.
+**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `export`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`, `docker`, `value-colors`
 **Filter management mode** (`f`): navigate, toggle, delete, edit, set color, add include/exclude
 
 ### Config (config.rs)
 
 - **Config file**: `~/.config/logsmith-rs/config.json` (loaded at startup; falls back to defaults on parse/IO error — never prevents startup).
 - **`Config`**: `{ theme: Option<String>, keybindings: Keybindings }`. `theme` is a theme name without the `.json` extension (e.g. `"dracula"`).
-- **`Keybindings`**: groups `NormalKeybindings`, `FilterKeybindings`, `GlobalKeybindings`, `AnnotationKeybindings` — each with `#[serde(default)]` so any absent field uses its built-in default.
+- **`Keybindings`**: groups `NormalKeybindings`, `FilterKeybindings`, `GlobalKeybindings`, `CommentKeybindings`, `VisualLineKeybindings` — each with `#[serde(default)]` so any absent field uses its built-in default.
 - **`KeyBindings`** (per action): a `Vec<KeyBinding>` — each action supports multiple alternative keys (e.g. `"j"` and `"Down"` for scroll down). Accepts a single JSON string or an array of strings.
 - **`KeyBinding`**: parsed from strings like `"j"`, `"Ctrl+d"`, `"Shift+Tab"`, `"F1"`, `"PageDown"`, `"Space"`, `"Esc"`. `"Shift+Tab"` maps to `KeyCode::BackTab`. `matches(key, modifiers)`: for `Char` keys accepts `NONE` or `SHIFT` (terminals vary); for non-`Char` keys (Enter, F-keys, etc.) requires an exact SHIFT match so `"Shift+Enter"` ≠ plain `"Enter"`.
 - **`Keybindings::validate() -> Vec<String>`**: checks all (action, keybinding) pairs within each mode scope (normal + global, filter + global) for overlaps and returns human-readable conflict descriptions. Called at startup; conflicts are printed to stderr and logged.
@@ -311,7 +329,7 @@ Example `~/.config/logsmith-rs/config.json`:
 - JSON files from `themes/` or `~/.config/logsmith-rs/themes/`
 - Colors: hex `"#RRGGBB"` or RGB array `[r, g, b]`
 - Default: Dracula theme (hardcoded)
-- Fields: `root_bg`, `border`, `border_title`, `text`, `text_highlight`, `trace_fg`, `debug_fg`, `notice_fg`, `warning_fg`, `error_fg`, `fatal_fg`, `value_colors`
+- Fields: `root_bg`, `border`, `border_title`, `text`, `text_highlight`, `cursor_fg`, `trace_fg`, `debug_fg`, `notice_fg`, `warning_fg`, `error_fg`, `fatal_fg`, `search_fg`, `visual_select_bg`, `visual_select_fg`, `mark_bg`, `mark_fg`, `value_colors`
 - **`ValueColors`**: Per-token color mappings for HTTP methods (`http_get`, `http_post`, `http_put`, `http_delete`, `http_patch`, `http_other`), status codes (`status_2xx`–`status_5xx`), IP addresses (`ip_address`), and UUIDs (`uuid`). All fields have `#[serde(default)]` so existing theme files need no changes. Overridable in theme JSON under `"value_colors": { ... }`.
 - **`Theme::list_available_themes() -> Vec<String>`**: Scans both theme directories, returns sorted names (no extension).
 - **`fuzzy_match(needle, haystack) -> bool`**: Case-insensitive subsequence check; used for `set-theme` tab completion.
@@ -349,11 +367,11 @@ Example `~/.config/logsmith-rs/config.json`:
 
 ## Dependencies
 
-anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, serde_with, sqlx 0.8 (sqlite, tokio), tokio (rt-multi-thread), async-trait, dirs, tempfile, unicode-width, memmap2, memchr, aho-corasick, rayon, tracing, tracing-subscriber, tracing-appender
+anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, serde_with, sqlx 0.8 (sqlite, tokio), tokio (rt-multi-thread), async-trait, dirs, tempfile, unicode-width, memmap2, memchr, aho-corasick, rayon, time, tracing, tracing-subscriber, tracing-appender, arboard 3 (cross-platform clipboard)
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/field_layout.rs, auto_complete.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, parser/timestamp.rs, parser/logfmt.rs, parser/common_log.rs, parser/web_error.rs, parser/dmesg.rs, parser/kube_cri.rs, value_colors.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 917 tests total
+- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/commands.rs, ui/field_layout.rs, auto_complete.rs, export.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, parser/timestamp.rs, parser/logfmt.rs, parser/common_log.rs, parser/web_error.rs, parser/dmesg.rs, parser/kube_cri.rs, value_colors.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 1031 tests total
 - **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
 - **Stdin tests** (tests/stdin.rs): pipe input end-to-end — 14 tests
 - **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)

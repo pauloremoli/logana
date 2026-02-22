@@ -1,0 +1,29 @@
+{{#header}}
+# Log Analysis
+
+**File:** {{filename}}
+**Date:** {{date}}
+
+---
+
+## Analysis
+{{/header}}
+{{#comment_group}}
+
+{{commentary}}
+
+```
+{{lines}}
+```
+{{/comment_group}}
+{{#footer}}
+
+---
+
+## Conclusion
+
+
+
+## Next Steps
+
+{{/footer}}

@@ -1,9 +1,13 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 use crate::{
-    mode::app_mode::{Mode, ModeRenderState},
+    config::Keybindings,
+    mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,
+    theme::Theme,
     types::DockerContainer,
     ui::{KeyResult, TabState},
 };
@@ -37,37 +41,73 @@ impl DockerSelectMode {
 impl Mode for DockerSelectMode {
     async fn handle_key(
         mut self: Box<Self>,
-        _tab: &mut TabState,
+        tab: &mut TabState,
         key: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        match key {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.containers.is_empty() {
-                    self.selected = (self.selected + 1).min(self.containers.len() - 1);
-                }
+        let kb = &tab.keybindings.docker_select;
+        if kb.navigate_down.matches(key, modifiers) {
+            if !self.containers.is_empty() {
+                self.selected = (self.selected + 1).min(self.containers.len() - 1);
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.selected = self.selected.saturating_sub(1);
+        } else if kb.navigate_up.matches(key, modifiers) {
+            self.selected = self.selected.saturating_sub(1);
+        } else if kb.confirm.matches(key, modifiers) {
+            if let Some(c) = self.containers.get(self.selected) {
+                let id = c.id.clone();
+                let name = c.name.clone();
+                return (Box::new(NormalMode), KeyResult::DockerAttach(id, name));
             }
-            KeyCode::Enter => {
-                if let Some(c) = self.containers.get(self.selected) {
-                    let id = c.id.clone();
-                    let name = c.name.clone();
-                    return (Box::new(NormalMode), KeyResult::DockerAttach(id, name));
-                }
-                return (Box::new(NormalMode), KeyResult::Handled);
-            }
-            KeyCode::Esc => {
-                return (Box::new(NormalMode), KeyResult::Handled);
-            }
-            _ => {}
+            return (Box::new(NormalMode), KeyResult::Handled);
+        } else if kb.cancel.matches(key, modifiers) {
+            return (Box::new(NormalMode), KeyResult::Handled);
         }
         (self, KeyResult::Handled)
     }
 
     fn status_line(&self) -> &str {
-        "[DOCKER] j/k=navigate | Enter=attach | Esc=cancel"
+        "[DOCKER] <j/k> navigate  <Enter> attach  <Esc> cancel"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[DOCKER]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        // Navigate up/down
+        spans.push(Span::styled("<", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
+            kb.docker_select.navigate_up.display(),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
+            kb.docker_select.navigate_down.display(),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            "> navigate  ",
+            Style::default().fg(theme.text),
+        ));
+        status_entry(
+            &mut spans,
+            kb.docker_select.confirm.display(),
+            "attach",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.docker_select.cancel.display(),
+            "cancel",
+            theme,
+        );
+        Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {

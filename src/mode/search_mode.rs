@@ -1,9 +1,13 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 use crate::{
-    mode::app_mode::{Mode, ModeRenderState},
+    config::Keybindings,
+    mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,
+    theme::Theme,
     ui::{KeyResult, TabState},
 };
 
@@ -19,44 +23,57 @@ impl Mode for SearchMode {
         mut self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
         if matches!(key, KeyCode::Tab | KeyCode::BackTab) {
             return (self, KeyResult::Ignored);
         }
-        match key {
-            KeyCode::Enter => {
-                let visible = tab.visible_indices.clone();
-                let _ = tab.search.search(&self.input, &visible, &tab.file_reader);
-                let result = if self.forward {
-                    tab.search.next_match()
-                } else {
-                    tab.search.previous_match()
-                };
-                if let Some(r) = result {
-                    let line_idx = r.line_idx;
-                    tab.scroll_to_line_idx(line_idx);
+        let kb = tab.keybindings.search.clone();
+        if kb.confirm.matches(key, modifiers) {
+            let visible = tab.visible_indices.clone();
+            let _ = tab.search.search(&self.input, &visible, &tab.file_reader);
+            let result = if self.forward {
+                tab.search.next_match()
+            } else {
+                tab.search.previous_match()
+            };
+            if let Some(r) = result {
+                let line_idx = r.line_idx;
+                tab.scroll_to_line_idx(line_idx);
+            }
+            (Box::new(NormalMode), KeyResult::Handled)
+        } else if kb.cancel.matches(key, modifiers) {
+            self.input.clear();
+            (Box::new(NormalMode), KeyResult::Handled)
+        } else {
+            match key {
+                KeyCode::Backspace => {
+                    self.input.pop();
+                    (self, KeyResult::Handled)
                 }
-                (Box::new(NormalMode), KeyResult::Handled)
+                KeyCode::Char(c) => {
+                    self.input.push(c);
+                    (self, KeyResult::Handled)
+                }
+                _ => (self, KeyResult::Handled),
             }
-            KeyCode::Esc => {
-                self.input.clear();
-                (Box::new(NormalMode), KeyResult::Handled)
-            }
-            KeyCode::Backspace => {
-                self.input.pop();
-                (self, KeyResult::Handled)
-            }
-            KeyCode::Char(c) => {
-                self.input.push(c);
-                (self, KeyResult::Handled)
-            }
-            _ => (self, KeyResult::Handled),
         }
     }
 
     fn status_line(&self) -> &str {
-        "[SEARCH] Esc => cancel | Enter => search"
+        "[SEARCH] <Esc> cancel  <Enter> search"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[SEARCH]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        status_entry(&mut spans, kb.search.cancel.display(), "cancel", theme);
+        status_entry(&mut spans, kb.search.confirm.display(), "search", theme);
+        Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {

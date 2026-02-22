@@ -1,9 +1,13 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 use crate::{
-    mode::app_mode::{Mode, ModeRenderState},
+    config::Keybindings,
+    mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,
+    theme::Theme,
     types::FieldLayout,
     ui::{KeyResult, TabState},
 };
@@ -34,72 +38,100 @@ impl Mode for SelectFieldsMode {
         mut self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        match key {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.fields.is_empty() {
-                    self.selected = (self.selected + 1).min(self.fields.len() - 1);
-                }
+        let kb = &tab.keybindings.select_fields;
+        if kb.apply.matches(key, modifiers) {
+            let enabled: Vec<String> = self
+                .fields
+                .iter()
+                .filter(|(_, on)| *on)
+                .map(|(name, _)| name.clone())
+                .collect();
+            let all_ordered: Vec<String> = self.fields.iter().map(|(n, _)| n.clone()).collect();
+            tab.field_layout.columns = Some(enabled);
+            tab.field_layout.columns_order = Some(all_ordered);
+            return (Box::new(NormalMode), KeyResult::Handled);
+        }
+        if kb.cancel.matches(key, modifiers) {
+            tab.field_layout = std::mem::take(&mut self.original_layout);
+            return (Box::new(NormalMode), KeyResult::Handled);
+        }
+        if kb.navigate_down.matches(key, modifiers) {
+            if !self.fields.is_empty() {
+                self.selected = (self.selected + 1).min(self.fields.len() - 1);
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.selected = self.selected.saturating_sub(1);
+        } else if kb.navigate_up.matches(key, modifiers) {
+            self.selected = self.selected.saturating_sub(1);
+        } else if kb.toggle.matches(key, modifiers) {
+            if let Some(f) = self.fields.get_mut(self.selected) {
+                f.1 = !f.1;
             }
-            KeyCode::Char(' ') => {
-                if let Some(f) = self.fields.get_mut(self.selected) {
-                    f.1 = !f.1;
-                }
+        } else if kb.move_down.matches(key, modifiers) {
+            if self.selected + 1 < self.fields.len() {
+                self.fields.swap(self.selected, self.selected + 1);
+                self.selected += 1;
             }
-            KeyCode::Char('J') => {
-                // Move selected field down
-                if self.selected + 1 < self.fields.len() {
-                    self.fields.swap(self.selected, self.selected + 1);
-                    self.selected += 1;
-                }
+        } else if kb.move_up.matches(key, modifiers) {
+            if self.selected > 0 {
+                self.fields.swap(self.selected, self.selected - 1);
+                self.selected -= 1;
             }
-            KeyCode::Char('K') => {
-                // Move selected field up
-                if self.selected > 0 {
-                    self.fields.swap(self.selected, self.selected - 1);
-                    self.selected -= 1;
-                }
+        } else if kb.all.matches(key, modifiers) {
+            for f in &mut self.fields {
+                f.1 = true;
             }
-            KeyCode::Char('a') => {
-                for f in &mut self.fields {
-                    f.1 = true;
-                }
+        } else if kb.none.matches(key, modifiers) {
+            for f in &mut self.fields {
+                f.1 = false;
             }
-            KeyCode::Char('n') => {
-                for f in &mut self.fields {
-                    f.1 = false;
-                }
-            }
-            KeyCode::Enter => {
-                let enabled: Vec<String> = self
-                    .fields
-                    .iter()
-                    .filter(|(_, on)| *on)
-                    .map(|(name, _)| name.clone())
-                    .collect();
-                // Always store the full ordered list so user's ordering is
-                // preserved.  Also store disabled names so the order is
-                // restored when the modal is reopened.
-                let all_ordered: Vec<String> = self.fields.iter().map(|(n, _)| n.clone()).collect();
-                tab.field_layout.columns = Some(enabled);
-                tab.field_layout.columns_order = Some(all_ordered);
-                return (Box::new(NormalMode), KeyResult::Handled);
-            }
-            KeyCode::Esc => {
-                tab.field_layout = std::mem::take(&mut self.original_layout);
-                return (Box::new(NormalMode), KeyResult::Handled);
-            }
-            _ => {}
         }
         (self, KeyResult::Handled)
     }
 
     fn status_line(&self) -> &str {
-        "[SELECT FIELDS] Space=toggle | J/K=reorder | Enter=apply | Esc=cancel | a=all | n=none"
+        "[SELECT FIELDS] <Space> toggle  <J/K> reorder  <Enter> apply  <Esc> cancel  <a> all  <n> none"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[SELECT FIELDS]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        status_entry(
+            &mut spans,
+            kb.select_fields.toggle.display(),
+            "toggle",
+            theme,
+        );
+        // Move up/down
+        spans.push(Span::styled("<", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
+            kb.select_fields.move_up.display(),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
+            kb.select_fields.move_down.display(),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("> reorder  ", Style::default().fg(theme.text)));
+        status_entry(&mut spans, kb.select_fields.apply.display(), "apply", theme);
+        status_entry(
+            &mut spans,
+            kb.select_fields.cancel.display(),
+            "cancel",
+            theme,
+        );
+        status_entry(&mut spans, kb.select_fields.all.display(), "all", theme);
+        status_entry(&mut spans, kb.select_fields.none.display(), "none", theme);
+        Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {

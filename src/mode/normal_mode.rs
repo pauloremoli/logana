@@ -14,7 +14,7 @@ use crate::{
         visual_mode::VisualLineMode,
     },
     theme::Theme,
-    ui::{KeyResult, TabState},
+    ui::{KeyResult, TabState, field_layout::apply_field_layout},
 };
 
 #[derive(Debug)]
@@ -177,6 +177,31 @@ impl Mode for NormalMode {
             return (self, KeyResult::Handled);
         }
 
+        if kb.normal.yank_marked.matches(key, modifiers) {
+            let marked = tab.log_manager.get_marked_indices();
+            tab.g_key_pressed = false;
+            if marked.is_empty() {
+                tab.command_error = Some("No marked lines".to_string());
+                return (self, KeyResult::Handled);
+            }
+            let text: String = marked
+                .iter()
+                .map(|&idx| {
+                    let bytes = tab.file_reader.get_line(idx);
+                    tab.detected_format
+                        .as_ref()
+                        .and_then(|parser| parser.parse_line(bytes))
+                        .map(|parts| {
+                            apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields)
+                                .join(" ")
+                        })
+                        .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            return (self, KeyResult::CopyToClipboard(text));
+        }
+
         if kb.normal.visual_mode.matches(key, modifiers) {
             let anchor = tab.scroll_offset;
             tab.g_key_pressed = false;
@@ -234,7 +259,7 @@ impl Mode for NormalMode {
     }
 
     fn status_line(&self) -> &str {
-        "[NORMAL] [q]uit | [f]ilter mode | [F] toggle filtering | [m]ark | [M] marks only | [s]idebar | [V]isual select | Tab/Shift+Tab switch tab | [F1] help"
+        "[NORMAL] <q> quit  <f> filter  <F> tog.filter  <m> mark  <M> marks only  <y> yank marked  <s> sidebar  <V> visual  <F1> help"
     }
 
     fn render_state(&self) -> ModeRenderState {
@@ -261,6 +286,12 @@ impl Mode for NormalMode {
             &mut spans,
             kb.normal.toggle_marks_only.display(),
             "marks only",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.normal.yank_marked.display(),
+            "yank marked",
             theme,
         );
         status_entry(
@@ -644,6 +675,28 @@ mod tests {
         assert!(tab.visible_indices.is_empty());
     }
 
+    #[tokio::test]
+    async fn test_y_yanks_marked_lines() {
+        let mut tab = make_tab(&["line0", "line1", "line2"]).await;
+        tab.log_manager.toggle_mark(0);
+        tab.log_manager.toggle_mark(2);
+        let (_, result) = press(&mut tab, KeyCode::Char('y'), KeyModifiers::NONE).await;
+        match result {
+            KeyResult::CopyToClipboard(text) => {
+                assert_eq!(text, "line0\nline2");
+            }
+            other => panic!("expected CopyToClipboard, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_y_no_marks_sets_error() {
+        let mut tab = make_tab(&["line0", "line1"]).await;
+        let (_, result) = press(&mut tab, KeyCode::Char('y'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert_eq!(tab.command_error.as_deref(), Some("No marked lines"));
+    }
+
     #[test]
     fn test_status_line_contains_normal() {
         assert!(NormalMode.status_line().contains("[NORMAL]"));
@@ -651,6 +704,6 @@ mod tests {
 
     #[test]
     fn test_status_line_contains_marks_only_hint() {
-        assert!(NormalMode.status_line().contains("[M] marks only"));
+        assert!(NormalMode.status_line().contains("marks only"));
     }
 }

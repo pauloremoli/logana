@@ -1,13 +1,16 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 use crate::{
     auto_complete::{
         complete_color, complete_file_path, extract_color_partial, find_command_completions,
         fuzzy_match,
     },
+    config::Keybindings,
     mode::{
-        app_mode::{Mode, ModeRenderState},
+        app_mode::{Mode, ModeRenderState, status_entry},
         filter_mode::FilterManagementMode,
         normal_mode::NormalMode,
     },
@@ -16,6 +19,29 @@ use crate::{
 };
 
 use clap::{Parser, Subcommand};
+
+/// If the input is `export ... -t <partial>` or `--template <partial>`,
+/// returns the partial template name for completion.
+fn extract_template_partial(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with("export") {
+        return None;
+    }
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+    let last = tokens[tokens.len() - 1];
+    let second_last = tokens[tokens.len() - 2];
+
+    if second_last == "-t" || second_last == "--template" {
+        return Some(last);
+    }
+    if (last == "-t" || last == "--template") && input.ends_with(' ') {
+        return Some("");
+    }
+    None
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, no_binary_name = true)]
@@ -87,6 +113,12 @@ pub enum Commands {
     Docker,
     /// Toggle value-based color coding (HTTP methods, status codes, IPs, UUIDs)
     ValueColors,
+    /// Export analysis (comments + marked lines) using a template
+    Export {
+        path: String,
+        #[arg(short, long, default_value = "markdown")]
+        template: String,
+    },
 }
 
 #[derive(Debug)]
@@ -131,8 +163,30 @@ impl CommandMode {
             }
         }
 
+        // Template completion for export -t/--template
+        if let Some(partial) = extract_template_partial(&trimmed) {
+            let completions = crate::export::complete_template(partial);
+            if !completions.is_empty() {
+                let prefix = if partial.is_empty() {
+                    trimmed.clone()
+                } else {
+                    trimmed[..trimmed.len() - partial.len()].to_string()
+                };
+                return completions
+                    .into_iter()
+                    .map(|c| format!("{}{}", prefix, c))
+                    .collect();
+            }
+        }
+
         // File path completion
-        let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
+        let file_commands = [
+            "open",
+            "load-filters",
+            "save-filters",
+            "export-marked",
+            "export",
+        ];
         let input_ltrimmed = self.input.trim_start();
         let file_cmd = file_commands
             .iter()
@@ -192,46 +246,41 @@ impl Mode for CommandMode {
         mut self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
+        let kb = tab.keybindings.command.clone();
+        if kb.confirm.matches(key, modifiers) {
+            let cmd = self.input.trim().to_string();
+            return (Box::new(NormalMode), KeyResult::ExecuteCommand(cmd));
+        }
+        if kb.cancel.matches(key, modifiers) {
+            tab.editing_filter_id = None;
+            if let Some(idx) = tab.filter_context.take() {
+                return (
+                    Box::new(FilterManagementMode {
+                        selected_filter_index: idx,
+                    }),
+                    KeyResult::Handled,
+                );
+            }
+            return (Box::new(NormalMode), KeyResult::Handled);
+        }
         match key {
-            KeyCode::Enter => {
-                if let Some(idx) = self.completion_index {
-                    let completions = self.compute_completions(tab);
-                    let len = completions.len();
-                    if let Some(text) = completions.into_iter().nth(idx) {
-                        self.input = text;
-                        self.cursor = self.input.len();
-                    }
-                    self.completion_index = None;
-                    if len == 1 {
-                        // Single match → accept AND execute in one step
-                        let cmd = self.input.trim().to_string();
-                        return (Box::new(NormalMode), KeyResult::ExecuteCommand(cmd));
-                    }
-                    return (self, KeyResult::Handled);
-                }
-                let cmd = self.input.trim().to_string();
-                return (Box::new(NormalMode), KeyResult::ExecuteCommand(cmd));
-            }
-            KeyCode::Esc => {
-                tab.editing_filter_id = None;
-                if let Some(idx) = tab.filter_context.take() {
-                    return (
-                        Box::new(FilterManagementMode {
-                            selected_filter_index: idx,
-                        }),
-                        KeyResult::Handled,
-                    );
-                }
-                return (Box::new(NormalMode), KeyResult::Handled);
-            }
             KeyCode::Backspace => {
                 if self.cursor > 0 && !self.input.is_empty() {
                     self.input.remove(self.cursor - 1);
                     self.cursor -= 1;
                     self.completion_index = None;
                 }
+            }
+            KeyCode::Char(' ') if self.completion_index.is_some() => {
+                let idx = self.completion_index.unwrap();
+                let completions = self.compute_completions(tab);
+                if let Some(text) = completions.into_iter().nth(idx) {
+                    self.input = text;
+                    self.cursor = self.input.len();
+                }
+                self.completion_index = None;
             }
             KeyCode::Char(c) => {
                 self.input.insert(self.cursor, c);
@@ -311,7 +360,20 @@ impl Mode for CommandMode {
     }
 
     fn status_line(&self) -> &str {
-        "[COMMAND] filter | exclude | set-color | export-marked | save-filters | load-filters | wrap | set-theme | level-colors | open | close-tab | Esc | Enter"
+        "[COMMAND] <Esc> cancel  <Enter> execute  <Tab> complete"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[COMMAND]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        status_entry(&mut spans, kb.command.cancel.display(), "cancel", theme);
+        status_entry(&mut spans, kb.command.confirm.display(), "execute", theme);
+        status_entry(&mut spans, "Tab".to_string(), "complete", theme);
+        Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {
@@ -643,23 +705,21 @@ mod tests {
         // Completion is highlighted
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
-        // Enter accepts the completion — single file → accept AND execute
-        let (_mode3, result) = mode2
-            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+        // Space accepts the highlighted completion into input
+        let (mode3, result) = mode2
+            .handle_key(&mut tab, KeyCode::Char(' '), KeyModifiers::NONE)
             .await;
-        match result {
-            KeyResult::ExecuteCommand(ref cmd) => {
-                assert!(
-                    cmd.starts_with("open "),
-                    "Command should start with 'open ', got: {cmd}"
-                );
-                assert!(
-                    cmd.contains(path.to_str().unwrap()),
-                    "Should complete into the open file's directory, got: {cmd}"
-                );
-            }
-            _ => panic!("Expected ExecuteCommand for single file match"),
-        }
+        assert!(matches!(result, KeyResult::Handled));
+        let (accepted, _) = command_state(mode3.as_ref()).unwrap();
+        assert!(
+            accepted.starts_with("open "),
+            "Should start with 'open ', got: {accepted}"
+        );
+        assert!(
+            accepted.contains(path.to_str().unwrap()),
+            "Should complete into the open file's directory, got: {accepted}"
+        );
+        assert!(completion_index(mode3.as_ref()).is_none());
     }
 
     #[tokio::test]
@@ -683,24 +743,21 @@ mod tests {
         assert_eq!(input, input_str);
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
-        // Enter accepts the highlighted completion
+        // Space accepts the highlighted completion into input
         let (mode3, result) = mode2
-            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .handle_key(&mut tab, KeyCode::Char(' '), KeyModifiers::NONE)
             .await;
-        let (accepted, _) = command_state(mode3.as_ref()).unwrap_or(("".to_string(), 0));
-        // Single fuzzy match → accept AND execute
+        assert!(matches!(result, KeyResult::Handled));
+        let (accepted, _) = command_state(mode3.as_ref()).unwrap();
         assert!(
-            accepted.is_empty() || accepted.ends_with("application.log"),
+            accepted.ends_with("application.log"),
             "Should accept application.log, got: {accepted}"
         );
-        assert!(
-            matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd.ends_with("application.log")),
-            "Single match should execute immediately"
-        );
+        assert!(completion_index(mode3.as_ref()).is_none());
     }
 
     #[tokio::test]
-    async fn test_enter_during_completion_accepts_without_executing() {
+    async fn test_space_accepts_completion_into_input() {
         let mut tab = make_tab().await;
         // Type "fi" then Tab to highlight first completion
         let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
@@ -711,9 +768,9 @@ mod tests {
         assert_eq!(command_state(mode2.as_ref()).unwrap().0, "fi");
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
-        // Press Enter — should accept highlighted completion into input (multiple matches)
+        // Press Space — should accept highlighted completion into input
         let (mode3, result) = mode2
-            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .handle_key(&mut tab, KeyCode::Char(' '), KeyModifiers::NONE)
             .await;
         assert!(matches!(result, KeyResult::Handled));
         // Still in command mode with accepted text
@@ -724,12 +781,11 @@ mod tests {
         );
         assert!(completion_index(mode3.as_ref()).is_none());
 
-        // Second Enter — should execute the command
+        // Enter — should execute the command
         let (mode4, result2) = mode3
             .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
             .await;
         assert!(matches!(result2, KeyResult::ExecuteCommand(_)));
-        // Now in normal mode (command_state returns None)
         assert!(!matches!(
             mode4.render_state(),
             ModeRenderState::Command { .. }
@@ -737,27 +793,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_enter_single_match_accepts_and_executes() {
+    async fn test_enter_during_completion_executes_raw_input() {
         let mut tab = make_tab().await;
-        // "wra" should match only "wrap"
-        let mode = CommandMode::with_history("wra".to_string(), 3, vec![]);
+        // Type "wrap" then Tab to highlight completion
+        let mode = CommandMode::with_history("wrap".to_string(), 4, vec![]);
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
-        assert_eq!(command_state(mode2.as_ref()).unwrap().0, "wra");
 
-        // Enter on single match → accept AND execute immediately
+        // Enter always executes the current input text, ignoring completion highlight
         let (mode3, result) = mode2
             .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
             .await;
         assert!(
             matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd == "wrap"),
-            "Single match should accept and execute immediately"
+            "Enter should execute the input text directly"
         );
         assert!(!matches!(
             mode3.render_state(),
             ModeRenderState::Command { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_space_without_completion_inserts_space() {
+        let mut tab = make_tab().await;
+        let mode = CommandMode::with_history("filter".to_string(), 6, vec![]);
+        // No Tab pressed, so completion_index is None
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char(' '), KeyModifiers::NONE)
+            .await;
+        let (input, cursor) = command_state(mode2.as_ref()).unwrap();
+        assert_eq!(input, "filter ");
+        assert_eq!(cursor, 7);
     }
 }

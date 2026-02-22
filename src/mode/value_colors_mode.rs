@@ -1,12 +1,15 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use std::collections::HashSet;
 
 use crate::{
     auto_complete::fuzzy_match,
-    mode::app_mode::{Mode, ModeRenderState},
+    config::Keybindings,
+    mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,
+    theme::Theme,
     ui::{KeyResult, TabState},
 };
 
@@ -117,12 +120,14 @@ impl ValueColorsMode {
 impl Mode for ValueColorsMode {
     async fn handle_key(
         mut self: Box<Self>,
-        _tab: &mut TabState,
+        tab: &mut TabState,
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        // Esc: clear search first, then cancel.
-        if key == KeyCode::Esc {
+        let kb = &tab.keybindings.value_colors;
+
+        // Cancel: clear search first, then cancel.
+        if kb.cancel.matches(key, modifiers) {
             if !self.search.is_empty() {
                 self.search.clear();
                 self.selected = 0;
@@ -134,7 +139,7 @@ impl Mode for ValueColorsMode {
             );
         }
 
-        if key == KeyCode::Enter {
+        if kb.apply.matches(key, modifiers) {
             let disabled: HashSet<String> = self
                 .groups
                 .iter()
@@ -145,70 +150,88 @@ impl Mode for ValueColorsMode {
             return (Box::new(NormalMode), KeyResult::ApplyValueColors(disabled));
         }
 
-        // When search is empty, j/k/Space/a/n work as navigation/toggle.
-        // When search is non-empty, printable chars go to search;
-        // j/k/Space still navigate and toggle.
-        match key {
-            KeyCode::Char('j') | KeyCode::Down => {
-                let count = self.visible_rows().len();
-                if count > 0 {
-                    self.selected = (self.selected + 1).min(count - 1);
-                }
+        if kb.navigate_down.matches(key, modifiers) {
+            let count = self.visible_rows().len();
+            if count > 0 {
+                self.selected = (self.selected + 1).min(count - 1);
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.selected = self.selected.saturating_sub(1);
-            }
-            KeyCode::Char(' ') => {
-                let rows = self.visible_rows();
-                if let Some(row) = rows.get(self.selected) {
-                    match row {
-                        ValueColorRow::Group(gi) => {
-                            let gi = *gi;
-                            // Toggle all children: if all enabled → disable all, otherwise enable all.
-                            let target = !self.group_enabled(gi).unwrap_or(false);
-                            for child in &mut self.groups[gi].children {
-                                child.enabled = target;
-                            }
-                        }
-                        ValueColorRow::Entry(gi, ei) => {
-                            let (gi, ei) = (*gi, *ei);
-                            self.groups[gi].children[ei].enabled =
-                                !self.groups[gi].children[ei].enabled;
+        } else if kb.navigate_up.matches(key, modifiers) {
+            self.selected = self.selected.saturating_sub(1);
+        } else if kb.toggle.matches(key, modifiers) {
+            let rows = self.visible_rows();
+            if let Some(row) = rows.get(self.selected) {
+                match row {
+                    ValueColorRow::Group(gi) => {
+                        let gi = *gi;
+                        let target = !self.group_enabled(gi).unwrap_or(false);
+                        for child in &mut self.groups[gi].children {
+                            child.enabled = target;
                         }
                     }
-                }
-            }
-            KeyCode::Char('a') if self.search.is_empty() => {
-                for group in &mut self.groups {
-                    for child in &mut group.children {
-                        child.enabled = true;
+                    ValueColorRow::Entry(gi, ei) => {
+                        let (gi, ei) = (*gi, *ei);
+                        self.groups[gi].children[ei].enabled =
+                            !self.groups[gi].children[ei].enabled;
                     }
                 }
             }
-            KeyCode::Char('n') if self.search.is_empty() => {
-                for group in &mut self.groups {
-                    for child in &mut group.children {
-                        child.enabled = false;
-                    }
+        } else if kb.all.matches(key, modifiers) && self.search.is_empty() {
+            for group in &mut self.groups {
+                for child in &mut group.children {
+                    child.enabled = true;
                 }
             }
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                self.search.push(c);
-                self.selected = 0;
-                self.clamp_selected();
+        } else if kb.none.matches(key, modifiers) && self.search.is_empty() {
+            for group in &mut self.groups {
+                for child in &mut group.children {
+                    child.enabled = false;
+                }
             }
-            KeyCode::Backspace => {
-                self.search.pop();
-                self.selected = 0;
-                self.clamp_selected();
+        } else {
+            match key {
+                KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.search.push(c);
+                    self.selected = 0;
+                    self.clamp_selected();
+                }
+                KeyCode::Backspace => {
+                    self.search.pop();
+                    self.selected = 0;
+                    self.clamp_selected();
+                }
+                _ => {}
             }
-            _ => {}
         }
         (self, KeyResult::Handled)
     }
 
     fn status_line(&self) -> &str {
-        "[VALUE COLORS] Space=toggle | a=all | n=none | Enter=apply | Esc=cancel | type to search"
+        "[VALUE COLORS] <Space> toggle  <a> all  <n> none  <Enter> apply  <Esc> cancel"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[VALUE COLORS]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        status_entry(
+            &mut spans,
+            kb.value_colors.toggle.display(),
+            "toggle",
+            theme,
+        );
+        status_entry(&mut spans, kb.value_colors.all.display(), "all", theme);
+        status_entry(&mut spans, kb.value_colors.none.display(), "none", theme);
+        status_entry(&mut spans, kb.value_colors.apply.display(), "apply", theme);
+        status_entry(
+            &mut spans,
+            kb.value_colors.cancel.display(),
+            "cancel",
+            theme,
+        );
+        Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {

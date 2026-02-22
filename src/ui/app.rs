@@ -31,6 +31,8 @@ pub struct App {
     pub stdin_load_state: Option<StdinLoadState>,
     /// Shared keybindings — propagated to every new tab.
     pub keybindings: Arc<Keybindings>,
+    /// Persistent clipboard instance — kept alive so clipboard managers can read the contents.
+    pub clipboard: Option<arboard::Clipboard>,
 }
 
 impl std::fmt::Debug for App {
@@ -95,6 +97,7 @@ impl App {
             file_load_state: None,
             stdin_load_state: None,
             keybindings,
+            clipboard: None,
         }
     }
 
@@ -241,6 +244,7 @@ impl App {
                     KeyResult::ApplyValueColors(disabled) => {
                         self.theme.value_colors.disabled = disabled;
                     }
+                    KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
                 }
             }
 
@@ -276,6 +280,37 @@ impl App {
             KeyResult::DockerAttach(id, name) => self.open_docker_logs(id, name).await,
             KeyResult::ApplyValueColors(disabled) => {
                 self.theme.value_colors.disabled = disabled;
+            }
+            KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
+        }
+    }
+
+    fn copy_to_clipboard(&mut self, text: String) {
+        let tab = &mut self.tabs[self.active_tab];
+        let line_count = text.lines().count();
+
+        // Lazily initialize the clipboard, keeping it alive for the session so
+        // clipboard managers on Linux have time to read the contents.
+        if self.clipboard.is_none() {
+            match arboard::Clipboard::new() {
+                Ok(cb) => self.clipboard = Some(cb),
+                Err(e) => {
+                    tab.command_error = Some(format!("Failed to copy: {}", e));
+                    return;
+                }
+            }
+        }
+        let cb = self.clipboard.as_mut().unwrap();
+        match cb.set_text(text) {
+            Ok(()) => {
+                tab.command_error = Some(format!(
+                    "{} line{} copied to clipboard",
+                    line_count,
+                    if line_count == 1 { "" } else { "s" }
+                ));
+            }
+            Err(e) => {
+                tab.command_error = Some(format!("Failed to copy: {}", e));
             }
         }
     }

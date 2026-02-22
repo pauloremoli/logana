@@ -1,10 +1,13 @@
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 use crate::{
     config::Keybindings,
-    mode::app_mode::{Mode, ModeRenderState},
+    mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,
+    theme::Theme,
     ui::{KeyResult, TabState},
 };
 
@@ -82,6 +85,10 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.toggle_marks_only.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Yank marked lines".into(),
+        keys: n.yank_marked.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Visual select".into(),
         keys: n.visual_mode.display(),
     });
@@ -124,6 +131,30 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     rows.push(HelpRow::Entry {
         action: "Show keybindings".into(),
         keys: n.show_keybindings.display(),
+    });
+
+    // ── Visual Line Mode ──────────────────────────────────────────────────────
+    let vl = &kb.visual_line;
+    rows.push(HelpRow::Header("Visual Line Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Extend down".into(),
+        keys: vl.scroll_down.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Extend up".into(),
+        keys: vl.scroll_up.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Comment selection".into(),
+        keys: vl.comment.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Yank to clipboard".into(),
+        keys: vl.yank.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Exit visual mode".into(),
+        keys: vl.exit.display(),
     });
 
     // ── Global ───────────────────────────────────────────────────────────────
@@ -198,6 +229,177 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     rows.push(HelpRow::Entry {
         action: "Exit filter mode".into(),
         keys: f.exit_mode.display(),
+    });
+
+    // ── Comment Mode ────────────────────────────────────────────────────────
+    rows.push(HelpRow::Header("Comment Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Save comment".into(),
+        keys: kb.comment.save.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Cancel".into(),
+        keys: kb.comment.cancel.display(),
+    });
+
+    // ── Search Mode ─────────────────────────────────────────────────────────
+    rows.push(HelpRow::Header("Search Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Confirm search".into(),
+        keys: kb.search.confirm.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Cancel".into(),
+        keys: kb.search.cancel.display(),
+    });
+
+    // ── Filter Edit Mode ────────────────────────────────────────────────────
+    rows.push(HelpRow::Header("Filter Edit Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Save".into(),
+        keys: kb.filter_edit.confirm.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Cancel".into(),
+        keys: kb.filter_edit.cancel.display(),
+    });
+
+    // ── Command Mode ────────────────────────────────────────────────────────
+    rows.push(HelpRow::Header("Command Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Execute".into(),
+        keys: kb.command.confirm.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Cancel".into(),
+        keys: kb.command.cancel.display(),
+    });
+
+    // ── Docker Select Mode ──────────────────────────────────────────────────
+    let ds = &kb.docker_select;
+    rows.push(HelpRow::Header("Docker Select Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Navigate".into(),
+        keys: format!(
+            "{}/{}",
+            ds.navigate_up.display(),
+            ds.navigate_down.display()
+        ),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Attach".into(),
+        keys: ds.confirm.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Cancel".into(),
+        keys: ds.cancel.display(),
+    });
+
+    // ── Value Colors Mode ───────────────────────────────────────────────────
+    let vc = &kb.value_colors;
+    rows.push(HelpRow::Header("Value Colors Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Navigate".into(),
+        keys: format!(
+            "{}/{}",
+            vc.navigate_up.display(),
+            vc.navigate_down.display()
+        ),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Toggle".into(),
+        keys: vc.toggle.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Enable all".into(),
+        keys: vc.all.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Disable all".into(),
+        keys: vc.none.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Apply".into(),
+        keys: vc.apply.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Cancel".into(),
+        keys: vc.cancel.display(),
+    });
+
+    // ── Select Fields Mode ──────────────────────────────────────────────────
+    let sf = &kb.select_fields;
+    rows.push(HelpRow::Header("Select Fields Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Navigate".into(),
+        keys: format!(
+            "{}/{}",
+            sf.navigate_up.display(),
+            sf.navigate_down.display()
+        ),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Toggle".into(),
+        keys: sf.toggle.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Move up".into(),
+        keys: sf.move_up.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Move down".into(),
+        keys: sf.move_down.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Enable all".into(),
+        keys: sf.all.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Disable all".into(),
+        keys: sf.none.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Apply".into(),
+        keys: sf.apply.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Cancel".into(),
+        keys: sf.cancel.display(),
+    });
+
+    // ── Help Mode ───────────────────────────────────────────────────────────
+    let h = &kb.help;
+    rows.push(HelpRow::Header("Help Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Scroll down".into(),
+        keys: h.scroll_down.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Scroll up".into(),
+        keys: h.scroll_up.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Fast scroll down".into(),
+        keys: h.fast_down.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Fast scroll up".into(),
+        keys: h.fast_up.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Close".into(),
+        keys: h.close.display(),
+    });
+
+    // ── Confirm Mode ────────────────────────────────────────────────────────
+    rows.push(HelpRow::Header("Confirm Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Yes".into(),
+        keys: kb.confirm.yes.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "No".into(),
+        keys: kb.confirm.no.display(),
     });
 
     rows
@@ -281,8 +483,8 @@ impl Mode for KeybindingsHelpMode {
     ) -> (Box<dyn Mode>, KeyResult) {
         let kb = tab.keybindings.clone();
 
-        // Close: Esc clears search first, then exits.
-        if key == KeyCode::Esc {
+        // Close: configured close key clears search first, then exits.
+        if kb.help.close.matches(key, modifiers) {
             if !self.search.is_empty() {
                 self.search.clear();
                 self.scroll = 0;
@@ -291,38 +493,30 @@ impl Mode for KeybindingsHelpMode {
             return (Box::new(NormalMode), KeyResult::Handled);
         }
 
-        // q closes (only when not typing in search)
-        if (key == KeyCode::Char('q') || key == KeyCode::Char('Q')) && self.search.is_empty() {
-            return (Box::new(NormalMode), KeyResult::Handled);
-        }
-
         // The show_keybindings key (F1 by default) also closes
         if kb.normal.show_keybindings.matches(key, modifiers) && self.search.is_empty() {
             return (Box::new(NormalMode), KeyResult::Handled);
         }
 
-        // Ctrl+d / Ctrl+u — fast scroll (works in both modes)
-        if key == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
+        // Fast scroll (works in both modes)
+        if kb.help.fast_down.matches(key, modifiers) {
             self.scroll = self.scroll.saturating_add(10);
             return (self, KeyResult::Handled);
         }
-        if key == KeyCode::Char('u') && modifiers.contains(KeyModifiers::CONTROL) {
+        if kb.help.fast_up.matches(key, modifiers) {
             self.scroll = self.scroll.saturating_sub(10);
             return (self, KeyResult::Handled);
         }
 
         // j/k/arrows scroll only when not typing
         if self.search.is_empty() {
-            match key {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.scroll = self.scroll.saturating_add(1);
-                    return (self, KeyResult::Handled);
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.scroll = self.scroll.saturating_sub(1);
-                    return (self, KeyResult::Handled);
-                }
-                _ => {}
+            if kb.help.scroll_down.matches(key, modifiers) {
+                self.scroll = self.scroll.saturating_add(1);
+                return (self, KeyResult::Handled);
+            }
+            if kb.help.scroll_up.matches(key, modifiers) {
+                self.scroll = self.scroll.saturating_sub(1);
+                return (self, KeyResult::Handled);
             }
         }
 
@@ -343,7 +537,38 @@ impl Mode for KeybindingsHelpMode {
     }
 
     fn status_line(&self) -> &str {
-        "[HELP] type to search | j/k scroll | Esc clear/close | q close"
+        "[HELP] type to search  <j/k> scroll  <Esc> close  <q> close"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[HELP]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        spans.push(Span::styled(
+            "type to search  ",
+            Style::default().fg(theme.text),
+        ));
+        // Scroll up/down
+        spans.push(Span::styled("<", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
+            kb.help.scroll_up.display(),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.border)));
+        spans.push(Span::styled(
+            kb.help.scroll_down.display(),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("> scroll  ", Style::default().fg(theme.text)));
+        status_entry(&mut spans, kb.help.close.display(), "close", theme);
+        Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {

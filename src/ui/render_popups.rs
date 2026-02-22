@@ -9,6 +9,20 @@ use crate::config::Keybindings;
 
 use super::App;
 
+/// Append `<KEY> action  ` spans to a footer line (popup style).
+fn popup_entry(
+    spans: &mut Vec<Span<'static>>,
+    key: String,
+    label: &str,
+    key_style: Style,
+    txt_style: Style,
+    br_style: Style,
+) {
+    spans.push(Span::styled("<", br_style));
+    spans.push(Span::styled(key, key_style));
+    spans.push(Span::styled(format!("> {}  ", label), txt_style));
+}
+
 impl App {
     pub(super) fn render_confirm_restore_modal(&mut self, frame: &mut Frame<'_>) {
         let modal_width = 44_u16;
@@ -18,38 +32,48 @@ impl App {
         let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
         let modal_area = ratatui::layout::Rect::new(x, y, modal_width, modal_height);
 
+        let kb = &self.keybindings;
+        let key_style = Style::default()
+            .fg(self.theme.text_highlight)
+            .add_modifier(Modifier::BOLD);
+        let txt_style = Style::default().fg(self.theme.text);
+        let br_style = Style::default().fg(self.theme.border);
+
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(" ", txt_style)];
+        popup_entry(
+            &mut spans,
+            kb.confirm.yes.display(),
+            "yes",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut spans,
+            kb.confirm.no.display(),
+            "no",
+            key_style,
+            txt_style,
+            br_style,
+        );
+
         frame.render_widget(ratatui::widgets::Clear, modal_area);
-        let modal = Paragraph::new(Line::from(vec![
-            Span::styled(
-                " [y]",
-                Style::default()
-                    .fg(self.theme.text_highlight)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("es  ", Style::default().fg(self.theme.text)),
-            Span::styled(
-                "[n]",
-                Style::default()
-                    .fg(self.theme.text_highlight)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("o ", Style::default().fg(self.theme.text)),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(self.theme.border_title))
-                .title(" Restore previous session? ")
-                .title_style(
-                    Style::default()
-                        .fg(self.theme.text_highlight)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .title_alignment(ratatui::layout::Alignment::Center)
-                .padding(ratatui::widgets::Padding::new(0, 0, 1, 0)),
-        )
-        .style(Style::default().bg(self.theme.root_bg));
+        let modal = Paragraph::new(Line::from(spans))
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.border_title))
+                    .title(" Restore previous session? ")
+                    .title_style(
+                        Style::default()
+                            .fg(self.theme.text_highlight)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .title_alignment(ratatui::layout::Alignment::Center)
+                    .padding(ratatui::widgets::Padding::new(0, 0, 1, 0)),
+            )
+            .style(Style::default().bg(self.theme.root_bg));
         frame.render_widget(modal, modal_area);
     }
 
@@ -145,35 +169,62 @@ impl App {
         );
 
         // Footer (two lines)
+        let kb = &self.keybindings.select_fields;
         let key_style = Style::default()
             .fg(self.theme.text_highlight)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
         let br_style = Style::default().fg(self.theme.border);
-        let footer_lines = vec![
-            Line::from(vec![
-                Span::styled("<", br_style),
-                Span::styled("Space", key_style),
-                Span::styled("> toggle  ", txt_style),
-                Span::styled("<", br_style),
-                Span::styled("J/K", key_style),
-                Span::styled("> reorder  ", txt_style),
-                Span::styled("<", br_style),
-                Span::styled("a", key_style),
-                Span::styled(">ll  ", txt_style),
-                Span::styled("<", br_style),
-                Span::styled("n", key_style),
-                Span::styled(">one", txt_style),
-            ]),
-            Line::from(vec![
-                Span::styled("<", br_style),
-                Span::styled("Enter", key_style),
-                Span::styled("> apply   ", txt_style),
-                Span::styled("<", br_style),
-                Span::styled("Esc", key_style),
-                Span::styled("> cancel", txt_style),
-            ]),
-        ];
+        let mut line1: Vec<Span<'static>> = Vec::new();
+        popup_entry(
+            &mut line1,
+            kb.toggle.display(),
+            "toggle",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        // Move up/down combined display
+        line1.push(Span::styled("<", br_style));
+        line1.push(Span::styled(
+            format!("{}/{}", kb.move_up.display(), kb.move_down.display()),
+            key_style,
+        ));
+        line1.push(Span::styled("> reorder  ", txt_style));
+        popup_entry(
+            &mut line1,
+            kb.all.display(),
+            "all",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut line1,
+            kb.none.display(),
+            "none",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        let mut line2: Vec<Span<'static>> = Vec::new();
+        popup_entry(
+            &mut line2,
+            kb.apply.display(),
+            "apply",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut line2,
+            kb.cancel.display(),
+            "cancel",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        let footer_lines = vec![Line::from(line1), Line::from(line2)];
         frame.render_widget(
             Paragraph::new(footer_lines).style(Style::default().bg(self.theme.root_bg)),
             vsplit[2],
@@ -391,33 +442,59 @@ impl App {
         );
 
         // Footer
+        let kb = &self.keybindings.value_colors;
         let key_style = Style::default()
             .fg(self.theme.text_highlight)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
         let br_style = Style::default().fg(self.theme.border);
-        let footer = vec![
-            Line::from(vec![
-                Span::styled("<", br_style),
-                Span::styled("Space", key_style),
-                Span::styled("> toggle  ", txt_style),
-                Span::styled("<", br_style),
-                Span::styled("a", key_style),
-                Span::styled(">ll  ", txt_style),
-                Span::styled("<", br_style),
-                Span::styled("n", key_style),
-                Span::styled(">one  ", txt_style),
-                Span::styled("type to search", Style::default().fg(self.theme.border)),
-            ]),
-            Line::from(vec![
-                Span::styled("<", br_style),
-                Span::styled("Enter", key_style),
-                Span::styled("> apply   ", txt_style),
-                Span::styled("<", br_style),
-                Span::styled("Esc", key_style),
-                Span::styled("> cancel", txt_style),
-            ]),
-        ];
+        let mut line1: Vec<Span<'static>> = Vec::new();
+        popup_entry(
+            &mut line1,
+            kb.toggle.display(),
+            "toggle",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut line1,
+            kb.all.display(),
+            "all",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut line1,
+            kb.none.display(),
+            "none",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        line1.push(Span::styled(
+            "type to search",
+            Style::default().fg(self.theme.border),
+        ));
+        let mut line2: Vec<Span<'static>> = Vec::new();
+        popup_entry(
+            &mut line2,
+            kb.apply.display(),
+            "apply",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut line2,
+            kb.cancel.display(),
+            "cancel",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        let footer = vec![Line::from(line1), Line::from(line2)];
         frame.render_widget(
             Paragraph::new(footer).style(Style::default().bg(self.theme.root_bg)),
             footer_area,
@@ -585,22 +662,41 @@ impl App {
         );
 
         // Footer
+        let kb = &self.keybindings.docker_select;
         let key_style = Style::default()
             .fg(self.theme.text_highlight)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
         let br_style = Style::default().fg(self.theme.border);
-        let footer = Line::from(vec![
-            Span::styled("<", br_style),
-            Span::styled("j/k", key_style),
-            Span::styled("> navigate  ", txt_style),
-            Span::styled("<", br_style),
-            Span::styled("Enter", key_style),
-            Span::styled("> attach  ", txt_style),
-            Span::styled("<", br_style),
-            Span::styled("Esc", key_style),
-            Span::styled("> cancel", txt_style),
-        ]);
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        // Navigate up/down combined display
+        spans.push(Span::styled("<", br_style));
+        spans.push(Span::styled(
+            format!(
+                "{}/{}",
+                kb.navigate_up.display(),
+                kb.navigate_down.display()
+            ),
+            key_style,
+        ));
+        spans.push(Span::styled("> navigate  ", txt_style));
+        popup_entry(
+            &mut spans,
+            kb.confirm.display(),
+            "attach",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut spans,
+            kb.cancel.display(),
+            "cancel",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        let footer = Line::from(spans);
         frame.render_widget(
             Paragraph::new(footer).style(Style::default().bg(self.theme.root_bg)),
             vsplit[2],
@@ -695,8 +791,9 @@ impl App {
         }
 
         // Build the outer block (with scrollbar if needed)
+        let close_keys = keybindings.help.close.display();
         let title = if search.is_empty() {
-            " Keybindings Help (?/q/Esc to close) ".to_string()
+            format!(" Keybindings Help ({} to close) ", close_keys)
         } else {
             format!(" Keybindings Help  /{}█ ", search)
         };
@@ -796,22 +893,30 @@ impl App {
             )));
         }
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled(
-                " [y]",
-                Style::default()
-                    .fg(self.theme.text_highlight)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("es  ", Style::default().fg(self.theme.text)),
-            Span::styled(
-                "[n]",
-                Style::default()
-                    .fg(self.theme.text_highlight)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("o", Style::default().fg(self.theme.text)),
-        ]));
+        let kb = &self.keybindings.confirm;
+        let key_style = Style::default()
+            .fg(self.theme.text_highlight)
+            .add_modifier(Modifier::BOLD);
+        let txt_style = Style::default().fg(self.theme.text);
+        let br_style = Style::default().fg(self.theme.border);
+        let mut yn_spans: Vec<Span<'static>> = vec![Span::styled(" ", txt_style)];
+        popup_entry(
+            &mut yn_spans,
+            kb.yes.display(),
+            "yes",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut yn_spans,
+            kb.no.display(),
+            "no",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        lines.push(Line::from(yn_spans));
 
         let modal = Paragraph::new(lines)
             .block(

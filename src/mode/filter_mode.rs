@@ -280,7 +280,7 @@ impl Mode for FilterManagementMode {
     }
 
     fn status_line(&self) -> &str {
-        "[FILTER] [i]nclude | e[x]clude | Space => toggle | [d]elete | [e]dit | set [c]olor | [J/K] move | [A] toggle all | [C] clear all | Esc"
+        "[FILTER] <i> include  <x> exclude  <Space> toggle  <d> delete  <e> edit  <c> color  <J/K> move  <A> tog.all  <C> clear  <Esc> exit"
     }
 
     fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -379,25 +379,27 @@ impl Mode for FilterEditMode {
         {
             return (self, KeyResult::Ignored);
         }
-        match key {
-            KeyCode::Enter => {
-                if let Some(id) = self.filter_id {
-                    tab.log_manager.edit_filter(id, self.filter_input).await;
-                    tab.refresh_visible();
-                }
-                (
-                    Box::new(FilterManagementMode {
-                        selected_filter_index: 0,
-                    }),
-                    KeyResult::Handled,
-                )
+        if kb.filter_edit.confirm.matches(key, modifiers) {
+            if let Some(id) = self.filter_id {
+                tab.log_manager.edit_filter(id, self.filter_input).await;
+                tab.refresh_visible();
             }
-            KeyCode::Esc => (
+            return (
                 Box::new(FilterManagementMode {
                     selected_filter_index: 0,
                 }),
                 KeyResult::Handled,
-            ),
+            );
+        }
+        if kb.filter_edit.cancel.matches(key, modifiers) {
+            return (
+                Box::new(FilterManagementMode {
+                    selected_filter_index: 0,
+                }),
+                KeyResult::Handled,
+            );
+        }
+        match key {
             KeyCode::Backspace => {
                 let mut input = self.filter_input;
                 input.pop();
@@ -425,7 +427,19 @@ impl Mode for FilterEditMode {
     }
 
     fn status_line(&self) -> &str {
-        "[FILTER EDIT] Esc => cancel | Enter => save"
+        "[FILTER EDIT] <Esc> cancel  <Enter> save"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[FILTER EDIT]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        status_entry(&mut spans, kb.filter_edit.cancel.display(), "cancel", theme);
+        status_entry(&mut spans, kb.filter_edit.confirm.display(), "save", theme);
+        Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {
@@ -746,10 +760,7 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let mode = edit_mode(None, "err");
         let (mode2, _) = press_edit(mode, &mut tab, KeyCode::Char('o')).await;
-        assert_eq!(
-            mode2.status_line(),
-            "[FILTER EDIT] Esc => cancel | Enter => save"
-        );
+        assert!(mode2.status_line().contains("[FILTER EDIT]"));
     }
 
     #[tokio::test]
