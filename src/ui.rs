@@ -37,7 +37,7 @@ use crate::{
     mode::{command_mode::CommandMode, filter_mode::FilterManagementMode},
 };
 use crate::{
-    log_line::{JsonDisplayParts, SpanInfo, classify_json_fields, parse_json_line},
+    format::{DisplayParts, LogFormatParser, detect_format, format_span_col},
     log_manager::LogManager,
     mode::command_mode::{CommandLine, Commands},
 };
@@ -82,18 +82,23 @@ pub struct TabState {
     pub command_history: Vec<String>,
     /// Active file watcher for this tab (None for stdin tabs or tabs not yet watching).
     pub watch_state: Option<FileWatchState>,
-    /// JSON field names that should be hidden from display (filter evaluation still uses raw line).
+    /// Field names that should be hidden from display (filter evaluation still uses raw line).
     pub hidden_fields: HashSet<String>,
-    /// JSON field 0-based indices that should be hidden from display.
-    pub hidden_field_indices: HashSet<usize>,
-    /// JSON field selection and ordering for display.
+    /// Field selection and ordering for display.
     pub field_layout: FieldLayout,
     /// Active keybindings for this tab (shared with App, overwritten after TabState::new).
     pub keybindings: Arc<Keybindings>,
+    /// Auto-detected log format parser for structured display (None = raw bytes).
+    pub detected_format: Option<Box<dyn LogFormatParser>>,
 }
 
 impl TabState {
     pub fn new(file_reader: FileReader, log_manager: LogManager, title: String) -> Self {
+        // Sample up to 200 lines for format detection.
+        let sample_limit = file_reader.line_count().min(200);
+        let sample: Vec<&[u8]> = (0..sample_limit).map(|i| file_reader.get_line(i)).collect();
+        let detected_format = detect_format(&sample);
+
         let mut tab = TabState {
             file_reader,
             log_manager,
@@ -118,9 +123,9 @@ impl TabState {
             command_history: Vec::new(),
             watch_state: None,
             hidden_fields: HashSet::new(),
-            hidden_field_indices: HashSet::new(),
             field_layout: FieldLayout::default(),
             keybindings: Arc::new(Keybindings::default()),
+            detected_format,
         };
         tab.refresh_visible();
         tab
@@ -192,99 +197,23 @@ impl TabState {
         }
     }
 
-    /// Sample visible lines and collect unique JSON field names.
-    ///
-    /// Returns canonical names first (only if actually found), then extra
-    /// field names sorted alphabetically.  Container fields (`fields`, `span`)
-    /// are expanded into dotted sub-field names (e.g. `span.name`,
-    /// `fields.count`).
-    pub fn collect_json_field_names(&self) -> Vec<String> {
+    /// Sample visible lines and collect unique field names from the detected
+    /// format parser. Returns canonical names first, then extras sorted
+    /// alphabetically. For JSON, container fields (`fields`, `span`) are
+    /// expanded into dotted sub-field names.
+    pub fn collect_field_names(&self) -> Vec<String> {
+        let parser = match &self.detected_format {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
         const SAMPLE_LIMIT: usize = 200;
-        const CANONICAL: &[&str] = &["timestamp", "level", "target", "message"];
-
-        let mut seen = HashSet::new();
-        let mut canonical_found = Vec::new();
-        let mut extras = Vec::new();
-
         let indices = &self.visible_indices;
         let limit = indices.len().min(SAMPLE_LIMIT);
-        for &idx in &indices[..limit] {
-            let line = self.file_reader.get_line(idx);
-            if let Some(fields) = parse_json_line(line) {
-                for field in &fields {
-                    let key = field.key;
-
-                    // Expand `fields` container into dotted sub-field names.
-                    if key == "fields" && !field.value_is_string {
-                        if let Some(subs) = parse_json_line(field.value.as_bytes()) {
-                            for sub in &subs {
-                                if crate::log_line::MESSAGE_KEYS.contains(&sub.key) {
-                                    // message sub-field → canonical "message"
-                                    if !canonical_found.contains(&"message".to_string()) {
-                                        canonical_found.push("message".to_string());
-                                    }
-                                }
-                                let dotted = format!("fields.{}", sub.key);
-                                if seen.insert(dotted.clone()) {
-                                    extras.push(dotted);
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
-                    // Expand `span` container into dotted sub-field names.
-                    if key == "span" && !field.value_is_string {
-                        if let Some(subs) = parse_json_line(field.value.as_bytes()) {
-                            for sub in &subs {
-                                let dotted = format!("span.{}", sub.key);
-                                if seen.insert(dotted.clone()) {
-                                    extras.push(dotted);
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
-                    if seen.insert(key.to_string()) {
-                        // Check if this key maps to a canonical name
-                        let canonical = if crate::log_line::TIMESTAMP_KEYS.contains(&key) {
-                            Some("timestamp")
-                        } else if crate::log_line::LEVEL_KEYS.contains(&key) {
-                            Some("level")
-                        } else if crate::log_line::TARGET_KEYS.contains(&key) {
-                            Some("target")
-                        } else if crate::log_line::MESSAGE_KEYS.contains(&key) {
-                            Some("message")
-                        } else {
-                            None
-                        };
-
-                        if let Some(canon) = canonical {
-                            if !canonical_found.contains(&canon.to_string()) {
-                                canonical_found.push(canon.to_string());
-                            }
-                        } else if key != "spans" {
-                            extras.push(key.to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Order: canonical (except message) → sorted extras → message last
-        let mut result: Vec<String> = CANONICAL
+        let lines: Vec<&[u8]> = indices[..limit]
             .iter()
-            .filter(|c| **c != "message" && canonical_found.contains(&c.to_string()))
-            .map(|c| c.to_string())
+            .map(|&idx| self.file_reader.get_line(idx))
             .collect();
-        extras.sort();
-        extras.dedup();
-        result.extend(extras);
-        if canonical_found.contains(&"message".to_string()) {
-            result.push("message".to_string());
-        }
-        result
+        parser.collect_field_names(&lines)
     }
 }
 
@@ -1001,33 +930,24 @@ impl App {
             }
             Some(Commands::HideField { field }) => {
                 let tab = &mut self.tabs[self.active_tab];
-                if let Ok(idx) = field.parse::<usize>() {
-                    tab.hidden_field_indices.insert(idx);
-                } else {
-                    tab.hidden_fields.insert(field);
-                }
+                tab.hidden_fields.insert(field);
             }
             Some(Commands::ShowField { field }) => {
                 let tab = &mut self.tabs[self.active_tab];
-                if let Ok(idx) = field.parse::<usize>() {
-                    tab.hidden_field_indices.remove(&idx);
-                } else {
-                    tab.hidden_fields.remove(&field);
-                }
+                tab.hidden_fields.remove(&field);
             }
             Some(Commands::ShowAllFields) => {
                 let tab = &mut self.tabs[self.active_tab];
                 tab.hidden_fields.clear();
-                tab.hidden_field_indices.clear();
             }
             Some(Commands::SelectFields) => {
                 let tab = &mut self.tabs[self.active_tab];
-                let all_names = tab.collect_json_field_names();
+                let all_names = tab.collect_field_names();
                 if all_names.is_empty() {
-                    return Err("No JSON fields found in visible lines".to_string());
+                    return Err("No structured fields found in visible lines".to_string());
                 }
-                let enabled_cols = &tab.field_layout.json_columns;
-                let saved_order = &tab.field_layout.json_columns_order;
+                let enabled_cols = &tab.field_layout.columns;
+                let saved_order = &tab.field_layout.columns_order;
                 // Restore the previous full ordering (enabled + disabled) if
                 // available, then append any newly-discovered fields.
                 let fields: Vec<(String, bool)> = match saved_order {
@@ -1052,9 +972,9 @@ impl App {
                     None => all_names.into_iter().map(|n| (n, true)).collect(),
                 };
                 let original = tab.field_layout.clone();
-                tab.mode = Box::new(
-                    crate::mode::select_fields_mode::SelectFieldsMode::new(fields, original),
-                );
+                tab.mode = Box::new(crate::mode::select_fields_mode::SelectFieldsMode::new(
+                    fields, original,
+                ));
                 return Ok(true);
             }
             None => {}
@@ -1173,8 +1093,7 @@ impl App {
                     .to_string();
                 (scroll, search)
             });
-        let select_fields_state: Option<(Vec<(String, bool)>, usize)> = self.tabs
-            [self.active_tab]
+        let select_fields_state: Option<(Vec<(String, bool)>, usize)> = self.tabs[self.active_tab]
             .mode
             .select_fields_state()
             .map(|(fields, sel)| (fields.to_vec(), sel));
@@ -1192,7 +1111,7 @@ impl App {
             .map(|s| s.content.as_ref())
             .collect();
         let content_lines = count_wrapped_lines(&status_text, inner_width);
-        let status_height = (content_lines + 2).min(6).max(3) as u16; // +2 for borders
+        let status_height = (content_lines + 2).clamp(3, 6) as u16; // +2 for borders
 
         let mut constraints = vec![];
         if has_multiple_tabs {
@@ -1399,10 +1318,8 @@ impl App {
         let theme = &self.theme;
         let level_colors = self.tabs[self.active_tab].level_colors;
         let current_scroll = self.tabs[self.active_tab].scroll_offset;
-        // Clone the hidden-field sets so the closure doesn't borrow `self` while iterating.
+        // Clone the hidden-field set so the closure doesn't borrow `self` while iterating.
         let hidden_fields = self.tabs[self.active_tab].hidden_fields.clone();
-        let hidden_field_indices = self.tabs[self.active_tab].hidden_field_indices.clone();
-        let _any_hidden = !hidden_fields.is_empty() || !hidden_field_indices.is_empty();
         let field_layout = self.tabs[self.active_tab].field_layout.clone();
         // Pre-compute visual selection range (indices into visible_indices space).
         let visual_range: Option<(usize, usize)> = visual_anchor.map(|anchor| {
@@ -1482,44 +1399,47 @@ impl App {
                     base_style
                 };
 
-                // For JSON lines render structured columns and run filter evaluation
+                // For structured lines, render columns and run filter evaluation
                 // against the rendered string so match-only highlights apply correctly.
                 //   timestamp  level  target  span_name: k=v, k=v  extra=val  message
                 // Known-field values are shown without their key names. Unknown fields
                 // and span context are rendered as key=value before the message.
                 // Filter visibility decisions still use the raw bytes (unaffected).
-                let json_line: Option<Line<'static>> = parse_json_line(line_bytes).map(|fields| {
-                    let p = classify_json_fields(&fields, &hidden_fields, &hidden_field_indices);
-                    let cols = apply_json_field_layout(&p, &field_layout);
+                let structured_line: Option<Line<'static>> = self.tabs[self.active_tab]
+                    .detected_format
+                    .as_ref()
+                    .and_then(|parser| parser.parse_line(line_bytes))
+                    .map(|parts| {
+                        let cols = apply_field_layout(&parts, &field_layout, &hidden_fields);
 
-                    if cols.is_empty() {
-                        // All fields hidden — fall back to raw bytes with filter +
-                        // search highlighting (raw-byte positions are correct here).
-                        let mut collector = filter_manager.evaluate_line(line_bytes);
-                        if let Some(sr) = search_map.get(&line_idx) {
-                            collector.with_priority(1000);
-                            for &(s, e) in &sr.matches {
-                                collector.push(s, e, SEARCH_STYLE_ID);
+                        if cols.is_empty() {
+                            // All fields hidden — fall back to raw bytes with filter +
+                            // search highlighting (raw-byte positions are correct here).
+                            let mut collector = filter_manager.evaluate_line(line_bytes);
+                            if let Some(sr) = search_map.get(&line_idx) {
+                                collector.with_priority(1000);
+                                for &(s, e) in &sr.matches {
+                                    collector.push(s, e, SEARCH_STYLE_ID);
+                                }
                             }
-                        }
-                        render_line(&collector, &styles)
-                    } else {
-                        // Evaluate filters AND search against the rendered string so
-                        // all spans land at the correct visible positions.
-                        let rendered = cols.join(" ");
-                        let mut collector = filter_manager.evaluate_line(rendered.as_bytes());
-                        if let Some(ref regex) = search_regex {
-                            collector.with_priority(1000);
-                            for m in regex.find_iter(&rendered) {
-                                collector.push(m.start(), m.end(), SEARCH_STYLE_ID);
+                            render_line(&collector, &styles)
+                        } else {
+                            // Evaluate filters AND search against the rendered string so
+                            // all spans land at the correct visible positions.
+                            let rendered = cols.join(" ");
+                            let mut collector = filter_manager.evaluate_line(rendered.as_bytes());
+                            if let Some(ref regex) = search_regex {
+                                collector.with_priority(1000);
+                                for m in regex.find_iter(&rendered) {
+                                    collector.push(m.start(), m.end(), SEARCH_STYLE_ID);
+                                }
                             }
+                            render_line(&collector, &styles)
                         }
-                        render_line(&collector, &styles)
-                    }
-                });
+                    });
 
-                let mut line = if let Some(json_line) = json_line {
-                    json_line
+                let mut line = if let Some(structured_line) = structured_line {
+                    structured_line
                 } else {
                     let mut collector = filter_manager.evaluate_line(line_bytes);
                     if let Some(sr) = search_map.get(&line_idx) {
@@ -1536,15 +1456,15 @@ impl App {
                     let line_num = line_idx + 1;
                     // Tree character: │ for mid-group lines, └ for the last line of a group,
                     // space for non-commented lines.
-                    let (tree_char, ln_fg) =
-                        if let Some(&cmt_idx) = vis_comment_map.get(&abs_vis_idx) {
-                            let next_same =
-                                vis_comment_map.get(&(abs_vis_idx + 1)) == Some(&cmt_idx);
-                            let ch = if next_same { "│" } else { "└" };
-                            (ch, theme.text_highlight)
-                        } else {
-                            (" ", theme.border)
-                        };
+                    let (tree_char, ln_fg) = if let Some(&cmt_idx) =
+                        vis_comment_map.get(&abs_vis_idx)
+                    {
+                        let next_same = vis_comment_map.get(&(abs_vis_idx + 1)) == Some(&cmt_idx);
+                        let ch = if next_same { "│" } else { "└" };
+                        (ch, theme.text_highlight)
+                    } else {
+                        (" ", theme.border)
+                    };
                     // Format: {tree_char}{line_num right-aligned}{space}
                     // Total width = 1 + line_number_width + 1 = ln_prefix_width ✓
                     let line_num_str = format!(
@@ -1866,7 +1786,7 @@ impl App {
         use crate::mode::keybindings_help_mode::{HelpRow, build_help_rows, filter_rows};
 
         let area = frame.size();
-        let popup_width = (area.width.saturating_sub(4)).min(72).max(40);
+        let popup_width = (area.width.saturating_sub(4)).clamp(40, 72);
         // height: up to 80% of screen, min 10
         let popup_height = (area.height * 4 / 5)
             .max(10)
@@ -2354,7 +2274,7 @@ impl App {
         line_count: usize,
     ) {
         let area = frame.size();
-        let popup_width = area.width.saturating_sub(8).min(70).max(40);
+        let popup_width = area.width.saturating_sub(8).clamp(40, 70);
         let text_rows = lines.len().max(1) as u16;
         // borders(2) + text editor rows + separator(1) + footer(1)
         let popup_height = (text_rows + 4).min(area.height.saturating_sub(4)).max(6);
@@ -2473,72 +2393,59 @@ fn count_wrapped_lines(text: &str, width: usize) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// JSON field layout helpers
+// Structured field layout helpers
 // ---------------------------------------------------------------------------
 
-fn format_span_col(s: &SpanInfo) -> String {
-    if s.fields.is_empty() {
-        return s.name.clone();
-    }
-    let kv = s
-        .fields
-        .iter()
-        .map(|(k, v)| format!("{}={}", k, v))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{}: {}", s.name, kv)
-}
-
-fn get_json_col(p: &JsonDisplayParts, name: &str) -> Option<String> {
+fn get_col(p: &DisplayParts<'_>, name: &str) -> Option<String> {
     match name {
-        "timestamp" | "ts" | "time" => p.timestamp.clone(),
-        "level" | "lvl" => p.level.as_ref().map(|l| format!("{:<5}", l)),
-        "target" => p.target.clone(),
+        "timestamp" | "ts" | "time" => p.timestamp.map(|s| s.to_string()),
+        "level" | "lvl" => p.level.map(|l| format!("{:<5}", l)),
+        "target" => p.target.map(|s| s.to_string()),
         "span" => p.span.as_ref().map(format_span_col),
-        "message" | "msg" => p.message.clone(),
+        "message" | "msg" => p.message.map(|s| s.to_string()),
         n => {
             // Resolve dotted span sub-field names (e.g. "span.name", "span.method").
             if let Some(suffix) = n.strip_prefix("span.") {
                 return p.span.as_ref().and_then(|s| {
                     if suffix == "name" {
-                        Some(s.name.clone())
+                        Some(s.name.to_string())
                     } else {
                         s.fields
                             .iter()
-                            .find(|(k, _)| k == suffix)
-                            .map(|(_, v)| v.clone())
+                            .find(|(k, _)| *k == suffix)
+                            .map(|(_, v)| v.to_string())
                     }
                 });
             }
             // Resolve dotted fields sub-field names (e.g. "fields.message", "fields.count").
             if let Some(suffix) = n.strip_prefix("fields.") {
                 return if crate::log_line::MESSAGE_KEYS.contains(&suffix) {
-                    p.message.clone()
+                    p.message.map(|s| s.to_string())
                 } else {
                     p.extra_fields
                         .iter()
-                        .find(|(k, _)| k == suffix)
-                        .map(|(_, v)| v.clone())
+                        .find(|(k, _)| *k == suffix)
+                        .map(|(_, v)| v.to_string())
                 };
             }
             p.extra_fields
                 .iter()
-                .find(|(k, _)| k == n)
-                .map(|(_, v)| v.clone())
+                .find(|(k, _)| *k == n)
+                .map(|(_, v)| v.to_string())
         }
     }
 }
 
-fn default_json_cols(p: &JsonDisplayParts) -> Vec<String> {
+fn default_cols(p: &DisplayParts<'_>) -> Vec<String> {
     let mut cols = Vec::new();
-    if let Some(ts) = &p.timestamp {
-        cols.push(ts.clone());
+    if let Some(ts) = p.timestamp {
+        cols.push(ts.to_string());
     }
-    if let Some(lvl) = &p.level {
+    if let Some(lvl) = p.level {
         cols.push(format!("{:<5}", lvl));
     }
-    if let Some(tgt) = &p.target {
-        cols.push(tgt.clone());
+    if let Some(tgt) = p.target {
+        cols.push(tgt.to_string());
     }
     if let Some(span) = &p.span {
         cols.push(format_span_col(span));
@@ -2546,19 +2453,64 @@ fn default_json_cols(p: &JsonDisplayParts) -> Vec<String> {
     for (key, value) in &p.extra_fields {
         cols.push(format!("{}={}", key, value));
     }
-    if let Some(msg) = &p.message {
-        cols.push(msg.clone());
+    if let Some(msg) = p.message {
+        cols.push(msg.to_string());
     }
     cols
 }
 
-fn apply_json_field_layout(p: &JsonDisplayParts, layout: &FieldLayout) -> Vec<String> {
-    match &layout.json_columns {
-        None => default_json_cols(p),
-        Some(names) => names
+fn apply_field_layout(
+    p: &DisplayParts<'_>,
+    layout: &FieldLayout,
+    hidden_fields: &HashSet<String>,
+) -> Vec<String> {
+    let cols = match &layout.columns {
+        None => default_cols(p),
+        Some(names) => names.iter().filter_map(|name| get_col(p, name)).collect(),
+    };
+    if hidden_fields.is_empty() {
+        cols
+    } else if let Some(names) = &layout.columns {
+        // Explicit layout — re-filter, excluding hidden names.
+        names
             .iter()
-            .filter_map(|name| get_json_col(p, name))
-            .collect(),
+            .filter(|name| !hidden_fields.contains(name.as_str()))
+            .filter_map(|name| get_col(p, name))
+            .collect()
+    } else {
+        // Default layout — rebuild without hidden fields.
+        let mut cols = Vec::new();
+        if !hidden_fields.contains("timestamp")
+            && let Some(ts) = p.timestamp
+        {
+            cols.push(ts.to_string());
+        }
+        if !hidden_fields.contains("level")
+            && let Some(lvl) = p.level
+        {
+            cols.push(format!("{:<5}", lvl));
+        }
+        if !hidden_fields.contains("target")
+            && let Some(tgt) = p.target
+        {
+            cols.push(tgt.to_string());
+        }
+        if !hidden_fields.contains("span")
+            && let Some(span) = &p.span
+        {
+            cols.push(format_span_col(span));
+        }
+        for (key, value) in &p.extra_fields {
+            if !hidden_fields.contains(*key) {
+                cols.push(format!("{}={}", key, value));
+            }
+        }
+        if !hidden_fields.contains("message")
+            && let Some(msg) = p.message
+        {
+            cols.push(msg.to_string());
+        }
+        cols
     }
 }
 
@@ -2781,11 +2733,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hide_field_by_index() {
+    async fn test_hide_field_by_name_stores_string() {
         let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        // Even numeric strings are stored as field names (no index-based hiding).
         app.execute_command_str("hide-field 0".to_string()).await;
-        assert!(app.tab().hidden_field_indices.contains(&0));
-        assert!(!app.tab().hidden_field_indices.contains(&1));
+        assert!(app.tab().hidden_fields.contains("0"));
     }
 
     #[tokio::test]
@@ -2798,23 +2750,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_show_field_removes_hidden_index() {
+    async fn test_show_field_removes_hidden_string() {
         let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
-        app.execute_command_str("hide-field 1".to_string()).await;
-        assert!(app.tab().hidden_field_indices.contains(&1));
-        app.execute_command_str("show-field 1".to_string()).await;
-        assert!(!app.tab().hidden_field_indices.contains(&1));
+        app.execute_command_str("hide-field level".to_string())
+            .await;
+        assert!(app.tab().hidden_fields.contains("level"));
+        app.execute_command_str("show-field level".to_string())
+            .await;
+        assert!(!app.tab().hidden_fields.contains("level"));
     }
 
     #[tokio::test]
     async fn test_show_all_fields_clears_everything() {
         let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
         app.execute_command_str("hide-field msg".to_string()).await;
-        app.execute_command_str("hide-field 0".to_string()).await;
+        app.execute_command_str("hide-field level".to_string())
+            .await;
         assert!(!app.tab().hidden_fields.is_empty());
-        assert!(!app.tab().hidden_field_indices.is_empty());
         app.execute_command_str("show-all-fields".to_string()).await;
         assert!(app.tab().hidden_fields.is_empty());
-        assert!(app.tab().hidden_field_indices.is_empty());
     }
 }

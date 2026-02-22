@@ -100,13 +100,16 @@ impl LogManager {
             self.filter_defs.iter().map(|f| f.id).max().unwrap_or(0) + 1
         };
 
-        self.filter_defs.insert(0, FilterDef {
-            id: next_id,
-            pattern,
-            filter_type,
-            enabled: true,
-            color_config,
-        });
+        self.filter_defs.insert(
+            0,
+            FilterDef {
+                id: next_id,
+                pattern,
+                filter_type,
+                enabled: true,
+                color_config,
+            },
+        );
     }
 
     pub async fn toggle_filter(&mut self, id: usize) {

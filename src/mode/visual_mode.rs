@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
-    mode::{comment_mode::CommentMode, app_mode::Mode, normal_mode::NormalMode},
+    mode::{app_mode::Mode, comment_mode::CommentMode, normal_mode::NormalMode},
     ui::{KeyResult, TabState},
 };
 
@@ -43,10 +43,7 @@ impl Mode for VisualLineMode {
                 let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
                 let line_indices: Vec<usize> = tab.visible_indices[lo..=hi].to_vec();
                 if !line_indices.is_empty() {
-                    return (
-                        Box::new(CommentMode::new(line_indices)),
-                        KeyResult::Handled,
-                    );
+                    return (Box::new(CommentMode::new(line_indices)), KeyResult::Handled);
                 }
                 return (Box::new(NormalMode), KeyResult::Handled);
             }

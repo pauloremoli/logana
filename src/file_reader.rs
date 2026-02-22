@@ -322,21 +322,19 @@ impl FileReader {
                 })
                 .await;
 
-                match result {
-                    Ok(Ok((new_size, buf))) => {
-                        if new_size < last_offset {
-                            // File was truncated (e.g. log rotation) — reset offset.
-                            last_offset = new_size;
-                        } else if !buf.is_empty() {
-                            last_offset = new_size;
-                            let stripped = strip_ansi_escapes(&buf);
-                            if tx.send(stripped).is_err() {
-                                break; // Receiver dropped — stop watching.
-                            }
+                if let Ok(Ok((new_size, buf))) = result {
+                    if new_size < last_offset {
+                        // File was truncated (e.g. log rotation) — reset offset.
+                        last_offset = new_size;
+                    } else if !buf.is_empty() {
+                        last_offset = new_size;
+                        let stripped = strip_ansi_escapes(&buf);
+                        if tx.send(stripped).is_err() {
+                            break; // Receiver dropped — stop watching.
                         }
                     }
-                    _ => {} // Transient I/O error or task panic — retry next tick.
                 }
+                // Else: transient I/O error or task panic — retry next tick.
             }
         });
 

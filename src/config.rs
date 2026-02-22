@@ -118,7 +118,9 @@ impl KeyBinding {
             s if s.chars().count() == 1 => KeyCode::Char(s.chars().next().unwrap()),
             // F-keys: "F1".."F12"
             s if s.starts_with('F') || s.starts_with('f') => {
-                let n: u8 = s[1..].parse().map_err(|_| format!("Unknown key: {:?}", s))?;
+                let n: u8 = s[1..]
+                    .parse()
+                    .map_err(|_| format!("Unknown key: {:?}", s))?;
                 KeyCode::F(n)
             }
             other => return Err(format!("Unknown key: {:?}", other)),
@@ -202,7 +204,11 @@ impl KeyBindings {
 
     /// Human-readable string joining all alternatives with `/` (e.g. `"j/Down"`).
     pub fn display(&self) -> String {
-        self.0.iter().map(|b| b.display()).collect::<Vec<_>>().join("/")
+        self.0
+            .iter()
+            .map(|b| b.display())
+            .collect::<Vec<_>>()
+            .join("/")
     }
 }
 
@@ -232,10 +238,7 @@ impl<'de> Deserialize<'de> for KeyBindings {
                     .map_err(E::custom)
             }
 
-            fn visit_seq<A: de::SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> Result<KeyBindings, A::Error> {
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<KeyBindings, A::Error> {
                 let mut bindings = Vec::new();
                 while let Some(s) = seq.next_element::<String>()? {
                     let b = KeyBinding::parse(&s).map_err(de::Error::custom)?;
@@ -578,7 +581,9 @@ pub struct CommentKeybindings {
 
 impl Default for CommentKeybindings {
     fn default() -> Self {
-        Self { save: default_comment_save() }
+        Self {
+            save: default_comment_save(),
+        }
     }
 }
 
@@ -624,53 +629,53 @@ impl Keybindings {
 
         // Build (name, &KeyBindings) slices for each scope.
         let normal_actions: &[(&str, &KeyBindings)] = &[
-            ("normal.scroll_down",       &self.normal.scroll_down),
-            ("normal.scroll_up",         &self.normal.scroll_up),
-            ("normal.scroll_left",       &self.normal.scroll_left),
-            ("normal.scroll_right",      &self.normal.scroll_right),
-            ("normal.half_page_down",    &self.normal.half_page_down),
-            ("normal.half_page_up",      &self.normal.half_page_up),
-            ("normal.page_down",         &self.normal.page_down),
-            ("normal.page_up",           &self.normal.page_up),
-            ("normal.command_mode",      &self.normal.command_mode),
-            ("normal.filter_mode",       &self.normal.filter_mode),
-            ("normal.toggle_filtering",  &self.normal.toggle_filtering),
-            ("normal.toggle_sidebar",    &self.normal.toggle_sidebar),
-            ("normal.go_to_top_chord",   &self.normal.go_to_top_chord),
-            ("normal.go_to_bottom",      &self.normal.go_to_bottom),
-            ("normal.mark_line",         &self.normal.mark_line),
+            ("normal.scroll_down", &self.normal.scroll_down),
+            ("normal.scroll_up", &self.normal.scroll_up),
+            ("normal.scroll_left", &self.normal.scroll_left),
+            ("normal.scroll_right", &self.normal.scroll_right),
+            ("normal.half_page_down", &self.normal.half_page_down),
+            ("normal.half_page_up", &self.normal.half_page_up),
+            ("normal.page_down", &self.normal.page_down),
+            ("normal.page_up", &self.normal.page_up),
+            ("normal.command_mode", &self.normal.command_mode),
+            ("normal.filter_mode", &self.normal.filter_mode),
+            ("normal.toggle_filtering", &self.normal.toggle_filtering),
+            ("normal.toggle_sidebar", &self.normal.toggle_sidebar),
+            ("normal.go_to_top_chord", &self.normal.go_to_top_chord),
+            ("normal.go_to_bottom", &self.normal.go_to_bottom),
+            ("normal.mark_line", &self.normal.mark_line),
             ("normal.toggle_marks_only", &self.normal.toggle_marks_only),
-            ("normal.visual_mode",       &self.normal.visual_mode),
-            ("normal.search_forward",    &self.normal.search_forward),
-            ("normal.search_backward",   &self.normal.search_backward),
-            ("normal.next_match",        &self.normal.next_match),
-            ("normal.prev_match",        &self.normal.prev_match),
-            ("normal.toggle_wrap",       &self.normal.toggle_wrap),
-            ("normal.show_keybindings",  &self.normal.show_keybindings),
-            ("global.quit",              &self.global.quit),
-            ("global.next_tab",          &self.global.next_tab),
-            ("global.prev_tab",          &self.global.prev_tab),
-            ("global.close_tab",         &self.global.close_tab),
-            ("global.new_tab",           &self.global.new_tab),
+            ("normal.visual_mode", &self.normal.visual_mode),
+            ("normal.search_forward", &self.normal.search_forward),
+            ("normal.search_backward", &self.normal.search_backward),
+            ("normal.next_match", &self.normal.next_match),
+            ("normal.prev_match", &self.normal.prev_match),
+            ("normal.toggle_wrap", &self.normal.toggle_wrap),
+            ("normal.show_keybindings", &self.normal.show_keybindings),
+            ("global.quit", &self.global.quit),
+            ("global.next_tab", &self.global.next_tab),
+            ("global.prev_tab", &self.global.prev_tab),
+            ("global.close_tab", &self.global.close_tab),
+            ("global.new_tab", &self.global.new_tab),
         ];
 
         let filter_actions: &[(&str, &KeyBindings)] = &[
-            ("filter.select_up",          &self.filter.select_up),
-            ("filter.select_down",        &self.filter.select_down),
-            ("filter.toggle_filter",      &self.filter.toggle_filter),
-            ("filter.delete_filter",      &self.filter.delete_filter),
-            ("filter.move_filter_up",     &self.filter.move_filter_up),
-            ("filter.move_filter_down",   &self.filter.move_filter_down),
-            ("filter.edit_filter",        &self.filter.edit_filter),
-            ("filter.set_color",          &self.filter.set_color),
+            ("filter.select_up", &self.filter.select_up),
+            ("filter.select_down", &self.filter.select_down),
+            ("filter.toggle_filter", &self.filter.toggle_filter),
+            ("filter.delete_filter", &self.filter.delete_filter),
+            ("filter.move_filter_up", &self.filter.move_filter_up),
+            ("filter.move_filter_down", &self.filter.move_filter_down),
+            ("filter.edit_filter", &self.filter.edit_filter),
+            ("filter.set_color", &self.filter.set_color),
             ("filter.toggle_all_filters", &self.filter.toggle_all_filters),
-            ("filter.clear_all_filters",  &self.filter.clear_all_filters),
-            ("filter.add_include",        &self.filter.add_include),
-            ("filter.add_exclude",        &self.filter.add_exclude),
-            ("filter.exit_mode",          &self.filter.exit_mode),
-            ("global.quit",               &self.global.quit),
-            ("global.next_tab",           &self.global.next_tab),
-            ("global.prev_tab",           &self.global.prev_tab),
+            ("filter.clear_all_filters", &self.filter.clear_all_filters),
+            ("filter.add_include", &self.filter.add_include),
+            ("filter.add_exclude", &self.filter.add_exclude),
+            ("filter.exit_mode", &self.filter.exit_mode),
+            ("global.quit", &self.global.quit),
+            ("global.next_tab", &self.global.next_tab),
+            ("global.prev_tab", &self.global.prev_tab),
         ];
 
         check_conflicts(normal_actions, &mut conflicts);
@@ -722,8 +727,8 @@ impl Config {
     /// This function is infallible — any I/O or parse error falls back to
     /// `Config::default()` so a bad config never prevents startup.
     pub fn load() -> Self {
-        let Some(config_path) = dirs::config_dir()
-            .map(|d| d.join("logsmith-rs").join("config.json"))
+        let Some(config_path) =
+            dirs::config_dir().map(|d| d.join("logsmith-rs").join("config.json"))
         else {
             return Config::default();
         };
@@ -864,10 +869,13 @@ mod tests {
         // (Config::load is infallible — returns default.)
         let config = Config::default();
         assert!(config.theme.is_none());
-        assert!(config.keybindings.global.quit.matches(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE
-        ));
+        assert!(
+            config
+                .keybindings
+                .global
+                .quit
+                .matches(KeyCode::Char('q'), KeyModifiers::NONE)
+        );
     }
 
     #[test]
@@ -876,34 +884,51 @@ mod tests {
         let cfg: Config = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.theme.as_deref(), Some("dracula"));
         // Custom binding: 'e' scrolls down
-        assert!(cfg
-            .keybindings
-            .normal
-            .scroll_down
-            .matches(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(
+            cfg.keybindings
+                .normal
+                .scroll_down
+                .matches(KeyCode::Char('e'), KeyModifiers::NONE)
+        );
         // Default bindings still intact
-        assert!(cfg
-            .keybindings
-            .global
-            .quit
-            .matches(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(
+            cfg.keybindings
+                .global
+                .quit
+                .matches(KeyCode::Char('q'), KeyModifiers::NONE)
+        );
     }
 
     #[test]
     fn test_normal_keybindings_default() {
         let kb = NormalKeybindings::default();
-        assert!(kb.scroll_down.matches(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert!(
+            kb.scroll_down
+                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
+        );
         assert!(kb.scroll_down.matches(KeyCode::Down, KeyModifiers::NONE));
-        assert!(kb.half_page_down.matches(KeyCode::Char('d'), KeyModifiers::CONTROL));
-        assert!(kb.go_to_bottom.matches(KeyCode::Char('G'), KeyModifiers::NONE));
+        assert!(
+            kb.half_page_down
+                .matches(KeyCode::Char('d'), KeyModifiers::CONTROL)
+        );
+        assert!(
+            kb.go_to_bottom
+                .matches(KeyCode::Char('G'), KeyModifiers::NONE)
+        );
     }
 
     #[test]
     fn test_filter_keybindings_default() {
         let kb = FilterKeybindings::default();
         assert!(kb.exit_mode.matches(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(kb.toggle_filter.matches(KeyCode::Char(' '), KeyModifiers::NONE));
-        assert!(kb.move_filter_up.matches(KeyCode::Char('K'), KeyModifiers::NONE));
+        assert!(
+            kb.toggle_filter
+                .matches(KeyCode::Char(' '), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.move_filter_up
+                .matches(KeyCode::Char('K'), KeyModifiers::NONE)
+        );
     }
 
     #[test]
@@ -912,7 +937,13 @@ mod tests {
         assert!(kb.quit.matches(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(kb.next_tab.matches(KeyCode::Tab, KeyModifiers::NONE));
         assert!(kb.prev_tab.matches(KeyCode::BackTab, KeyModifiers::NONE));
-        assert!(kb.close_tab.matches(KeyCode::Char('w'), KeyModifiers::CONTROL));
-        assert!(kb.new_tab.matches(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        assert!(
+            kb.close_tab
+                .matches(KeyCode::Char('w'), KeyModifiers::CONTROL)
+        );
+        assert!(
+            kb.new_tab
+                .matches(KeyCode::Char('t'), KeyModifiers::CONTROL)
+        );
     }
 }

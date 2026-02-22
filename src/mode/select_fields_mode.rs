@@ -83,10 +83,9 @@ impl Mode for SelectFieldsMode {
                 // Always store the full ordered list so user's ordering is
                 // preserved.  Also store disabled names so the order is
                 // restored when the modal is reopened.
-                let all_ordered: Vec<String> =
-                    self.fields.iter().map(|(n, _)| n.clone()).collect();
-                tab.field_layout.json_columns = Some(enabled);
-                tab.field_layout.json_columns_order = Some(all_ordered);
+                let all_ordered: Vec<String> = self.fields.iter().map(|(n, _)| n.clone()).collect();
+                tab.field_layout.columns = Some(enabled);
+                tab.field_layout.columns_order = Some(all_ordered);
                 return (Box::new(NormalMode), KeyResult::Handled);
             }
             KeyCode::Esc => {
@@ -215,11 +214,11 @@ mod tests {
         let (mode2, _) = press(mode, &mut tab, KeyCode::Enter).await;
         assert!(mode2.select_fields_state().is_none()); // transitioned to NormalMode
         assert_eq!(
-            tab.field_layout.json_columns,
+            tab.field_layout.columns,
             Some(vec!["timestamp".to_string(), "message".to_string()])
         );
         assert_eq!(
-            tab.field_layout.json_columns_order,
+            tab.field_layout.columns_order,
             Some(vec![
                 "timestamp".to_string(),
                 "level".to_string(),
@@ -231,18 +230,15 @@ mod tests {
     #[tokio::test]
     async fn test_enter_all_enabled_saves_columns() {
         let mut tab = make_tab().await;
-        let fields = vec![
-            ("timestamp".to_string(), true),
-            ("level".to_string(), true),
-        ];
+        let fields = vec![("timestamp".to_string(), true), ("level".to_string(), true)];
         let mode = SelectFieldsMode::new(fields, FieldLayout::default());
         let (_, _) = press(mode, &mut tab, KeyCode::Enter).await;
         assert_eq!(
-            tab.field_layout.json_columns,
+            tab.field_layout.columns,
             Some(vec!["timestamp".to_string(), "level".to_string()])
         );
         assert_eq!(
-            tab.field_layout.json_columns_order,
+            tab.field_layout.columns_order,
             Some(vec!["timestamp".to_string(), "level".to_string()])
         );
     }
@@ -251,17 +247,14 @@ mod tests {
     async fn test_esc_restores_original_layout() {
         let mut tab = make_tab().await;
         let original = FieldLayout {
-            json_columns: Some(vec!["level".to_string()]),
-            json_columns_order: Some(vec!["level".to_string(), "timestamp".to_string()]),
+            columns: Some(vec!["level".to_string()]),
+            columns_order: Some(vec!["level".to_string(), "timestamp".to_string()]),
         };
         let mode = SelectFieldsMode::new(sample_fields(), original.clone());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(mode2.select_fields_state().is_none()); // NormalMode
-        assert_eq!(tab.field_layout.json_columns, original.json_columns);
-        assert_eq!(
-            tab.field_layout.json_columns_order,
-            original.json_columns_order
-        );
+        assert_eq!(tab.field_layout.columns, original.columns);
+        assert_eq!(tab.field_layout.columns_order, original.columns_order);
     }
 
     #[tokio::test]
@@ -343,7 +336,7 @@ mod tests {
         let mode = SelectFieldsMode::new(fields, FieldLayout::default());
         let (_, _) = press(mode, &mut tab, KeyCode::Enter).await;
         assert_eq!(
-            tab.field_layout.json_columns,
+            tab.field_layout.columns,
             Some(vec!["level".to_string(), "timestamp".to_string()])
         );
     }

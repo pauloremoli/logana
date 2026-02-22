@@ -5,7 +5,10 @@ use ratatui::text::{Line, Span};
 
 use crate::{
     config::Keybindings,
-    mode::{app_mode::{status_entry, Mode}, normal_mode::NormalMode},
+    mode::{
+        app_mode::{Mode, status_entry},
+        normal_mode::NormalMode,
+    },
     theme::Theme,
     ui::{KeyResult, TabState},
 };
@@ -115,16 +118,14 @@ impl Mode for CommentMode {
             KeyCode::Up => {
                 if self.cursor_row > 0 {
                     self.cursor_row -= 1;
-                    self.cursor_col =
-                        self.cursor_col.min(self.lines[self.cursor_row].len());
+                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
                 }
             }
             // Cursor down — clamp col to new line length
             KeyCode::Down => {
                 if self.cursor_row + 1 < self.lines.len() {
                     self.cursor_row += 1;
-                    self.cursor_col =
-                        self.cursor_col.min(self.lines[self.cursor_row].len());
+                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
                 }
             }
             _ => {}

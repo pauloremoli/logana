@@ -78,13 +78,17 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
 
     for (start, end, style_id) in events {
         if start > pos {
-            let text = std::str::from_utf8(&col.line[pos..start]).unwrap_or("").to_string();
+            let text = std::str::from_utf8(&col.line[pos..start])
+                .unwrap_or("")
+                .to_string();
             if !text.is_empty() {
                 spans.push(Span::raw(text));
             }
         }
         if end > start {
-            let text = std::str::from_utf8(&col.line[start..end]).unwrap_or("").to_string();
+            let text = std::str::from_utf8(&col.line[start..end])
+                .unwrap_or("")
+                .to_string();
             let style = styles.get(style_id as usize).copied().unwrap_or_default();
             if !text.is_empty() {
                 spans.push(Span::styled(text, style));
@@ -94,7 +98,9 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
     }
 
     if pos < col.line.len() {
-        let text = std::str::from_utf8(&col.line[pos..]).unwrap_or("").to_string();
+        let text = std::str::from_utf8(&col.line[pos..])
+            .unwrap_or("")
+            .to_string();
         if !text.is_empty() {
             spans.push(Span::raw(text));
         }
@@ -143,7 +149,12 @@ impl<'a> MatchCollector<'a> {
 
 /// Returns true if `pattern` contains any regex metacharacters.
 fn is_regex_pattern(pattern: &str) -> bool {
-    pattern.chars().any(|c| matches!(c, '.' | '+' | '*' | '?' | '[' | ']' | '(' | ')' | '{' | '}' | '\\' | '^' | '$' | '|'))
+    pattern.chars().any(|c| {
+        matches!(
+            c,
+            '.' | '+' | '*' | '?' | '[' | ']' | '(' | ')' | '{' | '}' | '\\' | '^' | '$' | '|'
+        )
+    })
 }
 
 /// Include/exclude filter using Aho-Corasick for efficient literal substring matching.
@@ -256,7 +267,9 @@ pub fn build_filter(
         RegexFilter::new(pattern, decision, match_only, style_id)
             .map(|f| Box::new(f) as Box<dyn Filter>)
     } else {
-        Some(Box::new(SubstringFilter::new(pattern, decision, match_only, style_id)))
+        Some(Box::new(SubstringFilter::new(
+            pattern, decision, match_only, style_id,
+        )))
     }
 }
 
@@ -476,11 +489,7 @@ mod tests {
 
     #[test]
     fn test_filter_manager_compute_visible_exclude() {
-        let (_f, reader) = make_reader(&[
-            "ERROR: bad",
-            "DEBUG: verbose",
-            "INFO: good",
-        ]);
+        let (_f, reader) = make_reader(&["ERROR: bad", "DEBUG: verbose", "INFO: good"]);
 
         let exc = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0);
         let fm = FilterManager::new(vec![Box::new(exc)], false);

@@ -36,7 +36,7 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_level(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "info" => LogLevel::Info,
             "warn" | "warning" => LogLevel::Warning,
@@ -63,14 +63,12 @@ impl LogLevel {
             if w4 == *b"WARN" {
                 return LogLevel::Warning;
             }
-            if w4 == *b"DEBU"
-                && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'G') {
-                    return LogLevel::Debug;
-                }
-            if w4 == *b"ERRO"
-                && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'R') {
-                    return LogLevel::Error;
-                }
+            if w4 == *b"DEBU" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'G') {
+                return LogLevel::Debug;
+            }
+            if w4 == *b"ERRO" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'R') {
+                return LogLevel::Error;
+            }
             i += 1;
         }
         LogLevel::Unknown
@@ -128,17 +126,17 @@ pub struct SearchResult {
     pub matches: Vec<(usize, usize)>,
 }
 
-/// Controls which JSON columns are shown and in what order.
+/// Controls which structured columns are shown and in what order.
 #[derive(Debug, Clone, Default)]
 pub struct FieldLayout {
     /// When Some: show only these named columns in this order.
     /// Names: "timestamp"|"ts"|"time", "level"|"lvl", "target", "span",
-    ///         "message"|"msg", or any extra-field key present in the JSON.
+    ///         "message"|"msg", or any extra-field key present in the line.
     /// When None: show all columns in default order.
-    pub json_columns: Option<Vec<String>>,
+    pub columns: Option<Vec<String>>,
     /// Full ordered field list (enabled + disabled) from the select-fields
     /// modal.  Used to restore the list order when the modal is reopened.
-    pub json_columns_order: Option<Vec<String>>,
+    pub columns_order: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -147,26 +145,47 @@ mod tests {
 
     #[test]
     fn test_log_level_from_str() {
-        assert_eq!(LogLevel::from_str("info"), LogLevel::Info);
-        assert_eq!(LogLevel::from_str("INFO"), LogLevel::Info);
-        assert_eq!(LogLevel::from_str("warn"), LogLevel::Warning);
-        assert_eq!(LogLevel::from_str("WARNING"), LogLevel::Warning);
-        assert_eq!(LogLevel::from_str("error"), LogLevel::Error);
-        assert_eq!(LogLevel::from_str("ERR"), LogLevel::Error);
-        assert_eq!(LogLevel::from_str("debug"), LogLevel::Debug);
-        assert_eq!(LogLevel::from_str("unknown"), LogLevel::Unknown);
+        assert_eq!(LogLevel::parse_level("info"), LogLevel::Info);
+        assert_eq!(LogLevel::parse_level("INFO"), LogLevel::Info);
+        assert_eq!(LogLevel::parse_level("warn"), LogLevel::Warning);
+        assert_eq!(LogLevel::parse_level("WARNING"), LogLevel::Warning);
+        assert_eq!(LogLevel::parse_level("error"), LogLevel::Error);
+        assert_eq!(LogLevel::parse_level("ERR"), LogLevel::Error);
+        assert_eq!(LogLevel::parse_level("debug"), LogLevel::Debug);
+        assert_eq!(LogLevel::parse_level("unknown"), LogLevel::Unknown);
     }
 
     #[test]
     fn test_log_level_detect_from_bytes() {
-        assert_eq!(LogLevel::detect_from_bytes(b"some INFO message"), LogLevel::Info);
-        assert_eq!(LogLevel::detect_from_bytes(b"WARN: disk full"), LogLevel::Warning);
-        assert_eq!(LogLevel::detect_from_bytes(b"ERROR: connection lost"), LogLevel::Error);
-        assert_eq!(LogLevel::detect_from_bytes(b"DEBUG: value=5"), LogLevel::Debug);
-        assert_eq!(LogLevel::detect_from_bytes(b"plain log line"), LogLevel::Unknown);
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"some INFO message"),
+            LogLevel::Info
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"WARN: disk full"),
+            LogLevel::Warning
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"ERROR: connection lost"),
+            LogLevel::Error
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"DEBUG: value=5"),
+            LogLevel::Debug
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"plain log line"),
+            LogLevel::Unknown
+        );
         // Case insensitive
-        assert_eq!(LogLevel::detect_from_bytes(b"error happened"), LogLevel::Error);
-        assert_eq!(LogLevel::detect_from_bytes(b"warn about something"), LogLevel::Warning);
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"error happened"),
+            LogLevel::Error
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"warn about something"),
+            LogLevel::Warning
+        );
     }
 
     #[test]
@@ -187,7 +206,10 @@ mod tests {
     #[test]
     fn test_parse_color_rgb_triplet_with_spaces() {
         assert_eq!(parse_color("[255, 128, 0]"), Some(Color::Rgb(255, 128, 0)));
-        assert_eq!(parse_color("[ 10 , 20 , 30 ]"), Some(Color::Rgb(10, 20, 30)));
+        assert_eq!(
+            parse_color("[ 10 , 20 , 30 ]"),
+            Some(Color::Rgb(10, 20, 30))
+        );
     }
 
     #[test]

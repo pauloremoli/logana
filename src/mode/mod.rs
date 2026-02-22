@@ -1,6 +1,6 @@
-pub mod comment_mode;
 pub mod app_mode;
 pub mod command_mode;
+pub mod comment_mode;
 pub mod filter_mode;
 pub mod keybindings_help_mode;
 pub mod normal_mode;

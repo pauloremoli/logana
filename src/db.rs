@@ -486,8 +486,7 @@ impl FileContextStore for Database {
             let marked_json: String = r.get("marked_lines");
             let marked_lines: Vec<usize> = serde_json::from_str(&marked_json).unwrap_or_default();
             let comments_json: String = r.try_get("annotations_json").unwrap_or_default();
-            let comments: Vec<Comment> =
-                serde_json::from_str(&comments_json).unwrap_or_default();
+            let comments: Vec<Comment> = serde_json::from_str(&comments_json).unwrap_or_default();
             FileContext {
                 source_file: r.get::<String, _>("source_file"),
                 scroll_offset: r.get::<i64, _>("scroll_offset") as usize,

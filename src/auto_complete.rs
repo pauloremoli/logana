@@ -1,4 +1,3 @@
-
 pub struct CommandInfo {
     pub name: &'static str,
     pub usage: &'static str,
@@ -627,10 +626,16 @@ mod tests {
         // "Re" as a fuzzy subsequence: r then e appears in Red, Green, LightRed, LightGreen
         let results = complete_color("Re");
         assert!(results.contains(&"Red"), "Red should match");
-        assert!(results.contains(&"Green"), "Green should fuzzy-match (g-r-e-e-n)");
+        assert!(
+            results.contains(&"Green"),
+            "Green should fuzzy-match (g-r-e-e-n)"
+        );
         assert!(results.contains(&"LightRed"), "LightRed should match");
         assert!(results.contains(&"LightGreen"), "LightGreen should match");
-        assert!(!results.contains(&"Blue"), "Blue has no 'r' so should not match");
+        assert!(
+            !results.contains(&"Blue"),
+            "Blue has no 'r' so should not match"
+        );
     }
 
     #[test]
@@ -711,9 +716,18 @@ mod tests {
         // but not "error.txt" (no 'a')
         let prefix = format!("{}/ag", path.to_str().unwrap());
         let results = complete_file_path(&prefix);
-        assert!(results.iter().any(|r| r.ends_with("application.log")), "application.log should match 'ag'");
-        assert!(results.iter().any(|r| r.ends_with("access.log")), "access.log should match 'ag'");
-        assert!(!results.iter().any(|r| r.ends_with("error.txt")), "error.txt should not match 'ag'");
+        assert!(
+            results.iter().any(|r| r.ends_with("application.log")),
+            "application.log should match 'ag'"
+        );
+        assert!(
+            results.iter().any(|r| r.ends_with("access.log")),
+            "access.log should match 'ag'"
+        );
+        assert!(
+            !results.iter().any(|r| r.ends_with("error.txt")),
+            "error.txt should not match 'ag'"
+        );
     }
 
     #[test]

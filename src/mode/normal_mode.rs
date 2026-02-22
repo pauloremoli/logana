@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use crate::{
     config::Keybindings,
     mode::{
-        app_mode::{status_entry, Mode},
+        app_mode::{Mode, status_entry},
         command_mode::CommandMode,
         filter_mode::FilterManagementMode,
         keybindings_help_mode::KeybindingsHelpMode,
@@ -35,8 +35,7 @@ impl Mode for NormalMode {
         if kb.global.quit.matches(key, modifiers) {
             return (self, KeyResult::Ignored);
         }
-        if kb.global.next_tab.matches(key, modifiers)
-            || kb.global.prev_tab.matches(key, modifiers)
+        if kb.global.next_tab.matches(key, modifiers) || kb.global.prev_tab.matches(key, modifiers)
         {
             return (self, KeyResult::Ignored);
         }
@@ -226,10 +225,7 @@ impl Mode for NormalMode {
 
         if kb.normal.show_keybindings.matches(key, modifiers) {
             tab.g_key_pressed = false;
-            return (
-                Box::new(KeybindingsHelpMode::new()),
-                KeyResult::Handled,
-            );
+            return (Box::new(KeybindingsHelpMode::new()), KeyResult::Handled);
         }
 
         // Unrecognised key — consume it, reset the gg-chord state.
@@ -250,22 +246,46 @@ impl Mode for NormalMode {
         )];
         status_entry(&mut spans, kb.global.quit.display(), "quit", theme);
         status_entry(&mut spans, kb.normal.filter_mode.display(), "filter", theme);
-        status_entry(&mut spans, kb.normal.toggle_filtering.display(), "tog.filter", theme);
+        status_entry(
+            &mut spans,
+            kb.normal.toggle_filtering.display(),
+            "tog.filter",
+            theme,
+        );
         status_entry(&mut spans, kb.normal.mark_line.display(), "mark", theme);
-        status_entry(&mut spans, kb.normal.toggle_marks_only.display(), "marks only", theme);
-        status_entry(&mut spans, kb.normal.toggle_sidebar.display(), "sidebar", theme);
+        status_entry(
+            &mut spans,
+            kb.normal.toggle_marks_only.display(),
+            "marks only",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.normal.toggle_sidebar.display(),
+            "sidebar",
+            theme,
+        );
         status_entry(&mut spans, kb.normal.visual_mode.display(), "visual", theme);
-        status_entry(&mut spans, kb.normal.show_keybindings.display(), "help", theme);
+        status_entry(
+            &mut spans,
+            kb.normal.show_keybindings.display(),
+            "help",
+            theme,
+        );
         // Tab switching: <next/prev> tabs
         spans.push(Span::styled("<", Style::default().fg(theme.border)));
         spans.push(Span::styled(
             kb.global.next_tab.display(),
-            Style::default().fg(theme.text_highlight).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("/", Style::default().fg(theme.border)));
         spans.push(Span::styled(
             kb.global.prev_tab.display(),
-            Style::default().fg(theme.text_highlight).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("> tabs", Style::default().fg(theme.text)));
         Line::from(spans)
@@ -294,9 +314,7 @@ mod tests {
         code: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        Box::new(NormalMode)
-            .handle_key(tab, code, modifiers)
-            .await
+        Box::new(NormalMode).handle_key(tab, code, modifiers).await
     }
 
     #[tokio::test]

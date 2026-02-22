@@ -174,11 +174,7 @@ mod tests {
 
     #[test]
     fn test_next_previous_match() -> anyhow::Result<()> {
-        let (_f, reader) = make_reader(&[
-            "test line",
-            "nothing",
-            "another test",
-        ]);
+        let (_f, reader) = make_reader(&["test line", "nothing", "another test"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
         search.search("test", &all, &reader)?;
@@ -200,11 +196,7 @@ mod tests {
 
     #[test]
     fn test_search_only_visible() -> anyhow::Result<()> {
-        let (_f, reader) = make_reader(&[
-            "ERROR: bad",
-            "INFO: good",
-            "ERROR: also bad",
-        ]);
+        let (_f, reader) = make_reader(&["ERROR: bad", "INFO: good", "ERROR: also bad"]);
         // Only search visible lines (0 and 2 pass the filter)
         let visible = vec![0usize, 2];
         let mut search = Search::new();
