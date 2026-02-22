@@ -13,178 +13,40 @@
 
 use std::collections::HashSet;
 
+use super::timestamp::{
+    is_level_keyword, parse_bsd_precise_timestamp, parse_full_timestamp, parse_iso_timestamp,
+};
 use super::types::{DisplayParts, LogFormatParser};
 
 /// Zero-copy parser for journalctl text output.
 #[derive(Debug)]
 pub struct JournalctlParser;
 
-/// Weekday abbreviations used by `journalctl -o short-full`.
-const WEEKDAYS: &[&str] = &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-/// BSD month abbreviations (shared with syslog, but we avoid cross-module dependency).
-const BSD_MONTHS: &[&str] = &[
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-// ---------------------------------------------------------------------------
-// Timestamp parsers — each returns `(timestamp_slice, bytes_consumed)`.
-// ---------------------------------------------------------------------------
-
-/// Try ISO 8601 timestamp: `2024-02-22T10:15:30+0000` or `2024-02-22T10:15:30.123456+00:00`.
-/// Stops at the first space after the 'T'.
-fn parse_iso_timestamp(s: &str) -> Option<(&str, usize)> {
-    // Minimum: "YYYY-MM-DDTHH:MM:SS" = 19 chars
-    if s.len() < 19 {
-        return None;
+/// Check if a token looks like a plausible hostname (not a level keyword, not
+/// a Rust module path, and not a short all-uppercase token that is likely a
+/// log level).
+fn is_likely_hostname(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
     }
-    let bytes = s.as_bytes();
-    // Must start with 4 digits (year)
-    if !bytes[0].is_ascii_digit()
-        || !bytes[1].is_ascii_digit()
-        || !bytes[2].is_ascii_digit()
-        || !bytes[3].is_ascii_digit()
-        || bytes[4] != b'-'
+    // Reject known level keywords
+    if is_level_keyword(token) {
+        return false;
+    }
+    // Reject tokens containing "::" (Rust module paths like myapp::server)
+    if token.contains("::") {
+        return false;
+    }
+    // Reject all-uppercase tokens ≤ 8 chars (likely level abbreviations)
+    if token.len() <= 8
+        && token
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
     {
-        return None;
+        // Allow single-char hostnames only if they are lowercase (already filtered above)
+        return false;
     }
-    // Must contain 'T' at position 10
-    if bytes[10] != b'T' {
-        return None;
-    }
-    // Find the end: first space after position 10
-    let end = s[10..].find(' ').map(|p| p + 10).unwrap_or(s.len());
-    if end <= 10 {
-        return None;
-    }
-    Some((&s[..end], end))
-}
-
-/// Try BSD timestamp with microseconds: `Feb 22 10:15:30.123456`.
-/// Returns the full timestamp including microseconds.
-fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
-    // Minimum: "Mmm DD HH:MM:SS.U" = 16 chars (at least one microsecond digit)
-    if s.len() < 16 {
-        return None;
-    }
-    let month = &s[..3];
-    if !BSD_MONTHS.contains(&month) {
-        return None;
-    }
-    if s.as_bytes()[3] != b' ' {
-        return None;
-    }
-    // Day: " D" or "DD"
-    let day_end = if s.as_bytes()[4] == b' ' {
-        if !s.as_bytes()[5].is_ascii_digit() {
-            return None;
-        }
-        6
-    } else if s.as_bytes()[4].is_ascii_digit() && s.as_bytes()[5].is_ascii_digit() {
-        6
-    } else {
-        return None;
-    };
-    if day_end >= s.len() || s.as_bytes()[day_end] != b' ' {
-        return None;
-    }
-    // HH:MM:SS
-    let time_start = day_end + 1;
-    if time_start + 8 > s.len() {
-        return None;
-    }
-    let t = &s[time_start..time_start + 8];
-    if t.as_bytes()[2] != b':'
-        || t.as_bytes()[5] != b':'
-        || !t.as_bytes()[0].is_ascii_digit()
-        || !t.as_bytes()[1].is_ascii_digit()
-        || !t.as_bytes()[3].is_ascii_digit()
-        || !t.as_bytes()[4].is_ascii_digit()
-        || !t.as_bytes()[6].is_ascii_digit()
-        || !t.as_bytes()[7].is_ascii_digit()
-    {
-        return None;
-    }
-    let after_time = time_start + 8;
-    // Must have a '.' for microseconds (this distinguishes from plain BSD)
-    if after_time >= s.len() || s.as_bytes()[after_time] != b'.' {
-        return None;
-    }
-    // Consume digits after the dot
-    let mut end = after_time + 1;
-    while end < s.len() && s.as_bytes()[end].is_ascii_digit() {
-        end += 1;
-    }
-    // Must have consumed at least one digit after '.'
-    if end == after_time + 1 {
-        return None;
-    }
-    Some((&s[..end], end))
-}
-
-/// Try short-full timestamp: `Mon 2024-02-22 10:15:30 UTC`.
-/// Format: `Www YYYY-MM-DD HH:MM:SS TZ`
-fn parse_full_timestamp(s: &str) -> Option<(&str, usize)> {
-    // Minimum: "Mon 2024-02-22 10:15:30 UTC" = 27 chars
-    if s.len() < 27 {
-        return None;
-    }
-    let weekday = &s[..3];
-    if !WEEKDAYS.contains(&weekday) {
-        return None;
-    }
-    if s.as_bytes()[3] != b' ' {
-        return None;
-    }
-    // YYYY-MM-DD at offset 4
-    let date_part = &s[4..14];
-    let db = date_part.as_bytes();
-    if !db[0].is_ascii_digit()
-        || !db[1].is_ascii_digit()
-        || !db[2].is_ascii_digit()
-        || !db[3].is_ascii_digit()
-        || db[4] != b'-'
-        || !db[5].is_ascii_digit()
-        || !db[6].is_ascii_digit()
-        || db[7] != b'-'
-        || !db[8].is_ascii_digit()
-        || !db[9].is_ascii_digit()
-    {
-        return None;
-    }
-    if s.as_bytes()[14] != b' ' {
-        return None;
-    }
-    // HH:MM:SS at offset 15
-    if s.len() < 23 {
-        return None;
-    }
-    let t = &s[15..23];
-    if t.as_bytes()[2] != b':'
-        || t.as_bytes()[5] != b':'
-        || !t.as_bytes()[0].is_ascii_digit()
-        || !t.as_bytes()[1].is_ascii_digit()
-        || !t.as_bytes()[3].is_ascii_digit()
-        || !t.as_bytes()[4].is_ascii_digit()
-        || !t.as_bytes()[6].is_ascii_digit()
-        || !t.as_bytes()[7].is_ascii_digit()
-    {
-        return None;
-    }
-    // Space then timezone
-    if s.as_bytes()[23] != b' ' {
-        return None;
-    }
-    // Timezone: consume non-space chars
-    let tz_start = 24;
-    let tz_end = s[tz_start..]
-        .find(' ')
-        .map(|p| p + tz_start)
-        .unwrap_or(s.len());
-    if tz_end <= tz_start {
-        return None;
-    }
-    Some((&s[..tz_end], tz_end))
+    true
 }
 
 /// Extract hostname + unit[pid]: message after a timestamp.
@@ -200,6 +62,12 @@ fn parse_host_unit_message<'a>(rest: &'a str) -> Option<DisplayParts<'a>> {
     // hostname (next space-delimited token)
     let space = rest.find(' ')?;
     let hostname = &rest[..space];
+
+    // Validate that the token looks like a hostname
+    if !is_likely_hostname(hostname) {
+        return None;
+    }
+
     parts.extra_fields.push(("hostname", hostname));
     let rest = &rest[space + 1..];
 
@@ -331,94 +199,6 @@ impl LogFormatParser for JournalctlParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── ISO timestamp parsing ──────────────────────────────────────────
-
-    #[test]
-    fn test_parse_iso_timestamp_basic() {
-        let (ts, consumed) = parse_iso_timestamp("2024-02-22T10:15:30+0000 rest").unwrap();
-        assert_eq!(ts, "2024-02-22T10:15:30+0000");
-        assert_eq!(consumed, 24);
-    }
-
-    #[test]
-    fn test_parse_iso_timestamp_with_colon_offset() {
-        let (ts, _) = parse_iso_timestamp("2024-02-22T10:15:30+00:00 rest").unwrap();
-        assert_eq!(ts, "2024-02-22T10:15:30+00:00");
-    }
-
-    #[test]
-    fn test_parse_iso_timestamp_with_microseconds() {
-        let (ts, _) = parse_iso_timestamp("2024-02-22T10:15:30.123456+0000 rest").unwrap();
-        assert_eq!(ts, "2024-02-22T10:15:30.123456+0000");
-    }
-
-    #[test]
-    fn test_parse_iso_timestamp_z_suffix() {
-        let (ts, _) = parse_iso_timestamp("2024-02-22T10:15:30Z rest").unwrap();
-        assert_eq!(ts, "2024-02-22T10:15:30Z");
-    }
-
-    #[test]
-    fn test_parse_iso_timestamp_too_short() {
-        assert!(parse_iso_timestamp("2024-02-22T10:1").is_none());
-    }
-
-    #[test]
-    fn test_parse_iso_timestamp_not_iso() {
-        assert!(parse_iso_timestamp("Feb 22 10:15:30 host").is_none());
-    }
-
-    // ── BSD precise timestamp parsing ──────────────────────────────────
-
-    #[test]
-    fn test_parse_bsd_precise_basic() {
-        let (ts, consumed) = parse_bsd_precise_timestamp("Feb 22 10:15:30.123456 rest").unwrap();
-        assert_eq!(ts, "Feb 22 10:15:30.123456");
-        assert_eq!(consumed, 22);
-    }
-
-    #[test]
-    fn test_parse_bsd_precise_single_digit_day() {
-        let (ts, _) = parse_bsd_precise_timestamp("Feb  5 10:15:30.123456 rest").unwrap();
-        assert_eq!(ts, "Feb  5 10:15:30.123456");
-    }
-
-    #[test]
-    fn test_parse_bsd_precise_no_dot_returns_none() {
-        // Plain BSD timestamp without microseconds should NOT match
-        assert!(parse_bsd_precise_timestamp("Feb 22 10:15:30 host").is_none());
-    }
-
-    #[test]
-    fn test_parse_bsd_precise_not_bsd() {
-        assert!(parse_bsd_precise_timestamp("2024-02-22T10:15:30 host").is_none());
-    }
-
-    // ── Full timestamp parsing ─────────────────────────────────────────
-
-    #[test]
-    fn test_parse_full_timestamp_basic() {
-        let (ts, consumed) = parse_full_timestamp("Mon 2024-02-22 10:15:30 UTC rest").unwrap();
-        assert_eq!(ts, "Mon 2024-02-22 10:15:30 UTC");
-        assert_eq!(consumed, 27);
-    }
-
-    #[test]
-    fn test_parse_full_timestamp_long_tz() {
-        let (ts, _) = parse_full_timestamp("Fri 2024-12-31 23:59:59 Europe/Berlin rest").unwrap();
-        assert_eq!(ts, "Fri 2024-12-31 23:59:59 Europe/Berlin");
-    }
-
-    #[test]
-    fn test_parse_full_timestamp_not_weekday() {
-        assert!(parse_full_timestamp("Xxx 2024-02-22 10:15:30 UTC rest").is_none());
-    }
-
-    #[test]
-    fn test_parse_full_timestamp_too_short() {
-        assert!(parse_full_timestamp("Mon 2024-02-22 10:15:30").is_none());
-    }
 
     // ── JournalctlParser: short-iso format ─────────────────────────────
 
@@ -568,7 +348,6 @@ mod tests {
     #[test]
     fn test_parse_syslog_with_priority_not_journalctl() {
         let parser = JournalctlParser;
-        // Syslog with <PRI> prefix should not match journalctl
         assert!(
             parser
                 .parse_line(b"<134>Oct 11 22:14:15 myhost sshd[1234]: msg")
@@ -580,7 +359,6 @@ mod tests {
     fn test_unit_without_colon() {
         let line = b"2024-02-22T10:15:30+0000 myhost kernel";
         let parser = JournalctlParser;
-        // hostname consumed, then "kernel" has no colon — treated as message
         let parts = parser.parse_line(line).unwrap();
         assert!(
             parts
@@ -589,6 +367,71 @@ mod tests {
                 .any(|(k, v)| *k == "hostname" && *v == "myhost")
         );
         assert_eq!(parts.message, Some("kernel"));
+    }
+
+    // ── False positive rejection ──────────────────────────────────────
+
+    #[test]
+    fn test_reject_common_log_format_line() {
+        // env_logger style: ISO timestamp + level keyword where hostname would be
+        let parser = JournalctlParser;
+        assert!(
+            parser
+                .parse_line(b"2024-07-24T10:00:00Z INFO myapp::server: listening on 0.0.0.0:3000")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_reject_tracing_fmt_line() {
+        let parser = JournalctlParser;
+        assert!(
+            parser
+                .parse_line(b"2024-07-24T10:00:00Z DEBUG myapp::handler: request processed")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_reject_level_as_hostname() {
+        let parser = JournalctlParser;
+        // "WARN" where hostname would be should fail
+        assert!(
+            parser
+                .parse_line(b"2024-07-24T10:00:00Z WARN something: msg")
+                .is_none()
+        );
+    }
+
+    // ── is_likely_hostname ────────────────────────────────────────────
+
+    #[test]
+    fn test_is_likely_hostname_valid() {
+        assert!(is_likely_hostname("myhost"));
+        assert!(is_likely_hostname("server-01"));
+        assert!(is_likely_hostname("ip-172-31-0-1"));
+        assert!(is_likely_hostname("paulo-pc"));
+    }
+
+    #[test]
+    fn test_is_likely_hostname_rejects_levels() {
+        assert!(!is_likely_hostname("INFO"));
+        assert!(!is_likely_hostname("WARN"));
+        assert!(!is_likely_hostname("ERROR"));
+        assert!(!is_likely_hostname("DEBUG"));
+        assert!(!is_likely_hostname("TRACE"));
+    }
+
+    #[test]
+    fn test_is_likely_hostname_rejects_module_paths() {
+        assert!(!is_likely_hostname("myapp::server"));
+        assert!(!is_likely_hostname("crate::module::func"));
+    }
+
+    #[test]
+    fn test_is_likely_hostname_rejects_short_uppercase() {
+        assert!(!is_likely_hostname("ABC"));
+        assert!(!is_likely_hostname("MYAPP"));
     }
 
     // ── detect_score ───────────────────────────────────────────────────
@@ -660,5 +503,34 @@ mod tests {
     fn test_name() {
         let parser = JournalctlParser;
         assert_eq!(parser.name(), "journalctl");
+    }
+
+    // ── rsyslog RSYSLOG_FileFormat (ISO 8601 with microseconds) ───────
+
+    #[test]
+    fn test_rsyslog_file_format_parse() {
+        let parser = JournalctlParser;
+        let line = b"2026-02-22T00:05:10.113076+01:00 paulo-pc rsyslogd: [origin software=\"rsyslogd\"] rsyslogd was HUPed";
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("2026-02-22T00:05:10.113076+01:00"));
+        assert_eq!(parts.target, Some("rsyslogd"));
+        assert!(
+            parts
+                .extra_fields
+                .iter()
+                .any(|(k, v)| *k == "hostname" && *v == "paulo-pc")
+        );
+    }
+
+    #[test]
+    fn test_rsyslog_file_format_detect() {
+        let lines: Vec<&[u8]> = vec![
+            b"2026-02-22T00:05:10.113076+01:00 paulo-pc rsyslogd: [origin] msg",
+            b"2026-02-22T00:05:10.119576+01:00 paulo-pc systemd[1]: logrotate.service: Deactivated successfully.",
+            b"2026-02-22T00:07:24.887273+01:00 paulo-pc systemd[1]: Starting sysstat-summary.service",
+        ];
+        let parser = JournalctlParser;
+        let score = parser.detect_score(&lines);
+        assert!(score > 0.9, "Expected high score, got {}", score);
     }
 }

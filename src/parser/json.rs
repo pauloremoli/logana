@@ -208,7 +208,15 @@ pub const TARGET_KEYS: &[&str] = &[
     "_COMM",
     "caller",
 ];
-pub const MESSAGE_KEYS: &[&str] = &["message", "msg", "log", "text", "MESSAGE", "body"];
+pub const MESSAGE_KEYS: &[&str] = &[
+    "message",
+    "msg",
+    "log",
+    "text",
+    "MESSAGE",
+    "body",
+    "short_message",
+];
 
 /// Classify `fields` into known slots and extra fields, without any hidden-field
 /// filtering. This is the primary classification function used by `JsonParser`.

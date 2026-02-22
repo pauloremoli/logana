@@ -289,6 +289,15 @@ impl App {
                     return;
                 }
                 self.tabs[0].file_reader = file_reader;
+                // Re-detect format now that real data is available (the tab was
+                // created with an empty placeholder reader).
+                let limit = self.tabs[0].file_reader.line_count().min(200);
+                if limit > 0 {
+                    let sample: Vec<&[u8]> = (0..limit)
+                        .map(|j| self.tabs[0].file_reader.get_line(j))
+                        .collect();
+                    self.tabs[0].detected_format = crate::parser::detect_format(&sample);
+                }
                 self.tabs[0].refresh_visible();
                 if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     self.tabs[0].mode = Box::new(ConfirmRestoreMode { context: ctx });
@@ -717,6 +726,39 @@ mod tests {
         assert!(app.file_load_state.is_none());
         // The initial tab should have the loaded data.
         assert_eq!(app.tabs[0].file_reader.line_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_load_redetects_format() {
+        let mut app = make_app(&[]).await;
+        // Initial tab has no detected format (empty placeholder).
+        assert!(app.tabs[0].detected_format.is_none());
+
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        // Send JSON data so format detection finds a match.
+        let fr = FileReader::from_bytes(
+            b"{\"level\":\"INFO\",\"msg\":\"hello\"}\n{\"level\":\"WARN\",\"msg\":\"world\"}\n"
+                .to_vec(),
+        );
+        let _ = result_tx.send(Ok(fr));
+        drop(progress_tx);
+
+        app.file_load_state = Some(super::FileLoadState {
+            path: "test.log".to_string(),
+            progress_rx,
+            result_rx,
+            total_bytes: 60,
+            on_complete: LoadContext::ReplaceInitialTab,
+        });
+
+        app.advance_file_load().await;
+
+        assert!(app.file_load_state.is_none());
+        assert!(
+            app.tabs[0].detected_format.is_some(),
+            "Format should be re-detected after ReplaceInitialTab load"
+        );
     }
 
     #[tokio::test]

@@ -1071,10 +1071,9 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_process_stream_stderr() {
         // Use sh -c to write to stderr
-        let mut rx =
-            FileReader::spawn_process_stream("sh", &["-c", "echo error_output >&2"])
-                .await
-                .unwrap();
+        let mut rx = FileReader::spawn_process_stream("sh", &["-c", "echo error_output >&2"])
+            .await
+            .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
@@ -1089,12 +1088,9 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_process_stream_strips_ansi() {
         // printf outputs ANSI codes; they should be stripped
-        let mut rx = FileReader::spawn_process_stream(
-            "printf",
-            &["\x1b[31mred text\x1b[0m\n"],
-        )
-        .await
-        .unwrap();
+        let mut rx = FileReader::spawn_process_stream("printf", &["\x1b[31mred text\x1b[0m\n"])
+            .await
+            .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
@@ -1169,5 +1165,4 @@ mod tests {
             "watcher should detect data after truncation, got: {text}"
         );
     }
-
 }

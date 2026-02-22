@@ -27,10 +27,13 @@ pub fn parse_color(s: &str) -> Option<Color> {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum LogLevel {
+    Trace,
+    Debug,
     Info,
+    Notice,
     Warning,
     Error,
-    Debug,
+    Fatal,
     #[default]
     Unknown,
 }
@@ -38,10 +41,13 @@ pub enum LogLevel {
 impl LogLevel {
     pub fn parse_level(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "info" => LogLevel::Info,
-            "warn" | "warning" => LogLevel::Warning,
+            "trace" | "trc" => LogLevel::Trace,
+            "debug" | "dbg" => LogLevel::Debug,
+            "info" | "inf" => LogLevel::Info,
+            "notice" => LogLevel::Notice,
+            "warn" | "warning" | "wrn" => LogLevel::Warning,
             "error" | "err" => LogLevel::Error,
-            "debug" => LogLevel::Debug,
+            "fatal" | "ftl" | "critical" | "crit" | "emerg" | "alert" => LogLevel::Fatal,
             _ => LogLevel::Unknown,
         }
     }
@@ -57,17 +63,39 @@ impl LogLevel {
                 line[i + 2].to_ascii_uppercase(),
                 line[i + 3].to_ascii_uppercase(),
             ];
-            if w4 == *b"INFO" {
-                return LogLevel::Info;
+            if w4 == *b"FATA" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'L') {
+                return LogLevel::Fatal;
+            }
+            if w4 == *b"CRIT" {
+                return LogLevel::Fatal;
+            }
+            if w4 == *b"EMER" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'G') {
+                return LogLevel::Fatal;
+            }
+            if w4 == *b"ALER" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'T') {
+                return LogLevel::Fatal;
+            }
+            if w4 == *b"ERRO" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'R') {
+                return LogLevel::Error;
             }
             if w4 == *b"WARN" {
                 return LogLevel::Warning;
             }
+            if w4 == *b"NOTI"
+                && i + 6 <= line.len()
+                && line[i + 4].eq_ignore_ascii_case(&b'C')
+                && line[i + 5].eq_ignore_ascii_case(&b'E')
+            {
+                return LogLevel::Notice;
+            }
+            if w4 == *b"INFO" {
+                return LogLevel::Info;
+            }
             if w4 == *b"DEBU" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'G') {
                 return LogLevel::Debug;
             }
-            if w4 == *b"ERRO" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'R') {
-                return LogLevel::Error;
+            if w4 == *b"TRAC" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'E') {
+                return LogLevel::Trace;
             }
             i += 1;
         }
@@ -154,13 +182,25 @@ mod tests {
 
     #[test]
     fn test_log_level_from_str() {
+        assert_eq!(LogLevel::parse_level("trace"), LogLevel::Trace);
+        assert_eq!(LogLevel::parse_level("TRC"), LogLevel::Trace);
+        assert_eq!(LogLevel::parse_level("debug"), LogLevel::Debug);
+        assert_eq!(LogLevel::parse_level("DBG"), LogLevel::Debug);
         assert_eq!(LogLevel::parse_level("info"), LogLevel::Info);
         assert_eq!(LogLevel::parse_level("INFO"), LogLevel::Info);
+        assert_eq!(LogLevel::parse_level("INF"), LogLevel::Info);
+        assert_eq!(LogLevel::parse_level("notice"), LogLevel::Notice);
         assert_eq!(LogLevel::parse_level("warn"), LogLevel::Warning);
         assert_eq!(LogLevel::parse_level("WARNING"), LogLevel::Warning);
+        assert_eq!(LogLevel::parse_level("WRN"), LogLevel::Warning);
         assert_eq!(LogLevel::parse_level("error"), LogLevel::Error);
         assert_eq!(LogLevel::parse_level("ERR"), LogLevel::Error);
-        assert_eq!(LogLevel::parse_level("debug"), LogLevel::Debug);
+        assert_eq!(LogLevel::parse_level("fatal"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("FTL"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("critical"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("CRIT"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("emerg"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("alert"), LogLevel::Fatal);
         assert_eq!(LogLevel::parse_level("unknown"), LogLevel::Unknown);
     }
 
@@ -194,6 +234,31 @@ mod tests {
         assert_eq!(
             LogLevel::detect_from_bytes(b"warn about something"),
             LogLevel::Warning
+        );
+        // New levels
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"TRACE entering function"),
+            LogLevel::Trace
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"NOTICE system event"),
+            LogLevel::Notice
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"FATAL system crash"),
+            LogLevel::Fatal
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"CRITICAL out of memory"),
+            LogLevel::Fatal
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"EMERG kernel panic"),
+            LogLevel::Fatal
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"ALERT security breach"),
+            LogLevel::Fatal
         );
     }
 

@@ -211,10 +211,34 @@ pub struct Theme {
         default = "default_cursor_fg"
     )]
     pub cursor_fg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_trace_fg"
+    )]
+    pub trace_fg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_debug_fg"
+    )]
+    pub debug_fg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_notice_fg"
+    )]
+    pub notice_fg: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
     pub error_fg: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
     pub warning_fg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_fatal_fg"
+    )]
+    pub fatal_fg: Color,
     #[serde(
         serialize_with = "colors_to_str_vec",
         deserialize_with = "colors_from_str_vec"
@@ -320,6 +344,18 @@ impl<'de> serde::de::DeserializeSeed<'de> for ColorDeserializer {
     }
 }
 
+fn default_trace_fg() -> Color {
+    Color::Rgb(98, 114, 164) // dimmed/gray (Dracula comment color)
+}
+fn default_debug_fg() -> Color {
+    Color::Rgb(139, 233, 253) // cyan (Dracula cyan)
+}
+fn default_notice_fg() -> Color {
+    Color::Rgb(248, 248, 242) // same as default text (Dracula foreground)
+}
+fn default_fatal_fg() -> Color {
+    Color::Rgb(255, 85, 85) // bright red (same as error, Dracula red)
+}
 fn default_cursor_fg() -> Color {
     Color::Rgb(28, 28, 28)
 }
@@ -387,8 +423,12 @@ impl Default for Theme {
             text: Color::Rgb(248, 248, 242),
             text_highlight: Color::Rgb(255, 184, 108),
             cursor_fg: Color::Rgb(28, 28, 28),
+            trace_fg: default_trace_fg(),
+            debug_fg: default_debug_fg(),
+            notice_fg: default_notice_fg(),
             error_fg: Color::Rgb(255, 85, 85),
             warning_fg: Color::Rgb(241, 250, 140),
+            fatal_fg: default_fatal_fg(),
             process_colors: vec![
                 Color::Rgb(255, 85, 85),
                 Color::Rgb(80, 250, 123),
@@ -421,6 +461,249 @@ mod tests {
     use std::env;
     use tempfile::tempdir;
 
+    // ── ValueColors defaults ────────────────────────────────────────────
+
+    #[test]
+    fn test_value_colors_default() {
+        let vc = ValueColors::default();
+        assert_eq!(vc.http_get, Color::Rgb(80, 250, 123));
+        assert_eq!(vc.http_post, Color::Rgb(139, 233, 253));
+        assert_eq!(vc.http_put, Color::Rgb(255, 184, 108));
+        assert_eq!(vc.http_delete, Color::Rgb(255, 85, 85));
+        assert_eq!(vc.http_patch, Color::Rgb(189, 147, 249));
+        assert_eq!(vc.http_other, Color::Rgb(98, 114, 164));
+        assert_eq!(vc.status_2xx, Color::Rgb(80, 250, 123));
+        assert_eq!(vc.status_3xx, Color::Rgb(139, 233, 253));
+        assert_eq!(vc.status_4xx, Color::Rgb(255, 184, 108));
+        assert_eq!(vc.status_5xx, Color::Rgb(255, 85, 85));
+        assert_eq!(vc.ip_address, Color::Rgb(189, 147, 249));
+        assert_eq!(vc.uuid, Color::Rgb(108, 113, 196));
+        assert!(vc.disabled.is_empty());
+    }
+
+    // ── ValueColors::grouped_categories ─────────────────────────────────
+
+    #[test]
+    fn test_grouped_categories_structure() {
+        let vc = ValueColors::default();
+        let groups = vc.grouped_categories();
+        assert_eq!(groups.len(), 4);
+        assert_eq!(groups[0].label, "HTTP methods");
+        assert_eq!(groups[0].children.len(), 6);
+        assert_eq!(groups[1].label, "Status codes");
+        assert_eq!(groups[1].children.len(), 4);
+        assert_eq!(groups[2].label, "Network");
+        assert_eq!(groups[2].children.len(), 1);
+        assert_eq!(groups[3].label, "Identifiers");
+        assert_eq!(groups[3].children.len(), 1);
+    }
+
+    #[test]
+    fn test_grouped_categories_keys_and_labels() {
+        let vc = ValueColors::default();
+        let groups = vc.grouped_categories();
+        // HTTP methods group
+        let http = &groups[0].children;
+        assert_eq!(http[0].0, "http_get");
+        assert_eq!(http[0].1, "GET");
+        assert_eq!(http[5].0, "http_other");
+        assert_eq!(http[5].1, "HEAD/OPTIONS");
+        // Status codes group
+        let status = &groups[1].children;
+        assert_eq!(status[0].0, "status_2xx");
+        assert_eq!(status[3].0, "status_5xx");
+        // Network
+        assert_eq!(groups[2].children[0].0, "ip_address");
+        // Identifiers
+        assert_eq!(groups[3].children[0].0, "uuid");
+    }
+
+    #[test]
+    fn test_grouped_categories_uses_current_colors() {
+        let mut vc = ValueColors::default();
+        vc.http_get = Color::Rgb(1, 2, 3);
+        let groups = vc.grouped_categories();
+        assert_eq!(groups[0].children[0].2, Color::Rgb(1, 2, 3));
+    }
+
+    // ── ValueColors::is_disabled ────────────────────────────────────────
+
+    #[test]
+    fn test_is_disabled_false_by_default() {
+        let vc = ValueColors::default();
+        assert!(!vc.is_disabled("http_get"));
+        assert!(!vc.is_disabled("uuid"));
+    }
+
+    #[test]
+    fn test_is_disabled_true_when_in_set() {
+        let mut vc = ValueColors::default();
+        vc.disabled.insert("http_get".to_string());
+        assert!(vc.is_disabled("http_get"));
+        assert!(!vc.is_disabled("http_post"));
+    }
+
+    // ── ValueColors serde ───────────────────────────────────────────────
+
+    #[test]
+    fn test_value_colors_serde_roundtrip() {
+        let original = ValueColors::default();
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: ValueColors = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_value_colors_disabled_not_serialized() {
+        let mut vc = ValueColors::default();
+        vc.disabled.insert("http_get".to_string());
+        let json = serde_json::to_string(&vc).unwrap();
+        assert!(!json.contains("disabled"));
+        let deserialized: ValueColors = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.disabled.is_empty());
+    }
+
+    #[test]
+    fn test_value_colors_partial_json_uses_defaults() {
+        let json = r##"{"http_get": "#FF0000"}"##;
+        let vc: ValueColors = serde_json::from_str(json).unwrap();
+        assert_eq!(vc.http_get, Color::Rgb(255, 0, 0));
+        // Other fields should use defaults
+        assert_eq!(vc.http_post, default_http_post());
+        assert_eq!(vc.uuid, default_uuid());
+    }
+
+    // ── Theme defaults ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_theme_default_level_colors() {
+        let theme = Theme::default();
+        assert_eq!(theme.trace_fg, Color::Rgb(98, 114, 164));
+        assert_eq!(theme.debug_fg, Color::Rgb(139, 233, 253));
+        assert_eq!(theme.notice_fg, Color::Rgb(248, 248, 242));
+        assert_eq!(theme.fatal_fg, Color::Rgb(255, 85, 85));
+        assert_eq!(theme.cursor_fg, Color::Rgb(28, 28, 28));
+    }
+
+    #[test]
+    fn test_theme_default_base_colors() {
+        let theme = Theme::default();
+        assert_eq!(theme.error_fg, Color::Rgb(255, 85, 85));
+        assert_eq!(theme.warning_fg, Color::Rgb(241, 250, 140));
+        assert!(!theme.process_colors.is_empty());
+    }
+
+    // ── Theme serde ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_theme_serde_roundtrip() {
+        let original = Theme::default();
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Theme = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_theme_deserialize_hex_color() {
+        let json = serde_json::to_string(&Theme::default()).unwrap();
+        // The serialized form uses ratatui's color string format
+        let theme: Theme = serde_json::from_str(&json).unwrap();
+        assert_eq!(theme.root_bg, Color::Rgb(40, 42, 54));
+    }
+
+    #[test]
+    fn test_theme_deserialize_rgb_array() {
+        let mut json_value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&Theme::default()).unwrap()).unwrap();
+        // Replace a color with RGB array format
+        json_value["root_bg"] = serde_json::json!([100, 200, 50]);
+        let theme: Theme = serde_json::from_value(json_value).unwrap();
+        assert_eq!(theme.root_bg, Color::Rgb(100, 200, 50));
+    }
+
+    #[test]
+    fn test_theme_deserialize_missing_optional_fields_use_defaults() {
+        // Build a minimal theme JSON without trace_fg, debug_fg, notice_fg, fatal_fg, cursor_fg
+        let json = r##"{
+            "root_bg": "#282a36",
+            "border": "#6272a4",
+            "border_title": "#f8f8f2",
+            "text": "#f8f8f2",
+            "text_highlight": "#ffb86c",
+            "error_fg": "#ff5555",
+            "warning_fg": "#f1fa8c",
+            "process_colors": ["#ff5555", "#50fa7b"]
+        }"##;
+        let theme: Theme = serde_json::from_str(json).unwrap();
+        assert_eq!(theme.trace_fg, default_trace_fg());
+        assert_eq!(theme.debug_fg, default_debug_fg());
+        assert_eq!(theme.notice_fg, default_notice_fg());
+        assert_eq!(theme.fatal_fg, default_fatal_fg());
+        assert_eq!(theme.cursor_fg, default_cursor_fg());
+        assert_eq!(theme.value_colors, ValueColors::default());
+    }
+
+    #[test]
+    fn test_theme_deserialize_process_colors_rgb_arrays() {
+        let mut json_value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&Theme::default()).unwrap()).unwrap();
+        json_value["process_colors"] = serde_json::json!([[10, 20, 30], [40, 50, 60]]);
+        let theme: Theme = serde_json::from_value(json_value).unwrap();
+        assert_eq!(theme.process_colors.len(), 2);
+        assert_eq!(theme.process_colors[0], Color::Rgb(10, 20, 30));
+        assert_eq!(theme.process_colors[1], Color::Rgb(40, 50, 60));
+    }
+
+    // ── Theme::from_file ────────────────────────────────────────────────
+
+    #[test]
+    fn test_theme_from_file_nonexistent() {
+        let result = Theme::from_file("nonexistent_theme_xyz123.json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_theme_from_file_valid() {
+        let temp = tempdir().unwrap();
+        let theme_dir = temp.path().join("logsmith-rs").join("themes");
+        fs::create_dir_all(&theme_dir).unwrap();
+        let theme_json = serde_json::to_string(&Theme::default()).unwrap();
+        let path = theme_dir.join("test_theme.json");
+        fs::write(&path, &theme_json).unwrap();
+
+        unsafe {
+            env::set_var("XDG_CONFIG_HOME", temp.path());
+        }
+        let result = Theme::from_file("test_theme.json");
+        unsafe {
+            env::remove_var("XDG_CONFIG_HOME");
+        }
+
+        assert!(result.is_ok());
+        let theme = result.unwrap();
+        assert_eq!(theme.root_bg, Color::Rgb(40, 42, 54));
+    }
+
+    #[test]
+    fn test_theme_from_file_invalid_json() {
+        let temp = tempdir().unwrap();
+        let theme_dir = temp.path().join("logsmith-rs").join("themes");
+        fs::create_dir_all(&theme_dir).unwrap();
+        fs::write(theme_dir.join("broken.json"), "not valid json {{{").unwrap();
+
+        unsafe {
+            env::set_var("XDG_CONFIG_HOME", temp.path());
+        }
+        let result = Theme::from_file("broken.json");
+        unsafe {
+            env::remove_var("XDG_CONFIG_HOME");
+        }
+
+        assert!(result.is_err());
+    }
+
+    // ── Theme::list_available_themes ────────────────────────────────────
+
     #[test]
     fn test_theme_loading_from_config_dir() {
         let temp_dir = tempdir().unwrap();
@@ -442,10 +725,31 @@ mod tests {
     }
 
     #[test]
+    fn test_list_available_themes_ignores_non_json() {
+        let temp_dir = tempdir().unwrap();
+        unsafe {
+            env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+        }
+        let themes_dir = temp_dir.path().join("logsmith-rs/themes");
+        fs::create_dir_all(&themes_dir).unwrap();
+        fs::write(themes_dir.join("readme.txt"), "not a theme").unwrap();
+        fs::write(themes_dir.join("valid.json"), "{}").unwrap();
+
+        let themes = Theme::list_available_themes();
+        assert!(themes.contains(&"valid".to_string()));
+        assert!(!themes.contains(&"readme".to_string()));
+        assert!(!themes.contains(&"readme.txt".to_string()));
+
+        unsafe {
+            env::remove_var("XDG_CONFIG_HOME");
+        }
+    }
+
+    // ── complete_theme ──────────────────────────────────────────────────
+
+    #[test]
     fn test_complete_theme_empty_returns_available_themes() {
-        // Result depends on filesystem but must not panic
         let themes = complete_theme("");
-        // All returned entries must be non-empty strings
         for t in &themes {
             assert!(!t.is_empty());
         }
@@ -453,8 +757,80 @@ mod tests {
 
     #[test]
     fn test_complete_theme_no_match_returns_empty() {
-        // An unlikely prefix that won't match any theme name
         let results = complete_theme("zzznomatch9999");
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_complete_theme_fuzzy_match() {
+        let temp_dir = tempdir().unwrap();
+        unsafe {
+            env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+        }
+        let themes_dir = temp_dir.path().join("logsmith-rs/themes");
+        fs::create_dir_all(&themes_dir).unwrap();
+        fs::write(themes_dir.join("monokai.json"), "{}").unwrap();
+        fs::write(themes_dir.join("solarized.json"), "{}").unwrap();
+
+        let results = complete_theme("mono");
+        assert!(results.contains(&"monokai".to_string()));
+        assert!(!results.contains(&"solarized".to_string()));
+
+        unsafe {
+            env::remove_var("XDG_CONFIG_HOME");
+        }
+    }
+
+    // ── color serde helpers ─────────────────────────────────────────────
+
+    #[test]
+    fn test_color_deserialize_string() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(deserialize_with = "color_from_str")]
+            color: Color,
+        }
+        let w: Wrapper = serde_json::from_str(r##"{"color": "#ff0000"}"##).unwrap();
+        assert_eq!(w.color, Color::Rgb(255, 0, 0));
+    }
+
+    #[test]
+    fn test_color_deserialize_rgb_array() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(deserialize_with = "color_from_str")]
+            color: Color,
+        }
+        let w: Wrapper = serde_json::from_str(r#"{"color": [10, 20, 30]}"#).unwrap();
+        assert_eq!(w.color, Color::Rgb(10, 20, 30));
+    }
+
+    #[test]
+    fn test_color_deserialize_incomplete_array() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(deserialize_with = "color_from_str")]
+            _color: Color,
+        }
+        let result: Result<Wrapper, _> = serde_json::from_str(r#"{"_color": [10, 20]}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_colors_vec_roundtrip() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Wrapper {
+            #[serde(
+                serialize_with = "colors_to_str_vec",
+                deserialize_with = "colors_from_str_vec"
+            )]
+            colors: Vec<Color>,
+        }
+        let original = Wrapper {
+            colors: vec![Color::Rgb(1, 2, 3), Color::Rgb(4, 5, 6)],
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
     }
 }

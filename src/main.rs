@@ -33,6 +33,29 @@ fn get_db_path() -> String {
     }
 }
 
+/// Validate that `path` exists and is a regular file.
+/// Returns `Ok(())` on success, or an error message describing the problem.
+fn validate_file_path(path: &str) -> std::result::Result<(), String> {
+    let p = std::path::Path::new(path);
+    if !p.exists() {
+        return Err(format!("File '{}' not found.", path));
+    }
+    if p.is_dir() {
+        return Err(format!("'{}' is a directory, not a file.", path));
+    }
+    Ok(())
+}
+
+/// Determine whether to start a background file load and what source path
+/// to associate with the `LogManager`.
+fn resolve_source(file_path: &Option<String>) -> (Option<String>, bool) {
+    if let Some(path) = file_path {
+        (Some(path.clone()), true)
+    } else {
+        (None, false)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -56,29 +79,17 @@ async fn main() -> Result<()> {
     let db = Arc::new(db);
 
     // Validate the file path before entering the TUI (gives a clean error message).
-    if let Some(ref path) = file_path {
-        let p = std::path::Path::new(path);
-        if !p.exists() {
-            eprintln!("Error: File '{}' not found.", path);
-            std::process::exit(1);
-        }
-        if p.is_dir() {
-            eprintln!("Error: '{}' is a directory, not a file.", path);
-            std::process::exit(1);
-        }
+    if let Some(ref path) = file_path
+        && let Err(msg) = validate_file_path(path)
+    {
+        eprintln!("Error: {}", msg);
+        std::process::exit(1);
     }
 
     // Detect piped stdin before entering the TUI.
     let stdin_is_piped = file_path.is_none() && !stdin().is_terminal();
 
-    // For a file argument use an empty placeholder — the real FileReader is
-    // loaded in the background after the TUI starts so the progress bar is shown.
-    // For stdin, also use an empty placeholder; reading happens in the background.
-    let (source_path, background_file_load) = if let Some(ref path) = file_path {
-        (Some(path.clone()), true)
-    } else {
-        (None, false)
-    };
+    let (source_path, background_file_load) = resolve_source(&file_path);
 
     let log_manager = LogManager::new(db.clone(), source_path.clone()).await;
 
@@ -133,4 +144,129 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Args (clap) ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_args_no_file() {
+        let args = Args::try_parse_from(["logsmith-rs"]).unwrap();
+        assert!(args.file.is_none());
+    }
+
+    #[test]
+    fn test_args_with_file() {
+        let args = Args::try_parse_from(["logsmith-rs", "/var/log/syslog"]).unwrap();
+        assert_eq!(args.file, Some("/var/log/syslog".to_string()));
+    }
+
+    #[test]
+    fn test_args_rejects_unknown_flags() {
+        let result = Args::try_parse_from(["logsmith-rs", "--unknown"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_args_rejects_multiple_positional() {
+        let result = Args::try_parse_from(["logsmith-rs", "file1.log", "file2.log"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_args_version_flag() {
+        let result = Args::try_parse_from(["logsmith-rs", "--version"]);
+        // --version causes clap to print and exit with an error variant.
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_args_help_flag() {
+        let result = Args::try_parse_from(["logsmith-rs", "--help"]);
+        assert!(result.is_err());
+    }
+
+    // ── get_db_path ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_db_path_contains_logsmith() {
+        let path = get_db_path();
+        assert!(
+            path.contains("logsmith"),
+            "DB path should contain 'logsmith': {}",
+            path
+        );
+        assert!(
+            path.ends_with("logsmith.db"),
+            "DB path should end with 'logsmith.db': {}",
+            path
+        );
+    }
+
+    #[test]
+    fn test_get_db_path_uses_data_dir_when_available() {
+        let path = get_db_path();
+        // On most systems dirs::data_dir() returns Some, so the path
+        // should include the app subdirectory.
+        if dirs::data_dir().is_some() {
+            assert!(
+                path.contains("logsmith-rs"),
+                "DB path should include app directory: {}",
+                path
+            );
+        } else {
+            assert_eq!(path, "logsmith.db");
+        }
+    }
+
+    // ── validate_file_path ────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_file_path_nonexistent() {
+        let result = validate_file_path("/nonexistent/path/file.log");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_validate_file_path_directory() {
+        let result = validate_file_path("/tmp");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("directory"));
+    }
+
+    #[test]
+    fn test_validate_file_path_valid_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        assert!(validate_file_path(path).is_ok());
+    }
+
+    #[test]
+    fn test_validate_file_path_empty_string() {
+        let result = validate_file_path("");
+        // Empty path doesn't exist.
+        assert!(result.is_err());
+    }
+
+    // ── resolve_source ────────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_source_with_file() {
+        let file_path = Some("/var/log/syslog".to_string());
+        let (source, bg_load) = resolve_source(&file_path);
+        assert_eq!(source, Some("/var/log/syslog".to_string()));
+        assert!(bg_load);
+    }
+
+    #[test]
+    fn test_resolve_source_without_file() {
+        let file_path: Option<String> = None;
+        let (source, bg_load) = resolve_source(&file_path);
+        assert!(source.is_none());
+        assert!(!bg_load);
+    }
 }

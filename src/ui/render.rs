@@ -404,8 +404,12 @@ impl App {
                 let mut base_style = Style::default().fg(theme.text);
                 if level_colors {
                     match LogLevel::detect_from_bytes(line_bytes) {
-                        LogLevel::Error => base_style = base_style.fg(theme.error_fg),
+                        LogLevel::Trace => base_style = base_style.fg(theme.trace_fg),
+                        LogLevel::Debug => base_style = base_style.fg(theme.debug_fg),
+                        LogLevel::Notice => base_style = base_style.fg(theme.notice_fg),
                         LogLevel::Warning => base_style = base_style.fg(theme.warning_fg),
+                        LogLevel::Error => base_style = base_style.fg(theme.error_fg),
+                        LogLevel::Fatal => base_style = base_style.fg(theme.fatal_fg),
                         _ => {}
                     }
                 }

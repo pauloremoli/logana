@@ -12,10 +12,16 @@ src/
   parser/          - Log format parsing module directory
     mod.rs         - Re-exports, detect_format()
     types.rs       - LogFormatParser trait, DisplayParts, SpanInfo, format_span_col()
+    timestamp.rs   - Shared timestamp parsing utilities (ISO, BSD, datetime, slash-date, dmesg, Apache) + level normalization
     json.rs        - JSON log parser (JsonParser implementing LogFormatParser)
     syslog.rs      - Syslog parser: RFC 3164 + RFC 5424 (SyslogParser implementing LogFormatParser)
     journalctl.rs  - Journalctl text parser: short-iso, short-precise, short-full (JournalctlParser implementing LogFormatParser)
     clf.rs         - Common Log Format + Combined Log Format parser (ClfParser implementing LogFormatParser)
+    logfmt.rs      - Logfmt key=value parser: Go slog, Heroku, Grafana Loki (LogfmtParser implementing LogFormatParser)
+    common_log.rs  - Timestamp+LEVEL+target family: env_logger, tracing fmt, logback, Spring Boot, Python, loguru, structlog (CommonLogParser implementing LogFormatParser)
+    web_error.rs   - Nginx error log + Apache 2.4 error log (WebErrorParser implementing LogFormatParser)
+    dmesg.rs       - Linux kernel ring buffer / dmesg output (DmesgParser implementing LogFormatParser)
+    kube_cri.rs    - Kubernetes CRI log format (KubeCriParser implementing LogFormatParser)
   file_reader.rs  - Memory-mapped file I/O with SIMD line indexing (FileReader)
   filters.rs      - Filter pipeline: Filter trait, SubstringFilter, RegexFilter, FilterManager, render_line
   log_manager.rs  - Filter/mark state management + SQLite persistence bridge (LogManager)
@@ -42,8 +48,8 @@ tests/
 
 ## Core Data Models
 
-**LogLevel**: `Info | Warning | Error | Debug | Unknown`
-Detected by scanning raw bytes with a fast case-insensitive byte-window scan (`detect_from_bytes`).
+**LogLevel**: `Trace | Debug | Info | Notice | Warning | Error | Fatal | Unknown`
+Detected by scanning raw bytes with a fast case-insensitive byte-window scan (`detect_from_bytes`). `Fatal` covers FATAL, CRITICAL, CRIT, EMERG, and ALERT.
 
 **FilterType**: `Include | Exclude`
 
@@ -85,8 +91,9 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `collect_field_names(&self, lines: &[&[u8]]) -> Vec<String>` — discover field names by sampling
   - `detect_score(&self, sample: &[&[u8]]) -> f64` — confidence score (0.0–1.0) for format detection
   - `name(&self) -> &str` — human-readable format name
-- **`detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>>`**: Tries all registered parsers (JsonParser, SyslogParser, JournalctlParser, ClfParser), returns the one with the highest score above 0.0.
+- **`detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>>`**: Tries all registered parsers (JsonParser, SyslogParser, JournalctlParser, ClfParser, KubeCriParser, WebErrorParser, LogfmtParser, DmesgParser, CommonLogParser), returns the one with the highest score above 0.0. More specific parsers naturally score higher; CommonLogParser applies a 0.95× penalty to yield to more specific parsers on ties.
 - **`format_span_col(&SpanInfo) -> String`**: Formats span as `name: k=v, k=v`.
+- **Detection priority** (by score competition): JsonParser (lines must start with `{`), SyslogParser (requires `<PRI>` or BSD timestamp), JournalctlParser (ISO/BSD + valid hostname + unit), ClfParser (strict request/status pattern), KubeCriParser (ISO + stdout/stderr + F/P), WebErrorParser (slash-date + bracketed level or Apache double-bracket), LogfmtParser (≥3 key=value pairs), DmesgParser (bracketed seconds.usecs), CommonLogParser (broadest catch-all, 0.95× penalty).
 
 ### JSON Parser (parser/json.rs)
 
@@ -114,6 +121,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **short-precise**: `Mmm DD HH:MM:SS.FFFFFF hostname unit[pid]: message` — BSD timestamp with microseconds (the `.` suffix distinguishes from plain BSD handled by SyslogParser).
 - **short-full**: `Www YYYY-MM-DD HH:MM:SS TZ hostname unit[pid]: message` — weekday prefix + date + time + timezone name.
 - **Header/footer lines** (`-- Journal begins...`, `-- No entries --`) are skipped (return `None`).
+- **Hostname validation**: `is_likely_hostname()` rejects tokens that are recognized level keywords (via `normalize_level`), contain `::` (Rust module paths), or are short all-uppercase tokens — this prevents false positives where lines like `2024-07-24T10:00:00Z INFO myapp::server: msg` would incorrectly match as journalctl format.
 - **Zero-copy**: Converts `&[u8]` to `&str` once, then extracts `&str` slices by byte offsets for all fields.
 - **Fields**: `timestamp`, `target` (unit name), extras (`hostname`, `pid`), `message`. No `level` — journalctl text output does not carry priority.
 - **`detect_score`**: Proportion of sample lines that parse successfully.
@@ -131,6 +139,66 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **Field mapping**: `timestamp` = date, `target` = host, `message` = request line. Extras: `ident`, `authuser`, `status`, `bytes`, `referer`, `user_agent`.
 - **`detect_score`**: Proportion of sample lines that parse successfully.
 - **`collect_field_names`**: Static canonical names (`timestamp`, `target`) + discovered extras in order + `message` last.
+
+### Shared Timestamp Utilities (parser/timestamp.rs)
+
+- `pub(crate)` module — internal utility, not part of the public parser API.
+- **Timestamp parsers** (all return `Option<&str>` slices from the input):
+  - `parse_iso_timestamp` — `YYYY-MM-DDTHH:MM:SS...` (ISO 8601, with optional fractional seconds and timezone)
+  - `parse_bsd_precise_timestamp` — `Mmm DD HH:MM:SS.FFFFFF` (BSD with microseconds)
+  - `parse_full_timestamp` — `Www YYYY-MM-DD HH:MM:SS TZ` (weekday-prefixed full timestamp)
+  - `parse_datetime_timestamp` — `YYYY-MM-DD HH:MM:SS[.mmm][,mmm]` (logback, Python, Spring Boot; supports `.` and `,` as fractional separator, optional timezone)
+  - `parse_slash_datetime` — `YYYY/MM/DD HH:MM:SS[.frac]` (nginx error, Go standard log)
+  - `parse_dmesg_timestamp` — `[ seconds.usecs]` (Linux kernel ring buffer)
+  - `parse_apache_error_timestamp` — `[Www Mmm DD HH:MM:SS.usecs YYYY]` (Apache 2.4 error log)
+- **`normalize_level(token) -> Option<&'static str>`**: Maps level keywords (case-insensitive) to canonical strings: TRACE, DEBUG, INFO, NOTICE, WARN, ERROR, FATAL. Recognizes abbreviations (TRC, DBG, INF, WRN, ERR, FTL, CRIT, EMERG, ALERT).
+- **`is_level_keyword(token) -> bool`**: Returns true if the token is a recognized log level keyword.
+- **Constants**: `WEEKDAYS`, `BSD_MONTHS` — used across parsers for date validation.
+
+### Logfmt Parser (parser/logfmt.rs)
+
+- **`LogfmtParser`** implements `LogFormatParser`. Parses space-separated `key=value` pairs, commonly used by Go slog, Heroku, Grafana Loki, and 12-factor apps.
+- **Key mapping**: `time`/`timestamp`/`ts`/`datetime` → timestamp; `level`/`lvl`/`severity` → level (normalized); `msg`/`message` → message; `source`/`caller`/`logger`/`component`/`module` → target. All other keys → extra_fields.
+- **Quoted values**: Values wrapped in `"..."` are parsed with backslash-escape support.
+- **Minimum threshold**: Requires ≥3 key=value pairs to match. Rejects lines starting with `{` (not JSON).
+- **`detect_score`**: Lines with known semantic keys get full weight (1.0); lines with only unknown keys get 0.5× weight.
+
+### Common Log Parser (parser/common_log.rs)
+
+- **`CommonLogParser`** implements `LogFormatParser`. Broadest catch-all for the `TIMESTAMP + LEVEL + TARGET + MESSAGE` family, with internal sub-strategies tried in order:
+  - **env_logger**: `[ISO LEVEL  target] msg` or `[LEVEL target] msg` — bracketed, level inside brackets.
+  - **logback/log4j2**: `DATETIME [thread] LEVEL target - msg` — `[thread]` after timestamp, ` - ` separator.
+  - **Spring Boot**: `DATETIME  LEVEL PID --- [thread] target : msg` — `---` triple dash marker.
+  - **Python basic**: `LEVEL:target:msg` — no timestamp, colon-separated.
+  - **Python prod**: `DATETIME - target - LEVEL - msg` — dash-delimited, level in 4th position.
+  - **loguru**: `DATETIME | LEVEL | location - msg` — pipe `|` separators.
+  - **structlog**: `DATETIME [level] msg key=val...` — `[level]` in brackets, trailing key-value pairs.
+  - **Generic fallback**: `TIMESTAMP LEVEL rest-as-message` — any recognized timestamp + level keyword, with optional `target::` or `target:` extraction.
+- **Key rule**: All sub-strategies require a recognizable level keyword — prevents claiming journalctl/syslog lines that lack level info.
+- **`detect_score`**: Proportion of parsed lines × 0.95 (yields to more specific parsers on ties).
+
+### Web Error Parser (parser/web_error.rs)
+
+- **`WebErrorParser`** implements `LogFormatParser`. Handles nginx and Apache 2.4 error log formats.
+- **nginx error**: `YYYY/MM/DD HH:MM:SS [level] pid#tid: *connid msg, key: val, ...` — slash-date timestamp, bracketed level, trailing `client`/`server`/`request`/etc. key-value pairs extracted as extra fields.
+- **Apache 2.4 error**: `[Www Mmm DD HH:MM:SS.us YYYY] [module:level] [pid N:tid N] msg` — double-bracket pattern, module extracted as extra field.
+- **`detect_score`**: Proportion of sample lines that parse successfully.
+
+### Dmesg Parser (parser/dmesg.rs)
+
+- **`DmesgParser`** implements `LogFormatParser`. Parses Linux kernel ring buffer output.
+- **Format**: `[ seconds.usecs] message` — bracketed boot-relative timestamp with optional leading spaces.
+- **Subsystem extraction**: If the message contains a `subsystem ...:` pattern (e.g., `usb 1-1:`), the subsystem is extracted as the `target` field.
+- **No level field**: dmesg text output does not carry priority information.
+- **`detect_score`**: Proportion of sample lines with valid `[seconds.usecs]` prefix.
+
+### Kubernetes CRI Parser (parser/kube_cri.rs)
+
+- **`KubeCriParser`** implements `LogFormatParser`. Handles the Kubernetes Container Runtime Interface log format.
+- **Format**: `ISO_TIMESTAMP stdout|stderr F|P message` — ISO 8601 timestamp, stream indicator, full/partial flag, then message.
+- **Extra fields**: `stream` (stdout/stderr); partial lines with `P` flag add a `partial=true` extra field.
+- **Very distinctive**: The `stdout`/`stderr` + `F`/`P` combination makes false positives extremely unlikely.
+- **`detect_score`**: Proportion of sample lines that match the strict CRI format.
 
 ### Filter Pipeline (filters.rs)
 
@@ -243,7 +311,7 @@ Example `~/.config/logsmith-rs/config.json`:
 - JSON files from `themes/` or `~/.config/logsmith-rs/themes/`
 - Colors: hex `"#RRGGBB"` or RGB array `[r, g, b]`
 - Default: Dracula theme (hardcoded)
-- Fields: `root_bg`, `border`, `border_title`, `text`, `text_highlight`, `error_fg`, `warning_fg`, `value_colors`
+- Fields: `root_bg`, `border`, `border_title`, `text`, `text_highlight`, `trace_fg`, `debug_fg`, `notice_fg`, `warning_fg`, `error_fg`, `fatal_fg`, `value_colors`
 - **`ValueColors`**: Per-token color mappings for HTTP methods (`http_get`, `http_post`, `http_put`, `http_delete`, `http_patch`, `http_other`), status codes (`status_2xx`–`status_5xx`), IP addresses (`ip_address`), and UUIDs (`uuid`). All fields have `#[serde(default)]` so existing theme files need no changes. Overridable in theme JSON under `"value_colors": { ... }`.
 - **`Theme::list_available_themes() -> Vec<String>`**: Scans both theme directories, returns sorted names (no extension).
 - **`fuzzy_match(needle, haystack) -> bool`**: Case-insensitive subsequence check; used for `set-theme` tab completion.
@@ -285,7 +353,7 @@ anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, se
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/field_layout.rs, auto_complete.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, value_colors.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 607 tests total
+- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/field_layout.rs, auto_complete.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, parser/timestamp.rs, parser/logfmt.rs, parser/common_log.rs, parser/web_error.rs, parser/dmesg.rs, parser/kube_cri.rs, value_colors.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 917 tests total
 - **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
-- **Stdin test** (tests/stdin.rs): pipe input end-to-end — 1 test
+- **Stdin tests** (tests/stdin.rs): pipe input end-to-end — 14 tests
 - **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)

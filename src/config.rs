@@ -753,6 +753,8 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyModifiers};
 
+    // ── KeyBinding::parse — basic keys ──────────────────────────────────
+
     #[test]
     fn test_parse_single_char() {
         let kb = KeyBinding::parse("j").unwrap();
@@ -760,15 +762,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_ctrl_prefix() {
-        let kb = KeyBinding::parse("Ctrl+d").unwrap();
-        assert_eq!(kb, KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL));
-    }
-
-    #[test]
-    fn test_parse_shift_tab() {
-        let kb = KeyBinding::parse("Shift+Tab").unwrap();
-        assert_eq!(kb, KeyBinding(KeyCode::BackTab, KeyModifiers::NONE));
+    fn test_parse_uppercase_char() {
+        let kb = KeyBinding::parse("G").unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::Char('G'), KeyModifiers::NONE));
     }
 
     #[test]
@@ -784,6 +780,12 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_page_up() {
+        let kb = KeyBinding::parse("PageUp").unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::PageUp, KeyModifiers::NONE));
+    }
+
+    #[test]
     fn test_parse_space() {
         let kb = KeyBinding::parse("Space").unwrap();
         assert_eq!(kb, KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE));
@@ -796,15 +798,375 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_uppercase_char() {
-        let kb = KeyBinding::parse("G").unwrap();
-        assert_eq!(kb, KeyBinding(KeyCode::Char('G'), KeyModifiers::NONE));
+    fn test_parse_arrow_keys() {
+        assert_eq!(
+            KeyBinding::parse("Up").unwrap(),
+            KeyBinding(KeyCode::Up, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("Down").unwrap(),
+            KeyBinding(KeyCode::Down, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("Left").unwrap(),
+            KeyBinding(KeyCode::Left, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("Right").unwrap(),
+            KeyBinding(KeyCode::Right, KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_parse_enter_backspace_delete() {
+        assert_eq!(
+            KeyBinding::parse("Enter").unwrap(),
+            KeyBinding(KeyCode::Enter, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("Backspace").unwrap(),
+            KeyBinding(KeyCode::Backspace, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("Delete").unwrap(),
+            KeyBinding(KeyCode::Delete, KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_parse_home_end_insert() {
+        assert_eq!(
+            KeyBinding::parse("Home").unwrap(),
+            KeyBinding(KeyCode::Home, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("End").unwrap(),
+            KeyBinding(KeyCode::End, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("Insert").unwrap(),
+            KeyBinding(KeyCode::Insert, KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_parse_f_keys() {
+        assert_eq!(
+            KeyBinding::parse("F1").unwrap(),
+            KeyBinding(KeyCode::F(1), KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("F12").unwrap(),
+            KeyBinding(KeyCode::F(12), KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("f5").unwrap(),
+            KeyBinding(KeyCode::F(5), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_f_key() {
+        assert!(KeyBinding::parse("Fxx").is_err());
+    }
+
+    // ── KeyBinding::parse — lowercase key names ─────────────────────────
+
+    #[test]
+    fn test_parse_lowercase_key_names() {
+        assert_eq!(
+            KeyBinding::parse("tab").unwrap(),
+            KeyBinding(KeyCode::Tab, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("pagedown").unwrap(),
+            KeyBinding(KeyCode::PageDown, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("pageup").unwrap(),
+            KeyBinding(KeyCode::PageUp, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("space").unwrap(),
+            KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("esc").unwrap(),
+            KeyBinding(KeyCode::Esc, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("up").unwrap(),
+            KeyBinding(KeyCode::Up, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("down").unwrap(),
+            KeyBinding(KeyCode::Down, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("left").unwrap(),
+            KeyBinding(KeyCode::Left, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("right").unwrap(),
+            KeyBinding(KeyCode::Right, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("enter").unwrap(),
+            KeyBinding(KeyCode::Enter, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("backspace").unwrap(),
+            KeyBinding(KeyCode::Backspace, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("delete").unwrap(),
+            KeyBinding(KeyCode::Delete, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("home").unwrap(),
+            KeyBinding(KeyCode::Home, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("end").unwrap(),
+            KeyBinding(KeyCode::End, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            KeyBinding::parse("insert").unwrap(),
+            KeyBinding(KeyCode::Insert, KeyModifiers::NONE)
+        );
+    }
+
+    // ── KeyBinding::parse — modifiers ───────────────────────────────────
+
+    #[test]
+    fn test_parse_ctrl_prefix() {
+        let kb = KeyBinding::parse("Ctrl+d").unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn test_parse_ctrl_lowercase_prefix() {
+        let kb = KeyBinding::parse("ctrl+d").unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn test_parse_alt_prefix() {
+        let kb = KeyBinding::parse("Alt+x").unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::Char('x'), KeyModifiers::ALT));
+    }
+
+    #[test]
+    fn test_parse_alt_lowercase_prefix() {
+        let kb = KeyBinding::parse("alt+x").unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::Char('x'), KeyModifiers::ALT));
+    }
+
+    #[test]
+    fn test_parse_shift_prefix() {
+        let kb = KeyBinding::parse("Shift+Enter").unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::Enter, KeyModifiers::SHIFT));
+    }
+
+    #[test]
+    fn test_parse_shift_lowercase_prefix() {
+        let kb = KeyBinding::parse("shift+Enter").unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::Enter, KeyModifiers::SHIFT));
+    }
+
+    #[test]
+    fn test_parse_shift_tab_special_alias() {
+        let kb = KeyBinding::parse("Shift+Tab").unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::BackTab, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_parse_shift_tab_case_insensitive() {
+        let kb = KeyBinding::parse("shift+tab").unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::BackTab, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_parse_combined_ctrl_alt() {
+        let kb = KeyBinding::parse("Ctrl+Alt+x").unwrap();
+        assert_eq!(
+            kb,
+            KeyBinding(
+                KeyCode::Char('x'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_ctrl_shift() {
+        let kb = KeyBinding::parse("Ctrl+Shift+Enter").unwrap();
+        assert_eq!(
+            kb,
+            KeyBinding(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        );
     }
 
     #[test]
     fn test_parse_invalid_returns_err() {
         assert!(KeyBinding::parse("NotAKey").is_err());
     }
+
+    // ── KeyBinding::display ─────────────────────────────────────────────
+
+    #[test]
+    fn test_display_backtab() {
+        let kb = KeyBinding(KeyCode::BackTab, KeyModifiers::NONE);
+        assert_eq!(kb.display(), "Shift+Tab");
+    }
+
+    #[test]
+    fn test_display_ctrl_modifier() {
+        let kb = KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(kb.display(), "Ctrl+d");
+    }
+
+    #[test]
+    fn test_display_alt_modifier() {
+        let kb = KeyBinding(KeyCode::Char('x'), KeyModifiers::ALT);
+        assert_eq!(kb.display(), "Alt+x");
+    }
+
+    #[test]
+    fn test_display_shift_modifier() {
+        let kb = KeyBinding(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert_eq!(kb.display(), "Shift+Enter");
+    }
+
+    #[test]
+    fn test_display_combined_modifiers() {
+        let kb = KeyBinding(
+            KeyCode::Char('x'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert_eq!(kb.display(), "Ctrl+Alt+x");
+    }
+
+    #[test]
+    fn test_display_named_keys() {
+        assert_eq!(
+            KeyBinding(KeyCode::Tab, KeyModifiers::NONE).display(),
+            "Tab"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::PageDown, KeyModifiers::NONE).display(),
+            "PageDown"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::PageUp, KeyModifiers::NONE).display(),
+            "PageUp"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE).display(),
+            "Space"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::Esc, KeyModifiers::NONE).display(),
+            "Esc"
+        );
+        assert_eq!(KeyBinding(KeyCode::Up, KeyModifiers::NONE).display(), "Up");
+        assert_eq!(
+            KeyBinding(KeyCode::Down, KeyModifiers::NONE).display(),
+            "Down"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::Left, KeyModifiers::NONE).display(),
+            "Left"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::Right, KeyModifiers::NONE).display(),
+            "Right"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::Enter, KeyModifiers::NONE).display(),
+            "Enter"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::Backspace, KeyModifiers::NONE).display(),
+            "Backspace"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::Delete, KeyModifiers::NONE).display(),
+            "Delete"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::Home, KeyModifiers::NONE).display(),
+            "Home"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::End, KeyModifiers::NONE).display(),
+            "End"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::Insert, KeyModifiers::NONE).display(),
+            "Insert"
+        );
+    }
+
+    #[test]
+    fn test_display_f_key() {
+        assert_eq!(
+            KeyBinding(KeyCode::F(1), KeyModifiers::NONE).display(),
+            "F1"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::F(12), KeyModifiers::NONE).display(),
+            "F12"
+        );
+    }
+
+    #[test]
+    fn test_display_char() {
+        assert_eq!(
+            KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE).display(),
+            "j"
+        );
+        assert_eq!(
+            KeyBinding(KeyCode::Char('G'), KeyModifiers::NONE).display(),
+            "G"
+        );
+    }
+
+    #[test]
+    fn test_display_roundtrip() {
+        let cases = vec![
+            "j",
+            "G",
+            "Tab",
+            "PageDown",
+            "PageUp",
+            "Space",
+            "Esc",
+            "Up",
+            "Down",
+            "Left",
+            "Right",
+            "Enter",
+            "Backspace",
+            "Delete",
+            "Home",
+            "End",
+            "Insert",
+            "F1",
+            "Ctrl+d",
+            "Alt+x",
+            "Shift+Enter",
+            "Shift+Tab",
+        ];
+        for s in cases {
+            let kb = KeyBinding::parse(s).unwrap();
+            let displayed = kb.display();
+            let reparsed = KeyBinding::parse(&displayed).unwrap();
+            assert_eq!(kb, reparsed, "Roundtrip failed for {:?}", s);
+        }
+    }
+
+    // ── KeyBinding::matches ─────────────────────────────────────────────
 
     #[test]
     fn test_matches_exact() {
@@ -825,6 +1187,12 @@ mod tests {
     }
 
     #[test]
+    fn test_matches_rejects_alt_when_not_in_binding() {
+        let kb = KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert!(!kb.matches(KeyCode::Char('j'), KeyModifiers::ALT));
+    }
+
+    #[test]
     fn test_matches_ctrl_binding_requires_ctrl() {
         let kb = KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL);
         assert!(kb.matches(KeyCode::Char('d'), KeyModifiers::CONTROL));
@@ -832,10 +1200,77 @@ mod tests {
     }
 
     #[test]
+    fn test_matches_alt_binding_requires_alt() {
+        let kb = KeyBinding(KeyCode::Char('x'), KeyModifiers::ALT);
+        assert!(kb.matches(KeyCode::Char('x'), KeyModifiers::ALT));
+        assert!(!kb.matches(KeyCode::Char('x'), KeyModifiers::NONE));
+    }
+
+    #[test]
     fn test_matches_wrong_key() {
         let kb = KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE);
         assert!(!kb.matches(KeyCode::Char('k'), KeyModifiers::NONE));
     }
+
+    #[test]
+    fn test_matches_non_char_shift_exact() {
+        // Shift+Enter binding must match only Shift+Enter
+        let kb = KeyBinding(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert!(kb.matches(KeyCode::Enter, KeyModifiers::SHIFT));
+        assert!(!kb.matches(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_matches_non_char_no_shift_rejects_shift() {
+        // Plain Enter binding must NOT match Shift+Enter
+        let kb = KeyBinding(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(kb.matches(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!kb.matches(KeyCode::Enter, KeyModifiers::SHIFT));
+    }
+
+    #[test]
+    fn test_matches_non_char_rejects_ctrl() {
+        let kb = KeyBinding(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!kb.matches(KeyCode::Enter, KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn test_matches_ctrl_alt_combined() {
+        let kb = KeyBinding(
+            KeyCode::Char('x'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert!(kb.matches(
+            KeyCode::Char('x'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        ));
+        assert!(!kb.matches(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert!(!kb.matches(KeyCode::Char('x'), KeyModifiers::ALT));
+        assert!(!kb.matches(KeyCode::Char('x'), KeyModifiers::NONE));
+    }
+
+    // ── KeyBinding serde ────────────────────────────────────────────────
+
+    #[test]
+    fn test_keybinding_serialize() {
+        let kb = KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let json = serde_json::to_string(&kb).unwrap();
+        assert_eq!(json, r#""Ctrl+d""#);
+    }
+
+    #[test]
+    fn test_keybinding_deserialize() {
+        let kb: KeyBinding = serde_json::from_str(r#""Alt+x""#).unwrap();
+        assert_eq!(kb, KeyBinding(KeyCode::Char('x'), KeyModifiers::ALT));
+    }
+
+    #[test]
+    fn test_keybinding_deserialize_invalid() {
+        let result: Result<KeyBinding, _> = serde_json::from_str(r#""NotAKey""#);
+        assert!(result.is_err());
+    }
+
+    // ── KeyBindings ─────────────────────────────────────────────────────
 
     #[test]
     fn test_keybindings_matches_any() {
@@ -847,6 +1282,35 @@ mod tests {
         assert!(kbs.matches(KeyCode::Down, KeyModifiers::NONE));
         assert!(!kbs.matches(KeyCode::Char('k'), KeyModifiers::NONE));
     }
+
+    #[test]
+    fn test_keybindings_matches_empty() {
+        let kbs = KeyBindings(vec![]);
+        assert!(!kbs.matches(KeyCode::Char('j'), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_keybindings_display_single() {
+        let kbs = KeyBindings(vec![KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE)]);
+        assert_eq!(kbs.display(), "j");
+    }
+
+    #[test]
+    fn test_keybindings_display_multi() {
+        let kbs = KeyBindings(vec![
+            KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
+            KeyBinding(KeyCode::Down, KeyModifiers::NONE),
+        ]);
+        assert_eq!(kbs.display(), "j/Down");
+    }
+
+    #[test]
+    fn test_keybindings_display_empty() {
+        let kbs = KeyBindings(vec![]);
+        assert_eq!(kbs.display(), "");
+    }
+
+    // ── KeyBindings serde ───────────────────────────────────────────────
 
     #[test]
     fn test_keybindings_deserialize_string() {
@@ -864,40 +1328,123 @@ mod tests {
     }
 
     #[test]
-    fn test_config_load_fallback_on_missing_file() {
-        // Ensure no panic when config file doesn't exist.
-        // (Config::load is infallible — returns default.)
-        let config = Config::default();
-        assert!(config.theme.is_none());
+    fn test_keybindings_serialize_single_as_string() {
+        let kbs = KeyBindings(vec![KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE)]);
+        let json = serde_json::to_string(&kbs).unwrap();
+        assert_eq!(json, r#""j""#);
+    }
+
+    #[test]
+    fn test_keybindings_serialize_multi_as_array() {
+        let kbs = KeyBindings(vec![
+            KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
+            KeyBinding(KeyCode::Down, KeyModifiers::NONE),
+        ]);
+        let json = serde_json::to_string(&kbs).unwrap();
+        assert_eq!(json, r#"["j","Down"]"#);
+    }
+
+    #[test]
+    fn test_keybindings_serde_roundtrip() {
+        let original = KeyBindings(vec![
+            KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
+            KeyBinding(KeyCode::Down, KeyModifiers::NONE),
+        ]);
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: KeyBindings = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    // ── KeyBindings::has_overlap ────────────────────────────────────────
+
+    #[test]
+    fn test_has_overlap_true() {
+        let a = KeyBindings(vec![
+            KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
+            KeyBinding(KeyCode::Down, KeyModifiers::NONE),
+        ]);
+        let b = KeyBindings(vec![KeyBinding(KeyCode::Down, KeyModifiers::NONE)]);
+        assert!(a.has_overlap(&b));
+    }
+
+    #[test]
+    fn test_has_overlap_false() {
+        let a = KeyBindings(vec![KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE)]);
+        let b = KeyBindings(vec![KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE)]);
+        assert!(!a.has_overlap(&b));
+    }
+
+    #[test]
+    fn test_has_overlap_same_key_different_modifiers() {
+        let a = KeyBindings(vec![KeyBinding(KeyCode::Char('d'), KeyModifiers::NONE)]);
+        let b = KeyBindings(vec![KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL)]);
+        assert!(!a.has_overlap(&b));
+    }
+
+    #[test]
+    fn test_has_overlap_empty() {
+        let a = KeyBindings(vec![]);
+        let b = KeyBindings(vec![KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE)]);
+        assert!(!a.has_overlap(&b));
+    }
+
+    // ── Keybindings::validate ───────────────────────────────────────────
+
+    #[test]
+    fn test_validate_default_no_conflicts() {
+        let kb = Keybindings::default();
+        let conflicts = kb.validate();
         assert!(
-            config
-                .keybindings
-                .global
-                .quit
-                .matches(KeyCode::Char('q'), KeyModifiers::NONE)
+            conflicts.is_empty(),
+            "Default keybindings should have no conflicts, got: {:?}",
+            conflicts
         );
     }
 
     #[test]
-    fn test_config_deserialize_theme_and_keybinding() {
-        let json = r#"{"theme":"dracula","keybindings":{"normal":{"scroll_down":"e"}}}"#;
-        let cfg: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(cfg.theme.as_deref(), Some("dracula"));
-        // Custom binding: 'e' scrolls down
+    fn test_validate_detects_normal_conflict() {
+        let mut kb = Keybindings::default();
+        // Make scroll_down overlap with scroll_up by assigning 'k' to scroll_down
+        kb.normal.scroll_down =
+            KeyBindings(vec![KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE)]);
+        let conflicts = kb.validate();
         assert!(
-            cfg.keybindings
-                .normal
-                .scroll_down
-                .matches(KeyCode::Char('e'), KeyModifiers::NONE)
+            !conflicts.is_empty(),
+            "Should detect conflict between scroll_down and scroll_up"
         );
-        // Default bindings still intact
+        assert!(conflicts[0].contains("scroll_down"));
+        assert!(conflicts[0].contains("scroll_up"));
+    }
+
+    #[test]
+    fn test_validate_detects_normal_global_conflict() {
+        let mut kb = Keybindings::default();
+        // Make scroll_down overlap with quit by assigning 'q' to scroll_down
+        kb.normal.scroll_down =
+            KeyBindings(vec![KeyBinding(KeyCode::Char('q'), KeyModifiers::NONE)]);
+        let conflicts = kb.validate();
         assert!(
-            cfg.keybindings
-                .global
-                .quit
-                .matches(KeyCode::Char('q'), KeyModifiers::NONE)
+            !conflicts.is_empty(),
+            "Should detect conflict between scroll_down and global quit"
+        );
+        let joined = conflicts.join(" ");
+        assert!(joined.contains("scroll_down"));
+        assert!(joined.contains("quit"));
+    }
+
+    #[test]
+    fn test_validate_detects_filter_conflict() {
+        let mut kb = Keybindings::default();
+        // Make select_up overlap with toggle_filter by assigning Space to select_up
+        kb.filter.select_up = KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)]);
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "Should detect conflict between select_up and toggle_filter"
         );
     }
+
+    // ── Default keybindings ─────────────────────────────────────────────
 
     #[test]
     fn test_normal_keybindings_default() {
@@ -907,28 +1454,128 @@ mod tests {
                 .matches(KeyCode::Char('j'), KeyModifiers::NONE)
         );
         assert!(kb.scroll_down.matches(KeyCode::Down, KeyModifiers::NONE));
+        assert!(kb.scroll_up.matches(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert!(kb.scroll_up.matches(KeyCode::Up, KeyModifiers::NONE));
+        assert!(
+            kb.scroll_left
+                .matches(KeyCode::Char('h'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.scroll_right
+                .matches(KeyCode::Char('l'), KeyModifiers::NONE)
+        );
         assert!(
             kb.half_page_down
                 .matches(KeyCode::Char('d'), KeyModifiers::CONTROL)
         );
         assert!(
+            kb.half_page_up
+                .matches(KeyCode::Char('u'), KeyModifiers::CONTROL)
+        );
+        assert!(kb.page_down.matches(KeyCode::PageDown, KeyModifiers::NONE));
+        assert!(kb.page_up.matches(KeyCode::PageUp, KeyModifiers::NONE));
+        assert!(
+            kb.command_mode
+                .matches(KeyCode::Char(':'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.filter_mode
+                .matches(KeyCode::Char('f'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.toggle_filtering
+                .matches(KeyCode::Char('F'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.toggle_sidebar
+                .matches(KeyCode::Char('s'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.go_to_top_chord
+                .matches(KeyCode::Char('g'), KeyModifiers::NONE)
+        );
+        assert!(
             kb.go_to_bottom
                 .matches(KeyCode::Char('G'), KeyModifiers::NONE)
+        );
+        assert!(kb.mark_line.matches(KeyCode::Char('m'), KeyModifiers::NONE));
+        assert!(
+            kb.search_forward
+                .matches(KeyCode::Char('/'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.search_backward
+                .matches(KeyCode::Char('?'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.next_match
+                .matches(KeyCode::Char('n'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.prev_match
+                .matches(KeyCode::Char('N'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.toggle_wrap
+                .matches(KeyCode::Char('w'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.visual_mode
+                .matches(KeyCode::Char('V'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.toggle_marks_only
+                .matches(KeyCode::Char('M'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.show_keybindings
+                .matches(KeyCode::F(1), KeyModifiers::NONE)
         );
     }
 
     #[test]
     fn test_filter_keybindings_default() {
         let kb = FilterKeybindings::default();
-        assert!(kb.exit_mode.matches(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(kb.select_up.matches(KeyCode::Up, KeyModifiers::NONE));
+        assert!(kb.select_down.matches(KeyCode::Down, KeyModifiers::NONE));
         assert!(
             kb.toggle_filter
                 .matches(KeyCode::Char(' '), KeyModifiers::NONE)
         );
         assert!(
+            kb.delete_filter
+                .matches(KeyCode::Char('d'), KeyModifiers::NONE)
+        );
+        assert!(
             kb.move_filter_up
                 .matches(KeyCode::Char('K'), KeyModifiers::NONE)
         );
+        assert!(
+            kb.move_filter_down
+                .matches(KeyCode::Char('J'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.edit_filter
+                .matches(KeyCode::Char('e'), KeyModifiers::NONE)
+        );
+        assert!(kb.set_color.matches(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(
+            kb.toggle_all_filters
+                .matches(KeyCode::Char('A'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.clear_all_filters
+                .matches(KeyCode::Char('C'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.add_include
+                .matches(KeyCode::Char('i'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.add_exclude
+                .matches(KeyCode::Char('x'), KeyModifiers::NONE)
+        );
+        assert!(kb.exit_mode.matches(KeyCode::Esc, KeyModifiers::NONE));
     }
 
     #[test]
@@ -945,5 +1592,138 @@ mod tests {
             kb.new_tab
                 .matches(KeyCode::Char('t'), KeyModifiers::CONTROL)
         );
+    }
+
+    #[test]
+    fn test_comment_keybindings_default() {
+        let kb = CommentKeybindings::default();
+        assert!(kb.save.matches(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    }
+
+    // ── Config ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_config_load_fallback_on_missing_file() {
+        let config = Config::default();
+        assert!(config.theme.is_none());
+        assert!(
+            config
+                .keybindings
+                .global
+                .quit
+                .matches(KeyCode::Char('q'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_config_deserialize_theme_and_keybinding() {
+        let json = r#"{"theme":"dracula","keybindings":{"normal":{"scroll_down":"e"}}}"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.theme.as_deref(), Some("dracula"));
+        assert!(
+            cfg.keybindings
+                .normal
+                .scroll_down
+                .matches(KeyCode::Char('e'), KeyModifiers::NONE)
+        );
+        // Default bindings still intact
+        assert!(
+            cfg.keybindings
+                .global
+                .quit
+                .matches(KeyCode::Char('q'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_config_deserialize_empty_object() {
+        let cfg: Config = serde_json::from_str("{}").unwrap();
+        assert!(cfg.theme.is_none());
+        // All defaults should be intact
+        assert!(
+            cfg.keybindings
+                .normal
+                .scroll_down
+                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_config_deserialize_comment_keybindings() {
+        let json = r#"{"keybindings":{"comment":{"save":"Shift+Enter"}}}"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert!(
+            cfg.keybindings
+                .comment
+                .save
+                .matches(KeyCode::Enter, KeyModifiers::SHIFT)
+        );
+    }
+
+    #[test]
+    fn test_config_deserialize_filter_keybindings() {
+        let json = r#"{"keybindings":{"filter":{"delete_filter":"x"}}}"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert!(
+            cfg.keybindings
+                .filter
+                .delete_filter
+                .matches(KeyCode::Char('x'), KeyModifiers::NONE)
+        );
+        // Other filter defaults still intact
+        assert!(
+            cfg.keybindings
+                .filter
+                .toggle_filter
+                .matches(KeyCode::Char(' '), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_config_serialize_roundtrip() {
+        let original = Config::default();
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.theme, deserialized.theme);
+        // Verify a few bindings survived roundtrip
+        assert!(
+            deserialized
+                .keybindings
+                .normal
+                .scroll_down
+                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
+        );
+        assert!(
+            deserialized
+                .keybindings
+                .global
+                .quit
+                .matches(KeyCode::Char('q'), KeyModifiers::NONE)
+        );
+    }
+
+    // ── check_conflicts ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_check_conflicts_no_overlap() {
+        let a = KeyBindings(vec![KeyBinding(KeyCode::Char('a'), KeyModifiers::NONE)]);
+        let b = KeyBindings(vec![KeyBinding(KeyCode::Char('b'), KeyModifiers::NONE)]);
+        let actions: &[(&str, &KeyBindings)] = &[("action_a", &a), ("action_b", &b)];
+        let mut conflicts = Vec::new();
+        check_conflicts(actions, &mut conflicts);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_check_conflicts_overlap_reports_key() {
+        let a = KeyBindings(vec![KeyBinding(KeyCode::Char('x'), KeyModifiers::NONE)]);
+        let b = KeyBindings(vec![KeyBinding(KeyCode::Char('x'), KeyModifiers::NONE)]);
+        let actions: &[(&str, &KeyBindings)] = &[("alpha", &a), ("beta", &b)];
+        let mut conflicts = Vec::new();
+        check_conflicts(actions, &mut conflicts);
+        assert_eq!(conflicts.len(), 1);
+        assert!(conflicts[0].contains("alpha"));
+        assert!(conflicts[0].contains("beta"));
+        assert!(conflicts[0].contains("x"));
     }
 }
