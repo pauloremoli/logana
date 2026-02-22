@@ -16,6 +16,8 @@ use crate::theme::complete_theme;
 use crate::types::{FilterType, LogLevel};
 use crate::value_colors::colorize_known_values;
 
+use crate::mode::app_mode::ModeRenderState;
+
 use super::field_layout::{apply_field_layout, count_wrapped_lines, line_row_count};
 use super::{App, LoadContext};
 
@@ -26,65 +28,83 @@ impl App {
 
         let has_multiple_tabs = self.tabs.len() > 1;
 
-        // Extract mode-derived state up front to avoid holding a borrow over the rest of rendering
-        let has_input_bar = self.tabs[self.active_tab].mode.needs_input_bar();
-        let command_input: Option<(String, usize)> = self.tabs[self.active_tab]
-            .mode
-            .command_state()
-            .map(|(s, c)| (s.to_string(), c));
-        let completion_index: Option<usize> = self.tabs[self.active_tab].mode.completion_index();
-        let search_input: Option<(String, bool)> = self.tabs[self.active_tab]
-            .mode
-            .search_state()
-            .map(|(s, f)| (s.to_string(), f));
-        let is_confirm_restore = self.tabs[self.active_tab]
-            .mode
-            .confirm_restore_context()
-            .is_some();
-        let session_files: Option<Vec<String>> = self.tabs[self.active_tab]
-            .mode
-            .confirm_restore_session_files()
-            .map(|f| f.to_vec());
-        let selected_filter_idx = self.tabs[self.active_tab]
-            .mode
-            .selected_filter_index()
-            .unwrap_or(0);
+        // Extract mode-derived state up front via a single render_state() call,
+        // avoiding holding a borrow over the rest of rendering.
+        let render_state = self.tabs[self.active_tab].mode.render_state();
+
+        let has_input_bar = matches!(
+            render_state,
+            ModeRenderState::Command { .. } | ModeRenderState::Search { .. }
+        );
+        let command_input: Option<(String, usize)> = match &render_state {
+            ModeRenderState::Command { input, cursor, .. } => Some((input.clone(), *cursor)),
+            _ => None,
+        };
+        let completion_index: Option<usize> = match &render_state {
+            ModeRenderState::Command {
+                completion_index, ..
+            } => *completion_index,
+            _ => None,
+        };
+        let search_input: Option<(String, bool)> = match &render_state {
+            ModeRenderState::Search { query, forward } => Some((query.clone(), *forward)),
+            _ => None,
+        };
+        let is_confirm_restore = matches!(render_state, ModeRenderState::ConfirmRestore);
+        let session_files: Option<Vec<String>> = match &render_state {
+            ModeRenderState::ConfirmRestoreSession { files } => Some(files.clone()),
+            _ => None,
+        };
+        let selected_filter_idx = match &render_state {
+            ModeRenderState::FilterManagement { selected_index } => *selected_index,
+            _ => 0,
+        };
         let keybindings = self.tabs[self.active_tab].keybindings.clone();
         let status_line = self.tabs[self.active_tab]
             .mode
             .dynamic_status_line(&keybindings, &self.theme);
-        let visual_anchor: Option<usize> =
-            self.tabs[self.active_tab].mode.visual_selection_anchor();
-        let comment_popup: Option<(Vec<String>, usize, usize, usize)> =
-            self.tabs[self.active_tab].mode.comment_popup();
-        let help_state: Option<(usize, String)> = self.tabs[self.active_tab]
-            .mode
-            .keybindings_help_scroll()
-            .map(|scroll| {
-                let search = self.tabs[self.active_tab]
-                    .mode
-                    .keybindings_help_search()
-                    .unwrap_or("")
-                    .to_string();
-                (scroll, search)
-            });
-        let select_fields_state: Option<(Vec<(String, bool)>, usize)> = self.tabs[self.active_tab]
-            .mode
-            .select_fields_state()
-            .map(|(fields, sel)| (fields.to_vec(), sel));
+        let visual_anchor: Option<usize> = match &render_state {
+            ModeRenderState::VisualLine { anchor } => Some(*anchor),
+            _ => None,
+        };
+        let comment_popup: Option<(Vec<String>, usize, usize, usize)> = match &render_state {
+            ModeRenderState::Comment {
+                lines,
+                cursor_row,
+                cursor_col,
+                line_count,
+            } => Some((lines.clone(), *cursor_row, *cursor_col, *line_count)),
+            _ => None,
+        };
+        let help_state: Option<(usize, String)> = match &render_state {
+            ModeRenderState::KeybindingsHelp { scroll, search } => Some((*scroll, search.clone())),
+            _ => None,
+        };
+        let select_fields_state: Option<(Vec<(String, bool)>, usize)> = match &render_state {
+            ModeRenderState::SelectFields { fields, selected } => Some((fields.clone(), *selected)),
+            _ => None,
+        };
         let docker_select: Option<(Vec<crate::types::DockerContainer>, usize, Option<String>)> =
-            self.tabs[self.active_tab]
-                .mode
-                .docker_select_state()
-                .map(|(c, sel, err)| (c.to_vec(), sel, err.map(|s| s.to_string())));
+            match &render_state {
+                ModeRenderState::DockerSelect {
+                    containers,
+                    selected,
+                    error,
+                } => Some((containers.clone(), *selected, error.clone())),
+                _ => None,
+            };
         let value_colors_state: Option<(
             Vec<crate::mode::value_colors_mode::ValueColorGroup>,
             String,
             usize,
-        )> = self.tabs[self.active_tab]
-            .mode
-            .value_colors_state()
-            .map(|(groups, search, sel)| (groups.to_vec(), search.to_string(), sel));
+        )> = match &render_state {
+            ModeRenderState::ValueColors {
+                groups,
+                search,
+                selected,
+            } => Some((groups.clone(), search.clone(), *selected)),
+            _ => None,
+        };
 
         if is_confirm_restore {
             self.render_confirm_restore_modal(frame);
@@ -997,5 +1017,438 @@ impl App {
                 .style(Style::default().bg(self.theme.root_bg));
             frame.render_widget(tab_bar, tab_bar_area);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Keybindings;
+    use crate::db::Database;
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::mode::app_mode::ConfirmRestoreSessionMode;
+    use crate::mode::command_mode::CommandMode;
+    use crate::mode::filter_mode::FilterManagementMode;
+    use crate::mode::search_mode::SearchMode;
+    use crate::mode::visual_mode::VisualLineMode;
+    use crate::theme::Theme;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::Arc;
+
+    async fn make_app(lines: &[&str]) -> App {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await
+    }
+
+    fn make_terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    // 1. Basic normal mode rendering with 10 lines
+    #[tokio::test]
+    async fn test_ui_normal_mode_basic() {
+        let lines: Vec<&str> = (0..10)
+            .map(|i| match i {
+                0 => "line 0",
+                1 => "line 1",
+                2 => "line 2",
+                3 => "line 3",
+                4 => "line 4",
+                5 => "line 5",
+                6 => "line 6",
+                7 => "line 7",
+                8 => "line 8",
+                _ => "line 9",
+            })
+            .collect();
+        let mut app = make_app(&lines).await;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 2. Sidebar hidden
+    #[tokio::test]
+    async fn test_ui_no_sidebar() {
+        let mut app = make_app(&["line A", "line B", "line C"]).await;
+        app.tabs[0].show_sidebar = false;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 3. Command mode rendering
+    #[tokio::test]
+    async fn test_ui_command_mode() {
+        let mut app = make_app(&["log line"]).await;
+        app.tabs[0].mode = Box::new(CommandMode::with_history("filter ".to_string(), 7, vec![]));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 4. Command mode with error
+    #[tokio::test]
+    async fn test_ui_command_mode_error() {
+        let mut app = make_app(&["log line"]).await;
+        app.tabs[0].command_error = Some("test error".to_string());
+        app.tabs[0].mode = Box::new(CommandMode::with_history("bad-cmd".to_string(), 7, vec![]));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 5. Command mode with completion index
+    #[tokio::test]
+    async fn test_ui_command_mode_completion_index() {
+        let mut app = make_app(&["log line"]).await;
+        app.tabs[0].mode = Box::new(CommandMode {
+            input: "fil".to_string(),
+            cursor: 3,
+            history: vec![],
+            history_index: None,
+            completion_index: Some(0),
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 6. Search mode forward
+    #[tokio::test]
+    async fn test_ui_search_mode_forward() {
+        let mut app = make_app(&["hello world", "test line"]).await;
+        app.tabs[0].mode = Box::new(SearchMode {
+            input: "test".to_string(),
+            forward: true,
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 7. Search mode backward
+    #[tokio::test]
+    async fn test_ui_search_mode_backward() {
+        let mut app = make_app(&["hello world", "test line"]).await;
+        app.tabs[0].mode = Box::new(SearchMode {
+            input: "test".to_string(),
+            forward: false,
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 8. Search mode with empty input
+    #[tokio::test]
+    async fn test_ui_search_mode_empty() {
+        let mut app = make_app(&["hello world"]).await;
+        app.tabs[0].mode = Box::new(SearchMode {
+            input: String::new(),
+            forward: true,
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 9. Filter management mode with filters
+    #[tokio::test]
+    async fn test_ui_filter_management_mode() {
+        let mut app = make_app(&["INFO something", "ERROR bad thing"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "INFO".to_string(),
+                crate::types::FilterType::Include,
+                None,
+                None,
+                false,
+            )
+            .await;
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "ERROR".to_string(),
+                crate::types::FilterType::Include,
+                None,
+                None,
+                false,
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+        app.tabs[0].mode = Box::new(FilterManagementMode {
+            selected_filter_index: 0,
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 10. Visual line mode
+    #[tokio::test]
+    async fn test_ui_visual_line_mode() {
+        let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
+        app.tabs[0].mode = Box::new(VisualLineMode { anchor: 0 });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 11. Lines with marks
+    #[tokio::test]
+    async fn test_ui_with_marks() {
+        let mut app = make_app(&["line 0", "line 1", "line 2", "line 3"]).await;
+        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[0].log_manager.toggle_mark(2);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 12. Level colors enabled (default)
+    #[tokio::test]
+    async fn test_ui_level_colors() {
+        let mut app = make_app(&[
+            "INFO something happened",
+            "WARN warning message",
+            "ERROR error occurred",
+        ])
+        .await;
+        assert!(app.tabs[0].level_colors);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 13. Level colors disabled
+    #[tokio::test]
+    async fn test_ui_no_level_colors() {
+        let mut app = make_app(&[
+            "INFO something happened",
+            "WARN warning message",
+            "ERROR error occurred",
+        ])
+        .await;
+        app.tabs[0].level_colors = false;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 14. Line numbers shown (default)
+    #[tokio::test]
+    async fn test_ui_with_line_numbers() {
+        let mut app = make_app(&["line A", "line B"]).await;
+        assert!(app.tabs[0].show_line_numbers);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 15. Line numbers hidden
+    #[tokio::test]
+    async fn test_ui_without_line_numbers() {
+        let mut app = make_app(&["line A", "line B"]).await;
+        app.tabs[0].show_line_numbers = false;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 16. Lines with comments
+    #[tokio::test]
+    async fn test_ui_with_comments() {
+        let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_comment("test comment".to_string(), vec![0, 1]);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 17. Wrap enabled (default) with long lines
+    #[tokio::test]
+    async fn test_ui_wrap_enabled() {
+        let long_line = "A".repeat(200);
+        let mut app = make_app(&[&long_line, "short"]).await;
+        assert!(app.tabs[0].wrap);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 18. Wrap disabled
+    #[tokio::test]
+    async fn test_ui_wrap_disabled() {
+        let long_line = "B".repeat(200);
+        let mut app = make_app(&[&long_line, "short"]).await;
+        app.tabs[0].wrap = false;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 19. Horizontal scroll with wrap disabled
+    #[tokio::test]
+    async fn test_ui_horizontal_scroll() {
+        let long_line = "C".repeat(200);
+        let mut app = make_app(&[&long_line]).await;
+        app.tabs[0].wrap = false;
+        app.tabs[0].horizontal_scroll = 10;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 20. Empty file
+    #[tokio::test]
+    async fn test_ui_empty_file() {
+        let mut app = make_app(&[]).await;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 21. JSON structured format auto-detection
+    #[tokio::test]
+    async fn test_ui_json_structured() {
+        let mut app = make_app(&[
+            r#"{"level":"INFO","msg":"hello"}"#,
+            r#"{"level":"WARN","msg":"world"}"#,
+        ])
+        .await;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 22. Structured format with all fields hidden
+    #[tokio::test]
+    async fn test_ui_structured_all_hidden() {
+        let mut app = make_app(&[
+            r#"{"level":"INFO","msg":"hello"}"#,
+            r#"{"level":"WARN","msg":"world"}"#,
+        ])
+        .await;
+        app.tabs[0].hidden_fields.insert("level".to_string());
+        app.tabs[0].hidden_fields.insert("msg".to_string());
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 23. Multiple tabs
+    #[tokio::test]
+    async fn test_ui_multiple_tabs() {
+        let mut app = make_app(&["tab1 line"]).await;
+        let data2: Vec<u8> = "second tab line\n".as_bytes().to_vec();
+        let file_reader2 = FileReader::from_bytes(data2);
+        let log_manager2 = LogManager::new(app.db.clone(), None).await;
+        let mut tab2 = super::super::TabState::new(file_reader2, log_manager2, "tab2".to_string());
+        tab2.keybindings = app.keybindings.clone();
+        app.tabs.push(tab2);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 24. Filtering disabled
+    #[tokio::test]
+    async fn test_ui_filtering_disabled() {
+        let mut app = make_app(&["line 0", "line 1"]).await;
+        app.tabs[0].filtering_enabled = false;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 25. Marks-only mode
+    #[tokio::test]
+    async fn test_ui_marks_only() {
+        let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
+        app.tabs[0].log_manager.toggle_mark(1);
+        app.tabs[0].show_marks_only = true;
+        app.tabs[0].refresh_visible();
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 26. Confirm restore session mode
+    #[tokio::test]
+    async fn test_ui_confirm_restore_session() {
+        let mut app = make_app(&[]).await;
+        app.tabs[0].mode = Box::new(ConfirmRestoreSessionMode {
+            files: vec!["file.log".to_string()],
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 27. compute_hint_height with None input returns 1
+    #[tokio::test]
+    async fn test_compute_hint_height_empty() {
+        let app = make_app(&["line"]).await;
+        let result = app.compute_hint_height(&None, 80, None);
+        assert_eq!(result, 1);
+    }
+
+    // 28. compute_hint_height with matching command
+    #[tokio::test]
+    async fn test_compute_hint_height_matching_command() {
+        let app = make_app(&["line"]).await;
+        let input = Some(("filter".to_string(), 6));
+        let result = app.compute_hint_height(&input, 80, None);
+        assert!(result >= 1);
+    }
+
+    // 29. compute_hint_height with command error
+    #[tokio::test]
+    async fn test_compute_hint_height_error() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].command_error = Some("something went wrong".to_string());
+        let input = Some(("bad".to_string(), 3));
+        let result = app.compute_hint_height(&input, 80, None);
+        assert!(result >= 1);
+    }
+
+    // 30. Very small terminal
+    #[tokio::test]
+    async fn test_ui_small_terminal() {
+        let mut app = make_app(&["hello", "world"]).await;
+        let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 31. Scroll offset beyond visible lines
+    #[tokio::test]
+    async fn test_ui_scroll_beyond_visible() {
+        let mut app = make_app(&["line 0", "line 1"]).await;
+        app.tabs[0].scroll_offset = 999;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 32. Loading status bar with progress
+    #[tokio::test]
+    async fn test_ui_loading_status_bar() {
+        let mut app = make_app(&["placeholder"]).await;
+        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(0.5f64);
+        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        app.file_load_state = Some(super::super::FileLoadState {
+            path: "/tmp/test.log".to_string(),
+            progress_rx,
+            result_rx,
+            total_bytes: 1000,
+            on_complete: super::super::LoadContext::ReplaceInitialTab,
+        });
+        let mut terminal = make_terminal();
+        // _progress_tx is kept alive until after draw
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    // 33. Filters and search combined
+    #[tokio::test]
+    async fn test_ui_filters_and_search() {
+        let mut app = make_app(&[
+            "INFO something happened",
+            "ERROR another thing",
+            "INFO something else",
+        ])
+        .await;
+        app.execute_command_str("filter INFO".to_string()).await;
+        let visible = app.tabs[0].visible_indices.clone();
+        let tab = &mut app.tabs[0];
+        let _ = tab.search.search("something", &visible, &tab.file_reader);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
     }
 }

@@ -538,4 +538,327 @@ mod tests {
         app.execute_command_str("show-all-fields".to_string()).await;
         assert!(app.tab().hidden_fields.is_empty());
     }
+
+    #[tokio::test]
+    async fn test_set_color_preserves_match_only() {
+        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
+        // Create a filter with match_only enabled.
+        app.execute_command_str("filter INFO --fg red -m".to_string())
+            .await;
+        let filters = app.tab().log_manager.get_filters();
+        assert!(filters[0].color_config.as_ref().unwrap().match_only);
+
+        // Enter filter management mode so filter_context is set.
+        app.tab_mut().filter_context = Some(0);
+
+        // Change color without -m flag — match_only should be preserved.
+        app.execute_command_str("set-color --fg blue".to_string())
+            .await;
+        let filters = app.tab().log_manager.get_filters();
+        let cc = filters[0].color_config.as_ref().unwrap();
+        assert!(
+            cc.match_only,
+            "match_only should be preserved when -m is not passed"
+        );
+        assert_eq!(cc.fg, Some(ratatui::style::Color::Blue));
+    }
+
+    // ── close_tab ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_close_tab_single_tab_returns_true() {
+        let mut app = make_app(&["line"]).await;
+        let should_quit = app.close_tab().await;
+        assert!(should_quit);
+    }
+
+    #[tokio::test]
+    async fn test_close_tab_multiple_tabs_returns_false() {
+        let mut app = make_app(&["line"]).await;
+        let data: Vec<u8> = b"tab2\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut t = super::super::TabState::new(fr, lm, "tab2".to_string());
+        t.keybindings = app.keybindings.clone();
+        app.tabs.push(t);
+
+        let should_quit = app.close_tab().await;
+        assert!(!should_quit);
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_close_tab_clamps_active_tab_index() {
+        let mut app = make_app(&["line"]).await;
+        for _ in 0..2 {
+            let data: Vec<u8> = b"extra\n".to_vec();
+            let fr = FileReader::from_bytes(data);
+            let lm = LogManager::new(app.db.clone(), None).await;
+            let mut t = super::super::TabState::new(fr, lm, "extra".to_string());
+            t.keybindings = app.keybindings.clone();
+            app.tabs.push(t);
+        }
+        app.active_tab = 2; // last tab
+        let should_quit = app.close_tab().await;
+        assert!(!should_quit);
+        assert!(app.active_tab < app.tabs.len());
+    }
+
+    // ── handle_global_key ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_handle_global_key_quit() {
+        let mut app = make_app(&["line"]).await;
+        app.handle_global_key(KeyCode::Char('q'), KeyModifiers::NONE)
+            .await;
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn test_handle_global_key_next_tab() {
+        let mut app = make_app(&["line"]).await;
+        let data: Vec<u8> = b"tab2\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut t = super::super::TabState::new(fr, lm, "tab2".to_string());
+        t.keybindings = app.keybindings.clone();
+        app.tabs.push(t);
+
+        assert_eq!(app.active_tab, 0);
+        app.handle_global_key(KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        assert_eq!(app.active_tab, 1);
+        app.handle_global_key(KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        assert_eq!(app.active_tab, 0); // wraps around
+    }
+
+    #[tokio::test]
+    async fn test_handle_global_key_prev_tab() {
+        let mut app = make_app(&["line"]).await;
+        let data: Vec<u8> = b"tab2\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut t = super::super::TabState::new(fr, lm, "tab2".to_string());
+        t.keybindings = app.keybindings.clone();
+        app.tabs.push(t);
+
+        assert_eq!(app.active_tab, 0);
+        app.handle_global_key(KeyCode::BackTab, KeyModifiers::NONE)
+            .await;
+        assert_eq!(app.active_tab, 1); // wraps to end
+    }
+
+    #[tokio::test]
+    async fn test_handle_global_key_close_last_tab_quits() {
+        let mut app = make_app(&["line"]).await;
+        app.handle_global_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await;
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn test_handle_global_key_new_tab() {
+        use crate::mode::app_mode::ModeRenderState;
+        let mut app = make_app(&["line"]).await;
+        app.handle_global_key(KeyCode::Char('t'), KeyModifiers::CONTROL)
+            .await;
+        // Should enter command mode with "open " prefilled
+        match app.tabs[0].mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.starts_with("open "));
+            }
+            other => panic!("expected Command mode, got {:?}", other),
+        }
+    }
+
+    // ── execute_command_str ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_execute_command_str_success_pushes_history() {
+        let mut app = make_app(&["INFO a", "WARN b"]).await;
+        app.execute_command_str("wrap".to_string()).await;
+        assert!(app.tab().command_history.contains(&"wrap".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_str_success_normal_mode() {
+        use crate::mode::app_mode::ModeRenderState;
+        let mut app = make_app(&["line"]).await;
+        app.execute_command_str("wrap".to_string()).await;
+        assert!(matches!(
+            app.tab().mode.render_state(),
+            ModeRenderState::Normal
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_str_failure_sets_error() {
+        use crate::mode::app_mode::ModeRenderState;
+        let mut app = make_app(&["line"]).await;
+        app.execute_command_str("nonexistent-cmd".to_string()).await;
+        assert!(app.tab().command_error.is_some());
+        assert!(matches!(
+            app.tab().mode.render_state(),
+            ModeRenderState::Command { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_str_with_filter_context() {
+        use crate::mode::app_mode::ModeRenderState;
+        let mut app = make_app(&["INFO a", "WARN b"]).await;
+        app.execute_command_str("filter INFO".to_string()).await;
+        app.tab_mut().filter_context = Some(0);
+        app.execute_command_str("set-color --fg red".to_string())
+            .await;
+        // After success with filter_context, should return to FilterManagement
+        assert!(matches!(
+            app.tab().mode.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
+    }
+
+    // ── save_all_contexts ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_save_all_contexts_no_source_files() {
+        let app = make_app(&["line"]).await;
+        // Should not panic with no source files
+        app.save_all_contexts().await;
+    }
+
+    // ── tab() / tab_mut() ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_tab_accessors() {
+        let mut app = make_app(&["line"]).await;
+        assert_eq!(app.tab().title, "stdin");
+        app.tab_mut().title = "modified".to_string();
+        assert_eq!(app.tab().title, "modified");
+    }
+
+    #[tokio::test]
+    async fn test_app_new_with_empty_file() {
+        let app = make_app(&[]).await;
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.tab().visible_indices.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_empty_command_no_history_push() {
+        let mut app = make_app(&["line"]).await;
+        app.execute_command_str("  ".to_string()).await;
+        assert!(app.tab().command_history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_app_debug_impl() {
+        let app = make_app(&["line"]).await;
+        let debug = format!("{:?}", app);
+        assert!(debug.contains("active_tab"));
+        assert!(debug.contains("num_tabs"));
+    }
+
+    #[tokio::test]
+    async fn test_save_tab_context_no_source() {
+        let app = make_app(&["line"]).await;
+        // No source file — save_tab_context should be a no-op (no panic).
+        let tab = &app.tabs[0];
+        app.save_tab_context(tab).await;
+    }
+
+    #[tokio::test]
+    async fn test_save_tab_context_with_source() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let data: Vec<u8> = b"hello\nworld\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db.clone(), Some("test.log".to_string())).await;
+        let app = App::new(lm, fr, Theme::default(), Arc::new(Keybindings::default())).await;
+        let tab = &app.tabs[0];
+        app.save_tab_context(tab).await;
+        // Verify it was saved
+        let ctx = db.load_file_context("test.log").await.unwrap();
+        assert!(ctx.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_save_all_contexts_with_source_files() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let data: Vec<u8> = b"hello\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db.clone(), Some("test.log".to_string())).await;
+        let app = App::new(lm, fr, Theme::default(), Arc::new(Keybindings::default())).await;
+        app.save_all_contexts().await;
+        // Session should be saved
+        let files = db.load_session().await.unwrap();
+        assert!(!files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_global_key_prev_tab_non_wrapping() {
+        let mut app = make_app(&["line"]).await;
+        // Add two more tabs so we can test non-wrapping prev
+        for _ in 0..2 {
+            let data: Vec<u8> = b"extra\n".to_vec();
+            let fr = FileReader::from_bytes(data);
+            let lm = LogManager::new(app.db.clone(), None).await;
+            let mut t = super::super::TabState::new(fr, lm, "extra".to_string());
+            t.keybindings = app.keybindings.clone();
+            app.tabs.push(t);
+        }
+        app.active_tab = 2;
+        app.handle_global_key(KeyCode::BackTab, KeyModifiers::NONE)
+            .await;
+        assert_eq!(app.active_tab, 1); // non-wrapping: 2 -> 1
+    }
+
+    #[tokio::test]
+    async fn test_handle_key_event() {
+        use crate::mode::app_mode::ModeRenderState;
+        let mut app = make_app(&["line"]).await;
+        // Press ':' to enter command mode
+        app.handle_key_event(KeyCode::Char(':')).await;
+        assert!(matches!(
+            app.tab().mode.render_state(),
+            ModeRenderState::Command { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_key_event_with_modifiers() {
+        let mut app = make_app(&["line"]).await;
+        // Ctrl+W should quit when single tab
+        app.handle_key_event_with_modifiers(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await;
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn test_handle_global_key_close_tab_with_multiple() {
+        let mut app = make_app(&["line"]).await;
+        let data: Vec<u8> = b"tab2\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut t = super::super::TabState::new(fr, lm, "tab2".to_string());
+        t.keybindings = app.keybindings.clone();
+        app.tabs.push(t);
+
+        // Ctrl+W with 2 tabs should close tab, not quit
+        app.handle_global_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await;
+        assert!(!app.should_quit);
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_app_new_with_source_file() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let data: Vec<u8> = b"hello\nworld\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db, Some("/tmp/test.log".to_string())).await;
+        let app = App::new(lm, fr, Theme::default(), Arc::new(Keybindings::default())).await;
+        assert_eq!(app.tab().title, "test.log");
+    }
 }

@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
-    mode::{app_mode::Mode, comment_mode::CommentMode, normal_mode::NormalMode},
+    mode::app_mode::{Mode, ModeRenderState},
+    mode::comment_mode::CommentMode,
+    mode::normal_mode::NormalMode,
     ui::{KeyResult, TabState},
 };
 
@@ -59,8 +61,10 @@ impl Mode for VisualLineMode {
         "[VISUAL] j/k to extend selection | [c] comment selection | [Esc] cancel"
     }
 
-    fn visual_selection_anchor(&self) -> Option<usize> {
-        Some(self.anchor)
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::VisualLine {
+            anchor: self.anchor,
+        }
     }
 }
 
@@ -70,6 +74,7 @@ mod tests {
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
+    use crate::mode::app_mode::ModeRenderState;
     use crate::ui::TabState;
     use std::sync::Arc;
 
@@ -98,7 +103,10 @@ mod tests {
         let mode = VisualLineMode { anchor: 0 };
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
         assert_eq!(tab.scroll_offset, 1);
-        assert!(mode2.visual_selection_anchor().is_some());
+        assert!(matches!(
+            mode2.render_state(),
+            ModeRenderState::VisualLine { .. }
+        ));
     }
 
     #[tokio::test]
@@ -125,7 +133,10 @@ mod tests {
         let mode = VisualLineMode { anchor: 0 };
         let (mode2, result) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.visual_selection_anchor().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::VisualLine { .. }
+        ));
         assert!(mode2.status_line().contains("[NORMAL]"));
     }
 
@@ -137,10 +148,12 @@ mod tests {
         let (mode2, result) = press(mode, &mut tab, KeyCode::Char('c')).await;
         assert!(matches!(result, KeyResult::Handled));
         // Should be in comment mode
-        let popup = mode2.comment_popup();
-        assert!(popup.is_some());
-        let (_, _, _, count) = popup.unwrap();
-        assert_eq!(count, 3); // visible indices 1,2,3 → 3 lines
+        match mode2.render_state() {
+            ModeRenderState::Comment { line_count, .. } => {
+                assert_eq!(line_count, 3); // visible indices 1,2,3 → 3 lines
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -149,16 +162,21 @@ mod tests {
         tab.scroll_offset = 0;
         let mode = VisualLineMode { anchor: 2 }; // anchor below cursor
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('c')).await;
-        let popup = mode2.comment_popup();
-        assert!(popup.is_some());
-        let (_, _, _, count) = popup.unwrap();
-        assert_eq!(count, 3); // lines 0,1,2
+        match mode2.render_state() {
+            ModeRenderState::Comment { line_count, .. } => {
+                assert_eq!(line_count, 3); // lines 0,1,2
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[tokio::test]
     async fn test_visual_selection_anchor_returns_anchor() {
         let mode = VisualLineMode { anchor: 5 };
-        assert_eq!(mode.visual_selection_anchor(), Some(5));
+        match mode.render_state() {
+            ModeRenderState::VisualLine { anchor } => assert_eq!(anchor, 5),
+            other => panic!("expected VisualLine, got {:?}", other),
+        }
     }
 
     #[test]

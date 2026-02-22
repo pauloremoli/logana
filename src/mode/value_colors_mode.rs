@@ -5,7 +5,8 @@ use std::collections::HashSet;
 
 use crate::{
     auto_complete::fuzzy_match,
-    mode::{app_mode::Mode, normal_mode::NormalMode},
+    mode::app_mode::{Mode, ModeRenderState},
+    mode::normal_mode::NormalMode,
     ui::{KeyResult, TabState},
 };
 
@@ -210,8 +211,12 @@ impl Mode for ValueColorsMode {
         "[VALUE COLORS] Space=toggle | a=all | n=none | Enter=apply | Esc=cancel | type to search"
     }
 
-    fn value_colors_state(&self) -> Option<(&[ValueColorGroup], &str, usize)> {
-        Some((&self.groups, &self.search, self.selected))
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::ValueColors {
+            groups: self.groups.clone(),
+            search: self.search.clone(),
+            selected: self.selected,
+        }
     }
 }
 
@@ -221,6 +226,7 @@ mod tests {
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
+    use crate::mode::app_mode::ModeRenderState;
     use crate::ui::TabState;
     use std::sync::Arc;
 
@@ -324,8 +330,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = ValueColorsMode::new(sample_groups(), HashSet::new());
         let (mode, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
-        let (_, _, sel) = mode.value_colors_state().unwrap();
-        assert_eq!(sel, 1);
+        match mode.render_state() {
+            ModeRenderState::ValueColors { selected, .. } => assert_eq!(selected, 1),
+            other => panic!("expected ValueColors, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -333,8 +341,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = ValueColorsMode::new(sample_groups(), HashSet::new());
         let (mode, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
-        let (_, _, sel) = mode.value_colors_state().unwrap();
-        assert_eq!(sel, 0);
+        match mode.render_state() {
+            ModeRenderState::ValueColors { selected, .. } => assert_eq!(selected, 0),
+            other => panic!("expected ValueColors, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -343,8 +353,12 @@ mod tests {
         let mode = ValueColorsMode::new(sample_groups(), HashSet::new());
         // selected=0 is "HTTP methods" group, both children enabled → toggle disables
         let (mode, _) = press(mode, &mut tab, KeyCode::Char(' ')).await;
-        let (groups, _, _) = mode.value_colors_state().unwrap();
-        assert!(groups[0].children.iter().all(|c| !c.enabled));
+        match mode.render_state() {
+            ModeRenderState::ValueColors { groups, .. } => {
+                assert!(groups[0].children.iter().all(|c| !c.enabled));
+            }
+            other => panic!("expected ValueColors, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -358,9 +372,13 @@ mod tests {
         let (mode, _) = press_dyn(mode, &mut tab, KeyCode::Char('j')).await;
         // Now at row 3 = Group(1) = Status codes
         let (mode, _) = press_dyn(mode, &mut tab, KeyCode::Char(' ')).await;
-        let (groups, _, _) = mode.value_colors_state().unwrap();
-        // Mixed → should enable all
-        assert!(groups[1].children.iter().all(|c| c.enabled));
+        match mode.render_state() {
+            ModeRenderState::ValueColors { groups, .. } => {
+                // Mixed → should enable all
+                assert!(groups[1].children.iter().all(|c| c.enabled));
+            }
+            other => panic!("expected ValueColors, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -370,8 +388,12 @@ mod tests {
         // Navigate to row 1 = Entry(0, 0) = GET
         let (mode, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
         let (mode, _) = press_dyn(mode, &mut tab, KeyCode::Char(' ')).await;
-        let (groups, _, _) = mode.value_colors_state().unwrap();
-        assert!(!groups[0].children[0].enabled);
+        match mode.render_state() {
+            ModeRenderState::ValueColors { groups, .. } => {
+                assert!(!groups[0].children[0].enabled);
+            }
+            other => panic!("expected ValueColors, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -379,8 +401,12 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = ValueColorsMode::new(sample_groups(), HashSet::new());
         let (mode, _) = press(mode, &mut tab, KeyCode::Char('a')).await;
-        let (groups, _, _) = mode.value_colors_state().unwrap();
-        assert!(groups.iter().all(|g| g.children.iter().all(|c| c.enabled)));
+        match mode.render_state() {
+            ModeRenderState::ValueColors { groups, .. } => {
+                assert!(groups.iter().all(|g| g.children.iter().all(|c| c.enabled)));
+            }
+            other => panic!("expected ValueColors, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -388,8 +414,12 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = ValueColorsMode::new(sample_groups(), HashSet::new());
         let (mode, _) = press(mode, &mut tab, KeyCode::Char('n')).await;
-        let (groups, _, _) = mode.value_colors_state().unwrap();
-        assert!(groups.iter().all(|g| g.children.iter().all(|c| !c.enabled)));
+        match mode.render_state() {
+            ModeRenderState::ValueColors { groups, .. } => {
+                assert!(groups.iter().all(|g| g.children.iter().all(|c| !c.enabled)));
+            }
+            other => panic!("expected ValueColors, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -415,8 +445,10 @@ mod tests {
         mode.search = "http".to_string();
         let (mode, result) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        let (_, search, _) = mode.value_colors_state().unwrap();
-        assert!(search.is_empty());
+        match mode.render_state() {
+            ModeRenderState::ValueColors { search, .. } => assert!(search.is_empty()),
+            other => panic!("expected ValueColors, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -440,8 +472,10 @@ mod tests {
         let mode = ValueColorsMode::new(sample_groups(), HashSet::new());
         // Type 'g' — should go into search
         let (mode, _) = press(mode, &mut tab, KeyCode::Char('g')).await;
-        let (_, search, _) = mode.value_colors_state().unwrap();
-        assert_eq!(search, "g");
+        match mode.render_state() {
+            ModeRenderState::ValueColors { search, .. } => assert_eq!(search, "g"),
+            other => panic!("expected ValueColors, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -450,8 +484,10 @@ mod tests {
         let mut mode = ValueColorsMode::new(sample_groups(), HashSet::new());
         mode.search = "ge".to_string();
         let (mode, _) = press(mode, &mut tab, KeyCode::Backspace).await;
-        let (_, search, _) = mode.value_colors_state().unwrap();
-        assert_eq!(search, "g");
+        match mode.render_state() {
+            ModeRenderState::ValueColors { search, .. } => assert_eq!(search, "g"),
+            other => panic!("expected ValueColors, got {:?}", other),
+        }
     }
 
     #[tokio::test]

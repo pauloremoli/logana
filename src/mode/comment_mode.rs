@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use crate::{
     config::Keybindings,
     mode::{
-        app_mode::{Mode, status_entry},
+        app_mode::{Mode, ModeRenderState, status_entry},
         normal_mode::NormalMode,
     },
     theme::Theme,
@@ -153,13 +153,13 @@ impl Mode for CommentMode {
         Line::from(spans)
     }
 
-    fn comment_popup(&self) -> Option<(Vec<String>, usize, usize, usize)> {
-        Some((
-            self.lines.clone(),
-            self.cursor_row,
-            self.cursor_col,
-            self.line_indices.len(),
-        ))
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::Comment {
+            lines: self.lines.clone(),
+            cursor_row: self.cursor_row,
+            cursor_col: self.cursor_col,
+            line_count: self.line_indices.len(),
+        }
     }
 }
 
@@ -193,9 +193,15 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = CommentMode::new(vec![0, 1]);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('h'), KeyModifiers::NONE).await;
-        let (lines, _, col, _) = mode2.comment_popup().unwrap();
-        assert_eq!(lines[0], "h");
-        assert_eq!(col, 1);
+        match mode2.render_state() {
+            ModeRenderState::Comment {
+                lines, cursor_col, ..
+            } => {
+                assert_eq!(lines[0], "h");
+                assert_eq!(cursor_col, 1);
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -205,11 +211,20 @@ mod tests {
         mode.lines[0] = "hello world".to_string();
         mode.cursor_col = 5;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Enter, KeyModifiers::NONE).await;
-        let (lines, row, col, _) = mode2.comment_popup().unwrap();
-        assert_eq!(lines[0], "hello");
-        assert_eq!(lines[1], " world");
-        assert_eq!(row, 1);
-        assert_eq!(col, 0);
+        match mode2.render_state() {
+            ModeRenderState::Comment {
+                lines,
+                cursor_row,
+                cursor_col,
+                ..
+            } => {
+                assert_eq!(lines[0], "hello");
+                assert_eq!(lines[1], " world");
+                assert_eq!(cursor_row, 1);
+                assert_eq!(cursor_col, 0);
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -219,9 +234,15 @@ mod tests {
         mode.lines[0] = "hi".to_string();
         mode.cursor_col = 2;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Backspace, KeyModifiers::NONE).await;
-        let (lines, _, col, _) = mode2.comment_popup().unwrap();
-        assert_eq!(lines[0], "h");
-        assert_eq!(col, 1);
+        match mode2.render_state() {
+            ModeRenderState::Comment {
+                lines, cursor_col, ..
+            } => {
+                assert_eq!(lines[0], "h");
+                assert_eq!(cursor_col, 1);
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -232,11 +253,20 @@ mod tests {
         mode.cursor_row = 1;
         mode.cursor_col = 0;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Backspace, KeyModifiers::NONE).await;
-        let (lines, row, col, _) = mode2.comment_popup().unwrap();
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0], "firstsecond");
-        assert_eq!(row, 0);
-        assert_eq!(col, 5);
+        match mode2.render_state() {
+            ModeRenderState::Comment {
+                lines,
+                cursor_row,
+                cursor_col,
+                ..
+            } => {
+                assert_eq!(lines.len(), 1);
+                assert_eq!(lines[0], "firstsecond");
+                assert_eq!(cursor_row, 0);
+                assert_eq!(cursor_col, 5);
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -248,7 +278,10 @@ mod tests {
             press(mode, &mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
         assert!(matches!(result, KeyResult::Handled));
         // returned to NormalMode
-        assert!(mode2.comment_popup().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Comment { .. }
+        ));
         // comment stored
         let comments = tab.log_manager.get_comments();
         assert_eq!(comments.len(), 1);
@@ -263,7 +296,10 @@ mod tests {
         mode.lines[0] = "some text".to_string();
         let (mode2, result) = press(mode, &mut tab, KeyCode::Esc, KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.comment_popup().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Comment { .. }
+        ));
         assert!(tab.log_manager.get_comments().is_empty());
     }
 
@@ -275,9 +311,17 @@ mod tests {
         mode.cursor_row = 1;
         mode.cursor_col = 0;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Left, KeyModifiers::NONE).await;
-        let (_, row, col, _) = mode2.comment_popup().unwrap();
-        assert_eq!(row, 0);
-        assert_eq!(col, 2); // end of "ab"
+        match mode2.render_state() {
+            ModeRenderState::Comment {
+                cursor_row,
+                cursor_col,
+                ..
+            } => {
+                assert_eq!(cursor_row, 0);
+                assert_eq!(cursor_col, 2); // end of "ab"
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -288,9 +332,17 @@ mod tests {
         mode.cursor_row = 0;
         mode.cursor_col = 2; // end of "ab"
         let (mode2, _) = press(mode, &mut tab, KeyCode::Right, KeyModifiers::NONE).await;
-        let (_, row, col, _) = mode2.comment_popup().unwrap();
-        assert_eq!(row, 1);
-        assert_eq!(col, 0);
+        match mode2.render_state() {
+            ModeRenderState::Comment {
+                cursor_row,
+                cursor_col,
+                ..
+            } => {
+                assert_eq!(cursor_row, 1);
+                assert_eq!(cursor_col, 0);
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -301,9 +353,17 @@ mod tests {
         mode.cursor_row = 0;
         mode.cursor_col = 5;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Down, KeyModifiers::NONE).await;
-        let (_, row, col, _) = mode2.comment_popup().unwrap();
-        assert_eq!(row, 1);
-        assert_eq!(col, 2); // clamped to len("hi")=2
+        match mode2.render_state() {
+            ModeRenderState::Comment {
+                cursor_row,
+                cursor_col,
+                ..
+            } => {
+                assert_eq!(cursor_row, 1);
+                assert_eq!(cursor_col, 2); // clamped to len("hi")=2
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
 
         // Re-create for Up test
         let mut mode3 = CommentMode::new(vec![0]);
@@ -311,16 +371,28 @@ mod tests {
         mode3.cursor_row = 1;
         mode3.cursor_col = 2;
         let (mode4, _) = press(mode3, &mut tab, KeyCode::Up, KeyModifiers::NONE).await;
-        let (_, row2, col2, _) = mode4.comment_popup().unwrap();
-        assert_eq!(row2, 0);
-        assert_eq!(col2, 2);
+        match mode4.render_state() {
+            ModeRenderState::Comment {
+                cursor_row,
+                cursor_col,
+                ..
+            } => {
+                assert_eq!(cursor_row, 0);
+                assert_eq!(cursor_col, 2);
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[test]
-    fn test_comment_popup_returns_line_count() {
+    fn test_render_state_returns_line_count() {
         let mode = CommentMode::new(vec![5, 6, 7, 8]);
-        let (_, _, _, line_count) = mode.comment_popup().unwrap();
-        assert_eq!(line_count, 4);
+        match mode.render_state() {
+            ModeRenderState::Comment { line_count, .. } => {
+                assert_eq!(line_count, 4);
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[test]

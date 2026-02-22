@@ -1046,4 +1046,128 @@ mod tests {
         let collected: Vec<_> = r.iter().collect();
         assert_eq!(collected, vec![(0, b"only".as_ref())]);
     }
+
+    // -----------------------------------------------------------------------
+    // spawn_process_stream
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_spawn_process_stream_basic() {
+        let mut rx = FileReader::spawn_process_stream("echo", &["hello world"])
+            .await
+            .unwrap();
+
+        // Wait for the process to finish and the final flush.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+        let data = rx.borrow_and_update().clone();
+        let text = String::from_utf8_lossy(&data);
+        assert!(
+            text.contains("hello world"),
+            "stdout should be captured, got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_spawn_process_stream_stderr() {
+        // Use sh -c to write to stderr
+        let mut rx =
+            FileReader::spawn_process_stream("sh", &["-c", "echo error_output >&2"])
+                .await
+                .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+        let data = rx.borrow_and_update().clone();
+        let text = String::from_utf8_lossy(&data);
+        assert!(
+            text.contains("error_output"),
+            "stderr should be captured, got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_spawn_process_stream_strips_ansi() {
+        // printf outputs ANSI codes; they should be stripped
+        let mut rx = FileReader::spawn_process_stream(
+            "printf",
+            &["\x1b[31mred text\x1b[0m\n"],
+        )
+        .await
+        .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+        let data = rx.borrow_and_update().clone();
+        let text = String::from_utf8_lossy(&data);
+        assert!(
+            text.contains("red text"),
+            "should contain stripped text, got: {text}"
+        );
+        assert!(
+            !text.contains("\x1b["),
+            "ANSI codes should be stripped, got: {text}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // append_bytes – Mmap → Vec conversion branch
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_append_bytes_on_file_backed_reader() {
+        // FileReader::new uses Mmap storage. Appending should convert to Vec.
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"mmap line\n").unwrap();
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap();
+
+        let mut reader = FileReader::new(path).unwrap();
+        assert_eq!(reader.line_count(), 1);
+        assert_eq!(reader.get_line(0), b"mmap line");
+
+        // This triggers the Mmap→Vec conversion in append_bytes (line 272)
+        reader.append_bytes(b"appended\n");
+        assert_eq!(reader.line_count(), 2);
+        assert_eq!(reader.get_line(0), b"mmap line");
+        assert_eq!(reader.get_line(1), b"appended");
+    }
+
+    // -----------------------------------------------------------------------
+    // spawn_file_watcher – truncation detection
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_spawn_file_watcher_truncation() {
+        use std::io::{Seek, SeekFrom};
+        use tokio::time::{Duration, sleep};
+
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "original data that is fairly long\n").unwrap();
+        f.flush().unwrap();
+        let initial_size = f.as_file().metadata().unwrap().len();
+        let path = f.path().to_str().unwrap().to_string();
+
+        let mut rx = FileReader::spawn_file_watcher(path.clone(), initial_size).await;
+
+        // Step 1: truncate to 0 bytes — the watcher detects this and resets
+        // its internal offset to 0.
+        f.as_file().set_len(0).unwrap();
+        sleep(Duration::from_millis(1500)).await;
+
+        // Step 2: write new data — now the file grows past the reset offset
+        // and the watcher picks up the new content.
+        f.seek(SeekFrom::Start(0)).unwrap();
+        write!(f, "after truncation\n").unwrap();
+        f.flush().unwrap();
+        sleep(Duration::from_millis(1500)).await;
+
+        let data = rx.borrow_and_update().clone();
+        let text = String::from_utf8_lossy(&data);
+        assert!(
+            text.contains("after truncation"),
+            "watcher should detect data after truncation, got: {text}"
+        );
+    }
+
 }

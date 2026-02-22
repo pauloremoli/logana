@@ -364,7 +364,7 @@ impl App {
                         let sample: Vec<&[u8]> = (0..limit)
                             .map(|j| self.tabs[i].file_reader.get_line(j))
                             .collect();
-                        self.tabs[i].detected_format = crate::format::detect_format(&sample);
+                        self.tabs[i].detected_format = crate::parser::detect_format(&sample);
                     }
                     self.tabs[i].refresh_visible();
                     if at_end {
@@ -406,5 +406,384 @@ impl App {
         self.tabs[self.active_tab].mode = Box::new(NormalMode);
         self.continue_session_restore(queue, total, initial_tab_idx)
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Keybindings;
+    use crate::db::Database;
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::theme::Theme;
+    use crate::ui::StdinLoadState;
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    async fn make_app(lines: &[&str]) -> App {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_update_stdin_tab_empty_data() {
+        let mut app = make_app(&[]).await;
+        let line_count_before = app.tabs[0].file_reader.line_count();
+        app.update_stdin_tab(vec![]).await;
+        assert_eq!(app.tabs[0].file_reader.line_count(), line_count_before);
+    }
+
+    #[tokio::test]
+    async fn test_update_stdin_tab_replace_placeholder() {
+        let mut app = make_app(&[]).await;
+        assert_eq!(app.tabs[0].file_reader.line_count(), 0);
+
+        app.update_stdin_tab(b"line1\nline2\n".to_vec()).await;
+
+        assert_eq!(app.tabs[0].file_reader.line_count(), 2);
+        assert_eq!(app.tabs[0].visible_indices.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_stdin_tab_follow_mode() {
+        let mut app = make_app(&["first", "second"]).await;
+        // Position at the last visible line (follow mode).
+        let last = app.tabs[0].visible_indices.len().saturating_sub(1);
+        app.tabs[0].scroll_offset = last;
+
+        app.update_stdin_tab(b"first\nsecond\nthird\nfourth\n".to_vec())
+            .await;
+
+        // scroll_offset should have moved to the new last line.
+        let new_last = app.tabs[0].visible_indices.len().saturating_sub(1);
+        assert_eq!(app.tabs[0].scroll_offset, new_last);
+        assert!(new_last > last);
+    }
+
+    #[tokio::test]
+    async fn test_update_stdin_tab_creates_new_tab() {
+        // Create an app whose first tab has a source file (not a placeholder).
+        let data: Vec<u8> = b"existing line".to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, Some("test.log".to_string())).await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
+
+        assert_eq!(app.tabs.len(), 1);
+
+        app.update_stdin_tab(b"stdin line\n".to_vec()).await;
+
+        assert_eq!(app.tabs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_watches_no_watchers() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        assert!(app.tabs[0].watch_state.is_none());
+        // Should not panic.
+        app.advance_file_watches();
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_watches_with_data() {
+        // Use data with trailing newline so append_bytes starts a new line.
+        let data: Vec<u8> = b"original\n".to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        let original_count = app.tabs[0].file_reader.line_count();
+
+        tx.send(b"new line\n".to_vec()).unwrap();
+        app.advance_file_watches();
+
+        assert!(app.tabs[0].file_reader.line_count() > original_count);
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_watches_sender_dropped() {
+        let mut app = make_app(&["line"]).await;
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        drop(tx);
+        app.advance_file_watches();
+
+        assert!(app.tabs[0].watch_state.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_watches_format_redetection() {
+        let mut app = make_app(&[]).await;
+        assert!(app.tabs[0].detected_format.is_none());
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        // Send JSON data so the format detector can pick it up.
+        let json_data = b"{\"level\":\"INFO\",\"msg\":\"hello\"}\n";
+        tx.send(json_data.to_vec()).unwrap();
+        app.advance_file_watches();
+
+        assert!(app.tabs[0].detected_format.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_skip_or_fail_load_replace_initial() {
+        let mut app = make_app(&[]).await;
+        assert_eq!(app.tabs.len(), 1);
+
+        app.skip_or_fail_load(LoadContext::ReplaceInitialTab).await;
+
+        // App should still have 1 tab (stays with empty initial).
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_skip_or_fail_load_session_restore() {
+        let mut app = make_app(&[]).await;
+        assert_eq!(app.tabs.len(), 1);
+
+        app.skip_or_fail_load(LoadContext::SessionRestoreTab {
+            remaining: VecDeque::new(),
+            total: 1,
+            initial_tab_idx: 0,
+        })
+        .await;
+
+        // App should still be functional.
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_restore_session_empty() {
+        let mut app = make_app(&["line"]).await;
+        app.restore_session(vec![]).await;
+
+        // Mode should be unchanged (still NormalMode from make_app).
+        assert!(app.tabs[0].mode.status_line().contains("[NORMAL]"));
+    }
+
+    #[tokio::test]
+    async fn test_restore_session_clears_mode() {
+        let mut app = make_app(&["line"]).await;
+        // restore_session with empty vec returns immediately, but still sets
+        // mode to NormalMode first (only if non-empty).
+        // With an empty vec it returns before setting mode, so mode stays Normal.
+        // Verify the empty-vec early return path.
+        app.restore_session(vec![]).await;
+        assert!(app.tabs[0].mode.status_line().contains("[NORMAL]"));
+
+        // With a non-empty vec, mode is set to NormalMode at the start.
+        // Use a non-existent file so begin_file_load fails gracefully
+        // and skip_or_fail_load handles it.
+        app.restore_session(vec!["/nonexistent/file.log".to_string()])
+            .await;
+        assert!(app.tabs[0].mode.status_line().contains("[NORMAL]"));
+    }
+
+    #[tokio::test]
+    async fn test_advance_stdin_load_no_state() {
+        let mut app = make_app(&[]).await;
+        assert!(app.stdin_load_state.is_none());
+        // Should not panic.
+        app.advance_stdin_load().await;
+    }
+
+    #[tokio::test]
+    async fn test_advance_stdin_load_with_data() {
+        let mut app = make_app(&[]).await;
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.stdin_load_state = Some(StdinLoadState { snapshot_rx: rx });
+
+        tx.send(b"stdin line\n".to_vec()).unwrap();
+        app.advance_stdin_load().await;
+
+        assert_eq!(app.tabs[0].file_reader.line_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_advance_stdin_load_sender_dropped() {
+        let mut app = make_app(&[]).await;
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.stdin_load_state = Some(StdinLoadState { snapshot_rx: rx });
+
+        // Send some data, then drop sender.
+        tx.send(b"final line\n".to_vec()).unwrap();
+        drop(tx);
+
+        app.advance_stdin_load().await;
+
+        assert!(app.stdin_load_state.is_none());
+        assert_eq!(app.tabs[0].file_reader.line_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_load_no_state() {
+        let mut app = make_app(&[]).await;
+        assert!(app.file_load_state.is_none());
+        // Should not panic.
+        app.advance_file_load().await;
+    }
+
+    #[tokio::test]
+    async fn test_open_file_nonexistent() {
+        let mut app = make_app(&[]).await;
+        let result = app.open_file("/nonexistent/path/file.log").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_lowercase().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_open_file_directory() {
+        let mut app = make_app(&[]).await;
+        let result = app.open_file("/tmp").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_lowercase().contains("directory"));
+    }
+
+    #[tokio::test]
+    async fn test_open_file_success() {
+        let mut app = make_app(&["existing"]).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"hello\nworld\n").unwrap();
+        let path = tmp.path().to_str().unwrap();
+        let result = app.open_file(path).await;
+        assert!(result.is_ok());
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab, 1);
+        assert!(app.tabs[1].watch_state.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_begin_file_load_real_file() {
+        let mut app = make_app(&["placeholder"]).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"data\n").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.begin_file_load(path.clone(), LoadContext::ReplaceInitialTab)
+            .await;
+        assert!(app.file_load_state.is_some());
+        assert_eq!(app.file_load_state.as_ref().unwrap().path, path);
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_load_completed() {
+        let mut app = make_app(&[]).await;
+
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let fr = FileReader::from_bytes(b"loaded\n".to_vec());
+        let _ = result_tx.send(Ok(fr));
+        drop(progress_tx);
+
+        app.file_load_state = Some(super::FileLoadState {
+            path: "test.log".to_string(),
+            progress_rx,
+            result_rx,
+            total_bytes: 7,
+            on_complete: LoadContext::ReplaceInitialTab,
+        });
+
+        app.advance_file_load().await;
+
+        // Load state should be consumed.
+        assert!(app.file_load_state.is_none());
+        // The initial tab should have the loaded data.
+        assert_eq!(app.tabs[0].file_reader.line_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_load_failure() {
+        let mut app = make_app(&[]).await;
+
+        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(0.0_f64);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let _ = result_tx.send(Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "gone",
+        )));
+
+        app.file_load_state = Some(super::FileLoadState {
+            path: "missing.log".to_string(),
+            progress_rx,
+            result_rx,
+            total_bytes: 0,
+            on_complete: LoadContext::ReplaceInitialTab,
+        });
+
+        app.advance_file_load().await;
+
+        // Load state should be consumed even on failure.
+        assert!(app.file_load_state.is_none());
+        // Initial tab should still exist (empty placeholder).
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_restore_session_with_nonexistent_files() {
+        let mut app = make_app(&[]).await;
+        let files = vec![
+            "/nonexistent/a.log".to_string(),
+            "/nonexistent/b.log".to_string(),
+        ];
+        app.restore_session(files).await;
+        // Mode should be NormalMode after restore attempt.
+        assert!(app.tabs[0].mode.status_line().contains("[NORMAL]"));
+    }
+
+    #[tokio::test]
+    async fn test_continue_session_restore_empty_queue() {
+        let mut app = make_app(&[]).await;
+        let queue = VecDeque::new();
+        // Should just return; the only tab is the placeholder.
+        app.continue_session_restore(queue, 0, 0).await;
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_open_docker_logs() {
+        let mut app = make_app(&["line"]).await;
+        // Use a bogus container ID — spawn_process_stream will fail
+        // because docker won't find it, but it shouldn't panic.
+        app.open_docker_logs("fake_id_123".to_string(), "fake_container".to_string())
+            .await;
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab, 1);
+        assert!(app.tabs[1].title.contains("docker:fake_container"));
+    }
+
+    #[tokio::test]
+    async fn test_begin_stdin_load() {
+        let mut app = make_app(&[]).await;
+        assert!(app.stdin_load_state.is_none());
+        app.begin_stdin_load().await;
+        assert!(app.stdin_load_state.is_some());
     }
 }

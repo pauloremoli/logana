@@ -56,10 +56,21 @@ impl App {
                 if let Some(filter) = filters.get(selected_filter_index)
                     && filter.filter_type == FilterType::Include
                 {
+                    // When -m is not explicitly passed, preserve the filter's
+                    // existing match_only setting instead of resetting it.
+                    let match_only = if m {
+                        true
+                    } else {
+                        filter
+                            .color_config
+                            .as_ref()
+                            .map(|cc| cc.match_only)
+                            .unwrap_or(false)
+                    };
                     let filter_id = filter.id;
                     self.tabs[self.active_tab]
                         .log_manager
-                        .set_color_config(filter_id, fg.as_deref(), bg.as_deref(), m)
+                        .set_color_config(filter_id, fg.as_deref(), bg.as_deref(), match_only)
                         .await;
                     self.tabs[self.active_tab].refresh_visible();
                 }
@@ -289,5 +300,355 @@ impl App {
             None => {}
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Keybindings;
+    use crate::db::Database;
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::mode::app_mode::ModeRenderState;
+    use crate::theme::Theme;
+    use crate::types::FilterType;
+    use crate::ui::app::App;
+    use std::sync::Arc;
+
+    async fn make_app(lines: &[&str]) -> App {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_line_numbers_toggle() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        assert!(app.tab().show_line_numbers);
+        app.run_command("line-numbers").await.unwrap();
+        assert!(!app.tab().show_line_numbers);
+        app.run_command("line-numbers").await.unwrap();
+        assert!(app.tab().show_line_numbers);
+    }
+
+    #[tokio::test]
+    async fn test_level_colors_toggle() {
+        let mut app = make_app(&["line1"]).await;
+        assert!(app.tab().level_colors);
+        app.run_command("level-colors").await.unwrap();
+        assert!(!app.tab().level_colors);
+        app.run_command("level-colors").await.unwrap();
+        assert!(app.tab().level_colors);
+    }
+
+    #[tokio::test]
+    async fn test_close_tab_error_single_tab() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("close-tab").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Cannot close last tab"));
+    }
+
+    #[tokio::test]
+    async fn test_close_tab_success_multiple_tabs() {
+        let mut app = make_app(&["line"]).await;
+        // Push a second tab
+        let data2: Vec<u8> = b"second\n".to_vec();
+        let file_reader2 = FileReader::from_bytes(data2);
+        let log_manager2 = LogManager::new(app.db.clone(), None).await;
+        let mut tab2 = crate::ui::TabState::new(file_reader2, log_manager2, "tab2".to_string());
+        tab2.keybindings = app.keybindings.clone();
+        app.tabs.push(tab2);
+        assert_eq!(app.tabs.len(), 2);
+
+        app.run_command("close-tab").await.unwrap();
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_export_marked_writes_file() {
+        let mut app = make_app(&["line0", "line1", "line2"]).await;
+        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[0].log_manager.toggle_mark(2);
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("export-marked {}", path))
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("line0"));
+        assert!(content.contains("line2"));
+        assert!(!content.contains("line1"));
+    }
+
+    #[tokio::test]
+    async fn test_export_marked_empty_path() {
+        let mut app = make_app(&["line"]).await;
+        // Empty quoted path produces no token, so clap rejects the missing argument.
+        let result = app.run_command("export-marked \"\"").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_select_fields_json_opens_mode() {
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        let result = app.run_command("select-fields").await.unwrap();
+        assert!(result, "select-fields should return true (mode was set)");
+        assert!(matches!(
+            app.tabs[0].mode.render_state(),
+            ModeRenderState::SelectFields { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_select_fields_plain_text_errors() {
+        let mut app = make_app(&["plain text line"]).await;
+        let result = app.run_command("select-fields").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No structured fields"));
+    }
+
+    #[tokio::test]
+    async fn test_select_fields_saved_order() {
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        // Set a saved order on the field_layout
+        app.tabs[0].field_layout.columns = Some(vec!["msg".to_string()]);
+        app.tabs[0].field_layout.columns_order = Some(vec!["msg".to_string(), "level".to_string()]);
+        let result = app.run_command("select-fields").await.unwrap();
+        assert!(result);
+        if let ModeRenderState::SelectFields { fields, .. } = app.tabs[0].mode.render_state() {
+            // "msg" should be first and enabled, "level" second and disabled
+            assert_eq!(fields[0].0, "msg");
+            assert!(fields[0].1);
+            assert_eq!(fields[1].0, "level");
+            assert!(!fields[1].1);
+        } else {
+            panic!("expected SelectFields mode");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_value_colors_opens_mode() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("value-colors").await.unwrap();
+        assert!(result);
+        assert!(matches!(
+            app.tabs[0].mode.render_state(),
+            ModeRenderState::ValueColors { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_save_filters_empty_path() {
+        let mut app = make_app(&["line"]).await;
+        // Empty quoted path produces no token, so clap rejects the missing argument.
+        let result = app.run_command("save-filters \"\"").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_load_filters_empty_path() {
+        let mut app = make_app(&["line"]).await;
+        // Empty quoted path produces no token, so clap rejects the missing argument.
+        let result = app.run_command("load-filters \"\"").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_set_color_on_exclude_filter() {
+        let mut app = make_app(&["INFO a", "WARN b"]).await;
+        app.execute_command_str("exclude WARN".to_string()).await;
+        app.tabs[0].filter_context = Some(0);
+        // set-color on an exclude filter should be a no-op (no crash)
+        let result = app.run_command("set-color --fg red").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_color_with_match_only_flag() {
+        let mut app = make_app(&["INFO a", "WARN b"]).await;
+        app.execute_command_str("filter INFO".to_string()).await;
+        app.tabs[0].filter_context = Some(0);
+        app.run_command("set-color --fg green -m").await.unwrap();
+        let cc = app.tabs[0].log_manager.get_filters()[0]
+            .color_config
+            .as_ref()
+            .unwrap();
+        assert!(cc.match_only);
+        assert_eq!(cc.fg, Some(ratatui::style::Color::Green));
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_editing_filter_id() {
+        let mut app = make_app(&["INFO a", "WARN b"]).await;
+        app.execute_command_str("filter INFO".to_string()).await;
+        let old_id = app.tabs[0].log_manager.get_filters()[0].id;
+        app.tabs[0].editing_filter_id = Some(old_id);
+
+        // Adding a new filter while editing should remove the old one
+        app.run_command("filter WARN").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].pattern, "WARN");
+    }
+
+    #[tokio::test]
+    async fn test_exclude_with_editing_filter_id() {
+        let mut app = make_app(&["INFO a", "WARN b"]).await;
+        app.execute_command_str("filter INFO".to_string()).await;
+        let old_id = app.tabs[0].log_manager.get_filters()[0].id;
+        app.tabs[0].editing_filter_id = Some(old_id);
+
+        app.run_command("exclude WARN").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].filter_type, FilterType::Exclude);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_command() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("nonexistent-cmd").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid command"));
+    }
+
+    #[tokio::test]
+    async fn test_empty_command() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("").await;
+        // Empty input parses to None command, returns Ok(false)
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_wrap_toggle() {
+        let mut app = make_app(&["line"]).await;
+        assert!(app.tab().wrap);
+        app.run_command("wrap").await.unwrap();
+        assert!(!app.tab().wrap);
+    }
+
+    #[tokio::test]
+    async fn test_close_tab_clamps_active_index() {
+        let mut app = make_app(&["line"]).await;
+        // Push two more tabs
+        for _ in 0..2 {
+            let data: Vec<u8> = b"extra\n".to_vec();
+            let fr = FileReader::from_bytes(data);
+            let lm = LogManager::new(app.db.clone(), None).await;
+            let mut t = crate::ui::TabState::new(fr, lm, "extra".to_string());
+            t.keybindings = app.keybindings.clone();
+            app.tabs.push(t);
+        }
+        assert_eq!(app.tabs.len(), 3);
+        app.active_tab = 2;
+        app.run_command("close-tab").await.unwrap();
+        assert_eq!(app.tabs.len(), 2);
+        assert!(app.active_tab < app.tabs.len());
+    }
+
+    #[tokio::test]
+    async fn test_save_filters_valid_path() {
+        let mut app = make_app(&["line"]).await;
+        app.execute_command_str("filter test".to_string()).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let result = app.run_command(&format!("save-filters {}", path)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_load_filters_valid_path() {
+        let mut app = make_app(&["line"]).await;
+        app.execute_command_str("filter test".to_string()).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("save-filters {}", path))
+            .await
+            .unwrap();
+        // Load the saved filters into a fresh app
+        let mut app2 = make_app(&["line"]).await;
+        let result = app2.run_command(&format!("load-filters {}", path)).await;
+        assert!(result.is_ok());
+        assert!(!app2.tabs[0].log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_set_theme_invalid() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("set-theme nonexistent_theme_xyz").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clear_filters() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        app.execute_command_str("filter line1".to_string()).await;
+        assert!(!app.tabs[0].log_manager.get_filters().is_empty());
+        app.run_command("clear-filters").await.unwrap();
+        assert!(app.tabs[0].log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_disable_enable_filters() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        app.execute_command_str("filter line1".to_string()).await;
+        app.run_command("disable-filters").await.unwrap();
+        assert!(!app.tabs[0].log_manager.get_filters()[0].enabled);
+        app.run_command("enable-filters").await.unwrap();
+        assert!(app.tabs[0].log_manager.get_filters()[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_filtering_toggle() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        assert!(app.tab().filtering_enabled);
+        app.run_command("filtering").await.unwrap();
+        assert!(!app.tab().filtering_enabled);
+        app.run_command("filtering").await.unwrap();
+        assert!(app.tab().filtering_enabled);
+    }
+
+    #[tokio::test]
+    async fn test_hide_field() {
+        let mut app = make_app(&["line"]).await;
+        app.run_command("hide-field level").await.unwrap();
+        assert!(app.tabs[0].hidden_fields.contains("level"));
+    }
+
+    #[tokio::test]
+    async fn test_show_field() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].hidden_fields.insert("level".to_string());
+        app.run_command("show-field level").await.unwrap();
+        assert!(!app.tabs[0].hidden_fields.contains("level"));
+    }
+
+    #[tokio::test]
+    async fn test_show_all_fields() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].hidden_fields.insert("level".to_string());
+        app.tabs[0].hidden_fields.insert("msg".to_string());
+        app.run_command("show-all-fields").await.unwrap();
+        assert!(app.tabs[0].hidden_fields.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_open_nonexistent_file() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("open /nonexistent/path/xyz.log").await;
+        assert!(result.is_err());
     }
 }

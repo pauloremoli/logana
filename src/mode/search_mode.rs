@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
-    mode::{app_mode::Mode, normal_mode::NormalMode},
+    mode::app_mode::{Mode, ModeRenderState},
+    mode::normal_mode::NormalMode,
     ui::{KeyResult, TabState},
 };
 
@@ -58,12 +59,11 @@ impl Mode for SearchMode {
         "[SEARCH] Esc => cancel | Enter => search"
     }
 
-    fn search_state(&self) -> Option<(&str, bool)> {
-        Some((&self.input, self.forward))
-    }
-
-    fn needs_input_bar(&self) -> bool {
-        true
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::Search {
+            query: self.input.clone(),
+            forward: self.forward,
+        }
     }
 }
 
@@ -113,8 +113,10 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let (mode, result) = press(forward_mode(""), &mut tab, KeyCode::Char('e')).await;
         assert!(matches!(result, KeyResult::Handled));
-        let state = mode.search_state().unwrap();
-        assert_eq!(state.0, "e");
+        match mode.render_state() {
+            ModeRenderState::Search { query, .. } => assert_eq!(query, "e"),
+            other => panic!("expected Search, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -122,8 +124,10 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let mode = forward_mode("err");
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('o')).await;
-        let state = mode2.search_state().unwrap();
-        assert_eq!(state.0, "erro");
+        match mode2.render_state() {
+            ModeRenderState::Search { query, .. } => assert_eq!(query, "erro"),
+            other => panic!("expected Search, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -131,16 +135,20 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Backspace).await;
         assert!(matches!(result, KeyResult::Handled));
-        let state = mode2.search_state().unwrap();
-        assert_eq!(state.0, "erro");
+        match mode2.render_state() {
+            ModeRenderState::Search { query, .. } => assert_eq!(query, "erro"),
+            other => panic!("expected Search, got {:?}", other),
+        }
     }
 
     #[tokio::test]
     async fn test_backspace_on_empty_no_panic() {
         let mut tab = make_tab(&["line"]).await;
         let (mode2, _) = press(forward_mode(""), &mut tab, KeyCode::Backspace).await;
-        let state = mode2.search_state().unwrap();
-        assert_eq!(state.0, "");
+        match mode2.render_state() {
+            ModeRenderState::Search { query, .. } => assert_eq!(query, ""),
+            other => panic!("expected Search, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -148,8 +156,14 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.search_state().is_none());
-        assert!(mode2.command_state().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Search { .. }
+        ));
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Command { .. }
+        ));
     }
 
     #[tokio::test]
@@ -176,7 +190,10 @@ mod tests {
         .await;
         let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Enter).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.search_state().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Search { .. }
+        ));
     }
 
     #[tokio::test]
@@ -184,7 +201,10 @@ mod tests {
         let mut tab = make_tab(&["info: all good", "warn: minor issue"]).await;
         let (mode2, result) = press(forward_mode("critical"), &mut tab, KeyCode::Enter).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.search_state().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Search { .. }
+        ));
     }
 
     #[tokio::test]
@@ -198,22 +218,33 @@ mod tests {
     #[test]
     fn test_search_state_forward_true() {
         let mode = forward_mode("test");
-        let state = mode.search_state().unwrap();
-        assert_eq!(state.0, "test");
-        assert!(state.1);
+        match mode.render_state() {
+            ModeRenderState::Search { query, forward } => {
+                assert_eq!(query, "test");
+                assert!(forward);
+            }
+            other => panic!("expected Search, got {:?}", other),
+        }
     }
 
     #[test]
     fn test_search_state_forward_false() {
         let mode = backward_mode("warn");
-        let state = mode.search_state().unwrap();
-        assert_eq!(state.0, "warn");
-        assert!(!state.1);
+        match mode.render_state() {
+            ModeRenderState::Search { query, forward } => {
+                assert_eq!(query, "warn");
+                assert!(!forward);
+            }
+            other => panic!("expected Search, got {:?}", other),
+        }
     }
 
     #[test]
     fn test_needs_input_bar() {
-        assert!(forward_mode("").needs_input_bar());
+        assert!(matches!(
+            forward_mode("").render_state(),
+            ModeRenderState::Command { .. } | ModeRenderState::Search { .. }
+        ));
     }
 
     #[test]

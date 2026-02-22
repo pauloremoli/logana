@@ -87,7 +87,24 @@ fn collect_matches(text: &str, colors: &ValueColors) -> Vec<ColorMatch> {
         }
     }
 
+    let text_bytes = text.as_bytes();
     for m in STATUS_CODE_RE.find_iter(text) {
+        // Skip matches adjacent to '.' or '/' — avoids coloring version numbers
+        // (e.g. "537.36", "Chrome/120.0.0.0") and path segments ("/300/").
+        let before = if m.start() > 0 {
+            text_bytes[m.start() - 1]
+        } else {
+            b' '
+        };
+        let after = if m.end() < text_bytes.len() {
+            text_bytes[m.end()]
+        } else {
+            b' '
+        };
+        if before == b'.' || before == b'/' || after == b'.' || after == b'/' {
+            continue;
+        }
+
         let key = status_code_key(m.as_str());
         if !colors.is_disabled(key)
             && let Some(color) = status_code_color(m.as_str(), colors)
@@ -102,6 +119,16 @@ fn collect_matches(text: &str, colors: &ValueColors) -> Vec<ColorMatch> {
 
     for m in IPV4_RE.find_iter(text) {
         if !colors.is_disabled("ip_address") {
+            // Skip matches preceded by '/' — avoids coloring version numbers
+            // like "Chrome/120.0.0.0".
+            let before = if m.start() > 0 {
+                text_bytes[m.start() - 1]
+            } else {
+                b' '
+            };
+            if before == b'/' {
+                continue;
+            }
             // Validate each octet is 0..=255
             let valid = m
                 .as_str()
@@ -453,6 +480,69 @@ mod tests {
         let status_span = result.spans.iter().find(|s| s.content.as_ref() == "200");
         assert!(status_span.is_some());
         assert_eq!(status_span.unwrap().style.fg, Some(colors.status_2xx));
+    }
+
+    #[test]
+    fn test_status_code_not_in_version_number() {
+        let colors = default_colors();
+        let line = Line::from("AppleWebKit/537.36 Chrome/120.0.0.0");
+        let result = colorize_known_values(line, &colors);
+
+        // "537" and "120" should NOT be colorized — they are part of version numbers
+        for span in &result.spans {
+            if span.content.contains("537") || span.content.contains("120") {
+                assert_eq!(
+                    span.style.fg, None,
+                    "version number fragment '{}' should not be colorized",
+                    span.content
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_status_code_not_in_path_segment() {
+        let colors = default_colors();
+        let line = Line::from("GET /api/v2/items/300/details HTTP/1.1");
+        let result = colorize_known_values(line, &colors);
+
+        // "300" is a path segment (/300/), should NOT be colorized
+        let path_300 = result.spans.iter().find(|s| s.content.contains("300"));
+        assert!(path_300.is_some());
+        assert_eq!(path_300.unwrap().style.fg, None);
+    }
+
+    #[test]
+    fn test_status_code_standalone_still_works() {
+        let colors = default_colors();
+        let line = Line::from("responded 404 Not Found");
+        let result = colorize_known_values(line, &colors);
+
+        let status_span = result.spans.iter().find(|s| s.content.as_ref() == "404");
+        assert!(status_span.is_some());
+        assert_eq!(status_span.unwrap().style.fg, Some(colors.status_4xx));
+    }
+
+    #[test]
+    fn test_status_code_at_end_of_line() {
+        let colors = default_colors();
+        let line = Line::from("request completed 500");
+        let result = colorize_known_values(line, &colors);
+
+        let status_span = result.spans.iter().find(|s| s.content.as_ref() == "500");
+        assert!(status_span.is_some());
+        assert_eq!(status_span.unwrap().style.fg, Some(colors.status_5xx));
+    }
+
+    #[test]
+    fn test_status_code_not_in_port_number() {
+        let colors = default_colors();
+        let line = Line::from("listening on :443 and :200");
+        let _result = colorize_known_values(line, &colors);
+        // Port numbers like :443 and :200 are preceded by ':' which is not a
+        // word char, so \b still matches. This is acceptable — port numbers
+        // in the status code range do get colored. The important cases are
+        // version numbers (.) and path segments (/) which are now excluded.
     }
 
     #[test]

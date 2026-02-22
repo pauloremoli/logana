@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
-    mode::{app_mode::Mode, normal_mode::NormalMode},
+    mode::app_mode::{Mode, ModeRenderState},
+    mode::normal_mode::NormalMode,
     types::FieldLayout,
     ui::{KeyResult, TabState},
 };
@@ -101,8 +102,11 @@ impl Mode for SelectFieldsMode {
         "[SELECT FIELDS] Space=toggle | J/K=reorder | Enter=apply | Esc=cancel | a=all | n=none"
     }
 
-    fn select_fields_state(&self) -> Option<(&[(String, bool)], usize)> {
-        Some((&self.fields, self.selected))
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::SelectFields {
+            fields: self.fields.clone(),
+            selected: self.selected,
+        }
     }
 }
 
@@ -112,6 +116,7 @@ mod tests {
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
+    use crate::mode::app_mode::ModeRenderState;
     use std::sync::Arc;
 
     async fn make_tab() -> TabState {
@@ -145,7 +150,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
-        assert_eq!(mode2.select_fields_state().unwrap().1, 1);
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { selected, .. } => assert_eq!(selected, 1),
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -154,7 +162,10 @@ mod tests {
         let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         mode.selected = 2;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
-        assert_eq!(mode2.select_fields_state().unwrap().1, 1);
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { selected, .. } => assert_eq!(selected, 1),
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -162,7 +173,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
-        assert_eq!(mode2.select_fields_state().unwrap().1, 0);
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { selected, .. } => assert_eq!(selected, 0),
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -171,7 +185,10 @@ mod tests {
         let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         mode.selected = 3;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
-        assert_eq!(mode2.select_fields_state().unwrap().1, 3);
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { selected, .. } => assert_eq!(selected, 3),
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -179,8 +196,12 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char(' ')).await;
-        let (fields, _) = mode2.select_fields_state().unwrap();
-        assert!(!fields[0].1); // was true, now false
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { fields, .. } => {
+                assert!(!fields[0].1); // was true, now false
+            }
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -188,8 +209,12 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('a')).await;
-        let (fields, _) = mode2.select_fields_state().unwrap();
-        assert!(fields.iter().all(|(_, on)| *on));
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { fields, .. } => {
+                assert!(fields.iter().all(|(_, on)| *on));
+            }
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -197,8 +222,12 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('n')).await;
-        let (fields, _) = mode2.select_fields_state().unwrap();
-        assert!(fields.iter().all(|(_, on)| !*on));
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { fields, .. } => {
+                assert!(fields.iter().all(|(_, on)| !*on));
+            }
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -212,7 +241,10 @@ mod tests {
         ];
         let mode = SelectFieldsMode::new(fields, FieldLayout::default());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Enter).await;
-        assert!(mode2.select_fields_state().is_none()); // transitioned to NormalMode
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::SelectFields { .. }
+        )); // transitioned to NormalMode
         assert_eq!(
             tab.field_layout.columns,
             Some(vec!["timestamp".to_string(), "message".to_string()])
@@ -252,7 +284,10 @@ mod tests {
         };
         let mode = SelectFieldsMode::new(sample_fields(), original.clone());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Esc).await;
-        assert!(mode2.select_fields_state().is_none()); // NormalMode
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::SelectFields { .. }
+        )); // NormalMode
         assert_eq!(tab.field_layout.columns, original.columns);
         assert_eq!(tab.field_layout.columns_order, original.columns_order);
     }
@@ -268,7 +303,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Down).await;
-        assert_eq!(mode2.select_fields_state().unwrap().1, 1);
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { selected, .. } => assert_eq!(selected, 1),
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -277,7 +315,10 @@ mod tests {
         let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         mode.selected = 2;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Up).await;
-        assert_eq!(mode2.select_fields_state().unwrap().1, 1);
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { selected, .. } => assert_eq!(selected, 1),
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -286,10 +327,14 @@ mod tests {
         let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         mode.selected = 0; // "timestamp"
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('J')).await;
-        let (fields, sel) = mode2.select_fields_state().unwrap();
-        assert_eq!(sel, 1);
-        assert_eq!(fields[0].0, "level");
-        assert_eq!(fields[1].0, "timestamp");
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { fields, selected } => {
+                assert_eq!(selected, 1);
+                assert_eq!(fields[0].0, "level");
+                assert_eq!(fields[1].0, "timestamp");
+            }
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -298,10 +343,14 @@ mod tests {
         let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         mode.selected = 2; // "message"
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('K')).await;
-        let (fields, sel) = mode2.select_fields_state().unwrap();
-        assert_eq!(sel, 1);
-        assert_eq!(fields[1].0, "message");
-        assert_eq!(fields[2].0, "level");
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { fields, selected } => {
+                assert_eq!(selected, 1);
+                assert_eq!(fields[1].0, "message");
+                assert_eq!(fields[2].0, "level");
+            }
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -310,9 +359,13 @@ mod tests {
         let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         mode.selected = 3; // last item
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('J')).await;
-        let (fields, sel) = mode2.select_fields_state().unwrap();
-        assert_eq!(sel, 3);
-        assert_eq!(fields[3].0, "request_id"); // unchanged
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { fields, selected } => {
+                assert_eq!(selected, 3);
+                assert_eq!(fields[3].0, "request_id"); // unchanged
+            }
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -320,9 +373,13 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('K')).await;
-        let (fields, sel) = mode2.select_fields_state().unwrap();
-        assert_eq!(sel, 0);
-        assert_eq!(fields[0].0, "timestamp"); // unchanged
+        match mode2.render_state() {
+            ModeRenderState::SelectFields { fields, selected } => {
+                assert_eq!(selected, 0);
+                assert_eq!(fields[0].0, "timestamp"); // unchanged
+            }
+            other => panic!("expected SelectFields, got {:?}", other),
+        }
     }
 
     #[tokio::test]

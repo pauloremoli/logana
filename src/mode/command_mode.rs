@@ -6,7 +6,11 @@ use crate::{
         complete_color, complete_file_path, extract_color_partial, find_command_completions,
         fuzzy_match,
     },
-    mode::{app_mode::Mode, filter_mode::FilterManagementMode, normal_mode::NormalMode},
+    mode::{
+        app_mode::{Mode, ModeRenderState},
+        filter_mode::FilterManagementMode,
+        normal_mode::NormalMode,
+    },
     theme::Theme,
     ui::{KeyResult, TabState},
 };
@@ -310,16 +314,12 @@ impl Mode for CommandMode {
         "[COMMAND] filter | exclude | set-color | export-marked | save-filters | load-filters | wrap | set-theme | level-colors | open | close-tab | Esc | Enter"
     }
 
-    fn command_state(&self) -> Option<(&str, usize)> {
-        Some((&self.input, self.cursor))
-    }
-
-    fn completion_index(&self) -> Option<usize> {
-        self.completion_index
-    }
-
-    fn needs_input_bar(&self) -> bool {
-        true
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::Command {
+            input: self.input.clone(),
+            cursor: self.cursor,
+            completion_index: self.completion_index,
+        }
     }
 }
 
@@ -329,6 +329,7 @@ mod tests {
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
+    use crate::mode::app_mode::ModeRenderState;
     use crate::ui::{KeyResult, TabState};
     use std::sync::Arc;
 
@@ -353,12 +354,31 @@ mod tests {
             .await
     }
 
+    /// Extract (input, cursor) from a mode's render_state if it is Command.
+    /// Returns None when the mode is not CommandMode.
+    fn command_state(mode: &dyn Mode) -> Option<(String, usize)> {
+        match mode.render_state() {
+            ModeRenderState::Command { input, cursor, .. } => Some((input, cursor)),
+            _ => None,
+        }
+    }
+
+    /// Extract completion_index from a Command render_state.
+    fn completion_index(mode: &dyn Mode) -> Option<usize> {
+        match mode.render_state() {
+            ModeRenderState::Command {
+                completion_index, ..
+            } => completion_index,
+            _ => None,
+        }
+    }
+
     #[tokio::test]
     async fn test_char_appends_to_input() {
         let mut tab = make_tab().await;
         let (mode, result) = press(empty_mode(), &mut tab, KeyCode::Char('f')).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert_eq!(mode.command_state(), Some(("f", 1)));
+        assert_eq!(command_state(mode.as_ref()), Some(("f".to_string(), 1)));
     }
 
     #[tokio::test]
@@ -366,7 +386,7 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = CommandMode::with_history("fil".to_string(), 3, vec![]);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('t')).await;
-        assert_eq!(mode2.command_state(), Some(("filt", 4)));
+        assert_eq!(command_state(mode2.as_ref()), Some(("filt".to_string(), 4)));
     }
 
     #[tokio::test]
@@ -374,14 +394,17 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = CommandMode::with_history("filter".to_string(), 6, vec![]);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Backspace).await;
-        assert_eq!(mode2.command_state(), Some(("filte", 5)));
+        assert_eq!(
+            command_state(mode2.as_ref()),
+            Some(("filte".to_string(), 5))
+        );
     }
 
     #[tokio::test]
     async fn test_backspace_at_start_no_change() {
         let mut tab = make_tab().await;
         let (mode2, _) = press(empty_mode(), &mut tab, KeyCode::Backspace).await;
-        assert_eq!(mode2.command_state(), Some(("", 0)));
+        assert_eq!(command_state(mode2.as_ref()), Some(("".to_string(), 0)));
     }
 
     #[tokio::test]
@@ -390,7 +413,10 @@ mod tests {
         let mode = CommandMode::with_history("filter foo".to_string(), 10, vec![]);
         let (mode2, result) = press(mode, &mut tab, KeyCode::Enter).await;
         assert!(matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd == "filter foo"));
-        assert!(mode2.command_state().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Command { .. }
+        ));
     }
 
     #[tokio::test]
@@ -407,7 +433,10 @@ mod tests {
         let mode = CommandMode::with_history("filter".to_string(), 6, vec![]);
         let (mode2, result) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.command_state().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Command { .. }
+        ));
         assert!(mode2.status_line().contains("[NORMAL]"));
     }
 
@@ -429,7 +458,7 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = CommandMode::with_history("abc".to_string(), 3, vec![]);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Left).await;
-        assert_eq!(mode2.command_state(), Some(("abc", 2)));
+        assert_eq!(command_state(mode2.as_ref()), Some(("abc".to_string(), 2)));
     }
 
     #[tokio::test]
@@ -437,7 +466,7 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = CommandMode::with_history("abc".to_string(), 0, vec![]);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Left).await;
-        assert_eq!(mode2.command_state(), Some(("abc", 0)));
+        assert_eq!(command_state(mode2.as_ref()), Some(("abc".to_string(), 0)));
     }
 
     #[tokio::test]
@@ -445,7 +474,7 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = CommandMode::with_history("abc".to_string(), 2, vec![]);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Right).await;
-        assert_eq!(mode2.command_state(), Some(("abc", 3)));
+        assert_eq!(command_state(mode2.as_ref()), Some(("abc".to_string(), 3)));
     }
 
     #[tokio::test]
@@ -453,7 +482,7 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = CommandMode::with_history("abc".to_string(), 3, vec![]);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Right).await;
-        assert_eq!(mode2.command_state(), Some(("abc", 3)));
+        assert_eq!(command_state(mode2.as_ref()), Some(("abc".to_string(), 3)));
     }
 
     #[tokio::test]
@@ -462,7 +491,7 @@ mod tests {
         let history = vec!["cmd1".to_string(), "cmd2".to_string()];
         let mode = CommandMode::with_history(String::new(), 0, history);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Up).await;
-        let (input, _) = mode2.command_state().unwrap();
+        let (input, _) = command_state(mode2.as_ref()).unwrap();
         assert_eq!(input, "cmd2");
     }
 
@@ -470,7 +499,7 @@ mod tests {
     async fn test_up_on_empty_history_no_change() {
         let mut tab = make_tab().await;
         let (mode2, _) = press(empty_mode(), &mut tab, KeyCode::Up).await;
-        assert_eq!(mode2.command_state(), Some(("", 0)));
+        assert_eq!(command_state(mode2.as_ref()), Some(("".to_string(), 0)));
     }
 
     #[tokio::test]
@@ -479,7 +508,7 @@ mod tests {
         let history = vec!["cmd1".to_string()];
         let mode = CommandMode::with_history(String::new(), 0, history);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Up).await;
-        let (input, _) = mode2.command_state().unwrap();
+        let (input, _) = command_state(mode2.as_ref()).unwrap();
         assert_eq!(input, "cmd1");
 
         // Reconstruct CommandMode from state to continue
@@ -491,7 +520,7 @@ mod tests {
             completion_index: None,
         };
         let (mode4, _) = press(mode3, &mut tab, KeyCode::Down).await;
-        let (input2, _) = mode4.command_state().unwrap();
+        let (input2, _) = command_state(mode4.as_ref()).unwrap();
         assert_eq!(input2, "");
     }
 
@@ -503,10 +532,10 @@ mod tests {
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         // Input stays unchanged
-        let (input, _) = mode2.command_state().unwrap();
+        let (input, _) = command_state(mode2.as_ref()).unwrap();
         assert_eq!(input, "fi");
         // But completion_index is set
-        assert_eq!(mode2.completion_index(), Some(0));
+        assert_eq!(completion_index(mode2.as_ref()), Some(0));
     }
 
     #[tokio::test]
@@ -516,10 +545,10 @@ mod tests {
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         // Input stays empty
-        let (input, _) = mode2.command_state().unwrap();
+        let (input, _) = command_state(mode2.as_ref()).unwrap();
         assert_eq!(input, "");
         // But completion_index is set
-        assert_eq!(mode2.completion_index(), Some(0));
+        assert_eq!(completion_index(mode2.as_ref()), Some(0));
     }
 
     #[tokio::test]
@@ -530,12 +559,12 @@ mod tests {
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
-        assert_eq!(mode2.completion_index(), Some(0));
+        assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
         let (mode3, _) = mode2
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
-        assert_eq!(mode3.completion_index(), Some(1));
+        assert_eq!(completion_index(mode3.as_ref()), Some(1));
     }
 
     #[tokio::test]
@@ -546,12 +575,12 @@ mod tests {
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
-        assert_eq!(mode2.completion_index(), Some(0));
+        assert_eq!(completion_index(mode2.as_ref()), Some(0));
         // BackTab from 0 → wraps to last
         let (mode3, _) = mode2
             .handle_key(&mut tab, KeyCode::BackTab, KeyModifiers::NONE)
             .await;
-        let idx = mode3.completion_index().unwrap();
+        let idx = completion_index(mode3.as_ref()).unwrap();
         assert!(idx > 0, "BackTab from 0 should wrap to last index");
     }
 
@@ -562,23 +591,26 @@ mod tests {
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
-        assert!(mode2.completion_index().is_some());
+        assert!(completion_index(mode2.as_ref()).is_some());
         // Typing a char resets completion
         let (mode3, _) = mode2
             .handle_key(&mut tab, KeyCode::Char('l'), KeyModifiers::NONE)
             .await;
-        assert!(mode3.completion_index().is_none());
+        assert!(completion_index(mode3.as_ref()).is_none());
     }
 
     #[test]
     fn test_command_state_returns_input_and_cursor() {
         let mode = CommandMode::with_history("hello".to_string(), 3, vec![]);
-        assert_eq!(mode.command_state(), Some(("hello", 3)));
+        assert_eq!(command_state(&mode), Some(("hello".to_string(), 3)));
     }
 
     #[test]
-    fn test_needs_input_bar() {
-        assert!(empty_mode().needs_input_bar());
+    fn test_render_state_is_command() {
+        assert!(matches!(
+            empty_mode().render_state(),
+            ModeRenderState::Command { .. }
+        ));
     }
 
     #[test]
@@ -605,11 +637,11 @@ mod tests {
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
-        let (input, _) = mode2.command_state().unwrap();
+        let (input, _) = command_state(mode2.as_ref()).unwrap();
         // Input stays unchanged
         assert_eq!(input, "open ");
         // Completion is highlighted
-        assert_eq!(mode2.completion_index(), Some(0));
+        assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
         // Enter accepts the completion — single file → accept AND execute
         let (_mode3, result) = mode2
@@ -647,15 +679,15 @@ mod tests {
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         // Input stays unchanged after Tab
-        let (input, _) = mode2.command_state().unwrap();
+        let (input, _) = command_state(mode2.as_ref()).unwrap();
         assert_eq!(input, input_str);
-        assert_eq!(mode2.completion_index(), Some(0));
+        assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
         // Enter accepts the highlighted completion
         let (mode3, result) = mode2
             .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
             .await;
-        let (accepted, _) = mode3.command_state().unwrap_or(("", 0));
+        let (accepted, _) = command_state(mode3.as_ref()).unwrap_or(("".to_string(), 0));
         // Single fuzzy match → accept AND execute
         assert!(
             accepted.is_empty() || accepted.ends_with("application.log"),
@@ -676,8 +708,8 @@ mod tests {
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         // Input stays "fi", completion_index is set
-        assert_eq!(mode2.command_state().unwrap().0, "fi");
-        assert_eq!(mode2.completion_index(), Some(0));
+        assert_eq!(command_state(mode2.as_ref()).unwrap().0, "fi");
+        assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
         // Press Enter — should accept highlighted completion into input (multiple matches)
         let (mode3, result) = mode2
@@ -685,12 +717,12 @@ mod tests {
             .await;
         assert!(matches!(result, KeyResult::Handled));
         // Still in command mode with accepted text
-        let input_after_accept = mode3.command_state().unwrap().0.to_string();
+        let input_after_accept = command_state(mode3.as_ref()).unwrap().0.clone();
         assert!(
             !input_after_accept.is_empty(),
             "Input should be filled with accepted completion"
         );
-        assert!(mode3.completion_index().is_none());
+        assert!(completion_index(mode3.as_ref()).is_none());
 
         // Second Enter — should execute the command
         let (mode4, result2) = mode3
@@ -698,7 +730,10 @@ mod tests {
             .await;
         assert!(matches!(result2, KeyResult::ExecuteCommand(_)));
         // Now in normal mode (command_state returns None)
-        assert!(mode4.command_state().is_none());
+        assert!(!matches!(
+            mode4.render_state(),
+            ModeRenderState::Command { .. }
+        ));
     }
 
     #[tokio::test]
@@ -709,8 +744,8 @@ mod tests {
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
-        assert_eq!(mode2.completion_index(), Some(0));
-        assert_eq!(mode2.command_state().unwrap().0, "wra");
+        assert_eq!(completion_index(mode2.as_ref()), Some(0));
+        assert_eq!(command_state(mode2.as_ref()).unwrap().0, "wra");
 
         // Enter on single match → accept AND execute immediately
         let (mode3, result) = mode2
@@ -720,6 +755,9 @@ mod tests {
             matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd == "wrap"),
             "Single match should accept and execute immediately"
         );
-        assert!(mode3.command_state().is_none());
+        assert!(!matches!(
+            mode3.render_state(),
+            ModeRenderState::Command { .. }
+        ));
     }
 }

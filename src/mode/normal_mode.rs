@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use crate::{
     config::Keybindings,
     mode::{
-        app_mode::{Mode, status_entry},
+        app_mode::{Mode, ModeRenderState, status_entry},
         command_mode::CommandMode,
         filter_mode::FilterManagementMode,
         keybindings_help_mode::KeybindingsHelpMode,
@@ -237,6 +237,10 @@ impl Mode for NormalMode {
         "[NORMAL] [q]uit | [f]ilter mode | [F] toggle filtering | [m]ark | [M] marks only | [s]idebar | [V]isual select | Tab/Shift+Tab switch tab | [F1] help"
     }
 
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::Normal
+    }
+
     fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[NORMAL]  ",
@@ -429,8 +433,14 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let (mode, result) = press(&mut tab, KeyCode::Char(':'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode.command_state().is_some());
-        assert!(mode.needs_input_bar());
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::Command { .. }
+        ));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::Command { .. } | ModeRenderState::Search { .. }
+        ));
     }
 
     #[tokio::test]
@@ -438,26 +448,34 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let (mode, result) = press(&mut tab, KeyCode::Char('f'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode.selected_filter_index().is_some());
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
     }
 
     #[tokio::test]
     async fn test_slash_transitions_to_forward_search() {
         let mut tab = make_tab(&["line"]).await;
         let (mode, _) = press(&mut tab, KeyCode::Char('/'), KeyModifiers::NONE).await;
-        assert!(mode.needs_input_bar());
-        let search = mode.search_state();
-        assert!(search.is_some());
-        assert!(search.unwrap().1);
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::Command { .. } | ModeRenderState::Search { .. }
+        ));
+        match mode.render_state() {
+            ModeRenderState::Search { forward, .. } => assert!(forward),
+            other => panic!("expected Search, got {:?}", other),
+        }
     }
 
     #[tokio::test]
     async fn test_question_mark_transitions_to_backward_search() {
         let mut tab = make_tab(&["line"]).await;
         let (mode, _) = press(&mut tab, KeyCode::Char('?'), KeyModifiers::NONE).await;
-        let search = mode.search_state();
-        assert!(search.is_some());
-        assert!(!search.unwrap().1);
+        match mode.render_state() {
+            ModeRenderState::Search { forward, .. } => assert!(!forward),
+            other => panic!("expected Search, got {:?}", other),
+        }
     }
 
     #[tokio::test]

@@ -9,9 +9,13 @@ src/
   main.rs         - Entry point, CLI args, runtime setup, app lifecycle
   lib.rs          - Library re-exports
   types.rs        - Shared data types (LogLevel, FilterType, FilterDef, ColorConfig, SearchResult, FieldLayout)
-  format.rs       - Log format abstraction: LogFormatParser trait, DisplayParts, detect_format()
-  log_line.rs     - JSON log parser (JsonParser implementing LogFormatParser)
-  syslog.rs       - Syslog parser: RFC 3164 + RFC 5424 (SyslogParser implementing LogFormatParser)
+  parser/          - Log format parsing module directory
+    mod.rs         - Re-exports, detect_format()
+    types.rs       - LogFormatParser trait, DisplayParts, SpanInfo, format_span_col()
+    json.rs        - JSON log parser (JsonParser implementing LogFormatParser)
+    syslog.rs      - Syslog parser: RFC 3164 + RFC 5424 (SyslogParser implementing LogFormatParser)
+    journalctl.rs  - Journalctl text parser: short-iso, short-precise, short-full (JournalctlParser implementing LogFormatParser)
+    clf.rs         - Common Log Format + Combined Log Format parser (ClfParser implementing LogFormatParser)
   file_reader.rs  - Memory-mapped file I/O with SIMD line indexing (FileReader)
   filters.rs      - Filter pipeline: Filter trait, SubstringFilter, RegexFilter, FilterManager, render_line
   log_manager.rs  - Filter/mark state management + SQLite persistence bridge (LogManager)
@@ -70,7 +74,7 @@ A multiline comment attached to a group of log lines. Multiple comments can exis
 - **`from_bytes(Vec<u8>)`**: Used for stdin input and in-memory test data.
 - **`spawn_process_stream(program, args)`**: Spawns a child process, merges stdout+stderr via mpsc, strips ANSI, and delivers complete lines every 500 ms through a `watch::Receiver<Vec<u8>>`. Used by the `docker` command.
 
-### Format Abstraction (format.rs)
+### Format Abstraction (parser/)
 
 Trait-based log format parsing. New parsers are added by implementing a single trait.
 
@@ -81,10 +85,10 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `collect_field_names(&self, lines: &[&[u8]]) -> Vec<String>` — discover field names by sampling
   - `detect_score(&self, sample: &[&[u8]]) -> f64` — confidence score (0.0–1.0) for format detection
   - `name(&self) -> &str` — human-readable format name
-- **`detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>>`**: Tries all registered parsers (JsonParser, SyslogParser), returns the one with the highest score above 0.0.
+- **`detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>>`**: Tries all registered parsers (JsonParser, SyslogParser, JournalctlParser, ClfParser), returns the one with the highest score above 0.0.
 - **`format_span_col(&SpanInfo) -> String`**: Formats span as `name: k=v, k=v`.
 
-### JSON Parser (log_line.rs)
+### JSON Parser (parser/json.rs)
 
 - **`JsonParser`** implements `LogFormatParser`. Parses JSON log lines (tracing, bunyan, etc.).
 - **`parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'a>>>`**: Zero-copy JSON field extraction.
@@ -93,7 +97,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **`detect_score`**: Proportion of sample lines starting with `{` that parse successfully.
 - **`collect_field_names`**: Returns raw JSON key names (not canonical names) ordered by canonical slot (timestamp-group → level-group → target-group → sorted extras → message-group last), plus dotted sub-fields like `span.name`, `fields.count`.
 
-### Syslog Parser (syslog.rs)
+### Syslog Parser (parser/syslog.rs)
 
 - **`SyslogParser`** implements `LogFormatParser`. Supports RFC 3164 (BSD) and RFC 5424 formats.
 - **RFC 3164**: `<PRI>Mmm DD HH:MM:SS hostname app[pid]: message` — optional priority prefix, BSD timestamp, hostname, app name with optional PID.
@@ -102,6 +106,31 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **Zero-copy**: Converts `&[u8]` to `&str` once, then extracts `&str` slices by byte offsets. Severity levels are `&'static str` constants.
 - **`detect_score`**: Proportion of sample lines that parse successfully.
 - **`collect_field_names`**: Static canonical names + dynamically discovered extras (hostname, pid, facility, msgid, SD param names).
+
+### Journalctl Parser (parser/journalctl.rs)
+
+- **`JournalctlParser`** implements `LogFormatParser`. Handles `journalctl` text output variants that SyslogParser does not cover (ISO and precise timestamps).
+- **short-iso**: `YYYY-MM-DDTHH:MM:SS±ZZZZ hostname unit[pid]: message` — ISO 8601 timestamp.
+- **short-precise**: `Mmm DD HH:MM:SS.FFFFFF hostname unit[pid]: message` — BSD timestamp with microseconds (the `.` suffix distinguishes from plain BSD handled by SyslogParser).
+- **short-full**: `Www YYYY-MM-DD HH:MM:SS TZ hostname unit[pid]: message` — weekday prefix + date + time + timezone name.
+- **Header/footer lines** (`-- Journal begins...`, `-- No entries --`) are skipped (return `None`).
+- **Zero-copy**: Converts `&[u8]` to `&str` once, then extracts `&str` slices by byte offsets for all fields.
+- **Fields**: `timestamp`, `target` (unit name), extras (`hostname`, `pid`), `message`. No `level` — journalctl text output does not carry priority.
+- **`detect_score`**: Proportion of sample lines that parse successfully.
+- **`collect_field_names`**: Static canonical names (`timestamp`, `target`) + dynamically discovered extras + `message` last.
+
+### CLF Parser (parser/clf.rs)
+
+- **`ClfParser`** implements `LogFormatParser`. Supports both Common Log Format (CLF) and Combined Log Format.
+- **CLF**: `host ident authuser [dd/Mmm/yyyy:HH:MM:SS ±ZZZZ] "request" status bytes`.
+- **Combined**: CLF + `"referer" "user-agent"`.
+- **Date validation**: Strict `dd/Mmm/yyyy:HH:MM:SS ±ZZZZ` format check (month abbreviation + digit positions).
+- **Status validation**: Must be a 3-digit number or `"-"`.
+- **Dash handling**: Fields with value `"-"` are omitted from `extra_fields` (ident, authuser, bytes, referer, user_agent).
+- **Zero-copy**: All fields are `&str` slices into the original line.
+- **Field mapping**: `timestamp` = date, `target` = host, `message` = request line. Extras: `ident`, `authuser`, `status`, `bytes`, `referer`, `user_agent`.
+- **`detect_score`**: Proportion of sample lines that parse successfully.
+- **`collect_field_names`**: Static canonical names (`timestamp`, `target`) + discovered extras in order + `message` last.
 
 ### Filter Pipeline (filters.rs)
 
@@ -159,7 +188,8 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `keybindings: Arc<Keybindings>` — shared keybinding config (cloned from `App` on tab creation)
   - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
-- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `VisualLineMode`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`. Rendering data is exposed through trait methods: `status_line()`, `dynamic_status_line(&Keybindings)`, `selected_filter_index()`, `command_state()`, `completion_index()`, `search_state()`, `needs_input_bar()`, `confirm_restore_context()`, `confirm_restore_session_files()`, `visual_selection_anchor()`, `comment_popup()`, `keybindings_help_scroll()`, `keybindings_help_search()`, `select_fields_state()`, `docker_select_state()`, `value_colors_state()`.
+- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `VisualLineMode`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`.
+- **`ModeRenderState` enum** (ISP-compliant): Each mode implements `render_state() -> ModeRenderState`, returning a typed variant carrying exactly the data its renderer needs. Variants: `Normal`, `Command { input, cursor, completion_index }`, `Search { query, forward }`, `FilterManagement { selected_index }`, `FilterEdit`, `VisualLine { anchor }`, `Comment { lines, cursor_row, cursor_col, line_count }`, `KeybindingsHelp { scroll, search }`, `SelectFields { fields, selected }`, `DockerSelect { containers, selected, error }`, `ValueColors { groups, search, selected }`, `ConfirmRestore`, `ConfirmRestoreSession { files }`. The renderer does a single `match` on the enum instead of calling many optional trait methods.
 - **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`.
 
 **Rendering pipeline (per frame)**:
@@ -255,7 +285,7 @@ anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, se
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/field_layout.rs, auto_complete.rs, format.rs, log_line.rs, syslog.rs, value_colors.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 536 tests total
+- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/field_layout.rs, auto_complete.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, value_colors.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 607 tests total
 - **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
 - **Stdin test** (tests/stdin.rs): pipe input end-to-end — 1 test
 - **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)

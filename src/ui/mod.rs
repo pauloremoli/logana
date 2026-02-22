@@ -4,10 +4,10 @@ use std::sync::Arc;
 use crate::config::Keybindings;
 use crate::db::FileContext;
 use crate::file_reader::FileReader;
-use crate::format::{LogFormatParser, detect_format};
 use crate::log_manager::LogManager;
 use crate::mode::app_mode::Mode;
 use crate::mode::normal_mode::NormalMode;
+use crate::parser::{LogFormatParser, detect_format};
 use crate::search::Search;
 use crate::types::FieldLayout;
 
@@ -247,3 +247,193 @@ pub struct FileWatchState {
 }
 
 pub use app::App;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{Database, FileContext};
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::types::{Comment, FilterType};
+    use std::sync::Arc;
+
+    async fn make_tab(lines: &[&str]) -> TabState {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        TabState::new(file_reader, log_manager, "test".to_string())
+    }
+
+    async fn make_tab_with_source(lines: &[&str], source: &str) -> TabState {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, Some(source.to_string())).await;
+        TabState::new(file_reader, log_manager, "test".to_string())
+    }
+
+    #[tokio::test]
+    async fn test_refresh_visible_all_lines() {
+        let tab = make_tab(&["line1", "line2", "line3", "line4", "line5"]).await;
+        assert_eq!(tab.visible_indices.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_visible_marks_only() {
+        let mut tab = make_tab(&["line1", "line2", "line3", "line4", "line5"]).await;
+        tab.log_manager.toggle_mark(0);
+        tab.log_manager.toggle_mark(2);
+        tab.show_marks_only = true;
+        tab.refresh_visible();
+        assert_eq!(tab.visible_indices, vec![0, 2]);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_visible_filtering_disabled() {
+        let mut tab = make_tab(&["line1", "line2", "line3", "line4", "line5"]).await;
+        tab.log_manager
+            .add_filter_with_color("line1".to_string(), FilterType::Include, None, None, false)
+            .await;
+        tab.filtering_enabled = false;
+        tab.refresh_visible();
+        assert_eq!(tab.visible_indices.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_visible_empty_file() {
+        let tab = make_tab(&[]).await;
+        assert!(tab.visible_indices.is_empty());
+        assert_eq!(tab.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_visible_clamps_scroll() {
+        let mut tab = make_tab(&["line1", "line2", "line3"]).await;
+        tab.scroll_offset = 10;
+        tab.refresh_visible();
+        assert_eq!(tab.scroll_offset, 2);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_to_line_idx_found() {
+        let mut tab = make_tab(&["line1", "line2", "line3", "line4", "line5"]).await;
+        tab.scroll_to_line_idx(2);
+        assert_eq!(tab.scroll_offset, 2);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_to_line_idx_not_found() {
+        let mut tab = make_tab(&["line1", "line2", "line3", "line4", "line5"]).await;
+        tab.scroll_to_line_idx(999);
+        assert_eq!(tab.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_to_file_context_with_source() {
+        let tab = make_tab_with_source(&["line1", "line2", "line3"], "test.log").await;
+        let ctx = tab.to_file_context();
+        assert!(ctx.is_some());
+        let ctx = ctx.unwrap();
+        assert_eq!(ctx.source_file, "test.log");
+        assert_eq!(ctx.scroll_offset, 0);
+        assert!(ctx.wrap);
+        assert!(ctx.level_colors);
+        assert!(ctx.show_sidebar);
+        assert!(ctx.show_line_numbers);
+    }
+
+    #[tokio::test]
+    async fn test_to_file_context_no_source() {
+        let tab = make_tab(&["line1", "line2", "line3"]).await;
+        let ctx = tab.to_file_context();
+        assert!(ctx.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_apply_file_context_full() {
+        let mut tab =
+            make_tab_with_source(&["line1", "line2", "line3", "line4", "line5"], "test.log").await;
+        let ctx = FileContext {
+            source_file: "test.log".to_string(),
+            scroll_offset: 3,
+            search_query: "line".to_string(),
+            wrap: false,
+            level_colors: false,
+            show_sidebar: false,
+            horizontal_scroll: 5,
+            marked_lines: vec![0, 2],
+            file_hash: None,
+            show_line_numbers: false,
+            comments: vec![Comment {
+                text: "test".to_string(),
+                line_indices: vec![0],
+            }],
+        };
+        tab.apply_file_context(&ctx);
+        assert_eq!(tab.scroll_offset, 3);
+        assert!(!tab.wrap);
+        assert!(!tab.level_colors);
+        assert!(!tab.show_sidebar);
+        assert!(!tab.show_line_numbers);
+        assert_eq!(tab.horizontal_scroll, 5);
+        assert!(tab.log_manager.is_marked(0));
+        assert!(tab.log_manager.is_marked(2));
+        assert!(tab.log_manager.has_comment(0));
+    }
+
+    #[tokio::test]
+    async fn test_apply_file_context_empty() {
+        let mut tab = make_tab_with_source(&["line1", "line2", "line3"], "test.log").await;
+        let ctx = FileContext {
+            source_file: "test.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            wrap: true,
+            level_colors: true,
+            show_sidebar: true,
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            show_line_numbers: true,
+            comments: vec![],
+        };
+        tab.apply_file_context(&ctx);
+        assert!(tab.wrap);
+        assert!(tab.level_colors);
+        assert!(tab.show_sidebar);
+        assert!(tab.show_line_numbers);
+        assert_eq!(tab.scroll_offset, 0);
+        assert_eq!(tab.horizontal_scroll, 0);
+        assert!(!tab.log_manager.is_marked(0));
+        assert!(!tab.log_manager.has_comment(0));
+    }
+
+    #[tokio::test]
+    async fn test_collect_field_names_no_format() {
+        let tab = make_tab(&["plain text line", "another line"]).await;
+        let fields = tab.collect_field_names();
+        assert!(fields.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_collect_field_names_json_format() {
+        let tab = make_tab(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        let fields = tab.collect_field_names();
+        assert!(!fields.is_empty());
+        assert!(fields.contains(&"level".to_string()));
+        assert!(fields.contains(&"msg".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_new_tab_detects_format() {
+        let tab = make_tab(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        assert!(tab.detected_format.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_new_tab_plain_text_no_format() {
+        let tab = make_tab(&["just plain text", "no structure here"]).await;
+        assert!(tab.detected_format.is_none());
+    }
+}

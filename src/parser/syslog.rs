@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use crate::format::{DisplayParts, LogFormatParser};
+use super::types::{DisplayParts, LogFormatParser};
 
 /// Zero-copy syslog parser supporting both RFC 3164 and RFC 5424 formats.
 #[derive(Debug)]

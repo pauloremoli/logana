@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
-    mode::{app_mode::Mode, normal_mode::NormalMode},
+    mode::app_mode::{Mode, ModeRenderState},
+    mode::normal_mode::NormalMode,
     types::DockerContainer,
     ui::{KeyResult, TabState},
 };
@@ -69,8 +70,12 @@ impl Mode for DockerSelectMode {
         "[DOCKER] j/k=navigate | Enter=attach | Esc=cancel"
     }
 
-    fn docker_select_state(&self) -> Option<(&[DockerContainer], usize, Option<&str>)> {
-        Some((&self.containers, self.selected, self.error.as_deref()))
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::DockerSelect {
+            containers: self.containers.clone(),
+            selected: self.selected,
+            error: self.error.clone(),
+        }
     }
 }
 
@@ -80,6 +85,7 @@ mod tests {
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
+    use crate::mode::app_mode::ModeRenderState;
     use std::sync::Arc;
 
     async fn make_tab() -> TabState {
@@ -127,8 +133,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = DockerSelectMode::new(sample_containers());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
-        let (_, sel, _) = mode2.docker_select_state().unwrap();
-        assert_eq!(sel, 1);
+        match mode2.render_state() {
+            ModeRenderState::DockerSelect { selected, .. } => assert_eq!(selected, 1),
+            other => panic!("expected DockerSelect, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -137,8 +145,10 @@ mod tests {
         let mut mode = DockerSelectMode::new(sample_containers());
         mode.selected = 2;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
-        let (_, sel, _) = mode2.docker_select_state().unwrap();
-        assert_eq!(sel, 1);
+        match mode2.render_state() {
+            ModeRenderState::DockerSelect { selected, .. } => assert_eq!(selected, 1),
+            other => panic!("expected DockerSelect, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -146,8 +156,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = DockerSelectMode::new(sample_containers());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
-        let (_, sel, _) = mode2.docker_select_state().unwrap();
-        assert_eq!(sel, 0);
+        match mode2.render_state() {
+            ModeRenderState::DockerSelect { selected, .. } => assert_eq!(selected, 0),
+            other => panic!("expected DockerSelect, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -156,8 +168,10 @@ mod tests {
         let mut mode = DockerSelectMode::new(sample_containers());
         mode.selected = 2;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
-        let (_, sel, _) = mode2.docker_select_state().unwrap();
-        assert_eq!(sel, 2);
+        match mode2.render_state() {
+            ModeRenderState::DockerSelect { selected, .. } => assert_eq!(selected, 2),
+            other => panic!("expected DockerSelect, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -165,8 +179,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = DockerSelectMode::new(sample_containers());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Down).await;
-        let (_, sel, _) = mode2.docker_select_state().unwrap();
-        assert_eq!(sel, 1);
+        match mode2.render_state() {
+            ModeRenderState::DockerSelect { selected, .. } => assert_eq!(selected, 1),
+            other => panic!("expected DockerSelect, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -175,8 +191,10 @@ mod tests {
         let mut mode = DockerSelectMode::new(sample_containers());
         mode.selected = 2;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Up).await;
-        let (_, sel, _) = mode2.docker_select_state().unwrap();
-        assert_eq!(sel, 1);
+        match mode2.render_state() {
+            ModeRenderState::DockerSelect { selected, .. } => assert_eq!(selected, 1),
+            other => panic!("expected DockerSelect, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -188,7 +206,10 @@ mod tests {
             result,
             KeyResult::DockerAttach(ref id, ref name) if id == "abc123" && name == "web-app"
         ));
-        assert!(mode2.docker_select_state().is_none()); // NormalMode
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::DockerSelect { .. }
+        )); // NormalMode
     }
 
     #[tokio::test]
@@ -209,7 +230,10 @@ mod tests {
         let mode = DockerSelectMode::new(vec![]);
         let (mode2, result) = press(mode, &mut tab, KeyCode::Enter).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.docker_select_state().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::DockerSelect { .. }
+        ));
     }
 
     #[tokio::test]
@@ -218,7 +242,10 @@ mod tests {
         let mode = DockerSelectMode::new(sample_containers());
         let (mode2, result) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.docker_select_state().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::DockerSelect { .. }
+        ));
     }
 
     #[tokio::test]
@@ -230,8 +257,12 @@ mod tests {
     #[tokio::test]
     async fn test_error_mode_shows_error() {
         let mode = DockerSelectMode::with_error("Docker not found".to_string());
-        let (_, _, err) = mode.docker_select_state().unwrap();
-        assert_eq!(err, Some("Docker not found"));
+        match mode.render_state() {
+            ModeRenderState::DockerSelect { error, .. } => {
+                assert_eq!(error.as_deref(), Some("Docker not found"));
+            }
+            other => panic!("expected DockerSelect, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -240,7 +271,10 @@ mod tests {
         let mode = DockerSelectMode::with_error("Docker not found".to_string());
         let (mode2, result) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.docker_select_state().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::DockerSelect { .. }
+        ));
     }
 
     #[tokio::test]
@@ -248,8 +282,16 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = DockerSelectMode::new(vec![]);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
-        let (containers, sel, _) = mode2.docker_select_state().unwrap();
-        assert!(containers.is_empty());
-        assert_eq!(sel, 0);
+        match mode2.render_state() {
+            ModeRenderState::DockerSelect {
+                containers,
+                selected,
+                ..
+            } => {
+                assert!(containers.is_empty());
+                assert_eq!(selected, 0);
+            }
+            other => panic!("expected DockerSelect, got {:?}", other),
+        }
     }
 }

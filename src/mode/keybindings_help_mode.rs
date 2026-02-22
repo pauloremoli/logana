@@ -3,7 +3,8 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
     config::Keybindings,
-    mode::{app_mode::Mode, normal_mode::NormalMode},
+    mode::app_mode::{Mode, ModeRenderState},
+    mode::normal_mode::NormalMode,
     ui::{KeyResult, TabState},
 };
 
@@ -345,12 +346,11 @@ impl Mode for KeybindingsHelpMode {
         "[HELP] type to search | j/k scroll | Esc clear/close | q close"
     }
 
-    fn keybindings_help_scroll(&self) -> Option<usize> {
-        Some(self.scroll)
-    }
-
-    fn keybindings_help_search(&self) -> Option<&str> {
-        Some(&self.search)
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::KeybindingsHelp {
+            scroll: self.scroll,
+            search: self.search.clone(),
+        }
     }
 }
 
@@ -360,6 +360,7 @@ mod tests {
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
+    use crate::mode::app_mode::ModeRenderState;
     use crate::ui::TabState;
     use std::sync::Arc;
 
@@ -384,7 +385,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = KeybindingsHelpMode::new();
         let (mode2, _) = press(mode, &mut tab, KeyCode::Esc).await;
-        assert!(mode2.keybindings_help_scroll().is_none()); // NormalMode
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::KeybindingsHelp { .. }
+        )); // NormalMode
     }
 
     #[tokio::test]
@@ -394,13 +398,14 @@ mod tests {
         mode.search = "foo".to_string();
         let (mode2, _) = press(mode, &mut tab, KeyCode::Esc).await;
         // Still in help mode but search cleared
-        assert!(mode2.keybindings_help_scroll().is_some());
-        assert!(
-            mode2
-                .keybindings_help_search()
-                .map(|s| s.is_empty())
-                .unwrap_or(true)
-        );
+        assert!(matches!(
+            mode2.render_state(),
+            ModeRenderState::KeybindingsHelp { .. }
+        ));
+        match mode2.render_state() {
+            ModeRenderState::KeybindingsHelp { search, .. } => assert!(search.is_empty()),
+            other => panic!("expected KeybindingsHelp, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -408,7 +413,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = KeybindingsHelpMode::new();
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('q')).await;
-        assert!(mode2.keybindings_help_scroll().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::KeybindingsHelp { .. }
+        ));
     }
 
     #[tokio::test]
@@ -416,7 +424,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = KeybindingsHelpMode::new();
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
-        assert_eq!(mode2.keybindings_help_scroll(), Some(1));
+        match mode2.render_state() {
+            ModeRenderState::KeybindingsHelp { scroll, .. } => assert_eq!(scroll, 1),
+            other => panic!("expected KeybindingsHelp, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -424,7 +435,10 @@ mod tests {
         let mut tab = make_tab().await;
         let mode = KeybindingsHelpMode::new();
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
-        assert_eq!(mode2.keybindings_help_scroll(), Some(0));
+        match mode2.render_state() {
+            ModeRenderState::KeybindingsHelp { scroll, .. } => assert_eq!(scroll, 0),
+            other => panic!("expected KeybindingsHelp, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -433,8 +447,13 @@ mod tests {
         let mut mode = KeybindingsHelpMode::new();
         mode.scroll = 5;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('f')).await;
-        assert_eq!(mode2.keybindings_help_scroll(), Some(0));
-        assert_eq!(mode2.keybindings_help_search(), Some("f"));
+        match mode2.render_state() {
+            ModeRenderState::KeybindingsHelp { scroll, search } => {
+                assert_eq!(scroll, 0);
+                assert_eq!(search, "f");
+            }
+            other => panic!("expected KeybindingsHelp, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -443,7 +462,10 @@ mod tests {
         let mut mode = KeybindingsHelpMode::new();
         mode.search = "fo".to_string();
         let (mode2, _) = press(mode, &mut tab, KeyCode::Backspace).await;
-        assert_eq!(mode2.keybindings_help_search(), Some("f"));
+        match mode2.render_state() {
+            ModeRenderState::KeybindingsHelp { search, .. } => assert_eq!(search, "f"),
+            other => panic!("expected KeybindingsHelp, got {:?}", other),
+        }
     }
 
     #[tokio::test]

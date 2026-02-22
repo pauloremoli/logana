@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::format::{DisplayParts, LogFormatParser, SpanInfo};
+use super::types::{DisplayParts, LogFormatParser, SpanInfo};
 
 // ---------------------------------------------------------------------------
 // Legacy parser (kept for backward compatibility)

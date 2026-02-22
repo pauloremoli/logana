@@ -12,6 +12,59 @@ use crate::{
     ui::{KeyResult, TabState},
 };
 
+/// Rendering state returned by each mode via `Mode::render_state()`.
+///
+/// Each variant carries exactly the data the rendering layer needs for that mode,
+/// satisfying the Interface Segregation Principle: modes only expose what they own.
+#[derive(Debug, Clone)]
+pub enum ModeRenderState {
+    Normal,
+    Command {
+        input: String,
+        cursor: usize,
+        completion_index: Option<usize>,
+    },
+    Search {
+        query: String,
+        forward: bool,
+    },
+    FilterManagement {
+        selected_index: usize,
+    },
+    FilterEdit,
+    VisualLine {
+        anchor: usize,
+    },
+    Comment {
+        lines: Vec<String>,
+        cursor_row: usize,
+        cursor_col: usize,
+        line_count: usize,
+    },
+    KeybindingsHelp {
+        scroll: usize,
+        search: String,
+    },
+    SelectFields {
+        fields: Vec<(String, bool)>,
+        selected: usize,
+    },
+    DockerSelect {
+        containers: Vec<DockerContainer>,
+        selected: usize,
+        error: Option<String>,
+    },
+    ValueColors {
+        groups: Vec<ValueColorGroup>,
+        search: String,
+        selected: usize,
+    },
+    ConfirmRestore,
+    ConfirmRestoreSession {
+        files: Vec<String>,
+    },
+}
+
 #[async_trait]
 pub trait Mode: std::fmt::Debug + Send {
     async fn handle_key(
@@ -32,62 +85,12 @@ pub trait Mode: std::fmt::Debug + Send {
         ))
     }
 
-    /// Returns `Some(scroll_offset)` when a keybindings help popup is active.
-    fn keybindings_help_scroll(&self) -> Option<usize> {
-        None
-    }
-
-    /// Returns `Some(search_query)` when the keybindings help popup is active.
-    fn keybindings_help_search(&self) -> Option<&str> {
-        None
-    }
-
-    fn selected_filter_index(&self) -> Option<usize> {
-        None
-    }
-    fn command_state(&self) -> Option<(&str, usize)> {
-        None
-    }
-    /// Returns the currently highlighted completion index when Tab-cycling.
-    fn completion_index(&self) -> Option<usize> {
-        None
-    }
-    fn search_state(&self) -> Option<(&str, bool)> {
-        None
-    }
-    fn needs_input_bar(&self) -> bool {
-        false
-    }
-    fn confirm_restore_context(&self) -> Option<&FileContext> {
-        None
-    }
-    fn confirm_restore_session_files(&self) -> Option<&[String]> {
-        None
-    }
-    /// Returns the visual-line-selection anchor (index into `visible_indices`).
-    /// `None` when not in visual mode.
-    fn visual_selection_anchor(&self) -> Option<usize> {
-        None
-    }
-    /// Returns `(lines, cursor_row, cursor_col, commented_line_count)` when the
-    /// comment popup editor is active.
-    fn comment_popup(&self) -> Option<(Vec<String>, usize, usize, usize)> {
-        None
-    }
-    /// Returns `(fields_with_toggles, cursor_position)` when the select-fields
-    /// popup is active.
-    fn select_fields_state(&self) -> Option<(&[(String, bool)], usize)> {
-        None
-    }
-    /// Returns `(containers, selected_index, error)` when the docker-select
-    /// popup is active.
-    fn docker_select_state(&self) -> Option<(&[DockerContainer], usize, Option<&str>)> {
-        None
-    }
-    /// Returns `(groups, search_query, cursor_position)` when the value-colors popup is active.
-    fn value_colors_state(&self) -> Option<(&[ValueColorGroup], &str, usize)> {
-        None
-    }
+    /// Returns the rendering state for this mode.
+    ///
+    /// The rendering layer matches on the returned enum variant to decide which
+    /// UI elements to draw. Each variant carries exactly the data its renderer
+    /// needs — no more, no less.
+    fn render_state(&self) -> ModeRenderState;
 }
 
 /// Appends a styled `<key> action  ` entry to `spans`.
@@ -145,8 +148,8 @@ impl Mode for ConfirmRestoreMode {
         "[RESTORE] Restore previous session? [y]es / [n]o"
     }
 
-    fn confirm_restore_context(&self) -> Option<&FileContext> {
-        Some(&self.context)
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::ConfirmRestore
     }
 }
 
@@ -178,8 +181,10 @@ impl Mode for ConfirmRestoreSessionMode {
         "[RESTORE SESSION] Restore last session? [y]es / [n]o"
     }
 
-    fn confirm_restore_session_files(&self) -> Option<&[String]> {
-        Some(&self.files)
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::ConfirmRestoreSession {
+            files: self.files.clone(),
+        }
     }
 }
 
@@ -247,7 +252,10 @@ mod tests {
         let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Char('y')).await;
         assert!(matches!(result, KeyResult::Handled));
         // Should transition to NormalMode
-        assert!(mode2.confirm_restore_context().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmRestore
+        ));
         // Context should have been applied
         assert_eq!(tab.scroll_offset, 5);
         assert!(!tab.wrap);
@@ -271,7 +279,10 @@ mod tests {
         };
         let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Char('n')).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.confirm_restore_context().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmRestore
+        ));
         assert_eq!(tab.log_manager.get_filters().len(), 0);
     }
 
@@ -288,7 +299,10 @@ mod tests {
         };
         let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.confirm_restore_context().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmRestore
+        ));
         assert_eq!(tab.log_manager.get_filters().len(), 0);
     }
 
@@ -299,7 +313,10 @@ mod tests {
         let mode = ConfirmRestoreMode { context: ctx };
         let (mode2, result) = press_restore(mode, &mut tab, KeyCode::Char('x')).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.confirm_restore_context().is_some());
+        assert!(matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmRestore
+        ));
     }
 
     #[tokio::test]
@@ -316,9 +333,11 @@ mod tests {
         let mode = ConfirmRestoreMode {
             context: ctx.clone(),
         };
-        let returned = mode.confirm_restore_context().unwrap();
-        assert_eq!(returned.source_file, ctx.source_file);
-        assert_eq!(returned.scroll_offset, ctx.scroll_offset);
+        assert!(mode.status_line().contains("[RESTORE]"));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::ConfirmRestore
+        ));
     }
 
     // ── ConfirmRestoreSessionMode ────────────────────────────────────────────
@@ -332,7 +351,10 @@ mod tests {
         };
         let (mode2, result) = press_session(mode, &mut tab, KeyCode::Char('y')).await;
         assert!(matches!(result, KeyResult::RestoreSession(ref f) if *f == files));
-        assert!(mode2.confirm_restore_session_files().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmRestoreSession { .. }
+        ));
     }
 
     #[tokio::test]
@@ -343,7 +365,10 @@ mod tests {
         };
         let (mode2, result) = press_session(mode, &mut tab, KeyCode::Char('n')).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.confirm_restore_session_files().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmRestoreSession { .. }
+        ));
     }
 
     #[tokio::test]
@@ -354,7 +379,10 @@ mod tests {
         };
         let (mode2, result) = press_session(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.confirm_restore_session_files().is_none());
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmRestoreSession { .. }
+        ));
     }
 
     #[tokio::test]
@@ -364,7 +392,10 @@ mod tests {
         let mode = ConfirmRestoreSessionMode { files };
         let (mode2, result) = press_session(mode, &mut tab, KeyCode::Char('z')).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.confirm_restore_session_files().is_some());
+        assert!(matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmRestoreSession { .. }
+        ));
     }
 
     #[tokio::test]
@@ -381,7 +412,12 @@ mod tests {
         let mode = ConfirmRestoreSessionMode {
             files: files.clone(),
         };
-        assert_eq!(mode.confirm_restore_session_files(), Some(files.as_slice()));
+        match mode.render_state() {
+            ModeRenderState::ConfirmRestoreSession { files: returned } => {
+                assert_eq!(returned, files);
+            }
+            other => panic!("expected ConfirmRestoreSession, got {:?}", other),
+        }
     }
 
     // ── Mode trait defaults ──────────────────────────────────────────────────
@@ -391,20 +427,50 @@ mod tests {
         let mode = ConfirmRestoreMode {
             context: default_context(),
         };
-        assert!(mode.selected_filter_index().is_none());
-        assert!(mode.command_state().is_none());
-        assert!(mode.search_state().is_none());
-        assert!(!mode.needs_input_bar());
-        assert!(mode.confirm_restore_session_files().is_none());
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::Command { .. }
+        ));
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::Search { .. }
+        ));
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::Command { .. } | ModeRenderState::Search { .. }
+        ));
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::ConfirmRestoreSession { .. }
+        ));
     }
 
     #[tokio::test]
     async fn test_confirm_session_mode_default_methods() {
         let mode = ConfirmRestoreSessionMode { files: vec![] };
-        assert!(mode.selected_filter_index().is_none());
-        assert!(mode.command_state().is_none());
-        assert!(mode.search_state().is_none());
-        assert!(!mode.needs_input_bar());
-        assert!(mode.confirm_restore_context().is_none());
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::Command { .. }
+        ));
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::Search { .. }
+        ));
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::Command { .. } | ModeRenderState::Search { .. }
+        ));
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::ConfirmRestore
+        ));
     }
 }

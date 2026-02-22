@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::config::Keybindings;
-use crate::mode::app_mode::{Mode, status_entry};
+use crate::mode::app_mode::{Mode, ModeRenderState, status_entry};
 use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
 use crate::theme::Theme;
@@ -348,8 +348,10 @@ impl Mode for FilterManagementMode {
         Line::from(spans)
     }
 
-    fn selected_filter_index(&self) -> Option<usize> {
-        Some(self.selected_filter_index)
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::FilterManagement {
+            selected_index: self.selected_filter_index,
+        }
     }
 }
 
@@ -425,6 +427,10 @@ impl Mode for FilterEditMode {
     fn status_line(&self) -> &str {
         "[FILTER EDIT] Esc => cancel | Enter => save"
     }
+
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::FilterEdit
+    }
 }
 
 #[cfg(test)]
@@ -472,8 +478,14 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode.command_state().is_none());
-        assert!(mode.selected_filter_index().is_none());
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::Command { .. }
+        ));
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
     }
 
     #[tokio::test]
@@ -496,14 +508,20 @@ mod tests {
         add_filter(&mut tab, "a", FilterType::Include).await;
         add_filter(&mut tab, "b", FilterType::Include).await;
         let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Up).await;
-        assert_eq!(mode.selected_filter_index(), Some(0));
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
     }
 
     #[tokio::test]
     async fn test_up_saturates_at_zero() {
         let mut tab = make_tab(&["a"]).await;
         let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Up).await;
-        assert_eq!(mode.selected_filter_index(), Some(0));
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -512,7 +530,10 @@ mod tests {
         add_filter(&mut tab, "a", FilterType::Include).await;
         add_filter(&mut tab, "b", FilterType::Include).await;
         let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Down).await;
-        assert_eq!(mode.selected_filter_index(), Some(1));
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 1),
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -521,7 +542,10 @@ mod tests {
         add_filter(&mut tab, "a", FilterType::Include).await;
         add_filter(&mut tab, "b", FilterType::Include).await;
         let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Down).await;
-        assert_eq!(mode.selected_filter_index(), Some(1));
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 1),
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -555,27 +579,34 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('d')).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert_eq!(mode.selected_filter_index(), Some(0));
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
     }
 
     #[tokio::test]
     async fn test_i_opens_command_mode_with_filter_prefix() {
         let mut tab = make_tab(&["line"]).await;
         let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('i')).await;
-        let state = mode.command_state();
-        assert!(state.is_some());
-        let (input, _) = state.unwrap();
-        assert!(input.starts_with("filter "));
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.starts_with("filter "));
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
     }
 
     #[tokio::test]
     async fn test_x_opens_command_mode_with_exclude_prefix() {
         let mut tab = make_tab(&["line"]).await;
         let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('x')).await;
-        let state = mode.command_state();
-        assert!(state.is_some());
-        let (input, _) = state.unwrap();
-        assert!(input.starts_with("exclude "));
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.starts_with("exclude "));
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -583,10 +614,12 @@ mod tests {
         let mut tab = make_tab(&["error", "warn"]).await;
         add_filter(&mut tab, "error", FilterType::Include).await;
         let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        let state = mode.command_state();
-        assert!(state.is_some());
-        let (input, _) = state.unwrap();
-        assert!(input.contains("error"));
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.contains("error"));
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -594,10 +627,12 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         add_filter(&mut tab, "error", FilterType::Include).await;
         let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('c')).await;
-        let state = mode.command_state();
-        assert!(state.is_some());
-        let (input, _) = state.unwrap();
-        assert!(input.starts_with("set-color"));
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.starts_with("set-color"));
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -607,7 +642,10 @@ mod tests {
         add_filter(&mut tab, "second", FilterType::Include).await;
         let (mode, result) = press(filter_mode(1), &mut tab, KeyCode::Char('K')).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert_eq!(mode.selected_filter_index(), Some(0));
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -617,7 +655,10 @@ mod tests {
         add_filter(&mut tab, "second", FilterType::Include).await;
         let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('J')).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert_eq!(mode.selected_filter_index(), Some(1));
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 1),
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -661,7 +702,10 @@ mod tests {
         add_filter(&mut tab, "warn", FilterType::Include).await;
 
         let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Char('C')).await;
-        assert_eq!(mode.selected_filter_index(), Some(0));
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -672,7 +716,10 @@ mod tests {
     #[tokio::test]
     async fn test_selected_filter_index_returns_current() {
         let mode = filter_mode(3);
-        assert_eq!(mode.selected_filter_index(), Some(3));
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 3),
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
     }
 
     // FilterEditMode tests
@@ -721,7 +768,10 @@ mod tests {
         let mode = edit_mode(None, "error");
         let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.selected_filter_index().is_some());
+        assert!(matches!(
+            mode2.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
     }
 
     #[tokio::test]
@@ -741,7 +791,10 @@ mod tests {
         let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Enter).await;
         assert!(matches!(result, KeyResult::Handled));
         // Should transition to FilterManagementMode
-        assert!(mode2.selected_filter_index().is_some());
+        assert!(matches!(
+            mode2.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
         assert_eq!(tab.log_manager.get_filters()[0].pattern, "error");
     }
 }

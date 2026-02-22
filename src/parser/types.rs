@@ -43,28 +43,6 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &str;
 }
 
-/// Sample lines, try all registered parsers, return best match.
-pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
-    use crate::log_line::JsonParser;
-    use crate::syslog::SyslogParser;
-
-    if sample.is_empty() {
-        return None;
-    }
-
-    let parsers: Vec<Box<dyn LogFormatParser>> = vec![Box::new(JsonParser), Box::new(SyslogParser)];
-
-    parsers
-        .into_iter()
-        .map(|p| {
-            let score = p.detect_score(sample);
-            (p, score)
-        })
-        .filter(|(_, s)| *s > 0.0)
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-        .map(|(p, _)| p)
-}
-
 /// Format a `SpanInfo` as a display string: `name: v, v` or just `name`.
 pub fn format_span_col(s: &SpanInfo<'_>) -> String {
     if s.fields.is_empty() {
@@ -110,59 +88,5 @@ mod tests {
             fields: vec![("method", "GET"), ("uri", "/health")],
         };
         assert_eq!(format_span_col(&span), "request: GET, /health");
-    }
-
-    #[test]
-    fn test_detect_format_json() {
-        let lines: Vec<&[u8]> = vec![
-            br#"{"level":"INFO","msg":"hello"}"#,
-            br#"{"level":"WARN","msg":"world"}"#,
-        ];
-        let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "json");
-    }
-
-    #[test]
-    fn test_detect_format_syslog_rfc3164() {
-        let lines: Vec<&[u8]> = vec![
-            b"<134>Oct 11 22:14:15 myhost sshd[1234]: Accepted password for user",
-            b"<134>Oct 11 22:14:16 myhost sshd[1234]: Session opened",
-        ];
-        let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "syslog");
-    }
-
-    #[test]
-    fn test_detect_format_syslog_rfc5424() {
-        let lines: Vec<&[u8]> = vec![
-            b"<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"App\"] BOMAn application event log entry...",
-        ];
-        let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "syslog");
-    }
-
-    #[test]
-    fn test_detect_format_raw_text() {
-        let lines: Vec<&[u8]> = vec![b"plain text log line 1", b"plain text log line 2"];
-        assert!(detect_format(&lines).is_none());
-    }
-
-    #[test]
-    fn test_detect_format_empty_sample() {
-        let lines: Vec<&[u8]> = vec![];
-        assert!(detect_format(&lines).is_none());
-    }
-
-    #[test]
-    fn test_detect_format_mixed_json_wins() {
-        // Mostly JSON with one non-JSON line
-        let lines: Vec<&[u8]> = vec![
-            br#"{"level":"INFO","msg":"hello"}"#,
-            b"not json",
-            br#"{"level":"WARN","msg":"world"}"#,
-            br#"{"level":"ERROR","msg":"fail"}"#,
-        ];
-        let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "json");
     }
 }

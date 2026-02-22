@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::format::{DisplayParts, format_span_col};
+use crate::parser::{DisplayParts, format_span_col};
 use crate::types::FieldLayout;
 
 /// Number of terminal rows a line occupies when wrapped to `inner_width` columns.
@@ -60,7 +60,7 @@ pub(crate) fn get_col(p: &DisplayParts<'_>, name: &str) -> Option<String> {
             }
             // Resolve dotted fields sub-field names (e.g. "fields.message", "fields.count").
             if let Some(suffix) = n.strip_prefix("fields.") {
-                return if crate::log_line::MESSAGE_KEYS.contains(&suffix) {
+                return if crate::parser::MESSAGE_KEYS.contains(&suffix) {
                     p.message.map(|s| s.to_string())
                 } else {
                     p.extra_fields
@@ -70,16 +70,16 @@ pub(crate) fn get_col(p: &DisplayParts<'_>, name: &str) -> Option<String> {
                 };
             }
             // Resolve all known aliases to their canonical DisplayParts slots.
-            if crate::log_line::TIMESTAMP_KEYS.contains(&n) {
+            if crate::parser::TIMESTAMP_KEYS.contains(&n) {
                 return p.timestamp.map(|s| s.to_string());
             }
-            if crate::log_line::LEVEL_KEYS.contains(&n) {
+            if crate::parser::LEVEL_KEYS.contains(&n) {
                 return p.level.map(|l| format!("{:<5}", l));
             }
-            if crate::log_line::TARGET_KEYS.contains(&n) {
+            if crate::parser::TARGET_KEYS.contains(&n) {
                 return p.target.map(|s| s.to_string());
             }
-            if crate::log_line::MESSAGE_KEYS.contains(&n) {
+            if crate::parser::MESSAGE_KEYS.contains(&n) {
                 return p.message.map(|s| s.to_string());
             }
             p.extra_fields
@@ -136,21 +136,21 @@ pub(crate) fn apply_field_layout(
         // Check all aliases for each canonical slot so that hiding by raw key
         // (e.g. "lvl") works in the default (no explicit layout) path too.
         let mut cols = Vec::new();
-        if !crate::log_line::TIMESTAMP_KEYS
+        if !crate::parser::TIMESTAMP_KEYS
             .iter()
             .any(|k| hidden_fields.contains(*k))
             && let Some(ts) = p.timestamp
         {
             cols.push(ts.to_string());
         }
-        if !crate::log_line::LEVEL_KEYS
+        if !crate::parser::LEVEL_KEYS
             .iter()
             .any(|k| hidden_fields.contains(*k))
             && let Some(lvl) = p.level
         {
             cols.push(format!("{:<5}", lvl));
         }
-        if !crate::log_line::TARGET_KEYS
+        if !crate::parser::TARGET_KEYS
             .iter()
             .any(|k| hidden_fields.contains(*k))
             && let Some(tgt) = p.target
@@ -167,7 +167,7 @@ pub(crate) fn apply_field_layout(
                 cols.push(value.to_string());
             }
         }
-        if !crate::log_line::MESSAGE_KEYS
+        if !crate::parser::MESSAGE_KEYS
             .iter()
             .any(|k| hidden_fields.contains(*k))
             && let Some(msg) = p.message
@@ -181,7 +181,7 @@ pub(crate) fn apply_field_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::SpanInfo;
+    use crate::parser::SpanInfo;
 
     // -----------------------------------------------------------------------
     // line_row_count
