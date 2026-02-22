@@ -17,7 +17,14 @@ src/
   log_manager.rs  - Filter/mark state management + SQLite persistence bridge (LogManager)
   db.rs           - SQLite layer via sqlx (FilterStore, FileContextStore traits)
   search.rs       - Regex search with match positions and wrapping navigation
-  ui.rs           - Ratatui TUI (App, TabState, AppMode, rendering, keybindings)
+  ui/             - Ratatui TUI module directory
+    mod.rs         - Types (KeyResult, LoadContext, TabState, App structs)
+    app.rs         - App lifecycle: new(), run(), key dispatch, save/close, execute_command_str()
+    commands.rs    - run_command() — 30+ command handler
+    loading.rs     - File/stdin/docker loading, file watchers, session restore
+    render.rs      - Main render: ui(), render_logs_panel, tab bar, sidebar, command bar, input bar
+    render_popups.rs - Popup/modal renders: confirm restore, select fields, value colors, docker, keybindings help, comment editor
+    field_layout.rs  - Standalone helpers: get_col, default_cols, apply_field_layout, line_row_count, count_wrapped_lines
   theme.rs        - JSON-based theme loading and color management (Theme, ValueColors)
   value_colors.rs - Per-token color coding for HTTP methods, status codes, IP addresses
   config.rs       - JSON config file loading (Config, Keybindings, KeyBinding)
@@ -138,7 +145,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - Wrapping `next_match()` / `previous_match()` navigation.
 - Case sensitivity toggle (`set_case_sensitive`).
 
-### UI (ui.rs)
+### UI (ui/)
 
 - **`App`** owns a `Vec<TabState>`, the global theme, and an `Arc<Keybindings>` shared across all tabs.
 - **`TabState`** owns:
@@ -248,7 +255,7 @@ anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, se
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui.rs, auto_complete.rs, format.rs, log_line.rs, syslog.rs, value_colors.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 475 tests total
+- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/field_layout.rs, auto_complete.rs, format.rs, log_line.rs, syslog.rs, value_colors.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 536 tests total
 - **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
 - **Stdin test** (tests/stdin.rs): pipe input end-to-end — 1 test
 - **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)

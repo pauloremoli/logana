@@ -1003,7 +1003,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_file_watcher_detects_new_data() {
         use std::io::{Seek, SeekFrom};
-        use tokio::time::{sleep, Duration};
+        use tokio::time::{Duration, sleep};
 
         let mut f = NamedTempFile::new().unwrap();
         write!(f, "initial\n").unwrap();
@@ -1023,7 +1023,10 @@ mod tests {
 
         let data = rx.borrow_and_update().clone();
         let text = String::from_utf8_lossy(&data);
-        assert!(text.contains("appended"), "watcher should detect appended data, got: {text}");
+        assert!(
+            text.contains("appended"),
+            "watcher should detect appended data, got: {text}"
+        );
     }
 
     // -----------------------------------------------------------------------

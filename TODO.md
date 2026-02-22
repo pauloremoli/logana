@@ -4,8 +4,6 @@
 
 - command to open a view in a new tab with only marked lines
 
-- option to select the fields to show (and also order)
-
 - visual mode like in neovim (to allow copying into clipboard, or add filter/search based on selected text)
   - with complete set for vim motions
 
@@ -28,7 +26,5 @@ File name: <FILENAME>
 ```more MARKED_LINES```
 
 - command to preview analysis export
-
-- make all shortcuts configurable
 
 - support for opening a dir with log files, each in separate tab, if there is a timestamp field ask the user if it would like a view with the merged timeline from all logs sorted by the timestamp
