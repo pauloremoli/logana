@@ -562,23 +562,23 @@ impl Default for GlobalKeybindings {
 }
 
 // ---------------------------------------------------------------------------
-// AnnotationKeybindings — defaults
+// CommentKeybindings — defaults
 // ---------------------------------------------------------------------------
 
-fn default_annotation_save() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::SHIFT)])
+fn default_comment_save() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('s'), KeyModifiers::CONTROL)])
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnnotationKeybindings {
-    /// Key to save the annotation and return to Normal mode.
-    #[serde(default = "default_annotation_save")]
+pub struct CommentKeybindings {
+    /// Key to save the comment and return to Normal mode.
+    #[serde(default = "default_comment_save")]
     pub save: KeyBindings,
 }
 
-impl Default for AnnotationKeybindings {
+impl Default for CommentKeybindings {
     fn default() -> Self {
-        Self { save: default_annotation_save() }
+        Self { save: default_comment_save() }
     }
 }
 
@@ -595,7 +595,7 @@ pub struct Keybindings {
     #[serde(default)]
     pub global: GlobalKeybindings,
     #[serde(default)]
-    pub annotation: AnnotationKeybindings,
+    pub comment: CommentKeybindings,
 }
 
 impl KeyBindings {

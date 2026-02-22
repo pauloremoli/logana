@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use sqlx::Row;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
-use crate::types::{Annotation, ColorConfig, FilterDef, FilterType};
+use crate::types::{ColorConfig, Comment, FilterDef, FilterType};
 
 #[async_trait]
 pub trait FilterStore: Send + Sync {
@@ -43,7 +43,7 @@ pub struct FileContext {
     pub marked_lines: Vec<usize>,
     pub file_hash: Option<String>,
     pub show_line_numbers: bool,
-    pub annotations: Vec<Annotation>,
+    pub comments: Vec<Comment>,
 }
 
 #[async_trait]
@@ -440,8 +440,8 @@ impl FileContextStore for Database {
     async fn save_file_context(&self, ctx: &FileContext) -> Result<()> {
         let marked_json =
             serde_json::to_string(&ctx.marked_lines).unwrap_or_else(|_| "[]".to_string());
-        let annotations_json =
-            serde_json::to_string(&ctx.annotations).unwrap_or_else(|_| "[]".to_string());
+        let comments_json =
+            serde_json::to_string(&ctx.comments).unwrap_or_else(|_| "[]".to_string());
         sqlx::query(
             "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -467,7 +467,7 @@ impl FileContextStore for Database {
         .bind(&marked_json)
         .bind(&ctx.file_hash)
         .bind(ctx.show_line_numbers as i32)
-        .bind(&annotations_json)
+        .bind(&comments_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -485,9 +485,9 @@ impl FileContextStore for Database {
         Ok(row.map(|r| {
             let marked_json: String = r.get("marked_lines");
             let marked_lines: Vec<usize> = serde_json::from_str(&marked_json).unwrap_or_default();
-            let annotations_json: String = r.try_get("annotations_json").unwrap_or_default();
-            let annotations: Vec<Annotation> =
-                serde_json::from_str(&annotations_json).unwrap_or_default();
+            let comments_json: String = r.try_get("annotations_json").unwrap_or_default();
+            let comments: Vec<Comment> =
+                serde_json::from_str(&comments_json).unwrap_or_default();
             FileContext {
                 source_file: r.get::<String, _>("source_file"),
                 scroll_offset: r.get::<i64, _>("scroll_offset") as usize,
@@ -499,7 +499,7 @@ impl FileContextStore for Database {
                 marked_lines,
                 file_hash: r.get::<Option<String>, _>("file_hash"),
                 show_line_numbers: r.get::<i32, _>("show_line_numbers") != 0,
-                annotations,
+                comments,
             }
         }))
     }
@@ -759,7 +759,7 @@ mod tests {
             marked_lines: vec![1, 5, 10],
             file_hash: Some("abc123".to_string()),
             show_line_numbers: true,
-            annotations: vec![],
+            comments: vec![],
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -794,7 +794,7 @@ mod tests {
             marked_lines: vec![0, 3],
             file_hash: Some("hash1".to_string()),
             show_line_numbers: true,
-            annotations: vec![],
+            comments: vec![],
         };
         db.save_file_context(&ctx1).await.unwrap();
 
@@ -809,7 +809,7 @@ mod tests {
             marked_lines: vec![2, 7],
             file_hash: Some("hash2".to_string()),
             show_line_numbers: false,
-            annotations: vec![],
+            comments: vec![],
         };
         db.save_file_context(&ctx2).await.unwrap();
 
@@ -832,12 +832,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_context_saves_and_loads_annotations() {
-        use crate::types::Annotation;
+    async fn test_file_context_saves_and_loads_comments() {
+        use crate::types::Comment;
         let db = setup_db().await;
 
         let ctx = FileContext {
-            source_file: "/tmp/annotated.log".to_string(),
+            source_file: "/tmp/commented.log".to_string(),
             scroll_offset: 0,
             search_query: String::new(),
             wrap: true,
@@ -847,13 +847,13 @@ mod tests {
             marked_lines: vec![],
             file_hash: None,
             show_line_numbers: true,
-            annotations: vec![
-                Annotation {
-                    text: "First annotation\nspanning two lines".to_string(),
+            comments: vec![
+                Comment {
+                    text: "First comment\nspanning two lines".to_string(),
                     line_indices: vec![1, 2, 3],
                 },
-                Annotation {
-                    text: "Second annotation".to_string(),
+                Comment {
+                    text: "Second comment".to_string(),
                     line_indices: vec![10],
                 },
             ],
@@ -861,15 +861,15 @@ mod tests {
         db.save_file_context(&ctx).await.unwrap();
 
         let loaded = db
-            .load_file_context("/tmp/annotated.log")
+            .load_file_context("/tmp/commented.log")
             .await
             .unwrap()
             .expect("context should exist");
 
-        assert_eq!(loaded.annotations.len(), 2);
-        assert_eq!(loaded.annotations[0].text, "First annotation\nspanning two lines");
-        assert_eq!(loaded.annotations[0].line_indices, vec![1, 2, 3]);
-        assert_eq!(loaded.annotations[1].text, "Second annotation");
-        assert_eq!(loaded.annotations[1].line_indices, vec![10]);
+        assert_eq!(loaded.comments.len(), 2);
+        assert_eq!(loaded.comments[0].text, "First comment\nspanning two lines");
+        assert_eq!(loaded.comments[0].line_indices, vec![1, 2, 3]);
+        assert_eq!(loaded.comments[1].text, "Second comment");
+        assert_eq!(loaded.comments[1].line_indices, vec![10]);
     }
 }

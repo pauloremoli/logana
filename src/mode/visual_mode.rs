@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
-    mode::{annotation_mode::AnnotationMode, app_mode::Mode, normal_mode::NormalMode},
+    mode::{comment_mode::CommentMode, app_mode::Mode, normal_mode::NormalMode},
     ui::{KeyResult, TabState},
 };
 
@@ -10,7 +10,7 @@ use crate::{
 ///
 /// The line under the cursor at the time `V` is pressed becomes the anchor.
 /// Moving up/down with j/k (or arrow keys) extends/shrinks the selection.
-/// Pressing `c` opens `AnnotationMode` for the selected range.
+/// Pressing `c` opens `CommentMode` for the selected range.
 /// `Esc` cancels and returns to NormalMode.
 #[derive(Debug)]
 pub struct VisualLineMode {
@@ -33,7 +33,7 @@ impl Mode for VisualLineMode {
             KeyCode::Char('k') | KeyCode::Up => {
                 tab.scroll_offset = tab.scroll_offset.saturating_sub(1);
             }
-            // Annotate the selected range
+            // Comment the selected range
             KeyCode::Char('c') => {
                 if tab.visible_indices.is_empty() {
                     return (Box::new(NormalMode), KeyResult::Handled);
@@ -44,7 +44,7 @@ impl Mode for VisualLineMode {
                 let line_indices: Vec<usize> = tab.visible_indices[lo..=hi].to_vec();
                 if !line_indices.is_empty() {
                     return (
-                        Box::new(AnnotationMode::new(line_indices)),
+                        Box::new(CommentMode::new(line_indices)),
                         KeyResult::Handled,
                     );
                 }
@@ -59,7 +59,7 @@ impl Mode for VisualLineMode {
     }
 
     fn status_line(&self) -> &str {
-        "[VISUAL] j/k to extend selection | [c] annotate selection | [Esc] cancel"
+        "[VISUAL] j/k to extend selection | [c] comment selection | [Esc] cancel"
     }
 
     fn visual_selection_anchor(&self) -> Option<usize> {
@@ -133,14 +133,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_c_opens_annotation_mode_with_selected_lines() {
+    async fn test_c_opens_comment_mode_with_selected_lines() {
         let mut tab = make_tab(&["a", "b", "c", "d"]).await;
         tab.scroll_offset = 3; // cursor at line index 3
         let mode = VisualLineMode { anchor: 1 }; // anchor at visible index 1
         let (mode2, result) = press(mode, &mut tab, KeyCode::Char('c')).await;
         assert!(matches!(result, KeyResult::Handled));
-        // Should be in annotation mode
-        let popup = mode2.annotation_popup();
+        // Should be in comment mode
+        let popup = mode2.comment_popup();
         assert!(popup.is_some());
         let (_, _, _, count) = popup.unwrap();
         assert_eq!(count, 3); // visible indices 1,2,3 → 3 lines
@@ -152,7 +152,7 @@ mod tests {
         tab.scroll_offset = 0;
         let mode = VisualLineMode { anchor: 2 }; // anchor below cursor
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('c')).await;
-        let popup = mode2.annotation_popup();
+        let popup = mode2.comment_popup();
         assert!(popup.is_some());
         let (_, _, _, count) = popup.unwrap();
         assert_eq!(count, 3); // lines 0,1,2

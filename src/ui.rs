@@ -155,7 +155,7 @@ impl TabState {
     pub fn to_file_context(&self) -> Option<FileContext> {
         let source = self.log_manager.source_file()?;
         let marked_lines = self.log_manager.get_marked_indices();
-        let annotations = self.log_manager.get_annotations().to_vec();
+        let comments = self.log_manager.get_comments().to_vec();
         let file_hash = LogManager::compute_file_hash(source);
         Some(FileContext {
             source_file: source.to_string(),
@@ -168,7 +168,7 @@ impl TabState {
             marked_lines,
             file_hash,
             show_line_numbers: self.show_line_numbers,
-            annotations,
+            comments,
         })
     }
 
@@ -182,8 +182,8 @@ impl TabState {
         if !ctx.marked_lines.is_empty() {
             self.log_manager.set_marks(ctx.marked_lines.clone());
         }
-        if !ctx.annotations.is_empty() {
-            self.log_manager.set_annotations(ctx.annotations.clone());
+        if !ctx.comments.is_empty() {
+            self.log_manager.set_comments(ctx.comments.clone());
         }
         if !ctx.search_query.is_empty() {
             let _ = self
@@ -1160,8 +1160,8 @@ impl App {
             .dynamic_status_line(&keybindings, &self.theme);
         let visual_anchor: Option<usize> =
             self.tabs[self.active_tab].mode.visual_selection_anchor();
-        let annotation_popup: Option<(Vec<String>, usize, usize, usize)> =
-            self.tabs[self.active_tab].mode.annotation_popup();
+        let comment_popup: Option<(Vec<String>, usize, usize, usize)> =
+            self.tabs[self.active_tab].mode.comment_popup();
         let help_state: Option<(usize, String)> = self.tabs[self.active_tab]
             .mode
             .keybindings_help_scroll()
@@ -1252,9 +1252,9 @@ impl App {
             self.render_confirm_restore_session_modal(frame, &files);
         }
 
-        // Annotation popup renders over everything except the loading bar.
-        if let Some((lines, cursor_row, cursor_col, line_count)) = annotation_popup {
-            self.render_annotation_popup(frame, &lines, cursor_row, cursor_col, line_count);
+        // Comment popup renders over everything except the loading bar.
+        if let Some((lines, cursor_row, cursor_col, line_count)) = comment_popup {
+            self.render_comment_popup(frame, &lines, cursor_row, cursor_col, line_count);
         }
 
         // Select-fields popup renders over everything except the loading bar.
@@ -1413,37 +1413,37 @@ impl App {
         // Visual selection highlight colour (same as border bg, distinct from cursor).
         let visual_style = Style::default().fg(theme.text).bg(Color::Rgb(68, 71, 90));
 
-        // Clone annotation data before borrowing visible_indices for iteration.
-        let annotations_for_render: Vec<(Vec<usize>, String)> = self.tabs[self.active_tab]
+        // Clone comment data before borrowing visible_indices for iteration.
+        let comments_for_render: Vec<(Vec<usize>, String)> = self.tabs[self.active_tab]
             .log_manager
-            .get_annotations()
+            .get_comments()
             .iter()
             .map(|a| (a.line_indices.clone(), a.text.clone()))
             .collect();
 
-        // Two maps built in one pass over annotations × visible window:
-        //   banner_at:         abs_vis_idx → ann_idx  (where a banner header is injected)
-        //   vis_annotation_map: abs_vis_idx → ann_idx  (every visible annotated line)
+        // Two maps built in one pass over comments × visible window:
+        //   banner_at:         abs_vis_idx → cmt_idx  (where a banner header is injected)
+        //   vis_comment_map: abs_vis_idx → cmt_idx  (every visible commented line)
         // The latter drives the tree characters (│ / └) on log lines.
         let mut banner_at: HashMap<usize, usize> = HashMap::new();
-        let mut vis_annotation_map: HashMap<usize, usize> = HashMap::new();
-        for (ann_idx, (line_indices, _)) in annotations_for_render.iter().enumerate() {
+        let mut vis_comment_map: HashMap<usize, usize> = HashMap::new();
+        for (cmt_idx, (line_indices, _)) in comments_for_render.iter().enumerate() {
             let ann_set: HashSet<usize> = line_indices.iter().cloned().collect();
             let mut first_for_ann: Option<usize> = None;
             for abs_vi in start..end {
                 let li = self.tabs[self.active_tab].visible_indices[abs_vi];
                 if ann_set.contains(&li) {
-                    // First annotation wins when a line belongs to multiple groups.
-                    vis_annotation_map.entry(abs_vi).or_insert(ann_idx);
+                    // First comment wins when a line belongs to multiple groups.
+                    vis_comment_map.entry(abs_vi).or_insert(cmt_idx);
                     if first_for_ann.is_none() {
                         first_for_ann = Some(abs_vi);
-                        banner_at.insert(abs_vi, ann_idx);
+                        banner_at.insert(abs_vi, cmt_idx);
                     }
                 }
             }
         }
 
-        // Annotation banner styles.
+        // Comment banner styles.
         let banner_prefix_style = Style::default()
             .fg(theme.text_highlight)
             .add_modifier(Modifier::BOLD);
@@ -1535,11 +1535,11 @@ impl App {
                 if show_line_numbers {
                     let line_num = line_idx + 1;
                     // Tree character: │ for mid-group lines, └ for the last line of a group,
-                    // space for non-annotated lines.
+                    // space for non-commented lines.
                     let (tree_char, ln_fg) =
-                        if let Some(&ann_idx) = vis_annotation_map.get(&abs_vis_idx) {
+                        if let Some(&cmt_idx) = vis_comment_map.get(&abs_vis_idx) {
                             let next_same =
-                                vis_annotation_map.get(&(abs_vis_idx + 1)) == Some(&ann_idx);
+                                vis_comment_map.get(&(abs_vis_idx + 1)) == Some(&cmt_idx);
                             let ch = if next_same { "│" } else { "└" };
                             (ch, theme.text_highlight)
                         } else {
@@ -1555,20 +1555,20 @@ impl App {
                     );
                     let line_num_style = Style::default().fg(ln_fg).add_modifier(Modifier::DIM);
                     let mut all_spans = vec![Span::styled(line_num_str, line_num_style)];
-                    // Extra indent padding for lines nested under an annotation banner.
-                    if vis_annotation_map.contains_key(&abs_vis_idx) {
+                    // Extra indent padding for lines nested under a comment banner.
+                    if vis_comment_map.contains_key(&abs_vis_idx) {
                         all_spans.push(Span::raw("  "));
                     }
                     all_spans.extend(line.spans);
                     line = Line::from(all_spans).style(render_style);
                 }
 
-                // Optionally prepend an annotation banner before the first annotated line in view.
-                // Tree-prefix strings are ln_prefix_width wide so annotation text aligns with
+                // Optionally prepend a comment banner before the first commented line in view.
+                // Tree-prefix strings are ln_prefix_width wide so comment text aligns with
                 // log content:  "├" + "─"*(w-2) + " "  and  "│" + " "*(w-2) + " "
                 let mut result: Vec<Line> = Vec::new();
-                if let Some(&ann_idx) = banner_at.get(&abs_vis_idx) {
-                    let (_, text) = &annotations_for_render[ann_idx];
+                if let Some(&cmt_idx) = banner_at.get(&abs_vis_idx) {
+                    let (_, text) = &comments_for_render[cmt_idx];
                     let (first_prefix, cont_prefix) = if show_line_numbers && ln_prefix_width >= 2 {
                         (
                             format!("├{} ", "─".repeat(ln_prefix_width - 2)),
@@ -2345,7 +2345,7 @@ impl App {
         }
     }
 
-    fn render_annotation_popup(
+    fn render_comment_popup(
         &mut self,
         frame: &mut Frame<'_>,
         lines: &[String],
@@ -2367,7 +2367,7 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.theme.border_title))
-            .title(format!(" Annotation ({} lines) ", line_count))
+            .title(format!(" Comment ({} lines) ", line_count))
             .title_style(
                 Style::default()
                     .fg(self.theme.text_highlight)

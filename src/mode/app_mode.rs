@@ -64,9 +64,9 @@ pub trait Mode: std::fmt::Debug + Send {
     fn visual_selection_anchor(&self) -> Option<usize> {
         None
     }
-    /// Returns `(lines, cursor_row, cursor_col, annotated_line_count)` when the
-    /// annotation popup editor is active.
-    fn annotation_popup(&self) -> Option<(Vec<String>, usize, usize, usize)> {
+    /// Returns `(lines, cursor_row, cursor_col, commented_line_count)` when the
+    /// comment popup editor is active.
+    fn comment_popup(&self) -> Option<(Vec<String>, usize, usize, usize)> {
         None
     }
     /// Returns `(fields_with_toggles, cursor_position)` when the select-fields
@@ -119,7 +119,7 @@ impl Mode for ConfirmRestoreMode {
             KeyCode::Char('n') | KeyCode::Esc => {
                 tab.log_manager.clear_filters().await;
                 tab.log_manager.set_marks(vec![]);
-                tab.log_manager.set_annotations(vec![]);
+                tab.log_manager.set_comments(vec![]);
                 tab.refresh_visible();
                 (Box::new(NormalMode), KeyResult::Handled)
             }
@@ -199,7 +199,7 @@ mod tests {
             marked_lines: vec![],
             file_hash: None,
             show_line_numbers: false,
-            annotations: vec![],
+            comments: vec![],
         }
     }
 

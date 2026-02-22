@@ -10,10 +10,10 @@ use crate::{
     ui::{KeyResult, TabState},
 };
 
-/// Multi-line annotation editor mode.
+/// Multi-line comment editor mode.
 ///
 /// Opened from `VisualLineMode` when the user presses `c` after selecting
-/// a range of lines.  The annotation text is stored line-by-line so the
+/// a range of lines.  The comment text is stored line-by-line so the
 /// cursor can be positioned precisely.
 ///
 /// Keys:
@@ -22,20 +22,20 @@ use crate::{
 ///   Backspace     → delete char / merge with previous line
 ///   Left/Right    → move cursor within / across lines
 ///   Up/Down       → move cursor between rows
-///   Shift+Enter   → save annotation and return to NormalMode (configurable)
+///   Ctrl+S        → save comment and return to NormalMode (configurable)
 ///   Esc           → cancel, discard text, return to NormalMode
 #[derive(Debug)]
-pub struct AnnotationMode {
+pub struct CommentMode {
     pub lines: Vec<String>,
     pub cursor_row: usize,
     pub cursor_col: usize,
-    /// The actual file-line indices this annotation will be attached to.
+    /// The actual file-line indices this comment will be attached to.
     pub line_indices: Vec<usize>,
 }
 
-impl AnnotationMode {
+impl CommentMode {
     pub fn new(line_indices: Vec<usize>) -> Self {
-        AnnotationMode {
+        CommentMode {
             lines: vec![String::new()],
             cursor_row: 0,
             cursor_col: 0,
@@ -45,7 +45,7 @@ impl AnnotationMode {
 }
 
 #[async_trait]
-impl Mode for AnnotationMode {
+impl Mode for CommentMode {
     async fn handle_key(
         mut self: Box<Self>,
         tab: &mut TabState,
@@ -53,12 +53,12 @@ impl Mode for AnnotationMode {
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
-        let save_kb = tab.keybindings.annotation.save.clone();
+        let save_kb = tab.keybindings.comment.save.clone();
 
-        // Save (configurable, default Shift+Enter)
+        // Save (configurable, default Ctrl+S)
         if save_kb.matches(key, modifiers) {
             let text = self.lines.join("\n");
-            tab.log_manager.add_annotation(text, self.line_indices);
+            tab.log_manager.add_comment(text, self.line_indices);
             return (Box::new(NormalMode), KeyResult::Handled);
         }
 
@@ -67,8 +67,8 @@ impl Mode for AnnotationMode {
             KeyCode::Esc => {
                 return (Box::new(NormalMode), KeyResult::Handled);
             }
-            // Insert newline: split current line at cursor (plain Enter only)
-            KeyCode::Enter if !modifiers.contains(KeyModifiers::SHIFT) => {
+            // Insert newline: split current line at cursor
+            KeyCode::Enter => {
                 let rest = self.lines[self.cursor_row][self.cursor_col..].to_string();
                 self.lines[self.cursor_row].truncate(self.cursor_col);
                 self.cursor_row += 1;
@@ -134,25 +134,25 @@ impl Mode for AnnotationMode {
     }
 
     fn status_line(&self) -> &str {
-        "[ANNOTATION] Type annotation text | [Shift+Enter] Save | [Esc] Cancel"
+        "[COMMENT] Type comment text | [Ctrl+S] Save | [Esc] Cancel"
     }
 
     fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![
             Span::styled(
-                "[ANNOTATION]  ",
+                "[COMMENT]  ",
                 Style::default()
                     .fg(theme.text_highlight)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("type text  ", Style::default().fg(theme.text)),
         ];
-        status_entry(&mut spans, kb.annotation.save.display(), "save", theme);
+        status_entry(&mut spans, kb.comment.save.display(), "save", theme);
         status_entry(&mut spans, "Esc".to_string(), "cancel", theme);
         Line::from(spans)
     }
 
-    fn annotation_popup(&self) -> Option<(Vec<String>, usize, usize, usize)> {
+    fn comment_popup(&self) -> Option<(Vec<String>, usize, usize, usize)> {
         Some((
             self.lines.clone(),
             self.cursor_row,
@@ -179,7 +179,7 @@ mod tests {
     }
 
     async fn press(
-        mode: AnnotationMode,
+        mode: CommentMode,
         tab: &mut TabState,
         key: KeyCode,
         modifiers: KeyModifiers,
@@ -190,9 +190,9 @@ mod tests {
     #[tokio::test]
     async fn test_char_inserts_at_cursor() {
         let mut tab = make_tab().await;
-        let mode = AnnotationMode::new(vec![0, 1]);
+        let mode = CommentMode::new(vec![0, 1]);
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('h'), KeyModifiers::NONE).await;
-        let (lines, _, col, _) = mode2.annotation_popup().unwrap();
+        let (lines, _, col, _) = mode2.comment_popup().unwrap();
         assert_eq!(lines[0], "h");
         assert_eq!(col, 1);
     }
@@ -200,11 +200,11 @@ mod tests {
     #[tokio::test]
     async fn test_enter_splits_line() {
         let mut tab = make_tab().await;
-        let mut mode = AnnotationMode::new(vec![0]);
+        let mut mode = CommentMode::new(vec![0]);
         mode.lines[0] = "hello world".to_string();
         mode.cursor_col = 5;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Enter, KeyModifiers::NONE).await;
-        let (lines, row, col, _) = mode2.annotation_popup().unwrap();
+        let (lines, row, col, _) = mode2.comment_popup().unwrap();
         assert_eq!(lines[0], "hello");
         assert_eq!(lines[1], " world");
         assert_eq!(row, 1);
@@ -214,11 +214,11 @@ mod tests {
     #[tokio::test]
     async fn test_backspace_removes_char() {
         let mut tab = make_tab().await;
-        let mut mode = AnnotationMode::new(vec![0]);
+        let mut mode = CommentMode::new(vec![0]);
         mode.lines[0] = "hi".to_string();
         mode.cursor_col = 2;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Backspace, KeyModifiers::NONE).await;
-        let (lines, _, col, _) = mode2.annotation_popup().unwrap();
+        let (lines, _, col, _) = mode2.comment_popup().unwrap();
         assert_eq!(lines[0], "h");
         assert_eq!(col, 1);
     }
@@ -226,12 +226,12 @@ mod tests {
     #[tokio::test]
     async fn test_backspace_merges_lines() {
         let mut tab = make_tab().await;
-        let mut mode = AnnotationMode::new(vec![0]);
+        let mut mode = CommentMode::new(vec![0]);
         mode.lines = vec!["first".to_string(), "second".to_string()];
         mode.cursor_row = 1;
         mode.cursor_col = 0;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Backspace, KeyModifiers::NONE).await;
-        let (lines, row, col, _) = mode2.annotation_popup().unwrap();
+        let (lines, row, col, _) = mode2.comment_popup().unwrap();
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0], "firstsecond");
         assert_eq!(row, 0);
@@ -239,42 +239,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_shift_enter_saves_annotation() {
+    async fn test_ctrl_s_saves_comment() {
         let mut tab = make_tab().await;
-        let mut mode = AnnotationMode::new(vec![0, 1, 2]);
+        let mut mode = CommentMode::new(vec![0, 1, 2]);
         mode.lines = vec!["line one".to_string(), "line two".to_string()];
         let (mode2, result) =
-            press(mode, &mut tab, KeyCode::Enter, KeyModifiers::SHIFT).await;
+            press(mode, &mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
         assert!(matches!(result, KeyResult::Handled));
         // returned to NormalMode
-        assert!(mode2.annotation_popup().is_none());
-        // annotation stored
-        let annotations = tab.log_manager.get_annotations();
-        assert_eq!(annotations.len(), 1);
-        assert_eq!(annotations[0].text, "line one\nline two");
-        assert_eq!(annotations[0].line_indices, vec![0, 1, 2]);
+        assert!(mode2.comment_popup().is_none());
+        // comment stored
+        let comments = tab.log_manager.get_comments();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "line one\nline two");
+        assert_eq!(comments[0].line_indices, vec![0, 1, 2]);
     }
 
     #[tokio::test]
     async fn test_esc_cancels_without_saving() {
         let mut tab = make_tab().await;
-        let mut mode = AnnotationMode::new(vec![0]);
+        let mut mode = CommentMode::new(vec![0]);
         mode.lines[0] = "some text".to_string();
         let (mode2, result) = press(mode, &mut tab, KeyCode::Esc, KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(mode2.annotation_popup().is_none());
-        assert!(tab.log_manager.get_annotations().is_empty());
+        assert!(mode2.comment_popup().is_none());
+        assert!(tab.log_manager.get_comments().is_empty());
     }
 
     #[tokio::test]
     async fn test_left_wraps_to_previous_line() {
         let mut tab = make_tab().await;
-        let mut mode = AnnotationMode::new(vec![0]);
+        let mut mode = CommentMode::new(vec![0]);
         mode.lines = vec!["ab".to_string(), "cd".to_string()];
         mode.cursor_row = 1;
         mode.cursor_col = 0;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Left, KeyModifiers::NONE).await;
-        let (_, row, col, _) = mode2.annotation_popup().unwrap();
+        let (_, row, col, _) = mode2.comment_popup().unwrap();
         assert_eq!(row, 0);
         assert_eq!(col, 2); // end of "ab"
     }
@@ -282,12 +282,12 @@ mod tests {
     #[tokio::test]
     async fn test_right_wraps_to_next_line() {
         let mut tab = make_tab().await;
-        let mut mode = AnnotationMode::new(vec![0]);
+        let mut mode = CommentMode::new(vec![0]);
         mode.lines = vec!["ab".to_string(), "cd".to_string()];
         mode.cursor_row = 0;
         mode.cursor_col = 2; // end of "ab"
         let (mode2, _) = press(mode, &mut tab, KeyCode::Right, KeyModifiers::NONE).await;
-        let (_, row, col, _) = mode2.annotation_popup().unwrap();
+        let (_, row, col, _) = mode2.comment_popup().unwrap();
         assert_eq!(row, 1);
         assert_eq!(col, 0);
     }
@@ -295,36 +295,36 @@ mod tests {
     #[tokio::test]
     async fn test_up_down_navigation() {
         let mut tab = make_tab().await;
-        let mut mode = AnnotationMode::new(vec![0]);
+        let mut mode = CommentMode::new(vec![0]);
         mode.lines = vec!["hello".to_string(), "hi".to_string()];
         mode.cursor_row = 0;
         mode.cursor_col = 5;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Down, KeyModifiers::NONE).await;
-        let (_, row, col, _) = mode2.annotation_popup().unwrap();
+        let (_, row, col, _) = mode2.comment_popup().unwrap();
         assert_eq!(row, 1);
         assert_eq!(col, 2); // clamped to len("hi")=2
 
         // Re-create for Up test
-        let mut mode3 = AnnotationMode::new(vec![0]);
+        let mut mode3 = CommentMode::new(vec![0]);
         mode3.lines = vec!["hello".to_string(), "hi".to_string()];
         mode3.cursor_row = 1;
         mode3.cursor_col = 2;
         let (mode4, _) = press(mode3, &mut tab, KeyCode::Up, KeyModifiers::NONE).await;
-        let (_, row2, col2, _) = mode4.annotation_popup().unwrap();
+        let (_, row2, col2, _) = mode4.comment_popup().unwrap();
         assert_eq!(row2, 0);
         assert_eq!(col2, 2);
     }
 
     #[test]
-    fn test_annotation_popup_returns_line_count() {
-        let mode = AnnotationMode::new(vec![5, 6, 7, 8]);
-        let (_, _, _, line_count) = mode.annotation_popup().unwrap();
+    fn test_comment_popup_returns_line_count() {
+        let mode = CommentMode::new(vec![5, 6, 7, 8]);
+        let (_, _, _, line_count) = mode.comment_popup().unwrap();
         assert_eq!(line_count, 4);
     }
 
     #[test]
-    fn test_status_line_contains_annotation() {
-        let mode = AnnotationMode::new(vec![0]);
-        assert!(mode.status_line().contains("[ANNOTATION]"));
+    fn test_status_line_contains_comment() {
+        let mode = CommentMode::new(vec![0]);
+        assert!(mode.status_line().contains("[COMMENT]"));
     }
 }

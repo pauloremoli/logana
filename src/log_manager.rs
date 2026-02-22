@@ -8,7 +8,7 @@ use ratatui::style::Style;
 use crate::db::{Database, FilterStore};
 use crate::file_reader::FileReader;
 use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter};
-use crate::types::{Annotation, ColorConfig, FilterDef, FilterType, parse_color};
+use crate::types::{ColorConfig, Comment, FilterDef, FilterType, parse_color};
 
 /// Manages filter definitions (persisted to SQLite), marks (in-memory), and
 /// the mapping to a renderable `FilterManager` + style palette.
@@ -20,7 +20,7 @@ pub struct LogManager {
     source_file: Option<String>,
     filter_defs: Vec<FilterDef>,
     marks: HashSet<usize>,
-    annotations: Vec<Annotation>,
+    comments: Vec<Comment>,
 }
 
 impl LogManager {
@@ -30,7 +30,7 @@ impl LogManager {
             source_file,
             filter_defs: Vec::new(),
             marks: HashSet::new(),
-            annotations: Vec::new(),
+            comments: Vec::new(),
         };
         mgr.reload_filters_from_db().await;
         mgr
@@ -265,28 +265,28 @@ impl LogManager {
             .collect()
     }
 
-    // ── Annotations ──────────────────────────────────────────────────────────
+    // ── Comments ──────────────────────────────────────────────────────────────
 
-    /// Append a new annotation for the given line indices.
-    pub fn add_annotation(&mut self, text: String, line_indices: Vec<usize>) {
+    /// Append a new comment for the given line indices.
+    pub fn add_comment(&mut self, text: String, line_indices: Vec<usize>) {
         if !line_indices.is_empty() {
-            self.annotations.push(Annotation { text, line_indices });
+            self.comments.push(Comment { text, line_indices });
         }
     }
 
-    pub fn get_annotations(&self) -> &[Annotation] {
-        &self.annotations
+    pub fn get_comments(&self) -> &[Comment] {
+        &self.comments
     }
 
-    /// Returns true if `line_idx` belongs to at least one annotation.
-    pub fn has_annotation(&self, line_idx: usize) -> bool {
-        self.annotations
+    /// Returns true if `line_idx` belongs to at least one comment.
+    pub fn has_comment(&self, line_idx: usize) -> bool {
+        self.comments
             .iter()
             .any(|a| a.line_indices.contains(&line_idx))
     }
 
-    pub fn set_annotations(&mut self, annotations: Vec<Annotation>) {
-        self.annotations = annotations;
+    pub fn set_comments(&mut self, comments: Vec<Comment>) {
+        self.comments = comments;
     }
 
     // ── Filter-manager construction ──────────────────────────────────────────
