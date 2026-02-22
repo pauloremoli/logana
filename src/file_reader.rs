@@ -679,4 +679,368 @@ mod tests {
         r.append_bytes(b"");
         assert_eq!(r.line_count(), 1);
     }
+
+    // -----------------------------------------------------------------------
+    // strip_ansi_escapes – OSC sequences
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_strip_osc_terminated_by_bel() {
+        // OSC: ESC ] ... BEL (0x07)
+        let input = b"\x1b]0;my title\x07rest of line\n";
+        let r = make(input);
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0), b"rest of line");
+    }
+
+    #[test]
+    fn test_strip_osc_terminated_by_st() {
+        // OSC: ESC ] ... ESC backslash (ST)
+        let input = b"\x1b]0;my title\x1b\\rest\n";
+        let r = make(input);
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0), b"rest");
+    }
+
+    #[test]
+    fn test_strip_osc_mixed_with_csi() {
+        let input = b"\x1b]0;title\x07\x1b[32mGREEN\x1b[0m\n";
+        let r = make(input);
+        assert_eq!(r.get_line(0), b"GREEN");
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_ansi_escapes – two-byte ESC sequences
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_strip_two_byte_esc_sequence() {
+        // ESC M (reverse index), ESC = (keypad mode), etc.
+        let input = b"before\x1bMafter\n";
+        let r = make(input);
+        assert_eq!(r.get_line(0), b"beforeafter");
+    }
+
+    #[test]
+    fn test_strip_multiple_two_byte_esc() {
+        let input = b"\x1b=\x1b>hello\n";
+        let r = make(input);
+        assert_eq!(r.get_line(0), b"hello");
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_ansi_escapes – edge / truncation cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_strip_esc_at_end_of_input() {
+        // Truncated: ESC is the very last byte
+        let out = strip_ansi_escapes(b"hello\x1b");
+        assert_eq!(out, b"hello");
+    }
+
+    #[test]
+    fn test_strip_truncated_csi() {
+        // CSI that never gets a final byte (0x40-0x7E) — consume until end
+        let out = strip_ansi_escapes(b"hi\x1b[31");
+        assert_eq!(out, b"hi");
+    }
+
+    #[test]
+    fn test_strip_empty_input() {
+        let out = strip_ansi_escapes(b"");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_strip_only_escapes() {
+        let out = strip_ansi_escapes(b"\x1b[32m\x1b[0m\r");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_strip_complex_csi_with_params() {
+        // CSI with multiple params: ESC [ 38;5;196 m (256-color red)
+        let input = b"\x1b[38;5;196mred text\x1b[0m\n";
+        let r = make(input);
+        assert_eq!(r.get_line(0), b"red text");
+    }
+
+    #[test]
+    fn test_strip_cr_only_lines() {
+        // Lines with only CR (no LF)
+        let out = strip_ansi_escapes(b"hello\rworld");
+        assert_eq!(out, b"helloworld");
+    }
+
+    // -----------------------------------------------------------------------
+    // FileReader – content edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_only_newlines() {
+        let r = make(b"\n\n\n");
+        assert_eq!(r.line_count(), 3);
+        assert_eq!(r.get_line(0), b"");
+        assert_eq!(r.get_line(1), b"");
+        assert_eq!(r.get_line(2), b"");
+    }
+
+    #[test]
+    fn test_single_newline() {
+        let r = make(b"\n");
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0), b"");
+    }
+
+    #[test]
+    fn test_large_number_of_lines() {
+        let mut data = Vec::new();
+        for i in 0..10_000 {
+            data.extend_from_slice(format!("line {i}\n").as_bytes());
+        }
+        let r = make(&data);
+        assert_eq!(r.line_count(), 10_000);
+        assert_eq!(r.get_line(0), b"line 0");
+        assert_eq!(r.get_line(9_999), b"line 9999");
+    }
+
+    #[test]
+    fn test_long_single_line() {
+        let line = vec![b'x'; 100_000];
+        let r = make(&line);
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0).len(), 100_000);
+    }
+
+    #[test]
+    fn test_binary_content_no_newlines() {
+        let data: Vec<u8> = (0..=255).collect();
+        // This has 0x0a (newline) at position 10 and 0x1b (ESC) at position 27
+        // After stripping, there should be content split at newline positions
+        let r = make(&data);
+        assert!(r.line_count() >= 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // append_bytes – advanced scenarios
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_append_bytes_multiple_times() {
+        let mut r = make(b"a\n");
+        r.append_bytes(b"b\n");
+        r.append_bytes(b"c\n");
+        r.append_bytes(b"d\n");
+        assert_eq!(r.line_count(), 4);
+        assert_eq!(r.get_line(0), b"a");
+        assert_eq!(r.get_line(1), b"b");
+        assert_eq!(r.get_line(2), b"c");
+        assert_eq!(r.get_line(3), b"d");
+    }
+
+    #[test]
+    fn test_append_bytes_no_newline_then_newline() {
+        let mut r = make(b"start");
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0), b"start");
+
+        r.append_bytes(b" middle");
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0), b"start middle");
+
+        r.append_bytes(b" end\nnew\n");
+        assert_eq!(r.line_count(), 2);
+        assert_eq!(r.get_line(0), b"start middle end");
+        assert_eq!(r.get_line(1), b"new");
+    }
+
+    #[test]
+    fn test_append_to_empty() {
+        let mut r = make(b"");
+        assert_eq!(r.line_count(), 0);
+        r.append_bytes(b"hello\n");
+        assert_eq!(r.line_count(), 1);
+        assert_eq!(r.get_line(0), b"hello");
+    }
+
+    // -----------------------------------------------------------------------
+    // FileReader::new – file with ANSI codes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_file_reader_from_path_with_ansi() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"\x1b[32mgreen\x1b[0m\nplain\n").unwrap();
+        let path = f.path().to_str().unwrap();
+        let reader = FileReader::new(path).unwrap();
+        assert_eq!(reader.line_count(), 2);
+        assert_eq!(reader.get_line(0), b"green");
+        assert_eq!(reader.get_line(1), b"plain");
+    }
+
+    #[test]
+    fn test_file_reader_from_path_with_crlf() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"line1\r\nline2\r\n").unwrap();
+        let path = f.path().to_str().unwrap();
+        let reader = FileReader::new(path).unwrap();
+        assert_eq!(reader.line_count(), 2);
+        assert_eq!(reader.get_line(0), b"line1");
+        assert_eq!(reader.get_line(1), b"line2");
+    }
+
+    #[test]
+    fn test_file_reader_nonexistent_path() {
+        let result = FileReader::new("/tmp/nonexistent_logsmith_test_file.log");
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_line_starts – direct tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_line_starts_empty() {
+        let starts = compute_line_starts(b"");
+        assert_eq!(starts, vec![0]);
+    }
+
+    #[test]
+    fn test_compute_line_starts_no_newline() {
+        let starts = compute_line_starts(b"hello");
+        assert_eq!(starts, vec![0]);
+    }
+
+    #[test]
+    fn test_compute_line_starts_one_newline() {
+        let starts = compute_line_starts(b"hello\n");
+        assert_eq!(starts, vec![0, 6]);
+    }
+
+    #[test]
+    fn test_compute_line_starts_multiple() {
+        let starts = compute_line_starts(b"ab\ncd\nef\n");
+        assert_eq!(starts, vec![0, 3, 6, 9]);
+    }
+
+    #[test]
+    fn test_compute_line_starts_consecutive_newlines() {
+        let starts = compute_line_starts(b"\n\n\n");
+        assert_eq!(starts, vec![0, 1, 2, 3]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Async: load + index_chunked
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_load_basic() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "line 1").unwrap();
+        writeln!(f, "line 2").unwrap();
+        writeln!(f, "line 3").unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+
+        let handle = FileReader::load(path).await.unwrap();
+        assert!(handle.total_bytes > 0);
+
+        let reader = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(reader.line_count(), 3);
+        assert_eq!(reader.get_line(0), b"line 1");
+    }
+
+    #[tokio::test]
+    async fn test_load_progress_reaches_one() {
+        let mut f = NamedTempFile::new().unwrap();
+        for i in 0..100 {
+            writeln!(f, "line {i}").unwrap();
+        }
+        let path = f.path().to_str().unwrap().to_string();
+
+        let handle = FileReader::load(path).await.unwrap();
+        let reader = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(reader.line_count(), 100);
+
+        // After completion, progress should be 1.0
+        let progress = *handle.progress_rx.borrow();
+        assert!((progress - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_load_with_ansi() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"\x1b[31mred\x1b[0m\nplain\n").unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+
+        let handle = FileReader::load(path).await.unwrap();
+        let reader = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(reader.line_count(), 2);
+        assert_eq!(reader.get_line(0), b"red");
+        assert_eq!(reader.get_line(1), b"plain");
+    }
+
+    #[tokio::test]
+    async fn test_load_nonexistent() {
+        let result = FileReader::load("/tmp/nonexistent_logsmith_load_test.log".to_string()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_load_empty_file() {
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+
+        let handle = FileReader::load(path).await.unwrap();
+        let reader = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(reader.line_count(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Async: spawn_file_watcher
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_spawn_file_watcher_detects_new_data() {
+        use std::io::{Seek, SeekFrom};
+        use tokio::time::{sleep, Duration};
+
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "initial\n").unwrap();
+        f.flush().unwrap();
+        let initial_size = f.as_file().metadata().unwrap().len();
+        let path = f.path().to_str().unwrap().to_string();
+
+        let mut rx = FileReader::spawn_file_watcher(path, initial_size).await;
+
+        // Append new data to the file
+        f.seek(SeekFrom::End(0)).unwrap();
+        write!(f, "appended\n").unwrap();
+        f.flush().unwrap();
+
+        // Wait for the watcher to detect the change (polls every 500ms)
+        sleep(Duration::from_millis(1500)).await;
+
+        let data = rx.borrow_and_update().clone();
+        let text = String::from_utf8_lossy(&data);
+        assert!(text.contains("appended"), "watcher should detect appended data, got: {text}");
+    }
+
+    // -----------------------------------------------------------------------
+    // iter – additional coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_iter_empty() {
+        let r = make(b"");
+        let collected: Vec<_> = r.iter().collect();
+        assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn test_iter_single_no_newline() {
+        let r = make(b"only");
+        let collected: Vec<_> = r.iter().collect();
+        assert_eq!(collected, vec![(0, b"only".as_ref())]);
+    }
 }
