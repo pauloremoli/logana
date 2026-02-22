@@ -13,3 +13,4 @@ pub mod syslog;
 pub mod theme;
 pub mod types;
 pub mod ui;
+pub mod value_colors;

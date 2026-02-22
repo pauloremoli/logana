@@ -65,7 +65,7 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
         .map(|(p, _)| p)
 }
 
-/// Format a `SpanInfo` as a display string: `name: k=v, k=v` or just `name`.
+/// Format a `SpanInfo` as a display string: `name: v, v` or just `name`.
 pub fn format_span_col(s: &SpanInfo<'_>) -> String {
     if s.fields.is_empty() {
         return s.name.to_string();
@@ -73,7 +73,7 @@ pub fn format_span_col(s: &SpanInfo<'_>) -> String {
     let kv = s
         .fields
         .iter()
-        .map(|(k, v)| format!("{}={}", k, v))
+        .map(|(_, v)| v.to_string())
         .collect::<Vec<_>>()
         .join(", ");
     format!("{}: {}", s.name, kv)
@@ -109,7 +109,7 @@ mod tests {
             name: "request",
             fields: vec![("method", "GET"), ("uri", "/health")],
         };
-        assert_eq!(format_span_col(&span), "request: method=GET, uri=/health");
+        assert_eq!(format_span_col(&span), "request: GET, /health");
     }
 
     #[test]

@@ -8,16 +8,19 @@ Terminal-based log analysis tool built in Rust with a Ratatui TUI. Logs are read
 src/
   main.rs         - Entry point, CLI args, runtime setup, app lifecycle
   lib.rs          - Library re-exports
-  types.rs        - Shared data types (LogLevel, FilterType, FilterDef, ColorConfig, SearchResult)
+  types.rs        - Shared data types (LogLevel, FilterType, FilterDef, ColorConfig, SearchResult, FieldLayout)
+  format.rs       - Log format abstraction: LogFormatParser trait, DisplayParts, detect_format()
+  log_line.rs     - JSON log parser (JsonParser implementing LogFormatParser)
+  syslog.rs       - Syslog parser: RFC 3164 + RFC 5424 (SyslogParser implementing LogFormatParser)
   file_reader.rs  - Memory-mapped file I/O with SIMD line indexing (FileReader)
   filters.rs      - Filter pipeline: Filter trait, SubstringFilter, RegexFilter, FilterManager, render_line
   log_manager.rs  - Filter/mark state management + SQLite persistence bridge (LogManager)
   db.rs           - SQLite layer via sqlx (FilterStore, FileContextStore traits)
   search.rs       - Regex search with match positions and wrapping navigation
   ui.rs           - Ratatui TUI (App, TabState, AppMode, rendering, keybindings)
-  theme.rs        - JSON-based theme loading and color management
+  theme.rs        - JSON-based theme loading and color management (Theme, ValueColors)
+  value_colors.rs - Per-token color coding for HTTP methods, status codes, IP addresses
   config.rs       - JSON config file loading (Config, Keybindings, KeyBinding)
-  log_line.rs     - Syslog/journalctl line parser (LogLine)
   auto_complete.rs - Tab completion for commands, colors, and file paths
   commands.rs     - Clap-based command definitions for the command bar
 tests/
@@ -42,12 +45,12 @@ Persisted to SQLite. Renamed from `Filter` to avoid conflict with the `Filter` t
 **SearchResult**: `{ line_idx: usize, matches: Vec<(start, end)> }`
 Byte positions within the line.
 
-**Annotation**: `{ text: String, line_indices: Vec<usize> }`
-A multiline comment attached to a group of log lines. Multiple annotations can exist per session. `text` is newline-joined and `line_indices` are raw file-line indices (same space as `visible_indices`).
+**Comment**: `{ text: String, line_indices: Vec<usize> }`
+A multiline comment attached to a group of log lines. Multiple comments can exist per session. `text` is newline-joined and `line_indices` are raw file-line indices (same space as `visible_indices`).
 
-**FieldLayout**: `{ json_columns: Option<Vec<String>> }` — when `Some`, only the listed column names are shown in that order; `None` restores default display order. Held by `TabState`; not persisted.
+**FieldLayout**: `{ columns: Option<Vec<String>>, columns_order: Option<Vec<String>> }` — when `columns` is `Some`, only the listed column names are shown in that order; `None` restores default display order. `columns_order` stores the full ordered list (enabled + disabled) for modal reopening. Held by `TabState`; not persisted.
 
-**FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll, annotations).
+**FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll, comments).
 
 ## Architecture Layers
 
@@ -58,6 +61,40 @@ A multiline comment attached to a group of log lines. Multiple annotations can e
 - **`get_line(idx)`**: O(1) slice into the backing storage — no heap allocation per line.
 - **`line_count()`**: Skips the phantom empty entry after a trailing newline.
 - **`from_bytes(Vec<u8>)`**: Used for stdin input and in-memory test data.
+- **`spawn_process_stream(program, args)`**: Spawns a child process, merges stdout+stderr via mpsc, strips ANSI, and delivers complete lines every 500 ms through a `watch::Receiver<Vec<u8>>`. Used by the `docker` command.
+
+### Format Abstraction (format.rs)
+
+Trait-based log format parsing. New parsers are added by implementing a single trait.
+
+- **`DisplayParts<'a>`**: Format-agnostic structured representation of a parsed log line. All fields (`timestamp`, `level`, `target`, `span`, `extra_fields`, `message`) borrow `&'a str` slices from the original line bytes — zero-copy during parsing. Owned `String`s are only created at the column-formatting step in the UI.
+- **`SpanInfo<'a>`**: Span context (name + key-value fields) extracted from structured logs (e.g. tracing JSON).
+- **`LogFormatParser` trait** (object-safe):
+  - `parse_line(&self, line: &'a [u8]) -> Option<DisplayParts<'a>>` — zero-copy parse
+  - `collect_field_names(&self, lines: &[&[u8]]) -> Vec<String>` — discover field names by sampling
+  - `detect_score(&self, sample: &[&[u8]]) -> f64` — confidence score (0.0–1.0) for format detection
+  - `name(&self) -> &str` — human-readable format name
+- **`detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>>`**: Tries all registered parsers (JsonParser, SyslogParser), returns the one with the highest score above 0.0.
+- **`format_span_col(&SpanInfo) -> String`**: Formats span as `name: k=v, k=v`.
+
+### JSON Parser (log_line.rs)
+
+- **`JsonParser`** implements `LogFormatParser`. Parses JSON log lines (tracing, bunyan, etc.).
+- **`parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'a>>>`**: Zero-copy JSON field extraction.
+- **`classify_json_fields(fields, hidden_fields) -> DisplayParts<'a>`**: Maps JSON fields to canonical names (timestamp/level/target/span/message) with hidden-field filtering.
+- **`classify_json_fields_all(fields) -> DisplayParts<'a>`**: Same without hidden-field filtering (used by trait impl).
+- **`detect_score`**: Proportion of sample lines starting with `{` that parse successfully.
+- **`collect_field_names`**: Returns raw JSON key names (not canonical names) ordered by canonical slot (timestamp-group → level-group → target-group → sorted extras → message-group last), plus dotted sub-fields like `span.name`, `fields.count`.
+
+### Syslog Parser (syslog.rs)
+
+- **`SyslogParser`** implements `LogFormatParser`. Supports RFC 3164 (BSD) and RFC 5424 formats.
+- **RFC 3164**: `<PRI>Mmm DD HH:MM:SS hostname app[pid]: message` — optional priority prefix, BSD timestamp, hostname, app name with optional PID.
+- **RFC 5424**: `<PRI>VER TIMESTAMP HOSTNAME APP PROCID MSGID [SD] MSG` — ISO 8601 timestamp, structured data sections with `key="value"` params.
+- **Priority decoding**: `priority = facility * 8 + severity`. Severity → level: 0–3=ERROR, 4=WARN, 5–6=INFO, 7=DEBUG. Facility → name from 24-entry lookup table.
+- **Zero-copy**: Converts `&[u8]` to `&str` once, then extracts `&str` slices by byte offsets. Severity levels are `&'static str` constants.
+- **`detect_score`**: Proportion of sample lines that parse successfully.
+- **`collect_field_names`**: Static canonical names + dynamically discovered extras (hostname, pid, facility, msgid, SD param names).
 
 ### Filter Pipeline (filters.rs)
 
@@ -76,11 +113,11 @@ A multiline comment attached to a group of log lines. Multiple annotations can e
 
 ### Log Manager (log_manager.rs)
 
-- **`LogManager`**: Owns `filter_defs: Vec<FilterDef>` (in-memory, DB-backed), `marks: HashSet<usize>` (in-memory only), and `annotations: Vec<Annotation>` (in-memory only). Does **not** own the `FileReader`.
+- **`LogManager`**: Owns `filter_defs: Vec<FilterDef>` (in-memory, DB-backed), `marks: HashSet<usize>` (in-memory only), and `comments: Vec<Comment>` (in-memory only). Does **not** own the `FileReader`.
 - **Filter CRUD**: `add_filter_with_color`, `remove_filter`, `toggle_filter`, `edit_filter`, `move_filter_up/down`, `set_color_config`, `clear_filters`, `save_filters` (JSON), `load_filters` (JSON).
 - **`build_filter_manager() -> (FilterManager, Vec<Style>)`**: Converts enabled `FilterDef`s into a renderable `FilterManager` + parallel style palette (one `Style` per enabled filter, indexed by `StyleId`).
 - **Marks**: `toggle_mark`, `is_marked`, `get_marked_indices`, `get_marked_lines(&FileReader)`.
-- **Annotations**: `add_annotation(text, line_indices)`, `get_annotations() -> &[Annotation]`, `has_annotation(line_idx) -> bool`, `set_annotations(Vec<Annotation>)`. Multiple annotation groups can share the same log lines.
+- **Comments**: `add_comment(text, line_indices)`, `get_comments() -> &[Comment]`, `has_comment(line_idx) -> bool`, `set_comments(Vec<Comment>)`. Multiple comment groups can share the same log lines.
 - **DB bridge**: Filter mutations are fully `async` — all methods on `LogManager` are `async fn` and `await` their DB calls directly. On construction, filters are loaded from DB via `reload_filters_from_db().await`.
 - **File hash**: `compute_file_hash(path)` hashes file size + mtime for change detection.
 
@@ -107,6 +144,7 @@ A multiline comment attached to a group of log lines. Multiple annotations can e
 - **`TabState`** owns:
   - `file_reader: FileReader` — the backing log data
   - `log_manager: LogManager` — filter defs and marks
+  - `detected_format: Option<Box<dyn LogFormatParser>>` — auto-detected log format parser (sampled on tab creation)
   - `visible_indices: Vec<usize>` — indices of currently visible lines under active filters
   - `scroll_offset: usize` — selected line (index into `visible_indices`)
   - `viewport_offset: usize` — first rendered line (index into `visible_indices`)
@@ -114,7 +152,7 @@ A multiline comment attached to a group of log lines. Multiple annotations can e
   - `keybindings: Arc<Keybindings>` — shared keybinding config (cloned from `App` on tab creation)
   - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
-- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `VisualLineMode`, `AnnotationMode`, `KeybindingsHelpMode`, `SelectFieldsMode`. Rendering data is exposed through trait methods: `status_line()`, `dynamic_status_line(&Keybindings)`, `selected_filter_index()`, `command_state()`, `search_state()`, `needs_input_bar()`, `confirm_restore_context()`, `confirm_restore_session_files()`, `visual_selection_anchor()`, `annotation_popup()`, `keybindings_help_scroll()`, `keybindings_help_search()`, `select_fields_state()`.
+- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `VisualLineMode`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`. Rendering data is exposed through trait methods: `status_line()`, `dynamic_status_line(&Keybindings)`, `selected_filter_index()`, `command_state()`, `completion_index()`, `search_state()`, `needs_input_bar()`, `confirm_restore_context()`, `confirm_restore_session_files()`, `visual_selection_anchor()`, `comment_popup()`, `keybindings_help_scroll()`, `keybindings_help_search()`, `select_fields_state()`, `docker_select_state()`, `value_colors_state()`.
 - **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`.
 
 **Rendering pipeline (per frame)**:
@@ -123,19 +161,22 @@ A multiline comment attached to a group of log lines. Multiple annotations can e
 3. Wrap-aware viewport adjustment: when wrap is ON, sums terminal rows (via `line_row_count`) from `viewport_offset` to `scroll_offset`; scrolls when total exceeds `visible_height`.
 4. Wrap-aware `end` computation: walks from `start` accumulating `line_row_count()` until `visible_height` is filled.
 5. Build `FilterManager` + 256-slot styles array (filter styles at 0..N, search style at index 255).
-6. For each line in `[start..end]`: evaluate filters (`evaluate_line`), overlay search spans at priority 1000, apply level colours and mark styles, compose final `Line` via `render_line`.
-7. `line_row_count(bytes, inner_width)` uses `unicode_width` to compute `ceil(display_width / inner_width)`, keeping wrap-aware viewport math precise.
+6. For each line in `[start..end]`: if `detected_format` is set, parse via the trait (`parser.parse_line(line_bytes)`) to get `DisplayParts`, then format into columns via `apply_field_layout`; otherwise fall back to raw byte rendering. Evaluate filters (`evaluate_line`), overlay search spans at priority 1000, apply level colours and mark styles, compose final `Line` via `render_line`.
+7. Apply value-based coloring (`colorize_known_values`) to spans with no `fg` set — HTTP methods, status codes, and IP addresses get per-token colors from `theme.value_colors`. Spans already colored by filters or search are left untouched.
+8. `line_row_count(bytes, inner_width)` uses `unicode_width` to compute `ceil(display_width / inner_width)`, keeping wrap-aware viewport math precise.
 
-**JSON field layout**: `apply_json_field_layout(&JsonDisplayParts, &FieldLayout) -> Vec<String>` — module-level helper that routes through `default_json_cols` (all columns, default order) or picks specific columns via `get_json_col`. Column name aliases: `timestamp|ts|time`, `level|lvl`, `target`, `span`, `message|msg`, plus any extra-field key. Tab completion for the `fields` command completes against the five canonical names plus dynamically discovered field names from the first 200 visible log lines (`TabState::collect_json_field_names()`).
-**Select-fields mode** (`:select-fields`): floating popup showing all discovered JSON fields with checkboxes. `j`/`k` navigate, `Space` toggle, `a`/`n` enable/disable all, `Enter` apply, `Esc` cancel. Implemented by `SelectFieldsMode` in `src/mode/select_fields_mode.rs`.
+**Structured field layout**: `apply_field_layout(&DisplayParts, &FieldLayout, &HashSet<String>) -> Vec<String>` — module-level helper that routes through `default_cols` (all columns, default order) or picks specific columns via `get_col`, with name-based hidden-field filtering. Column name resolution: `get_col()` checks all aliases from `TIMESTAMP_KEYS`, `LEVEL_KEYS`, `TARGET_KEYS`, `MESSAGE_KEYS` arrays to map raw JSON key names to `DisplayParts` slots, plus `span` and dotted sub-field names (`span.*`, `fields.*`). Tab completion for the `fields` command completes against the five canonical names plus dynamically discovered field names from the first 200 visible log lines (`TabState::collect_field_names()`, which delegates to the detected format parser's `collect_field_names`).
+**Format auto-detection**: On tab creation, the first 200 lines are sampled and passed to `detect_format()`, which tries all registered parsers and stores the best match in `TabState::detected_format`. The rendering pipeline dispatches through the trait: `detected_format.as_ref().and_then(|parser| parser.parse_line(line_bytes))`. If no format is detected, lines fall back to raw byte rendering.
+**Select-fields mode** (`:select-fields`): floating popup showing all discovered structured fields with checkboxes. `j`/`k` navigate, `Space` toggle, `J`/`K` reorder, `a`/`n` enable/disable all, `Enter` apply, `Esc` cancel. Implemented by `SelectFieldsMode` in `src/mode/select_fields_mode.rs`.
 **Vim keybindings**: j/k, gg/G, Ctrl+d/u (half page), PageUp/Down, /, ?, n/N, m (mark), V (visual select)
-**Visual line mode** (`V`): anchor at current line, j/k extend selection, `c` opens annotation editor, Esc cancel. Selected range highlighted in the log panel.
-**Annotation mode**: multiline text editor (Enter = newline, Backspace = delete/merge, Left/Right wrap lines, Up/Down move rows, Shift+Enter = save (configurable), Esc = cancel). Rendered as a floating popup. Annotated lines show a `◆` indicator in the line-number margin.
+**Docker logs** (`:docker`): runs `docker ps` to list running containers, opens a `DockerSelectMode` popup (j/k navigate, Enter attach, Esc cancel). On selection, spawns `docker logs -f <id>` via `FileReader::spawn_process_stream()` and opens a new streaming tab. `DockerContainer { id, name, image, status }` in `types.rs`. Docker tabs persist across sessions via `source_file = "docker:name"`; on session restore, the `"docker:"` prefix is detected and `restore_docker_tab()` re-spawns the stream by container name instead of attempting a file load.
+**Visual line mode** (`V`): anchor at current line, j/k extend selection, `c` opens comment editor, Esc cancel. Selected range highlighted in the log panel.
+**Comment mode**: multiline text editor (Enter = newline, Backspace = delete/merge, Left/Right wrap lines, Up/Down move rows, Shift+Enter = save (configurable), Esc = cancel). Rendered as a floating popup. Commented lines show a `◆` indicator in the line-number margin.
 **Keybindings help** (`F1`): floating popup listing all configured keybindings grouped by mode. Type to fuzzy-search, j/k scroll, Esc/q/F1 close. The status bar reflects the actual configured keybinding strings.
 **Conflict validation**: at startup `Keybindings::validate()` checks for overlapping bindings within each mode scope; conflicts are printed to stderr and logged as warnings.
 **Multi-tab**: Tab/Shift+Tab switch, Ctrl+t open, Ctrl+w close
-**Command mode** (`:`) with tab completion, history, live hints
-**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`
+**Command mode** (`:`) with highlight-then-accept tab completion, history, live hints. Tab/BackTab cycle a highlight over completions in the hint area without changing input; Enter accepts the highlighted completion into the input (single match = accept+execute immediately). `CommandMode::compute_completions()` encapsulates the 4-tier completion logic (color → file path → theme → command name). `completion_index()` trait method exposes the active highlight to the renderer.
+**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`, `docker`, `value-colors`
 **Filter management mode** (`f`): navigate, toggle, delete, edit, set color, add include/exclude
 
 ### Config (config.rs)
@@ -165,9 +206,18 @@ Example `~/.config/logsmith-rs/config.json`:
 - JSON files from `themes/` or `~/.config/logsmith-rs/themes/`
 - Colors: hex `"#RRGGBB"` or RGB array `[r, g, b]`
 - Default: Dracula theme (hardcoded)
-- Fields: `root_bg`, `border`, `border_title`, `text`, `text_highlight`, `error_fg`, `warning_fg`
+- Fields: `root_bg`, `border`, `border_title`, `text`, `text_highlight`, `error_fg`, `warning_fg`, `value_colors`
+- **`ValueColors`**: Per-token color mappings for HTTP methods (`http_get`, `http_post`, `http_put`, `http_delete`, `http_patch`, `http_other`), status codes (`status_2xx`–`status_5xx`), IP addresses (`ip_address`), and UUIDs (`uuid`). All fields have `#[serde(default)]` so existing theme files need no changes. Overridable in theme JSON under `"value_colors": { ... }`.
 - **`Theme::list_available_themes() -> Vec<String>`**: Scans both theme directories, returns sorted names (no extension).
 - **`fuzzy_match(needle, haystack) -> bool`**: Case-insensitive subsequence check; used for `set-theme` tab completion.
+
+### Value Colors (value_colors.rs)
+
+- **Per-token coloring** for known values: HTTP methods (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS), HTTP status codes (2xx–5xx), IPv4 and IPv6 addresses, UUIDs.
+- **Regex patterns** compiled once via `std::sync::LazyLock`.
+- **`colorize_known_values(line, &ValueColors) -> Line`**: Post-processes a rendered `Line`, scanning unstyled spans (no `fg` set) for known patterns. Matched tokens get split into sub-spans with appropriate colors. Spans already colored by filters or search highlights are left untouched.
+- **Priority layering** (highest wins): cursor/mark/visual selection → search highlights → filter highlights → value colors → level colors (line-level fallback).
+- **`:value-colors` command**: opens `ValueColorsMode` popup with a grouped hierarchy (HTTP methods, Status codes, Network, Identifiers). Groups show tri-state checkboxes (`[x]`/`[ ]`/`[-]`). `j`/`k` navigate, `Space` toggles group or entry, `a` enable all, `n` disable all, `Enter` apply, `Esc` cancel. Typing filters rows via fuzzy search; `Esc` clears search first, then cancels. Disabled categories are stored in `ValueColors.disabled` (runtime-only, not serialized to theme JSON).
 
 ## Key Patterns
 
@@ -178,7 +228,7 @@ Example `~/.config/logsmith-rs/config.json`:
 - **Wrap-aware viewport**: `line_row_count` (unicode_width) drives both the scroll trigger and the `[start..end]` window, so the selected line is always on-screen regardless of line length.
 - **Async DB access**: All `LogManager` methods are `async fn` and `await` DB calls directly. No `block_on` or manual runtime bridging.
 - **Repository pattern**: `FilterStore` / `FileContextStore` traits enable in-memory SQLite for tests.
-- **Session persistence**: Filters + UI context saved per `source_file`; hash-verified restore prompt on reopen.
+- **Session persistence**: Filters + UI context saved per `source_file`; hash-verified restore prompt on reopen. Docker tabs are stored as `"docker:name"` and restored by detecting the prefix (re-spawns `docker logs -f` by container name).
 
 ## App Lifecycle
 
@@ -198,7 +248,7 @@ anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, se
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui.rs, auto_complete.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs — 374 tests total
+- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui.rs, auto_complete.rs, format.rs, log_line.rs, syslog.rs, value_colors.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 475 tests total
 - **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
 - **Stdin test** (tests/stdin.rs): pipe input end-to-end — 1 test
 - **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)

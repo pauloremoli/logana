@@ -79,6 +79,10 @@ pub enum Commands {
     ShowAllFields,
     /// Open a modal to select which JSON fields to display
     SelectFields,
+    /// List running Docker containers and attach to one
+    Docker,
+    /// Toggle value-based color coding (HTTP methods, status codes, IPs, UUIDs)
+    ValueColors,
 }
 
 #[derive(Debug)]
@@ -100,6 +104,82 @@ impl CommandMode {
             completion_index: None,
         }
     }
+
+    /// Compute the list of full replacement strings for the current input.
+    /// Returns completions for whichever tier matches first:
+    /// color → file path → theme → command name.
+    fn compute_completions(&self, tab: &TabState) -> Vec<String> {
+        let trimmed = self.input.trim().to_string();
+
+        // Color completion for --fg/--bg arguments
+        if let Some(partial) = extract_color_partial(&trimmed) {
+            let completions = complete_color(partial);
+            if !completions.is_empty() {
+                let prefix = if partial.is_empty() {
+                    trimmed.clone()
+                } else {
+                    trimmed[..trimmed.len() - partial.len()].to_string()
+                };
+                return completions
+                    .into_iter()
+                    .map(|c| format!("{}{}", prefix, c))
+                    .collect();
+            }
+        }
+
+        // File path completion
+        let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
+        let input_ltrimmed = self.input.trim_start();
+        let file_cmd = file_commands
+            .iter()
+            .find(|cmd| input_ltrimmed.starts_with(&format!("{} ", cmd)));
+        if let Some(&cmd) = file_cmd {
+            let partial = input_ltrimmed[cmd.len()..].trim_start();
+            let default_dir: String;
+            let effective_partial: &str = if partial.is_empty() {
+                default_dir = tab
+                    .log_manager
+                    .source_file()
+                    .and_then(|p| std::path::Path::new(p).parent())
+                    .and_then(|d| d.to_str())
+                    .map(|d| format!("{}/", d))
+                    .unwrap_or_default();
+                &default_dir
+            } else {
+                partial
+            };
+            let completions = complete_file_path(effective_partial);
+            if !completions.is_empty() {
+                return completions
+                    .into_iter()
+                    .map(|c| format!("{} {}", cmd, c))
+                    .collect();
+            }
+            return vec![];
+        }
+
+        // Theme completion
+        if let Some(after_prefix) = trimmed.strip_prefix("set-theme") {
+            let partial = after_prefix.trim_start();
+            let mut themes = Theme::list_available_themes();
+            if !partial.is_empty() {
+                themes.retain(|t| fuzzy_match(partial, t));
+            }
+            if !themes.is_empty() {
+                return themes
+                    .into_iter()
+                    .map(|t| format!("set-theme {}", t))
+                    .collect();
+            }
+            return vec![];
+        }
+
+        // Command name completion
+        find_command_completions(&trimmed)
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -112,6 +192,21 @@ impl Mode for CommandMode {
     ) -> (Box<dyn Mode>, KeyResult) {
         match key {
             KeyCode::Enter => {
+                if let Some(idx) = self.completion_index {
+                    let completions = self.compute_completions(tab);
+                    let len = completions.len();
+                    if let Some(text) = completions.into_iter().nth(idx) {
+                        self.input = text;
+                        self.cursor = self.input.len();
+                    }
+                    self.completion_index = None;
+                    if len == 1 {
+                        // Single match → accept AND execute in one step
+                        let cmd = self.input.trim().to_string();
+                        return (Box::new(NormalMode), KeyResult::ExecuteCommand(cmd));
+                    }
+                    return (self, KeyResult::Handled);
+                }
                 let cmd = self.input.trim().to_string();
                 return (Box::new(NormalMode), KeyResult::ExecuteCommand(cmd));
             }
@@ -187,84 +282,23 @@ impl Mode for CommandMode {
                 }
             }
             KeyCode::Tab => {
-                let trimmed = self.input.trim().to_string();
-
-                // Color completion for --fg/--bg arguments
-                if let Some(partial) = extract_color_partial(&trimmed) {
-                    let completions = complete_color(partial);
-                    if !completions.is_empty() {
-                        let idx = self.completion_index.unwrap_or(0) % completions.len();
-                        let color_name = completions[idx];
-                        let prefix = if partial.is_empty() {
-                            trimmed.clone()
-                        } else {
-                            trimmed[..trimmed.len() - partial.len()].to_string()
-                        };
-                        self.input = format!("{}{}", prefix, color_name);
-                        self.cursor = self.input.len();
-                        self.completion_index = Some(idx + 1);
-                        return (self, KeyResult::Handled);
-                    }
-                }
-
-                // File path completion — use the un-right-trimmed input so that a trailing
-                // space after the command name (e.g. "open ") is preserved for detection.
-                let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
-                let input_ltrimmed = self.input.trim_start();
-                let file_cmd = file_commands
-                    .iter()
-                    .find(|cmd| input_ltrimmed.starts_with(&format!("{} ", cmd)));
-                if let Some(&cmd) = file_cmd {
-                    let partial = input_ltrimmed[cmd.len()..].trim_start();
-                    // When nothing is typed yet, default to the directory of the currently open file.
-                    let default_dir: String;
-                    let effective_partial: &str = if partial.is_empty() {
-                        default_dir = tab
-                            .log_manager
-                            .source_file()
-                            .and_then(|p| std::path::Path::new(p).parent())
-                            .and_then(|d| d.to_str())
-                            .map(|d| format!("{}/", d))
-                            .unwrap_or_default();
-                        &default_dir
-                    } else {
-                        partial
-                    };
-                    let completions = complete_file_path(effective_partial);
-                    if !completions.is_empty() {
-                        let idx = self.completion_index.unwrap_or(0) % completions.len();
-                        let completed = completions[idx].clone();
-                        self.input = format!("{} {}", cmd, completed);
-                        self.cursor = self.input.len();
-                        self.completion_index = Some(idx + 1);
-                    }
-                    return (self, KeyResult::Handled);
-                }
-
-                // set-theme completion with fuzzy match
-                if let Some(after_prefix) = trimmed.strip_prefix("set-theme") {
-                    let partial = after_prefix.trim_start();
-                    let mut themes = Theme::list_available_themes();
-                    if !partial.is_empty() {
-                        themes.retain(|t| fuzzy_match(partial, t));
-                    }
-                    if !themes.is_empty() {
-                        let idx = self.completion_index.unwrap_or(0) % themes.len();
-                        let theme_name = themes[idx].clone();
-                        self.input = format!("set-theme {}", theme_name);
-                        self.cursor = self.input.len();
-                        self.completion_index = Some(idx + 1);
-                    }
-                    return (self, KeyResult::Handled);
-                }
-
-                // Command name completion
-                let completions = find_command_completions(&trimmed);
+                let completions = self.compute_completions(tab);
                 if !completions.is_empty() {
-                    let idx = self.completion_index.unwrap_or(0) % completions.len();
-                    self.input = completions[idx].to_string();
-                    self.cursor = self.input.len();
-                    self.completion_index = Some(idx + 1);
+                    let idx = match self.completion_index {
+                        None => 0,
+                        Some(i) => (i + 1) % completions.len(),
+                    };
+                    self.completion_index = Some(idx);
+                }
+            }
+            KeyCode::BackTab => {
+                let completions = self.compute_completions(tab);
+                if !completions.is_empty() {
+                    let idx = match self.completion_index {
+                        None | Some(0) => completions.len() - 1,
+                        Some(i) => i - 1,
+                    };
+                    self.completion_index = Some(idx);
                 }
             }
             _ => {}
@@ -278,6 +312,10 @@ impl Mode for CommandMode {
 
     fn command_state(&self) -> Option<(&str, usize)> {
         Some((&self.input, self.cursor))
+    }
+
+    fn completion_index(&self) -> Option<usize> {
+        self.completion_index
     }
 
     fn needs_input_bar(&self) -> bool {
@@ -458,24 +496,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tab_completes_command_name() {
+    async fn test_tab_highlights_without_changing_input() {
         let mut tab = make_tab().await;
         let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
+        // Input stays unchanged
         let (input, _) = mode2.command_state().unwrap();
-        assert!(input.starts_with("fi") || input == "filter");
+        assert_eq!(input, "fi");
+        // But completion_index is set
+        assert_eq!(mode2.completion_index(), Some(0));
     }
 
     #[tokio::test]
-    async fn test_tab_empty_input_completes_to_first_command() {
+    async fn test_tab_empty_input_highlights_first_command() {
         let mut tab = make_tab().await;
         let (mode2, _) = Box::new(empty_mode())
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
+        // Input stays empty
         let (input, _) = mode2.command_state().unwrap();
-        assert!(!input.is_empty());
+        assert_eq!(input, "");
+        // But completion_index is set
+        assert_eq!(mode2.completion_index(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_tab_cycles_completion_index() {
+        let mut tab = make_tab().await;
+        // "fi" matches "filter", "filtering", etc.
+        let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        assert_eq!(mode2.completion_index(), Some(0));
+
+        let (mode3, _) = mode2
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        assert_eq!(mode3.completion_index(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_backtab_cycles_backward() {
+        let mut tab = make_tab().await;
+        let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
+        // Tab → index 0
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        assert_eq!(mode2.completion_index(), Some(0));
+        // BackTab from 0 → wraps to last
+        let (mode3, _) = mode2
+            .handle_key(&mut tab, KeyCode::BackTab, KeyModifiers::NONE)
+            .await;
+        let idx = mode3.completion_index().unwrap();
+        assert!(idx > 0, "BackTab from 0 should wrap to last index");
+    }
+
+    #[tokio::test]
+    async fn test_typing_resets_completion_index() {
+        let mut tab = make_tab().await;
+        let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        assert!(mode2.completion_index().is_some());
+        // Typing a char resets completion
+        let (mode3, _) = mode2
+            .handle_key(&mut tab, KeyCode::Char('l'), KeyModifiers::NONE)
+            .await;
+        assert!(mode3.completion_index().is_none());
     }
 
     #[test]
@@ -495,7 +587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tab_open_with_no_path_defaults_to_open_file_directory() {
+    async fn test_tab_open_with_no_path_highlights_completion() {
         use crate::log_manager::LogManager;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
@@ -508,24 +600,38 @@ mod tests {
         let log_manager = LogManager::new(db, Some(source.to_str().unwrap().to_string())).await;
         let mut tab = TabState::new(file_reader, log_manager, "existing.log".to_string());
 
-        // "open " with trailing space but no path → Tab should list files in source_file's directory
+        // "open " with trailing space but no path → Tab highlights first completion
         let mode = CommandMode::with_history("open ".to_string(), 5, vec![]);
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         let (input, _) = mode2.command_state().unwrap();
-        assert!(
-            input.starts_with("open "),
-            "Input should start with 'open '"
-        );
-        assert!(
-            input.contains(path.to_str().unwrap()),
-            "Should complete into the open file's directory, got: {input}"
-        );
+        // Input stays unchanged
+        assert_eq!(input, "open ");
+        // Completion is highlighted
+        assert_eq!(mode2.completion_index(), Some(0));
+
+        // Enter accepts the completion — single file → accept AND execute
+        let (_mode3, result) = mode2
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        match result {
+            KeyResult::ExecuteCommand(ref cmd) => {
+                assert!(
+                    cmd.starts_with("open "),
+                    "Command should start with 'open ', got: {cmd}"
+                );
+                assert!(
+                    cmd.contains(path.to_str().unwrap()),
+                    "Should complete into the open file's directory, got: {cmd}"
+                );
+            }
+            _ => panic!("Expected ExecuteCommand for single file match"),
+        }
     }
 
     #[tokio::test]
-    async fn test_tab_open_with_fuzzy_path_matches() {
+    async fn test_tab_open_with_fuzzy_path_highlights() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
         std::fs::write(path.join("application.log"), b"data").unwrap();
@@ -533,16 +639,87 @@ mod tests {
 
         // "alog" fuzzy-matches "application.log" (a…l…o…g)
         let partial = format!("{}/alog", path.to_str().unwrap());
-        let mode =
-            CommandMode::with_history(format!("open {}", partial), partial.len() + 5, vec![]);
+        let input_str = format!("open {}", partial);
+        let cursor = input_str.len();
+        let mode = CommandMode::with_history(input_str.clone(), cursor, vec![]);
         let mut tab = make_tab().await;
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
+        // Input stays unchanged after Tab
         let (input, _) = mode2.command_state().unwrap();
+        assert_eq!(input, input_str);
+        assert_eq!(mode2.completion_index(), Some(0));
+
+        // Enter accepts the highlighted completion
+        let (mode3, result) = mode2
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        let (accepted, _) = mode3.command_state().unwrap_or(("", 0));
+        // Single fuzzy match → accept AND execute
         assert!(
-            input.ends_with("application.log"),
-            "Fuzzy 'alog' should match application.log, got: {input}"
+            accepted.is_empty() || accepted.ends_with("application.log"),
+            "Should accept application.log, got: {accepted}"
         );
+        assert!(
+            matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd.ends_with("application.log")),
+            "Single match should execute immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_enter_during_completion_accepts_without_executing() {
+        let mut tab = make_tab().await;
+        // Type "fi" then Tab to highlight first completion
+        let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        // Input stays "fi", completion_index is set
+        assert_eq!(mode2.command_state().unwrap().0, "fi");
+        assert_eq!(mode2.completion_index(), Some(0));
+
+        // Press Enter — should accept highlighted completion into input (multiple matches)
+        let (mode3, result) = mode2
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        assert!(matches!(result, KeyResult::Handled));
+        // Still in command mode with accepted text
+        let input_after_accept = mode3.command_state().unwrap().0.to_string();
+        assert!(
+            !input_after_accept.is_empty(),
+            "Input should be filled with accepted completion"
+        );
+        assert!(mode3.completion_index().is_none());
+
+        // Second Enter — should execute the command
+        let (mode4, result2) = mode3
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        assert!(matches!(result2, KeyResult::ExecuteCommand(_)));
+        // Now in normal mode (command_state returns None)
+        assert!(mode4.command_state().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_enter_single_match_accepts_and_executes() {
+        let mut tab = make_tab().await;
+        // "wra" should match only "wrap"
+        let mode = CommandMode::with_history("wra".to_string(), 3, vec![]);
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        assert_eq!(mode2.completion_index(), Some(0));
+        assert_eq!(mode2.command_state().unwrap().0, "wra");
+
+        // Enter on single match → accept AND execute immediately
+        let (mode3, result) = mode2
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        assert!(
+            matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd == "wrap"),
+            "Single match should accept and execute immediately"
+        );
+        assert!(mode3.command_state().is_none());
     }
 }

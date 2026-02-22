@@ -351,10 +351,12 @@ impl LogFormatParser for JsonParser {
     }
 
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String> {
-        const CANONICAL: &[&str] = &["timestamp", "level", "target", "message"];
-
         let mut seen = HashSet::new();
-        let mut canonical_found = Vec::new();
+        // Slot lists hold raw key names in first-seen order per canonical group.
+        let mut timestamp_keys = Vec::new();
+        let mut level_keys = Vec::new();
+        let mut target_keys = Vec::new();
+        let mut message_keys = Vec::new();
         let mut extras = Vec::new();
 
         for &line in lines {
@@ -363,14 +365,11 @@ impl LogFormatParser for JsonParser {
                     let key = field.key;
 
                     // Expand `fields` container into dotted sub-field names.
+                    // Always add as "fields.{raw}" extras — never inject a bare
+                    // canonical name, so there's no duplication.
                     if key == "fields" && !field.value_is_string {
                         if let Some(subs) = parse_json_line(field.value.as_bytes()) {
                             for sub in &subs {
-                                if MESSAGE_KEYS.contains(&sub.key)
-                                    && !canonical_found.contains(&"message".to_string())
-                                {
-                                    canonical_found.push("message".to_string());
-                                }
                                 let dotted = format!("fields.{}", sub.key);
                                 if seen.insert(dotted.clone()) {
                                     extras.push(dotted);
@@ -393,24 +392,20 @@ impl LogFormatParser for JsonParser {
                         continue;
                     }
 
-                    if seen.insert(key.to_string()) {
-                        let canonical = if TIMESTAMP_KEYS.contains(&key) {
-                            Some("timestamp")
-                        } else if LEVEL_KEYS.contains(&key) {
-                            Some("level")
-                        } else if TARGET_KEYS.contains(&key) {
-                            Some("target")
-                        } else if MESSAGE_KEYS.contains(&key) {
-                            Some("message")
-                        } else {
-                            None
-                        };
+                    if key == "spans" {
+                        continue;
+                    }
 
-                        if let Some(canon) = canonical {
-                            if !canonical_found.contains(&canon.to_string()) {
-                                canonical_found.push(canon.to_string());
-                            }
-                        } else if key != "spans" {
+                    if seen.insert(key.to_string()) {
+                        if TIMESTAMP_KEYS.contains(&key) {
+                            timestamp_keys.push(key.to_string());
+                        } else if LEVEL_KEYS.contains(&key) {
+                            level_keys.push(key.to_string());
+                        } else if TARGET_KEYS.contains(&key) {
+                            target_keys.push(key.to_string());
+                        } else if MESSAGE_KEYS.contains(&key) {
+                            message_keys.push(key.to_string());
+                        } else {
                             extras.push(key.to_string());
                         }
                     }
@@ -418,18 +413,15 @@ impl LogFormatParser for JsonParser {
             }
         }
 
-        // Order: canonical (except message) → sorted extras → message last
-        let mut result: Vec<String> = CANONICAL
-            .iter()
-            .filter(|c| **c != "message" && canonical_found.contains(&c.to_string()))
-            .map(|c| c.to_string())
-            .collect();
+        // Order: timestamp-group → level-group → target-group → sorted extras → message-group last
+        let mut result: Vec<String> = Vec::new();
+        result.extend(timestamp_keys);
+        result.extend(level_keys);
+        result.extend(target_keys);
         extras.sort();
         extras.dedup();
         result.extend(extras);
-        if canonical_found.contains(&"message".to_string()) {
-            result.push("message".to_string());
-        }
+        result.extend(message_keys);
         result
     }
 

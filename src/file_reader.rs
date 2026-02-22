@@ -283,6 +283,111 @@ impl FileReader {
         self.storage = Storage::Bytes(data);
     }
 
+    /// Spawn a child process and stream its combined stdout+stderr output.
+    ///
+    /// Returns a `watch::Receiver<Vec<u8>>` whose value is replaced whenever
+    /// new complete lines arrive (flushed every 500 ms).  ANSI escape
+    /// sequences are stripped from the output.  When the process exits the
+    /// sender is dropped.
+    pub async fn spawn_process_stream(
+        program: &str,
+        args: &[&str],
+    ) -> io::Result<watch::Receiver<Vec<u8>>> {
+        use tokio::process::Command;
+
+        let mut child = Command::new(program)
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
+            .spawn()?;
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        let (tx, rx) = watch::channel(Vec::<u8>::new());
+
+        // Merge stdout and stderr by spawning a reader task for each,
+        // both writing into a shared mpsc channel.
+        let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+
+        if let Some(mut out) = stdout {
+            let sender = line_tx.clone();
+            spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut buf = vec![0u8; 4096];
+                loop {
+                    match out.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if sender.send(buf[..n].to_vec()).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        if let Some(mut err) = stderr {
+            let sender = line_tx.clone();
+            spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut buf = vec![0u8; 4096];
+                loop {
+                    match err.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if sender.send(buf[..n].to_vec()).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Drop the original sender so line_rx closes when both readers finish.
+        drop(line_tx);
+
+        spawn(async move {
+            use std::time::Duration;
+
+            let mut accumulated: Vec<u8> = Vec::new();
+            let mut partial: Vec<u8> = Vec::new();
+
+            let mut interval = tokio::time::interval(Duration::from_millis(500));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await; // skip initial immediate tick
+
+            loop {
+                tokio::select! {
+                    chunk = line_rx.recv() => {
+                        match chunk {
+                            Some(data) => partial.extend_from_slice(&data),
+                            None => {
+                                // Both readers done — flush remaining.
+                                accumulated.extend_from_slice(&strip_ansi_escapes(&partial));
+                                let _ = tx.send(accumulated);
+                                return;
+                            }
+                        }
+                    }
+                    _ = interval.tick() => {
+                        if let Some(last_nl) = partial.iter().rposition(|&b| b == b'\n') {
+                            let chunk = &partial[..=last_nl];
+                            accumulated.extend_from_slice(&strip_ansi_escapes(chunk));
+                            partial.drain(..=last_nl);
+                            let _ = tx.send(accumulated.clone());
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
     /// Spawn a background task that polls `path` for new bytes every 500 ms.
     ///
     /// `initial_offset` must be the **original** (unstripped) file size in

@@ -126,6 +126,15 @@ pub struct SearchResult {
     pub matches: Vec<(usize, usize)>,
 }
 
+/// A running Docker container discovered by `docker ps`.
+#[derive(Debug, Clone)]
+pub struct DockerContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub status: String,
+}
+
 /// Controls which structured columns are shown and in what order.
 #[derive(Debug, Clone, Default)]
 pub struct FieldLayout {

@@ -2,11 +2,195 @@ use anyhow::Context;
 use ratatui::style::Color;
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
 
 use crate::auto_complete::fuzzy_match;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ValueColors {
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_http_get"
+    )]
+    pub http_get: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_http_post"
+    )]
+    pub http_post: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_http_put"
+    )]
+    pub http_put: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_http_delete"
+    )]
+    pub http_delete: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_http_patch"
+    )]
+    pub http_patch: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_http_other"
+    )]
+    pub http_other: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_status_2xx"
+    )]
+    pub status_2xx: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_status_3xx"
+    )]
+    pub status_3xx: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_status_4xx"
+    )]
+    pub status_4xx: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_status_5xx"
+    )]
+    pub status_5xx: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_ip_address"
+    )]
+    pub ip_address: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_uuid"
+    )]
+    pub uuid: Color,
+    /// Runtime-only set of disabled category keys (not serialized to theme JSON).
+    #[serde(skip)]
+    pub disabled: HashSet<String>,
+}
+
+fn default_http_get() -> Color {
+    Color::Rgb(80, 250, 123)
+}
+fn default_http_post() -> Color {
+    Color::Rgb(139, 233, 253)
+}
+fn default_http_put() -> Color {
+    Color::Rgb(255, 184, 108)
+}
+fn default_http_delete() -> Color {
+    Color::Rgb(255, 85, 85)
+}
+fn default_http_patch() -> Color {
+    Color::Rgb(189, 147, 249)
+}
+fn default_http_other() -> Color {
+    Color::Rgb(98, 114, 164)
+}
+fn default_status_2xx() -> Color {
+    Color::Rgb(80, 250, 123)
+}
+fn default_status_3xx() -> Color {
+    Color::Rgb(139, 233, 253)
+}
+fn default_status_4xx() -> Color {
+    Color::Rgb(255, 184, 108)
+}
+fn default_status_5xx() -> Color {
+    Color::Rgb(255, 85, 85)
+}
+fn default_ip_address() -> Color {
+    Color::Rgb(189, 147, 249)
+}
+fn default_uuid() -> Color {
+    Color::Rgb(108, 113, 196)
+}
+
+impl Default for ValueColors {
+    fn default() -> Self {
+        ValueColors {
+            http_get: default_http_get(),
+            http_post: default_http_post(),
+            http_put: default_http_put(),
+            http_delete: default_http_delete(),
+            http_patch: default_http_patch(),
+            http_other: default_http_other(),
+            status_2xx: default_status_2xx(),
+            status_3xx: default_status_3xx(),
+            status_4xx: default_status_4xx(),
+            status_5xx: default_status_5xx(),
+            ip_address: default_ip_address(),
+            uuid: default_uuid(),
+            disabled: HashSet::new(),
+        }
+    }
+}
+
+/// A group of related value-color categories.
+pub struct ValueColorGroup {
+    pub label: &'static str,
+    pub children: Vec<(&'static str, &'static str, Color)>,
+}
+
+impl ValueColors {
+    /// Returns categories organised into groups.
+    pub fn grouped_categories(&self) -> Vec<ValueColorGroup> {
+        vec![
+            ValueColorGroup {
+                label: "HTTP methods",
+                children: vec![
+                    ("http_get", "GET", self.http_get),
+                    ("http_post", "POST", self.http_post),
+                    ("http_put", "PUT", self.http_put),
+                    ("http_delete", "DELETE", self.http_delete),
+                    ("http_patch", "PATCH", self.http_patch),
+                    ("http_other", "HEAD/OPTIONS", self.http_other),
+                ],
+            },
+            ValueColorGroup {
+                label: "Status codes",
+                children: vec![
+                    ("status_2xx", "2xx", self.status_2xx),
+                    ("status_3xx", "3xx", self.status_3xx),
+                    ("status_4xx", "4xx", self.status_4xx),
+                    ("status_5xx", "5xx", self.status_5xx),
+                ],
+            },
+            ValueColorGroup {
+                label: "Network",
+                children: vec![("ip_address", "IP addresses", self.ip_address)],
+            },
+            ValueColorGroup {
+                label: "Identifiers",
+                children: vec![("uuid", "UUIDs", self.uuid)],
+            },
+        ]
+    }
+
+    pub fn is_disabled(&self, key: &str) -> bool {
+        self.disabled.contains(key)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Theme {
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
@@ -36,6 +220,8 @@ pub struct Theme {
         deserialize_with = "colors_from_str_vec"
     )]
     pub process_colors: Vec<Color>,
+    #[serde(default)]
+    pub value_colors: ValueColors,
 }
 
 fn color_to_str<S>(color: &Color, serializer: S) -> Result<S::Ok, S::Error>
@@ -211,6 +397,7 @@ impl Default for Theme {
                 Color::Rgb(255, 121, 198),
                 Color::Rgb(139, 233, 253),
             ],
+            value_colors: ValueColors::default(),
         })
     }
 }

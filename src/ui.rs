@@ -17,6 +17,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::search::Search;
 use crate::theme::{Theme, complete_theme};
 use crate::types::{FieldLayout, FilterType, LogLevel};
+use crate::value_colors::colorize_known_values;
 use crate::{
     auto_complete::{
         complete_color, complete_file_path, extract_color_partial, find_command_completions,
@@ -51,6 +52,8 @@ pub enum KeyResult {
     Ignored,
     ExecuteCommand(String),
     RestoreSession(Vec<String>),
+    DockerAttach(String, String),
+    ApplyValueColors(std::collections::HashSet<String>),
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +399,103 @@ impl App {
         Ok(())
     }
 
+    /// Open a new tab streaming logs from a Docker container.
+    async fn open_docker_logs(&mut self, container_id: String, container_name: String) {
+        let file_reader = FileReader::from_bytes(vec![]);
+        let source_label = format!("docker:{}", container_name);
+        let log_manager = LogManager::new(self.db.clone(), Some(source_label)).await;
+        let title = format!("docker:{}", container_name);
+
+        let mut tab = TabState::new(file_reader, log_manager, title);
+        tab.keybindings = self.keybindings.clone();
+
+        match FileReader::spawn_process_stream("docker", &["logs", "-f", &container_id]).await {
+            Ok(rx) => {
+                tab.watch_state = Some(FileWatchState { new_data_rx: rx });
+            }
+            Err(e) => {
+                tab.command_error = Some(format!("Failed to attach to container: {}", e));
+            }
+        }
+
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    /// Create a docker streaming tab from a `"docker:name"` source string
+    /// (used during session restore).  The container name is passed directly
+    /// to `docker logs -f`.
+    async fn restore_docker_tab(&mut self, source: &str) {
+        let name = source.strip_prefix("docker:").unwrap_or(source);
+        let file_reader = FileReader::from_bytes(vec![]);
+        let log_manager = LogManager::new(self.db.clone(), Some(source.to_string())).await;
+        let title = source.to_string();
+
+        let mut tab = TabState::new(file_reader, log_manager, title);
+        tab.keybindings = self.keybindings.clone();
+
+        match FileReader::spawn_process_stream("docker", &["logs", "-f", name]).await {
+            Ok(rx) => {
+                tab.watch_state = Some(FileWatchState { new_data_rx: rx });
+            }
+            Err(e) => {
+                tab.command_error = Some(format!("Failed to attach to container: {}", e));
+            }
+        }
+
+        if let Ok(Some(ctx)) = self.db.load_file_context(source).await {
+            tab.apply_file_context(&ctx);
+        }
+
+        self.tabs.push(tab);
+    }
+
+    /// Consume the session-restore queue, handling both docker tabs and file
+    /// tabs.  Docker tabs are created immediately; file tabs are handed off
+    /// to `begin_file_load` for background indexing.
+    async fn continue_session_restore(
+        &mut self,
+        mut remaining: VecDeque<String>,
+        total: usize,
+        initial_tab_idx: usize,
+    ) {
+        loop {
+            let next = match remaining.pop_front() {
+                Some(n) => n,
+                None => {
+                    // Queue exhausted — remove the placeholder tab if it exists
+                    if self.tabs.len() > 1 {
+                        let is_placeholder = self.tabs[initial_tab_idx]
+                            .log_manager
+                            .source_file()
+                            .is_none()
+                            && self.tabs[initial_tab_idx].file_reader.line_count() == 0;
+                        if is_placeholder {
+                            self.tabs.remove(initial_tab_idx);
+                            self.active_tab = 0;
+                        }
+                    }
+                    return;
+                }
+            };
+            if next.starts_with("docker:") {
+                self.restore_docker_tab(&next).await;
+                continue;
+            }
+            // Regular file — hand off to background loader
+            self.begin_file_load(
+                next,
+                LoadContext::SessionRestoreTab {
+                    remaining,
+                    total,
+                    initial_tab_idx,
+                },
+            )
+            .await;
+            return;
+        }
+    }
+
     /// Start loading `path` in the background via tokio's blocking thread pool.
     ///
     /// Progress streams through `FileLoadState::progress_rx` (0.0–1.0);
@@ -552,7 +652,7 @@ impl App {
                 });
             }
             LoadContext::SessionRestoreTab {
-                mut remaining,
+                remaining,
                 total,
                 initial_tab_idx,
             } => {
@@ -573,29 +673,8 @@ impl App {
                 });
                 self.tabs.push(tab);
 
-                if let Some(next) = remaining.pop_front() {
-                    self.begin_file_load(
-                        next,
-                        LoadContext::SessionRestoreTab {
-                            remaining,
-                            total,
-                            initial_tab_idx,
-                        },
-                    )
+                self.continue_session_restore(remaining, total, initial_tab_idx)
                     .await;
-                } else if self.tabs.len() > 1 {
-                    let is_placeholder = self.tabs[initial_tab_idx]
-                        .log_manager
-                        .source_file()
-                        .is_none()
-                        && self.tabs[initial_tab_idx].file_reader.line_count() == 0;
-                    if is_placeholder {
-                        self.tabs.remove(initial_tab_idx);
-                        self.active_tab = 0;
-                    }
-                    // If the tab was populated by stdin, leave active_tab as-is so
-                    // the user stays on the stdin content.
-                }
             }
         }
     }
@@ -629,6 +708,17 @@ impl App {
                             || tab.scroll_offset + 1 >= tab.visible_indices.len()
                     };
                     self.tabs[i].file_reader.append_bytes(&new_data);
+                    // Re-detect format if not yet known (e.g. docker-logs
+                    // tab that started empty).
+                    if self.tabs[i].detected_format.is_none()
+                        && self.tabs[i].file_reader.line_count() > 0
+                    {
+                        let limit = self.tabs[i].file_reader.line_count().min(200);
+                        let sample: Vec<&[u8]> = (0..limit)
+                            .map(|j| self.tabs[i].file_reader.get_line(j))
+                            .collect();
+                        self.tabs[i].detected_format = detect_format(&sample);
+                    }
                     self.tabs[i].refresh_visible();
                     if at_end {
                         let new_count = self.tabs[i].visible_indices.len();
@@ -647,48 +737,28 @@ impl App {
     /// Called when a file load fails or the file cannot be opened.
     async fn skip_or_fail_load(&mut self, context: LoadContext) {
         if let LoadContext::SessionRestoreTab {
-            mut remaining,
+            remaining,
             total,
             initial_tab_idx,
         } = context
         {
-            if let Some(next) = remaining.pop_front() {
-                self.begin_file_load(
-                    next,
-                    LoadContext::SessionRestoreTab {
-                        remaining,
-                        total,
-                        initial_tab_idx,
-                    },
-                )
+            self.continue_session_restore(remaining, total, initial_tab_idx)
                 .await;
-            } else if self.tabs.len() > 1 {
-                self.tabs.remove(initial_tab_idx);
-                self.active_tab = 0;
-            }
         }
         // ReplaceInitialTab failure: stay with the empty initial tab.
     }
 
-    /// Begin a session restore: kick off the first file load.
+    /// Begin a session restore: kick off the first file load (or docker tab).
     async fn restore_session(&mut self, files: Vec<String>) {
         if files.is_empty() {
             return;
         }
         let total = files.len();
-        let mut queue: VecDeque<String> = files.into_iter().collect();
-        let first = queue.pop_front().unwrap();
+        let queue: VecDeque<String> = files.into_iter().collect();
         let initial_tab_idx = self.active_tab;
         self.tabs[self.active_tab].mode = Box::new(NormalMode);
-        self.begin_file_load(
-            first,
-            LoadContext::SessionRestoreTab {
-                remaining: queue,
-                total,
-                initial_tab_idx,
-            },
-        )
-        .await;
+        self.continue_session_restore(queue, total, initial_tab_idx)
+            .await;
     }
 
     async fn save_tab_context(&self, tab: &TabState) {
@@ -977,6 +1047,99 @@ impl App {
                 ));
                 return Ok(true);
             }
+            Some(Commands::Docker) => {
+                let output = std::process::Command::new("docker")
+                    .args([
+                        "ps",
+                        "--format",
+                        "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
+                    ])
+                    .output();
+                match output {
+                    Ok(out) if out.status.success() => {
+                        let text = String::from_utf8_lossy(&out.stdout);
+                        let containers: Vec<crate::types::DockerContainer> = text
+                            .lines()
+                            .filter(|l| !l.is_empty())
+                            .filter_map(|line| {
+                                let parts: Vec<&str> = line.splitn(4, '\t').collect();
+                                if parts.len() == 4 {
+                                    Some(crate::types::DockerContainer {
+                                        id: parts[0].to_string(),
+                                        name: parts[1].to_string(),
+                                        image: parts[2].to_string(),
+                                        status: parts[3].to_string(),
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if containers.is_empty() {
+                            self.tabs[self.active_tab].mode = Box::new(
+                                crate::mode::docker_select_mode::DockerSelectMode::with_error(
+                                    "No running containers found".to_string(),
+                                ),
+                            );
+                        } else {
+                            self.tabs[self.active_tab].mode = Box::new(
+                                crate::mode::docker_select_mode::DockerSelectMode::new(containers),
+                            );
+                        }
+                        return Ok(true);
+                    }
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                        self.tabs[self.active_tab].mode = Box::new(
+                            crate::mode::docker_select_mode::DockerSelectMode::with_error(
+                                if stderr.is_empty() {
+                                    "docker ps failed".to_string()
+                                } else {
+                                    stderr
+                                },
+                            ),
+                        );
+                        return Ok(true);
+                    }
+                    Err(e) => {
+                        self.tabs[self.active_tab].mode = Box::new(
+                            crate::mode::docker_select_mode::DockerSelectMode::with_error(format!(
+                                "Failed to run docker: {}",
+                                e
+                            )),
+                        );
+                        return Ok(true);
+                    }
+                }
+            }
+            Some(Commands::ValueColors) => {
+                use crate::mode::value_colors_mode::{ValueColorEntry, ValueColorGroup as VCGroup};
+                let disabled = &self.theme.value_colors.disabled;
+                let groups: Vec<VCGroup> = self
+                    .theme
+                    .value_colors
+                    .grouped_categories()
+                    .into_iter()
+                    .map(|g| VCGroup {
+                        label: g.label.to_string(),
+                        children: g
+                            .children
+                            .into_iter()
+                            .map(|(key, label, color)| ValueColorEntry {
+                                key: key.to_string(),
+                                label: label.to_string(),
+                                color,
+                                enabled: !disabled.contains(key),
+                            })
+                            .collect(),
+                    })
+                    .collect();
+                let original_disabled = disabled.clone();
+                self.tabs[self.active_tab].mode = Box::new(
+                    crate::mode::value_colors_mode::ValueColorsMode::new(groups, original_disabled),
+                );
+                return Ok(true);
+            }
             None => {}
         }
         Ok(false)
@@ -1011,6 +1174,10 @@ impl App {
                     KeyResult::Ignored => self.handle_global_key(key.code, key.modifiers).await,
                     KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd).await,
                     KeyResult::RestoreSession(files) => self.restore_session(files).await,
+                    KeyResult::DockerAttach(id, name) => self.open_docker_logs(id, name).await,
+                    KeyResult::ApplyValueColors(disabled) => {
+                        self.theme.value_colors.disabled = disabled;
+                    }
                 }
             }
 
@@ -1043,6 +1210,10 @@ impl App {
             KeyResult::Ignored => self.handle_global_key(key_code, modifiers).await,
             KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd).await,
             KeyResult::RestoreSession(files) => self.restore_session(files).await,
+            KeyResult::DockerAttach(id, name) => self.open_docker_logs(id, name).await,
+            KeyResult::ApplyValueColors(disabled) => {
+                self.theme.value_colors.disabled = disabled;
+            }
         }
     }
 
@@ -1058,6 +1229,7 @@ impl App {
             .mode
             .command_state()
             .map(|(s, c)| (s.to_string(), c));
+        let completion_index: Option<usize> = self.tabs[self.active_tab].mode.completion_index();
         let search_input: Option<(String, bool)> = self.tabs[self.active_tab]
             .mode
             .search_state()
@@ -1097,6 +1269,19 @@ impl App {
             .mode
             .select_fields_state()
             .map(|(fields, sel)| (fields.to_vec(), sel));
+        let docker_select: Option<(Vec<crate::types::DockerContainer>, usize, Option<String>)> =
+            self.tabs[self.active_tab]
+                .mode
+                .docker_select_state()
+                .map(|(c, sel, err)| (c.to_vec(), sel, err.map(|s| s.to_string())));
+        let value_colors_state: Option<(
+            Vec<crate::mode::value_colors_mode::ValueColorGroup>,
+            String,
+            usize,
+        )> = self.tabs[self.active_tab]
+            .mode
+            .value_colors_state()
+            .map(|(groups, search, sel)| (groups.to_vec(), search.to_string(), sel));
 
         if is_confirm_restore {
             self.render_confirm_restore_modal(frame);
@@ -1120,7 +1305,9 @@ impl App {
         constraints.push(Constraint::Min(1)); // Main content
         if has_input_bar {
             constraints.push(Constraint::Length(1)); // input line
-            constraints.push(Constraint::Length(1)); // hint line
+            let hint_height =
+                self.compute_hint_height(&command_input, inner_width, completion_index);
+            constraints.push(Constraint::Length(hint_height)); // hint line(s)
         }
         constraints.push(Constraint::Length(status_height)); // command list
         let chunks = Layout::default()
@@ -1151,7 +1338,7 @@ impl App {
 
         self.render_side_bar(frame, selected_filter_idx, sidebar_area);
 
-        self.render_command_bar(frame, command_input, &chunks, chunk_idx);
+        self.render_command_bar(frame, command_input, completion_index, &chunks, chunk_idx);
 
         self.render_input_bar(frame, search_input, &chunks, chunk_idx);
 
@@ -1181,6 +1368,16 @@ impl App {
             self.render_select_fields_popup(frame, &fields, selected);
         }
 
+        // Docker container selection popup.
+        if let Some((containers, selected, error)) = docker_select {
+            self.render_docker_select_popup(frame, &containers, selected, error.as_deref());
+        }
+
+        // Value colors toggle popup.
+        if let Some((groups, search, selected)) = value_colors_state {
+            self.render_value_colors_popup(frame, &groups, &search, selected);
+        }
+
         // Keybindings help popup renders over everything except the loading bar.
         if let Some((scroll, search)) = help_state {
             self.render_keybindings_help_popup(frame, &keybindings, scroll, &search);
@@ -1202,8 +1399,9 @@ impl App {
         self.tabs[self.active_tab].visible_height = visible_height;
 
         let show_line_numbers = self.tabs[self.active_tab].show_line_numbers;
+        let total_lines = self.tabs[self.active_tab].file_reader.line_count();
         let line_number_width = if show_line_numbers {
-            num_visible.max(1).to_string().len()
+            total_lines.max(1).to_string().len()
         } else {
             0
         };
@@ -1219,7 +1417,9 @@ impl App {
         let wrap = self.tabs[self.active_tab].wrap;
 
         // Clamp scroll_offset
-        if num_visible > 0 && self.tabs[self.active_tab].scroll_offset >= num_visible {
+        if num_visible == 0 {
+            self.tabs[self.active_tab].scroll_offset = 0;
+        } else if self.tabs[self.active_tab].scroll_offset >= num_visible {
             self.tabs[self.active_tab].scroll_offset = num_visible - 1;
         }
 
@@ -1450,6 +1650,7 @@ impl App {
                     }
                     render_line(&collector, &styles)
                 };
+                line = colorize_known_values(line, &theme.value_colors);
                 line = line.style(render_style);
 
                 if show_line_numbers {
@@ -1776,6 +1977,421 @@ impl App {
         }
     }
 
+    fn render_value_colors_popup(
+        &mut self,
+        frame: &mut Frame<'_>,
+        groups: &[crate::mode::value_colors_mode::ValueColorGroup],
+        search: &str,
+        selected: usize,
+    ) {
+        use crate::auto_complete::fuzzy_match as fmatch;
+        use crate::mode::value_colors_mode::ValueColorRow;
+
+        // Build the flat visible-row list (same logic as ValueColorsMode::visible_rows).
+        let mut vis_rows: Vec<ValueColorRow> = Vec::new();
+        for (gi, group) in groups.iter().enumerate() {
+            if search.is_empty() {
+                vis_rows.push(ValueColorRow::Group(gi));
+                for (ei, _) in group.children.iter().enumerate() {
+                    vis_rows.push(ValueColorRow::Entry(gi, ei));
+                }
+            } else {
+                let matching: Vec<usize> = group
+                    .children
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| {
+                        let haystack = format!("{} {}", group.label, e.label);
+                        fmatch(search, &haystack)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                if !matching.is_empty() {
+                    vis_rows.push(ValueColorRow::Group(gi));
+                    for ei in matching {
+                        vis_rows.push(ValueColorRow::Entry(gi, ei));
+                    }
+                }
+            }
+        }
+
+        let area = frame.size();
+        let popup_width = (area.width.saturating_sub(4)).clamp(40, 60);
+        let row_count = vis_rows.len() as u16;
+        // +5 = 2 border + 1 separator + 2 footer; +1 for search bar when active
+        let extra = if search.is_empty() { 5 } else { 6 };
+        let popup_height = (row_count + extra)
+            .min(area.height * 4 / 5)
+            .max(9)
+            .min(area.height.saturating_sub(2));
+        let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.border_title))
+            .title(" Value Colors ")
+            .title_style(
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .title_alignment(Alignment::Center)
+            .style(Style::default().bg(self.theme.root_bg));
+
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        // Layout: optional search bar + content + separator + footer
+        let has_search = !search.is_empty();
+        let footer_lines = 3usize; // separator + 2 hint lines
+        let search_rows = if has_search { 1usize } else { 0 };
+        let content_h = inner
+            .height
+            .saturating_sub((footer_lines + search_rows) as u16) as usize;
+
+        let mut constraints = vec![];
+        if has_search {
+            constraints.push(Constraint::Length(1));
+        }
+        constraints.push(Constraint::Min(1));
+        constraints.push(Constraint::Length(1));
+        constraints.push(Constraint::Length(2));
+
+        let vsplit = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(inner);
+
+        let (search_area, content_area, sep_area, footer_area) = if has_search {
+            (Some(vsplit[0]), vsplit[1], vsplit[2], vsplit[3])
+        } else {
+            (None, vsplit[0], vsplit[1], vsplit[2])
+        };
+
+        // Search bar
+        if let Some(sa) = search_area {
+            let search_line = Line::from(vec![
+                Span::styled(
+                    " /",
+                    Style::default()
+                        .fg(self.theme.text_highlight)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    search.to_string(),
+                    Style::default().fg(self.theme.text_highlight),
+                ),
+            ]);
+            frame.render_widget(
+                Paragraph::new(search_line).style(Style::default().bg(self.theme.root_bg)),
+                sa,
+            );
+        }
+
+        // Scroll
+        let scroll = if selected >= content_h {
+            selected - content_h + 1
+        } else {
+            0
+        };
+
+        // Compute group tri-state for each group
+        let group_state: Vec<Option<bool>> = groups
+            .iter()
+            .map(|g| {
+                let all = g.children.iter().all(|c| c.enabled);
+                let none = g.children.iter().all(|c| !c.enabled);
+                if all {
+                    Some(true)
+                } else if none {
+                    Some(false)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, row) in vis_rows.iter().enumerate().skip(scroll).take(content_h) {
+            let is_sel = i == selected;
+            let prefix = if is_sel { "> " } else { "  " };
+            let sel_style = if is_sel {
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.theme.text)
+            };
+
+            match row {
+                ValueColorRow::Group(gi) => {
+                    let check = match group_state[*gi] {
+                        Some(true) => "[x] ",
+                        Some(false) => "[ ] ",
+                        None => "[-] ",
+                    };
+                    let header_style = if is_sel {
+                        sel_style
+                    } else {
+                        Style::default()
+                            .fg(self.theme.text)
+                            .add_modifier(Modifier::BOLD)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("{}{}{}", prefix, check, groups[*gi].label),
+                        header_style,
+                    )));
+                }
+                ValueColorRow::Entry(gi, ei) => {
+                    let entry = &groups[*gi].children[*ei];
+                    let check = if entry.enabled { "[x] " } else { "[ ] " };
+                    let swatch_style = Style::default().fg(entry.color);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {}{}", prefix, check), sel_style),
+                        Span::styled("\u{2588}\u{2588}", swatch_style),
+                        Span::styled(format!(" {}", entry.label), sel_style),
+                    ]));
+                }
+            }
+        }
+
+        while lines.len() < content_h {
+            lines.push(Line::from(""));
+        }
+
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(self.theme.root_bg)),
+            content_area,
+        );
+
+        // Separator
+        let sep = "\u{2500}".repeat(sep_area.width as usize);
+        frame.render_widget(
+            Paragraph::new(sep).style(Style::default().fg(self.theme.border)),
+            sep_area,
+        );
+
+        // Footer
+        let key_style = Style::default()
+            .fg(self.theme.text_highlight)
+            .add_modifier(Modifier::BOLD);
+        let txt_style = Style::default().fg(self.theme.text);
+        let br_style = Style::default().fg(self.theme.border);
+        let footer = vec![
+            Line::from(vec![
+                Span::styled("<", br_style),
+                Span::styled("Space", key_style),
+                Span::styled("> toggle  ", txt_style),
+                Span::styled("<", br_style),
+                Span::styled("a", key_style),
+                Span::styled(">ll  ", txt_style),
+                Span::styled("<", br_style),
+                Span::styled("n", key_style),
+                Span::styled(">one  ", txt_style),
+                Span::styled("type to search", Style::default().fg(self.theme.border)),
+            ]),
+            Line::from(vec![
+                Span::styled("<", br_style),
+                Span::styled("Enter", key_style),
+                Span::styled("> apply   ", txt_style),
+                Span::styled("<", br_style),
+                Span::styled("Esc", key_style),
+                Span::styled("> cancel", txt_style),
+            ]),
+        ];
+        frame.render_widget(
+            Paragraph::new(footer).style(Style::default().bg(self.theme.root_bg)),
+            footer_area,
+        );
+
+        // Scrollbar
+        let total = vis_rows.len();
+        if total > content_h {
+            let mut sb_state =
+                ScrollbarState::new(total.saturating_sub(content_h)).position(scroll);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                content_area,
+                &mut sb_state,
+            );
+        }
+    }
+
+    fn render_docker_select_popup(
+        &mut self,
+        frame: &mut Frame<'_>,
+        containers: &[crate::types::DockerContainer],
+        selected: usize,
+        error: Option<&str>,
+    ) {
+        let area = frame.size();
+        let popup_width = (area.width.saturating_sub(4)).clamp(50, 80);
+        let content_rows = if error.is_some() {
+            3u16
+        } else {
+            containers.len() as u16
+        };
+        // 2 border rows + 1 separator + 1 footer + content
+        let popup_height = (content_rows + 4)
+            .min(area.height * 4 / 5)
+            .max(8)
+            .min(area.height.saturating_sub(2));
+        let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.border_title))
+            .title(" Docker Containers ")
+            .title_style(
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .title_alignment(Alignment::Center)
+            .style(Style::default().bg(self.theme.root_bg));
+
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        let vsplit = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),    // content
+                Constraint::Length(1), // separator
+                Constraint::Length(1), // footer
+            ])
+            .split(inner);
+
+        let inner_h = inner.height as usize;
+        let footer_lines = 2usize; // separator + footer
+        let content_h = inner_h.saturating_sub(footer_lines);
+
+        if let Some(err) = error {
+            let err_line = Line::from(Span::styled(
+                err.to_string(),
+                Style::default().fg(self.theme.error_fg),
+            ));
+            frame.render_widget(
+                Paragraph::new(vec![Line::from(""), err_line])
+                    .alignment(Alignment::Center)
+                    .style(Style::default().bg(self.theme.root_bg)),
+                vsplit[0],
+            );
+        } else {
+            // Scroll so selected is visible
+            let scroll = if selected >= content_h {
+                selected - content_h + 1
+            } else {
+                0
+            };
+
+            // Compute column widths from available space
+            let total_w = vsplit[0].width as usize;
+            // Layout: "> NAME          IMAGE            STATUS"
+            let name_w = total_w * 35 / 100;
+            let image_w = total_w * 35 / 100;
+            let status_w = total_w.saturating_sub(name_w + image_w + 2); // 2 for prefix
+
+            let mut lines: Vec<Line> = Vec::new();
+            for (i, c) in containers.iter().enumerate().skip(scroll).take(content_h) {
+                let is_selected = i == selected;
+                let prefix = if is_selected { "> " } else { "  " };
+                let name = if c.name.len() > name_w {
+                    &c.name[..name_w]
+                } else {
+                    &c.name
+                };
+                let image = if c.image.len() > image_w {
+                    &c.image[..image_w]
+                } else {
+                    &c.image
+                };
+                let status = if c.status.len() > status_w {
+                    &c.status[..status_w]
+                } else {
+                    &c.status
+                };
+                let style = if is_selected {
+                    Style::default()
+                        .fg(self.theme.text_highlight)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(self.theme.text)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{}{:<nw$} {:<iw$} {}",
+                        prefix,
+                        name,
+                        image,
+                        status,
+                        nw = name_w,
+                        iw = image_w
+                    ),
+                    style,
+                )));
+            }
+
+            while lines.len() < content_h {
+                lines.push(Line::from(""));
+            }
+
+            frame.render_widget(
+                Paragraph::new(lines).style(Style::default().bg(self.theme.root_bg)),
+                vsplit[0],
+            );
+
+            // Scrollbar
+            let total = containers.len();
+            if total > content_h {
+                let mut sb_state =
+                    ScrollbarState::new(total.saturating_sub(content_h)).position(scroll);
+                frame.render_stateful_widget(
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                    vsplit[0],
+                    &mut sb_state,
+                );
+            }
+        }
+
+        // Separator
+        let sep = "─".repeat(vsplit[1].width as usize);
+        frame.render_widget(
+            Paragraph::new(sep).style(Style::default().fg(self.theme.border)),
+            vsplit[1],
+        );
+
+        // Footer
+        let key_style = Style::default()
+            .fg(self.theme.text_highlight)
+            .add_modifier(Modifier::BOLD);
+        let txt_style = Style::default().fg(self.theme.text);
+        let br_style = Style::default().fg(self.theme.border);
+        let footer = Line::from(vec![
+            Span::styled("<", br_style),
+            Span::styled("j/k", key_style),
+            Span::styled("> navigate  ", txt_style),
+            Span::styled("<", br_style),
+            Span::styled("Enter", key_style),
+            Span::styled("> attach  ", txt_style),
+            Span::styled("<", br_style),
+            Span::styled("Esc", key_style),
+            Span::styled("> cancel", txt_style),
+        ]);
+        frame.render_widget(
+            Paragraph::new(footer).style(Style::default().bg(self.theme.root_bg)),
+            vsplit[2],
+        );
+    }
+
     fn render_keybindings_help_popup(
         &mut self,
         frame: &mut Frame<'_>,
@@ -2055,10 +2671,81 @@ impl App {
         frame.render_widget(modal, modal_area);
     }
 
+    /// Compute how many rows the command-mode hint area needs (1–3).
+    fn compute_hint_height(
+        &self,
+        command_input: &Option<(String, usize)>,
+        width: usize,
+        completion_index: Option<usize>,
+    ) -> u16 {
+        let text = match command_input {
+            Some((input_text, _)) => {
+                if self.tabs[self.active_tab].command_error.is_some() {
+                    let err = self.tabs[self.active_tab].command_error.as_ref().unwrap();
+                    err.clone()
+                } else if let Some(partial) = extract_color_partial(input_text) {
+                    let completions = complete_color(partial);
+                    completions
+                        .iter()
+                        .map(|n| format!(" {} ", n))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
+                    let trimmed = input_text.trim();
+                    let file_cmd = file_commands
+                        .iter()
+                        .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
+
+                    if let Some(&cmd) = file_cmd {
+                        let partial = trimmed[cmd.len()..].trim_start();
+                        let completions = complete_file_path(partial);
+                        completions
+                            .iter()
+                            .map(|c| {
+                                std::path::Path::new(c)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|n| {
+                                        if c.ends_with('/') {
+                                            format!("{}/", n.trim_end_matches('/'))
+                                        } else {
+                                            n.to_string()
+                                        }
+                                    })
+                                    .unwrap_or_else(|| c.clone())
+                            })
+                            .collect::<Vec<_>>()
+                            .join("  ")
+                    } else if let Some(partial_raw) =
+                        input_text.trim_start().strip_prefix("set-theme ")
+                    {
+                        let partial = partial_raw.trim_start();
+                        complete_theme(partial).join("  ")
+                    } else if completion_index.is_none() {
+                        if let Some(cmd) = find_matching_command(input_text) {
+                            format!("  {} - {}", cmd.usage, cmd.description)
+                        } else {
+                            find_command_completions(trimmed).join("  ")
+                        }
+                    } else {
+                        find_command_completions(trimmed).join("  ")
+                    }
+                }
+            }
+            None => String::new(),
+        };
+        if text.is_empty() {
+            return 1;
+        }
+        (count_wrapped_lines(&text, width) as u16).clamp(1, 3)
+    }
+
     fn render_command_bar(
         &mut self,
         frame: &mut Frame<'_>,
         command_input: Option<(String, usize)>,
+        completion_index: Option<usize>,
         chunks: &std::rc::Rc<[Rect]>,
         chunk_idx: usize,
     ) {
@@ -2075,28 +2762,37 @@ impl App {
             }
 
             let hint_area = chunks[chunk_idx + 1];
+            let normal_style = Style::default()
+                .fg(self.theme.border)
+                .bg(self.theme.root_bg);
+            let highlight_style = Style::default()
+                .fg(self.theme.root_bg)
+                .bg(self.theme.border);
+
             if let Some(err) = &self.tabs[self.active_tab].command_error {
                 let error_paragraph = Paragraph::new(err.as_str())
-                    .style(Style::default().fg(Color::Red).bg(self.theme.root_bg));
+                    .style(Style::default().fg(Color::Red).bg(self.theme.root_bg))
+                    .wrap(Wrap { trim: false });
                 frame.render_widget(error_paragraph, hint_area);
             } else if let Some(partial) = extract_color_partial(&input_text) {
                 let completions = complete_color(partial);
                 if !completions.is_empty() {
                     let hint_spans: Vec<Span> = completions
                         .iter()
-                        .flat_map(|name| {
+                        .enumerate()
+                        .flat_map(|(i, name)| {
                             let color = name.parse::<Color>().unwrap_or(Color::White);
-                            vec![
-                                Span::styled(
-                                    format!(" {} ", name),
-                                    Style::default().fg(color).bg(self.theme.root_bg),
-                                ),
-                                Span::raw(" "),
-                            ]
+                            let style = if completion_index == Some(i) {
+                                Style::default().fg(color).bg(self.theme.border)
+                            } else {
+                                Style::default().fg(color).bg(self.theme.root_bg)
+                            };
+                            vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
                         })
                         .collect();
                     let hint = Paragraph::new(Line::from(hint_spans))
-                        .style(Style::default().bg(self.theme.root_bg));
+                        .style(Style::default().bg(self.theme.root_bg))
+                        .wrap(Wrap { trim: false });
                     frame.render_widget(hint, hint_area);
                 }
             } else {
@@ -2110,10 +2806,11 @@ impl App {
                     let partial = trimmed_input[cmd.len()..].trim_start();
                     let completions = complete_file_path(partial);
                     if !completions.is_empty() {
-                        let hint_text = completions
+                        let hint_spans: Vec<Span> = completions
                             .iter()
-                            .map(|c| {
-                                std::path::Path::new(c)
+                            .enumerate()
+                            .flat_map(|(i, c)| {
+                                let display = std::path::Path::new(c)
                                     .file_name()
                                     .and_then(|n| n.to_str())
                                     .map(|n| {
@@ -2123,15 +2820,21 @@ impl App {
                                             n.to_string()
                                         }
                                     })
-                                    .unwrap_or_else(|| c.clone())
+                                    .unwrap_or_else(|| c.clone());
+                                let style = if completion_index == Some(i) {
+                                    highlight_style
+                                } else {
+                                    normal_style
+                                };
+                                vec![
+                                    Span::styled(format!(" {} ", display), style),
+                                    Span::raw(" "),
+                                ]
                             })
-                            .collect::<Vec<_>>()
-                            .join("  ");
-                        let hint = Paragraph::new(hint_text).style(
-                            Style::default()
-                                .fg(self.theme.border)
-                                .bg(self.theme.root_bg),
-                        );
+                            .collect();
+                        let hint = Paragraph::new(Line::from(hint_spans))
+                            .style(Style::default().bg(self.theme.root_bg))
+                            .wrap(Wrap { trim: false });
                         frame.render_widget(hint, hint_area);
                     }
                 } else if let Some(partial_raw) = input_text.trim_start().strip_prefix("set-theme ")
@@ -2139,35 +2842,80 @@ impl App {
                     let partial = partial_raw.trim_start();
                     let completions = complete_theme(partial);
                     if !completions.is_empty() {
-                        let hint_text = completions.join("  ");
-                        let hint = Paragraph::new(hint_text).style(
-                            Style::default()
-                                .fg(self.theme.border)
-                                .bg(self.theme.root_bg),
-                        );
+                        let hint_spans: Vec<Span> = completions
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(i, name)| {
+                                let style = if completion_index == Some(i) {
+                                    highlight_style
+                                } else {
+                                    normal_style
+                                };
+                                vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
+                            })
+                            .collect();
+                        let hint = Paragraph::new(Line::from(hint_spans))
+                            .style(Style::default().bg(self.theme.root_bg))
+                            .wrap(Wrap { trim: false });
                         frame.render_widget(hint, hint_area);
                     }
-                } else if let Some(cmd) = find_matching_command(&input_text) {
-                    let hint = Paragraph::new(format!("  {} - {}", cmd.usage, cmd.description))
-                        .style(
-                            Style::default()
-                                .fg(self.theme.border)
-                                .bg(self.theme.root_bg),
+                } else if completion_index.is_none() {
+                    if let Some(cmd) = find_matching_command(&input_text) {
+                        let hint = Paragraph::new(format!("  {} - {}", cmd.usage, cmd.description))
+                            .style(normal_style)
+                            .wrap(Wrap { trim: false });
+                        frame.render_widget(hint, hint_area);
+                    } else {
+                        self.render_command_completions(
+                            frame,
+                            &input_text,
+                            completion_index,
+                            hint_area,
+                            normal_style,
+                            highlight_style,
                         );
-                    frame.render_widget(hint, hint_area);
+                    }
                 } else {
-                    let completions = find_command_completions(input_text.trim());
-                    if !completions.is_empty() {
-                        let hint_text = completions.join("  ");
-                        let hint = Paragraph::new(hint_text).style(
-                            Style::default()
-                                .fg(self.theme.border)
-                                .bg(self.theme.root_bg),
-                        );
-                        frame.render_widget(hint, hint_area);
-                    }
+                    self.render_command_completions(
+                        frame,
+                        &input_text,
+                        completion_index,
+                        hint_area,
+                        normal_style,
+                        highlight_style,
+                    );
                 }
             }
+        }
+    }
+
+    fn render_command_completions(
+        &self,
+        frame: &mut Frame<'_>,
+        input_text: &str,
+        completion_index: Option<usize>,
+        hint_area: Rect,
+        normal_style: Style,
+        highlight_style: Style,
+    ) {
+        let completions = find_command_completions(input_text.trim());
+        if !completions.is_empty() {
+            let hint_spans: Vec<Span> = completions
+                .iter()
+                .enumerate()
+                .flat_map(|(i, name)| {
+                    let style = if completion_index == Some(i) {
+                        highlight_style
+                    } else {
+                        normal_style
+                    };
+                    vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
+                })
+                .collect();
+            let hint = Paragraph::new(Line::from(hint_spans))
+                .style(Style::default().bg(self.theme.root_bg))
+                .wrap(Wrap { trim: false });
+            frame.render_widget(hint, hint_area);
         }
     }
 
@@ -2398,11 +3146,7 @@ fn count_wrapped_lines(text: &str, width: usize) -> usize {
 
 fn get_col(p: &DisplayParts<'_>, name: &str) -> Option<String> {
     match name {
-        "timestamp" | "ts" | "time" => p.timestamp.map(|s| s.to_string()),
-        "level" | "lvl" => p.level.map(|l| format!("{:<5}", l)),
-        "target" => p.target.map(|s| s.to_string()),
         "span" => p.span.as_ref().map(format_span_col),
-        "message" | "msg" => p.message.map(|s| s.to_string()),
         n => {
             // Resolve dotted span sub-field names (e.g. "span.name", "span.method").
             if let Some(suffix) = n.strip_prefix("span.") {
@@ -2428,6 +3172,19 @@ fn get_col(p: &DisplayParts<'_>, name: &str) -> Option<String> {
                         .map(|(_, v)| v.to_string())
                 };
             }
+            // Resolve all known aliases to their canonical DisplayParts slots.
+            if crate::log_line::TIMESTAMP_KEYS.contains(&n) {
+                return p.timestamp.map(|s| s.to_string());
+            }
+            if crate::log_line::LEVEL_KEYS.contains(&n) {
+                return p.level.map(|l| format!("{:<5}", l));
+            }
+            if crate::log_line::TARGET_KEYS.contains(&n) {
+                return p.target.map(|s| s.to_string());
+            }
+            if crate::log_line::MESSAGE_KEYS.contains(&n) {
+                return p.message.map(|s| s.to_string());
+            }
             p.extra_fields
                 .iter()
                 .find(|(k, _)| *k == n)
@@ -2450,8 +3207,8 @@ fn default_cols(p: &DisplayParts<'_>) -> Vec<String> {
     if let Some(span) = &p.span {
         cols.push(format_span_col(span));
     }
-    for (key, value) in &p.extra_fields {
-        cols.push(format!("{}={}", key, value));
+    for (_key, value) in &p.extra_fields {
+        cols.push(value.to_string());
     }
     if let Some(msg) = p.message {
         cols.push(msg.to_string());
@@ -2479,18 +3236,26 @@ fn apply_field_layout(
             .collect()
     } else {
         // Default layout — rebuild without hidden fields.
+        // Check all aliases for each canonical slot so that hiding by raw key
+        // (e.g. "lvl") works in the default (no explicit layout) path too.
         let mut cols = Vec::new();
-        if !hidden_fields.contains("timestamp")
+        if !crate::log_line::TIMESTAMP_KEYS
+            .iter()
+            .any(|k| hidden_fields.contains(*k))
             && let Some(ts) = p.timestamp
         {
             cols.push(ts.to_string());
         }
-        if !hidden_fields.contains("level")
+        if !crate::log_line::LEVEL_KEYS
+            .iter()
+            .any(|k| hidden_fields.contains(*k))
             && let Some(lvl) = p.level
         {
             cols.push(format!("{:<5}", lvl));
         }
-        if !hidden_fields.contains("target")
+        if !crate::log_line::TARGET_KEYS
+            .iter()
+            .any(|k| hidden_fields.contains(*k))
             && let Some(tgt) = p.target
         {
             cols.push(tgt.to_string());
@@ -2502,10 +3267,12 @@ fn apply_field_layout(
         }
         for (key, value) in &p.extra_fields {
             if !hidden_fields.contains(*key) {
-                cols.push(format!("{}={}", key, value));
+                cols.push(value.to_string());
             }
         }
-        if !hidden_fields.contains("message")
+        if !crate::log_line::MESSAGE_KEYS
+            .iter()
+            .any(|k| hidden_fields.contains(*k))
             && let Some(msg) = p.message
         {
             cols.push(msg.to_string());

@@ -6,8 +6,9 @@ use ratatui::text::{Line, Span};
 use crate::{
     config::Keybindings,
     db::FileContext,
-    mode::normal_mode::NormalMode,
+    mode::{normal_mode::NormalMode, value_colors_mode::ValueColorGroup},
     theme::Theme,
+    types::DockerContainer,
     ui::{KeyResult, TabState},
 };
 
@@ -47,6 +48,10 @@ pub trait Mode: std::fmt::Debug + Send {
     fn command_state(&self) -> Option<(&str, usize)> {
         None
     }
+    /// Returns the currently highlighted completion index when Tab-cycling.
+    fn completion_index(&self) -> Option<usize> {
+        None
+    }
     fn search_state(&self) -> Option<(&str, bool)> {
         None
     }
@@ -72,6 +77,15 @@ pub trait Mode: std::fmt::Debug + Send {
     /// Returns `(fields_with_toggles, cursor_position)` when the select-fields
     /// popup is active.
     fn select_fields_state(&self) -> Option<(&[(String, bool)], usize)> {
+        None
+    }
+    /// Returns `(containers, selected_index, error)` when the docker-select
+    /// popup is active.
+    fn docker_select_state(&self) -> Option<(&[DockerContainer], usize, Option<&str>)> {
+        None
+    }
+    /// Returns `(groups, search_query, cursor_position)` when the value-colors popup is active.
+    fn value_colors_state(&self) -> Option<(&[ValueColorGroup], &str, usize)> {
         None
     }
 }

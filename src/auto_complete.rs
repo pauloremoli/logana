@@ -105,6 +105,16 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "select-fields",
         description: "Open a modal to select which JSON fields to display and their order",
     },
+    CommandInfo {
+        name: "docker",
+        usage: "docker",
+        description: "List running Docker containers and stream logs from the selected one",
+    },
+    CommandInfo {
+        name: "value-colors",
+        usage: "value-colors",
+        description: "Toggle value-based color coding (HTTP methods, status codes, IPs, UUIDs)",
+    },
 ];
 
 pub fn command_names() -> Vec<&'static str> {
