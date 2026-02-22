@@ -1,3 +1,4 @@
+
 pub struct CommandInfo {
     pub name: &'static str,
     pub usage: &'static str,
@@ -8,7 +9,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "filter",
         usage: "filter [-m] [--fg <color>] [--bg <color>] <pattern>",
-        description: "Add an include filter. -m colors match only. e.g. filter -m --fg Red error",
+        description: "Add an include filter. -m colors match only. e.g. filter --fg Red error, filter --fg [255,0,0] error",
     },
     CommandInfo {
         name: "exclude",
@@ -18,7 +19,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "set-color",
         usage: "set-color [-m] --fg <color> --bg <color>",
-        description: "Set color for the selected filter. -m colors match only. e.g. set-color --fg Green",
+        description: "Set color for the selected filter. -m colors match only. e.g. set-color --fg Green, set-color --fg [0,255,0]",
     },
     CommandInfo {
         name: "export-marked",
@@ -100,6 +101,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "show-all-fields",
         description: "Clear all hidden fields and show the complete JSON line",
     },
+    CommandInfo {
+        name: "select-fields",
+        usage: "select-fields",
+        description: "Open a modal to select which JSON fields to display and their order",
+    },
 ];
 
 pub fn command_names() -> Vec<&'static str> {
@@ -119,10 +125,19 @@ pub fn shell_split(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;
+    let mut in_brackets = false;
     for ch in input.chars() {
         match ch {
             '"' => in_quotes = !in_quotes,
-            c if c.is_whitespace() && !in_quotes => {
+            '[' if !in_quotes => {
+                in_brackets = true;
+                current.push(ch);
+            }
+            ']' if in_brackets => {
+                in_brackets = false;
+                current.push(ch);
+            }
+            c if c.is_whitespace() && !in_quotes && !in_brackets => {
                 if !current.is_empty() {
                     tokens.push(std::mem::take(&mut current));
                 }
@@ -432,6 +447,30 @@ mod tests {
     #[test]
     fn test_shell_split_empty_quoted_string() {
         assert_eq!(shell_split(r#"filter """#), vec!["filter"]);
+    }
+
+    #[test]
+    fn test_shell_split_brackets_kept_as_single_token() {
+        assert_eq!(
+            shell_split("filter --fg [255, 128, 0] error"),
+            vec!["filter", "--fg", "[255, 128, 0]", "error"]
+        );
+    }
+
+    #[test]
+    fn test_shell_split_brackets_no_spaces() {
+        assert_eq!(
+            shell_split("filter --fg [255,0,0] error"),
+            vec!["filter", "--fg", "[255,0,0]", "error"]
+        );
+    }
+
+    #[test]
+    fn test_shell_split_unclosed_bracket_keeps_rest() {
+        assert_eq!(
+            shell_split("filter --fg [255, 0"),
+            vec!["filter", "--fg", "[255, 0"]
+        );
     }
 
     // ── find_command_completions ─────────────────────────────────────────────

@@ -69,6 +69,11 @@ pub trait Mode: std::fmt::Debug + Send {
     fn annotation_popup(&self) -> Option<(Vec<String>, usize, usize, usize)> {
         None
     }
+    /// Returns `(fields_with_toggles, cursor_position)` when the select-fields
+    /// popup is active.
+    fn select_fields_state(&self) -> Option<(&[(String, bool)], usize)> {
+        None
+    }
 }
 
 /// Appends a styled `<key> action  ` entry to `spans`.

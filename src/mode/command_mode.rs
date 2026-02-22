@@ -3,8 +3,8 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
     auto_complete::{
-        complete_color, complete_file_path, extract_color_partial, find_command_completions,
-        fuzzy_match,
+        complete_color, complete_file_path, extract_color_partial,
+        find_command_completions, fuzzy_match,
     },
     mode::{app_mode::Mode, filter_mode::FilterManagementMode, normal_mode::NormalMode},
     theme::Theme,
@@ -77,6 +77,8 @@ pub enum Commands {
     ShowField { field: String },
     /// Clear all hidden fields
     ShowAllFields,
+    /// Open a modal to select which JSON fields to display
+    SelectFields,
 }
 
 #[derive(Debug)]
@@ -255,6 +257,8 @@ impl Mode for CommandMode {
                     }
                     return (self, KeyResult::Handled);
                 }
+
+
 
                 // Command name completion
                 let completions = find_command_completions(&trimmed);

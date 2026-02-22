@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::search::Search;
 use crate::theme::{Theme, complete_theme};
-use crate::types::{FilterType, LogLevel};
+use crate::types::{FieldLayout, FilterType, LogLevel};
 use crate::{
     auto_complete::{
         complete_color, complete_file_path, extract_color_partial, find_command_completions,
@@ -33,11 +33,11 @@ use crate::{
     mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode},
 };
 use crate::{
-    filters::{MatchCollector, SEARCH_STYLE_ID, render_line},
+    filters::{SEARCH_STYLE_ID, render_line},
     mode::{command_mode::CommandMode, filter_mode::FilterManagementMode},
 };
 use crate::{
-    log_line::{classify_json_fields, parse_json_line},
+    log_line::{JsonDisplayParts, SpanInfo, classify_json_fields, parse_json_line},
     log_manager::LogManager,
     mode::command_mode::{CommandLine, Commands},
 };
@@ -86,6 +86,8 @@ pub struct TabState {
     pub hidden_fields: HashSet<String>,
     /// JSON field 0-based indices that should be hidden from display.
     pub hidden_field_indices: HashSet<usize>,
+    /// JSON field selection and ordering for display.
+    pub field_layout: FieldLayout,
     /// Active keybindings for this tab (shared with App, overwritten after TabState::new).
     pub keybindings: Arc<Keybindings>,
 }
@@ -117,6 +119,7 @@ impl TabState {
             watch_state: None,
             hidden_fields: HashSet::new(),
             hidden_field_indices: HashSet::new(),
+            field_layout: FieldLayout::default(),
             keybindings: Arc::new(Keybindings::default()),
         };
         tab.refresh_visible();
@@ -187,6 +190,101 @@ impl TabState {
                 .search
                 .search(&ctx.search_query, &self.visible_indices, &self.file_reader);
         }
+    }
+
+    /// Sample visible lines and collect unique JSON field names.
+    ///
+    /// Returns canonical names first (only if actually found), then extra
+    /// field names sorted alphabetically.  Container fields (`fields`, `span`)
+    /// are expanded into dotted sub-field names (e.g. `span.name`,
+    /// `fields.count`).
+    pub fn collect_json_field_names(&self) -> Vec<String> {
+        const SAMPLE_LIMIT: usize = 200;
+        const CANONICAL: &[&str] = &["timestamp", "level", "target", "message"];
+
+        let mut seen = HashSet::new();
+        let mut canonical_found = Vec::new();
+        let mut extras = Vec::new();
+
+        let indices = &self.visible_indices;
+        let limit = indices.len().min(SAMPLE_LIMIT);
+        for &idx in &indices[..limit] {
+            let line = self.file_reader.get_line(idx);
+            if let Some(fields) = parse_json_line(line) {
+                for field in &fields {
+                    let key = field.key;
+
+                    // Expand `fields` container into dotted sub-field names.
+                    if key == "fields" && !field.value_is_string {
+                        if let Some(subs) = parse_json_line(field.value.as_bytes()) {
+                            for sub in &subs {
+                                if crate::log_line::MESSAGE_KEYS.contains(&sub.key) {
+                                    // message sub-field → canonical "message"
+                                    if !canonical_found.contains(&"message".to_string()) {
+                                        canonical_found.push("message".to_string());
+                                    }
+                                }
+                                let dotted = format!("fields.{}", sub.key);
+                                if seen.insert(dotted.clone()) {
+                                    extras.push(dotted);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Expand `span` container into dotted sub-field names.
+                    if key == "span" && !field.value_is_string {
+                        if let Some(subs) = parse_json_line(field.value.as_bytes()) {
+                            for sub in &subs {
+                                let dotted = format!("span.{}", sub.key);
+                                if seen.insert(dotted.clone()) {
+                                    extras.push(dotted);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    if seen.insert(key.to_string()) {
+                        // Check if this key maps to a canonical name
+                        let canonical = if crate::log_line::TIMESTAMP_KEYS.contains(&key) {
+                            Some("timestamp")
+                        } else if crate::log_line::LEVEL_KEYS.contains(&key) {
+                            Some("level")
+                        } else if crate::log_line::TARGET_KEYS.contains(&key) {
+                            Some("target")
+                        } else if crate::log_line::MESSAGE_KEYS.contains(&key) {
+                            Some("message")
+                        } else {
+                            None
+                        };
+
+                        if let Some(canon) = canonical {
+                            if !canonical_found.contains(&canon.to_string()) {
+                                canonical_found.push(canon.to_string());
+                            }
+                        } else if key != "spans" {
+                            extras.push(key.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Order: canonical (except message) → sorted extras → message last
+        let mut result: Vec<String> = CANONICAL
+            .iter()
+            .filter(|c| **c != "message" && canonical_found.contains(&c.to_string()))
+            .map(|c| c.to_string())
+            .collect();
+        extras.sort();
+        extras.dedup();
+        result.extend(extras);
+        if canonical_found.contains(&"message".to_string()) {
+            result.push("message".to_string());
+        }
+        result
     }
 }
 
@@ -737,16 +835,18 @@ impl App {
         let result = self.run_command(&cmd).await;
         let tab = &mut self.tabs[self.active_tab];
         match result {
-            Ok(()) => {
+            Ok(mode_was_set) => {
                 if !cmd.trim().is_empty() {
                     tab.command_history.push(cmd.trim().to_string());
                 }
-                if let Some(idx) = tab.filter_context.take() {
-                    tab.mode = Box::new(FilterManagementMode {
-                        selected_filter_index: idx,
-                    });
-                } else {
-                    tab.mode = Box::new(NormalMode);
+                if !mode_was_set {
+                    if let Some(idx) = tab.filter_context.take() {
+                        tab.mode = Box::new(FilterManagementMode {
+                            selected_filter_index: idx,
+                        });
+                    } else {
+                        tab.mode = Box::new(NormalMode);
+                    }
                 }
             }
             Err(msg) => {
@@ -764,7 +864,9 @@ impl App {
         }
     }
 
-    async fn run_command(&mut self, input: &str) -> Result<(), String> {
+    /// Returns `Ok(true)` when the command sets the mode itself (e.g. select-fields
+    /// opens a popup), so `execute_command_str` should not override it.
+    async fn run_command(&mut self, input: &str) -> Result<bool, String> {
         let args = CommandLine::try_parse_from(shell_split(input))
             .map_err(|e| format!("Invalid command: {}", e))?;
 
@@ -918,9 +1020,46 @@ impl App {
                 tab.hidden_fields.clear();
                 tab.hidden_field_indices.clear();
             }
+            Some(Commands::SelectFields) => {
+                let tab = &mut self.tabs[self.active_tab];
+                let all_names = tab.collect_json_field_names();
+                if all_names.is_empty() {
+                    return Err("No JSON fields found in visible lines".to_string());
+                }
+                let enabled_cols = &tab.field_layout.json_columns;
+                let saved_order = &tab.field_layout.json_columns_order;
+                // Restore the previous full ordering (enabled + disabled) if
+                // available, then append any newly-discovered fields.
+                let fields: Vec<(String, bool)> = match saved_order {
+                    Some(order) => {
+                        let enabled: HashSet<&String> = enabled_cols
+                            .as_ref()
+                            .map(|v| v.iter().collect())
+                            .unwrap_or_default();
+                        let mut ordered: Vec<(String, bool)> = order
+                            .iter()
+                            .filter(|n| all_names.contains(n))
+                            .map(|n| (n.clone(), enabled.contains(n)))
+                            .collect();
+                        // Append fields not yet in the saved order.
+                        for name in &all_names {
+                            if !order.contains(name) {
+                                ordered.push((name.clone(), false));
+                            }
+                        }
+                        ordered
+                    }
+                    None => all_names.into_iter().map(|n| (n, true)).collect(),
+                };
+                let original = tab.field_layout.clone();
+                tab.mode = Box::new(
+                    crate::mode::select_fields_mode::SelectFieldsMode::new(fields, original),
+                );
+                return Ok(true);
+            }
             None => {}
         }
-        Ok(())
+        Ok(false)
     }
 
     pub async fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> anyhow::Result<()> {
@@ -1019,9 +1158,8 @@ impl App {
         let status_line = self.tabs[self.active_tab]
             .mode
             .dynamic_status_line(&keybindings, &self.theme);
-        let visual_anchor: Option<usize> = self.tabs[self.active_tab]
-            .mode
-            .visual_selection_anchor();
+        let visual_anchor: Option<usize> =
+            self.tabs[self.active_tab].mode.visual_selection_anchor();
         let annotation_popup: Option<(Vec<String>, usize, usize, usize)> =
             self.tabs[self.active_tab].mode.annotation_popup();
         let help_state: Option<(usize, String)> = self.tabs[self.active_tab]
@@ -1035,6 +1173,11 @@ impl App {
                     .to_string();
                 (scroll, search)
             });
+        let select_fields_state: Option<(Vec<(String, bool)>, usize)> = self.tabs
+            [self.active_tab]
+            .mode
+            .select_fields_state()
+            .map(|(fields, sel)| (fields.to_vec(), sel));
 
         if is_confirm_restore {
             self.render_confirm_restore_modal(frame);
@@ -1043,7 +1186,11 @@ impl App {
 
         // Compute how many rows the status bar needs so wrapped text is fully visible.
         let inner_width = (size.width as usize).saturating_sub(2); // minus 2 for L/R borders
-        let status_text: String = status_line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let status_text: String = status_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         let content_lines = count_wrapped_lines(&status_text, inner_width);
         let status_height = (content_lines + 2).min(6).max(3) as u16; // +2 for borders
 
@@ -1108,6 +1255,11 @@ impl App {
         // Annotation popup renders over everything except the loading bar.
         if let Some((lines, cursor_row, cursor_col, line_count)) = annotation_popup {
             self.render_annotation_popup(frame, &lines, cursor_row, cursor_col, line_count);
+        }
+
+        // Select-fields popup renders over everything except the loading bar.
+        if let Some((fields, selected)) = select_fields_state {
+            self.render_select_fields_popup(frame, &fields, selected);
         }
 
         // Keybindings help popup renders over everything except the loading bar.
@@ -1237,6 +1389,12 @@ impl App {
         let search_results = self.tabs[self.active_tab].search.get_results();
         let search_map: HashMap<usize, &crate::types::SearchResult> =
             search_results.iter().map(|r| (r.line_idx, r)).collect();
+        // Clone the compiled regex once so the JSON render path can re-match against
+        // the rendered string (raw-byte positions from search_map don't map there).
+        let search_regex = self.tabs[self.active_tab]
+            .search
+            .get_compiled_pattern()
+            .cloned();
 
         let theme = &self.theme;
         let level_colors = self.tabs[self.active_tab].level_colors;
@@ -1245,6 +1403,7 @@ impl App {
         let hidden_fields = self.tabs[self.active_tab].hidden_fields.clone();
         let hidden_field_indices = self.tabs[self.active_tab].hidden_field_indices.clone();
         let _any_hidden = !hidden_fields.is_empty() || !hidden_field_indices.is_empty();
+        let field_layout = self.tabs[self.active_tab].field_layout.clone();
         // Pre-compute visual selection range (indices into visible_indices space).
         let visual_range: Option<(usize, usize)> = visual_anchor.map(|anchor| {
             let lo = anchor.min(current_scroll);
@@ -1252,9 +1411,7 @@ impl App {
             (lo, hi)
         });
         // Visual selection highlight colour (same as border bg, distinct from cursor).
-        let visual_style = Style::default()
-            .fg(theme.text)
-            .bg(Color::Rgb(68, 71, 90));
+        let visual_style = Style::default().fg(theme.text).bg(Color::Rgb(68, 71, 90));
 
         // Clone annotation data before borrowing visible_indices for iteration.
         let annotations_for_render: Vec<(Vec<usize>, String)> = self.tabs[self.active_tab]
@@ -1325,56 +1482,41 @@ impl App {
                     base_style
                 };
 
-                // For JSON lines render structured columns (no per-field colours):
+                // For JSON lines render structured columns and run filter evaluation
+                // against the rendered string so match-only highlights apply correctly.
                 //   timestamp  level  target  span_name: k=v, k=v  extra=val  message
                 // Known-field values are shown without their key names. Unknown fields
                 // and span context are rendered as key=value before the message.
-                // Filter evaluation uses the raw bytes so filtering is unaffected.
-                let json_line: Option<Line<'static>> =
-                    parse_json_line(line_bytes).map(|fields| {
-                        let p =
-                            classify_json_fields(&fields, &hidden_fields, &hidden_field_indices);
-                        let mut cols: Vec<String> = Vec::new();
+                // Filter visibility decisions still use the raw bytes (unaffected).
+                let json_line: Option<Line<'static>> = parse_json_line(line_bytes).map(|fields| {
+                    let p = classify_json_fields(&fields, &hidden_fields, &hidden_field_indices);
+                    let cols = apply_json_field_layout(&p, &field_layout);
 
-                        if let Some(ts) = p.timestamp {
-                            cols.push(ts);
-                        }
-                        if let Some(lvl) = p.level {
-                            cols.push(format!("{:<5}", lvl));
-                        }
-                        if let Some(tgt) = p.target {
-                            cols.push(tgt);
-                        }
-                        if let Some(span) = p.span {
-                            let mut s = span.name;
-                            if !span.fields.is_empty() {
-                                s.push_str(": ");
-                                s.push_str(
-                                    &span
-                                        .fields
-                                        .iter()
-                                        .map(|(k, v)| format!("{}={}", k, v))
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                );
+                    if cols.is_empty() {
+                        // All fields hidden — fall back to raw bytes with filter +
+                        // search highlighting (raw-byte positions are correct here).
+                        let mut collector = filter_manager.evaluate_line(line_bytes);
+                        if let Some(sr) = search_map.get(&line_idx) {
+                            collector.with_priority(1000);
+                            for &(s, e) in &sr.matches {
+                                collector.push(s, e, SEARCH_STYLE_ID);
                             }
-                            cols.push(s);
                         }
-                        for (key, value) in p.extra_fields {
-                            cols.push(format!("{}={}", key, value));
+                        render_line(&collector, &styles)
+                    } else {
+                        // Evaluate filters AND search against the rendered string so
+                        // all spans land at the correct visible positions.
+                        let rendered = cols.join(" ");
+                        let mut collector = filter_manager.evaluate_line(rendered.as_bytes());
+                        if let Some(ref regex) = search_regex {
+                            collector.with_priority(1000);
+                            for m in regex.find_iter(&rendered) {
+                                collector.push(m.start(), m.end(), SEARCH_STYLE_ID);
+                            }
                         }
-                        if let Some(msg) = p.message {
-                            cols.push(msg);
-                        }
-
-                        if cols.is_empty() {
-                            Line::from(
-                                std::str::from_utf8(line_bytes).unwrap_or("").to_string(),
-                            )
-                        } else {
-                            Line::from(cols.join("  "))
-                        }
-                    });
+                        render_line(&collector, &styles)
+                    }
+                });
 
                 let mut line = if let Some(json_line) = json_line {
                     json_line
@@ -1405,10 +1547,13 @@ impl App {
                         };
                     // Format: {tree_char}{line_num right-aligned}{space}
                     // Total width = 1 + line_number_width + 1 = ln_prefix_width ✓
-                    let line_num_str =
-                        format!("{}{:>width$} ", tree_char, line_num, width = line_number_width);
-                    let line_num_style =
-                        Style::default().fg(ln_fg).add_modifier(Modifier::DIM);
+                    let line_num_str = format!(
+                        "{}{:>width$} ",
+                        tree_char,
+                        line_num,
+                        width = line_number_width
+                    );
+                    let line_num_style = Style::default().fg(ln_fg).add_modifier(Modifier::DIM);
                     let mut all_spans = vec![Span::styled(line_num_str, line_num_style)];
                     // Extra indent padding for lines nested under an annotation banner.
                     if vis_annotation_map.contains_key(&abs_vis_idx) {
@@ -1572,6 +1717,145 @@ impl App {
         frame.render_widget(modal, modal_area);
     }
 
+    fn render_select_fields_popup(
+        &mut self,
+        frame: &mut Frame<'_>,
+        fields: &[(String, bool)],
+        selected: usize,
+    ) {
+        let area = frame.size();
+        let popup_width = (area.width.saturating_sub(4)).clamp(40, 60);
+        // 2 border rows + 1 separator + 2 footer lines + fields list
+        let content_rows = fields.len() as u16;
+        let popup_height = (content_rows + 5)
+            .min(area.height * 4 / 5)
+            .max(9)
+            .min(area.height.saturating_sub(2));
+        let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.border_title))
+            .title(" Select Fields ")
+            .title_style(
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .title_alignment(Alignment::Center)
+            .style(Style::default().bg(self.theme.root_bg));
+
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        // Split inner into content + separator + footer (2 lines)
+        let inner_h = inner.height as usize;
+        let footer_lines = 3usize; // separator + 2 hint lines
+        let content_h = inner_h.saturating_sub(footer_lines);
+
+        let vsplit = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),    // content
+                Constraint::Length(1), // separator
+                Constraint::Length(2), // footer
+            ])
+            .split(inner);
+
+        // Scroll so selected is visible
+        let scroll = if selected >= content_h {
+            selected - content_h + 1
+        } else {
+            0
+        };
+
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, (name, enabled)) in fields.iter().enumerate().skip(scroll).take(content_h) {
+            let is_selected = i == selected;
+            let prefix = if is_selected { "> " } else { "  " };
+            let check = if *enabled { "[x] " } else { "[ ] " };
+            let style = if is_selected {
+                Style::default()
+                    .fg(self.theme.text_highlight)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.theme.text)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{}{}{}", prefix, check, name),
+                style,
+            )));
+        }
+
+        // Pad remaining lines
+        while lines.len() < content_h {
+            lines.push(Line::from(""));
+        }
+
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(self.theme.root_bg)),
+            vsplit[0],
+        );
+
+        // Separator
+        let sep = "─".repeat(vsplit[1].width as usize);
+        frame.render_widget(
+            Paragraph::new(sep).style(Style::default().fg(self.theme.border)),
+            vsplit[1],
+        );
+
+        // Footer (two lines)
+        let key_style = Style::default()
+            .fg(self.theme.text_highlight)
+            .add_modifier(Modifier::BOLD);
+        let txt_style = Style::default().fg(self.theme.text);
+        let br_style = Style::default().fg(self.theme.border);
+        let footer_lines = vec![
+            Line::from(vec![
+                Span::styled("<", br_style),
+                Span::styled("Space", key_style),
+                Span::styled("> toggle  ", txt_style),
+                Span::styled("<", br_style),
+                Span::styled("J/K", key_style),
+                Span::styled("> reorder  ", txt_style),
+                Span::styled("<", br_style),
+                Span::styled("a", key_style),
+                Span::styled(">ll  ", txt_style),
+                Span::styled("<", br_style),
+                Span::styled("n", key_style),
+                Span::styled(">one", txt_style),
+            ]),
+            Line::from(vec![
+                Span::styled("<", br_style),
+                Span::styled("Enter", key_style),
+                Span::styled("> apply   ", txt_style),
+                Span::styled("<", br_style),
+                Span::styled("Esc", key_style),
+                Span::styled("> cancel", txt_style),
+            ]),
+        ];
+        frame.render_widget(
+            Paragraph::new(footer_lines).style(Style::default().bg(self.theme.root_bg)),
+            vsplit[2],
+        );
+
+        // Scrollbar if needed
+        let total = fields.len();
+        if total > content_h {
+            let mut sb_state =
+                ScrollbarState::new(total.saturating_sub(content_h)).position(scroll);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                vsplit[0],
+                &mut sb_state,
+            );
+        }
+    }
+
     fn render_keybindings_help_popup(
         &mut self,
         frame: &mut Frame<'_>,
@@ -1584,7 +1868,9 @@ impl App {
         let area = frame.size();
         let popup_width = (area.width.saturating_sub(4)).min(72).max(40);
         // height: up to 80% of screen, min 10
-        let popup_height = (area.height * 4 / 5).max(10).min(area.height.saturating_sub(2));
+        let popup_height = (area.height * 4 / 5)
+            .max(10)
+            .min(area.height.saturating_sub(2));
         let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
         let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
         let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -1690,10 +1976,7 @@ impl App {
 
         // Search bar
         let search_display = if search.is_empty() {
-            Span::styled(
-                "  type to filter…",
-                Style::default().fg(self.theme.border),
-            )
+            Span::styled("  type to filter…", Style::default().fg(self.theme.border))
         } else {
             Span::styled(
                 format!("  /{}", search),
@@ -2117,8 +2400,11 @@ impl App {
         // Separator
         let sep_text = "─".repeat(chunks[1].width as usize);
         frame.render_widget(
-            Paragraph::new(sep_text)
-                .style(Style::default().fg(self.theme.border).bg(self.theme.root_bg)),
+            Paragraph::new(sep_text).style(
+                Style::default()
+                    .fg(self.theme.border)
+                    .bg(self.theme.root_bg),
+            ),
             chunks[1],
         );
 
@@ -2184,6 +2470,96 @@ fn count_wrapped_lines(text: &str, width: usize) -> usize {
         }
     }
     lines
+}
+
+// ---------------------------------------------------------------------------
+// JSON field layout helpers
+// ---------------------------------------------------------------------------
+
+fn format_span_col(s: &SpanInfo) -> String {
+    if s.fields.is_empty() {
+        return s.name.clone();
+    }
+    let kv = s
+        .fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}: {}", s.name, kv)
+}
+
+fn get_json_col(p: &JsonDisplayParts, name: &str) -> Option<String> {
+    match name {
+        "timestamp" | "ts" | "time" => p.timestamp.clone(),
+        "level" | "lvl" => p.level.as_ref().map(|l| format!("{:<5}", l)),
+        "target" => p.target.clone(),
+        "span" => p.span.as_ref().map(format_span_col),
+        "message" | "msg" => p.message.clone(),
+        n => {
+            // Resolve dotted span sub-field names (e.g. "span.name", "span.method").
+            if let Some(suffix) = n.strip_prefix("span.") {
+                return p.span.as_ref().and_then(|s| {
+                    if suffix == "name" {
+                        Some(s.name.clone())
+                    } else {
+                        s.fields
+                            .iter()
+                            .find(|(k, _)| k == suffix)
+                            .map(|(_, v)| v.clone())
+                    }
+                });
+            }
+            // Resolve dotted fields sub-field names (e.g. "fields.message", "fields.count").
+            if let Some(suffix) = n.strip_prefix("fields.") {
+                return if crate::log_line::MESSAGE_KEYS.contains(&suffix) {
+                    p.message.clone()
+                } else {
+                    p.extra_fields
+                        .iter()
+                        .find(|(k, _)| k == suffix)
+                        .map(|(_, v)| v.clone())
+                };
+            }
+            p.extra_fields
+                .iter()
+                .find(|(k, _)| k == n)
+                .map(|(_, v)| v.clone())
+        }
+    }
+}
+
+fn default_json_cols(p: &JsonDisplayParts) -> Vec<String> {
+    let mut cols = Vec::new();
+    if let Some(ts) = &p.timestamp {
+        cols.push(ts.clone());
+    }
+    if let Some(lvl) = &p.level {
+        cols.push(format!("{:<5}", lvl));
+    }
+    if let Some(tgt) = &p.target {
+        cols.push(tgt.clone());
+    }
+    if let Some(span) = &p.span {
+        cols.push(format_span_col(span));
+    }
+    for (key, value) in &p.extra_fields {
+        cols.push(format!("{}={}", key, value));
+    }
+    if let Some(msg) = &p.message {
+        cols.push(msg.clone());
+    }
+    cols
+}
+
+fn apply_json_field_layout(p: &JsonDisplayParts, layout: &FieldLayout) -> Vec<String> {
+    match &layout.json_columns {
+        None => default_json_cols(p),
+        Some(names) => names
+            .iter()
+            .filter_map(|name| get_json_col(p, name))
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -2278,9 +2654,13 @@ mod tests {
     async fn test_filter_reduces_visible() {
         let lines = vec!["INFO something", "WARN warning", "ERROR error"];
         let (file_reader, log_manager) = make_tab(&lines).await;
-        let mut app =
-            App::new(log_manager, file_reader, Theme::default(), Arc::new(Keybindings::default()))
-                .await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
 
         assert_eq!(app.tab().visible_indices.len(), 3);
 
@@ -2293,9 +2673,13 @@ mod tests {
     async fn test_mark_toggle() {
         let lines = vec!["line0", "line1", "line2"];
         let (file_reader, log_manager) = make_tab(&lines).await;
-        let mut app =
-            App::new(log_manager, file_reader, Theme::default(), Arc::new(Keybindings::default()))
-                .await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
 
         app.tab_mut().scroll_offset = 0;
         app.handle_key_event_with_modifiers(KeyCode::Char('m'), KeyModifiers::NONE)
@@ -2311,9 +2695,13 @@ mod tests {
     async fn test_scroll_g_key() {
         let lines: Vec<&str> = (0..20).map(|_| "line").collect();
         let (file_reader, log_manager) = make_tab(&lines).await;
-        let mut app =
-            App::new(log_manager, file_reader, Theme::default(), Arc::new(Keybindings::default()))
-                .await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
 
         // 'G' goes to end
         app.handle_key_event_with_modifiers(KeyCode::Char('G'), KeyModifiers::NONE)

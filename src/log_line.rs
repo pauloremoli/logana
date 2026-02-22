@@ -26,14 +26,16 @@ impl<'a> LogLine<'a> {
         let mut current_pos = 0;
 
         // Try to parse timestamp
-        if line.len() > 1 && line[0] == b'['
-            && let Some(ts_end_bracket) = line[1..].iter().position(|&b| b == b']') {
-                timestamp = std::str::from_utf8(&line[1..ts_end_bracket + 1]).ok();
-                current_pos = ts_end_bracket + 2;
-                while current_pos < line.len() && line[current_pos] == b' ' {
-                    current_pos += 1;
-                }
+        if line.len() > 1
+            && line[0] == b'['
+            && let Some(ts_end_bracket) = line[1..].iter().position(|&b| b == b']')
+        {
+            timestamp = std::str::from_utf8(&line[1..ts_end_bracket + 1]).ok();
+            current_pos = ts_end_bracket + 2;
+            while current_pos < line.len() && line[current_pos] == b' ' {
+                current_pos += 1;
             }
+        }
 
         // Try to parse level
         if current_pos < line.len() {
@@ -120,7 +122,11 @@ pub fn parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'_>>> {
         // Read value
         let (value, value_is_string) = read_value(line, &mut pos)?;
 
-        fields.push(JsonField { key, value, value_is_string });
+        fields.push(JsonField {
+            key,
+            value,
+            value_is_string,
+        });
 
         // Skip optional comma and whitespace before next key
         pos += skip_ws(line, pos);
@@ -129,14 +135,21 @@ pub fn parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'_>>> {
         }
     }
 
-    if fields.is_empty() { None } else { Some(fields) }
+    if fields.is_empty() {
+        None
+    } else {
+        Some(fields)
+    }
 }
 
 /// Detect the JSON log format from a parsed field list.
 pub fn detect_json_format(fields: &[JsonField<'_>]) -> LogFormat {
     if fields.iter().any(|f| f.key == "MESSAGE") {
         LogFormat::JournalctlJson
-    } else if fields.iter().any(|f| matches!(f.key, "message" | "msg" | "log" | "text")) {
+    } else if fields
+        .iter()
+        .any(|f| matches!(f.key, "message" | "msg" | "log" | "text"))
+    {
         LogFormat::SyslogJson
     } else {
         LogFormat::Plain
@@ -164,14 +177,14 @@ pub fn build_display_json(
             parts.push(format!("{}={}", field.key, field.value));
         }
     }
-    parts.join("  ")
+    parts.join(" ")
 }
 
 // ---------------------------------------------------------------------------
 // Structured JSON display
 // ---------------------------------------------------------------------------
 
-const TIMESTAMP_KEYS: &[&str] = &[
+pub const TIMESTAMP_KEYS: &[&str] = &[
     "timestamp",
     "time",
     "ts",
@@ -180,8 +193,8 @@ const TIMESTAMP_KEYS: &[&str] = &[
     "_SOURCE_REALTIME_TIMESTAMP",
     "__REALTIME_TIMESTAMP",
 ];
-const LEVEL_KEYS: &[&str] = &["level", "lvl", "severity", "PRIORITY", "log_level"];
-const TARGET_KEYS: &[&str] = &[
+pub const LEVEL_KEYS: &[&str] = &["level", "lvl", "severity", "PRIORITY", "log_level"];
+pub const TARGET_KEYS: &[&str] = &[
     "target",
     "module",
     "logger",
@@ -193,8 +206,7 @@ const TARGET_KEYS: &[&str] = &[
     "_COMM",
     "caller",
 ];
-const MESSAGE_KEYS: &[&str] =
-    &["message", "msg", "log", "text", "MESSAGE", "body"];
+pub const MESSAGE_KEYS: &[&str] = &["message", "msg", "log", "text", "MESSAGE", "body"];
 
 /// Span context extracted from a `span` field of a tracing JSON log line.
 #[derive(Debug)]
@@ -261,7 +273,9 @@ pub fn classify_json_fields(
                     if MESSAGE_KEYS.contains(&sub.key) {
                         parts.message.get_or_insert_with(|| sub.value.to_string());
                     } else {
-                        parts.extra_fields.push((sub.key.to_string(), sub.value.to_string()));
+                        parts
+                            .extra_fields
+                            .push((sub.key.to_string(), sub.value.to_string()));
                     }
                 }
             }
@@ -277,7 +291,10 @@ pub fn classify_json_fields(
                         span_fields.push((sub.key.to_string(), sub.value.to_string()));
                     }
                 }
-                parts.span = Some(SpanInfo { name: span_name, fields: span_fields });
+                parts.span = Some(SpanInfo {
+                    name: span_name,
+                    fields: span_fields,
+                });
             }
         } else if key == "spans" {
             // Parent span stack — skip; the current span is already in "span".
@@ -290,7 +307,9 @@ pub fn classify_json_fields(
         } else if MESSAGE_KEYS.contains(&key) {
             parts.message.get_or_insert_with(val);
         } else {
-            parts.extra_fields.push((key.to_string(), field.value.to_string()));
+            parts
+                .extra_fields
+                .push((key.to_string(), field.value.to_string()));
         }
     }
 
@@ -384,7 +403,10 @@ fn read_value<'a>(line: &'a [u8], pos: &mut usize) -> Option<(&'a str, bool)> {
             // Number, boolean, null — runs until `,`, `}`, `]`, or whitespace.
             let start = *pos;
             while *pos < line.len()
-                && !matches!(line[*pos], b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n')
+                && !matches!(
+                    line[*pos],
+                    b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n'
+                )
             {
                 *pos += 1;
             }
@@ -504,18 +526,34 @@ mod tests {
     fn test_parse_json_journalctl_format() {
         let line = br#"{"__REALTIME_TIMESTAMP":"1699999999000000","PRIORITY":"6","_HOSTNAME":"myhost","SYSLOG_IDENTIFIER":"sshd","MESSAGE":"Accepted password for user"}"#;
         let fields = parse_json_line(line).unwrap();
-        assert!(fields.iter().any(|f| f.key == "MESSAGE" && f.value == "Accepted password for user"));
+        assert!(
+            fields
+                .iter()
+                .any(|f| f.key == "MESSAGE" && f.value == "Accepted password for user")
+        );
         assert!(fields.iter().any(|f| f.key == "PRIORITY" && f.value == "6"));
-        assert!(fields.iter().any(|f| f.key == "_HOSTNAME" && f.value == "myhost"));
+        assert!(
+            fields
+                .iter()
+                .any(|f| f.key == "_HOSTNAME" && f.value == "myhost")
+        );
     }
 
     #[test]
     fn test_parse_json_syslog_format() {
         let line = br#"{"time":"2024-01-15T10:00:00Z","level":"INFO","hostname":"myhost","app":"nginx","message":"GET /health 200"}"#;
         let fields = parse_json_line(line).unwrap();
-        assert!(fields.iter().any(|f| f.key == "message" && f.value == "GET /health 200"));
+        assert!(
+            fields
+                .iter()
+                .any(|f| f.key == "message" && f.value == "GET /health 200")
+        );
         assert!(fields.iter().any(|f| f.key == "level" && f.value == "INFO"));
-        assert!(fields.iter().any(|f| f.key == "hostname" && f.value == "myhost"));
+        assert!(
+            fields
+                .iter()
+                .any(|f| f.key == "hostname" && f.value == "myhost")
+        );
     }
 
     #[test]
@@ -688,7 +726,10 @@ mod tests {
         assert_eq!(parts.level.as_deref(), Some("WARN"));
         assert_eq!(parts.message.as_deref(), Some("hi"));
         assert_eq!(parts.extra_fields.len(), 1);
-        assert_eq!(parts.extra_fields[0], ("request_id".to_string(), "abc".to_string()));
+        assert_eq!(
+            parts.extra_fields[0],
+            ("request_id".to_string(), "abc".to_string())
+        );
     }
 
     #[test]
@@ -771,7 +812,10 @@ mod tests {
         let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
         assert_eq!(parts.message.as_deref(), Some("todos listed"));
         assert_eq!(parts.extra_fields.len(), 1);
-        assert_eq!(parts.extra_fields[0], ("count".to_string(), "9".to_string()));
+        assert_eq!(
+            parts.extra_fields[0],
+            ("count".to_string(), "9".to_string())
+        );
     }
 
     #[test]

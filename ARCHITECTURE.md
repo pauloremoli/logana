@@ -45,6 +45,8 @@ Byte positions within the line.
 **Annotation**: `{ text: String, line_indices: Vec<usize> }`
 A multiline comment attached to a group of log lines. Multiple annotations can exist per session. `text` is newline-joined and `line_indices` are raw file-line indices (same space as `visible_indices`).
 
+**FieldLayout**: `{ json_columns: Option<Vec<String>> }` — when `Some`, only the listed column names are shown in that order; `None` restores default display order. Held by `TabState`; not persisted.
+
 **FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll, annotations).
 
 ## Architecture Layers
@@ -112,7 +114,7 @@ A multiline comment attached to a group of log lines. Multiple annotations can e
   - `keybindings: Arc<Keybindings>` — shared keybinding config (cloned from `App` on tab creation)
   - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
-- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `VisualLineMode`, `AnnotationMode`, `KeybindingsHelpMode`. Rendering data is exposed through trait methods: `status_line()`, `dynamic_status_line(&Keybindings)`, `selected_filter_index()`, `command_state()`, `search_state()`, `needs_input_bar()`, `confirm_restore_context()`, `confirm_restore_session_files()`, `visual_selection_anchor()`, `annotation_popup()`, `keybindings_help_scroll()`, `keybindings_help_search()`.
+- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `VisualLineMode`, `AnnotationMode`, `KeybindingsHelpMode`, `SelectFieldsMode`. Rendering data is exposed through trait methods: `status_line()`, `dynamic_status_line(&Keybindings)`, `selected_filter_index()`, `command_state()`, `search_state()`, `needs_input_bar()`, `confirm_restore_context()`, `confirm_restore_session_files()`, `visual_selection_anchor()`, `annotation_popup()`, `keybindings_help_scroll()`, `keybindings_help_search()`, `select_fields_state()`.
 - **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`.
 
 **Rendering pipeline (per frame)**:
@@ -124,6 +126,8 @@ A multiline comment attached to a group of log lines. Multiple annotations can e
 6. For each line in `[start..end]`: evaluate filters (`evaluate_line`), overlay search spans at priority 1000, apply level colours and mark styles, compose final `Line` via `render_line`.
 7. `line_row_count(bytes, inner_width)` uses `unicode_width` to compute `ceil(display_width / inner_width)`, keeping wrap-aware viewport math precise.
 
+**JSON field layout**: `apply_json_field_layout(&JsonDisplayParts, &FieldLayout) -> Vec<String>` — module-level helper that routes through `default_json_cols` (all columns, default order) or picks specific columns via `get_json_col`. Column name aliases: `timestamp|ts|time`, `level|lvl`, `target`, `span`, `message|msg`, plus any extra-field key. Tab completion for the `fields` command completes against the five canonical names plus dynamically discovered field names from the first 200 visible log lines (`TabState::collect_json_field_names()`).
+**Select-fields mode** (`:select-fields`): floating popup showing all discovered JSON fields with checkboxes. `j`/`k` navigate, `Space` toggle, `a`/`n` enable/disable all, `Enter` apply, `Esc` cancel. Implemented by `SelectFieldsMode` in `src/mode/select_fields_mode.rs`.
 **Vim keybindings**: j/k, gg/G, Ctrl+d/u (half page), PageUp/Down, /, ?, n/N, m (mark), V (visual select)
 **Visual line mode** (`V`): anchor at current line, j/k extend selection, `c` opens annotation editor, Esc cancel. Selected range highlighted in the log panel.
 **Annotation mode**: multiline text editor (Enter = newline, Backspace = delete/merge, Left/Right wrap lines, Up/Down move rows, Shift+Enter = save (configurable), Esc = cancel). Rendered as a floating popup. Annotated lines show a `◆` indicator in the line-number margin.
@@ -131,7 +135,7 @@ A multiline comment attached to a group of log lines. Multiple annotations can e
 **Conflict validation**: at startup `Keybindings::validate()` checks for overlapping bindings within each mode scope; conflicts are printed to stderr and logged as warnings.
 **Multi-tab**: Tab/Shift+Tab switch, Ctrl+t open, Ctrl+w close
 **Command mode** (`:`) with tab completion, history, live hints
-**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`
+**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`
 **Filter management mode** (`f`): navigate, toggle, delete, edit, set color, add include/exclude
 
 ### Config (config.rs)
@@ -194,7 +198,7 @@ anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, se
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui.rs, auto_complete.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs — 322 tests total
+- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui.rs, auto_complete.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs — 374 tests total
 - **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
 - **Stdin test** (tests/stdin.rs): pipe input end-to-end — 1 test
 - **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)

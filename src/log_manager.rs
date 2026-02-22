@@ -3,12 +3,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 
 use crate::db::{Database, FilterStore};
 use crate::file_reader::FileReader;
 use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter};
-use crate::types::{Annotation, ColorConfig, FilterDef, FilterType};
+use crate::types::{Annotation, ColorConfig, FilterDef, FilterType, parse_color};
 
 /// Manages filter definitions (persisted to SQLite), marks (in-memory), and
 /// the mapping to a renderable `FilterManager` + style palette.
@@ -62,8 +62,8 @@ impl LogManager {
         match_only: bool,
     ) {
         let color_config = if filter_type == FilterType::Include {
-            let fg_color = fg.and_then(|s| s.parse::<Color>().ok());
-            let bg_color = bg.and_then(|s| s.parse::<Color>().ok());
+            let fg_color = fg.and_then(parse_color);
+            let bg_color = bg.and_then(parse_color);
             if fg_color.is_some() || bg_color.is_some() || match_only {
                 Some(ColorConfig {
                     fg: fg_color,
@@ -196,8 +196,8 @@ impl LogManager {
         bg: Option<&str>,
         match_only: bool,
     ) {
-        let fg_color = fg.and_then(|s| s.parse::<Color>().ok());
-        let bg_color = bg.and_then(|s| s.parse::<Color>().ok());
+        let fg_color = fg.and_then(parse_color);
+        let bg_color = bg.and_then(parse_color);
         if fg_color.is_none() && bg_color.is_none() && !match_only {
             return;
         }

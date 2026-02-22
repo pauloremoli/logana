@@ -98,6 +98,10 @@ impl Search {
     pub fn get_pattern(&self) -> Option<&str> {
         self.pattern.as_ref().map(|p| p.as_str())
     }
+
+    pub fn get_compiled_pattern(&self) -> Option<&Regex> {
+        self.pattern.as_ref()
+    }
 }
 
 #[cfg(test)]

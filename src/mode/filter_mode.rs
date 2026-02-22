@@ -174,10 +174,10 @@ impl Mode for FilterManagementMode {
                     && let Some(cfg) = &cc
                 {
                     if let Some(fg) = cfg.fg {
-                        cmd.push_str(&format!(" --fg {:?}", fg));
+                        cmd.push_str(&format!(" --fg {}", fg));
                     }
                     if let Some(bg) = cfg.bg {
-                        cmd.push_str(&format!(" --bg {:?}", bg));
+                        cmd.push_str(&format!(" --bg {}", bg));
                     }
                     if cfg.match_only {
                         cmd.push_str(" -m");
@@ -210,10 +210,10 @@ impl Mode for FilterManagementMode {
             let mut cmd = String::from("set-color");
             if let Some(cfg) = color_config {
                 if let Some(fg) = cfg.fg {
-                    cmd.push_str(&format!(" --fg {:?}", fg));
+                    cmd.push_str(&format!(" --fg {}", fg));
                 }
                 if let Some(bg) = cfg.bg {
-                    cmd.push_str(&format!(" --bg {:?}", bg));
+                    cmd.push_str(&format!(" --bg {}", bg));
                 }
             }
             let len = cmd.len();
