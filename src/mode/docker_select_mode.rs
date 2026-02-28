@@ -45,22 +45,25 @@ impl Mode for DockerSelectMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings.docker_select;
-        if kb.navigate_down.matches(key, modifiers) {
+        let kb = &tab.keybindings;
+        if kb.navigation.scroll_down.matches(key, modifiers) {
             if !self.containers.is_empty() {
                 self.selected = (self.selected + 1).min(self.containers.len() - 1);
             }
-        } else if kb.navigate_up.matches(key, modifiers) {
+        } else if kb.navigation.scroll_up.matches(key, modifiers) {
             self.selected = self.selected.saturating_sub(1);
-        } else if kb.confirm.matches(key, modifiers) {
+        } else if kb.docker_select.confirm.matches(key, modifiers) {
             if let Some(c) = self.containers.get(self.selected) {
                 let id = c.id.clone();
                 let name = c.name.clone();
-                return (Box::new(NormalMode), KeyResult::DockerAttach(id, name));
+                return (
+                    Box::new(NormalMode::default()),
+                    KeyResult::DockerAttach(id, name),
+                );
             }
-            return (Box::new(NormalMode), KeyResult::Handled);
-        } else if kb.cancel.matches(key, modifiers) {
-            return (Box::new(NormalMode), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
+        } else if kb.docker_select.cancel.matches(key, modifiers) {
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
         (self, KeyResult::Handled)
     }
@@ -79,14 +82,14 @@ impl Mode for DockerSelectMode {
         // Navigate up/down
         spans.push(Span::styled("<", Style::default().fg(theme.border)));
         spans.push(Span::styled(
-            kb.docker_select.navigate_up.display(),
+            kb.navigation.scroll_up.display(),
             Style::default()
                 .fg(theme.text_highlight)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("/", Style::default().fg(theme.border)));
         spans.push(Span::styled(
-            kb.docker_select.navigate_down.display(),
+            kb.navigation.scroll_down.display(),
             Style::default()
                 .fg(theme.text_highlight)
                 .add_modifier(Modifier::BOLD),

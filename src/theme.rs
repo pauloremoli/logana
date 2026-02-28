@@ -407,7 +407,7 @@ fn default_mark_fg() -> Color {
 
 impl Theme {
     /// Returns the names of all available themes found in the local `themes/` directory
-    /// and in `~/.config/logsmith-rs/themes/`.
+    /// and in `~/.config/logana/themes/`.
     pub fn list_available_themes() -> Vec<String> {
         let mut theme_paths = vec![];
         if let Ok(entries) = std::fs::read_dir("themes") {
@@ -416,7 +416,7 @@ impl Theme {
             }
         }
         if let Some(config_dir) = dirs::config_dir() {
-            let user_themes_path = config_dir.join("logsmith-rs/themes");
+            let user_themes_path = config_dir.join("logana/themes");
             if let Ok(entries) = std::fs::read_dir(user_themes_path) {
                 for entry in entries.flatten() {
                     theme_paths.push(entry.path());
@@ -438,7 +438,7 @@ impl Theme {
 
     pub fn from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let config_path =
-            dirs::config_dir().map(|d| d.join("logsmith-rs").join("themes").join(&path));
+            dirs::config_dir().map(|d| d.join("logana").join("themes").join(&path));
         let local_path = Path::new("themes").join(&path);
 
         let data = if config_path.as_ref().is_some_and(|p| p.exists()) {
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn test_theme_from_file_valid() {
         let temp = tempdir().unwrap();
-        let theme_dir = temp.path().join("logsmith-rs").join("themes");
+        let theme_dir = temp.path().join("logana").join("themes");
         fs::create_dir_all(&theme_dir).unwrap();
         let theme_json = serde_json::to_string(&Theme::default()).unwrap();
         let path = theme_dir.join("test_theme.json");
@@ -747,7 +747,7 @@ mod tests {
     #[test]
     fn test_theme_from_file_invalid_json() {
         let temp = tempdir().unwrap();
-        let theme_dir = temp.path().join("logsmith-rs").join("themes");
+        let theme_dir = temp.path().join("logana").join("themes");
         fs::create_dir_all(&theme_dir).unwrap();
         fs::write(theme_dir.join("broken.json"), "not valid json {{{").unwrap();
 
@@ -772,7 +772,7 @@ mod tests {
             env::set_var("XDG_CONFIG_HOME", config_home);
         }
 
-        let themes_dir = config_home.join("logsmith-rs/themes");
+        let themes_dir = config_home.join("logana/themes");
         fs::create_dir_all(&themes_dir).unwrap();
         let theme_path = themes_dir.join("mytheme.json");
         fs::write(&theme_path, "{}").unwrap();
@@ -790,7 +790,7 @@ mod tests {
         unsafe {
             env::set_var("XDG_CONFIG_HOME", temp_dir.path());
         }
-        let themes_dir = temp_dir.path().join("logsmith-rs/themes");
+        let themes_dir = temp_dir.path().join("logana/themes");
         fs::create_dir_all(&themes_dir).unwrap();
         fs::write(themes_dir.join("readme.txt"), "not a theme").unwrap();
         fs::write(themes_dir.join("valid.json"), "{}").unwrap();
@@ -827,7 +827,7 @@ mod tests {
         unsafe {
             env::set_var("XDG_CONFIG_HOME", temp_dir.path());
         }
-        let themes_dir = temp_dir.path().join("logsmith-rs/themes");
+        let themes_dir = temp_dir.path().join("logana/themes");
         fs::create_dir_all(&themes_dir).unwrap();
         fs::write(themes_dir.join("monokai.json"), "{}").unwrap();
         fs::write(themes_dir.join("solarized.json"), "{}").unwrap();

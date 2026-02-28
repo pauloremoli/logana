@@ -23,7 +23,7 @@ use super::{App, LoadContext};
 
 impl App {
     pub(super) fn ui(&mut self, frame: &mut Frame) {
-        let size = frame.size();
+        let size = frame.area();
         frame.render_widget(Block::default().bg(self.theme.root_bg), size);
 
         let has_multiple_tabs = self.tabs.len() > 1;
@@ -619,7 +619,7 @@ impl App {
             frame.render_widget(search_line, input_area);
             let cursor_x = input_area.x + 1 + input_str.len() as u16;
             if cursor_x < input_area.x + input_area.width {
-                frame.set_cursor(cursor_x, input_area.y);
+                frame.set_cursor_position((cursor_x, input_area.y));
             }
 
             let hint_area = chunks[chunk_idx + 1];
@@ -676,7 +676,7 @@ impl App {
         let pct = (progress * 100.0) as usize;
         let text = format!(" Loading {}  {} {}% ", subtitle, bar, pct);
 
-        let area = frame.size();
+        let area = frame.area();
         if area.height == 0 {
             return;
         }
@@ -789,7 +789,7 @@ impl App {
             frame.render_widget(command_line, input_area);
             let cursor_x = input_area.x + 1 + cursor_pos as u16;
             if cursor_x < input_area.x + input_area.width {
-                frame.set_cursor(cursor_x, input_area.y);
+                frame.set_cursor_position((cursor_x, input_area.y));
             }
 
             let hint_area = chunks[chunk_idx + 1];
@@ -964,9 +964,19 @@ impl App {
                 .map(|(i, filter)| {
                     let status = if filter.enabled { "[x]" } else { "[ ]" };
                     let selected_prefix = if i == selected_filter_idx { ">" } else { " " };
-                    let filter_type_str = match filter.filter_type {
-                        FilterType::Include => "In",
-                        FilterType::Exclude => "Out",
+                    let is_date = filter.pattern.starts_with(crate::date_filter::DATE_PREFIX);
+                    let filter_type_str = if is_date {
+                        "Date"
+                    } else {
+                        match filter.filter_type {
+                            FilterType::Include => "In",
+                            FilterType::Exclude => "Out",
+                        }
+                    };
+                    let display_pattern = if is_date {
+                        &filter.pattern[crate::date_filter::DATE_PREFIX.len()..]
+                    } else {
+                        &filter.pattern
                     };
                     let mut style = Style::default().fg(self.theme.text);
                     if let Some(cfg) = &filter.color_config {
@@ -979,7 +989,7 @@ impl App {
                     }
                     Line::from(format!(
                         "{}{} {}: {}",
-                        selected_prefix, status, filter_type_str, filter.pattern
+                        selected_prefix, status, filter_type_str, display_pattern
                     ))
                     .style(style)
                 })
@@ -1216,7 +1226,10 @@ mod tests {
     #[tokio::test]
     async fn test_ui_visual_line_mode() {
         let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
-        app.tabs[0].mode = Box::new(VisualLineMode { anchor: 0 });
+        app.tabs[0].mode = Box::new(VisualLineMode {
+            anchor: 0,
+            count: None,
+        });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }

@@ -83,7 +83,7 @@ impl TabState {
             file_reader,
             log_manager,
             visible_indices: Vec::new(),
-            mode: Box::new(NormalMode),
+            mode: Box::new(NormalMode::default()),
             scroll_offset: 0,
             viewport_offset: 0,
             show_sidebar: true,
@@ -123,6 +123,24 @@ impl TabState {
             let (fm, _) = self.log_manager.build_filter_manager();
             self.visible_indices = fm.compute_visible(&self.file_reader);
         }
+
+        // Apply date filters as a post-processing step.
+        let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
+        if !date_filters.is_empty()
+            && let Some(parser) = &self.detected_format
+        {
+            self.visible_indices.retain(|&idx| {
+                let line = self.file_reader.get_line(idx);
+                match parser.parse_line(line) {
+                    Some(parts) => match parts.timestamp {
+                        Some(ts) => date_filters.iter().all(|df| df.matches(ts)),
+                        None => true, // lines without timestamps pass through
+                    },
+                    None => true, // unparseable lines pass through
+                }
+            });
+        }
+
         // Clamp scroll_offset so it never points past the end of the new visible set.
         if self.visible_indices.is_empty() {
             self.scroll_offset = 0;
@@ -135,6 +153,49 @@ impl TabState {
         if let Some(index) = self.visible_indices.iter().position(|&i| i == line_idx) {
             self.scroll_offset = index;
         }
+    }
+
+    /// Jump to a 1-based line number, or the closest visible line if the
+    /// target is hidden by filters.  Returns an error message when the
+    /// line number is invalid (zero).
+    pub fn goto_line(&mut self, line_number: usize) -> Result<(), String> {
+        if line_number == 0 {
+            return Err("Line numbers start at 1".to_string());
+        }
+        if self.visible_indices.is_empty() {
+            return Ok(());
+        }
+        let target_idx = line_number - 1; // convert to 0-based file index
+
+        // Binary search for the target in visible_indices.
+        match self.visible_indices.binary_search(&target_idx) {
+            Ok(pos) => {
+                // Exact match — the line is visible.
+                self.scroll_offset = pos;
+            }
+            Err(pos) => {
+                // `pos` is where target_idx would be inserted.
+                // Pick the closer neighbour.
+                let before = if pos > 0 { Some(pos - 1) } else { None };
+                let after = if pos < self.visible_indices.len() {
+                    Some(pos)
+                } else {
+                    None
+                };
+                let best = match (before, after) {
+                    (Some(b), Some(a)) => {
+                        let dist_b = target_idx - self.visible_indices[b];
+                        let dist_a = self.visible_indices[a] - target_idx;
+                        if dist_b <= dist_a { b } else { a }
+                    }
+                    (Some(b), None) => b,
+                    (None, Some(a)) => a,
+                    (None, None) => unreachable!(), // visible_indices is non-empty
+                };
+                self.scroll_offset = best;
+            }
+        }
+        Ok(())
     }
 
     pub fn to_file_context(&self) -> Option<FileContext> {
@@ -437,5 +498,83 @@ mod tests {
     async fn test_new_tab_plain_text_no_format() {
         let tab = make_tab(&["just plain text", "no structure here"]).await;
         assert!(tab.detected_format.is_none());
+    }
+
+    // ── goto_line ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_goto_line_exact_visible() {
+        let mut tab = make_tab(&["a", "b", "c", "d", "e"]).await;
+        // All lines visible (indices 0..5), go to line 3 (0-based idx 2)
+        tab.goto_line(3).unwrap();
+        assert_eq!(tab.scroll_offset, 2);
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_first_line() {
+        let mut tab = make_tab(&["a", "b", "c"]).await;
+        tab.scroll_offset = 2;
+        tab.goto_line(1).unwrap();
+        assert_eq!(tab.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_last_line() {
+        let mut tab = make_tab(&["a", "b", "c", "d", "e"]).await;
+        tab.goto_line(5).unwrap();
+        assert_eq!(tab.scroll_offset, 4);
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_zero_returns_error() {
+        let mut tab = make_tab(&["a", "b", "c"]).await;
+        let result = tab.goto_line(0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("start at 1"));
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_beyond_file_jumps_to_last() {
+        let mut tab = make_tab(&["a", "b", "c"]).await;
+        tab.goto_line(999).unwrap();
+        assert_eq!(tab.scroll_offset, 2); // last visible line
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_hidden_finds_closest() {
+        let mut tab = make_tab(&["a", "b", "c", "d", "e"]).await;
+        // Simulate filter hiding lines 1 and 2 (keep 0, 3, 4)
+        tab.visible_indices = vec![0, 3, 4];
+        // Go to line 2 (idx 1) — hidden, closest visible is idx 0
+        tab.goto_line(2).unwrap();
+        assert_eq!(tab.scroll_offset, 0); // idx 0 is at position 0
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_hidden_prefers_closer_after() {
+        let mut tab = make_tab(&["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]).await;
+        // Visible: 0, 5, 9
+        tab.visible_indices = vec![0, 5, 9];
+        // Go to line 4 (idx 3) — equidistant: idx 0 (dist 3) vs idx 5 (dist 2) → pick 5
+        tab.goto_line(4).unwrap();
+        assert_eq!(tab.scroll_offset, 1); // idx 5 is at position 1
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_hidden_prefers_closer_before() {
+        let mut tab = make_tab(&["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]).await;
+        tab.visible_indices = vec![0, 5, 9];
+        // Go to line 7 (idx 6) — idx 5 (dist 1) vs idx 9 (dist 3) → pick 5
+        tab.goto_line(7).unwrap();
+        assert_eq!(tab.scroll_offset, 1); // idx 5 is at position 1
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_empty_visible_indices() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        tab.visible_indices = vec![];
+        // Should not panic, just no-op
+        tab.goto_line(1).unwrap();
+        assert_eq!(tab.scroll_offset, 0);
     }
 }

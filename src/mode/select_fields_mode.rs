@@ -40,8 +40,8 @@ impl Mode for SelectFieldsMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings.select_fields;
-        if kb.apply.matches(key, modifiers) {
+        let kb = &tab.keybindings;
+        if kb.select_fields.apply.matches(key, modifiers) {
             let enabled: Vec<String> = self
                 .fields
                 .iter()
@@ -51,37 +51,37 @@ impl Mode for SelectFieldsMode {
             let all_ordered: Vec<String> = self.fields.iter().map(|(n, _)| n.clone()).collect();
             tab.field_layout.columns = Some(enabled);
             tab.field_layout.columns_order = Some(all_ordered);
-            return (Box::new(NormalMode), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
-        if kb.cancel.matches(key, modifiers) {
+        if kb.select_fields.cancel.matches(key, modifiers) {
             tab.field_layout = std::mem::take(&mut self.original_layout);
-            return (Box::new(NormalMode), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
-        if kb.navigate_down.matches(key, modifiers) {
+        if kb.navigation.scroll_down.matches(key, modifiers) {
             if !self.fields.is_empty() {
                 self.selected = (self.selected + 1).min(self.fields.len() - 1);
             }
-        } else if kb.navigate_up.matches(key, modifiers) {
+        } else if kb.navigation.scroll_up.matches(key, modifiers) {
             self.selected = self.selected.saturating_sub(1);
-        } else if kb.toggle.matches(key, modifiers) {
+        } else if kb.select_fields.toggle.matches(key, modifiers) {
             if let Some(f) = self.fields.get_mut(self.selected) {
                 f.1 = !f.1;
             }
-        } else if kb.move_down.matches(key, modifiers) {
+        } else if kb.select_fields.move_down.matches(key, modifiers) {
             if self.selected + 1 < self.fields.len() {
                 self.fields.swap(self.selected, self.selected + 1);
                 self.selected += 1;
             }
-        } else if kb.move_up.matches(key, modifiers) {
+        } else if kb.select_fields.move_up.matches(key, modifiers) {
             if self.selected > 0 {
                 self.fields.swap(self.selected, self.selected - 1);
                 self.selected -= 1;
             }
-        } else if kb.all.matches(key, modifiers) {
+        } else if kb.select_fields.all.matches(key, modifiers) {
             for f in &mut self.fields {
                 f.1 = true;
             }
-        } else if kb.none.matches(key, modifiers) {
+        } else if kb.select_fields.none.matches(key, modifiers) {
             for f in &mut self.fields {
                 f.1 = false;
             }

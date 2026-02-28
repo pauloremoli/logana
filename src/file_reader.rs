@@ -892,7 +892,7 @@ mod tests {
 
     #[test]
     fn test_file_reader_nonexistent_path() {
-        let result = FileReader::new("/tmp/nonexistent_logsmith_test_file.log");
+        let result = FileReader::new("/tmp/nonexistent_logana_test_file.log");
         assert!(result.is_err());
     }
 
@@ -982,7 +982,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_nonexistent() {
-        let result = FileReader::load("/tmp/nonexistent_logsmith_load_test.log".to_string()).await;
+        let result = FileReader::load("/tmp/nonexistent_logana_load_test.log".to_string()).await;
         assert!(result.is_err());
     }
 

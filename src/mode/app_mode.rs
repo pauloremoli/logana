@@ -131,13 +131,13 @@ impl Mode for ConfirmRestoreMode {
         let kb = &tab.keybindings.confirm;
         if kb.yes.matches(key, modifiers) {
             tab.apply_file_context(&self.context);
-            (Box::new(NormalMode), KeyResult::Handled)
+            (Box::new(NormalMode::default()), KeyResult::Handled)
         } else if kb.no.matches(key, modifiers) {
             tab.log_manager.clear_filters().await;
             tab.log_manager.set_marks(vec![]);
             tab.log_manager.set_comments(vec![]);
             tab.refresh_visible();
-            (Box::new(NormalMode), KeyResult::Handled)
+            (Box::new(NormalMode::default()), KeyResult::Handled)
         } else {
             (self, KeyResult::Handled)
         }
@@ -187,9 +187,12 @@ impl Mode for ConfirmRestoreSessionMode {
     ) -> (Box<dyn Mode>, KeyResult) {
         let kb = &tab.keybindings.confirm;
         if kb.yes.matches(key, modifiers) {
-            (Box::new(NormalMode), KeyResult::RestoreSession(self.files))
+            (
+                Box::new(NormalMode::default()),
+                KeyResult::RestoreSession(self.files),
+            )
         } else if kb.no.matches(key, modifiers) {
-            (Box::new(NormalMode), KeyResult::Handled)
+            (Box::new(NormalMode::default()), KeyResult::Handled)
         } else {
             (self, KeyResult::Handled)
         }

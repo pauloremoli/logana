@@ -1,0 +1,105 @@
+{
+  "theme": null,
+  "keybindings": {
+    "navigation": {
+      "scroll_down": ["j", "Down"],
+      "scroll_up": ["k", "Up"],
+      "half_page_down": "Ctrl+d",
+      "half_page_up": "Ctrl+u",
+      "page_down": "PageDown",
+      "page_up": "PageUp"
+    },
+    "normal": {
+      "scroll_left": "h",
+      "scroll_right": "l",
+      "command_mode": ":",
+      "filter_mode": "f",
+      "toggle_filtering": "F",
+      "toggle_sidebar": "s",
+      "go_to_top_chord": "g",
+      "go_to_bottom": "G",
+      "mark_line": "m",
+      "search_forward": "/",
+      "search_backward": "?",
+      "next_match": "n",
+      "prev_match": "N",
+      "toggle_wrap": "w",
+      "visual_mode": "V",
+      "toggle_marks_only": "M",
+      "yank_marked": "y",
+      "show_keybindings": "F1",
+      "clear_all": "C",
+      "edit_comment": "c"
+    },
+    "filter": {
+      "toggle_filter": "Space",
+      "delete_filter": "d",
+      "move_filter_up": "K",
+      "move_filter_down": "J",
+      "edit_filter": "e",
+      "set_color": "c",
+      "toggle_all_filters": "A",
+      "clear_all_filters": "C",
+      "add_include": "i",
+      "add_exclude": "x",
+      "add_date_filter": "t",
+      "exit_mode": "Esc"
+    },
+    "global": {
+      "quit": "q",
+      "next_tab": "Tab",
+      "prev_tab": "Shift+Tab",
+      "close_tab": "Ctrl+w",
+      "new_tab": "Ctrl+t"
+    },
+    "comment": {
+      "save": "Ctrl+s",
+      "cancel": "Esc",
+      "delete": "Ctrl+d"
+    },
+    "visual_line": {
+      "comment": "c",
+      "yank": "y",
+      "exit": "Esc"
+    },
+    "search": {
+      "cancel": "Esc",
+      "confirm": "Enter"
+    },
+    "filter_edit": {
+      "cancel": "Esc",
+      "confirm": "Enter"
+    },
+    "command": {
+      "cancel": "Esc",
+      "confirm": "Enter"
+    },
+    "docker_select": {
+      "confirm": "Enter",
+      "cancel": "Esc"
+    },
+    "value_colors": {
+      "toggle": "Space",
+      "all": "a",
+      "none": "n",
+      "apply": "Enter",
+      "cancel": "Esc"
+    },
+    "select_fields": {
+      "toggle": "Space",
+      "move_up": "K",
+      "move_down": "J",
+      "all": "a",
+      "none": "n",
+      "apply": "Enter",
+      "cancel": "Esc"
+    },
+    "help": {
+      "close": ["q", "Esc"]
+    },
+    "confirm": {
+      "yes": ["y", "Enter"],
+      "no": ["n", "Esc"]
+    }
+  }
+}

@@ -192,7 +192,7 @@ impl App {
                             selected_filter_index: idx,
                         });
                     } else {
-                        tab.mode = Box::new(NormalMode);
+                        tab.mode = Box::new(NormalMode::default());
                     }
                 }
             }
@@ -211,7 +211,10 @@ impl App {
         }
     }
 
-    pub async fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> anyhow::Result<()> {
+    pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> anyhow::Result<()>
+    where
+        <B as Backend>::Error: Send + Sync + 'static,
+    {
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(250);
 
@@ -232,7 +235,7 @@ impl App {
                 && key.kind == crossterm::event::KeyEventKind::Press
             {
                 let tab = &mut self.tabs[self.active_tab];
-                let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode));
+                let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode::default()));
                 let (next_mode, result) = mode.handle_key(tab, key.code, key.modifiers).await;
                 tab.mode = next_mode;
                 match result {
@@ -269,7 +272,7 @@ impl App {
         modifiers: KeyModifiers,
     ) {
         let tab = &mut self.tabs[self.active_tab];
-        let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode));
+        let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode::default()));
         let (next_mode, result) = mode.handle_key(tab, key_code, modifiers).await;
         tab.mode = next_mode;
         match result {
@@ -577,23 +580,23 @@ mod tests {
     #[tokio::test]
     async fn test_set_color_preserves_match_only() {
         let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
-        // Create a filter with match_only enabled.
-        app.execute_command_str("filter INFO --fg red -m".to_string())
+        // Create a filter with full-line mode (-l → match_only=false).
+        app.execute_command_str("filter INFO --fg red -l".to_string())
             .await;
         let filters = app.tab().log_manager.get_filters();
-        assert!(filters[0].color_config.as_ref().unwrap().match_only);
+        assert!(!filters[0].color_config.as_ref().unwrap().match_only);
 
         // Enter filter management mode so filter_context is set.
         app.tab_mut().filter_context = Some(0);
 
-        // Change color without -m flag — match_only should be preserved.
+        // Change color without -l flag — match_only=false should be preserved.
         app.execute_command_str("set-color --fg blue".to_string())
             .await;
         let filters = app.tab().log_manager.get_filters();
         let cc = filters[0].color_config.as_ref().unwrap();
         assert!(
-            cc.match_only,
-            "match_only should be preserved when -m is not passed"
+            !cc.match_only,
+            "match_only should be preserved when -l is not passed"
         );
         assert_eq!(cc.fg, Some(ratatui::style::Color::Blue));
     }

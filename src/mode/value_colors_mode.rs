@@ -124,22 +124,22 @@ impl Mode for ValueColorsMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings.value_colors;
+        let kb = &tab.keybindings;
 
         // Cancel: clear search first, then cancel.
-        if kb.cancel.matches(key, modifiers) {
+        if kb.value_colors.cancel.matches(key, modifiers) {
             if !self.search.is_empty() {
                 self.search.clear();
                 self.selected = 0;
                 return (self, KeyResult::Handled);
             }
             return (
-                Box::new(NormalMode),
+                Box::new(NormalMode::default()),
                 KeyResult::ApplyValueColors(self.original_disabled.clone()),
             );
         }
 
-        if kb.apply.matches(key, modifiers) {
+        if kb.value_colors.apply.matches(key, modifiers) {
             let disabled: HashSet<String> = self
                 .groups
                 .iter()
@@ -147,17 +147,20 @@ impl Mode for ValueColorsMode {
                 .filter(|e| !e.enabled)
                 .map(|e| e.key.clone())
                 .collect();
-            return (Box::new(NormalMode), KeyResult::ApplyValueColors(disabled));
+            return (
+                Box::new(NormalMode::default()),
+                KeyResult::ApplyValueColors(disabled),
+            );
         }
 
-        if kb.navigate_down.matches(key, modifiers) {
+        if kb.navigation.scroll_down.matches(key, modifiers) {
             let count = self.visible_rows().len();
             if count > 0 {
                 self.selected = (self.selected + 1).min(count - 1);
             }
-        } else if kb.navigate_up.matches(key, modifiers) {
+        } else if kb.navigation.scroll_up.matches(key, modifiers) {
             self.selected = self.selected.saturating_sub(1);
-        } else if kb.toggle.matches(key, modifiers) {
+        } else if kb.value_colors.toggle.matches(key, modifiers) {
             let rows = self.visible_rows();
             if let Some(row) = rows.get(self.selected) {
                 match row {
@@ -175,13 +178,13 @@ impl Mode for ValueColorsMode {
                     }
                 }
             }
-        } else if kb.all.matches(key, modifiers) && self.search.is_empty() {
+        } else if kb.value_colors.all.matches(key, modifiers) && self.search.is_empty() {
             for group in &mut self.groups {
                 for child in &mut group.children {
                     child.enabled = true;
                 }
             }
-        } else if kb.none.matches(key, modifiers) && self.search.is_empty() {
+        } else if kb.value_colors.none.matches(key, modifiers) && self.search.is_empty() {
             for group in &mut self.groups {
                 for child in &mut group.children {
                     child.enabled = false;

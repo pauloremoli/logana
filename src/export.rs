@@ -62,7 +62,7 @@ fn extract_section_optional(raw: &str, name: &str) -> Option<String> {
 pub fn load_template(name: &str) -> Result<ExportTemplate, String> {
     let filename = format!("{}.txt", name);
     let config_path =
-        dirs::config_dir().map(|d| d.join("logsmith-rs").join("templates").join(&filename));
+        dirs::config_dir().map(|d| d.join("logana").join("templates").join(&filename));
     let local_path = Path::new("templates").join(&filename);
 
     let data = if config_path.as_ref().is_some_and(|p| p.exists()) {
@@ -90,7 +90,7 @@ pub fn list_templates() -> Vec<String> {
         }
     }
     if let Some(config_dir) = dirs::config_dir() {
-        let user_templates = config_dir.join("logsmith-rs/templates");
+        let user_templates = config_dir.join("logana/templates");
         if let Ok(entries) = fs::read_dir(user_templates) {
             for entry in entries.flatten() {
                 paths.push(entry.path());

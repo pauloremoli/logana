@@ -412,7 +412,7 @@ impl App {
         let total = files.len();
         let queue: VecDeque<String> = files.into_iter().collect();
         let initial_tab_idx = self.active_tab;
-        self.tabs[self.active_tab].mode = Box::new(NormalMode);
+        self.tabs[self.active_tab].mode = Box::new(NormalMode::default());
         self.continue_session_restore(queue, total, initial_tab_idx)
             .await;
     }

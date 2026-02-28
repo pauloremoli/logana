@@ -24,22 +24,42 @@ pub enum HelpRow {
 
 /// Build the full list of rows from the current keybindings.
 pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
+    let nav = &kb.navigation;
     let n = &kb.normal;
     let g = &kb.global;
     let f = &kb.filter;
 
     let mut rows: Vec<HelpRow> = Vec::new();
 
-    // ── Normal Mode ──────────────────────────────────────────────────────────
-    rows.push(HelpRow::Header("Normal Mode".to_string()));
+    // ── Navigation (all modes) ───────────────────────────────────────────────
+    rows.push(HelpRow::Header("Navigation (all modes)".to_string()));
     rows.push(HelpRow::Entry {
         action: "Scroll down".into(),
-        keys: n.scroll_down.display(),
+        keys: nav.scroll_down.display(),
     });
     rows.push(HelpRow::Entry {
         action: "Scroll up".into(),
-        keys: n.scroll_up.display(),
+        keys: nav.scroll_up.display(),
     });
+    rows.push(HelpRow::Entry {
+        action: "Half page down".into(),
+        keys: nav.half_page_down.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Half page up".into(),
+        keys: nav.half_page_up.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Page down".into(),
+        keys: nav.page_down.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Page up".into(),
+        keys: nav.page_up.display(),
+    });
+
+    // ── Normal Mode ──────────────────────────────────────────────────────────
+    rows.push(HelpRow::Header("Normal Mode".to_string()));
     rows.push(HelpRow::Entry {
         action: "Scroll left".into(),
         keys: n.scroll_left.display(),
@@ -47,22 +67,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     rows.push(HelpRow::Entry {
         action: "Scroll right".into(),
         keys: n.scroll_right.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Half page down".into(),
-        keys: n.half_page_down.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Half page up".into(),
-        keys: n.half_page_up.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Page down".into(),
-        keys: n.page_down.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Page up".into(),
-        keys: n.page_up.display(),
     });
     rows.push(HelpRow::Entry {
         action: "Go to top (gg)".into(),
@@ -129,6 +133,14 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.command_mode.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Edit comment".into(),
+        keys: n.edit_comment.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Clear marks/comments".into(),
+        keys: n.clear_all.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Show keybindings".into(),
         keys: n.show_keybindings.display(),
     });
@@ -136,14 +148,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     // ── Visual Line Mode ──────────────────────────────────────────────────────
     let vl = &kb.visual_line;
     rows.push(HelpRow::Header("Visual Line Mode".to_string()));
-    rows.push(HelpRow::Entry {
-        action: "Extend down".into(),
-        keys: vl.scroll_down.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Extend up".into(),
-        keys: vl.scroll_up.display(),
-    });
     rows.push(HelpRow::Entry {
         action: "Comment selection".into(),
         keys: vl.comment.display(),
@@ -183,16 +187,16 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     // ── Filter Mode ──────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Filter Mode".to_string()));
     rows.push(HelpRow::Entry {
-        action: "Navigate".into(),
-        keys: format!("{}/{}", f.select_up.display(), f.select_down.display()),
-    });
-    rows.push(HelpRow::Entry {
         action: "Add include".into(),
         keys: f.add_include.display(),
     });
     rows.push(HelpRow::Entry {
         action: "Add exclude".into(),
         keys: f.add_exclude.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Add date filter".into(),
+        keys: f.add_date_filter.display(),
     });
     rows.push(HelpRow::Entry {
         action: "Toggle filter".into(),
@@ -238,6 +242,10 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: kb.comment.save.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Delete comment".into(),
+        keys: kb.comment.delete.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Cancel".into(),
         keys: kb.comment.cancel.display(),
     });
@@ -279,14 +287,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     let ds = &kb.docker_select;
     rows.push(HelpRow::Header("Docker Select Mode".to_string()));
     rows.push(HelpRow::Entry {
-        action: "Navigate".into(),
-        keys: format!(
-            "{}/{}",
-            ds.navigate_up.display(),
-            ds.navigate_down.display()
-        ),
-    });
-    rows.push(HelpRow::Entry {
         action: "Attach".into(),
         keys: ds.confirm.display(),
     });
@@ -298,14 +298,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     // ── Value Colors Mode ───────────────────────────────────────────────────
     let vc = &kb.value_colors;
     rows.push(HelpRow::Header("Value Colors Mode".to_string()));
-    rows.push(HelpRow::Entry {
-        action: "Navigate".into(),
-        keys: format!(
-            "{}/{}",
-            vc.navigate_up.display(),
-            vc.navigate_down.display()
-        ),
-    });
     rows.push(HelpRow::Entry {
         action: "Toggle".into(),
         keys: vc.toggle.display(),
@@ -330,14 +322,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     // ── Select Fields Mode ──────────────────────────────────────────────────
     let sf = &kb.select_fields;
     rows.push(HelpRow::Header("Select Fields Mode".to_string()));
-    rows.push(HelpRow::Entry {
-        action: "Navigate".into(),
-        keys: format!(
-            "{}/{}",
-            sf.navigate_up.display(),
-            sf.navigate_down.display()
-        ),
-    });
     rows.push(HelpRow::Entry {
         action: "Toggle".into(),
         keys: sf.toggle.display(),
@@ -370,22 +354,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     // ── Help Mode ───────────────────────────────────────────────────────────
     let h = &kb.help;
     rows.push(HelpRow::Header("Help Mode".to_string()));
-    rows.push(HelpRow::Entry {
-        action: "Scroll down".into(),
-        keys: h.scroll_down.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Scroll up".into(),
-        keys: h.scroll_up.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Fast scroll down".into(),
-        keys: h.fast_down.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Fast scroll up".into(),
-        keys: h.fast_up.display(),
-    });
     rows.push(HelpRow::Entry {
         action: "Close".into(),
         keys: h.close.display(),
@@ -490,31 +458,31 @@ impl Mode for KeybindingsHelpMode {
                 self.scroll = 0;
                 return (self, KeyResult::Handled);
             }
-            return (Box::new(NormalMode), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
         // The show_keybindings key (F1 by default) also closes
         if kb.normal.show_keybindings.matches(key, modifiers) && self.search.is_empty() {
-            return (Box::new(NormalMode), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
         // Fast scroll (works in both modes)
-        if kb.help.fast_down.matches(key, modifiers) {
+        if kb.navigation.half_page_down.matches(key, modifiers) {
             self.scroll = self.scroll.saturating_add(10);
             return (self, KeyResult::Handled);
         }
-        if kb.help.fast_up.matches(key, modifiers) {
+        if kb.navigation.half_page_up.matches(key, modifiers) {
             self.scroll = self.scroll.saturating_sub(10);
             return (self, KeyResult::Handled);
         }
 
         // j/k/arrows scroll only when not typing
         if self.search.is_empty() {
-            if kb.help.scroll_down.matches(key, modifiers) {
+            if kb.navigation.scroll_down.matches(key, modifiers) {
                 self.scroll = self.scroll.saturating_add(1);
                 return (self, KeyResult::Handled);
             }
-            if kb.help.scroll_up.matches(key, modifiers) {
+            if kb.navigation.scroll_up.matches(key, modifiers) {
                 self.scroll = self.scroll.saturating_sub(1);
                 return (self, KeyResult::Handled);
             }
@@ -554,14 +522,14 @@ impl Mode for KeybindingsHelpMode {
         // Scroll up/down
         spans.push(Span::styled("<", Style::default().fg(theme.border)));
         spans.push(Span::styled(
-            kb.help.scroll_up.display(),
+            kb.navigation.scroll_up.display(),
             Style::default()
                 .fg(theme.text_highlight)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("/", Style::default().fg(theme.border)));
         spans.push(Span::styled(
-            kb.help.scroll_down.display(),
+            kb.navigation.scroll_down.display(),
             Style::default()
                 .fg(theme.text_highlight)
                 .add_modifier(Modifier::BOLD),

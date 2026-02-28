@@ -64,7 +64,7 @@ impl LogManager {
         let color_config = if filter_type == FilterType::Include {
             let fg_color = fg.and_then(parse_color);
             let bg_color = bg.and_then(parse_color);
-            if fg_color.is_some() || bg_color.is_some() || match_only {
+            if fg_color.is_some() || bg_color.is_some() || !match_only {
                 Some(ColorConfig {
                     fg: fg_color,
                     bg: bg_color,
@@ -201,7 +201,7 @@ impl LogManager {
     ) {
         let fg_color = fg.and_then(parse_color);
         let bg_color = bg.and_then(parse_color);
-        if fg_color.is_none() && bg_color.is_none() && !match_only {
+        if fg_color.is_none() && bg_color.is_none() && match_only {
             return;
         }
         let cc = ColorConfig {
@@ -292,6 +292,19 @@ impl LogManager {
         self.comments = comments;
     }
 
+    /// Remove a single comment by index.
+    pub fn remove_comment(&mut self, index: usize) {
+        if index < self.comments.len() {
+            self.comments.remove(index);
+        }
+    }
+
+    /// Clear all marks and comments at once.
+    pub fn clear_all_marks_and_comments(&mut self) {
+        self.marks.clear();
+        self.comments.clear();
+    }
+
     // ── Filter-manager construction ──────────────────────────────────────────
 
     /// Build a `FilterManager` and its associated `Vec<Style>` from the current
@@ -304,6 +317,10 @@ impl LogManager {
         let mut has_include = false;
 
         for (style_idx, def) in self.filter_defs.iter().filter(|f| f.enabled).enumerate() {
+            // Date filters are applied separately in refresh_visible().
+            if def.pattern.starts_with(crate::date_filter::DATE_PREFIX) {
+                continue;
+            }
             let style_id = style_idx as StyleId;
 
             let style = def
@@ -334,7 +351,7 @@ impl LogManager {
                 .color_config
                 .as_ref()
                 .map(|cc| cc.match_only)
-                .unwrap_or(false);
+                .unwrap_or(true);
 
             if let Some(f) = build_filter(&def.pattern, decision, match_only, style_id) {
                 filters.push(f);
@@ -391,9 +408,9 @@ mod tests {
         let mut mgr = make_manager().await;
         assert!(mgr.get_filters().is_empty());
 
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
-        mgr.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, false)
+        mgr.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, true)
             .await;
 
         let filters = mgr.get_filters();
@@ -408,7 +425,7 @@ mod tests {
     #[tokio::test]
     async fn test_toggle_filter() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
         let id = mgr.get_filters()[0].id;
 
@@ -422,9 +439,9 @@ mod tests {
     #[tokio::test]
     async fn test_remove_filter() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
-        mgr.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, false)
+        mgr.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, true)
             .await;
         let id = mgr.get_filters()[0].id;
 
@@ -437,7 +454,7 @@ mod tests {
     #[tokio::test]
     async fn test_edit_filter() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
         let id = mgr.get_filters()[0].id;
 
@@ -448,11 +465,11 @@ mod tests {
     #[tokio::test]
     async fn test_move_filter_up_down() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("first".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("first".into(), FilterType::Include, None, None, true)
             .await;
-        mgr.add_filter_with_color("second".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("second".into(), FilterType::Include, None, None, true)
             .await;
-        mgr.add_filter_with_color("third".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("third".into(), FilterType::Include, None, None, true)
             .await;
 
         // After three inserts (newest first): ["third", "second", "first"]
@@ -509,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_filter_manager_include() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("ERROR".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("ERROR".into(), FilterType::Include, None, None, true)
             .await;
 
         let (fm, styles) = mgr.build_filter_manager();
@@ -521,7 +538,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_filter_manager_exclude() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("DEBUG".into(), FilterType::Exclude, None, None, false)
+        mgr.add_filter_with_color("DEBUG".into(), FilterType::Exclude, None, None, true)
             .await;
 
         let (fm, _styles) = mgr.build_filter_manager();
@@ -532,7 +549,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_filter_manager_disabled_filter_ignored() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("ERROR".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("ERROR".into(), FilterType::Include, None, None, true)
             .await;
         let id = mgr.get_filters()[0].id;
         mgr.toggle_filter(id).await; // disable it
@@ -546,9 +563,9 @@ mod tests {
     #[tokio::test]
     async fn test_save_and_load_filters() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
-        mgr.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, false)
+        mgr.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, true)
             .await;
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -569,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn test_clear_filters() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
         mgr.clear_filters().await;
         assert!(mgr.get_filters().is_empty());
@@ -578,9 +595,9 @@ mod tests {
     #[tokio::test]
     async fn test_disable_all_filters() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
-        mgr.add_filter_with_color("warn".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("warn".into(), FilterType::Include, None, None, true)
             .await;
         assert!(mgr.get_filters().iter().all(|f| f.enabled));
 
@@ -591,7 +608,7 @@ mod tests {
     #[tokio::test]
     async fn test_disable_all_filters_already_disabled_is_noop() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
         let id = mgr.get_filters()[0].id;
         mgr.toggle_filter(id).await; // disable it first
@@ -604,9 +621,9 @@ mod tests {
     #[tokio::test]
     async fn test_enable_all_filters() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
-        mgr.add_filter_with_color("warn".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("warn".into(), FilterType::Include, None, None, true)
             .await;
         mgr.disable_all_filters().await;
         assert!(mgr.get_filters().iter().all(|f| !f.enabled));
@@ -618,7 +635,7 @@ mod tests {
     #[tokio::test]
     async fn test_enable_all_filters_already_enabled_is_noop() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
         assert!(mgr.get_filters()[0].enabled);
 
@@ -629,9 +646,9 @@ mod tests {
     #[tokio::test]
     async fn test_disable_then_enable_restores_state() {
         let mut mgr = make_manager().await;
-        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, false)
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
             .await;
-        mgr.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, false)
+        mgr.add_filter_with_color("debug".into(), FilterType::Exclude, None, None, true)
             .await;
 
         mgr.disable_all_filters().await;
@@ -639,6 +656,41 @@ mod tests {
 
         mgr.enable_all_filters().await;
         assert!(mgr.get_filters().iter().all(|f| f.enabled));
+    }
+
+    #[tokio::test]
+    async fn test_remove_comment() {
+        let mut mgr = make_manager().await;
+        mgr.add_comment("first".into(), vec![0]);
+        mgr.add_comment("second".into(), vec![1]);
+        assert_eq!(mgr.get_comments().len(), 2);
+
+        mgr.remove_comment(0);
+        assert_eq!(mgr.get_comments().len(), 1);
+        assert_eq!(mgr.get_comments()[0].text, "second");
+    }
+
+    #[tokio::test]
+    async fn test_remove_comment_out_of_bounds() {
+        let mut mgr = make_manager().await;
+        mgr.add_comment("only".into(), vec![0]);
+        mgr.remove_comment(5); // out of bounds, should be a no-op
+        assert_eq!(mgr.get_comments().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_clear_all_marks_and_comments() {
+        let mut mgr = make_manager().await;
+        mgr.toggle_mark(0);
+        mgr.toggle_mark(3);
+        mgr.add_comment("note".into(), vec![1]);
+        mgr.add_comment("another".into(), vec![2]);
+        assert!(!mgr.get_marked_indices().is_empty());
+        assert!(!mgr.get_comments().is_empty());
+
+        mgr.clear_all_marks_and_comments();
+        assert!(mgr.get_marked_indices().is_empty());
+        assert!(mgr.get_comments().is_empty());
     }
 
     #[tokio::test]

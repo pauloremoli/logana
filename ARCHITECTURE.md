@@ -1,4 +1,4 @@
-# logsmith-rs Architecture
+# logana Architecture
 
 Terminal-based log analysis tool built in Rust with a Ratatui TUI. Logs are read via memory-mapped files; filters and UI context are persisted in SQLite.
 
@@ -22,6 +22,7 @@ src/
     web_error.rs   - Nginx error log + Apache 2.4 error log (WebErrorParser implementing LogFormatParser)
     dmesg.rs       - Linux kernel ring buffer / dmesg output (DmesgParser implementing LogFormatParser)
     kube_cri.rs    - Kubernetes CRI log format (KubeCriParser implementing LogFormatParser)
+  date_filter.rs  - Date/time filter: parsing, timestamp normalization, matching (DateFilter)
   file_reader.rs  - Memory-mapped file I/O with SIMD line indexing (FileReader)
   filters.rs      - Filter pipeline: Filter trait, SubstringFilter, RegexFilter, FilterManager, render_line
   log_manager.rs  - Filter/mark state management + SQLite persistence bridge (LogManager)
@@ -58,7 +59,7 @@ Detected by scanning raw bytes with a fast case-insensitive byte-window scan (`d
 **FilterType**: `Include | Exclude`
 
 **ColorConfig**: `{ fg: Option<Color>, bg: Option<Color>, match_only: bool }`
-When `match_only` is true only matched byte spans are highlighted; otherwise the whole line is coloured.
+When `match_only` is true (default), only matched byte spans are highlighted; `-l` flag highlights the whole line.
 
 **FilterDef**: `{ id, pattern, filter_type, enabled, color_config: Option<ColorConfig> }`
 Persisted to SQLite. Renamed from `Filter` to avoid conflict with the `Filter` trait.
@@ -219,13 +220,36 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **`StyleId`** (`u8`): Index into the 256-slot styles array. `SEARCH_STYLE_ID = u8::MAX = 255` is reserved for search highlights.
 - **`render_line(&MatchCollector, &[Style]) -> Line`**: Flattens overlapping spans by priority order into a ratatui `Line` of styled `Span`s.
 
+### Date Filter (date_filter.rs)
+
+- **Date/time filter for log lines**: Filters visible lines by timestamp using range or comparison expressions. Operates as a post-processing step in `refresh_visible()` — after the text-based `FilterManager` runs, date filters further narrow `visible_indices` via `retain()`.
+- **Persistence**: Stored as regular `FilterDef` entries with `FilterType::Include` and an `@date:` prefix in the pattern field (e.g., `@date:01:00:00 .. 02:00:00`). This avoids DB schema changes (the `CHECK(filter_type IN ('Include','Exclude'))` constraint remains). `build_filter_manager()` skips `@date:` patterns so they don't compile as text filters.
+- **User syntax** (after `date-filter` command or `@date:` prefix):
+  - Range: `01:00:00 .. 02:00:00`, `Feb 21 .. Feb 22`, `2024-02-21 .. 2024-02-22`
+  - Comparison: `> Feb 21 01:00:00`, `>= 2024-02-22`, `< 2024-02-22T10:15:30`, `<= Feb 22`
+  - Time-only (`HH:MM:SS` or `HH:MM`): compares seconds since midnight
+  - Full datetime: canonical `YYYY-MM-DD HH:MM:SS.ffffff` string comparison
+- **Types** (all `pub(crate)`):
+  - `ComparisonOp`: `Gt | Ge | Lt | Le`
+  - `ComparisonMode`: `TimeOnly | FullDatetime`
+  - `DateBound`: holds either `time_val: u32` (seconds since midnight) or `datetime_val: String` (canonical form)
+  - `DateFilter`: `Range { mode, lower, upper }` or `Comparison { mode, op, bound }`
+- **Key functions**:
+  - `parse_date_filter(input) -> Result<DateFilter, String>` — parses expression after `@date:` prefix
+  - `normalize_log_timestamp(ts) -> Option<NormalizedTimestamp>` — normalizes any parser-produced timestamp to canonical `YYYY-MM-DD HH:MM:SS.ffffff` form
+  - `DateFilter::matches(timestamp) -> bool` — checks if a raw timestamp string passes the filter
+  - `extract_date_filters(filter_defs) -> Vec<DateFilter>` — collects all enabled `@date:` filters, parsed and ready
+- **Integration in `refresh_visible()`**: After text filters compute `visible_indices`, date filters are extracted via `extract_date_filters()`. If any exist and a format parser is detected, each visible line is parsed to extract its timestamp and tested against all date filters (AND logic). Lines without a parseable timestamp pass through (continuation/stack-trace lines).
+- **Access**: `t` key in filter management mode (opens command mode with `"date-filter "` prefix) or `:date-filter <expr>` command directly. Date filters display as `Date: <expr>` in the sidebar (not `In: @date:<expr>`).
+- **Design decisions**: Range bounds are inclusive (`..` = `>=` lower AND `<=` upper). Midnight wraparound is not supported (`23:00 .. 01:00` is an error). Multiple date filters are AND-ed. No color support (date filters only affect visibility). Requires a detected format parser (error if none).
+
 ### Log Manager (log_manager.rs)
 
 - **`LogManager`**: Owns `filter_defs: Vec<FilterDef>` (in-memory, DB-backed), `marks: HashSet<usize>` (in-memory only), and `comments: Vec<Comment>` (in-memory only). Does **not** own the `FileReader`.
 - **Filter CRUD**: `add_filter_with_color`, `remove_filter`, `toggle_filter`, `edit_filter`, `move_filter_up/down`, `set_color_config`, `clear_filters`, `save_filters` (JSON), `load_filters` (JSON).
-- **`build_filter_manager() -> (FilterManager, Vec<Style>)`**: Converts enabled `FilterDef`s into a renderable `FilterManager` + parallel style palette (one `Style` per enabled filter, indexed by `StyleId`).
+- **`build_filter_manager() -> (FilterManager, Vec<Style>)`**: Converts enabled `FilterDef`s into a renderable `FilterManager` + parallel style palette (one `Style` per enabled filter, indexed by `StyleId`). Skips `@date:` prefixed patterns (date filters are applied separately in `refresh_visible()`).
 - **Marks**: `toggle_mark`, `is_marked`, `get_marked_indices`, `get_marked_lines(&FileReader)`.
-- **Comments**: `add_comment(text, line_indices)`, `get_comments() -> &[Comment]`, `has_comment(line_idx) -> bool`, `set_comments(Vec<Comment>)`. Multiple comment groups can share the same log lines.
+- **Comments**: `add_comment(text, line_indices)`, `get_comments() -> &[Comment]`, `has_comment(line_idx) -> bool`, `set_comments(Vec<Comment>)`, `remove_comment(index)`, `clear_all_marks_and_comments()`. Multiple comment groups can share the same log lines.
 - **DB bridge**: Filter mutations are fully `async` — all methods on `LogManager` are `async fn` and `await` their DB calls directly. On construction, filters are loaded from DB via `reload_filters_from_db().await`.
 - **File hash**: `compute_file_hash(path)` hashes file size + mtime for change detection.
 
@@ -253,7 +277,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **`ExportTemplate`**: Parsed template with `header`, `comment_group`, and optional `marked_lines`/`footer` sections.
 - **`ExportData`**: Bundles filename, comments, marked indices, and file reader for rendering.
 - **`parse_template(raw)`**: Extracts sections from raw template text.
-- **`load_template(name)`**: Resolves template files — checks `~/.config/logsmith-rs/templates/{name}.txt` first, falls back to `./templates/{name}.txt` (same pattern as `Theme::from_file`).
+- **`load_template(name)`**: Resolves template files — checks `~/.config/logana/templates/{name}.txt` first, falls back to `./templates/{name}.txt` (same pattern as `Theme::from_file`).
 - **`list_templates()`**: Scans both directories for `.txt` files, dedupes, sorts (same pattern as `Theme::list_available_themes`).
 - **`render_export(template, data)`**: Renders the full document — header with filename/date, then comments and standalone marked lines interleaved in log order (consecutive standalone marks are grouped). Lines are rendered through the detected format parser (same as the TUI display) when available; falls back to raw bytes for plain text logs.
 - **`complete_template(partial)`**: Fuzzy-match completion for template names.
@@ -274,9 +298,9 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `keybindings: Arc<Keybindings>` — shared keybinding config (cloned from `App` on tab creation)
   - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
-- **Mode structs**: `NormalMode`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `VisualLineMode`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`.
+- **Mode structs**: `NormalMode { count }`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `VisualLineMode { anchor, count }`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`.
 - **`ModeRenderState` enum** (ISP-compliant): Each mode implements `render_state() -> ModeRenderState`, returning a typed variant carrying exactly the data its renderer needs. Variants: `Normal`, `Command { input, cursor, completion_index }`, `Search { query, forward }`, `FilterManagement { selected_index }`, `FilterEdit`, `VisualLine { anchor }`, `Comment { lines, cursor_row, cursor_col, line_count }`, `KeybindingsHelp { scroll, search }`, `SelectFields { fields, selected }`, `DockerSelect { containers, selected, error }`, `ValueColors { groups, search, selected }`, `ConfirmRestore`, `ConfirmRestoreSession { files }`. The renderer does a single `match` on the enum instead of calling many optional trait methods.
-- **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`.
+- **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`, then applies date filters as a post-processing `retain()` step (see Date Filter section).
 
 **Rendering pipeline (per frame)**:
 1. Compute `visible_height = logs_area.height - 2` (subtract Block borders).
@@ -291,34 +315,36 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 **Structured field layout**: `apply_field_layout(&DisplayParts, &FieldLayout, &HashSet<String>) -> Vec<String>` — module-level helper that routes through `default_cols` (all columns, default order) or picks specific columns via `get_col`, with name-based hidden-field filtering. Column name resolution: `get_col()` checks all aliases from `TIMESTAMP_KEYS`, `LEVEL_KEYS`, `TARGET_KEYS`, `MESSAGE_KEYS` arrays to map raw JSON key names to `DisplayParts` slots, plus `span` and dotted sub-field names (`span.*`, `fields.*`). Tab completion for the `fields` command completes against the five canonical names plus dynamically discovered field names from the first 200 visible log lines (`TabState::collect_field_names()`, which delegates to the detected format parser's `collect_field_names`).
 **Format auto-detection**: On tab creation, the first 200 lines are sampled and passed to `detect_format()`, which tries all registered parsers and stores the best match in `TabState::detected_format`. The rendering pipeline dispatches through the trait: `detected_format.as_ref().and_then(|parser| parser.parse_line(line_bytes))`. If no format is detected, lines fall back to raw byte rendering.
 **Select-fields mode** (`:select-fields`): floating popup showing all discovered structured fields with checkboxes. `j`/`k` navigate, `Space` toggle, `J`/`K` reorder, `a`/`n` enable/disable all, `Enter` apply, `Esc` cancel. Implemented by `SelectFieldsMode` in `src/mode/select_fields_mode.rs`.
-**Vim keybindings**: j/k, gg/G, Ctrl+d/u (half page), PageUp/Down, /, ?, n/N, m (mark), V (visual select)
+**Go-to-line** (`:N`): Typing a bare number in command mode (e.g. `:500`) jumps to that 1-based line number. If the target line is hidden by filters, jumps to the closest visible line (binary search on `visible_indices`, picks the nearer neighbour). Line 0 returns an error; numbers beyond the file jump to the last visible line. Implemented via `TabState::goto_line()` with a fast-path check in `run_command` before clap parsing.
+**Vim keybindings**: j/k, gg/G, Ctrl+d/u (half page), PageUp/Down, /, ?, n/N, m (mark), V (visual select). **Count prefix**: typing digits before a motion repeats it — `5j` moves down 5, `10k` up 10, `50G` goes to line 50, `3gg` goes to line 3, `2Ctrl+d` scrolls 2 half-pages. Count is accumulated in `NormalMode.count` / `VisualLineMode.count` and capped at 999,999. Digits 1-9 start a count; 0 appends when a count is active. Count is consumed by motions and reset on non-motion keys. The active count is shown in the status bar (e.g. `[NORMAL] 5`).
 **Docker logs** (`:docker`): runs `docker ps` to list running containers, opens a `DockerSelectMode` popup (j/k navigate, Enter attach, Esc cancel). On selection, spawns `docker logs -f <id>` via `FileReader::spawn_process_stream()` and opens a new streaming tab. `DockerContainer { id, name, image, status }` in `types.rs`. Docker tabs persist across sessions via `source_file = "docker:name"`; on session restore, the `"docker:"` prefix is detected and `restore_docker_tab()` re-spawns the stream by container name instead of attempting a file load.
 **Visual line mode** (`V`): anchor at current line, j/k extend selection, `c` opens comment editor, `y` yanks (copies) selected lines to system clipboard via `arboard`, Esc cancel. All keys are configurable via `VisualLineKeybindings`. Selected range highlighted in the log panel.
-**Comment mode**: multiline text editor (Enter = newline, Backspace = delete/merge, Left/Right wrap lines, Up/Down move rows, Shift+Enter = save (configurable), Esc = cancel). Rendered as a floating popup. Commented lines show a `◆` indicator in the line-number margin.
+**Comment mode**: multiline text editor (Enter = newline, Backspace = delete/merge, Left/Right wrap lines, Up/Down move rows, Ctrl+S = save (configurable), Esc = cancel). Rendered as a floating popup. Commented lines show a `◆` indicator in the line-number margin. In normal mode, `c` on a commented line opens edit mode (pre-filled text); `C` clears all marks and comments. In edit mode, `Ctrl+D` deletes the comment.
 **Keybindings help** (`F1`): floating popup listing all configured keybindings grouped by mode. Type to fuzzy-search, j/k scroll, Esc/q/F1 close. The status bar reflects the actual configured keybinding strings.
 **Conflict validation**: at startup `Keybindings::validate()` checks for overlapping bindings within each mode scope; conflicts are printed to stderr and logged as warnings.
 **Multi-tab**: Tab/Shift+Tab switch, Ctrl+t open, Ctrl+w close
 **Command mode** (`:`) with highlight-then-accept tab completion, history, live hints. Tab/BackTab cycle a highlight over completions in the hint area without changing input; Enter accepts the highlighted completion into the input (single match = accept+execute immediately). `CommandMode::compute_completions()` encapsulates the 5-tier completion logic (color → template → file path → theme → command name). `completion_index()` trait method exposes the active highlight to the renderer.
-**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `export`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`, `docker`, `value-colors`
-**Filter management mode** (`f`): navigate, toggle, delete, edit, set color, add include/exclude
+**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `export`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`, `docker`, `value-colors`, `date-filter`
+**Filter management mode** (`f`): navigate, toggle, delete, edit, set color, add include/exclude/date-filter
 
 ### Config (config.rs)
 
-- **Config file**: `~/.config/logsmith-rs/config.json` (loaded at startup; falls back to defaults on parse/IO error — never prevents startup).
+- **Config file**: `~/.config/logana/config.json` (loaded at startup; falls back to defaults on parse/IO error — never prevents startup).
 - **`Config`**: `{ theme: Option<String>, keybindings: Keybindings }`. `theme` is a theme name without the `.json` extension (e.g. `"dracula"`).
-- **`Keybindings`**: groups `NormalKeybindings`, `FilterKeybindings`, `GlobalKeybindings`, `CommentKeybindings`, `VisualLineKeybindings` — each with `#[serde(default)]` so any absent field uses its built-in default.
+- **`Keybindings`**: groups `NavigationKeybindings` (shared scroll/page keys used across all modes), `NormalKeybindings`, `FilterKeybindings`, `GlobalKeybindings`, `CommentKeybindings`, `VisualLineKeybindings`, `DockerSelectKeybindings`, `ValueColorsKeybindings`, `SelectFieldsKeybindings`, `HelpKeybindings`, `ConfirmKeybindings` — each with `#[serde(default)]` so any absent field uses its built-in default. Navigation keys (scroll_down/up, half_page_down/up, page_down/up) are configured once in the `navigation` group and shared by all modes.
 - **`KeyBindings`** (per action): a `Vec<KeyBinding>` — each action supports multiple alternative keys (e.g. `"j"` and `"Down"` for scroll down). Accepts a single JSON string or an array of strings.
 - **`KeyBinding`**: parsed from strings like `"j"`, `"Ctrl+d"`, `"Shift+Tab"`, `"F1"`, `"PageDown"`, `"Space"`, `"Esc"`. `"Shift+Tab"` maps to `KeyCode::BackTab`. `matches(key, modifiers)`: for `Char` keys accepts `NONE` or `SHIFT` (terminals vary); for non-`Char` keys (Enter, F-keys, etc.) requires an exact SHIFT match so `"Shift+Enter"` ≠ plain `"Enter"`.
 - **`Keybindings::validate() -> Vec<String>`**: checks all (action, keybinding) pairs within each mode scope (normal + global, filter + global) for overlaps and returns human-readable conflict descriptions. Called at startup; conflicts are printed to stderr and logged.
 - **Sharing**: `Arc<Keybindings>` is held by `App` and cloned into each `TabState` when tabs are created (including session restores and new tabs opened via commands).
 - **Default keybindings** exactly match the previously hardcoded key assignments, so the config file is fully optional. Default for `annotation.save` is `Shift+Enter`; `normal.show_keybindings` is `F1`.
 
-Example `~/.config/logsmith-rs/config.json`:
+Example `~/.config/logana/config.json`:
 ```json
 {
   "theme": "dracula",
   "keybindings": {
-    "normal": { "scroll_down": ["j", "Down"], "half_page_down": "Ctrl+d" },
+    "navigation": { "scroll_down": ["j", "Down"], "half_page_down": "Ctrl+d" },
+    "normal": { "scroll_left": "h", "scroll_right": "l" },
     "global": { "quit": "q" }
   }
 }
@@ -326,7 +352,7 @@ Example `~/.config/logsmith-rs/config.json`:
 
 ### Theme (theme.rs)
 
-- JSON files from `themes/` or `~/.config/logsmith-rs/themes/`
+- JSON files from `themes/` or `~/.config/logana/themes/`
 - Colors: hex `"#RRGGBB"` or RGB array `[r, g, b]`
 - Default: Dracula theme (hardcoded)
 - Fields: `root_bg`, `border`, `border_title`, `text`, `text_highlight`, `cursor_fg`, `trace_fg`, `debug_fg`, `notice_fg`, `warning_fg`, `error_fg`, `fatal_fg`, `search_fg`, `visual_select_bg`, `visual_select_fg`, `mark_bg`, `mark_fg`, `value_colors`
@@ -356,8 +382,8 @@ Example `~/.config/logsmith-rs/config.json`:
 ## App Lifecycle
 
 1. Parse CLI args (optional file path).
-2. Init tokio runtime + SQLite DB (`~/.local/share/logsmith-rs/logsmith.db`).
-3. Load `Config` from `~/.config/logsmith-rs/config.json` (or defaults on missing/parse error).
+2. Init tokio runtime + SQLite DB (`~/.local/share/logana/logana.db`).
+3. Load `Config` from `~/.config/logana/config.json` (or defaults on missing/parse error).
 4. Build `FileReader` from file path (mmap) or stdin (bytes).
 5. Build `LogManager` — loads filters from DB for this source.
 6. Enter terminal raw mode, create `App` with theme and `Arc<Keybindings>`.
@@ -371,7 +397,7 @@ anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, se
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/commands.rs, ui/field_layout.rs, auto_complete.rs, export.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, parser/timestamp.rs, parser/logfmt.rs, parser/common_log.rs, parser/web_error.rs, parser/dmesg.rs, parser/kube_cri.rs, value_colors.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 1031 tests total
+- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/commands.rs, ui/field_layout.rs, auto_complete.rs, export.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, parser/timestamp.rs, parser/logfmt.rs, parser/common_log.rs, parser/web_error.rs, parser/dmesg.rs, parser/kube_cri.rs, value_colors.rs, date_filter.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 1149 tests total
 - **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
 - **Stdin tests** (tests/stdin.rs): pipe input end-to-end — 14 tests
 - **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)

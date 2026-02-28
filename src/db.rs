@@ -124,7 +124,7 @@ impl Database {
                 bg_color TEXT,
                 display_order INTEGER NOT NULL DEFAULT 0,
                 source_file TEXT NOT NULL DEFAULT '',
-                match_only INTEGER NOT NULL DEFAULT 0
+                match_only INTEGER NOT NULL DEFAULT 1
             )",
         )
         .execute(&self.pool)
@@ -136,9 +136,16 @@ impl Database {
             .await;
 
         // Migration: add match_only column if it doesn't exist (for existing databases)
-        let _ = sqlx::query("ALTER TABLE filters ADD COLUMN match_only INTEGER NOT NULL DEFAULT 0")
+        let _ = sqlx::query("ALTER TABLE filters ADD COLUMN match_only INTEGER NOT NULL DEFAULT 1")
             .execute(&self.pool)
             .await;
+
+        // Migration: flip match_only default for existing filters without custom colors
+        let _ = sqlx::query(
+            "UPDATE filters SET match_only = 1 WHERE match_only = 0 AND fg_color IS NULL AND bg_color IS NULL",
+        )
+        .execute(&self.pool)
+        .await;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS file_context (
@@ -215,7 +222,7 @@ fn row_to_filter_def(row: &sqlx::sqlite::SqliteRow) -> FilterDef {
     let match_only = row.get::<i32, _>("match_only") != 0;
 
     let color_config = match (fg_str, bg_str) {
-        (None, None) if !match_only => None,
+        (None, None) if match_only => None,
         (fg, bg) => Some(ColorConfig {
             fg: fg.and_then(|s| s.parse().ok()),
             bg: bg.and_then(|s| s.parse().ok()),
@@ -259,7 +266,7 @@ impl FilterStore for Database {
                 cc.bg.map(|c| c.to_string()),
                 cc.match_only,
             ),
-            None => (None, None, false),
+            None => (None, None, true),
         };
 
         let result = sqlx::query(
@@ -311,7 +318,7 @@ impl FilterStore for Database {
                 cc.bg.map(|c| c.to_string()),
                 cc.match_only,
             ),
-            None => (None, None, false),
+            None => (None, None, true),
         };
 
         sqlx::query("UPDATE filters SET fg_color = ?, bg_color = ?, match_only = ? WHERE id = ?")
@@ -411,7 +418,7 @@ impl FilterStore for Database {
                     cc.bg.map(|c| c.to_string()),
                     cc.match_only,
                 ),
-                None => (None, None, false),
+                None => (None, None, true),
             };
 
             sqlx::query(

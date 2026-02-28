@@ -59,9 +59,9 @@ pub enum Commands {
         fg: Option<String>,
         #[arg(long)]
         bg: Option<String>,
-        /// Apply color only to the matched text instead of the whole line
-        #[arg(short)]
-        m: bool,
+        /// Apply color to the whole line instead of only the matched text
+        #[arg(short = 'l')]
+        line_mode: bool,
     },
     /// Add an exclude filter
     Exclude { pattern: String },
@@ -71,9 +71,9 @@ pub enum Commands {
         fg: Option<String>,
         #[arg(long)]
         bg: Option<String>,
-        /// Apply color only to the matched text instead of the whole line
-        #[arg(short)]
-        m: bool,
+        /// Apply color to the whole line instead of only the matched text
+        #[arg(short = 'l')]
+        line_mode: bool,
     },
     /// Export marked logs
     ExportMarked { path: String },
@@ -118,6 +118,11 @@ pub enum Commands {
         path: String,
         #[arg(short, long, default_value = "markdown")]
         template: String,
+    },
+    /// Filter log lines by timestamp range or comparison
+    DateFilter {
+        /// Date filter expression (e.g. "01:00 .. 02:00", "> 2024-02-22")
+        expr: Vec<String>,
     },
 }
 
@@ -251,7 +256,10 @@ impl Mode for CommandMode {
         let kb = tab.keybindings.command.clone();
         if kb.confirm.matches(key, modifiers) {
             let cmd = self.input.trim().to_string();
-            return (Box::new(NormalMode), KeyResult::ExecuteCommand(cmd));
+            return (
+                Box::new(NormalMode::default()),
+                KeyResult::ExecuteCommand(cmd),
+            );
         }
         if kb.cancel.matches(key, modifiers) {
             tab.editing_filter_id = None;
@@ -263,7 +271,7 @@ impl Mode for CommandMode {
                     KeyResult::Handled,
                 );
             }
-            return (Box::new(NormalMode), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
         match key {
             KeyCode::Backspace => {

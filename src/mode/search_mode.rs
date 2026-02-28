@@ -41,10 +41,10 @@ impl Mode for SearchMode {
                 let line_idx = r.line_idx;
                 tab.scroll_to_line_idx(line_idx);
             }
-            (Box::new(NormalMode), KeyResult::Handled)
+            (Box::new(NormalMode::default()), KeyResult::Handled)
         } else if kb.cancel.matches(key, modifiers) {
             self.input.clear();
-            (Box::new(NormalMode), KeyResult::Handled)
+            (Box::new(NormalMode::default()), KeyResult::Handled)
         } else {
             match key {
                 KeyCode::Backspace => {

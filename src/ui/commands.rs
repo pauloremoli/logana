@@ -12,11 +12,18 @@ impl App {
     /// Returns `Ok(true)` when the command sets the mode itself (e.g. select-fields
     /// opens a popup), so `execute_command_str` should not override it.
     pub(super) async fn run_command(&mut self, input: &str) -> Result<bool, String> {
+        // Bare number → go to line.
+        let trimmed = input.trim();
+        if let Ok(line_number) = trimmed.parse::<usize>() {
+            self.tabs[self.active_tab].goto_line(line_number)?;
+            return Ok(false);
+        }
+
         let args = CommandLine::try_parse_from(shell_split(input))
             .map_err(|e| format!("Invalid command: {}", e))?;
 
         match args.command {
-            Some(Commands::Filter { pattern, fg, bg, m }) => {
+            Some(Commands::Filter { pattern, fg, bg, line_mode }) => {
                 if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
                     self.tabs[self.active_tab]
                         .log_manager
@@ -30,7 +37,7 @@ impl App {
                         FilterType::Include,
                         fg.as_deref(),
                         bg.as_deref(),
-                        m,
+                        !line_mode,
                     )
                     .await;
                 self.tabs[self.active_tab].scroll_offset = 0;
@@ -45,27 +52,27 @@ impl App {
                 }
                 self.tabs[self.active_tab]
                     .log_manager
-                    .add_filter_with_color(pattern, FilterType::Exclude, None, None, false)
+                    .add_filter_with_color(pattern, FilterType::Exclude, None, None, true)
                     .await;
                 self.tabs[self.active_tab].scroll_offset = 0;
                 self.tabs[self.active_tab].refresh_visible();
             }
-            Some(Commands::SetColor { fg, bg, m }) => {
+            Some(Commands::SetColor { fg, bg, line_mode }) => {
                 let selected_filter_index = self.tabs[self.active_tab].filter_context.unwrap_or(0);
                 let filters = self.tabs[self.active_tab].log_manager.get_filters();
                 if let Some(filter) = filters.get(selected_filter_index)
                     && filter.filter_type == FilterType::Include
                 {
-                    // When -m is not explicitly passed, preserve the filter's
+                    // When -l is not explicitly passed, preserve the filter's
                     // existing match_only setting instead of resetting it.
-                    let match_only = if m {
-                        true
+                    let match_only = if line_mode {
+                        false
                     } else {
                         filter
                             .color_config
                             .as_ref()
                             .map(|cc| cc.match_only)
-                            .unwrap_or(false)
+                            .unwrap_or(true)
                     };
                     let filter_id = filter.id;
                     self.tabs[self.active_tab]
@@ -315,6 +322,31 @@ impl App {
                 );
                 return Ok(true);
             }
+            Some(Commands::DateFilter { expr }) => {
+                let tab = &self.tabs[self.active_tab];
+                if tab.detected_format.is_none() {
+                    return Err(
+                        "No log format detected — date filter requires structured timestamps"
+                            .to_string(),
+                    );
+                }
+                let expression = expr.join(" ");
+                // Validate the expression parses before storing.
+                crate::date_filter::parse_date_filter(&expression)
+                    .map_err(|e| format!("Invalid date filter: {}", e))?;
+                let pattern = format!("{}{}", crate::date_filter::DATE_PREFIX, expression);
+                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .remove_filter(old_id)
+                        .await;
+                }
+                self.tabs[self.active_tab]
+                    .log_manager
+                    .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+                    .await;
+                self.tabs[self.active_tab].refresh_visible();
+            }
             None => {}
         }
         Ok(false)
@@ -493,16 +525,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_color_with_match_only_flag() {
+    async fn test_set_color_with_line_flag() {
         let mut app = make_app(&["INFO a", "WARN b"]).await;
         app.execute_command_str("filter INFO".to_string()).await;
         app.tabs[0].filter_context = Some(0);
-        app.run_command("set-color --fg green -m").await.unwrap();
+        app.run_command("set-color --fg green -l").await.unwrap();
         let cc = app.tabs[0].log_manager.get_filters()[0]
             .color_config
             .as_ref()
             .unwrap();
-        assert!(cc.match_only);
+        assert!(!cc.match_only);
         assert_eq!(cc.fg, Some(ratatui::style::Color::Green));
     }
 
@@ -729,5 +761,40 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
+    }
+
+    // ── goto line ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_goto_line_command() {
+        let mut app = make_app(&["a", "b", "c", "d", "e"]).await;
+        let result = app.run_command("3").await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap()); // mode not set
+        assert_eq!(app.tab().scroll_offset, 2);
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_zero_error() {
+        let mut app = make_app(&["a", "b", "c"]).await;
+        let result = app.run_command("0").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("start at 1"));
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_beyond_file() {
+        let mut app = make_app(&["a", "b", "c"]).await;
+        let result = app.run_command("999").await;
+        assert!(result.is_ok());
+        assert_eq!(app.tab().scroll_offset, 2);
+    }
+
+    #[tokio::test]
+    async fn test_goto_line_with_whitespace() {
+        let mut app = make_app(&["a", "b", "c", "d", "e"]).await;
+        let result = app.run_command("  4  ").await;
+        assert!(result.is_ok());
+        assert_eq!(app.tab().scroll_offset, 3);
     }
 }

@@ -38,10 +38,10 @@ impl Mode for FilterManagementMode {
         let selected = self.selected_filter_index;
 
         if kb.filter.exit_mode.matches(key, modifiers) {
-            return (Box::new(NormalMode), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
-        if kb.filter.select_up.matches(key, modifiers) {
+        if kb.navigation.scroll_up.matches(key, modifiers) {
             return (
                 Box::new(FilterManagementMode {
                     selected_filter_index: selected.saturating_sub(1),
@@ -50,7 +50,7 @@ impl Mode for FilterManagementMode {
             );
         }
 
-        if kb.filter.select_down.matches(key, modifiers) {
+        if kb.navigation.scroll_down.matches(key, modifiers) {
             let num_filters = tab.log_manager.get_filters().len();
             let new_idx = if num_filters > 0 {
                 (selected + 1).min(num_filters - 1)
@@ -164,26 +164,32 @@ impl Mode for FilterManagementMode {
             if let Some((id, ft, cc, pattern)) = filter_info {
                 tab.editing_filter_id = Some(id);
                 tab.filter_context = Some(selected);
-                let mut cmd = if ft == FilterType::Include {
-                    String::from("filter")
-                } else {
-                    String::from("exclude")
-                };
-                if ft == FilterType::Include
-                    && let Some(cfg) = &cc
+                let cmd = if let Some(expr) = pattern.strip_prefix(crate::date_filter::DATE_PREFIX)
                 {
-                    if let Some(fg) = cfg.fg {
-                        cmd.push_str(&format!(" --fg {}", fg));
+                    format!("date-filter {}", expr)
+                } else {
+                    let mut c = if ft == FilterType::Include {
+                        String::from("filter")
+                    } else {
+                        String::from("exclude")
+                    };
+                    if ft == FilterType::Include
+                        && let Some(cfg) = &cc
+                    {
+                        if let Some(fg) = cfg.fg {
+                            c.push_str(&format!(" --fg {}", fg));
+                        }
+                        if let Some(bg) = cfg.bg {
+                            c.push_str(&format!(" --bg {}", bg));
+                        }
+                        if !cfg.match_only {
+                            c.push_str(" -l");
+                        }
                     }
-                    if let Some(bg) = cfg.bg {
-                        cmd.push_str(&format!(" --bg {}", bg));
-                    }
-                    if cfg.match_only {
-                        cmd.push_str(" -m");
-                    }
-                }
-                cmd.push(' ');
-                cmd.push_str(&pattern);
+                    c.push(' ');
+                    c.push_str(&pattern);
+                    c
+                };
                 let len = cmd.len();
                 let history = tab.command_history.clone();
                 return (
@@ -270,6 +276,18 @@ impl Mode for FilterManagementMode {
             );
         }
 
+        if kb.filter.add_date_filter.matches(key, modifiers) {
+            let history = tab.command_history.clone();
+            return (
+                Box::new(CommandMode::with_history(
+                    "date-filter ".to_string(),
+                    12,
+                    history,
+                )),
+                KeyResult::Handled,
+            );
+        }
+
         // Unrecognised key — stay in filter mode.
         (
             Box::new(FilterManagementMode {
@@ -280,7 +298,7 @@ impl Mode for FilterManagementMode {
     }
 
     fn status_line(&self) -> &str {
-        "[FILTER] <i> include  <x> exclude  <Space> toggle  <d> delete  <e> edit  <c> color  <J/K> move  <A> tog.all  <C> clear  <Esc> exit"
+        "[FILTER] <i> include  <x> exclude  <t> date  <Space> toggle  <d> delete  <e> edit  <c> color  <J/K> move  <A> tog.all  <C> clear  <Esc> exit"
     }
 
     fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -300,6 +318,12 @@ impl Mode for FilterManagementMode {
             &mut spans,
             kb.filter.add_exclude.display(),
             "exclude",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.filter.add_date_filter.display(),
+            "date",
             theme,
         );
         status_entry(
@@ -466,7 +490,7 @@ mod tests {
 
     async fn add_filter(tab: &mut TabState, pattern: &str, filter_type: FilterType) {
         tab.log_manager
-            .add_filter_with_color(pattern.to_string(), filter_type, None, None, false)
+            .add_filter_with_color(pattern.to_string(), filter_type, None, None, true)
             .await;
         tab.refresh_visible();
     }

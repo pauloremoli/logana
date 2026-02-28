@@ -23,26 +23,51 @@ use crate::{
 pub struct VisualLineMode {
     /// Index into `visible_indices` that was the cursor when `V` was pressed.
     pub anchor: usize,
+    /// Vim-style count prefix for multi-line motions.
+    pub count: Option<usize>,
 }
 
 #[async_trait]
 impl Mode for VisualLineMode {
     async fn handle_key(
-        self: Box<Self>,
+        mut self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings.visual_line;
+        let kb = &tab.keybindings;
 
-        if kb.scroll_down.matches(key, modifiers) {
-            tab.scroll_offset = tab.scroll_offset.saturating_add(1);
-        } else if kb.scroll_up.matches(key, modifiers) {
-            tab.scroll_offset = tab.scroll_offset.saturating_sub(1);
-        } else if kb.comment.matches(key, modifiers) {
+        // ── Digit accumulation for count prefix ─────────────────────────
+        if let KeyCode::Char(c @ '1'..='9') = key
+            && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+        {
+            let digit = (c as u32 - '0' as u32) as usize;
+            let n = self
+                .count
+                .unwrap_or(0)
+                .saturating_mul(10)
+                .saturating_add(digit);
+            self.count = Some(n.min(999_999));
+            return (self, KeyResult::Handled);
+        }
+        if let KeyCode::Char('0') = key
+            && self.count.is_some()
+            && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+        {
+            self.count = Some(self.count.unwrap().saturating_mul(10).min(999_999));
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.navigation.scroll_down.matches(key, modifiers) {
+            let count = self.count.take().unwrap_or(1);
+            tab.scroll_offset = tab.scroll_offset.saturating_add(count);
+        } else if kb.navigation.scroll_up.matches(key, modifiers) {
+            let count = self.count.take().unwrap_or(1);
+            tab.scroll_offset = tab.scroll_offset.saturating_sub(count);
+        } else if kb.visual_line.comment.matches(key, modifiers) {
             // Comment the selected range
             if tab.visible_indices.is_empty() {
-                return (Box::new(NormalMode), KeyResult::Handled);
+                return (Box::new(NormalMode::default()), KeyResult::Handled);
             }
             let max_idx = tab.visible_indices.len() - 1;
             let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
@@ -51,12 +76,12 @@ impl Mode for VisualLineMode {
             if !line_indices.is_empty() {
                 return (Box::new(CommentMode::new(line_indices)), KeyResult::Handled);
             }
-            return (Box::new(NormalMode), KeyResult::Handled);
-        } else if kb.yank.matches(key, modifiers) {
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
+        } else if kb.visual_line.yank.matches(key, modifiers) {
             // Yank (copy) selected lines to clipboard
             if tab.visible_indices.is_empty() {
                 tab.command_error = Some("No lines to copy".to_string());
-                return (Box::new(NormalMode), KeyResult::Handled);
+                return (Box::new(NormalMode::default()), KeyResult::Handled);
             }
             let max_idx = tab.visible_indices.len() - 1;
             let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
@@ -77,9 +102,12 @@ impl Mode for VisualLineMode {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            return (Box::new(NormalMode), KeyResult::CopyToClipboard(text));
-        } else if kb.exit.matches(key, modifiers) {
-            return (Box::new(NormalMode), KeyResult::Handled);
+            return (
+                Box::new(NormalMode::default()),
+                KeyResult::CopyToClipboard(text),
+            );
+        } else if kb.visual_line.exit.matches(key, modifiers) {
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
         (self, KeyResult::Handled)
@@ -90,8 +118,12 @@ impl Mode for VisualLineMode {
     }
 
     fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let label = match self.count {
+            Some(n) => format!("[VISUAL] {}  ", n),
+            None => "[VISUAL]  ".to_string(),
+        };
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
-            "[VISUAL]  ",
+            label,
             Style::default()
                 .fg(theme.text_highlight)
                 .add_modifier(Modifier::BOLD),
@@ -99,14 +131,14 @@ impl Mode for VisualLineMode {
         // Extend up/down
         spans.push(Span::styled("<", Style::default().fg(theme.border)));
         spans.push(Span::styled(
-            kb.visual_line.scroll_up.display(),
+            kb.navigation.scroll_up.display(),
             Style::default()
                 .fg(theme.text_highlight)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("/", Style::default().fg(theme.border)));
         spans.push(Span::styled(
-            kb.visual_line.scroll_down.display(),
+            kb.navigation.scroll_down.display(),
             Style::default()
                 .fg(theme.text_highlight)
                 .add_modifier(Modifier::BOLD),
@@ -162,7 +194,10 @@ mod tests {
     async fn test_j_moves_cursor_down() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
         tab.scroll_offset = 0;
-        let mode = VisualLineMode { anchor: 0 };
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
         assert_eq!(tab.scroll_offset, 1);
         assert!(matches!(
@@ -175,7 +210,10 @@ mod tests {
     async fn test_k_moves_cursor_up() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
         tab.scroll_offset = 2;
-        let mode = VisualLineMode { anchor: 2 };
+        let mode = VisualLineMode {
+            anchor: 2,
+            count: None,
+        };
         let (_, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
         assert_eq!(tab.scroll_offset, 1);
     }
@@ -184,7 +222,10 @@ mod tests {
     async fn test_k_saturates_at_zero() {
         let mut tab = make_tab(&["a"]).await;
         tab.scroll_offset = 0;
-        let mode = VisualLineMode { anchor: 0 };
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
         let _ = press(mode, &mut tab, KeyCode::Char('k')).await;
         assert_eq!(tab.scroll_offset, 0);
     }
@@ -192,7 +233,10 @@ mod tests {
     #[tokio::test]
     async fn test_esc_returns_normal_mode() {
         let mut tab = make_tab(&["a"]).await;
-        let mode = VisualLineMode { anchor: 0 };
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
         let (mode2, result) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(!matches!(
@@ -206,7 +250,10 @@ mod tests {
     async fn test_c_opens_comment_mode_with_selected_lines() {
         let mut tab = make_tab(&["a", "b", "c", "d"]).await;
         tab.scroll_offset = 3; // cursor at line index 3
-        let mode = VisualLineMode { anchor: 1 }; // anchor at visible index 1
+        let mode = VisualLineMode {
+            anchor: 1,
+            count: None,
+        }; // anchor at visible index 1
         let (mode2, result) = press(mode, &mut tab, KeyCode::Char('c')).await;
         assert!(matches!(result, KeyResult::Handled));
         // Should be in comment mode
@@ -222,7 +269,10 @@ mod tests {
     async fn test_c_with_anchor_above_cursor() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
         tab.scroll_offset = 0;
-        let mode = VisualLineMode { anchor: 2 }; // anchor below cursor
+        let mode = VisualLineMode {
+            anchor: 2,
+            count: None,
+        }; // anchor below cursor
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('c')).await;
         match mode2.render_state() {
             ModeRenderState::Comment { line_count, .. } => {
@@ -234,7 +284,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_visual_selection_anchor_returns_anchor() {
-        let mode = VisualLineMode { anchor: 5 };
+        let mode = VisualLineMode {
+            anchor: 5,
+            count: None,
+        };
         match mode.render_state() {
             ModeRenderState::VisualLine { anchor } => assert_eq!(anchor, 5),
             other => panic!("expected VisualLine, got {:?}", other),
@@ -243,13 +296,19 @@ mod tests {
 
     #[test]
     fn test_status_line_contains_visual() {
-        let mode = VisualLineMode { anchor: 0 };
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
         assert!(mode.status_line().contains("[VISUAL]"));
     }
 
     #[test]
     fn test_status_line_contains_yank() {
-        let mode = VisualLineMode { anchor: 0 };
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
         assert!(mode.status_line().contains("yank"));
     }
 
@@ -257,7 +316,10 @@ mod tests {
     async fn test_y_yanks_and_returns_normal() {
         let mut tab = make_tab(&["line one", "line two", "line three"]).await;
         tab.scroll_offset = 0;
-        let mode = VisualLineMode { anchor: 2 };
+        let mode = VisualLineMode {
+            anchor: 2,
+            count: None,
+        };
         let (mode2, result) = press(mode, &mut tab, KeyCode::Char('y')).await;
         // Should return to normal mode
         assert!(mode2.status_line().contains("[NORMAL]"));
@@ -284,7 +346,10 @@ mod tests {
             "expected a format parser to be detected"
         );
         tab.scroll_offset = 0;
-        let mode = VisualLineMode { anchor: 1 };
+        let mode = VisualLineMode {
+            anchor: 1,
+            count: None,
+        };
         let (_, result) = press(mode, &mut tab, KeyCode::Char('y')).await;
         match result {
             KeyResult::CopyToClipboard(text) => {
@@ -301,9 +366,66 @@ mod tests {
     async fn test_y_empty_visible_indices_returns_normal() {
         let mut tab = make_tab(&[]).await;
         tab.scroll_offset = 0;
-        let mode = VisualLineMode { anchor: 0 };
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('y')).await;
         assert!(mode2.status_line().contains("[NORMAL]"));
         assert_eq!(tab.command_error.as_deref(), Some("No lines to copy"));
+    }
+
+    // ── Count prefix tests ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_visual_count_5j_moves_down_5() {
+        let lines: Vec<&str> = (0..20).map(|_| "line").collect();
+        let mut tab = make_tab(&lines).await;
+        tab.scroll_offset = 0;
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: Some(5),
+        };
+        let (_, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 5);
+    }
+
+    #[tokio::test]
+    async fn test_visual_count_3k_moves_up_3() {
+        let lines: Vec<&str> = (0..20).map(|_| "line").collect();
+        let mut tab = make_tab(&lines).await;
+        tab.scroll_offset = 10;
+        let mode = VisualLineMode {
+            anchor: 10,
+            count: Some(3),
+        };
+        let (_, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('k'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 7);
+    }
+
+    #[tokio::test]
+    async fn test_visual_digit_accumulation() {
+        let lines: Vec<&str> = (0..200).map(|_| "line").collect();
+        let mut tab = make_tab(&lines).await;
+        tab.scroll_offset = 0;
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
+        // Type "15j"
+        let (mode, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('1'), KeyModifiers::NONE)
+            .await;
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('5'), KeyModifiers::NONE)
+            .await;
+        let _ = mode
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 15);
     }
 }

@@ -120,6 +120,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "export [-t <template>] <path>",
         description: "Export analysis (comments + marked lines) to a file. -t sets the template (default: markdown). e.g. export /tmp/report.md",
     },
+    CommandInfo {
+        name: "date-filter",
+        usage: "date-filter <expression>",
+        description: "Filter lines by timestamp. e.g. date-filter 01:00 .. 02:00, date-filter > 2024-02-22, date-filter >= Feb 21",
+    },
 ];
 
 pub fn command_names() -> Vec<&'static str> {

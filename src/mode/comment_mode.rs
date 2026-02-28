@@ -10,6 +10,7 @@ use crate::{
         normal_mode::NormalMode,
     },
     theme::Theme,
+    types::Comment,
     ui::{KeyResult, TabState},
 };
 
@@ -34,6 +35,8 @@ pub struct CommentMode {
     pub cursor_col: usize,
     /// The actual file-line indices this comment will be attached to.
     pub line_indices: Vec<usize>,
+    /// When editing an existing comment, holds its index in LogManager::comments.
+    pub editing_index: Option<usize>,
 }
 
 impl CommentMode {
@@ -43,6 +46,25 @@ impl CommentMode {
             cursor_row: 0,
             cursor_col: 0,
             line_indices,
+            editing_index: None,
+        }
+    }
+
+    /// Open the editor pre-filled with an existing comment's text.
+    pub fn edit(index: usize, text: String, line_indices: Vec<usize>) -> Self {
+        let lines: Vec<String> = if text.is_empty() {
+            vec![String::new()]
+        } else {
+            text.split('\n').map(String::from).collect()
+        };
+        let cursor_row = lines.len() - 1;
+        let cursor_col = lines.last().map_or(0, |l| l.len());
+        CommentMode {
+            lines,
+            cursor_row,
+            cursor_col,
+            line_indices,
+            editing_index: Some(index),
         }
     }
 }
@@ -61,13 +83,32 @@ impl Mode for CommentMode {
         // Save (configurable, default Ctrl+S)
         if comment_kb.save.matches(key, modifiers) {
             let text = self.lines.join("\n");
-            tab.log_manager.add_comment(text, self.line_indices);
-            return (Box::new(NormalMode), KeyResult::Handled);
+            if let Some(idx) = self.editing_index {
+                let mut comments = tab.log_manager.get_comments().to_vec();
+                if idx < comments.len() {
+                    comments[idx] = Comment {
+                        text,
+                        line_indices: self.line_indices,
+                    };
+                    tab.log_manager.set_comments(comments);
+                }
+            } else {
+                tab.log_manager.add_comment(text, self.line_indices);
+            }
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
+        }
+
+        // Delete comment (only when editing, default Ctrl+D)
+        if comment_kb.delete.matches(key, modifiers) {
+            if let Some(idx) = self.editing_index {
+                tab.log_manager.remove_comment(idx);
+            }
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
         // Cancel (configurable, default Esc)
         if comment_kb.cancel.matches(key, modifiers) {
-            return (Box::new(NormalMode), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
         match key {
@@ -136,13 +177,22 @@ impl Mode for CommentMode {
     }
 
     fn status_line(&self) -> &str {
-        "[COMMENT] type text  <Ctrl+S> save  <Esc> cancel"
+        if self.editing_index.is_some() {
+            "[COMMENT EDIT] type text  <Ctrl+S> save  <Ctrl+D> delete  <Esc> cancel"
+        } else {
+            "[COMMENT] type text  <Ctrl+S> save  <Esc> cancel"
+        }
     }
 
     fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let label = if self.editing_index.is_some() {
+            "[COMMENT EDIT]  "
+        } else {
+            "[COMMENT]  "
+        };
         let mut spans: Vec<Span<'static>> = vec![
             Span::styled(
-                "[COMMENT]  ",
+                label,
                 Style::default()
                     .fg(theme.text_highlight)
                     .add_modifier(Modifier::BOLD),
@@ -150,6 +200,9 @@ impl Mode for CommentMode {
             Span::styled("type text  ", Style::default().fg(theme.text)),
         ];
         status_entry(&mut spans, kb.comment.save.display(), "save", theme);
+        if self.editing_index.is_some() {
+            status_entry(&mut spans, kb.comment.delete.display(), "delete", theme);
+        }
         status_entry(&mut spans, kb.comment.cancel.display(), "cancel", theme);
         Line::from(spans)
     }
@@ -400,5 +453,97 @@ mod tests {
     fn test_status_line_contains_comment() {
         let mode = CommentMode::new(vec![0]);
         assert!(mode.status_line().contains("[COMMENT]"));
+    }
+
+    // ── Edit mode tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_edit_constructor_prefills_text() {
+        let mode = CommentMode::edit(0, "hello\nworld".to_string(), vec![1, 2]);
+        assert_eq!(mode.lines, vec!["hello", "world"]);
+        assert_eq!(mode.cursor_row, 1);
+        assert_eq!(mode.cursor_col, 5);
+        assert_eq!(mode.editing_index, Some(0));
+        assert_eq!(mode.line_indices, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_edit_constructor_empty_text() {
+        let mode = CommentMode::edit(3, String::new(), vec![0]);
+        assert_eq!(mode.lines, vec![""]);
+        assert_eq!(mode.cursor_row, 0);
+        assert_eq!(mode.cursor_col, 0);
+        assert_eq!(mode.editing_index, Some(3));
+    }
+
+    #[tokio::test]
+    async fn test_save_in_edit_mode_replaces_comment() {
+        let mut tab = make_tab().await;
+        tab.log_manager.add_comment("original".into(), vec![0, 1]);
+        tab.log_manager.add_comment("other".into(), vec![2]);
+
+        let mut mode = CommentMode::edit(0, "original".to_string(), vec![0, 1]);
+        mode.lines = vec!["updated text".to_string()];
+        let (mode2, result) =
+            press(mode, &mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Comment { .. }
+        ));
+
+        let comments = tab.log_manager.get_comments();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].text, "updated text");
+        assert_eq!(comments[1].text, "other");
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_d_deletes_comment_in_edit_mode() {
+        let mut tab = make_tab().await;
+        tab.log_manager.add_comment("to delete".into(), vec![0]);
+        tab.log_manager.add_comment("keep".into(), vec![1]);
+
+        let mode = CommentMode::edit(0, "to delete".to_string(), vec![0]);
+        let (mode2, result) =
+            press(mode, &mut tab, KeyCode::Char('d'), KeyModifiers::CONTROL).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Comment { .. }
+        ));
+
+        let comments = tab.log_manager.get_comments();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "keep");
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_d_in_new_mode_returns_to_normal() {
+        let mut tab = make_tab().await;
+        let mode = CommentMode::new(vec![0]);
+        let (mode2, result) =
+            press(mode, &mut tab, KeyCode::Char('d'), KeyModifiers::CONTROL).await;
+        assert!(matches!(result, KeyResult::Handled));
+        // Returns to normal mode even when not editing
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Comment { .. }
+        ));
+        // No comments were deleted (none existed)
+        assert!(tab.log_manager.get_comments().is_empty());
+    }
+
+    #[test]
+    fn test_status_line_edit_mode() {
+        let mode = CommentMode::edit(0, "text".to_string(), vec![0]);
+        assert!(mode.status_line().contains("[COMMENT EDIT]"));
+        assert!(mode.status_line().contains("delete"));
+    }
+
+    #[test]
+    fn test_status_line_new_mode_no_delete() {
+        let mode = CommentMode::new(vec![0]);
+        assert!(!mode.status_line().contains("delete"));
     }
 }

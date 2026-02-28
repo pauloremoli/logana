@@ -1,4 +1,4 @@
-//! Configuration loaded from `~/.config/logsmith-rs/config.json`.
+//! Configuration loaded from `~/.config/logana/config.json`.
 //!
 //! Keybinding string format:
 //!   `"j"`, `"Ctrl+d"`, `"Shift+Tab"`, `"Tab"`, `"PageDown"`, `"Space"`, `"Esc"`, …
@@ -334,21 +334,23 @@ fn default_yank_marked() -> KeyBindings {
 fn default_show_keybindings() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::F(1), KeyModifiers::NONE)])
 }
+fn default_clear_all() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('C'), KeyModifiers::NONE)])
+}
+fn default_edit_comment() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('c'), KeyModifiers::NONE)])
+}
 
 // ---------------------------------------------------------------------------
-// NormalKeybindings
+// NavigationKeybindings — shared across all modes
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NormalKeybindings {
+pub struct NavigationKeybindings {
     #[serde(default = "default_scroll_down")]
     pub scroll_down: KeyBindings,
     #[serde(default = "default_scroll_up")]
     pub scroll_up: KeyBindings,
-    #[serde(default = "default_scroll_left")]
-    pub scroll_left: KeyBindings,
-    #[serde(default = "default_scroll_right")]
-    pub scroll_right: KeyBindings,
     #[serde(default = "default_half_page_down")]
     pub half_page_down: KeyBindings,
     #[serde(default = "default_half_page_up")]
@@ -357,6 +359,31 @@ pub struct NormalKeybindings {
     pub page_down: KeyBindings,
     #[serde(default = "default_page_up")]
     pub page_up: KeyBindings,
+}
+
+impl Default for NavigationKeybindings {
+    fn default() -> Self {
+        Self {
+            scroll_down: default_scroll_down(),
+            scroll_up: default_scroll_up(),
+            half_page_down: default_half_page_down(),
+            half_page_up: default_half_page_up(),
+            page_down: default_page_down(),
+            page_up: default_page_up(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NormalKeybindings
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NormalKeybindings {
+    #[serde(default = "default_scroll_left")]
+    pub scroll_left: KeyBindings,
+    #[serde(default = "default_scroll_right")]
+    pub scroll_right: KeyBindings,
     #[serde(default = "default_command_mode")]
     pub command_mode: KeyBindings,
     #[serde(default = "default_filter_mode_key")]
@@ -389,19 +416,17 @@ pub struct NormalKeybindings {
     pub yank_marked: KeyBindings,
     #[serde(default = "default_show_keybindings")]
     pub show_keybindings: KeyBindings,
+    #[serde(default = "default_clear_all")]
+    pub clear_all: KeyBindings,
+    #[serde(default = "default_edit_comment")]
+    pub edit_comment: KeyBindings,
 }
 
 impl Default for NormalKeybindings {
     fn default() -> Self {
         Self {
-            scroll_down: default_scroll_down(),
-            scroll_up: default_scroll_up(),
             scroll_left: default_scroll_left(),
             scroll_right: default_scroll_right(),
-            half_page_down: default_half_page_down(),
-            half_page_up: default_half_page_up(),
-            page_down: default_page_down(),
-            page_up: default_page_up(),
             command_mode: default_command_mode(),
             filter_mode: default_filter_mode_key(),
             toggle_filtering: default_toggle_filtering(),
@@ -418,6 +443,8 @@ impl Default for NormalKeybindings {
             toggle_marks_only: default_toggle_marks_only(),
             yank_marked: default_yank_marked(),
             show_keybindings: default_show_keybindings(),
+            clear_all: default_clear_all(),
+            edit_comment: default_edit_comment(),
         }
     }
 }
@@ -426,12 +453,6 @@ impl Default for NormalKeybindings {
 // FilterKeybindings — defaults
 // ---------------------------------------------------------------------------
 
-fn default_filter_select_up() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Up, KeyModifiers::NONE)])
-}
-fn default_filter_select_down() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Down, KeyModifiers::NONE)])
-}
 fn default_filter_toggle() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)])
 }
@@ -462,6 +483,9 @@ fn default_filter_add_include() -> KeyBindings {
 fn default_filter_add_exclude() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('x'), KeyModifiers::NONE)])
 }
+fn default_filter_add_date() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('t'), KeyModifiers::NONE)])
+}
 fn default_filter_exit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
@@ -472,10 +496,6 @@ fn default_filter_exit() -> KeyBindings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilterKeybindings {
-    #[serde(default = "default_filter_select_up")]
-    pub select_up: KeyBindings,
-    #[serde(default = "default_filter_select_down")]
-    pub select_down: KeyBindings,
     #[serde(default = "default_filter_toggle")]
     pub toggle_filter: KeyBindings,
     #[serde(default = "default_filter_delete")]
@@ -496,6 +516,8 @@ pub struct FilterKeybindings {
     pub add_include: KeyBindings,
     #[serde(default = "default_filter_add_exclude")]
     pub add_exclude: KeyBindings,
+    #[serde(default = "default_filter_add_date")]
+    pub add_date_filter: KeyBindings,
     #[serde(default = "default_filter_exit")]
     pub exit_mode: KeyBindings,
 }
@@ -503,8 +525,6 @@ pub struct FilterKeybindings {
 impl Default for FilterKeybindings {
     fn default() -> Self {
         Self {
-            select_up: default_filter_select_up(),
-            select_down: default_filter_select_down(),
             toggle_filter: default_filter_toggle(),
             delete_filter: default_filter_delete(),
             move_filter_up: default_filter_move_up(),
@@ -515,6 +535,7 @@ impl Default for FilterKeybindings {
             clear_all_filters: default_filter_clear_all(),
             add_include: default_filter_add_include(),
             add_exclude: default_filter_add_exclude(),
+            add_date_filter: default_filter_add_date(),
             exit_mode: default_filter_exit(),
         }
     }
@@ -580,6 +601,9 @@ fn default_comment_save() -> KeyBindings {
 fn default_comment_cancel() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
+fn default_comment_delete() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL)])
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommentKeybindings {
@@ -589,6 +613,9 @@ pub struct CommentKeybindings {
     /// Key to cancel the comment and return to Normal mode.
     #[serde(default = "default_comment_cancel")]
     pub cancel: KeyBindings,
+    /// Key to delete the comment being edited (only in edit mode).
+    #[serde(default = "default_comment_delete")]
+    pub delete: KeyBindings,
 }
 
 impl Default for CommentKeybindings {
@@ -596,6 +623,7 @@ impl Default for CommentKeybindings {
         Self {
             save: default_comment_save(),
             cancel: default_comment_cancel(),
+            delete: default_comment_delete(),
         }
     }
 }
@@ -604,18 +632,6 @@ impl Default for CommentKeybindings {
 // VisualLineKeybindings — defaults
 // ---------------------------------------------------------------------------
 
-fn default_visual_scroll_down() -> KeyBindings {
-    KeyBindings(vec![
-        KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
-        KeyBinding(KeyCode::Down, KeyModifiers::NONE),
-    ])
-}
-fn default_visual_scroll_up() -> KeyBindings {
-    KeyBindings(vec![
-        KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE),
-        KeyBinding(KeyCode::Up, KeyModifiers::NONE),
-    ])
-}
 fn default_visual_comment() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('c'), KeyModifiers::NONE)])
 }
@@ -632,10 +648,6 @@ fn default_visual_exit() -> KeyBindings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualLineKeybindings {
-    #[serde(default = "default_visual_scroll_down")]
-    pub scroll_down: KeyBindings,
-    #[serde(default = "default_visual_scroll_up")]
-    pub scroll_up: KeyBindings,
     #[serde(default = "default_visual_comment")]
     pub comment: KeyBindings,
     #[serde(default = "default_visual_yank")]
@@ -647,8 +659,6 @@ pub struct VisualLineKeybindings {
 impl Default for VisualLineKeybindings {
     fn default() -> Self {
         Self {
-            scroll_down: default_visual_scroll_down(),
-            scroll_up: default_visual_scroll_up(),
             comment: default_visual_comment(),
             yank: default_visual_yank(),
             exit: default_visual_exit(),
@@ -744,18 +754,6 @@ impl Default for CommandModeKeybindings {
 // DockerSelectKeybindings — defaults
 // ---------------------------------------------------------------------------
 
-fn default_docker_navigate_up() -> KeyBindings {
-    KeyBindings(vec![
-        KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE),
-        KeyBinding(KeyCode::Up, KeyModifiers::NONE),
-    ])
-}
-fn default_docker_navigate_down() -> KeyBindings {
-    KeyBindings(vec![
-        KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
-        KeyBinding(KeyCode::Down, KeyModifiers::NONE),
-    ])
-}
 fn default_docker_confirm() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
 }
@@ -765,10 +763,6 @@ fn default_docker_cancel() -> KeyBindings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DockerSelectKeybindings {
-    #[serde(default = "default_docker_navigate_up")]
-    pub navigate_up: KeyBindings,
-    #[serde(default = "default_docker_navigate_down")]
-    pub navigate_down: KeyBindings,
     #[serde(default = "default_docker_confirm")]
     pub confirm: KeyBindings,
     #[serde(default = "default_docker_cancel")]
@@ -778,8 +772,6 @@ pub struct DockerSelectKeybindings {
 impl Default for DockerSelectKeybindings {
     fn default() -> Self {
         Self {
-            navigate_up: default_docker_navigate_up(),
-            navigate_down: default_docker_navigate_down(),
             confirm: default_docker_confirm(),
             cancel: default_docker_cancel(),
         }
@@ -790,18 +782,6 @@ impl Default for DockerSelectKeybindings {
 // ValueColorsKeybindings — defaults
 // ---------------------------------------------------------------------------
 
-fn default_vc_navigate_up() -> KeyBindings {
-    KeyBindings(vec![
-        KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE),
-        KeyBinding(KeyCode::Up, KeyModifiers::NONE),
-    ])
-}
-fn default_vc_navigate_down() -> KeyBindings {
-    KeyBindings(vec![
-        KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
-        KeyBinding(KeyCode::Down, KeyModifiers::NONE),
-    ])
-}
 fn default_vc_toggle() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)])
 }
@@ -820,10 +800,6 @@ fn default_vc_cancel() -> KeyBindings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValueColorsKeybindings {
-    #[serde(default = "default_vc_navigate_up")]
-    pub navigate_up: KeyBindings,
-    #[serde(default = "default_vc_navigate_down")]
-    pub navigate_down: KeyBindings,
     #[serde(default = "default_vc_toggle")]
     pub toggle: KeyBindings,
     #[serde(default = "default_vc_all")]
@@ -839,8 +815,6 @@ pub struct ValueColorsKeybindings {
 impl Default for ValueColorsKeybindings {
     fn default() -> Self {
         Self {
-            navigate_up: default_vc_navigate_up(),
-            navigate_down: default_vc_navigate_down(),
             toggle: default_vc_toggle(),
             all: default_vc_all(),
             none: default_vc_none(),
@@ -854,18 +828,6 @@ impl Default for ValueColorsKeybindings {
 // SelectFieldsKeybindings — defaults
 // ---------------------------------------------------------------------------
 
-fn default_sf_navigate_up() -> KeyBindings {
-    KeyBindings(vec![
-        KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE),
-        KeyBinding(KeyCode::Up, KeyModifiers::NONE),
-    ])
-}
-fn default_sf_navigate_down() -> KeyBindings {
-    KeyBindings(vec![
-        KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
-        KeyBinding(KeyCode::Down, KeyModifiers::NONE),
-    ])
-}
 fn default_sf_toggle() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)])
 }
@@ -890,10 +852,6 @@ fn default_sf_cancel() -> KeyBindings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelectFieldsKeybindings {
-    #[serde(default = "default_sf_navigate_up")]
-    pub navigate_up: KeyBindings,
-    #[serde(default = "default_sf_navigate_down")]
-    pub navigate_down: KeyBindings,
     #[serde(default = "default_sf_toggle")]
     pub toggle: KeyBindings,
     #[serde(default = "default_sf_move_up")]
@@ -913,8 +871,6 @@ pub struct SelectFieldsKeybindings {
 impl Default for SelectFieldsKeybindings {
     fn default() -> Self {
         Self {
-            navigate_up: default_sf_navigate_up(),
-            navigate_down: default_sf_navigate_down(),
             toggle: default_sf_toggle(),
             move_up: default_sf_move_up(),
             move_down: default_sf_move_down(),
@@ -930,24 +886,6 @@ impl Default for SelectFieldsKeybindings {
 // HelpKeybindings — defaults
 // ---------------------------------------------------------------------------
 
-fn default_help_scroll_down() -> KeyBindings {
-    KeyBindings(vec![
-        KeyBinding(KeyCode::Char('j'), KeyModifiers::NONE),
-        KeyBinding(KeyCode::Down, KeyModifiers::NONE),
-    ])
-}
-fn default_help_scroll_up() -> KeyBindings {
-    KeyBindings(vec![
-        KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE),
-        KeyBinding(KeyCode::Up, KeyModifiers::NONE),
-    ])
-}
-fn default_help_fast_down() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL)])
-}
-fn default_help_fast_up() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('u'), KeyModifiers::CONTROL)])
-}
 fn default_help_close() -> KeyBindings {
     KeyBindings(vec![
         KeyBinding(KeyCode::Char('q'), KeyModifiers::NONE),
@@ -957,14 +895,6 @@ fn default_help_close() -> KeyBindings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HelpKeybindings {
-    #[serde(default = "default_help_scroll_down")]
-    pub scroll_down: KeyBindings,
-    #[serde(default = "default_help_scroll_up")]
-    pub scroll_up: KeyBindings,
-    #[serde(default = "default_help_fast_down")]
-    pub fast_down: KeyBindings,
-    #[serde(default = "default_help_fast_up")]
-    pub fast_up: KeyBindings,
     #[serde(default = "default_help_close")]
     pub close: KeyBindings,
 }
@@ -972,10 +902,6 @@ pub struct HelpKeybindings {
 impl Default for HelpKeybindings {
     fn default() -> Self {
         Self {
-            scroll_down: default_help_scroll_down(),
-            scroll_up: default_help_scroll_up(),
-            fast_down: default_help_fast_down(),
-            fast_up: default_help_fast_up(),
             close: default_help_close(),
         }
     }
@@ -1021,6 +947,8 @@ impl Default for ConfirmKeybindings {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Keybindings {
+    #[serde(default)]
+    pub navigation: NavigationKeybindings,
     #[serde(default)]
     pub normal: NormalKeybindings,
     #[serde(default)]
@@ -1074,15 +1002,18 @@ impl Keybindings {
         let mut conflicts = Vec::new();
 
         // Build (name, &KeyBindings) slices for each scope.
+        // Navigation keys are shared; include them in every scope that uses them.
+        let nav = &self.navigation;
+
         let normal_actions: &[(&str, &KeyBindings)] = &[
-            ("normal.scroll_down", &self.normal.scroll_down),
-            ("normal.scroll_up", &self.normal.scroll_up),
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
+            ("navigation.half_page_down", &nav.half_page_down),
+            ("navigation.half_page_up", &nav.half_page_up),
+            ("navigation.page_down", &nav.page_down),
+            ("navigation.page_up", &nav.page_up),
             ("normal.scroll_left", &self.normal.scroll_left),
             ("normal.scroll_right", &self.normal.scroll_right),
-            ("normal.half_page_down", &self.normal.half_page_down),
-            ("normal.half_page_up", &self.normal.half_page_up),
-            ("normal.page_down", &self.normal.page_down),
-            ("normal.page_up", &self.normal.page_up),
             ("normal.command_mode", &self.normal.command_mode),
             ("normal.filter_mode", &self.normal.filter_mode),
             ("normal.toggle_filtering", &self.normal.toggle_filtering),
@@ -1099,6 +1030,8 @@ impl Keybindings {
             ("normal.prev_match", &self.normal.prev_match),
             ("normal.toggle_wrap", &self.normal.toggle_wrap),
             ("normal.show_keybindings", &self.normal.show_keybindings),
+            ("normal.clear_all", &self.normal.clear_all),
+            ("normal.edit_comment", &self.normal.edit_comment),
             ("global.quit", &self.global.quit),
             ("global.next_tab", &self.global.next_tab),
             ("global.prev_tab", &self.global.prev_tab),
@@ -1107,8 +1040,8 @@ impl Keybindings {
         ];
 
         let filter_actions: &[(&str, &KeyBindings)] = &[
-            ("filter.select_up", &self.filter.select_up),
-            ("filter.select_down", &self.filter.select_down),
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
             ("filter.toggle_filter", &self.filter.toggle_filter),
             ("filter.delete_filter", &self.filter.delete_filter),
             ("filter.move_filter_up", &self.filter.move_filter_up),
@@ -1119,6 +1052,7 @@ impl Keybindings {
             ("filter.clear_all_filters", &self.filter.clear_all_filters),
             ("filter.add_include", &self.filter.add_include),
             ("filter.add_exclude", &self.filter.add_exclude),
+            ("filter.add_date_filter", &self.filter.add_date_filter),
             ("filter.exit_mode", &self.filter.exit_mode),
             ("global.quit", &self.global.quit),
             ("global.next_tab", &self.global.next_tab),
@@ -1126,29 +1060,23 @@ impl Keybindings {
         ];
 
         let visual_line_actions: &[(&str, &KeyBindings)] = &[
-            ("visual_line.scroll_down", &self.visual_line.scroll_down),
-            ("visual_line.scroll_up", &self.visual_line.scroll_up),
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
             ("visual_line.comment", &self.visual_line.comment),
             ("visual_line.yank", &self.visual_line.yank),
             ("visual_line.exit", &self.visual_line.exit),
         ];
 
         let docker_select_actions: &[(&str, &KeyBindings)] = &[
-            ("docker_select.navigate_up", &self.docker_select.navigate_up),
-            (
-                "docker_select.navigate_down",
-                &self.docker_select.navigate_down,
-            ),
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
             ("docker_select.confirm", &self.docker_select.confirm),
             ("docker_select.cancel", &self.docker_select.cancel),
         ];
 
         let value_colors_actions: &[(&str, &KeyBindings)] = &[
-            ("value_colors.navigate_up", &self.value_colors.navigate_up),
-            (
-                "value_colors.navigate_down",
-                &self.value_colors.navigate_down,
-            ),
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
             ("value_colors.toggle", &self.value_colors.toggle),
             ("value_colors.all", &self.value_colors.all),
             ("value_colors.none", &self.value_colors.none),
@@ -1157,11 +1085,8 @@ impl Keybindings {
         ];
 
         let select_fields_actions: &[(&str, &KeyBindings)] = &[
-            ("select_fields.navigate_up", &self.select_fields.navigate_up),
-            (
-                "select_fields.navigate_down",
-                &self.select_fields.navigate_down,
-            ),
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
             ("select_fields.toggle", &self.select_fields.toggle),
             ("select_fields.move_up", &self.select_fields.move_up),
             ("select_fields.move_down", &self.select_fields.move_down),
@@ -1172,10 +1097,10 @@ impl Keybindings {
         ];
 
         let help_actions: &[(&str, &KeyBindings)] = &[
-            ("help.scroll_down", &self.help.scroll_down),
-            ("help.scroll_up", &self.help.scroll_up),
-            ("help.fast_down", &self.help.fast_down),
-            ("help.fast_up", &self.help.fast_up),
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
+            ("navigation.half_page_down", &nav.half_page_down),
+            ("navigation.half_page_up", &nav.half_page_up),
             ("help.close", &self.help.close),
         ];
 
@@ -1228,13 +1153,13 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load configuration from `~/.config/logsmith-rs/config.json`.
+    /// Load configuration from `~/.config/logana/config.json`.
     ///
     /// This function is infallible — any I/O or parse error falls back to
     /// `Config::default()` so a bad config never prevents startup.
     pub fn load() -> Self {
         let Some(config_path) =
-            dirs::config_dir().map(|d| d.join("logsmith-rs").join("config.json"))
+            dirs::config_dir().map(|d| d.join("logana").join("config.json"))
         else {
             return Config::default();
         };
@@ -1910,8 +1835,8 @@ mod tests {
     #[test]
     fn test_validate_detects_normal_conflict() {
         let mut kb = Keybindings::default();
-        // Make scroll_down overlap with scroll_up by assigning 'k' to scroll_down
-        kb.normal.scroll_down =
+        // Make navigation.scroll_down overlap with navigation.scroll_up by assigning 'k'
+        kb.navigation.scroll_down =
             KeyBindings(vec![KeyBinding(KeyCode::Char('k'), KeyModifiers::NONE)]);
         let conflicts = kb.validate();
         assert!(
@@ -1925,8 +1850,8 @@ mod tests {
     #[test]
     fn test_validate_detects_normal_global_conflict() {
         let mut kb = Keybindings::default();
-        // Make scroll_down overlap with quit by assigning 'q' to scroll_down
-        kb.normal.scroll_down =
+        // Make navigation.scroll_down overlap with quit by assigning 'q'
+        kb.navigation.scroll_down =
             KeyBindings(vec![KeyBinding(KeyCode::Char('q'), KeyModifiers::NONE)]);
         let conflicts = kb.validate();
         assert!(
@@ -1941,20 +1866,21 @@ mod tests {
     #[test]
     fn test_validate_detects_filter_conflict() {
         let mut kb = Keybindings::default();
-        // Make select_up overlap with toggle_filter by assigning Space to select_up
-        kb.filter.select_up = KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)]);
+        // Make navigation.scroll_up overlap with toggle_filter by assigning Space
+        kb.navigation.scroll_up =
+            KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)]);
         let conflicts = kb.validate();
         assert!(
             !conflicts.is_empty(),
-            "Should detect conflict between select_up and toggle_filter"
+            "Should detect conflict between navigation.scroll_up and toggle_filter"
         );
     }
 
     // ── Default keybindings ─────────────────────────────────────────────
 
     #[test]
-    fn test_normal_keybindings_default() {
-        let kb = NormalKeybindings::default();
+    fn test_navigation_keybindings_default() {
+        let kb = NavigationKeybindings::default();
         assert!(
             kb.scroll_down
                 .matches(KeyCode::Char('j'), KeyModifiers::NONE)
@@ -1962,14 +1888,6 @@ mod tests {
         assert!(kb.scroll_down.matches(KeyCode::Down, KeyModifiers::NONE));
         assert!(kb.scroll_up.matches(KeyCode::Char('k'), KeyModifiers::NONE));
         assert!(kb.scroll_up.matches(KeyCode::Up, KeyModifiers::NONE));
-        assert!(
-            kb.scroll_left
-                .matches(KeyCode::Char('h'), KeyModifiers::NONE)
-        );
-        assert!(
-            kb.scroll_right
-                .matches(KeyCode::Char('l'), KeyModifiers::NONE)
-        );
         assert!(
             kb.half_page_down
                 .matches(KeyCode::Char('d'), KeyModifiers::CONTROL)
@@ -1980,6 +1898,19 @@ mod tests {
         );
         assert!(kb.page_down.matches(KeyCode::PageDown, KeyModifiers::NONE));
         assert!(kb.page_up.matches(KeyCode::PageUp, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_normal_keybindings_default() {
+        let kb = NormalKeybindings::default();
+        assert!(
+            kb.scroll_left
+                .matches(KeyCode::Char('h'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.scroll_right
+                .matches(KeyCode::Char('l'), KeyModifiers::NONE)
+        );
         assert!(
             kb.command_mode
                 .matches(KeyCode::Char(':'), KeyModifiers::NONE)
@@ -2041,13 +1972,16 @@ mod tests {
             kb.show_keybindings
                 .matches(KeyCode::F(1), KeyModifiers::NONE)
         );
+        assert!(kb.clear_all.matches(KeyCode::Char('C'), KeyModifiers::NONE));
+        assert!(
+            kb.edit_comment
+                .matches(KeyCode::Char('c'), KeyModifiers::NONE)
+        );
     }
 
     #[test]
     fn test_filter_keybindings_default() {
         let kb = FilterKeybindings::default();
-        assert!(kb.select_up.matches(KeyCode::Up, KeyModifiers::NONE));
-        assert!(kb.select_down.matches(KeyCode::Down, KeyModifiers::NONE));
         assert!(
             kb.toggle_filter
                 .matches(KeyCode::Char(' '), KeyModifiers::NONE)
@@ -2109,6 +2043,7 @@ mod tests {
         let kb = CommentKeybindings::default();
         assert!(kb.save.matches(KeyCode::Char('s'), KeyModifiers::CONTROL));
         assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(kb.delete.matches(KeyCode::Char('d'), KeyModifiers::CONTROL));
     }
 
     #[test]
@@ -2135,16 +2070,6 @@ mod tests {
     #[test]
     fn test_docker_select_keybindings_default() {
         let kb = DockerSelectKeybindings::default();
-        assert!(
-            kb.navigate_up
-                .matches(KeyCode::Char('k'), KeyModifiers::NONE)
-        );
-        assert!(kb.navigate_up.matches(KeyCode::Up, KeyModifiers::NONE));
-        assert!(
-            kb.navigate_down
-                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
-        );
-        assert!(kb.navigate_down.matches(KeyCode::Down, KeyModifiers::NONE));
         assert!(kb.confirm.matches(KeyCode::Enter, KeyModifiers::NONE));
         assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
     }
@@ -2152,16 +2077,6 @@ mod tests {
     #[test]
     fn test_value_colors_keybindings_default() {
         let kb = ValueColorsKeybindings::default();
-        assert!(
-            kb.navigate_up
-                .matches(KeyCode::Char('k'), KeyModifiers::NONE)
-        );
-        assert!(kb.navigate_up.matches(KeyCode::Up, KeyModifiers::NONE));
-        assert!(
-            kb.navigate_down
-                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
-        );
-        assert!(kb.navigate_down.matches(KeyCode::Down, KeyModifiers::NONE));
         assert!(kb.toggle.matches(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(kb.all.matches(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(kb.none.matches(KeyCode::Char('n'), KeyModifiers::NONE));
@@ -2172,16 +2087,6 @@ mod tests {
     #[test]
     fn test_select_fields_keybindings_default() {
         let kb = SelectFieldsKeybindings::default();
-        assert!(
-            kb.navigate_up
-                .matches(KeyCode::Char('k'), KeyModifiers::NONE)
-        );
-        assert!(kb.navigate_up.matches(KeyCode::Up, KeyModifiers::NONE));
-        assert!(
-            kb.navigate_down
-                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
-        );
-        assert!(kb.navigate_down.matches(KeyCode::Down, KeyModifiers::NONE));
         assert!(kb.toggle.matches(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(kb.move_up.matches(KeyCode::Char('K'), KeyModifiers::NONE));
         assert!(kb.move_down.matches(KeyCode::Char('J'), KeyModifiers::NONE));
@@ -2194,21 +2099,6 @@ mod tests {
     #[test]
     fn test_help_keybindings_default() {
         let kb = HelpKeybindings::default();
-        assert!(
-            kb.scroll_down
-                .matches(KeyCode::Char('j'), KeyModifiers::NONE)
-        );
-        assert!(kb.scroll_down.matches(KeyCode::Down, KeyModifiers::NONE));
-        assert!(kb.scroll_up.matches(KeyCode::Char('k'), KeyModifiers::NONE));
-        assert!(kb.scroll_up.matches(KeyCode::Up, KeyModifiers::NONE));
-        assert!(
-            kb.fast_down
-                .matches(KeyCode::Char('d'), KeyModifiers::CONTROL)
-        );
-        assert!(
-            kb.fast_up
-                .matches(KeyCode::Char('u'), KeyModifiers::CONTROL)
-        );
         assert!(kb.close.matches(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(kb.close.matches(KeyCode::Esc, KeyModifiers::NONE));
     }
@@ -2239,12 +2129,12 @@ mod tests {
 
     #[test]
     fn test_config_deserialize_theme_and_keybinding() {
-        let json = r#"{"theme":"dracula","keybindings":{"normal":{"scroll_down":"e"}}}"#;
+        let json = r#"{"theme":"dracula","keybindings":{"navigation":{"scroll_down":"e"}}}"#;
         let cfg: Config = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.theme.as_deref(), Some("dracula"));
         assert!(
             cfg.keybindings
-                .normal
+                .navigation
                 .scroll_down
                 .matches(KeyCode::Char('e'), KeyModifiers::NONE)
         );
@@ -2264,7 +2154,7 @@ mod tests {
         // All defaults should be intact
         assert!(
             cfg.keybindings
-                .normal
+                .navigation
                 .scroll_down
                 .matches(KeyCode::Char('j'), KeyModifiers::NONE)
         );
@@ -2311,7 +2201,7 @@ mod tests {
         assert!(
             deserialized
                 .keybindings
-                .normal
+                .navigation
                 .scroll_down
                 .matches(KeyCode::Char('j'), KeyModifiers::NONE)
         );

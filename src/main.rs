@@ -4,12 +4,12 @@ use crossterm::{
     ExecutableCommand,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use logsmith_rs::config::Config;
-use logsmith_rs::db::Database;
-use logsmith_rs::file_reader::FileReader;
-use logsmith_rs::log_manager::LogManager;
-use logsmith_rs::theme::Theme;
-use logsmith_rs::ui::{App, LoadContext};
+use logana::config::Config;
+use logana::db::Database;
+use logana::file_reader::FileReader;
+use logana::log_manager::LogManager;
+use logana::theme::Theme;
+use logana::ui::{App, LoadContext};
 use ratatui::prelude::*;
 use std::io::{IsTerminal, stdin, stdout};
 use std::sync::Arc;
@@ -26,10 +26,10 @@ struct Args {
 
 fn get_db_path() -> String {
     if let Some(data_dir) = dirs::data_dir() {
-        let app_dir = data_dir.join("logsmith-rs");
-        app_dir.join("logsmith.db").to_string_lossy().to_string()
+        let app_dir = data_dir.join("logana");
+        app_dir.join("logana.db").to_string_lossy().to_string()
     } else {
-        "logsmith.db".to_string()
+        "logana.db".to_string()
     }
 }
 
@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let file_path = args.file;
 
-    let file_appender = rolling::daily("logs", "logsmith.log");
+    let file_appender = rolling::daily("logs", "logana.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -154,54 +154,54 @@ mod tests {
 
     #[test]
     fn test_args_no_file() {
-        let args = Args::try_parse_from(["logsmith-rs"]).unwrap();
+        let args = Args::try_parse_from(["logana"]).unwrap();
         assert!(args.file.is_none());
     }
 
     #[test]
     fn test_args_with_file() {
-        let args = Args::try_parse_from(["logsmith-rs", "/var/log/syslog"]).unwrap();
+        let args = Args::try_parse_from(["logana", "/var/log/syslog"]).unwrap();
         assert_eq!(args.file, Some("/var/log/syslog".to_string()));
     }
 
     #[test]
     fn test_args_rejects_unknown_flags() {
-        let result = Args::try_parse_from(["logsmith-rs", "--unknown"]);
+        let result = Args::try_parse_from(["logana", "--unknown"]);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_args_rejects_multiple_positional() {
-        let result = Args::try_parse_from(["logsmith-rs", "file1.log", "file2.log"]);
+        let result = Args::try_parse_from(["logana", "file1.log", "file2.log"]);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_args_version_flag() {
-        let result = Args::try_parse_from(["logsmith-rs", "--version"]);
+        let result = Args::try_parse_from(["logana", "--version"]);
         // --version causes clap to print and exit with an error variant.
         assert!(result.is_err());
     }
 
     #[test]
     fn test_args_help_flag() {
-        let result = Args::try_parse_from(["logsmith-rs", "--help"]);
+        let result = Args::try_parse_from(["logana", "--help"]);
         assert!(result.is_err());
     }
 
     // ── get_db_path ───────────────────────────────────────────────────
 
     #[test]
-    fn test_get_db_path_contains_logsmith() {
+    fn test_get_db_path_contains_logana() {
         let path = get_db_path();
         assert!(
-            path.contains("logsmith"),
-            "DB path should contain 'logsmith': {}",
+            path.contains("logana"),
+            "DB path should contain 'logana': {}",
             path
         );
         assert!(
-            path.ends_with("logsmith.db"),
-            "DB path should end with 'logsmith.db': {}",
+            path.ends_with("logana.db"),
+            "DB path should end with 'logana.db': {}",
             path
         );
     }
@@ -213,12 +213,12 @@ mod tests {
         // should include the app subdirectory.
         if dirs::data_dir().is_some() {
             assert!(
-                path.contains("logsmith-rs"),
+                path.contains("logana"),
                 "DB path should include app directory: {}",
                 path
             );
         } else {
-            assert_eq!(path, "logsmith.db");
+            assert_eq!(path, "logana.db");
         }
     }
 

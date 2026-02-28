@@ -27,7 +27,7 @@ impl App {
     pub(super) fn render_confirm_restore_modal(&mut self, frame: &mut Frame<'_>) {
         let modal_width = 44_u16;
         let modal_height = 5_u16;
-        let area = frame.size();
+        let area = frame.area();
         let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
         let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
         let modal_area = ratatui::layout::Rect::new(x, y, modal_width, modal_height);
@@ -83,7 +83,7 @@ impl App {
         fields: &[(String, bool)],
         selected: usize,
     ) {
-        let area = frame.size();
+        let area = frame.area();
         let popup_width = (area.width.saturating_sub(4)).clamp(40, 60);
         // 2 border rows + 1 separator + 2 footer lines + fields list
         let content_rows = fields.len() as u16;
@@ -281,7 +281,7 @@ impl App {
             }
         }
 
-        let area = frame.size();
+        let area = frame.area();
         let popup_width = (area.width.saturating_sub(4)).clamp(40, 60);
         let row_count = vis_rows.len() as u16;
         // +5 = 2 border + 1 separator + 2 footer; +1 for search bar when active
@@ -520,7 +520,7 @@ impl App {
         selected: usize,
         error: Option<&str>,
     ) {
-        let area = frame.size();
+        let area = frame.area();
         let popup_width = (area.width.saturating_sub(4)).clamp(50, 80);
         let content_rows = if error.is_some() {
             3u16
@@ -663,6 +663,7 @@ impl App {
 
         // Footer
         let kb = &self.keybindings.docker_select;
+        let nav = &self.keybindings.navigation;
         let key_style = Style::default()
             .fg(self.theme.text_highlight)
             .add_modifier(Modifier::BOLD);
@@ -672,11 +673,7 @@ impl App {
         // Navigate up/down combined display
         spans.push(Span::styled("<", br_style));
         spans.push(Span::styled(
-            format!(
-                "{}/{}",
-                kb.navigate_up.display(),
-                kb.navigate_down.display()
-            ),
+            format!("{}/{}", nav.scroll_up.display(), nav.scroll_down.display()),
             key_style,
         ));
         spans.push(Span::styled("> navigate  ", txt_style));
@@ -712,7 +709,7 @@ impl App {
     ) {
         use crate::mode::keybindings_help_mode::{HelpRow, build_help_rows, filter_rows};
 
-        let area = frame.size();
+        let area = frame.area();
         let popup_width = (area.width.saturating_sub(4)).clamp(40, 72);
         // height: up to 80% of screen, min 10
         let popup_height = (area.height * 4 / 5)
@@ -874,8 +871,8 @@ impl App {
 
         let modal_width = 50_u16;
         // borders(2) + blank(1) + header(1) + files + blank(1) + y/n(1)
-        let modal_height = (file_names.len() as u16 + 6).min(frame.size().height);
-        let area = frame.size();
+        let modal_height = (file_names.len() as u16 + 6).min(frame.area().height);
+        let area = frame.area();
         let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
         let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
         let modal_area = ratatui::layout::Rect::new(x, y, modal_width, modal_height);
@@ -944,7 +941,7 @@ impl App {
         cursor_col: usize,
         line_count: usize,
     ) {
-        let area = frame.size();
+        let area = frame.area();
         let popup_width = area.width.saturating_sub(8).clamp(40, 70);
         let text_rows = lines.len().max(1) as u16;
         // borders(2) + text editor rows + separator(1) + footer(1)
@@ -1026,7 +1023,7 @@ impl App {
         let cur_x = text_area.x + cursor_col as u16;
         let cur_y = text_area.y + cursor_row as u16;
         if cur_x < text_area.x + text_area.width && cur_y < text_area.y + text_area.height {
-            frame.set_cursor(cur_x, cur_y);
+            frame.set_cursor_position((cur_x, cur_y));
         }
     }
 }
