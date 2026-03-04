@@ -15,6 +15,9 @@ pub type StyleId = u8;
 /// Reserved StyleId for search highlights (always at the end of the styles array).
 pub const SEARCH_STYLE_ID: StyleId = u8::MAX;
 
+/// Reserved StyleId for the *current* search occurrence (one slot below SEARCH_STYLE_ID).
+pub const CURRENT_SEARCH_STYLE_ID: StyleId = u8::MAX - 1;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FilterDecision {
     /// This line should be shown (matched an include filter).

@@ -334,7 +334,8 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.next_match.matches(key, modifiers) {
-            if let Some(result) = tab.search.next_match() {
+            // `n` continues in the original search direction (vim semantics).
+            if let Some(result) = tab.search.go_next() {
                 let line_idx = result.line_idx;
                 tab.scroll_to_line_idx(line_idx);
             }
@@ -344,10 +345,18 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.prev_match.matches(key, modifiers) {
-            if let Some(result) = tab.search.previous_match() {
+            // `N` reverses the original search direction (vim semantics).
+            if let Some(result) = tab.search.go_prev() {
                 let line_idx = result.line_idx;
                 tab.scroll_to_line_idx(line_idx);
             }
+            tab.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.clear_search.matches(key, modifiers) && tab.search.get_pattern().is_some() {
+            tab.search.clear();
             tab.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
@@ -412,7 +421,7 @@ impl Mode for NormalMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             label,
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         status_entry(&mut spans, kb.global.quit.display(), "quit", theme);
@@ -460,14 +469,14 @@ impl Mode for NormalMode {
         spans.push(Span::styled(
             kb.global.next_tab.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("/", Style::default().fg(theme.border)));
         spans.push(Span::styled(
             kb.global.prev_tab.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("> tabs", Style::default().fg(theme.text)));
@@ -687,6 +696,32 @@ mod tests {
             ModeRenderState::Search { forward, .. } => assert!(!forward),
             other => panic!("expected Search, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_esc_clears_active_search() {
+        let mut tab = make_tab(&["error line", "info line"]).await;
+        tab.visible_indices = vec![0, 1];
+        let visible = tab.visible_indices.clone();
+        let texts = tab.collect_display_texts(&visible);
+        tab.search
+            .search("error", &visible, |li| texts.get(&li).cloned())
+            .unwrap();
+        assert!(tab.search.get_pattern().is_some());
+        let (_, result) = press(&mut tab, KeyCode::Esc, KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(tab.search.get_pattern().is_none());
+        assert!(tab.search.get_results().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_esc_without_active_search_does_nothing() {
+        let mut tab = make_tab(&["line"]).await;
+        assert!(tab.search.get_pattern().is_none());
+        let (_, result) = press(&mut tab, KeyCode::Esc, KeyModifiers::NONE).await;
+        // NormalMode consumes all unrecognised keys; no search to clear
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(tab.search.get_pattern().is_none());
     }
 
     #[tokio::test]

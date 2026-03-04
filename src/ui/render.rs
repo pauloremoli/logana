@@ -17,10 +17,10 @@ use ratatui::{
 };
 
 use crate::auto_complete::{
-    FILE_PATH_COMMANDS, complete_color, complete_file_path, extract_color_partial,
-    find_command_completions, find_matching_command,
+    complete_color, complete_file_path, extract_color_partial, find_command_completions,
 };
-use crate::filters::{SEARCH_STYLE_ID, render_line};
+use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
+use crate::filters::{CURRENT_SEARCH_STYLE_ID, SEARCH_STYLE_ID, render_line};
 use crate::theme::complete_theme;
 use crate::types::{FilterType, LogLevel};
 use crate::value_colors::colorize_known_values;
@@ -41,10 +41,19 @@ impl App {
         // avoiding holding a borrow over the rest of rendering.
         let render_state = self.tabs[self.active_tab].mode.render_state();
 
+        let persistent_pattern: Option<String> =
+            if matches!(render_state, ModeRenderState::Normal) {
+                self.tabs[self.active_tab]
+                    .search
+                    .get_pattern()
+                    .map(|p| p.to_string())
+            } else {
+                None
+            };
         let has_input_bar = matches!(
             render_state,
             ModeRenderState::Command { .. } | ModeRenderState::Search { .. }
-        );
+        ) || persistent_pattern.is_some();
         let command_input: Option<(String, usize)> = match &render_state {
             ModeRenderState::Command { input, cursor, .. } => Some((input.clone(), *cursor)),
             _ => None,
@@ -55,9 +64,11 @@ impl App {
             } => *completion_index,
             _ => None,
         };
-        let search_input: Option<(String, bool)> = match &render_state {
-            ModeRenderState::Search { query, forward } => Some((query.clone(), *forward)),
-            _ => None,
+        // (query, forward, is_active): is_active=true while typing (shows cursor + count),
+        // false when persistent after execution (shows "match X / N").
+        let search_input: Option<(String, bool, bool)> = match &render_state {
+            ModeRenderState::Search { query, forward } => Some((query.clone(), *forward, true)),
+            _ => persistent_pattern.map(|p| (p, true, false)),
         };
         let is_confirm_restore = matches!(render_state, ModeRenderState::ConfirmRestore);
         let session_files: Option<Vec<String>> = match &render_state {
@@ -401,11 +412,25 @@ impl App {
             .build_filter_manager();
         let search_style = Style::default()
             .fg(self.theme.search_fg)
-            .bg(self.theme.text_highlight);
+            .bg(self.theme.text_highlight_fg);
+        let current_search_style = Style::default()
+            .fg(self.theme.text_highlight_fg)
+            .bg(self.theme.search_fg);
         styles.resize(256, Style::default());
         styles[255] = search_style;
+        styles[254] = current_search_style;
 
         let search_results = self.tabs[self.active_tab].search.get_results();
+        // Pre-compute which line holds the current occurrence and which index within it.
+        let current_search_info: Option<(usize, usize)> = if search_results.is_empty() {
+            None
+        } else {
+            let ri = self.tabs[self.active_tab].search.get_current_match_index();
+            Some((
+                search_results[ri].line_idx,
+                self.tabs[self.active_tab].search.get_current_occurrence_index(),
+            ))
+        };
         let search_map: HashMap<usize, &crate::types::SearchResult> =
             search_results.iter().map(|r| (r.line_idx, r)).collect();
         // Clone the compiled regex once so the JSON render path can re-match against
@@ -461,7 +486,7 @@ impl App {
 
         // Comment banner styles.
         let banner_prefix_style = Style::default()
-            .fg(theme.text_highlight)
+            .fg(theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let banner_text_style = Style::default().fg(theme.text);
 
@@ -515,14 +540,23 @@ impl App {
                     .map(|parts| {
                         let cols = apply_field_layout(&parts, &field_layout, &hidden_fields);
 
+                        // Determine which occurrence index (if any) is current for this line.
+                        let current_occ = current_search_info
+                            .and_then(|(cl, co)| if cl == line_idx { Some(co) } else { None });
+
                         if cols.is_empty() {
                             // All fields hidden — fall back to raw bytes with filter +
                             // search highlighting (raw-byte positions are correct here).
                             let mut collector = filter_manager.evaluate_line(line_bytes);
                             if let Some(sr) = search_map.get(&line_idx) {
                                 collector.with_priority(1000);
-                                for &(s, e) in &sr.matches {
-                                    collector.push(s, e, SEARCH_STYLE_ID);
+                                for (i, &(s, e)) in sr.matches.iter().enumerate() {
+                                    let sid = if current_occ == Some(i) {
+                                        CURRENT_SEARCH_STYLE_ID
+                                    } else {
+                                        SEARCH_STYLE_ID
+                                    };
+                                    collector.push(s, e, sid);
                                 }
                             }
                             render_line(&collector, &styles)
@@ -533,13 +567,22 @@ impl App {
                             let mut collector = filter_manager.evaluate_line(rendered.as_bytes());
                             if let Some(ref regex) = search_regex {
                                 collector.with_priority(1000);
-                                for m in regex.find_iter(&rendered) {
-                                    collector.push(m.start(), m.end(), SEARCH_STYLE_ID);
+                                for (i, m) in regex.find_iter(&rendered).enumerate() {
+                                    let sid = if current_occ == Some(i) {
+                                        CURRENT_SEARCH_STYLE_ID
+                                    } else {
+                                        SEARCH_STYLE_ID
+                                    };
+                                    collector.push(m.start(), m.end(), sid);
                                 }
                             }
                             render_line(&collector, &styles)
                         }
                     });
+
+                // Determine which occurrence index (if any) is current for this line.
+                let current_occ = current_search_info
+                    .and_then(|(cl, co)| if cl == line_idx { Some(co) } else { None });
 
                 let mut line = if let Some(structured_line) = structured_line {
                     structured_line
@@ -547,26 +590,21 @@ impl App {
                     let mut collector = filter_manager.evaluate_line(line_bytes);
                     if let Some(sr) = search_map.get(&line_idx) {
                         collector.with_priority(1000);
-                        for &(s, e) in &sr.matches {
-                            collector.push(s, e, SEARCH_STYLE_ID);
+                        for (i, &(s, e)) in sr.matches.iter().enumerate() {
+                            let sid = if current_occ == Some(i) {
+                                CURRENT_SEARCH_STYLE_ID
+                            } else {
+                                SEARCH_STYLE_ID
+                            };
+                            collector.push(s, e, sid);
                         }
                     }
                     render_line(&collector, &styles)
                 };
                 line = colorize_known_values(line, &theme.value_colors);
-                if is_current {
-                    // Strip all per-span fg/bg so the cursor line uses
-                    // a uniform cursor style without filter/search colors.
-                    let cursor_style = Style::default().fg(theme.cursor_fg).bg(theme.border);
-                    line = Line::from(
-                        line.spans
-                            .into_iter()
-                            .map(|s| Span::styled(s.content, cursor_style))
-                            .collect::<Vec<_>>(),
-                    );
-                } else {
-                    line = line.style(render_style);
-                }
+                // Use line-level base style so per-span highlights (search, filters) are
+                // preserved on the cursor line. Spans with explicit fg/bg override the base.
+                line = line.style(render_style);
 
                 if show_line_numbers {
                     let line_num = line_idx + 1;
@@ -577,7 +615,7 @@ impl App {
                     {
                         let next_same = vis_comment_map.get(&(abs_vis_idx + 1)) == Some(&cmt_idx);
                         let ch = if next_same { "│" } else { "└" };
-                        (ch, theme.text_highlight)
+                        (ch, theme.text_highlight_fg)
                     } else {
                         (" ", theme.border)
                     };
@@ -689,26 +727,35 @@ impl App {
     fn render_input_bar(
         &mut self,
         frame: &mut Frame<'_>,
-        search_input: Option<(String, bool)>,
+        search_input: Option<(String, bool, bool)>,
         chunks: &std::rc::Rc<[Rect]>,
         chunk_idx: usize,
     ) {
-        if let Some((input_str, forward)) = search_input {
+        if let Some((input_str, forward, is_active)) = search_input {
             let prefix = if forward { "/" } else { "?" };
             let search_line = Paragraph::new(format!("{}{}", prefix, input_str))
-                .style(Style::default().fg(self.theme.text).bg(self.theme.border))
+                .style(Style::default().fg(self.theme.cursor_fg).bg(self.theme.border))
                 .wrap(Wrap { trim: false });
             let input_area = chunks[chunk_idx];
             frame.render_widget(search_line, input_area);
-            let cursor_x = input_area.x + 1 + input_str.len() as u16;
-            if cursor_x < input_area.x + input_area.width {
-                frame.set_cursor_position((cursor_x, input_area.y));
+            if is_active {
+                let cursor_x = input_area.x + 1 + input_str.len() as u16;
+                if cursor_x < input_area.x + input_area.width {
+                    frame.set_cursor_position((cursor_x, input_area.y));
+                }
             }
 
             let hint_area = chunks[chunk_idx + 1];
-            let match_count = self.tabs[self.active_tab].search.get_results().len();
+            let total = self.tabs[self.active_tab].search.get_total_match_count();
             let hint_text = if !input_str.is_empty() {
-                format!("  {} matches", match_count)
+                if is_active {
+                    format!("  {} matches", total)
+                } else if total == 0 {
+                    "  no matches".to_string()
+                } else {
+                    let current = self.tabs[self.active_tab].search.get_current_occurrence_number();
+                    format!("  match {} / {}", current, total)
+                }
             } else {
                 "  Type pattern and press Enter to search".to_string()
             };
@@ -774,7 +821,7 @@ impl App {
             Paragraph::new(text).style(
                 Style::default()
                     .fg(self.theme.root_bg)
-                    .bg(self.theme.text_highlight),
+                    .bg(self.theme.text_highlight_fg),
             ),
             bar_rect,
         );
@@ -859,7 +906,7 @@ impl App {
         if let Some((input_text, cursor_pos)) = command_input {
             let input_prefix = ":";
             let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
-                .style(Style::default().fg(self.theme.text).bg(self.theme.border))
+                .style(Style::default().fg(self.theme.cursor_fg).bg(self.theme.border))
                 .wrap(Wrap { trim: false });
             let input_area = chunks[chunk_idx];
             frame.render_widget(command_line, input_area);
@@ -1117,7 +1164,7 @@ impl App {
                     let style = if is_active {
                         Style::default()
                             .fg(self.theme.text)
-                            .bg(self.theme.text_highlight)
+                            .bg(self.theme.text_highlight_bg)
                             .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
@@ -1568,7 +1615,8 @@ mod tests {
         app.execute_command_str("filter INFO".to_string()).await;
         let visible = app.tabs[0].visible_indices.clone();
         let tab = &mut app.tabs[0];
-        let _ = tab.search.search("something", &visible, &tab.file_reader);
+        let texts = tab.collect_display_texts(&visible);
+        let _ = tab.search.search("something", &visible, |li| texts.get(&li).cloned());
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }

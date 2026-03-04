@@ -93,7 +93,7 @@ impl Mode for SelectFieldsMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[SELECT FIELDS]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         status_entry(
@@ -107,14 +107,14 @@ impl Mode for SelectFieldsMode {
         spans.push(Span::styled(
             kb.select_fields.move_up.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("/", Style::default().fg(theme.border)));
         spans.push(Span::styled(
             kb.select_fields.move_down.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("> reorder  ", Style::default().fg(theme.text)));

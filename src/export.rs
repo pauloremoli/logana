@@ -117,10 +117,10 @@ pub fn list_templates() -> Vec<String> {
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) == Some("txt") {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        set.insert(stem.to_string());
-                    }
+                if path.extension().and_then(|ext| ext.to_str()) == Some("txt")
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                {
+                    set.insert(stem.to_string());
                 }
             }
         }

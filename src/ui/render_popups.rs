@@ -41,7 +41,7 @@ impl App {
 
         let kb = &self.keybindings;
         let key_style = Style::default()
-            .fg(self.theme.text_highlight)
+            .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
         let br_style = Style::default().fg(self.theme.border);
@@ -74,7 +74,7 @@ impl App {
                     .title(" Restore previous session? ")
                     .title_style(
                         Style::default()
-                            .fg(self.theme.text_highlight)
+                            .fg(self.theme.text_highlight_fg)
                             .add_modifier(Modifier::BOLD),
                     )
                     .title_alignment(ratatui::layout::Alignment::Center)
@@ -110,7 +110,7 @@ impl App {
             .title(" Select Fields ")
             .title_style(
                 Style::default()
-                    .fg(self.theme.text_highlight)
+                    .fg(self.theme.text_highlight_fg)
                     .add_modifier(Modifier::BOLD),
             )
             .title_alignment(Alignment::Center)
@@ -147,7 +147,7 @@ impl App {
             let check = if *enabled { "[x] " } else { "[ ] " };
             let style = if is_selected {
                 Style::default()
-                    .fg(self.theme.text_highlight)
+                    .fg(self.theme.text_highlight_fg)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(self.theme.text)
@@ -178,7 +178,7 @@ impl App {
         // Footer (two lines)
         let kb = &self.keybindings.select_fields;
         let key_style = Style::default()
-            .fg(self.theme.text_highlight)
+            .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
         let br_style = Style::default().fg(self.theme.border);
@@ -309,7 +309,7 @@ impl App {
             .title(" Value Colors ")
             .title_style(
                 Style::default()
-                    .fg(self.theme.text_highlight)
+                    .fg(self.theme.text_highlight_fg)
                     .add_modifier(Modifier::BOLD),
             )
             .title_alignment(Alignment::Center)
@@ -351,12 +351,12 @@ impl App {
                 Span::styled(
                     " /",
                     Style::default()
-                        .fg(self.theme.text_highlight)
+                        .fg(self.theme.text_highlight_fg)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     search.to_string(),
-                    Style::default().fg(self.theme.text_highlight),
+                    Style::default().fg(self.theme.text_highlight_fg),
                 ),
             ]);
             frame.render_widget(
@@ -394,7 +394,7 @@ impl App {
             let prefix = if is_sel { "> " } else { "  " };
             let sel_style = if is_sel {
                 Style::default()
-                    .fg(self.theme.text_highlight)
+                    .fg(self.theme.text_highlight_fg)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(self.theme.text)
@@ -451,7 +451,7 @@ impl App {
         // Footer
         let kb = &self.keybindings.value_colors;
         let key_style = Style::default()
-            .fg(self.theme.text_highlight)
+            .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
         let br_style = Style::default().fg(self.theme.border);
@@ -551,7 +551,7 @@ impl App {
             .title(" Docker Containers ")
             .title_style(
                 Style::default()
-                    .fg(self.theme.text_highlight)
+                    .fg(self.theme.text_highlight_fg)
                     .add_modifier(Modifier::BOLD),
             )
             .title_alignment(Alignment::Center)
@@ -620,7 +620,7 @@ impl App {
                 };
                 let style = if is_selected {
                     Style::default()
-                        .fg(self.theme.text_highlight)
+                        .fg(self.theme.text_highlight_fg)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(self.theme.text)
@@ -672,7 +672,7 @@ impl App {
         let kb = &self.keybindings.docker_select;
         let nav = &self.keybindings.navigation;
         let key_style = Style::default()
-            .fg(self.theme.text_highlight)
+            .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
         let br_style = Style::default().fg(self.theme.border);
@@ -756,7 +756,7 @@ impl App {
                     lines.push(Line::from(vec![Span::styled(
                         format!("── {} {}", title, bar),
                         Style::default()
-                            .fg(self.theme.text_highlight)
+                            .fg(self.theme.text_highlight_fg)
                             .add_modifier(Modifier::BOLD),
                     )]));
                 }
@@ -778,7 +778,7 @@ impl App {
                         Span::styled(
                             keys_str.to_string(),
                             Style::default()
-                                .fg(self.theme.text_highlight)
+                                .fg(self.theme.text_highlight_fg)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(">", Style::default().fg(self.theme.border)),
@@ -807,7 +807,7 @@ impl App {
             .title(title)
             .title_style(
                 Style::default()
-                    .fg(self.theme.text_highlight)
+                    .fg(self.theme.text_highlight_fg)
                     .add_modifier(Modifier::BOLD),
             )
             .title_alignment(Alignment::Center)
@@ -899,7 +899,7 @@ impl App {
         lines.push(Line::from(""));
         let kb = &self.keybindings.confirm;
         let key_style = Style::default()
-            .fg(self.theme.text_highlight)
+            .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
         let br_style = Style::default().fg(self.theme.border);
@@ -930,7 +930,7 @@ impl App {
                     .title(" Restore last session? ")
                     .title_style(
                         Style::default()
-                            .fg(self.theme.text_highlight)
+                            .fg(self.theme.text_highlight_fg)
                             .add_modifier(Modifier::BOLD),
                     )
                     .title_alignment(ratatui::layout::Alignment::Center)
@@ -963,7 +963,7 @@ impl App {
         let txt_style = Style::default().fg(self.theme.text);
         let br_style = Style::default().fg(self.theme.border);
         let key_style = Style::default()
-            .fg(self.theme.text_highlight)
+            .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
 
         let mut lines_out: Vec<Line> = Vec::new();
@@ -1015,7 +1015,7 @@ impl App {
                     .title(title)
                     .title_style(
                         Style::default()
-                            .fg(self.theme.text_highlight)
+                            .fg(self.theme.text_highlight_fg)
                             .add_modifier(Modifier::BOLD),
                     )
                     .title_alignment(ratatui::layout::Alignment::Center)
@@ -1052,7 +1052,7 @@ impl App {
             .title(format!(" Comment ({} lines) ", line_count))
             .title_style(
                 Style::default()
-                    .fg(self.theme.text_highlight)
+                    .fg(self.theme.text_highlight_fg)
                     .add_modifier(Modifier::BOLD),
             )
             .title_alignment(Alignment::Center)
@@ -1096,14 +1096,14 @@ impl App {
                 Span::styled(
                     "[Ctrl+S]",
                     Style::default()
-                        .fg(self.theme.text_highlight)
+                        .fg(self.theme.text_highlight_fg)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" Save  ", Style::default().fg(self.theme.text)),
                 Span::styled(
                     "[Esc]",
                     Style::default()
-                        .fg(self.theme.text_highlight)
+                        .fg(self.theme.text_highlight_fg)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" Cancel", Style::default().fg(self.theme.text)),

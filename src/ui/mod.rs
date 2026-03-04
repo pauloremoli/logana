@@ -191,6 +191,31 @@ impl TabState {
         }
     }
 
+    /// Returns the text that is actually displayed for `line_idx`.
+    /// For structured log lines this is the rendered column string (which omits
+    /// hidden fields); for raw lines it is the UTF-8 decoded bytes.
+    /// This is the text the search should match against so that hidden-field
+    /// content is never counted as a hit.
+    pub fn get_display_text(&self, line_idx: usize) -> String {
+        let bytes = self.file_reader.get_line(line_idx);
+        if let Some(parser) = &self.detected_format
+            && let Some(parts) = parser.parse_line(bytes)
+        {
+            let cols = field_layout::apply_field_layout(&parts, &self.field_layout, &self.hidden_fields);
+            if !cols.is_empty() {
+                return cols.join(" ");
+            }
+        }
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    /// Build a lookup map of display text for each of the given `indices`.
+    /// Collecting up-front allows callers to pass the map into `Search::search`
+    /// without conflicting borrows on `self.search`.
+    pub fn collect_display_texts(&self, indices: &[usize]) -> std::collections::HashMap<usize, String> {
+        indices.iter().map(|&li| (li, self.get_display_text(li))).collect()
+    }
+
     pub fn scroll_to_line_idx(&mut self, line_idx: usize) {
         if let Some(index) = self.visible_indices.iter().position(|&i| i == line_idx) {
             self.scroll_offset = index;
@@ -278,9 +303,12 @@ impl TabState {
             self.log_manager.set_comments(ctx.comments.clone());
         }
         if !ctx.search_query.is_empty() {
+            let texts = self.collect_display_texts(&self.visible_indices.clone());
             let _ = self
                 .search
-                .search(&ctx.search_query, &self.visible_indices, &self.file_reader);
+                .search(&ctx.search_query, &self.visible_indices, |li| {
+                    texts.get(&li).cloned()
+                });
         }
     }
 
@@ -736,3 +764,4 @@ mod tests {
         assert!(!tab.show_borders);
     }
 }
+

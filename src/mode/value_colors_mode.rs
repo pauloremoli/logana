@@ -212,7 +212,7 @@ impl Mode for ValueColorsMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[VALUE COLORS]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         status_entry(

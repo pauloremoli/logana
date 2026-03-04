@@ -322,7 +322,11 @@ async fn test_search_on_visible_lines() {
 
     // Search for "Application" within visible lines only
     let mut search = Search::new();
-    search.search("Application", &visible, &reader).unwrap();
+    search
+        .search("Application", &visible, |li| {
+            Some(String::from_utf8_lossy(reader.get_line(li)).into_owned())
+        })
+        .unwrap();
     let results = search.get_results();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].line_idx, 0);

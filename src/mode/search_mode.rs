@@ -31,7 +31,17 @@ impl Mode for SearchMode {
         let kb = tab.keybindings.search.clone();
         if kb.confirm.matches(key, modifiers) {
             let visible = tab.visible_indices.clone();
-            let _ = tab.search.search(&self.input, &visible, &tab.file_reader);
+            let texts = tab.collect_display_texts(&visible);
+            let _ = tab.search.search(&self.input, &visible, |li| texts.get(&li).cloned());
+            tab.search.set_forward(self.forward);
+            // Navigate to the first match relative to the current line.
+            let current_line_idx = tab
+                .visible_indices
+                .get(tab.scroll_offset)
+                .copied()
+                .unwrap_or(0);
+            tab.search
+                .set_position_for_search(current_line_idx, self.forward);
             let result = if self.forward {
                 tab.search.next_match()
             } else {
@@ -43,16 +53,28 @@ impl Mode for SearchMode {
             }
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else if kb.cancel.matches(key, modifiers) {
-            self.input.clear();
+            tab.search.clear();
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else {
             match key {
                 KeyCode::Backspace => {
                     self.input.pop();
+                    if self.input.is_empty() {
+                        tab.search.clear();
+                    } else {
+                        let visible = tab.visible_indices.clone();
+                        let texts = tab.collect_display_texts(&visible);
+                        let _ = tab.search.search(&self.input, &visible, |li| texts.get(&li).cloned());
+                        self.seed_incremental_position(tab);
+                    }
                     (self, KeyResult::Handled)
                 }
                 KeyCode::Char(c) => {
                     self.input.push(c);
+                    let visible = tab.visible_indices.clone();
+                    let texts = tab.collect_display_texts(&visible);
+                    let _ = tab.search.search(&self.input, &visible, |li| texts.get(&li).cloned());
+                    self.seed_incremental_position(tab);
                     (self, KeyResult::Handled)
                 }
                 _ => (self, KeyResult::Handled),
@@ -64,7 +86,7 @@ impl Mode for SearchMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[SEARCH]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         status_entry(&mut spans, kb.search.cancel.display(), "cancel", theme);
@@ -76,6 +98,25 @@ impl Mode for SearchMode {
         ModeRenderState::Search {
             query: self.input.clone(),
             forward: self.forward,
+        }
+    }
+}
+
+impl SearchMode {
+    /// After an incremental search, position the "current" occurrence highlight
+    /// at the match closest to the cursor line (without scrolling).
+    fn seed_incremental_position(&self, tab: &mut TabState) {
+        let current_line_idx = tab
+            .visible_indices
+            .get(tab.scroll_offset)
+            .copied()
+            .unwrap_or(0);
+        tab.search
+            .set_position_for_search(current_line_idx, self.forward);
+        if self.forward {
+            tab.search.next_match();
+        } else {
+            tab.search.previous_match();
         }
     }
 }
@@ -165,18 +206,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_esc_clears_input_and_returns_normal_mode() {
-        let mut tab = make_tab(&["line"]).await;
+    async fn test_esc_returns_normal_mode_and_clears_search() {
+        let mut tab = make_tab(&["error line"]).await;
+        tab.visible_indices = vec![0];
+        // Simulate incremental search having run
+        let visible = tab.visible_indices.clone();
+        let texts = tab.collect_display_texts(&visible);
+        tab.search
+            .search("error", &visible, |li| texts.get(&li).cloned())
+            .unwrap();
+        assert!(tab.search.get_pattern().is_some());
         let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(!matches!(
-            mode2.render_state(),
-            ModeRenderState::Search { .. }
-        ));
-        assert!(!matches!(
-            mode2.render_state(),
-            ModeRenderState::Command { .. }
-        ));
+        assert!(!matches!(mode2.render_state(), ModeRenderState::Search { .. }));
+        assert!(tab.search.get_pattern().is_none());
+        assert!(tab.search.get_results().is_empty());
     }
 
     #[tokio::test]
@@ -250,6 +294,34 @@ mod tests {
             }
             other => panic!("expected Search, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_typing_char_updates_search_results() {
+        // Use plain text lines that won't trigger the structured-log format parser.
+        let mut tab = make_tab(&["needle in haystack", "nothing here", "needle again"]).await;
+        tab.visible_indices = vec![0, 1, 2];
+        press(forward_mode("needl"), &mut tab, KeyCode::Char('e')).await;
+        assert_eq!(tab.search.get_results().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_backspace_updates_search_results() {
+        // Use plain text lines that won't trigger the structured-log format parser.
+        let mut tab = make_tab(&["needle in haystack", "nothing here", "needle again"]).await;
+        tab.visible_indices = vec![0, 1, 2];
+        // Start with "needles" (no match), backspace to "needle" (2 matches)
+        press(forward_mode("needles"), &mut tab, KeyCode::Backspace).await;
+        assert_eq!(tab.search.get_results().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_backspace_to_empty_clears_results() {
+        let mut tab = make_tab(&["error: disk full"]).await;
+        tab.visible_indices = vec![0];
+        press(forward_mode("e"), &mut tab, KeyCode::Backspace).await;
+        assert!(tab.search.get_results().is_empty());
+        assert!(tab.search.get_pattern().is_none());
     }
 
     #[test]

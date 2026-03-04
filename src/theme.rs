@@ -222,8 +222,18 @@ pub struct Theme {
     pub border_title: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
     pub text: Color,
-    #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
-    pub text_highlight: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_text_highlight_fg"
+    )]
+    pub text_highlight_fg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_text_highlight_bg"
+    )]
+    pub text_highlight_bg: Color,
     /// Foreground colour used for the currently-selected (cursor) line.
     /// Should contrast well against the `border` colour used as the cursor background.
     #[serde(
@@ -395,6 +405,12 @@ impl<'de> serde::de::DeserializeSeed<'de> for ColorDeserializer {
     }
 }
 
+fn default_text_highlight_fg() -> Color {
+    Color::Rgb(255, 184, 108) // #ffb86c
+}
+fn default_text_highlight_bg() -> Color {
+    Color::Rgb(122, 74, 16) // #7a4a10
+}
 fn default_trace_fg() -> Color {
     Color::Rgb(98, 114, 164) // dimmed/gray (Dracula comment color)
 }
@@ -441,10 +457,10 @@ impl Theme {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let p = entry.path();
-                    if p.extension().and_then(|e| e.to_str()) == Some("json") {
-                        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                            set.insert(stem.to_string());
-                        }
+                    if p.extension().and_then(|e| e.to_str()) == Some("json")
+                        && let Some(stem) = p.file_stem().and_then(|s| s.to_str())
+                    {
+                        set.insert(stem.to_string());
                     }
                 }
             }
@@ -507,7 +523,8 @@ impl Default for Theme {
             border: Color::Rgb(98, 114, 164),
             border_title: Color::Rgb(248, 248, 242),
             text: Color::Rgb(248, 248, 242),
-            text_highlight: Color::Rgb(255, 184, 108),
+            text_highlight_fg: default_text_highlight_fg(),
+            text_highlight_bg: default_text_highlight_bg(),
             cursor_fg: Color::Rgb(28, 28, 28),
             trace_fg: default_trace_fg(),
             debug_fg: default_debug_fg(),
@@ -724,7 +741,7 @@ mod tests {
             "border": "#6272a4",
             "border_title": "#f8f8f2",
             "text": "#f8f8f2",
-            "text_highlight": "#ffb86c",
+            "text_highlight_fg": "#ffb86c",
             "error_fg": "#ff5555",
             "warning_fg": "#f1fa8c",
             "process_colors": ["#ff5555", "#50fa7b"]

@@ -186,7 +186,7 @@ impl Mode for CommentMode {
             Span::styled(
                 label,
                 Style::default()
-                    .fg(theme.text_highlight)
+                    .fg(theme.text_highlight_fg)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("type text  ", Style::default().fg(theme.text)),

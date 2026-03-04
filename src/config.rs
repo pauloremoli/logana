@@ -361,6 +361,9 @@ fn default_enter_ui_mode() -> KeyBindings {
 fn default_ui_exit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
+fn default_clear_search() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
 
 // ---------------------------------------------------------------------------
 // NavigationKeybindings — shared across all modes
@@ -445,6 +448,8 @@ pub struct NormalKeybindings {
     pub filter_exclude: KeyBindings,
     #[serde(default = "default_enter_ui_mode")]
     pub enter_ui_mode: KeyBindings,
+    #[serde(default = "default_clear_search")]
+    pub clear_search: KeyBindings,
 }
 
 impl Default for NormalKeybindings {
@@ -472,6 +477,7 @@ impl Default for NormalKeybindings {
             filter_include: default_normal_filter_include(),
             filter_exclude: default_normal_filter_exclude(),
             enter_ui_mode: default_enter_ui_mode(),
+            clear_search: default_clear_search(),
         }
     }
 }

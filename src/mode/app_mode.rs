@@ -106,7 +106,7 @@ pub fn status_entry_dyn(
     spans.push(Span::styled(
         key,
         Style::default()
-            .fg(theme.text_highlight)
+            .fg(theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(">", Style::default().fg(theme.border)));
@@ -128,7 +128,7 @@ pub fn status_entry(
     spans.push(Span::styled(
         key,
         Style::default()
-            .fg(theme.text_highlight)
+            .fg(theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(">", Style::default().fg(theme.border)));
@@ -170,7 +170,7 @@ impl Mode for ConfirmRestoreMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[RESTORE]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         spans.push(Span::styled(
@@ -221,7 +221,7 @@ impl Mode for ConfirmRestoreSessionMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[RESTORE SESSION]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         spans.push(Span::styled(
@@ -277,7 +277,7 @@ impl Mode for ConfirmOpenDirMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[OPEN DIR]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         spans.push(Span::styled(

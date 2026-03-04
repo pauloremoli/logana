@@ -72,7 +72,7 @@ impl Mode for DockerSelectMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[DOCKER]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         // Navigate up/down
@@ -80,14 +80,14 @@ impl Mode for DockerSelectMode {
         spans.push(Span::styled(
             kb.navigation.scroll_up.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("/", Style::default().fg(theme.border)));
         spans.push(Span::styled(
             kb.navigation.scroll_down.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(

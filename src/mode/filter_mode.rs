@@ -284,7 +284,7 @@ impl Mode for FilterManagementMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[FILTER]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         status_entry(
@@ -312,14 +312,14 @@ impl Mode for FilterManagementMode {
         spans.push(Span::styled(
             kb.filter.move_filter_up.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("/", Style::default().fg(theme.border)));
         spans.push(Span::styled(
             kb.filter.move_filter_down.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("> move  ", Style::default().fg(theme.text)));
@@ -421,7 +421,7 @@ impl Mode for FilterEditMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[FILTER EDIT]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         status_entry(&mut spans, kb.filter_edit.cancel.display(), "cancel", theme);

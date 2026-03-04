@@ -532,7 +532,7 @@ impl Mode for KeybindingsHelpMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[HELP]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         spans.push(Span::styled(
@@ -544,14 +544,14 @@ impl Mode for KeybindingsHelpMode {
         spans.push(Span::styled(
             kb.navigation.scroll_up.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("/", Style::default().fg(theme.border)));
         spans.push(Span::styled(
             kb.navigation.scroll_down.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("> scroll  ", Style::default().fg(theme.text)));

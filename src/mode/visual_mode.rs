@@ -121,7 +121,7 @@ impl Mode for VisualLineMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             label,
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         // Extend up/down
@@ -129,14 +129,14 @@ impl Mode for VisualLineMode {
         spans.push(Span::styled(
             kb.navigation.scroll_up.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("/", Style::default().fg(theme.border)));
         spans.push(Span::styled(
             kb.navigation.scroll_down.display(),
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("> extend  ", Style::default().fg(theme.text)));

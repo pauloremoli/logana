@@ -5,9 +5,10 @@ use ratatui::text::{Line, Span};
 
 use crate::{
     auto_complete::{
-        FILE_PATH_COMMANDS, complete_color, complete_file_path, extract_color_partial,
-        find_command_completions, fuzzy_match,
+        complete_color, complete_file_path, extract_color_partial, find_command_completions,
+        fuzzy_match,
     },
+    commands::FILE_PATH_COMMANDS,
     config::Keybindings,
     mode::{
         app_mode::{Mode, ModeRenderState, status_entry},
@@ -366,7 +367,7 @@ impl Mode for CommandMode {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[COMMAND]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
         status_entry(&mut spans, kb.command.cancel.display(), "cancel", theme);

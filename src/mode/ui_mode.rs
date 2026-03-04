@@ -80,7 +80,7 @@ impl Mode for UiMode {
         let mut spans = vec![Span::styled(
             "[UI]  ",
             Style::default()
-                .fg(theme.text_highlight)
+                .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
 
