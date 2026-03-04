@@ -227,13 +227,11 @@ impl App {
             .iter()
             .position(|t| t.log_manager.source_file().is_none())
         {
-            let last_count = self.tabs[idx].visible_indices.len();
-            let at_end = last_count == 0 || self.tabs[idx].scroll_offset + 1 >= last_count;
-
+            let tail_mode = self.tabs[idx].tail_mode;
             self.tabs[idx].file_reader = FileReader::from_bytes(data);
             self.tabs[idx].refresh_visible();
 
-            if at_end {
+            if tail_mode {
                 let new_count = self.tabs[idx].visible_indices.len();
                 self.tabs[idx].scroll_offset = new_count.saturating_sub(1);
             }
@@ -358,11 +356,7 @@ impl App {
                     if new_data.is_empty() {
                         continue;
                     }
-                    let at_end = {
-                        let tab = &self.tabs[i];
-                        tab.visible_indices.is_empty()
-                            || tab.scroll_offset + 1 >= tab.visible_indices.len()
-                    };
+                    let tail_mode = self.tabs[i].tail_mode;
                     self.tabs[i].file_reader.append_bytes(&new_data);
                     // Re-detect format if not yet known (e.g. docker-logs
                     // tab that started empty).
@@ -376,7 +370,7 @@ impl App {
                         self.tabs[i].detected_format = crate::parser::detect_format(&sample);
                     }
                     self.tabs[i].refresh_visible();
-                    if at_end {
+                    if tail_mode {
                         let new_count = self.tabs[i].visible_indices.len();
                         self.tabs[i].scroll_offset = new_count.saturating_sub(1);
                     }
@@ -464,19 +458,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_stdin_tab_follow_mode() {
+    async fn test_update_stdin_tab_tail_mode_scrolls_to_last() {
         let mut app = make_app(&["first", "second"]).await;
-        // Position at the last visible line (follow mode).
-        let last = app.tabs[0].visible_indices.len().saturating_sub(1);
-        app.tabs[0].scroll_offset = last;
+        app.tabs[0].tail_mode = true;
+        app.tabs[0].scroll_offset = 0;
 
         app.update_stdin_tab(b"first\nsecond\nthird\nfourth\n".to_vec())
             .await;
 
-        // scroll_offset should have moved to the new last line.
+        // With tail_mode on, scroll_offset should be at the new last line.
         let new_last = app.tabs[0].visible_indices.len().saturating_sub(1);
         assert_eq!(app.tabs[0].scroll_offset, new_last);
-        assert!(new_last > last);
+        assert!(new_last > 0);
+    }
+
+    #[tokio::test]
+    async fn test_update_stdin_tab_no_tail_no_scroll() {
+        let mut app = make_app(&["first", "second"]).await;
+        app.tabs[0].tail_mode = false;
+        app.tabs[0].scroll_offset = 0;
+
+        app.update_stdin_tab(b"first\nsecond\nthird\nfourth\n".to_vec())
+            .await;
+
+        // With tail_mode off, scroll_offset should stay where it was.
+        assert_eq!(app.tabs[0].scroll_offset, 0);
     }
 
     #[tokio::test]
@@ -533,6 +539,185 @@ mod tests {
         app.advance_file_watches();
 
         assert!(app.tabs[0].file_reader.line_count() > original_count);
+    }
+
+    // ── tail mode: file-streaming tests ─────────────────────────────────────
+    //
+    // These tests simulate the file-watcher channel delivering new bytes (as the
+    // real FileReader::spawn_file_watcher would) and assert that tail_mode
+    // correctly drags (or does not drag) the scroll position.
+
+    #[tokio::test]
+    async fn test_file_stream_tail_on_always_scrolls_to_last() {
+        // Start with 3 existing lines and scroll at the top.
+        let data = b"line1\nline2\nline3\n".to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
+
+        app.tabs[0].tail_mode = true;
+        app.tabs[0].scroll_offset = 0; // user is NOT at the end
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        // Simulate the watcher delivering 3 new lines appended to the file.
+        tx.send(b"line4\nline5\nline6\n".to_vec()).unwrap();
+        app.advance_file_watches();
+
+        let last = app.tabs[0].visible_indices.len().saturating_sub(1);
+        assert_eq!(
+            app.tabs[0].scroll_offset, last,
+            "tail_mode on: scroll should track the last line"
+        );
+        assert_eq!(app.tabs[0].file_reader.line_count(), 6);
+    }
+
+    #[tokio::test]
+    async fn test_file_stream_tail_off_preserves_scroll() {
+        // Same setup but tail_mode is off — scroll must not move.
+        let data = b"line1\nline2\nline3\n".to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
+
+        app.tabs[0].tail_mode = false;
+        app.tabs[0].scroll_offset = 1; // user is in the middle
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        tx.send(b"line4\nline5\nline6\n".to_vec()).unwrap();
+        app.advance_file_watches();
+
+        assert_eq!(
+            app.tabs[0].scroll_offset, 1,
+            "tail_mode off: scroll should stay where the user left it"
+        );
+        assert_eq!(app.tabs[0].file_reader.line_count(), 6);
+    }
+
+    #[tokio::test]
+    async fn test_file_stream_multiple_batches_tail_on() {
+        // New lines arrive in multiple watch batches; tail_mode keeps up.
+        let data = b"a\n".to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
+
+        app.tabs[0].tail_mode = true;
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        for batch in &[b"b\nc\n".as_ref(), b"d\ne\n".as_ref(), b"f\n".as_ref()] {
+            tx.send(batch.to_vec()).unwrap();
+            app.advance_file_watches();
+            let last = app.tabs[0].visible_indices.len().saturating_sub(1);
+            assert_eq!(
+                app.tabs[0].scroll_offset, last,
+                "after each batch, scroll should be at last line"
+            );
+        }
+        assert_eq!(app.tabs[0].file_reader.line_count(), 6);
+    }
+
+    #[tokio::test]
+    async fn test_file_stream_tail_on_with_real_file() {
+        // Write initial content to a temp file, set up the app via open_file,
+        // then write more lines and deliver them through the watch channel —
+        // verifying that the scroll is dragged to the end.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        std::fs::write(&path, b"first\nsecond\nthird\n").unwrap();
+
+        let mut app = make_app(&[]).await;
+        app.open_file(&path).await.unwrap();
+
+        // open_file adds a new tab (index 1).
+        let tab_idx = app.tabs.len() - 1;
+        app.active_tab = tab_idx;
+        app.tabs[tab_idx].tail_mode = true;
+        app.tabs[tab_idx].scroll_offset = 0; // scroll to top
+
+        // Replace the real watcher with a manual channel so the test controls delivery.
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[tab_idx].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        // Simulate new lines being appended.
+        tx.send(b"fourth\nfifth\n".to_vec()).unwrap();
+        app.advance_file_watches();
+
+        let last = app.tabs[tab_idx].visible_indices.len().saturating_sub(1);
+        assert_eq!(
+            app.tabs[tab_idx].scroll_offset, last,
+            "tail_mode on + real file: scroll must reach the last visible line"
+        );
+        assert!(
+            app.tabs[tab_idx].file_reader.line_count() >= 5,
+            "expected at least 5 lines after append"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_stream_tail_toggled_mid_stream() {
+        // Tail starts off. User enables it mid-stream; subsequent batches
+        // should drag the scroll.
+        let data = b"l1\nl2\nl3\n".to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
+
+        app.tabs[0].tail_mode = false;
+        app.tabs[0].scroll_offset = 0;
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        // First batch with tail off — scroll stays.
+        tx.send(b"l4\nl5\n".to_vec()).unwrap();
+        app.advance_file_watches();
+        assert_eq!(app.tabs[0].scroll_offset, 0, "tail off: should not scroll");
+
+        // Enable tail (like the user runs :tail).
+        app.tabs[0].tail_mode = true;
+
+        // Second batch — now scroll should follow.
+        tx.send(b"l6\nl7\n".to_vec()).unwrap();
+        app.advance_file_watches();
+        let last = app.tabs[0].visible_indices.len().saturating_sub(1);
+        assert_eq!(
+            app.tabs[0].scroll_offset, last,
+            "tail on: should scroll to last after enable"
+        );
     }
 
     #[tokio::test]

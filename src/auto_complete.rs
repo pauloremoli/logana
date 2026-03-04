@@ -125,6 +125,20 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "date-filter <expression>",
         description: "Filter lines by timestamp. e.g. date-filter 01:00 .. 02:00, date-filter > 2024-02-22, date-filter >= Feb 21",
     },
+    CommandInfo {
+        name: "tail",
+        usage: "tail",
+        description: "Toggle tail mode — when on, always scrolls to the last line as new content arrives",
+    },
+];
+
+/// Commands whose last argument is a file path and should receive path auto-completion.
+pub const FILE_PATH_COMMANDS: &[&str] = &[
+    "open",
+    "load-filters",
+    "save-filters",
+    "export-marked",
+    "export",
 ];
 
 pub fn command_names() -> Vec<&'static str> {
@@ -246,9 +260,27 @@ pub fn complete_color(partial: &str) -> Vec<&'static str> {
 
 /// Complete a partial file path by listing matching entries in the parent directory.
 /// Returns a sorted list of absolute or relative paths that match the prefix.
-/// Directories get a trailing `/` appended.
+/// Directories get a trailing `/` appended.  A leading `~` is expanded to the
+/// user's home directory and preserved in the returned completions.
 pub fn complete_file_path(partial: &str) -> Vec<String> {
     use std::path::Path;
+
+    // Expand a leading `~` / `~/` to the real home directory for directory reads,
+    // then restore the `~` prefix in the returned completions.
+    let home = dirs::home_dir();
+    let expanded: Option<String> = if partial == "~" || partial.starts_with("~/") {
+        home.as_ref().map(|h| {
+            if partial == "~" {
+                format!("{}/", h.display())
+            } else {
+                format!("{}{}", h.display(), &partial[1..])
+            }
+        })
+    } else {
+        None
+    };
+    let tilde_expanded = expanded.is_some();
+    let partial: &str = expanded.as_deref().unwrap_or(partial);
 
     let path = Path::new(partial);
 
@@ -307,6 +339,21 @@ pub fn complete_file_path(partial: &str) -> Vec<String> {
         .collect();
 
     completions.sort();
+
+    // Restore the `~` prefix in paths that were expanded from the home directory.
+    if tilde_expanded && let Some(h) = home {
+        let home_str = h.to_string_lossy();
+        return completions
+            .into_iter()
+            .map(|c| {
+                if c.starts_with(home_str.as_ref()) {
+                    format!("~{}", &c[home_str.len()..])
+                } else {
+                    c
+                }
+            })
+            .collect();
+    }
     completions
 }
 
@@ -810,6 +857,50 @@ mod tests {
         let results = complete_file_path("Cargo");
         // Should find Cargo.toml / Cargo.lock at minimum
         assert!(results.iter().any(|r| r.starts_with("Cargo")));
+    }
+
+    #[test]
+    fn test_complete_file_path_tilde_slash_lists_home() {
+        let results = complete_file_path("~/");
+        assert!(
+            !results.is_empty(),
+            "~/ should list home directory contents"
+        );
+        for r in &results {
+            assert!(r.starts_with("~/"), "expected ~/ prefix, got: {r}");
+        }
+    }
+
+    #[test]
+    fn test_complete_file_path_tilde_alone_expands_home() {
+        // Bare `~` should also expand and list home directory contents
+        let results = complete_file_path("~");
+        assert!(
+            !results.is_empty(),
+            "~ should expand to home and list contents"
+        );
+        for r in &results {
+            assert!(r.starts_with("~/"), "expected ~/ prefix, got: {r}");
+        }
+    }
+
+    #[test]
+    fn test_complete_file_path_tilde_with_prefix_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        // We can't mock dirs::home_dir(), so test the substitution logic
+        // by verifying that a real ~/path returns ~ prefixed results.
+        let results = complete_file_path("~/");
+        // All completions must have the tilde restored, never the raw home path
+        if let Some(home) = dirs::home_dir() {
+            let home_str = home.to_string_lossy();
+            for r in &results {
+                assert!(
+                    !r.starts_with(home_str.as_ref()),
+                    "raw home path leaked into completion: {r}"
+                );
+            }
+        }
+        drop(dir);
     }
 
     #[test]

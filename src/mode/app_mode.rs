@@ -63,6 +63,10 @@ pub enum ModeRenderState {
     ConfirmRestoreSession {
         files: Vec<String>,
     },
+    ConfirmOpenDir {
+        dir: String,
+        files: Vec<String>,
+    },
 }
 
 #[async_trait]
@@ -220,6 +224,72 @@ impl Mode for ConfirmRestoreSessionMode {
 
     fn render_state(&self) -> ModeRenderState {
         ModeRenderState::ConfirmRestoreSession {
+            files: self.files.clone(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConfirmOpenDirMode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct ConfirmOpenDirMode {
+    pub dir: String,
+    pub files: Vec<String>,
+}
+
+#[async_trait]
+impl Mode for ConfirmOpenDirMode {
+    async fn handle_key(
+        self: Box<Self>,
+        tab: &mut TabState,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        let kb = &tab.keybindings.confirm;
+        if kb.yes.matches(key, modifiers) {
+            (
+                Box::new(NormalMode::default()),
+                KeyResult::OpenFiles(self.files),
+            )
+        } else if kb.no.matches(key, modifiers) {
+            (Box::new(NormalMode::default()), KeyResult::Handled)
+        } else {
+            (self, KeyResult::Handled)
+        }
+    }
+
+    fn status_line(&self) -> &str {
+        "[OPEN DIR] Open files from directory?  <y> yes  <n> no"
+    }
+
+    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let n = self.files.len();
+        let dir = self.dir.clone();
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[OPEN DIR]  ",
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        )];
+        spans.push(Span::styled(
+            format!(
+                "Open {} file{} from {}?  ",
+                n,
+                if n == 1 { "" } else { "s" },
+                dir
+            ),
+            Style::default().fg(theme.text),
+        ));
+        status_entry(&mut spans, kb.confirm.yes.display(), "yes", theme);
+        status_entry(&mut spans, kb.confirm.no.display(), "no", theme);
+        Line::from(spans)
+    }
+
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::ConfirmOpenDir {
+            dir: self.dir.clone(),
             files: self.files.clone(),
         }
     }
@@ -509,5 +579,106 @@ mod tests {
             mode.render_state(),
             ModeRenderState::ConfirmRestore
         ));
+    }
+
+    // ── ConfirmOpenDirMode ───────────────────────────────────────────────────
+
+    async fn press_open_dir(
+        mode: ConfirmOpenDirMode,
+        tab: &mut TabState,
+        code: KeyCode,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        Box::new(mode)
+            .handle_key(tab, code, KeyModifiers::NONE)
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_confirm_open_dir_y_returns_open_files() {
+        let mut tab = make_tab(&["line"]).await;
+        let files = vec!["/tmp/a.log".to_string(), "/tmp/b.log".to_string()];
+        let mode = ConfirmOpenDirMode {
+            dir: "/tmp".to_string(),
+            files: files.clone(),
+        };
+        let (mode2, result) = press_open_dir(mode, &mut tab, KeyCode::Char('y')).await;
+        assert!(matches!(result, KeyResult::OpenFiles(ref f) if *f == files));
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmOpenDir { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_confirm_open_dir_n_returns_normal() {
+        let mut tab = make_tab(&["line"]).await;
+        let mode = ConfirmOpenDirMode {
+            dir: "/tmp".to_string(),
+            files: vec!["/tmp/a.log".to_string()],
+        };
+        let (mode2, result) = press_open_dir(mode, &mut tab, KeyCode::Char('n')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmOpenDir { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_confirm_open_dir_esc_returns_normal() {
+        let mut tab = make_tab(&["line"]).await;
+        let mode = ConfirmOpenDirMode {
+            dir: "/tmp".to_string(),
+            files: vec!["/tmp/a.log".to_string()],
+        };
+        let (mode2, result) = press_open_dir(mode, &mut tab, KeyCode::Esc).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmOpenDir { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_confirm_open_dir_other_key_stays_in_mode() {
+        let mut tab = make_tab(&["line"]).await;
+        let mode = ConfirmOpenDirMode {
+            dir: "/tmp".to_string(),
+            files: vec!["/tmp/a.log".to_string()],
+        };
+        let (mode2, result) = press_open_dir(mode, &mut tab, KeyCode::Char('z')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(matches!(
+            mode2.render_state(),
+            ModeRenderState::ConfirmOpenDir { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_confirm_open_dir_status_line_contains_open_dir() {
+        let mode = ConfirmOpenDirMode {
+            dir: "/tmp".to_string(),
+            files: vec!["/tmp/a.log".to_string()],
+        };
+        assert!(mode.status_line().contains("[OPEN DIR]"));
+    }
+
+    #[tokio::test]
+    async fn test_confirm_open_dir_render_state() {
+        let files = vec!["/tmp/a.log".to_string()];
+        let mode = ConfirmOpenDirMode {
+            dir: "/tmp".to_string(),
+            files: files.clone(),
+        };
+        match mode.render_state() {
+            ModeRenderState::ConfirmOpenDir {
+                dir,
+                files: returned,
+            } => {
+                assert_eq!(dir, "/tmp");
+                assert_eq!(returned, files);
+            }
+            other => panic!("expected ConfirmOpenDir, got {:?}", other),
+        }
     }
 }

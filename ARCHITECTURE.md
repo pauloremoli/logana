@@ -298,8 +298,8 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `keybindings: Arc<Keybindings>` — shared keybinding config (cloned from `App` on tab creation)
   - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
-- **Mode structs**: `NormalMode { count }`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `VisualLineMode { anchor, count }`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`.
-- **`ModeRenderState` enum** (ISP-compliant): Each mode implements `render_state() -> ModeRenderState`, returning a typed variant carrying exactly the data its renderer needs. Variants: `Normal`, `Command { input, cursor, completion_index }`, `Search { query, forward }`, `FilterManagement { selected_index }`, `FilterEdit`, `VisualLine { anchor }`, `Comment { lines, cursor_row, cursor_col, line_count }`, `KeybindingsHelp { scroll, search }`, `SelectFields { fields, selected }`, `DockerSelect { containers, selected, error }`, `ValueColors { groups, search, selected }`, `ConfirmRestore`, `ConfirmRestoreSession { files }`. The renderer does a single `match` on the enum instead of calling many optional trait methods.
+- **Mode structs**: `NormalMode { count }`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `ConfirmOpenDirMode`, `VisualLineMode { anchor, count }`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`.
+- **`ModeRenderState` enum** (ISP-compliant): Each mode implements `render_state() -> ModeRenderState`, returning a typed variant carrying exactly the data its renderer needs. Variants: `Normal`, `Command { input, cursor, completion_index }`, `Search { query, forward }`, `FilterManagement { selected_index }`, `FilterEdit`, `VisualLine { anchor }`, `Comment { lines, cursor_row, cursor_col, line_count }`, `KeybindingsHelp { scroll, search }`, `SelectFields { fields, selected }`, `DockerSelect { containers, selected, error }`, `ValueColors { groups, search, selected }`, `ConfirmRestore`, `ConfirmRestoreSession { files }`, `ConfirmOpenDir { dir, files }`. The renderer does a single `match` on the enum instead of calling many optional trait methods.
 - **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`, then applies date filters as a post-processing `retain()` step (see Date Filter section).
 
 **Rendering pipeline (per frame)**:
@@ -324,7 +324,9 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 **Conflict validation**: at startup `Keybindings::validate()` checks for overlapping bindings within each mode scope; conflicts are printed to stderr and logged as warnings.
 **Multi-tab**: Tab/Shift+Tab switch, Ctrl+t open, Ctrl+w close
 **Command mode** (`:`) with highlight-then-accept tab completion, history, live hints. Tab/BackTab cycle a highlight over completions in the hint area without changing input; Enter accepts the highlighted completion into the input (single match = accept+execute immediately). `CommandMode::compute_completions()` encapsulates the 5-tier completion logic (color → template → file path → theme → command name). `completion_index()` trait method exposes the active highlight to the renderer.
-**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `export`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`, `docker`, `value-colors`, `date-filter`
+**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `export`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`, `docker`, `value-colors`, `date-filter`, `tail`
+**Open directory**: `logana <dir>` or `:open <dir>` lists flat (non-recursive), non-hidden regular files in the directory and shows a `ConfirmOpenDirMode` popup. Confirming opens each file in its own tab. Empty directories are rejected with an error before the TUI starts (for CLI) or as a command error (for `:open`). `list_dir_files(path) -> Vec<String>` in `ui/mod.rs` implements the listing logic.
+**Tail mode** (`:tail`): per-tab flag `tail_mode: bool` on `TabState`. When enabled, every call to `advance_file_watches()` or `update_stdin_tab()` moves `scroll_offset` to the last visible line after new content arrives. When disabled, the view is not auto-scrolled (stays wherever the user left it). Enabling tail immediately jumps to the last line. The logs panel title shows `[TAIL]` when active.
 **Filter management mode** (`f`): navigate, toggle, delete, edit, set color, add include/exclude/date-filter
 
 ### Config (config.rs)
@@ -381,13 +383,13 @@ Example `~/.config/logana/config.json`:
 
 ## App Lifecycle
 
-1. Parse CLI args (optional file path).
+1. Parse CLI args (optional file path or directory path).
 2. Init tokio runtime + SQLite DB (`~/.local/share/logana/logana.db`).
 3. Load `Config` from `~/.config/logana/config.json` (or defaults on missing/parse error).
-4. Build `FileReader` from file path (mmap) or stdin (bytes).
+4. Build `FileReader` from file path (mmap) or stdin (bytes). For directory args, start with an empty reader.
 5. Build `LogManager` — loads filters from DB for this source.
 6. Enter terminal raw mode, create `App` with theme and `Arc<Keybindings>`.
-7. If a file was opened: check for saved `FileContext`, prompt per-file restore (`ConfirmRestoreMode`). If no file and no piped data: check for a saved session (`session_tabs`), prompt session restore (`ConfirmRestoreSessionMode`). On confirm, all session files are opened and their per-file contexts auto-applied without additional prompts.
+7. If a file was opened: check for saved `FileContext`, prompt per-file restore (`ConfirmRestoreMode`). If a directory was given: set `ConfirmOpenDirMode` with the listed files. If no file and no piped data: check for a saved session (`session_tabs`), prompt session restore (`ConfirmRestoreSessionMode`). On confirm, all session files are opened and their per-file contexts auto-applied without additional prompts.
 8. **Event loop** (250ms poll): render frame → wait for key event → handle key → repeat.
 9. On exit: save `FileContext` for each tab + save the session (list of open source files), restore terminal.
 

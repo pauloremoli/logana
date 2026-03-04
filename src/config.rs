@@ -1158,8 +1158,7 @@ impl Config {
     /// This function is infallible — any I/O or parse error falls back to
     /// `Config::default()` so a bad config never prevents startup.
     pub fn load() -> Self {
-        let Some(config_path) =
-            dirs::config_dir().map(|d| d.join("logana").join("config.json"))
+        let Some(config_path) = dirs::config_dir().map(|d| d.join("logana").join("config.json"))
         else {
             return Config::default();
         };

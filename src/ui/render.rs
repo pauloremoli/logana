@@ -8,8 +8,8 @@ use ratatui::{
 };
 
 use crate::auto_complete::{
-    complete_color, complete_file_path, extract_color_partial, find_command_completions,
-    find_matching_command,
+    FILE_PATH_COMMANDS, complete_color, complete_file_path, extract_color_partial,
+    find_command_completions, find_matching_command,
 };
 use crate::filters::{SEARCH_STYLE_ID, render_line};
 use crate::theme::complete_theme;
@@ -105,6 +105,10 @@ impl App {
             } => Some((groups.clone(), search.clone(), *selected)),
             _ => None,
         };
+        let confirm_open_dir: Option<(String, Vec<String>)> = match &render_state {
+            ModeRenderState::ConfirmOpenDir { dir, files } => Some((dir.clone(), files.clone())),
+            _ => None,
+        };
 
         if is_confirm_restore {
             self.render_confirm_restore_modal(frame);
@@ -181,6 +185,11 @@ impl App {
         // is visible behind it.
         if let Some(files) = session_files {
             self.render_confirm_restore_session_modal(frame, &files);
+        }
+
+        // Open-directory confirmation popup.
+        if let Some((dir, files)) = confirm_open_dir {
+            self.render_confirm_open_dir_modal(frame, &dir, &files);
         }
 
         // Comment popup renders over everything except the loading bar.
@@ -559,8 +568,9 @@ impl App {
             })
             .collect();
 
+        let tail_mode = self.tabs[self.active_tab].tail_mode;
         let logs_title = format!(
-            "{} ({})",
+            "{} ({}){}",
             self.tabs[self.active_tab]
                 .log_manager
                 .source_file()
@@ -572,7 +582,8 @@ impl App {
                         .to_string()
                 })
                 .unwrap_or(String::from("Logs")),
-            num_visible
+            num_visible,
+            if tail_mode { " [TAIL]" } else { "" }
         );
 
         let mut paragraph = Paragraph::new(log_lines)
@@ -716,15 +727,8 @@ impl App {
                         .collect::<Vec<_>>()
                         .join(" ")
                 } else {
-                    let file_commands = [
-                        "open",
-                        "load-filters",
-                        "save-filters",
-                        "export-marked",
-                        "export",
-                    ];
                     let trimmed = input_text.trim();
-                    let file_cmd = file_commands
+                    let file_cmd = FILE_PATH_COMMANDS
                         .iter()
                         .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
 
@@ -827,9 +831,8 @@ impl App {
                     frame.render_widget(hint, hint_area);
                 }
             } else {
-                let file_commands = ["open", "load-filters", "save-filters", "export-marked"];
                 let trimmed_input = input_text.trim();
-                let file_cmd = file_commands
+                let file_cmd = FILE_PATH_COMMANDS
                     .iter()
                     .find(|cmd| trimmed_input.starts_with(&format!("{} ", cmd)));
 

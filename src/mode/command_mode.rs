@@ -5,8 +5,8 @@ use ratatui::text::{Line, Span};
 
 use crate::{
     auto_complete::{
-        complete_color, complete_file_path, extract_color_partial, find_command_completions,
-        fuzzy_match,
+        FILE_PATH_COMMANDS, complete_color, complete_file_path, extract_color_partial,
+        find_command_completions, fuzzy_match,
     },
     config::Keybindings,
     mode::{
@@ -124,6 +124,8 @@ pub enum Commands {
         /// Date filter expression (e.g. "01:00 .. 02:00", "> 2024-02-22")
         expr: Vec<String>,
     },
+    /// Toggle tail mode (always scroll to last line on new content)
+    Tail,
 }
 
 #[derive(Debug)]
@@ -185,15 +187,8 @@ impl CommandMode {
         }
 
         // File path completion
-        let file_commands = [
-            "open",
-            "load-filters",
-            "save-filters",
-            "export-marked",
-            "export",
-        ];
         let input_ltrimmed = self.input.trim_start();
-        let file_cmd = file_commands
+        let file_cmd = FILE_PATH_COMMANDS
             .iter()
             .find(|cmd| input_ltrimmed.starts_with(&format!("{} ", cmd)));
         if let Some(&cmd) = file_cmd {

@@ -933,6 +933,93 @@ impl App {
         frame.render_widget(modal, modal_area);
     }
 
+    pub(super) fn render_confirm_open_dir_modal(
+        &mut self,
+        frame: &mut Frame<'_>,
+        dir: &str,
+        files: &[String],
+    ) {
+        const MAX_DISPLAY: usize = 10;
+        let display_count = files.len().min(MAX_DISPLAY);
+        let extra = files.len().saturating_sub(MAX_DISPLAY);
+        let extra_line: u16 = if extra > 0 { 1 } else { 0 };
+        let modal_width = 60_u16;
+        // borders(2) + top-padding(1) + files + extra_line + blank(1) + y/n(1)
+        let modal_height = (display_count as u16 + 4 + extra_line).min(frame.area().height);
+        let area = frame.area();
+        let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(modal_height)) / 2;
+        let modal_area = ratatui::layout::Rect::new(x, y, modal_width, modal_height);
+
+        frame.render_widget(ratatui::widgets::Clear, modal_area);
+
+        let txt_style = Style::default().fg(self.theme.text);
+        let br_style = Style::default().fg(self.theme.border);
+        let key_style = Style::default()
+            .fg(self.theme.text_highlight)
+            .add_modifier(Modifier::BOLD);
+
+        let mut lines_out: Vec<Line> = Vec::new();
+        for path in files.iter().take(MAX_DISPLAY) {
+            let name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path.as_str());
+            lines_out.push(Line::from(Span::styled(format!("  • {}", name), txt_style)));
+        }
+        if extra > 0 {
+            lines_out.push(Line::from(Span::styled(
+                format!("  … and {} more", extra),
+                br_style,
+            )));
+        }
+        lines_out.push(Line::from(""));
+
+        let kb = &self.keybindings.confirm;
+        let mut yn_spans: Vec<Span<'static>> = vec![Span::styled(" ", txt_style)];
+        popup_entry(
+            &mut yn_spans,
+            kb.yes.display(),
+            "yes",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut yn_spans,
+            kb.no.display(),
+            "no",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        lines_out.push(Line::from(yn_spans));
+
+        let title = format!(
+            " Open directory? ({} file{}) ",
+            files.len(),
+            if files.len() == 1 { "" } else { "s" }
+        );
+        let modal = Paragraph::new(lines_out)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.border_title))
+                    .title(title)
+                    .title_style(
+                        Style::default()
+                            .fg(self.theme.text_highlight)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .title_alignment(ratatui::layout::Alignment::Center)
+                    .padding(ratatui::widgets::Padding::new(0, 0, 1, 0)),
+            )
+            .style(Style::default().bg(self.theme.root_bg));
+        frame.render_widget(modal, modal_area);
+
+        let _ = dir; // used in title via `files.len()`, dir shown in status bar
+    }
+
     pub(super) fn render_comment_popup(
         &mut self,
         frame: &mut Frame<'_>,

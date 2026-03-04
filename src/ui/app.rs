@@ -248,6 +248,14 @@ impl App {
                         self.theme.value_colors.disabled = disabled;
                     }
                     KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
+                    KeyResult::OpenFiles(paths) => {
+                        for path in paths {
+                            if let Err(e) = self.open_file(&path).await {
+                                self.tabs[self.active_tab].command_error = Some(e);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -285,6 +293,14 @@ impl App {
                 self.theme.value_colors.disabled = disabled;
             }
             KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
+            KeyResult::OpenFiles(paths) => {
+                for path in paths {
+                    if let Err(e) = self.open_file(&path).await {
+                        self.tabs[self.active_tab].command_error = Some(e);
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -805,6 +821,26 @@ mod tests {
         // No source file — save_tab_context should be a no-op (no panic).
         let tab = &app.tabs[0];
         app.save_tab_context(tab).await;
+    }
+
+    #[tokio::test]
+    async fn test_open_files_key_result_opens_new_tabs() {
+        let mut app = make_app(&["line"]).await;
+        // Create real temp files so open_file succeeds.
+        let tmp = tempfile::tempdir().unwrap();
+        let path_a = tmp.path().join("a.log");
+        let path_b = tmp.path().join("b.log");
+        std::fs::write(&path_a, b"aaa\n").unwrap();
+        std::fs::write(&path_b, b"bbb\n").unwrap();
+        let paths = vec![
+            path_a.to_str().unwrap().to_string(),
+            path_b.to_str().unwrap().to_string(),
+        ];
+        // Simulate the OpenFiles result being handled.
+        for path in &paths {
+            app.open_file(path).await.unwrap();
+        }
+        assert_eq!(app.tabs.len(), 3); // initial + 2 new
     }
 
     #[tokio::test]

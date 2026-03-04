@@ -23,7 +23,12 @@ impl App {
             .map_err(|e| format!("Invalid command: {}", e))?;
 
         match args.command {
-            Some(Commands::Filter { pattern, fg, bg, line_mode }) => {
+            Some(Commands::Filter {
+                pattern,
+                fg,
+                bg,
+                line_mode,
+            }) => {
                 if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
                     self.tabs[self.active_tab]
                         .log_manager
@@ -146,6 +151,15 @@ impl App {
                     .map_err(|e| format!("Failed to load theme '{}': {}", theme_name, e))?;
             }
             Some(Commands::Open { path }) => {
+                if std::path::Path::new(&path).is_dir() {
+                    let files = crate::ui::list_dir_files(&path);
+                    if files.is_empty() {
+                        return Err(format!("'{}' contains no files.", path));
+                    }
+                    self.tabs[self.active_tab].mode =
+                        Box::new(crate::mode::app_mode::ConfirmOpenDirMode { dir: path, files });
+                    return Ok(true);
+                }
                 self.open_file(&path).await?;
             }
             Some(Commands::CloseTab) => {
@@ -347,6 +361,14 @@ impl App {
                     .await;
                 self.tabs[self.active_tab].refresh_visible();
             }
+            Some(Commands::Tail) => {
+                let tab = &mut self.tabs[self.active_tab];
+                tab.tail_mode = !tab.tail_mode;
+                if tab.tail_mode {
+                    let new_count = tab.visible_indices.len();
+                    tab.scroll_offset = new_count.saturating_sub(1);
+                }
+            }
             None => {}
         }
         Ok(false)
@@ -377,6 +399,46 @@ mod tests {
             Arc::new(Keybindings::default()),
         )
         .await
+    }
+
+    // ── tail ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_tail_command_toggles_on() {
+        let mut app = make_app(&["line1", "line2", "line3"]).await;
+        assert!(!app.tab().tail_mode);
+        app.run_command("tail").await.unwrap();
+        assert!(app.tab().tail_mode);
+    }
+
+    #[tokio::test]
+    async fn test_tail_command_toggles_off() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        app.run_command("tail").await.unwrap();
+        assert!(app.tab().tail_mode);
+        app.run_command("tail").await.unwrap();
+        assert!(!app.tab().tail_mode);
+    }
+
+    #[tokio::test]
+    async fn test_tail_on_jumps_to_last_line() {
+        let mut app = make_app(&["l1", "l2", "l3", "l4", "l5"]).await;
+        app.tabs[0].scroll_offset = 0;
+        app.run_command("tail").await.unwrap();
+        // Enabling tail should immediately jump to the last visible line.
+        assert_eq!(app.tab().scroll_offset, 4);
+    }
+
+    #[tokio::test]
+    async fn test_tail_off_does_not_change_scroll() {
+        let mut app = make_app(&["l1", "l2", "l3", "l4", "l5"]).await;
+        // Enable then disable tail; the disabling should not move the cursor.
+        app.run_command("tail").await.unwrap();
+        assert_eq!(app.tab().scroll_offset, 4);
+        app.tabs[0].scroll_offset = 2;
+        app.run_command("tail").await.unwrap();
+        assert!(!app.tab().tail_mode);
+        assert_eq!(app.tab().scroll_offset, 2);
     }
 
     #[tokio::test]
@@ -700,6 +762,31 @@ mod tests {
         let mut app = make_app(&["line"]).await;
         let result = app.run_command("open /nonexistent/path/xyz.log").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_open_dir_sets_confirm_open_dir_mode() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.log"), b"hello").unwrap();
+        std::fs::write(tmp.path().join("b.log"), b"world").unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let result = app.run_command(&format!("open {}", dir)).await.unwrap();
+        assert!(result, "open <dir> should return true (mode was set)");
+        assert!(matches!(
+            app.tabs[0].mode.render_state(),
+            ModeRenderState::ConfirmOpenDir { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_open_empty_dir_returns_error() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let result = app.run_command(&format!("open {}", dir)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("contains no files"));
     }
 
     // ── export ─────────────────────────────────────────────────────────

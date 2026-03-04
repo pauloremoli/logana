@@ -8,14 +8,13 @@ use logana::config::Config;
 use logana::db::Database;
 use logana::file_reader::FileReader;
 use logana::log_manager::LogManager;
+use logana::mode::app_mode::ConfirmOpenDirMode;
 use logana::theme::Theme;
-use logana::ui::{App, LoadContext};
+use logana::ui::{App, LoadContext, list_dir_files};
 use ratatui::prelude::*;
 use std::io::{IsTerminal, stdin, stdout};
 use std::sync::Arc;
 use tracing::error;
-use tracing_appender::rolling;
-use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -33,44 +32,56 @@ fn get_db_path() -> String {
     }
 }
 
-/// Validate that `path` exists and is a regular file.
+/// Validate that `path` exists (file or directory).
 /// Returns `Ok(())` on success, or an error message describing the problem.
-fn validate_file_path(path: &str) -> std::result::Result<(), String> {
+fn validate_file_arg(path: &str) -> std::result::Result<(), String> {
     let p = std::path::Path::new(path);
     if !p.exists() {
-        return Err(format!("File '{}' not found.", path));
-    }
-    if p.is_dir() {
-        return Err(format!("'{}' is a directory, not a file.", path));
+        return Err(format!("'{}' not found.", path));
     }
     Ok(())
 }
 
 /// Determine whether to start a background file load and what source path
 /// to associate with the `LogManager`.
+/// For directories, returns `(None, false)` — the dir mode is handled via
+/// `ConfirmOpenDirMode` after the TUI is started.
 fn resolve_source(file_path: &Option<String>) -> (Option<String>, bool) {
     if let Some(path) = file_path {
-        (Some(path.clone()), true)
+        if std::path::Path::new(path).is_dir() {
+            (None, false)
+        } else {
+            (Some(path.clone()), true)
+        }
     } else {
         (None, false)
     }
 }
+
+/// In debug builds, write logs to a fixed file in the system temp directory
+/// (`$TMPDIR/logana.log`).  The returned guard must be kept alive for the
+/// duration of the process.
+#[cfg(debug_assertions)]
+fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
+    let file_appender = tracing_appender::rolling::never(std::env::temp_dir(), "logana.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .json()
+        .init();
+    guard
+}
+
+/// In release builds logging is disabled entirely.
+#[cfg(not(debug_assertions))]
+fn init_logging() {}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let file_path = args.file;
 
-    let file_appender = rolling::daily("logs", "logana.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    fmt()
-        .with_env_filter(env_filter)
-        .with_writer(non_blocking)
-        .json()
-        .init();
+    let _log_guard = init_logging();
 
     let db_path = get_db_path();
     let db = Database::new(&db_path).await.inspect_err(|err| {
@@ -78,11 +89,21 @@ async fn main() -> Result<()> {
     })?;
     let db = Arc::new(db);
 
-    // Validate the file path before entering the TUI (gives a clean error message).
+    // Validate the path before entering the TUI (gives a clean error message).
     if let Some(ref path) = file_path
-        && let Err(msg) = validate_file_path(path)
+        && let Err(msg) = validate_file_arg(path)
     {
         eprintln!("Error: {}", msg);
+        std::process::exit(1);
+    }
+
+    // For a directory argument, pre-check that it contains files so we can
+    // give a clean error before entering the TUI.
+    if let Some(ref path) = file_path
+        && std::path::Path::new(path).is_dir()
+        && logana::ui::list_dir_files(path).is_empty()
+    {
+        eprintln!("Error: '{}' contains no files.", path);
         std::process::exit(1);
     }
 
@@ -129,6 +150,17 @@ async fn main() -> Result<()> {
             }
         } else if stdin_is_piped {
             app.begin_stdin_load().await;
+        }
+
+        // Directory argument: show confirmation popup to open each file in its own tab.
+        if let Some(ref path) = file_path
+            && std::path::Path::new(path).is_dir()
+        {
+            let files = list_dir_files(path);
+            app.tabs[0].mode = Box::new(ConfirmOpenDirMode {
+                dir: path.clone(),
+                files,
+            });
         }
 
         let app_result = app.run(&mut terminal).await;
@@ -222,32 +254,32 @@ mod tests {
         }
     }
 
-    // ── validate_file_path ────────────────────────────────────────────
+    // ── validate_file_arg ─────────────────────────────────────────────
 
     #[test]
-    fn test_validate_file_path_nonexistent() {
-        let result = validate_file_path("/nonexistent/path/file.log");
+    fn test_validate_file_arg_nonexistent() {
+        let result = validate_file_arg("/nonexistent/path/file.log");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
     }
 
     #[test]
-    fn test_validate_file_path_directory() {
-        let result = validate_file_path("/tmp");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("directory"));
+    fn test_validate_file_arg_directory_is_ok() {
+        // Directories are now accepted (handled via ConfirmOpenDirMode).
+        let result = validate_file_arg("/tmp");
+        assert!(result.is_ok());
     }
 
     #[test]
-    fn test_validate_file_path_valid_file() {
+    fn test_validate_file_arg_valid_file() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap();
-        assert!(validate_file_path(path).is_ok());
+        assert!(validate_file_arg(path).is_ok());
     }
 
     #[test]
-    fn test_validate_file_path_empty_string() {
-        let result = validate_file_path("");
+    fn test_validate_file_arg_empty_string() {
+        let result = validate_file_arg("");
         // Empty path doesn't exist.
         assert!(result.is_err());
     }
@@ -256,15 +288,27 @@ mod tests {
 
     #[test]
     fn test_resolve_source_with_file() {
-        let file_path = Some("/var/log/syslog".to_string());
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let file_path = Some(path.clone());
         let (source, bg_load) = resolve_source(&file_path);
-        assert_eq!(source, Some("/var/log/syslog".to_string()));
+        assert_eq!(source, Some(path));
         assert!(bg_load);
     }
 
     #[test]
     fn test_resolve_source_without_file() {
         let file_path: Option<String> = None;
+        let (source, bg_load) = resolve_source(&file_path);
+        assert!(source.is_none());
+        assert!(!bg_load);
+    }
+
+    #[test]
+    fn test_resolve_source_with_dir_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap().to_string();
+        let file_path = Some(dir);
         let (source, bg_load) = resolve_source(&file_path);
         assert!(source.is_none());
         assert!(!bg_load);

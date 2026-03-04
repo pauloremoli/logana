@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn test_rsyslog_file_format_parse() {
         let parser = JournalctlParser;
-        let line = b"2026-02-22T00:05:10.113076+01:00 paulo-pc rsyslogd: [origin software=\"rsyslogd\"] rsyslogd was HUPed";
+        let line = b"2026-02-22T00:05:10.113076+01:00 my-pc rsyslogd: [origin software=\"rsyslogd\"] rsyslogd was HUPed";
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2026-02-22T00:05:10.113076+01:00"));
         assert_eq!(parts.target, Some("rsyslogd"));
@@ -518,16 +518,16 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "hostname" && *v == "paulo-pc")
+                .any(|(k, v)| *k == "hostname" && *v == "my-pc")
         );
     }
 
     #[test]
     fn test_rsyslog_file_format_detect() {
         let lines: Vec<&[u8]> = vec![
-            b"2026-02-22T00:05:10.113076+01:00 paulo-pc rsyslogd: [origin] msg",
-            b"2026-02-22T00:05:10.119576+01:00 paulo-pc systemd[1]: logrotate.service: Deactivated successfully.",
-            b"2026-02-22T00:07:24.887273+01:00 paulo-pc systemd[1]: Starting sysstat-summary.service",
+            b"2026-02-22T00:05:10.113076+01:00 my-pc rsyslogd: [origin] msg",
+            b"2026-02-22T00:05:10.119576+01:00 my-pc systemd[1]: logrotate.service: Deactivated successfully.",
+            b"2026-02-22T00:07:24.887273+01:00 my-pc systemd[1]: Starting sysstat-summary.service",
         ];
         let parser = JournalctlParser;
         let score = parser.detect_score(&lines);

@@ -166,9 +166,9 @@ mod tests {
     #[test]
     fn test_detect_format_rsyslog_file_format() {
         let lines: Vec<&[u8]> = vec![
-            b"2026-02-22T00:05:10.113076+01:00 paulo-pc rsyslogd: [origin software=\"rsyslogd\"] msg",
-            b"2026-02-22T00:05:10.119576+01:00 paulo-pc systemd[1]: logrotate.service: Deactivated successfully.",
-            b"2026-02-22T00:07:24.887273+01:00 paulo-pc systemd[1]: Starting sysstat-summary.service",
+            b"2026-02-22T00:05:10.113076+01:00 my-pc rsyslogd: [origin software=\"rsyslogd\"] msg",
+            b"2026-02-22T00:05:10.119576+01:00 my-pc systemd[1]: logrotate.service: Deactivated successfully.",
+            b"2026-02-22T00:07:24.887273+01:00 my-pc systemd[1]: Starting sysstat-summary.service",
         ];
         let parser = detect_format(&lines).unwrap();
         assert_eq!(parser.name(), "journalctl");
