@@ -11,7 +11,7 @@ use tokio::{
 // FileLoadHandle
 // ---------------------------------------------------------------------------
 
-/// Handle returned by [`FileReader::load_async`].
+/// Handle returned by [`FileReader::load`].
 ///
 /// * `progress_rx` — watch channel carrying the current progress fraction
 ///   (0.0 – 1.0).  Updated in ~4 MiB increments by the background task.
@@ -258,7 +258,7 @@ impl FileReader {
     /// Append pre-stripped bytes to this reader, extending the line index.
     ///
     /// The caller is responsible for stripping ANSI escape sequences before
-    /// calling this (e.g. [`spawn_file_watcher`] does it automatically).
+    /// calling this (e.g. [`FileReader::spawn_file_watcher`] does it automatically).
     /// Converting an mmap-backed reader to heap-owned bytes on first call is
     /// unavoidable but cheap relative to the file I/O that precedes it.
     pub fn append_bytes(&mut self, new_data: &[u8]) {

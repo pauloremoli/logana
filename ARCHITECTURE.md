@@ -72,7 +72,7 @@ A multiline comment attached to a group of log lines. Multiple comments can exis
 
 **FieldLayout**: `{ columns: Option<Vec<String>>, columns_order: Option<Vec<String>> }` — when `columns` is `Some`, only the listed column names are shown in that order; `None` restores default display order. `columns_order` stores the full ordered list (enabled + disabled) for modal reopening. Held by `TabState`; not persisted.
 
-**FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll, comments, show_status_bar, show_borders).
+**FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll, comments, show_mode_bar, show_borders).
 
 ## Architecture Layers
 
@@ -296,7 +296,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `viewport_offset: usize` — first rendered line (index into `visible_indices`)
   - `visible_height: usize` — content rows available (updated each render frame)
   - `keybindings: Arc<Keybindings>` — shared keybinding config (cloned from `App` on tab creation)
-  - `show_status_bar: bool` — whether the bottom status/mode bar is visible (default `true`; toggled with `b`)
+  - `show_mode_bar: bool` — whether the bottom status/mode bar is visible (default `true`; toggled with `b`)
   - `show_borders: bool` — whether all panel borders (logs, sidebar, status bar) are visible (default `true`; toggled with `B`)
   - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
@@ -336,7 +336,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 ### Config (config.rs)
 
 - **Config file**: `~/.config/logana/config.json` (loaded at startup; falls back to defaults on parse/IO error — never prevents startup).
-- **`Config`**: `{ theme: Option<String>, keybindings: Keybindings, show_status_bar: bool, show_borders: bool }`. `theme` is a theme name without the `.json` extension (e.g. `"dracula"`). `show_status_bar` (default `true`) hides/shows the bottom mode/status bar at startup; `show_borders` (default `true`) hides/shows all panel borders at startup. Both can be toggled at runtime via UI mode (`u` → `b` / `B`).
+- **`Config`**: `{ theme: Option<String>, keybindings: Keybindings, show_mode_bar: bool, show_borders: bool }`. `theme` is a theme name without the `.json` extension (e.g. `"dracula"`). `show_mode_bar` (default `true`) hides/shows the bottom mode/status bar at startup; `show_borders` (default `true`) hides/shows all panel borders at startup. Both can be toggled at runtime via UI mode (`u` → `b` / `B`).
 - **`Keybindings`**: groups `NavigationKeybindings` (shared scroll/page keys used across all modes), `NormalKeybindings`, `FilterKeybindings`, `GlobalKeybindings`, `CommentKeybindings`, `VisualLineKeybindings`, `DockerSelectKeybindings`, `ValueColorsKeybindings`, `SelectFieldsKeybindings`, `HelpKeybindings`, `ConfirmKeybindings`, `UiKeybindings` — each with `#[serde(default)]` so any absent field uses its built-in default. Navigation keys (scroll_down/up, half_page_down/up, page_down/up) are configured once in the `navigation` group and shared by all modes.
 - **`KeyBindings`** (per action): a `Vec<KeyBinding>` — each action supports multiple alternative keys (e.g. `"j"` and `"Down"` for scroll down). Accepts a single JSON string or an array of strings.
 - **`KeyBinding`**: parsed from strings like `"j"`, `"Ctrl+d"`, `"Shift+Tab"`, `"F1"`, `"PageDown"`, `"Space"`, `"Esc"`. `"Shift+Tab"` maps to `KeyCode::BackTab`. `matches(key, modifiers)`: for `Char` keys accepts `NONE` or `SHIFT` (terminals vary); for non-`Char` keys (Enter, F-keys, etc.) requires an exact SHIFT match so `"Shift+Enter"` ≠ plain `"Enter"`.
@@ -348,7 +348,7 @@ Example `~/.config/logana/config.json`:
 ```json
 {
   "theme": "dracula",
-  "show_status_bar": false,
+  "show_mode_bar": false,
   "show_borders": false,
   "keybindings": {
     "navigation": { "scroll_down": ["j", "Down"], "half_page_down": "Ctrl+d" },
@@ -360,12 +360,13 @@ Example `~/.config/logana/config.json`:
 
 ### Theme (theme.rs)
 
-- JSON files from `themes/` or `~/.config/logana/themes/`
+- **Lookup order**: `~/.config/logana/themes/` (user override) → `themes/` relative to CWD (dev) → bundled themes embedded in the binary at compile time via `include_str!`. User-config always wins; bundled themes are always available regardless of install location.
+- **Bundled themes** (`BUNDLED_THEMES` static): atomic, dracula, gruvbox-dark, jandedobbeleer, monokai, nord, paradox, solarized, tokyonight.
 - Colors: hex `"#RRGGBB"` or RGB array `[r, g, b]`
-- Default: Dracula theme (hardcoded)
+- Default: Dracula theme (loaded from bundled data; hardcoded fallback if parse fails)
 - Fields: `root_bg`, `border`, `border_title`, `text`, `text_highlight`, `cursor_fg`, `trace_fg`, `debug_fg`, `notice_fg`, `warning_fg`, `error_fg`, `fatal_fg`, `search_fg`, `visual_select_bg`, `visual_select_fg`, `mark_bg`, `mark_fg`, `value_colors`
 - **`ValueColors`**: Per-token color mappings for HTTP methods (`http_get`, `http_post`, `http_put`, `http_delete`, `http_patch`, `http_other`), status codes (`status_2xx`–`status_5xx`), IP addresses (`ip_address`), and UUIDs (`uuid`). All fields have `#[serde(default)]` so existing theme files need no changes. Overridable in theme JSON under `"value_colors": { ... }`.
-- **`Theme::list_available_themes() -> Vec<String>`**: Scans both theme directories, returns sorted names (no extension).
+- **`Theme::list_available_themes() -> Vec<String>`**: Seeds from bundled names, then overlays names from `themes/` and `~/.config/logana/themes/`. Returns sorted deduplicated list.
 - **`fuzzy_match(needle, haystack) -> bool`**: Case-insensitive subsequence check; used for `set-theme` tab completion.
 
 ### Value Colors (value_colors.rs)
@@ -401,11 +402,11 @@ Example `~/.config/logana/config.json`:
 
 ## Dependencies
 
-anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, serde_with, sqlx 0.8 (sqlite, tokio), tokio (rt-multi-thread), async-trait, dirs, tempfile, unicode-width, memmap2, memchr, aho-corasick, rayon, time, tracing, tracing-subscriber, tracing-appender, arboard 3 (cross-platform clipboard)
+anyhow, clap (derive), regex, ratatui 0.30, crossterm 0.29, serde/serde_json, serde_with, sqlx 0.8 (sqlite, tokio), tokio (rt-multi-thread), async-trait, dirs, unicode-width, memmap2, memchr, aho-corasick, rayon, time, tracing, tracing-subscriber, tracing-appender, arboard 3 (cross-platform clipboard)
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/commands.rs, ui/field_layout.rs, auto_complete.rs, export.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, parser/timestamp.rs, parser/logfmt.rs, parser/common_log.rs, parser/web_error.rs, parser/dmesg.rs, parser/kube_cri.rs, value_colors.rs, date_filter.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs, mode/normal_mode.rs, mode/ui_mode.rs, config.rs, ui/mod.rs — 1208 tests total
+- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/commands.rs, ui/field_layout.rs, auto_complete.rs, export.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, parser/timestamp.rs, parser/logfmt.rs, parser/common_log.rs, parser/web_error.rs, parser/dmesg.rs, parser/kube_cri.rs, value_colors.rs, date_filter.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs, mode/normal_mode.rs, mode/ui_mode.rs, config.rs, ui/mod.rs — 1246 tests total
 - **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
 - **Stdin tests** (tests/stdin.rs): pipe input end-to-end — 14 tests
 - **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)

@@ -2,31 +2,56 @@
 name = "logana"
 version = "0.1.0"
 edition = "2024"
+authors = ["Paulo Remoli"]
+description = "A fast, keyboard-driven terminal log viewer and analyzer with filtering, search, and annotations."
+license = "GPL-3.0"
+repository = "https://github.com/pauloremoli/logana"
+homepage = "https://github.com/pauloremoli/logana"
+keywords = ["log", "tui", "viewer", "terminal", "analyzer"]
+categories = ["command-line-utilities", "development-tools::debugging"]
+exclude = [".github", "pkg"]
 
 [dependencies]
-anyhow = "1.0"
-clap = { version = "4.5", features = ["derive"] }
-regex = "1.10"
+anyhow            = { version = "1.0",    default-features = false, features = ["std"] }
+clap              = { version = "4.5",    default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
+regex             = { version = "1.10",   default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
+ratatui           = { version = "0.30",   default-features = false, features = ["crossterm"] }
+crossterm         = "0.29"
+unicode-width     = { version = "0.2",    default-features = false, features = ["cjk"] }
+serde             = { version = "1.0",    default-features = false, features = ["std", "derive"] }
+serde_json        = { version = "1.0",    default-features = false, features = ["std"] }
+serde_with        = { version = "3.8",    default-features = false, features = ["std", "macros"] }
+sqlx              = { version = "0.8",    default-features = false, features = ["runtime-tokio", "sqlite"] }
+tokio             = { version = "1",      default-features = false, features = ["rt-multi-thread", "macros", "io-std", "time", "process"] }
+async-trait       = "0.1"
+dirs              = "6.0.0"
+tracing           = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.22", default-features = false, features = ["fmt", "json"] }
+tracing-appender  = "0.2.4"
+memmap2           = "0.9"
+memchr            = { version = "2",      default-features = false, features = ["std"] }
+aho-corasick      = { version = "1",      default-features = false, features = ["std", "perf-literal"] }
+rayon             = "1"
+time              = { version = "0.3",    default-features = false, features = ["std"] }
+arboard           = "3"
+
+[dev-dependencies]
 tempfile = "3.10"
-ratatui = "0.30"
-crossterm = "0.29"
-unicode-width = "0.2"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_with = "3.8"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "process"] }
-async-trait = "0.1"
-dirs = "6.0.0"
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter", "json"]}
-tracing-appender = "0.2.4"
-memmap2 = "0.9"
-memchr = "2"
-aho-corasick = "1"
-rayon = "1"
-time = "0.3"
-arboard = "3"
 
 [profile.release]
 debug = true
+
+[workspace.metadata.dist]
+cargo-dist-version = "0.28.0"
+ci = ["github"]
+installers = ["shell", "powershell", "homebrew"]
+tap = "pauloremoli/homebrew-logana"
+publish-jobs = ["homebrew"]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+pr-run-mode = "plan"

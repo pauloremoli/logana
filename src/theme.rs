@@ -9,6 +9,20 @@ use std::str::FromStr;
 
 use crate::auto_complete::fuzzy_match;
 
+/// Themes embedded into the binary at compile time.
+/// Lookup order: user config dir → local `themes/` (dev) → here.
+static BUNDLED_THEMES: &[(&str, &str)] = &[
+    ("atomic", include_str!("../themes/atomic.json")),
+    ("dracula", include_str!("../themes/dracula.json")),
+    ("gruvbox-dark", include_str!("../themes/gruvbox-dark.json")),
+    ("jandedobbeleer", include_str!("../themes/jandedobbeleer.json")),
+    ("monokai", include_str!("../themes/monokai.json")),
+    ("nord", include_str!("../themes/nord.json")),
+    ("paradox", include_str!("../themes/paradox.json")),
+    ("solarized", include_str!("../themes/solarized.json")),
+    ("tokyonight", include_str!("../themes/tokyonight.json")),
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ValueColors {
     #[serde(
@@ -406,38 +420,48 @@ fn default_mark_fg() -> Color {
 }
 
 impl Theme {
-    /// Returns the names of all available themes found in the local `themes/` directory
-    /// and in `~/.config/logana/themes/`.
+    /// Returns the names of all available themes: bundled, local `themes/`, and
+    /// `~/.config/logana/themes/`. User-config and local names shadow bundled ones.
     pub fn list_available_themes() -> Vec<String> {
-        let mut theme_paths = vec![];
-        if let Ok(entries) = std::fs::read_dir("themes") {
-            for entry in entries.flatten() {
-                theme_paths.push(entry.path());
-            }
-        }
-        if let Some(config_dir) = dirs::config_dir() {
-            let user_themes_path = config_dir.join("logana/themes");
-            if let Ok(entries) = std::fs::read_dir(user_themes_path) {
+        Self::list_available_themes_from(dirs::config_dir().as_deref())
+    }
+
+    fn list_available_themes_from(config_dir: Option<&Path>) -> Vec<String> {
+        let mut set: std::collections::HashSet<String> =
+            BUNDLED_THEMES.iter().map(|(name, _)| name.to_string()).collect();
+
+        let mut add_from_dir = |dir: &Path| {
+            if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
-                    theme_paths.push(entry.path());
+                    let p = entry.path();
+                    if p.extension().and_then(|e| e.to_str()) == Some("json") {
+                        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                            set.insert(stem.to_string());
+                        }
+                    }
                 }
             }
+        };
+
+        add_from_dir(Path::new("themes"));
+        if let Some(dir) = config_dir {
+            add_from_dir(&dir.join("logana/themes"));
         }
-        let mut set = std::collections::HashSet::new();
-        for path in theme_paths {
-            if path.extension().and_then(|ext| ext.to_str()) == Some("json")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-            {
-                set.insert(stem.to_string());
-            }
-        }
+
         let mut themes: Vec<String> = set.into_iter().collect();
         themes.sort();
         themes
     }
 
     pub fn from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let config_path = dirs::config_dir().map(|d| d.join("logana").join("themes").join(&path));
+        Self::from_file_with_config_dir(path, dirs::config_dir().as_deref())
+    }
+
+    fn from_file_with_config_dir<P: AsRef<Path>>(
+        path: P,
+        config_dir: Option<&Path>,
+    ) -> anyhow::Result<Self> {
+        let config_path = config_dir.map(|d| d.join("logana").join("themes").join(&path));
         let local_path = Path::new("themes").join(&path);
 
         let data = if config_path.as_ref().is_some_and(|p| p.exists()) {
@@ -448,10 +472,21 @@ impl Theme {
             fs::read_to_string(&local_path)
                 .with_context(|| format!("Failed to read theme from {:?}", local_path))?
         } else {
-            anyhow::bail!(
-                "Theme {:?} not found in config dir or local themes/",
-                path.as_ref()
-            );
+            let stem = path
+                .as_ref()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            BUNDLED_THEMES
+                .iter()
+                .find(|(name, _)| *name == stem)
+                .map(|(_, json)| json.to_string())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Theme {:?} not found in config dir, local themes/, or bundled themes",
+                        path.as_ref()
+                    )
+                })?
         };
         let config: Theme = serde_json::from_str(&data)?;
         Ok(config)
@@ -507,7 +542,6 @@ pub fn complete_theme(partial: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
     use tempfile::tempdir;
 
     // ── ValueColors defaults ────────────────────────────────────────────
@@ -727,20 +761,12 @@ mod tests {
         let theme_dir = temp.path().join("logana").join("themes");
         fs::create_dir_all(&theme_dir).unwrap();
         let theme_json = serde_json::to_string(&Theme::default()).unwrap();
-        let path = theme_dir.join("test_theme.json");
-        fs::write(&path, &theme_json).unwrap();
+        fs::write(theme_dir.join("test_theme.json"), &theme_json).unwrap();
 
-        unsafe {
-            env::set_var("XDG_CONFIG_HOME", temp.path());
-        }
-        let result = Theme::from_file("test_theme.json");
-        unsafe {
-            env::remove_var("XDG_CONFIG_HOME");
-        }
+        let result = Theme::from_file_with_config_dir("test_theme.json", Some(temp.path()));
 
         assert!(result.is_ok());
-        let theme = result.unwrap();
-        assert_eq!(theme.root_bg, Color::Rgb(40, 42, 54));
+        assert_eq!(result.unwrap().root_bg, Color::Rgb(40, 42, 54));
     }
 
     #[test]
@@ -750,13 +776,7 @@ mod tests {
         fs::create_dir_all(&theme_dir).unwrap();
         fs::write(theme_dir.join("broken.json"), "not valid json {{{").unwrap();
 
-        unsafe {
-            env::set_var("XDG_CONFIG_HOME", temp.path());
-        }
-        let result = Theme::from_file("broken.json");
-        unsafe {
-            env::remove_var("XDG_CONFIG_HOME");
-        }
+        let result = Theme::from_file_with_config_dir("broken.json", Some(temp.path()));
 
         assert!(result.is_err());
     }
@@ -766,42 +786,26 @@ mod tests {
     #[test]
     fn test_theme_loading_from_config_dir() {
         let temp_dir = tempdir().unwrap();
-        let config_home = temp_dir.path();
-        unsafe {
-            env::set_var("XDG_CONFIG_HOME", config_home);
-        }
-
-        let themes_dir = config_home.join("logana/themes");
+        let themes_dir = temp_dir.path().join("logana/themes");
         fs::create_dir_all(&themes_dir).unwrap();
-        let theme_path = themes_dir.join("mytheme.json");
-        fs::write(&theme_path, "{}").unwrap();
+        fs::write(themes_dir.join("mytheme.json"), "{}").unwrap();
 
-        assert!(Theme::list_available_themes().contains(&"mytheme".to_string()));
-
-        unsafe {
-            env::remove_var("XDG_CONFIG_HOME");
-        }
+        let themes = Theme::list_available_themes_from(Some(temp_dir.path()));
+        assert!(themes.contains(&"mytheme".to_string()));
     }
 
     #[test]
     fn test_list_available_themes_ignores_non_json() {
         let temp_dir = tempdir().unwrap();
-        unsafe {
-            env::set_var("XDG_CONFIG_HOME", temp_dir.path());
-        }
         let themes_dir = temp_dir.path().join("logana/themes");
         fs::create_dir_all(&themes_dir).unwrap();
         fs::write(themes_dir.join("readme.txt"), "not a theme").unwrap();
         fs::write(themes_dir.join("valid.json"), "{}").unwrap();
 
-        let themes = Theme::list_available_themes();
+        let themes = Theme::list_available_themes_from(Some(temp_dir.path()));
         assert!(themes.contains(&"valid".to_string()));
         assert!(!themes.contains(&"readme".to_string()));
         assert!(!themes.contains(&"readme.txt".to_string()));
-
-        unsafe {
-            env::remove_var("XDG_CONFIG_HOME");
-        }
     }
 
     // ── complete_theme ──────────────────────────────────────────────────
@@ -823,21 +827,15 @@ mod tests {
     #[test]
     fn test_complete_theme_fuzzy_match() {
         let temp_dir = tempdir().unwrap();
-        unsafe {
-            env::set_var("XDG_CONFIG_HOME", temp_dir.path());
-        }
         let themes_dir = temp_dir.path().join("logana/themes");
         fs::create_dir_all(&themes_dir).unwrap();
         fs::write(themes_dir.join("monokai.json"), "{}").unwrap();
         fs::write(themes_dir.join("solarized.json"), "{}").unwrap();
 
-        let results = complete_theme("mono");
+        let all = Theme::list_available_themes_from(Some(temp_dir.path()));
+        let results: Vec<String> = all.into_iter().filter(|t| fuzzy_match("mono", t)).collect();
         assert!(results.contains(&"monokai".to_string()));
         assert!(!results.contains(&"solarized".to_string()));
-
-        unsafe {
-            env::remove_var("XDG_CONFIG_HOME");
-        }
     }
 
     // ── color serde helpers ─────────────────────────────────────────────
