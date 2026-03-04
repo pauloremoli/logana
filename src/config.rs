@@ -334,8 +334,11 @@ fn default_visual_mode() -> KeyBindings {
 fn default_toggle_marks_only() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('M'), KeyModifiers::NONE)])
 }
-fn default_yank_marked() -> KeyBindings {
+fn default_yank_line() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('y'), KeyModifiers::NONE)])
+}
+fn default_yank_marked() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('Y'), KeyModifiers::NONE)])
 }
 fn default_show_keybindings() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::F(1), KeyModifiers::NONE)])
@@ -426,6 +429,8 @@ pub struct NormalKeybindings {
     pub visual_mode: KeyBindings,
     #[serde(default = "default_toggle_marks_only")]
     pub toggle_marks_only: KeyBindings,
+    #[serde(default = "default_yank_line")]
+    pub yank_line: KeyBindings,
     #[serde(default = "default_yank_marked")]
     pub yank_marked: KeyBindings,
     #[serde(default = "default_show_keybindings")]
@@ -459,6 +464,7 @@ impl Default for NormalKeybindings {
             prev_match: default_prev_match(),
             visual_mode: default_visual_mode(),
             toggle_marks_only: default_toggle_marks_only(),
+            yank_line: default_yank_line(),
             yank_marked: default_yank_marked(),
             show_keybindings: default_show_keybindings(),
             clear_all: default_clear_all(),
@@ -1065,6 +1071,7 @@ impl Keybindings {
             ("normal.go_to_bottom", &self.normal.go_to_bottom),
             ("normal.mark_line", &self.normal.mark_line),
             ("normal.toggle_marks_only", &self.normal.toggle_marks_only),
+            ("normal.yank_line", &self.normal.yank_line),
             ("normal.yank_marked", &self.normal.yank_marked),
             ("normal.visual_mode", &self.normal.visual_mode),
             ("normal.search_forward", &self.normal.search_forward),
@@ -2042,9 +2049,10 @@ mod tests {
             kb.toggle_marks_only
                 .matches(KeyCode::Char('M'), KeyModifiers::NONE)
         );
+        assert!(kb.yank_line.matches(KeyCode::Char('y'), KeyModifiers::NONE));
         assert!(
             kb.yank_marked
-                .matches(KeyCode::Char('y'), KeyModifiers::NONE)
+                .matches(KeyCode::Char('Y'), KeyModifiers::NONE)
         );
         assert!(
             kb.show_keybindings

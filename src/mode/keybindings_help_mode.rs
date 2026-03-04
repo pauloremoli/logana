@@ -89,6 +89,10 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.toggle_marks_only.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Yank current line".into(),
+        keys: n.yank_line.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Yank marked lines".into(),
         keys: n.yank_marked.display(),
     });

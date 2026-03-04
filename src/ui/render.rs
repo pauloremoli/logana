@@ -268,9 +268,10 @@ impl App {
         let show_borders = self.tabs[self.active_tab].show_borders;
 
         // When borders are on they consume 1 row/col on each side (2 total).
-        // When borders are off we still reserve 1 col on the left for visual padding
-        // but no rows vertically (the block has no frame to consume rows).
-        let vertical_border = if show_borders { 2 } else { 0 };
+        // When borders are off we still reserve 1 col on the left for visual padding.
+        // The block title always occupies 1 row (ratatui Block::inner subtracts 1 for
+        // has_title_at_position(Top) even when Borders::NONE), so vertical cost is 1.
+        let vertical_border = if show_borders { 2 } else { 1 };
         let horizontal_shrink = if show_borders { 2 } else { 1 };
         let visible_height = (logs_area.height as usize).saturating_sub(vertical_border);
         self.tabs[self.active_tab].visible_height = visible_height;
