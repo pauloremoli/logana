@@ -4,7 +4,9 @@ use ratatui::{
     Frame,
     prelude::*,
     style::Modifier,
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+    widgets::{
+        Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
 
 use crate::auto_complete::{
@@ -110,20 +112,30 @@ impl App {
             _ => None,
         };
 
+        let show_mode_bar = self.tabs[self.active_tab].show_mode_bar;
+        let show_borders = self.tabs[self.active_tab].show_borders;
+
         if is_confirm_restore {
             self.render_confirm_restore_modal(frame);
             return;
         }
 
-        // Compute how many rows the status bar needs so wrapped text is fully visible.
-        let inner_width = (size.width as usize).saturating_sub(2); // minus 2 for L/R borders
+        // Compute how many rows the mode bar needs so wrapped text is fully visible.
+        // When borders are on they consume 1 col on each side (2 total); when off we
+        // still reserve 1 col on the left for visual padding.
+        let border_width = if show_borders { 2 } else { 1 };
+        let inner_width = (size.width as usize).saturating_sub(border_width);
         let status_text: String = status_line
             .spans
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
         let content_lines = count_wrapped_lines(&status_text, inner_width);
-        let status_height = (content_lines + 2).clamp(3, 6) as u16; // +2 for borders
+        let status_height = if show_borders {
+            (content_lines + 2).clamp(3, 6) as u16
+        } else {
+            content_lines.clamp(1, 4) as u16
+        };
 
         let mut constraints = vec![];
         if has_multiple_tabs {
@@ -136,7 +148,12 @@ impl App {
                 self.compute_hint_height(&command_input, inner_width, completion_index);
             constraints.push(Constraint::Length(hint_height)); // hint line(s)
         }
-        constraints.push(Constraint::Length(status_height)); // command list
+        if show_mode_bar {
+            if !show_borders {
+                constraints.push(Constraint::Length(1)); // visual gap above mode bar
+            }
+            constraints.push(Constraint::Length(status_height)); // command list
+        }
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
@@ -152,11 +169,24 @@ impl App {
         let tab = &self.tabs[self.active_tab];
 
         let (logs_area, sidebar_area) = if tab.show_sidebar {
-            let horizontal = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(1), Constraint::Length(30)])
-                .split(main_chunk);
-            (horizontal[0], Some(horizontal[1]))
+            if show_borders {
+                let horizontal = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Min(1), Constraint::Length(30)])
+                    .split(main_chunk);
+                (horizontal[0], Some(horizontal[1]))
+            } else {
+                // Add a 1-column gap between logs and sidebar when borders are off.
+                let horizontal = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Min(1),
+                        Constraint::Length(1),
+                        Constraint::Length(30),
+                    ])
+                    .split(main_chunk);
+                (horizontal[0], Some(horizontal[2]))
+            }
         } else {
             (main_chunk, None)
         };
@@ -169,16 +199,23 @@ impl App {
 
         self.render_input_bar(frame, search_input, &chunks, chunk_idx);
 
-        let command_list = Paragraph::new(status_line)
-            .block(
+        if show_mode_bar {
+            let status_block = if show_borders {
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.border)),
-            )
-            .wrap(Wrap { trim: true })
-            .style(Style::default().bg(self.theme.root_bg));
-        if let Some(&status_area) = chunks.last() {
-            frame.render_widget(command_list, status_area);
+                    .border_style(Style::default().fg(self.theme.border))
+            } else {
+                Block::default()
+                    .borders(Borders::NONE)
+                    .padding(Padding::new(1, 0, 0, 0))
+            };
+            let command_list = Paragraph::new(status_line)
+                .block(status_block)
+                .wrap(Wrap { trim: true })
+                .style(Style::default().bg(self.theme.root_bg));
+            if let Some(&status_area) = chunks.last() {
+                frame.render_widget(command_list, status_area);
+            }
         }
 
         // Session restore modal renders on top of the full TUI so stdin content
@@ -228,8 +265,14 @@ impl App {
         visual_anchor: Option<usize>,
     ) {
         let num_visible = self.tabs[self.active_tab].visible_indices.len();
+        let show_borders = self.tabs[self.active_tab].show_borders;
 
-        let visible_height = (logs_area.height as usize).saturating_sub(2);
+        // When borders are on they consume 1 row/col on each side (2 total).
+        // When borders are off we still reserve 1 col on the left for visual padding
+        // but no rows vertically (the block has no frame to consume rows).
+        let vertical_border = if show_borders { 2 } else { 0 };
+        let horizontal_shrink = if show_borders { 2 } else { 1 };
+        let visible_height = (logs_area.height as usize).saturating_sub(vertical_border);
         self.tabs[self.active_tab].visible_height = visible_height;
 
         let show_line_numbers = self.tabs[self.active_tab].show_line_numbers;
@@ -246,7 +289,8 @@ impl App {
         } else {
             0
         };
-        let inner_width = (logs_area.width as usize).saturating_sub(2 + ln_prefix_width);
+        let inner_width =
+            (logs_area.width as usize).saturating_sub(horizontal_shrink + ln_prefix_width);
 
         let wrap = self.tabs[self.active_tab].wrap;
 
@@ -586,14 +630,21 @@ impl App {
             if tail_mode { " [TAIL]" } else { "" }
         );
 
+        let logs_block = if show_borders {
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.theme.border))
+                .title(logs_title)
+                .title_style(Style::default().fg(self.theme.border_title))
+        } else {
+            Block::default()
+                .borders(Borders::NONE)
+                .padding(Padding::new(1, 0, 0, 0))
+                .title(logs_title)
+                .title_style(Style::default().fg(self.theme.border_title))
+        };
         let mut paragraph = Paragraph::new(log_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.border))
-                    .title(logs_title)
-                    .title_style(Style::default().fg(self.theme.border_title)),
-            )
+            .block(logs_block)
             .scroll((0, self.tabs[self.active_tab].horizontal_scroll as u16));
 
         if self.tabs[self.active_tab].wrap {
@@ -960,6 +1011,7 @@ impl App {
         sidebar_area: Option<Rect>,
     ) {
         if let Some(sidebar_area) = sidebar_area {
+            let show_borders = self.tabs[self.active_tab].show_borders;
             let filters = self.tabs[self.active_tab].log_manager.get_filters();
             let filters_text: Vec<Line> = filters
                 .iter()
@@ -1005,13 +1057,20 @@ impl App {
             } else {
                 "Filters [OFF]"
             };
-            let sidebar = Paragraph::new(filters_text).block(
+            let sidebar_block = if show_borders {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(self.theme.border))
                     .title(sidebar_title)
-                    .title_style(Style::default().fg(self.theme.border_title)),
-            );
+                    .title_style(Style::default().fg(self.theme.border_title))
+            } else {
+                Block::default()
+                    .borders(Borders::NONE)
+                    .padding(Padding::new(1, 0, 0, 0))
+                    .title(sidebar_title)
+                    .title_style(Style::default().fg(self.theme.border_title))
+            };
+            let sidebar = Paragraph::new(filters_text).block(sidebar_block);
             frame.render_widget(sidebar, sidebar_area);
         }
     }

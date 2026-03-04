@@ -12,6 +12,7 @@ use crate::{
         filter_mode::FilterManagementMode,
         keybindings_help_mode::KeybindingsHelpMode,
         search_mode::SearchMode,
+        ui_mode::UiMode,
         visual_mode::VisualLineMode,
     },
     theme::Theme,
@@ -138,11 +139,34 @@ impl Mode for NormalMode {
             return (self, KeyResult::Handled);
         }
 
-        if kb.normal.toggle_sidebar.matches(key, modifiers) {
-            tab.show_sidebar = !tab.show_sidebar;
+        if kb.normal.filter_include.matches(key, modifiers) {
+            let history = tab.command_history.clone();
             tab.g_key_pressed = false;
             self.count = None;
-            return (self, KeyResult::Handled);
+            return (
+                Box::new(CommandMode::with_history("filter ".to_string(), 7, history)),
+                KeyResult::Handled,
+            );
+        }
+
+        if kb.normal.filter_exclude.matches(key, modifiers) {
+            let history = tab.command_history.clone();
+            tab.g_key_pressed = false;
+            self.count = None;
+            return (
+                Box::new(CommandMode::with_history(
+                    "exclude ".to_string(),
+                    8,
+                    history,
+                )),
+                KeyResult::Handled,
+            );
+        }
+
+        if kb.normal.enter_ui_mode.matches(key, modifiers) {
+            tab.g_key_pressed = false;
+            self.count = None;
+            return (Box::new(UiMode::from_tab(tab)), KeyResult::Handled);
         }
 
         if kb.navigation.scroll_down.matches(key, modifiers) {
@@ -172,13 +196,6 @@ impl Mode for NormalMode {
             if !tab.wrap {
                 tab.horizontal_scroll = tab.horizontal_scroll.saturating_add(1);
             }
-            tab.g_key_pressed = false;
-            self.count = None;
-            return (self, KeyResult::Handled);
-        }
-
-        if kb.normal.toggle_wrap.matches(key, modifiers) {
-            tab.wrap = !tab.wrap;
             tab.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
@@ -361,7 +378,7 @@ impl Mode for NormalMode {
     }
 
     fn status_line(&self) -> &str {
-        "[NORMAL] <q> quit  <f> filter  <F> tog.filter  <m> mark  <M> marks only  <y> yank marked  <s> sidebar  <V> visual  <F1> help"
+        "[NORMAL] <q> quit  <i> filter in  <o> filter out  <f> filters  <F> tog.filter  <m> mark  <M> marks only  <y> yank  <u> ui  <V> visual  <F1> help"
     }
 
     fn render_state(&self) -> ModeRenderState {
@@ -380,7 +397,24 @@ impl Mode for NormalMode {
                 .add_modifier(Modifier::BOLD),
         )];
         status_entry(&mut spans, kb.global.quit.display(), "quit", theme);
-        status_entry(&mut spans, kb.normal.filter_mode.display(), "filter", theme);
+        status_entry(
+            &mut spans,
+            kb.normal.filter_include.display(),
+            "filter in",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.normal.filter_exclude.display(),
+            "filter out",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.normal.filter_mode.display(),
+            "filters",
+            theme,
+        );
         status_entry(
             &mut spans,
             kb.normal.toggle_filtering.display(),
@@ -394,18 +428,8 @@ impl Mode for NormalMode {
             "marks only",
             theme,
         );
-        status_entry(
-            &mut spans,
-            kb.normal.yank_marked.display(),
-            "yank marked",
-            theme,
-        );
-        status_entry(
-            &mut spans,
-            kb.normal.toggle_sidebar.display(),
-            "sidebar",
-            theme,
-        );
+        status_entry(&mut spans, kb.normal.yank_marked.display(), "yank", theme);
+        status_entry(&mut spans, kb.normal.enter_ui_mode.display(), "ui", theme);
         status_entry(&mut spans, kb.normal.visual_mode.display(), "visual", theme);
         status_entry(
             &mut spans,
@@ -548,23 +572,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_w_toggles_wrap() {
+    async fn test_i_opens_filter_include_command() {
         let mut tab = make_tab(&["line"]).await;
-        assert!(tab.wrap);
-        press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
-        assert!(!tab.wrap);
-        press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
-        assert!(tab.wrap);
+        let (mode, result) = press(&mut tab, KeyCode::Char('i'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::Handled));
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, "filter ");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
     }
 
     #[tokio::test]
-    async fn test_s_toggles_sidebar() {
+    async fn test_o_opens_filter_exclude_command() {
         let mut tab = make_tab(&["line"]).await;
-        let initial = tab.show_sidebar;
-        press(&mut tab, KeyCode::Char('s'), KeyModifiers::NONE).await;
-        assert_eq!(tab.show_sidebar, !initial);
-        press(&mut tab, KeyCode::Char('s'), KeyModifiers::NONE).await;
-        assert_eq!(tab.show_sidebar, initial);
+        let (mode, result) = press(&mut tab, KeyCode::Char('o'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::Handled));
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, "exclude ");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_u_enters_ui_mode() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, result) = press(&mut tab, KeyCode::Char('u'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(format!("{:?}", mode).contains("UiMode"));
     }
 
     #[tokio::test]
@@ -908,12 +946,15 @@ mod tests {
     async fn test_count_resets_on_non_motion_key() {
         let mut tab = make_tab(&["a", "b"]).await;
         let (mode, _) = press(&mut tab, KeyCode::Char('5'), KeyModifiers::NONE).await;
-        // Press 'w' (toggle wrap) — count should be reset
-        let _ = mode
-            .handle_key(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE)
+        // Press 'm' (mark line) — count should be reset, mode stays Normal
+        let (mode_after, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('m'), KeyModifiers::NONE)
             .await;
-        // wrap should have toggled once (not 5 times)
-        assert!(!tab.wrap);
+        // NormalMode.count should have been cleared
+        match mode_after.render_state() {
+            ModeRenderState::Normal => {}
+            other => panic!("expected Normal, got {:?}", other),
+        }
     }
 
     #[tokio::test]

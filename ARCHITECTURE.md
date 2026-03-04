@@ -72,7 +72,7 @@ A multiline comment attached to a group of log lines. Multiple comments can exis
 
 **FieldLayout**: `{ columns: Option<Vec<String>>, columns_order: Option<Vec<String>> }` — when `columns` is `Some`, only the listed column names are shown in that order; `None` restores default display order. `columns_order` stores the full ordered list (enabled + disabled) for modal reopening. Held by `TabState`; not persisted.
 
-**FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll, comments).
+**FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll, comments, show_status_bar, show_borders).
 
 ## Architecture Layers
 
@@ -296,14 +296,16 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `viewport_offset: usize` — first rendered line (index into `visible_indices`)
   - `visible_height: usize` — content rows available (updated each render frame)
   - `keybindings: Arc<Keybindings>` — shared keybinding config (cloned from `App` on tab creation)
+  - `show_status_bar: bool` — whether the bottom status/mode bar is visible (default `true`; toggled with `b`)
+  - `show_borders: bool` — whether all panel borders (logs, sidebar, status bar) are visible (default `true`; toggled with `B`)
   - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
-- **Mode structs**: `NormalMode { count }`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `ConfirmOpenDirMode`, `VisualLineMode { anchor, count }`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`.
+- **Mode structs**: `NormalMode { count }`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `ConfirmOpenDirMode`, `VisualLineMode { anchor, count }`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`, `UiMode { sidebar, status_bar, borders, wrap }`.
 - **`ModeRenderState` enum** (ISP-compliant): Each mode implements `render_state() -> ModeRenderState`, returning a typed variant carrying exactly the data its renderer needs. Variants: `Normal`, `Command { input, cursor, completion_index }`, `Search { query, forward }`, `FilterManagement { selected_index }`, `FilterEdit`, `VisualLine { anchor }`, `Comment { lines, cursor_row, cursor_col, line_count }`, `KeybindingsHelp { scroll, search }`, `SelectFields { fields, selected }`, `DockerSelect { containers, selected, error }`, `ValueColors { groups, search, selected }`, `ConfirmRestore`, `ConfirmRestoreSession { files }`, `ConfirmOpenDir { dir, files }`. The renderer does a single `match` on the enum instead of calling many optional trait methods.
 - **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`, then applies date filters as a post-processing `retain()` step (see Date Filter section).
 
 **Rendering pipeline (per frame)**:
-1. Compute `visible_height = logs_area.height - 2` (subtract Block borders).
+1. Compute `visible_height = logs_area.height - border_size` where `border_size` is 2 when `show_borders` is `true`, 0 otherwise.
 2. Compute `inner_width` (terminal columns available inside borders, minus line-number prefix).
 3. Wrap-aware viewport adjustment: when wrap is ON, sums terminal rows (via `line_row_count`) from `viewport_offset` to `scroll_offset`; scrolls when total exceeds `visible_height`.
 4. Wrap-aware `end` computation: walks from `start` accumulating `line_row_count()` until `visible_height` is filled.
@@ -325,6 +327,8 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 **Multi-tab**: Tab/Shift+Tab switch, Ctrl+t open, Ctrl+w close
 **Command mode** (`:`) with highlight-then-accept tab completion, history, live hints. Tab/BackTab cycle a highlight over completions in the hint area without changing input; Enter accepts the highlighted completion into the input (single match = accept+execute immediately). `CommandMode::compute_completions()` encapsulates the 5-tier completion logic (color → template → file path → theme → command name). `completion_index()` trait method exposes the active highlight to the renderer.
 **Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `export`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`, `docker`, `value-colors`, `date-filter`, `tail`
+**UI mode** (`u`): display-only toggles — sidebar (`s`), status bar (`b`), borders (`B`), wrap (`w`). Stays open until `Esc`. Status bar shows current ON/OFF state for each toggle. `UiMode` stores a snapshot of tab display flags to render state without access to `TabState` in `dynamic_status_line`.
+**Quick filter shortcuts** (Normal mode): `i` → opens CommandMode prefilled with `"filter "` (include), `o` → opens CommandMode prefilled with `"exclude "` (exclude). These allow adding filters without entering Filter Management mode.
 **Open directory**: `logana <dir>` or `:open <dir>` lists flat (non-recursive), non-hidden regular files in the directory and shows a `ConfirmOpenDirMode` popup. Confirming opens each file in its own tab. Empty directories are rejected with an error before the TUI starts (for CLI) or as a command error (for `:open`). `list_dir_files(path) -> Vec<String>` in `ui/mod.rs` implements the listing logic.
 **Tail mode** (`:tail`): per-tab flag `tail_mode: bool` on `TabState`. When enabled, every call to `advance_file_watches()` or `update_stdin_tab()` moves `scroll_offset` to the last visible line after new content arrives. When disabled, the view is not auto-scrolled (stays wherever the user left it). Enabling tail immediately jumps to the last line. The logs panel title shows `[TAIL]` when active.
 **Filter management mode** (`f`): navigate, toggle, delete, edit, set color, add include/exclude/date-filter
@@ -332,8 +336,8 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 ### Config (config.rs)
 
 - **Config file**: `~/.config/logana/config.json` (loaded at startup; falls back to defaults on parse/IO error — never prevents startup).
-- **`Config`**: `{ theme: Option<String>, keybindings: Keybindings }`. `theme` is a theme name without the `.json` extension (e.g. `"dracula"`).
-- **`Keybindings`**: groups `NavigationKeybindings` (shared scroll/page keys used across all modes), `NormalKeybindings`, `FilterKeybindings`, `GlobalKeybindings`, `CommentKeybindings`, `VisualLineKeybindings`, `DockerSelectKeybindings`, `ValueColorsKeybindings`, `SelectFieldsKeybindings`, `HelpKeybindings`, `ConfirmKeybindings` — each with `#[serde(default)]` so any absent field uses its built-in default. Navigation keys (scroll_down/up, half_page_down/up, page_down/up) are configured once in the `navigation` group and shared by all modes.
+- **`Config`**: `{ theme: Option<String>, keybindings: Keybindings, show_status_bar: bool, show_borders: bool }`. `theme` is a theme name without the `.json` extension (e.g. `"dracula"`). `show_status_bar` (default `true`) hides/shows the bottom mode/status bar at startup; `show_borders` (default `true`) hides/shows all panel borders at startup. Both can be toggled at runtime via UI mode (`u` → `b` / `B`).
+- **`Keybindings`**: groups `NavigationKeybindings` (shared scroll/page keys used across all modes), `NormalKeybindings`, `FilterKeybindings`, `GlobalKeybindings`, `CommentKeybindings`, `VisualLineKeybindings`, `DockerSelectKeybindings`, `ValueColorsKeybindings`, `SelectFieldsKeybindings`, `HelpKeybindings`, `ConfirmKeybindings`, `UiKeybindings` — each with `#[serde(default)]` so any absent field uses its built-in default. Navigation keys (scroll_down/up, half_page_down/up, page_down/up) are configured once in the `navigation` group and shared by all modes.
 - **`KeyBindings`** (per action): a `Vec<KeyBinding>` — each action supports multiple alternative keys (e.g. `"j"` and `"Down"` for scroll down). Accepts a single JSON string or an array of strings.
 - **`KeyBinding`**: parsed from strings like `"j"`, `"Ctrl+d"`, `"Shift+Tab"`, `"F1"`, `"PageDown"`, `"Space"`, `"Esc"`. `"Shift+Tab"` maps to `KeyCode::BackTab`. `matches(key, modifiers)`: for `Char` keys accepts `NONE` or `SHIFT` (terminals vary); for non-`Char` keys (Enter, F-keys, etc.) requires an exact SHIFT match so `"Shift+Enter"` ≠ plain `"Enter"`.
 - **`Keybindings::validate() -> Vec<String>`**: checks all (action, keybinding) pairs within each mode scope (normal + global, filter + global) for overlaps and returns human-readable conflict descriptions. Called at startup; conflicts are printed to stderr and logged.
@@ -344,9 +348,11 @@ Example `~/.config/logana/config.json`:
 ```json
 {
   "theme": "dracula",
+  "show_status_bar": false,
+  "show_borders": false,
   "keybindings": {
     "navigation": { "scroll_down": ["j", "Down"], "half_page_down": "Ctrl+d" },
-    "normal": { "scroll_left": "h", "scroll_right": "l" },
+    "normal": { "scroll_left": "h", "scroll_right": "l", "toggle_status_bar": "b", "toggle_borders": "B" },
     "global": { "quit": "q" }
   }
 }
@@ -399,7 +405,7 @@ anyhow, clap (derive), regex, ratatui 0.26, crossterm 0.27, serde/serde_json, se
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/commands.rs, ui/field_layout.rs, auto_complete.rs, export.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, parser/timestamp.rs, parser/logfmt.rs, parser/common_log.rs, parser/web_error.rs, parser/dmesg.rs, parser/kube_cri.rs, value_colors.rs, date_filter.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs — 1149 tests total
+- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/commands.rs, ui/field_layout.rs, auto_complete.rs, export.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, parser/timestamp.rs, parser/logfmt.rs, parser/common_log.rs, parser/web_error.rs, parser/dmesg.rs, parser/kube_cri.rs, value_colors.rs, date_filter.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs, mode/normal_mode.rs, mode/ui_mode.rs, config.rs, ui/mod.rs — 1208 tests total
 - **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
 - **Stdin tests** (tests/stdin.rs): pipe input end-to-end — 14 tests
 - **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)

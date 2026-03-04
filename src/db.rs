@@ -44,6 +44,8 @@ pub struct FileContext {
     pub file_hash: Option<String>,
     pub show_line_numbers: bool,
     pub comments: Vec<Comment>,
+    pub show_mode_bar: bool,
+    pub show_borders: bool,
 }
 
 #[async_trait]
@@ -185,6 +187,20 @@ impl Database {
         // Migration: add annotations_json column if it doesn't exist
         let _ = sqlx::query(
             "ALTER TABLE file_context ADD COLUMN annotations_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&self.pool)
+        .await;
+
+        // Migration: add show_status_bar column if it doesn't exist
+        let _ = sqlx::query(
+            "ALTER TABLE file_context ADD COLUMN show_status_bar INTEGER NOT NULL DEFAULT 1",
+        )
+        .execute(&self.pool)
+        .await;
+
+        // Migration: add show_borders column if it doesn't exist
+        let _ = sqlx::query(
+            "ALTER TABLE file_context ADD COLUMN show_borders INTEGER NOT NULL DEFAULT 1",
         )
         .execute(&self.pool)
         .await;
@@ -450,8 +466,8 @@ impl FileContextStore for Database {
         let comments_json =
             serde_json::to_string(&ctx.comments).unwrap_or_else(|_| "[]".to_string());
         sqlx::query(
-            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_file) DO UPDATE SET
                 scroll_offset = excluded.scroll_offset,
                 search_query = excluded.search_query,
@@ -462,7 +478,9 @@ impl FileContextStore for Database {
                 marked_lines = excluded.marked_lines,
                 file_hash = excluded.file_hash,
                 show_line_numbers = excluded.show_line_numbers,
-                annotations_json = excluded.annotations_json",
+                annotations_json = excluded.annotations_json,
+                show_status_bar = excluded.show_status_bar,
+                show_borders = excluded.show_borders",
         )
         .bind(&ctx.source_file)
         .bind(ctx.scroll_offset as i64)
@@ -475,6 +493,8 @@ impl FileContextStore for Database {
         .bind(&ctx.file_hash)
         .bind(ctx.show_line_numbers as i32)
         .bind(&comments_json)
+        .bind(ctx.show_mode_bar as i32)
+        .bind(ctx.show_borders as i32)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -482,7 +502,7 @@ impl FileContextStore for Database {
 
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
         let row = sqlx::query(
-            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json
+            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders
              FROM file_context WHERE source_file = ?",
         )
         .bind(source_file)
@@ -506,6 +526,8 @@ impl FileContextStore for Database {
                 file_hash: r.get::<Option<String>, _>("file_hash"),
                 show_line_numbers: r.get::<i32, _>("show_line_numbers") != 0,
                 comments,
+                show_mode_bar: r.try_get::<i32, _>("show_status_bar").unwrap_or(1) != 0,
+                show_borders: r.try_get::<i32, _>("show_borders").unwrap_or(1) != 0,
             }
         }))
     }
@@ -766,6 +788,8 @@ mod tests {
             file_hash: Some("abc123".to_string()),
             show_line_numbers: true,
             comments: vec![],
+            show_mode_bar: true,
+            show_borders: true,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -801,6 +825,8 @@ mod tests {
             file_hash: Some("hash1".to_string()),
             show_line_numbers: true,
             comments: vec![],
+            show_mode_bar: true,
+            show_borders: true,
         };
         db.save_file_context(&ctx1).await.unwrap();
 
@@ -816,6 +842,8 @@ mod tests {
             file_hash: Some("hash2".to_string()),
             show_line_numbers: false,
             comments: vec![],
+            show_mode_bar: false,
+            show_borders: false,
         };
         db.save_file_context(&ctx2).await.unwrap();
 
@@ -863,6 +891,8 @@ mod tests {
                     line_indices: vec![10],
                 },
             ],
+            show_mode_bar: true,
+            show_borders: true,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -877,5 +907,36 @@ mod tests {
         assert_eq!(loaded.comments[0].line_indices, vec![1, 2, 3]);
         assert_eq!(loaded.comments[1].text, "Second comment");
         assert_eq!(loaded.comments[1].line_indices, vec![10]);
+    }
+
+    #[tokio::test]
+    async fn test_file_context_round_trip_with_display_fields() {
+        let db = setup_db().await;
+
+        let ctx = FileContext {
+            source_file: "/tmp/display.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            wrap: true,
+            level_colors: true,
+            show_sidebar: true,
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            show_line_numbers: true,
+            comments: vec![],
+            show_mode_bar: false,
+            show_borders: false,
+        };
+        db.save_file_context(&ctx).await.unwrap();
+
+        let loaded = db
+            .load_file_context("/tmp/display.log")
+            .await
+            .unwrap()
+            .expect("context should exist");
+
+        assert!(!loaded.show_mode_bar);
+        assert!(!loaded.show_borders);
     }
 }

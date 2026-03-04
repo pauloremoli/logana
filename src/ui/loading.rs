@@ -31,6 +31,8 @@ impl App {
         let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         let mut tab = TabState::new(file_reader, log_manager, title);
         tab.keybindings = self.keybindings.clone();
+        tab.show_mode_bar = self.show_mode_bar_default;
+        tab.show_borders = self.show_borders_default;
 
         if let Ok(Some(ctx)) = self.db.load_file_context(path).await {
             tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
@@ -55,6 +57,8 @@ impl App {
 
         let mut tab = TabState::new(file_reader, log_manager, title);
         tab.keybindings = self.keybindings.clone();
+        tab.show_mode_bar = self.show_mode_bar_default;
+        tab.show_borders = self.show_borders_default;
 
         match FileReader::spawn_process_stream("docker", &["logs", "-f", &container_id]).await {
             Ok(rx) => {
@@ -80,6 +84,8 @@ impl App {
 
         let mut tab = TabState::new(file_reader, log_manager, title);
         tab.keybindings = self.keybindings.clone();
+        tab.show_mode_bar = self.show_mode_bar_default;
+        tab.show_borders = self.show_borders_default;
 
         match FileReader::spawn_process_stream("docker", &["logs", "-f", name]).await {
             Ok(rx) => {
@@ -242,6 +248,8 @@ impl App {
                 let log_manager = LogManager::new(self.db.clone(), None).await;
                 let mut tab = TabState::new(file_reader, log_manager, "stdin".to_string());
                 tab.keybindings = self.keybindings.clone();
+                tab.show_mode_bar = self.show_mode_bar_default;
+                tab.show_borders = self.show_borders_default;
                 tab.scroll_offset = tab.visible_indices.len().saturating_sub(1);
                 self.tabs.push(tab);
             }
@@ -318,6 +326,8 @@ impl App {
                 let log_manager = LogManager::new(self.db.clone(), Some(path.clone())).await;
                 let mut tab = TabState::new(file_reader, log_manager, title);
                 tab.keybindings = self.keybindings.clone();
+                tab.show_mode_bar = self.show_mode_bar_default;
+                tab.show_borders = self.show_borders_default;
                 if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     tab.apply_file_context(&ctx);
                 }

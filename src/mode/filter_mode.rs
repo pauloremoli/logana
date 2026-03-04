@@ -256,26 +256,6 @@ impl Mode for FilterManagementMode {
             );
         }
 
-        if kb.filter.add_include.matches(key, modifiers) {
-            let history = tab.command_history.clone();
-            return (
-                Box::new(CommandMode::with_history("filter ".to_string(), 7, history)),
-                KeyResult::Handled,
-            );
-        }
-
-        if kb.filter.add_exclude.matches(key, modifiers) {
-            let history = tab.command_history.clone();
-            return (
-                Box::new(CommandMode::with_history(
-                    "exclude ".to_string(),
-                    8,
-                    history,
-                )),
-                KeyResult::Handled,
-            );
-        }
-
         if kb.filter.add_date_filter.matches(key, modifiers) {
             let history = tab.command_history.clone();
             return (
@@ -298,7 +278,7 @@ impl Mode for FilterManagementMode {
     }
 
     fn status_line(&self) -> &str {
-        "[FILTER] <i> include  <x> exclude  <t> date  <Space> toggle  <d> delete  <e> edit  <c> color  <J/K> move  <A> tog.all  <C> clear  <Esc> exit"
+        "[FILTER] <t> date  <Space> toggle  <d> delete  <e> edit  <c> color  <J/K> move  <A> tog.all  <C> clear  <Esc> exit"
     }
 
     fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -308,18 +288,6 @@ impl Mode for FilterManagementMode {
                 .fg(theme.text_highlight)
                 .add_modifier(Modifier::BOLD),
         )];
-        status_entry(
-            &mut spans,
-            kb.filter.add_include.display(),
-            "include",
-            theme,
-        );
-        status_entry(
-            &mut spans,
-            kb.filter.add_exclude.display(),
-            "exclude",
-            theme,
-        );
         status_entry(
             &mut spans,
             kb.filter.add_date_filter.display(),
@@ -620,30 +588,6 @@ mod tests {
         match mode.render_state() {
             ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
             other => panic!("expected FilterManagement, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_i_opens_command_mode_with_filter_prefix() {
-        let mut tab = make_tab(&["line"]).await;
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('i')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert!(input.starts_with("filter "));
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_x_opens_command_mode_with_exclude_prefix() {
-        let mut tab = make_tab(&["line"]).await;
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('x')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert!(input.starts_with("exclude "));
-            }
-            other => panic!("expected Command, got {:?}", other),
         }
     }
 

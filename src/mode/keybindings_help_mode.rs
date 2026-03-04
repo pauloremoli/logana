@@ -113,6 +113,14 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.prev_match.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Filter include".into(),
+        keys: n.filter_include.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Filter exclude".into(),
+        keys: n.filter_exclude.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Filter mode".into(),
         keys: n.filter_mode.display(),
     });
@@ -121,12 +129,8 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.toggle_filtering.display(),
     });
     rows.push(HelpRow::Entry {
-        action: "Toggle sidebar".into(),
-        keys: n.toggle_sidebar.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Toggle wrap".into(),
-        keys: n.toggle_wrap.display(),
+        action: "UI mode".into(),
+        keys: n.enter_ui_mode.display(),
     });
     rows.push(HelpRow::Entry {
         action: "Command mode".into(),
@@ -184,16 +188,32 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: g.new_tab.display(),
     });
 
+    // ── UI Mode ──────────────────────────────────────────────────────────────
+    rows.push(HelpRow::Header("UI Mode".to_string()));
+    let ui = &kb.ui;
+    rows.push(HelpRow::Entry {
+        action: "Toggle sidebar".into(),
+        keys: ui.toggle_sidebar.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Toggle mode bar".into(),
+        keys: ui.toggle_mode_bar.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Toggle borders".into(),
+        keys: ui.toggle_borders.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Toggle wrap".into(),
+        keys: ui.toggle_wrap.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Exit UI mode".into(),
+        keys: ui.exit.display(),
+    });
+
     // ── Filter Mode ──────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Filter Mode".to_string()));
-    rows.push(HelpRow::Entry {
-        action: "Add include".into(),
-        keys: f.add_include.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Add exclude".into(),
-        keys: f.add_exclude.display(),
-    });
     rows.push(HelpRow::Entry {
         action: "Add date filter".into(),
         keys: f.add_date_filter.display(),

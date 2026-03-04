@@ -33,6 +33,10 @@ pub struct App {
     pub keybindings: Arc<Keybindings>,
     /// Persistent clipboard instance — kept alive so clipboard managers can read the contents.
     pub clipboard: Option<arboard::Clipboard>,
+    /// Default show_mode_bar value applied to new tabs.
+    pub show_mode_bar_default: bool,
+    /// Default show_borders value applied to new tabs.
+    pub show_borders_default: bool,
 }
 
 impl std::fmt::Debug for App {
@@ -98,6 +102,8 @@ impl App {
             stdin_load_state: None,
             keybindings,
             clipboard: None,
+            show_mode_bar_default: true,
+            show_borders_default: true,
         }
     }
 

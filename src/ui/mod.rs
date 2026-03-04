@@ -99,6 +99,10 @@ pub struct TabState {
     pub detected_format: Option<Box<dyn LogFormatParser>>,
     /// When true, always scroll to the last visible line when new content arrives.
     pub tail_mode: bool,
+    /// Whether the mode bar is shown at the bottom.
+    pub show_mode_bar: bool,
+    /// Whether panel borders (logs, sidebar, mode bar) are drawn.
+    pub show_borders: bool,
 }
 
 impl TabState {
@@ -136,6 +140,8 @@ impl TabState {
             keybindings: Arc::new(Keybindings::default()),
             detected_format,
             tail_mode: false,
+            show_mode_bar: true,
+            show_borders: true,
         };
         tab.refresh_visible();
         tab
@@ -245,6 +251,8 @@ impl TabState {
             file_hash,
             show_line_numbers: self.show_line_numbers,
             comments,
+            show_mode_bar: self.show_mode_bar,
+            show_borders: self.show_borders,
         })
     }
 
@@ -255,6 +263,8 @@ impl TabState {
         self.show_sidebar = ctx.show_sidebar;
         self.show_line_numbers = ctx.show_line_numbers;
         self.horizontal_scroll = ctx.horizontal_scroll;
+        self.show_mode_bar = ctx.show_mode_bar;
+        self.show_borders = ctx.show_borders;
         if !ctx.marked_lines.is_empty() {
             self.log_manager.set_marks(ctx.marked_lines.clone());
         }
@@ -512,6 +522,8 @@ mod tests {
                 text: "test".to_string(),
                 line_indices: vec![0],
             }],
+            show_mode_bar: false,
+            show_borders: false,
         };
         tab.apply_file_context(&ctx);
         assert_eq!(tab.scroll_offset, 3);
@@ -540,6 +552,8 @@ mod tests {
             file_hash: None,
             show_line_numbers: true,
             comments: vec![],
+            show_mode_bar: true,
+            show_borders: true,
         };
         tab.apply_file_context(&ctx);
         assert!(tab.wrap);
@@ -656,5 +670,63 @@ mod tests {
         // Should not panic, just no-op
         tab.goto_line(1).unwrap();
         assert_eq!(tab.scroll_offset, 0);
+    }
+
+    // ── show_mode_bar / show_borders ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_tabstate_show_mode_bar_default_true() {
+        let tab = make_tab(&["line"]).await;
+        assert!(tab.show_mode_bar);
+    }
+
+    #[tokio::test]
+    async fn test_tabstate_show_borders_default_true() {
+        let tab = make_tab(&["line"]).await;
+        assert!(tab.show_borders);
+    }
+
+    #[tokio::test]
+    async fn test_apply_file_context_restores_show_mode_bar() {
+        let mut tab = make_tab_with_source(&["line"], "test.log").await;
+        let ctx = FileContext {
+            source_file: "test.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            wrap: true,
+            level_colors: true,
+            show_sidebar: true,
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            show_line_numbers: true,
+            comments: vec![],
+            show_mode_bar: false,
+            show_borders: true,
+        };
+        tab.apply_file_context(&ctx);
+        assert!(!tab.show_mode_bar);
+    }
+
+    #[tokio::test]
+    async fn test_apply_file_context_restores_show_borders() {
+        let mut tab = make_tab_with_source(&["line"], "test.log").await;
+        let ctx = FileContext {
+            source_file: "test.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            wrap: true,
+            level_colors: true,
+            show_sidebar: true,
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            show_line_numbers: true,
+            comments: vec![],
+            show_mode_bar: true,
+            show_borders: false,
+        };
+        tab.apply_file_context(&ctx);
+        assert!(!tab.show_borders);
     }
 }

@@ -1017,7 +1017,7 @@ impl App {
             .style(Style::default().bg(self.theme.root_bg));
         frame.render_widget(modal, modal_area);
 
-        let _ = dir; // used in title via `files.len()`, dir shown in status bar
+        let _ = dir; // used in title via `files.len()`, dir shown in mode bar
     }
 
     pub(super) fn render_comment_popup(
@@ -1167,6 +1167,8 @@ mod tests {
             file_hash: None,
             show_line_numbers: true,
             comments: vec![],
+            show_mode_bar: true,
+            show_borders: true,
         };
         app.tabs[0].mode = Box::new(ConfirmRestoreMode { context });
         let mut terminal = make_terminal();

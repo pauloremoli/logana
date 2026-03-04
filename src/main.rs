@@ -120,6 +120,8 @@ async fn main() -> Result<()> {
         .as_deref()
         .and_then(|name| Theme::from_file(format!("{}.json", name)).ok())
         .unwrap_or_default();
+    let show_mode_bar = config.show_mode_bar;
+    let show_borders = config.show_borders;
 
     for conflict in config.keybindings.validate() {
         tracing::warn!("{}", conflict);
@@ -141,6 +143,12 @@ async fn main() -> Result<()> {
             keybindings,
         )
         .await;
+
+        // Apply display defaults from config.
+        app.show_mode_bar_default = show_mode_bar;
+        app.show_borders_default = show_borders;
+        app.tabs[0].show_mode_bar = show_mode_bar;
+        app.tabs[0].show_borders = show_borders;
 
         // Kick off the background file load now that the TUI is visible.
         if background_file_load {

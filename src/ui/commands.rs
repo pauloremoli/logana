@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::collections::HashSet;
 
-use crate::auto_complete::shell_split;
+use crate::auto_complete::{expand_tilde, shell_split};
 use crate::mode::command_mode::{CommandLine, Commands};
 use crate::theme::Theme;
 use crate::types::FilterType;
@@ -151,6 +151,7 @@ impl App {
                     .map_err(|e| format!("Failed to load theme '{}': {}", theme_name, e))?;
             }
             Some(Commands::Open { path }) => {
+                let path = expand_tilde(&path);
                 if std::path::Path::new(&path).is_dir() {
                     let files = crate::ui::list_dir_files(&path);
                     if files.is_empty() {
@@ -755,6 +756,23 @@ mod tests {
         app.tabs[0].hidden_fields.insert("msg".to_string());
         app.run_command("show-all-fields").await.unwrap();
         assert!(app.tabs[0].hidden_fields.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_open_tilde_path_expands() {
+        // Create a temporary file inside the real home directory so the tilde path is valid.
+        if let Some(home) = dirs::home_dir() {
+            let tmp = tempfile::NamedTempFile::new_in(&home).unwrap();
+            let filename = tmp.path().file_name().unwrap().to_str().unwrap();
+            let tilde_path = format!("~/{}", filename);
+            let mut app = make_app(&["line"]).await;
+            let result = app.run_command(&format!("open {}", tilde_path)).await;
+            assert!(
+                result.is_ok(),
+                "open with ~ path should succeed: {:?}",
+                result
+            );
+        }
     }
 
     #[tokio::test]

@@ -97,8 +97,29 @@ pub trait Mode: std::fmt::Debug + Send {
     fn render_state(&self) -> ModeRenderState;
 }
 
+/// Like `status_entry` but accepts a runtime-computed action string.
+pub fn status_entry_dyn(
+    spans: &mut Vec<Span<'static>>,
+    key: String,
+    action: String,
+    theme: &Theme,
+) {
+    spans.push(Span::styled("<", Style::default().fg(theme.border)));
+    spans.push(Span::styled(
+        key,
+        Style::default()
+            .fg(theme.text_highlight)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(">", Style::default().fg(theme.border)));
+    spans.push(Span::styled(
+        format!(" {}  ", action),
+        Style::default().fg(theme.text),
+    ));
+}
+
 /// Appends a styled `<key> action  ` entry to `spans`.
-/// Used by mode implementations to build the status bar line.
+/// Used by mode implementations to build the mode bar line.
 pub fn status_entry(
     spans: &mut Vec<Span<'static>>,
     key: String,
@@ -326,6 +347,8 @@ mod tests {
             file_hash: None,
             show_line_numbers: false,
             comments: vec![],
+            show_mode_bar: true,
+            show_borders: true,
         }
     }
 

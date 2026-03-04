@@ -298,6 +298,12 @@ fn default_toggle_filtering() -> KeyBindings {
 fn default_toggle_sidebar() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('s'), KeyModifiers::NONE)])
 }
+fn default_toggle_mode_bar() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('b'), KeyModifiers::NONE)])
+}
+fn default_toggle_borders() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('B'), KeyModifiers::NONE)])
+}
 fn default_go_to_top_chord() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('g'), KeyModifiers::NONE)])
 }
@@ -339,6 +345,18 @@ fn default_clear_all() -> KeyBindings {
 }
 fn default_edit_comment() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('c'), KeyModifiers::NONE)])
+}
+fn default_normal_filter_include() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('i'), KeyModifiers::NONE)])
+}
+fn default_normal_filter_exclude() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('o'), KeyModifiers::NONE)])
+}
+fn default_enter_ui_mode() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('u'), KeyModifiers::NONE)])
+}
+fn default_ui_exit() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
 
 // ---------------------------------------------------------------------------
@@ -390,8 +408,6 @@ pub struct NormalKeybindings {
     pub filter_mode: KeyBindings,
     #[serde(default = "default_toggle_filtering")]
     pub toggle_filtering: KeyBindings,
-    #[serde(default = "default_toggle_sidebar")]
-    pub toggle_sidebar: KeyBindings,
     #[serde(default = "default_go_to_top_chord")]
     pub go_to_top_chord: KeyBindings,
     #[serde(default = "default_go_to_bottom")]
@@ -406,8 +422,6 @@ pub struct NormalKeybindings {
     pub next_match: KeyBindings,
     #[serde(default = "default_prev_match")]
     pub prev_match: KeyBindings,
-    #[serde(default = "default_toggle_wrap")]
-    pub toggle_wrap: KeyBindings,
     #[serde(default = "default_visual_mode")]
     pub visual_mode: KeyBindings,
     #[serde(default = "default_toggle_marks_only")]
@@ -420,6 +434,12 @@ pub struct NormalKeybindings {
     pub clear_all: KeyBindings,
     #[serde(default = "default_edit_comment")]
     pub edit_comment: KeyBindings,
+    #[serde(default = "default_normal_filter_include")]
+    pub filter_include: KeyBindings,
+    #[serde(default = "default_normal_filter_exclude")]
+    pub filter_exclude: KeyBindings,
+    #[serde(default = "default_enter_ui_mode")]
+    pub enter_ui_mode: KeyBindings,
 }
 
 impl Default for NormalKeybindings {
@@ -430,7 +450,6 @@ impl Default for NormalKeybindings {
             command_mode: default_command_mode(),
             filter_mode: default_filter_mode_key(),
             toggle_filtering: default_toggle_filtering(),
-            toggle_sidebar: default_toggle_sidebar(),
             go_to_top_chord: default_go_to_top_chord(),
             go_to_bottom: default_go_to_bottom(),
             mark_line: default_mark_line(),
@@ -438,13 +457,15 @@ impl Default for NormalKeybindings {
             search_backward: default_search_backward(),
             next_match: default_next_match(),
             prev_match: default_prev_match(),
-            toggle_wrap: default_toggle_wrap(),
             visual_mode: default_visual_mode(),
             toggle_marks_only: default_toggle_marks_only(),
             yank_marked: default_yank_marked(),
             show_keybindings: default_show_keybindings(),
             clear_all: default_clear_all(),
             edit_comment: default_edit_comment(),
+            filter_include: default_normal_filter_include(),
+            filter_exclude: default_normal_filter_exclude(),
+            enter_ui_mode: default_enter_ui_mode(),
         }
     }
 }
@@ -477,12 +498,6 @@ fn default_filter_toggle_all() -> KeyBindings {
 fn default_filter_clear_all() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('C'), KeyModifiers::NONE)])
 }
-fn default_filter_add_include() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('i'), KeyModifiers::NONE)])
-}
-fn default_filter_add_exclude() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('x'), KeyModifiers::NONE)])
-}
 fn default_filter_add_date() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('t'), KeyModifiers::NONE)])
 }
@@ -512,10 +527,6 @@ pub struct FilterKeybindings {
     pub toggle_all_filters: KeyBindings,
     #[serde(default = "default_filter_clear_all")]
     pub clear_all_filters: KeyBindings,
-    #[serde(default = "default_filter_add_include")]
-    pub add_include: KeyBindings,
-    #[serde(default = "default_filter_add_exclude")]
-    pub add_exclude: KeyBindings,
     #[serde(default = "default_filter_add_date")]
     pub add_date_filter: KeyBindings,
     #[serde(default = "default_filter_exit")]
@@ -533,8 +544,6 @@ impl Default for FilterKeybindings {
             set_color: default_filter_set_color(),
             toggle_all_filters: default_filter_toggle_all(),
             clear_all_filters: default_filter_clear_all(),
-            add_include: default_filter_add_include(),
-            add_exclude: default_filter_add_exclude(),
             add_date_filter: default_filter_add_date(),
             exit_mode: default_filter_exit(),
         }
@@ -942,6 +951,36 @@ impl Default for ConfirmKeybindings {
 }
 
 // ---------------------------------------------------------------------------
+// UiKeybindings — UI display toggles accessible from UiMode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiKeybindings {
+    #[serde(default = "default_toggle_sidebar")]
+    pub toggle_sidebar: KeyBindings,
+    #[serde(default = "default_toggle_mode_bar")]
+    pub toggle_mode_bar: KeyBindings,
+    #[serde(default = "default_toggle_borders")]
+    pub toggle_borders: KeyBindings,
+    #[serde(default = "default_toggle_wrap")]
+    pub toggle_wrap: KeyBindings,
+    #[serde(default = "default_ui_exit")]
+    pub exit: KeyBindings,
+}
+
+impl Default for UiKeybindings {
+    fn default() -> Self {
+        Self {
+            toggle_sidebar: default_toggle_sidebar(),
+            toggle_mode_bar: default_toggle_mode_bar(),
+            toggle_borders: default_toggle_borders(),
+            toggle_wrap: default_toggle_wrap(),
+            exit: default_ui_exit(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Keybindings
 // ---------------------------------------------------------------------------
 
@@ -975,6 +1014,8 @@ pub struct Keybindings {
     pub help: HelpKeybindings,
     #[serde(default)]
     pub confirm: ConfirmKeybindings,
+    #[serde(default)]
+    pub ui: UiKeybindings,
 }
 
 impl KeyBindings {
@@ -1017,7 +1058,9 @@ impl Keybindings {
             ("normal.command_mode", &self.normal.command_mode),
             ("normal.filter_mode", &self.normal.filter_mode),
             ("normal.toggle_filtering", &self.normal.toggle_filtering),
-            ("normal.toggle_sidebar", &self.normal.toggle_sidebar),
+            ("normal.enter_ui_mode", &self.normal.enter_ui_mode),
+            ("normal.filter_include", &self.normal.filter_include),
+            ("normal.filter_exclude", &self.normal.filter_exclude),
             ("normal.go_to_top_chord", &self.normal.go_to_top_chord),
             ("normal.go_to_bottom", &self.normal.go_to_bottom),
             ("normal.mark_line", &self.normal.mark_line),
@@ -1028,7 +1071,6 @@ impl Keybindings {
             ("normal.search_backward", &self.normal.search_backward),
             ("normal.next_match", &self.normal.next_match),
             ("normal.prev_match", &self.normal.prev_match),
-            ("normal.toggle_wrap", &self.normal.toggle_wrap),
             ("normal.show_keybindings", &self.normal.show_keybindings),
             ("normal.clear_all", &self.normal.clear_all),
             ("normal.edit_comment", &self.normal.edit_comment),
@@ -1050,8 +1092,6 @@ impl Keybindings {
             ("filter.set_color", &self.filter.set_color),
             ("filter.toggle_all_filters", &self.filter.toggle_all_filters),
             ("filter.clear_all_filters", &self.filter.clear_all_filters),
-            ("filter.add_include", &self.filter.add_include),
-            ("filter.add_exclude", &self.filter.add_exclude),
             ("filter.add_date_filter", &self.filter.add_date_filter),
             ("filter.exit_mode", &self.filter.exit_mode),
             ("global.quit", &self.global.quit),
@@ -1104,6 +1144,19 @@ impl Keybindings {
             ("help.close", &self.help.close),
         ];
 
+        let ui_actions: &[(&str, &KeyBindings)] = &[
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
+            ("ui.toggle_sidebar", &self.ui.toggle_sidebar),
+            ("ui.toggle_mode_bar", &self.ui.toggle_mode_bar),
+            ("ui.toggle_borders", &self.ui.toggle_borders),
+            ("ui.toggle_wrap", &self.ui.toggle_wrap),
+            ("ui.exit", &self.ui.exit),
+            ("global.quit", &self.global.quit),
+            ("global.next_tab", &self.global.next_tab),
+            ("global.prev_tab", &self.global.prev_tab),
+        ];
+
         check_conflicts(normal_actions, &mut conflicts);
         check_conflicts(filter_actions, &mut conflicts);
         check_conflicts(visual_line_actions, &mut conflicts);
@@ -1111,6 +1164,7 @@ impl Keybindings {
         check_conflicts(value_colors_actions, &mut conflicts);
         check_conflicts(select_fields_actions, &mut conflicts);
         check_conflicts(help_actions, &mut conflicts);
+        check_conflicts(ui_actions, &mut conflicts);
 
         conflicts
     }
@@ -1144,12 +1198,33 @@ fn check_conflicts(actions: &[(&str, &KeyBindings)], out: &mut Vec<String>) {
 // Config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     /// Theme name (without `.json` extension) to load on startup.
     pub theme: Option<String>,
     #[serde(default)]
     pub keybindings: Keybindings,
+    /// Whether to show the mode bar at the bottom (default: true).
+    #[serde(default = "default_true")]
+    pub show_mode_bar: bool,
+    /// Whether to show panel borders (default: true).
+    #[serde(default = "default_true")]
+    pub show_borders: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            theme: None,
+            keybindings: Keybindings::default(),
+            show_mode_bar: true,
+            show_borders: true,
+        }
+    }
 }
 
 impl Config {
@@ -1923,8 +1998,16 @@ mod tests {
                 .matches(KeyCode::Char('F'), KeyModifiers::NONE)
         );
         assert!(
-            kb.toggle_sidebar
-                .matches(KeyCode::Char('s'), KeyModifiers::NONE)
+            kb.filter_include
+                .matches(KeyCode::Char('i'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.filter_exclude
+                .matches(KeyCode::Char('o'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.enter_ui_mode
+                .matches(KeyCode::Char('u'), KeyModifiers::NONE)
         );
         assert!(
             kb.go_to_top_chord
@@ -1950,10 +2033,6 @@ mod tests {
         assert!(
             kb.prev_match
                 .matches(KeyCode::Char('N'), KeyModifiers::NONE)
-        );
-        assert!(
-            kb.toggle_wrap
-                .matches(KeyCode::Char('w'), KeyModifiers::NONE)
         );
         assert!(
             kb.visual_mode
@@ -2009,14 +2088,6 @@ mod tests {
         assert!(
             kb.clear_all_filters
                 .matches(KeyCode::Char('C'), KeyModifiers::NONE)
-        );
-        assert!(
-            kb.add_include
-                .matches(KeyCode::Char('i'), KeyModifiers::NONE)
-        );
-        assert!(
-            kb.add_exclude
-                .matches(KeyCode::Char('x'), KeyModifiers::NONE)
         );
         assert!(kb.exit_mode.matches(KeyCode::Esc, KeyModifiers::NONE));
     }
@@ -2236,5 +2307,102 @@ mod tests {
         assert!(conflicts[0].contains("alpha"));
         assert!(conflicts[0].contains("beta"));
         assert!(conflicts[0].contains("x"));
+    }
+
+    // ── Config show_mode_bar / show_borders ────────────────────────────
+
+    #[test]
+    fn test_config_show_mode_bar_defaults_true() {
+        let cfg: Config = serde_json::from_str("{}").unwrap();
+        assert!(cfg.show_mode_bar);
+    }
+
+    #[test]
+    fn test_config_show_borders_defaults_true() {
+        let cfg: Config = serde_json::from_str("{}").unwrap();
+        assert!(cfg.show_borders);
+    }
+
+    #[test]
+    fn test_config_show_mode_bar_false() {
+        let cfg: Config = serde_json::from_str(r#"{"show_mode_bar": false}"#).unwrap();
+        assert!(!cfg.show_mode_bar);
+    }
+
+    #[test]
+    fn test_config_show_borders_false() {
+        let cfg: Config = serde_json::from_str(r#"{"show_borders": false}"#).unwrap();
+        assert!(!cfg.show_borders);
+    }
+
+    #[test]
+    fn test_config_default_show_mode_bar_true() {
+        let cfg = Config::default();
+        assert!(cfg.show_mode_bar);
+    }
+
+    #[test]
+    fn test_config_default_show_borders_true() {
+        let cfg = Config::default();
+        assert!(cfg.show_borders);
+    }
+
+    #[test]
+    fn test_toggle_mode_bar_keybinding_default() {
+        let kb = UiKeybindings::default();
+        assert!(
+            kb.toggle_mode_bar
+                .matches(KeyCode::Char('b'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_toggle_borders_keybinding_default() {
+        let kb = UiKeybindings::default();
+        assert!(
+            kb.toggle_borders
+                .matches(KeyCode::Char('B'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_filter_include_keybinding_default() {
+        let kb = NormalKeybindings::default();
+        assert!(
+            kb.filter_include
+                .matches(KeyCode::Char('i'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_filter_exclude_keybinding_default() {
+        let kb = NormalKeybindings::default();
+        assert!(
+            kb.filter_exclude
+                .matches(KeyCode::Char('o'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_enter_ui_mode_keybinding_default() {
+        let kb = NormalKeybindings::default();
+        assert!(
+            kb.enter_ui_mode
+                .matches(KeyCode::Char('u'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_ui_keybindings_defaults() {
+        let kb = UiKeybindings::default();
+        assert!(
+            kb.toggle_sidebar
+                .matches(KeyCode::Char('s'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.toggle_wrap
+                .matches(KeyCode::Char('w'), KeyModifiers::NONE)
+        );
+        assert!(kb.exit.matches(KeyCode::Esc, KeyModifiers::NONE));
     }
 }

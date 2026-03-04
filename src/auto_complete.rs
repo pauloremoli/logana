@@ -258,6 +258,22 @@ pub fn complete_color(partial: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Expand a leading `~` to the user's home directory.
+/// `"~"` → `"/home/user"`, `"~/foo"` → `"/home/user/foo"`.
+/// Paths that don't start with `~` are returned unchanged.
+pub fn expand_tilde(path: &str) -> String {
+    if (path == "~" || path.starts_with("~/"))
+        && let Some(home) = dirs::home_dir()
+    {
+        if path == "~" {
+            return home.to_string_lossy().into_owned();
+        } else {
+            return format!("{}{}", home.display(), &path[1..]);
+        }
+    }
+    path.to_owned()
+}
+
 /// Complete a partial file path by listing matching entries in the parent directory.
 /// Returns a sorted list of absolute or relative paths that match the prefix.
 /// Directories get a trailing `/` appended.  A leading `~` is expanded to the
@@ -857,6 +873,34 @@ mod tests {
         let results = complete_file_path("Cargo");
         // Should find Cargo.toml / Cargo.lock at minimum
         assert!(results.iter().any(|r| r.starts_with("Cargo")));
+    }
+
+    #[test]
+    fn test_expand_tilde_bare() {
+        if let Some(home) = dirs::home_dir() {
+            let result = expand_tilde("~");
+            assert_eq!(result, home.to_string_lossy().as_ref());
+        }
+    }
+
+    #[test]
+    fn test_expand_tilde_with_path() {
+        if let Some(home) = dirs::home_dir() {
+            let result = expand_tilde("~/foo/bar.log");
+            assert_eq!(result, format!("{}/foo/bar.log", home.display()));
+        }
+    }
+
+    #[test]
+    fn test_expand_tilde_no_tilde() {
+        assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+        assert_eq!(expand_tilde("relative/path"), "relative/path");
+    }
+
+    #[test]
+    fn test_expand_tilde_not_at_start() {
+        // A `~` that doesn't start the string should not be expanded.
+        assert_eq!(expand_tilde("/foo/~bar"), "/foo/~bar");
     }
 
     #[test]
