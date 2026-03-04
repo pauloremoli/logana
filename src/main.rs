@@ -48,10 +48,15 @@ fn validate_file_arg(path: &str) -> std::result::Result<(), String> {
 /// `ConfirmOpenDirMode` after the TUI is started.
 fn resolve_source(file_path: &Option<String>) -> (Option<String>, bool) {
     if let Some(path) = file_path {
-        if std::path::Path::new(path).is_dir() {
+        let p = std::path::Path::new(path);
+        if p.is_dir() {
             (None, false)
         } else {
-            (Some(path.clone()), true)
+            let abs = std::fs::canonicalize(p)
+                .ok()
+                .and_then(|c| c.to_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| path.clone());
+            (Some(abs), true)
         }
     } else {
         (None, false)

@@ -18,9 +18,14 @@ impl App {
             return Err(format!("'{}' is a directory, not a file.", path));
         }
 
+        let abs_path = std::fs::canonicalize(file_path_obj)
+            .ok()
+            .and_then(|c| c.to_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| path.to_string());
+
         let file_reader =
             FileReader::new(path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
-        let log_manager = LogManager::new(self.db.clone(), Some(path.to_string())).await;
+        let log_manager = LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
 
         let title = file_path_obj
             .file_name()
@@ -34,11 +39,11 @@ impl App {
         tab.show_mode_bar = self.show_mode_bar_default;
         tab.show_borders = self.show_borders_default;
 
-        if let Ok(Some(ctx)) = self.db.load_file_context(path).await {
+        if let Ok(Some(ctx)) = self.db.load_file_context(&abs_path).await {
             tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
         }
 
-        let watch_rx = FileReader::spawn_file_watcher(path.to_string(), file_size).await;
+        let watch_rx = FileReader::spawn_file_watcher(abs_path.clone(), file_size).await;
         tab.watch_state = Some(FileWatchState {
             new_data_rx: watch_rx,
         });
