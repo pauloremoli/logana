@@ -528,11 +528,7 @@ impl Mode for KeybindingsHelpMode {
         (self, KeyResult::Handled)
     }
 
-    fn status_line(&self) -> &str {
-        "[HELP] type to search  <j/k> scroll  <Esc> close  <q> close"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[HELP]  ",
             Style::default()
@@ -686,9 +682,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_status_line_contains_help() {
+    async fn test_mode_bar_content_contains_help() {
         let mode = KeybindingsHelpMode::new();
-        assert!(mode.status_line().contains("[HELP]"));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::KeybindingsHelp { .. }
+        ));
     }
 
     #[test]

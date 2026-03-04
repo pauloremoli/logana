@@ -15,7 +15,7 @@ use crate::ui::{KeyResult, TabState};
 #[derive(Debug)]
 pub struct UiMode {
     /// Snapshot of display flags, kept in sync on each toggle so that
-    /// `dynamic_status_line` can show current ON/OFF state without needing
+    /// `mode_bar_content` can show current ON/OFF state without needing
     /// access to `TabState`.
     pub sidebar: bool,
     pub mode_bar: bool,
@@ -72,15 +72,11 @@ impl Mode for UiMode {
         (self, KeyResult::Ignored)
     }
 
-    fn status_line(&self) -> &str {
-        "[UI] <s> sidebar  <b> mode bar  <B> borders  <w> wrap  <Esc> back"
-    }
-
     fn render_state(&self) -> ModeRenderState {
         ModeRenderState::Normal
     }
 
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans = vec![Span::styled(
             "[UI]  ",
             Style::default()

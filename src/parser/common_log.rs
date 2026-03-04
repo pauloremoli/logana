@@ -1,14 +1,13 @@
-// ---------------------------------------------------------------------------
-// Common log format parser: TIMESTAMP + LEVEL + TARGET + MESSAGE family
-// ---------------------------------------------------------------------------
-//
-// Handles the broad family of log formats that share a common structure:
-// a timestamp, followed by a log level, optionally a target/logger name,
-// and a message. This covers env_logger, tracing fmt, log4rs, logback,
-// log4j2, Spring Boot, Python logging, loguru, structlog, and more.
-//
-// Key rule: Requires a recognizable level keyword to match — prevents
-// claiming journalctl/syslog lines that lack level info.
+//! Catch-all parser for the `TIMESTAMP + LEVEL + TARGET + MESSAGE` log family.
+//!
+//! Covers env_logger, tracing fmt, log4rs, logback, log4j2, Spring Boot,
+//! Python logging, loguru, structlog, and more. Tries sub-strategies in order:
+//! env_logger → logback/log4j2 → Spring Boot → Python basic/prod → loguru →
+//! structlog → generic fallback.
+//!
+//! A recognizable level keyword is required in all sub-strategies to prevent
+//! false positives against syslog/journalctl lines. Applies a 0.95× score
+//! penalty to yield to more specific parsers on ties.
 
 use std::collections::HashSet;
 

@@ -1,37 +1,53 @@
 # logana
 
-A fast, keyboard-driven terminal log viewer and analyzer with filtering, search, and annotations.
+A fast, keyboard-driven terminal log viewer and analyzer built in Rust.
 
-## Key Features
+Open a file, pipe stdin, or stream Docker containers — logana auto-detects the format and lets you filter, search, annotate, and export without ever leaving the terminal.
 
-- Rich terminal UI with structured views, color themes, and keyboard-driven navigation
-- Real-time filtering (include/exclude/date-range), search, and highlighting
-- Persistent annotations, marks, and session restore across runs
-- Multi-tab, vim keybindings, visual line mode, and clipboard integration
+---
+
+<!-- GIF: opening a log file and navigating (j/k, gg/G, Ctrl+d/u) -->
+
+---
+
+## Features
+
+- **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, nginx, Apache, dmesg, Kubernetes CRI, and more
+- **Real-time filtering** — include/exclude patterns (literal or regex), date-range filters, instant preview
+- **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; per-file restore on reopen
+- **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; show/hide/reorder per session
+- **Multi-tab** — open multiple files or Docker streams side-by-side
+- **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search
+- **Visual line selection** — select a range, yank to clipboard, or attach a comment
+- **Annotations** — attach multiline comments to log lines; export to Markdown or Jira
+- **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
+- **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 9 bundled themes
+
+---
 
 ## Supported Log Formats
 
-Auto-detected on open — no configuration required:
+Detected automatically on open — no flags or config required:
 
 | Format | Examples |
 |---|---|
-| JSON | tracing-subscriber, bunyan, structured logging |
+| JSON | tracing-subscriber, bunyan, pino, any structured JSON logger |
 | Syslog | RFC 3164 (BSD), RFC 5424 |
 | Journalctl | short-iso, short-precise, short-full |
-| Common Log / Combined | Apache access, nginx access |
-| Logfmt | Go slog, Heroku, Grafana Loki |
-| Common log family | env_logger, tracing fmt, logback, Spring Boot, Python, loguru, structlog |
-| Web error | nginx error, Apache 2.4 error |
+| Common / Combined Log | Apache access, nginx access |
+| Logfmt | Go `slog`, Heroku, Grafana Loki |
+| Common log family | env_logger, tracing fmt, logback, log4j2, Spring Boot, Python logging, loguru, structlog |
+| Web error | nginx error log, Apache 2.4 error log |
 | dmesg | Linux kernel ring buffer |
-| Kubernetes CRI | Container Runtime Interface |
+| Kubernetes CRI | Container Runtime Interface log format |
+
+---
 
 ## Installation
 
 ### Pre-built binaries (recommended)
 
-Download the latest release for your platform from the
-[Releases page](https://github.com/pauloremoli/logana/releases), or use the
-install scripts:
+Download from the [Releases page](https://github.com/pauloremoli/logana/releases), or use the install script:
 
 **Linux / macOS**
 ```sh
@@ -50,9 +66,7 @@ brew tap pauloremoli/logana
 brew install logana
 ```
 
-### Cargo (from crates.io)
-
-Requires the [Rust toolchain](https://rustup.rs).
+### Cargo (crates.io)
 
 ```sh
 cargo install logana
@@ -72,21 +86,258 @@ paru -S logana
 yay -S logana
 ```
 
-Manual install:
+---
+
+## Quick Start
+
 ```sh
-git clone https://aur.archlinux.org/logana.git
-cd logana && makepkg -si
+# Open a file
+logana app.log
+
+# Open a directory (each file opens in its own tab)
+logana /var/log/
+
+# Pipe from stdin
+journalctl -f | logana
+tail -f app.log | logana
+
+# Stream a Docker container
+logana            # then type :docker
 ```
 
-### Nix
+---
 
-```nix
-# In a flake or overlay:
-pkgs.callPackage (builtins.fetchGit {
-  url = "https://github.com/pauloremoli/logana";
-  ref = "main";
-} + "/pkg/nix") {}
+## Filtering
+
+<!-- GIF: adding an include filter, then an exclude filter, toggling filters on/off -->
+
+Filters are layered — include patterns narrow the view, exclude patterns hide matching lines. Both support literal strings (fast Aho-Corasick) and regular expressions.
+
+| Action | Key / Command |
+|---|---|
+| Add include filter | `i` or `:filter <pattern>` |
+| Add exclude filter | `o` or `:exclude <pattern>` |
+| Open filter manager | `f` |
+| Toggle filtering on/off | `F` |
+| Add date range filter | `t` in filter manager, or `:date-filter <expr>` |
+
+**Date filter syntax:**
+```
+:date-filter 01:00:00 .. 02:00:00
+:date-filter > 2024-02-21T10:00:00
+:date-filter Feb 21 .. Feb 22
 ```
 
-> **Note:** update the `hash` and `cargoHash` fields in `pkg/nix/default.nix`
-> after each version bump (see comments in that file).
+Filters are persisted to SQLite and restored the next time you open the same file.
+
+---
+
+## Search
+
+<!-- GIF: searching forward and backward, n/N navigation -->
+
+| Action | Key |
+|---|---|
+| Search forward | `/` |
+| Search backward | `?` |
+| Next match | `n` |
+| Previous match | `N` |
+
+Search operates on visible lines only (respects active filters). Matches are highlighted inline.
+
+---
+
+## Structured Field View
+
+<!-- GIF: structured JSON log, showing/hiding fields with :select-fields -->
+
+When a structured format is detected (JSON, logfmt, syslog, etc.), logana parses each line into columns: timestamp, level, target, and extra fields. Use `:select-fields` to show, hide, and reorder columns interactively.
+
+```sh
+:fields timestamp level message     # show specific fields
+:hide-field span                    # hide a field
+:show-all-fields                    # reset to defaults
+:select-fields                      # interactive picker
+```
+
+---
+
+## Annotations
+
+<!-- GIF: visual select lines, type comment, export to markdown -->
+
+Select lines with `V` (visual mode), then press `c` to attach a multiline comment. Annotated lines show a `◆` marker in the gutter. Export everything to a report:
+
+```sh
+:export report.md                   # Markdown (default)
+:export report.md -t jira           # Jira wiki markup
+:export report.md -t <template>     # custom template
+```
+
+---
+
+## Docker
+
+Stream any running container without leaving the terminal:
+
+```
+:docker
+```
+
+A picker lists running containers (`j`/`k` to navigate, `Enter` to attach). The stream opens in a new tab. Docker tabs are persisted across sessions — logana re-attaches automatically on next launch.
+
+---
+
+## Key Reference
+
+### Navigation
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Scroll down / up |
+| `gg` / `G` | First / last line |
+| `Ctrl+d` / `Ctrl+u` | Half page down / up |
+| `PageDown` / `PageUp` | Full page down / up |
+| `h` / `l` | Scroll left / right |
+| `5j`, `10G` | Count prefix — repeat motion N times |
+
+### Normal Mode
+
+| Key | Action |
+|---|---|
+| `i` | Add include filter |
+| `o` | Add exclude filter |
+| `f` | Open filter manager |
+| `F` | Toggle filtering on/off |
+| `/` / `?` | Search forward / backward |
+| `n` / `N` | Next / previous match |
+| `m` | Mark / unmark current line |
+| `M` | Toggle marks-only view |
+| `V` | Enter visual line mode |
+| `u` | UI options |
+| `F1` | Keybindings help |
+| `:` | Open command mode |
+| `q` | Quit |
+
+### Visual Line Mode
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Extend selection down / up |
+| `c` | Attach comment to selection |
+| `y` | Yank (copy) lines to clipboard |
+| `Esc` | Cancel |
+
+### Filter Manager (`f`)
+
+| Key | Action |
+|---|---|
+| `Space` | Toggle filter on/off |
+| `e` | Edit pattern |
+| `d` | Delete filter |
+| `c` | Set highlight color |
+| `t` | Add date filter |
+| `J` / `K` | Move filter down / up |
+| `A` | Toggle all on/off |
+| `C` | Clear all filters |
+| `Esc` | Exit |
+
+### Multi-tab
+
+| Key | Action |
+|---|---|
+| `Tab` / `Shift+Tab` | Next / previous tab |
+| `Ctrl+t` | Open new tab |
+| `Ctrl+w` | Close current tab |
+
+### UI Toggles (`u`)
+
+| Key | Action |
+|---|---|
+| `s` | Sidebar |
+| `b` | Mode bar |
+| `B` | Borders |
+| `w` | Line wrap |
+
+---
+
+## Commands
+
+Type `:` to enter command mode. Tab completes commands, flags, colors, themes, and file paths.
+
+| Command | Description |
+|---|---|
+| `:filter <pattern>` | Add include filter |
+| `:exclude <pattern>` | Add exclude filter |
+| `:date-filter <expr>` | Add date/time range filter |
+| `:set-color [--fg COLOR] [--bg COLOR]` | Set highlight color for selected filter |
+| `:open <path>` | Open file or directory |
+| `:close-tab` | Close current tab |
+| `:docker` | Pick and stream a Docker container |
+| `:tail` | Toggle tail mode (auto-scroll on new content) |
+| `:wrap` | Toggle line wrap |
+| `:level-colors` | Toggle log-level coloring |
+| `:value-colors` | Configure HTTP/IP/UUID token coloring |
+| `:fields [col ...]` | Set visible columns |
+| `:select-fields` | Interactive column picker |
+| `:set-theme <name>` | Switch color theme |
+| `:save-filters <file>` | Save current filters to JSON |
+| `:load-filters <file>` | Load filters from JSON |
+| `:export <file> [-t template]` | Export annotations to file |
+| `:<N>` | Jump to line N |
+
+---
+
+## Configuration
+
+Config file: `~/.config/logana/config.json`
+
+```json
+{
+  "theme": "dracula",
+  "show_mode_bar": true,
+  "show_borders": true,
+  "keybindings": {
+    "navigation": {
+      "scroll_down": ["j", "Down"],
+      "scroll_up": ["k", "Up"],
+      "half_page_down": "Ctrl+d",
+      "half_page_up": "Ctrl+u"
+    },
+    "global": {
+      "quit": "q"
+    }
+  }
+}
+```
+
+All keybindings have sensible defaults — the config file is entirely optional. Each action supports a single key or an array of alternatives.
+
+---
+
+## Themes
+
+9 themes are bundled: `atomic`, `dracula`, `gruvbox-dark`, `jandedobbeleer`, `monokai`, `nord`, `paradox`, `solarized`, `tokyonight`.
+
+```sh
+:set-theme nord
+```
+
+Place custom themes (JSON) in `~/.config/logana/themes/`. Colors accept hex (`"#RRGGBB"`) or RGB arrays (`[r, g, b]`).
+
+---
+
+## Data Locations
+
+| Path | Contents |
+|---|---|
+| `~/.local/share/logana/logana.db` | Filters, session state, file contexts |
+| `~/.config/logana/config.json` | Keybindings, theme, UI defaults |
+| `~/.config/logana/themes/` | Custom themes |
+| `~/.config/logana/templates/` | Custom export templates |
+
+---
+
+## License
+
+MIT

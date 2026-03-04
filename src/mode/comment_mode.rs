@@ -176,15 +176,7 @@ impl Mode for CommentMode {
         (self, KeyResult::Handled)
     }
 
-    fn status_line(&self) -> &str {
-        if self.editing_index.is_some() {
-            "[COMMENT EDIT] type text  <Ctrl+S> save  <Ctrl+D> delete  <Esc> cancel"
-        } else {
-            "[COMMENT] type text  <Ctrl+S> save  <Esc> cancel"
-        }
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let label = if self.editing_index.is_some() {
             "[COMMENT EDIT]  "
         } else {
@@ -450,9 +442,9 @@ mod tests {
     }
 
     #[test]
-    fn test_status_line_contains_comment() {
+    fn test_mode_bar_content_contains_comment() {
         let mode = CommentMode::new(vec![0]);
-        assert!(mode.status_line().contains("[COMMENT]"));
+        assert!(matches!(mode.render_state(), ModeRenderState::Comment { .. }));
     }
 
     // ── Edit mode tests ─────────────────────────────────────────────────
@@ -535,15 +527,18 @@ mod tests {
     }
 
     #[test]
-    fn test_status_line_edit_mode() {
+    fn test_mode_bar_content_edit_mode_contains_delete() {
         let mode = CommentMode::edit(0, "text".to_string(), vec![0]);
-        assert!(mode.status_line().contains("[COMMENT EDIT]"));
-        assert!(mode.status_line().contains("delete"));
+        let content = mode.mode_bar_content(&Keybindings::default(), &Theme::default());
+        let text: String = content.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("delete"));
     }
 
     #[test]
-    fn test_status_line_new_mode_no_delete() {
+    fn test_mode_bar_content_new_mode_no_delete() {
         let mode = CommentMode::new(vec![0]);
-        assert!(!mode.status_line().contains("delete"));
+        let content = mode.mode_bar_content(&Keybindings::default(), &Theme::default());
+        let text: String = content.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!text.contains("delete"));
     }
 }

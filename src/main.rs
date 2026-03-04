@@ -1,3 +1,9 @@
+//! Entry point for logana — a terminal log analysis tool.
+//!
+//! Parses CLI arguments, initialises the tokio runtime and SQLite database,
+//! loads configuration, builds the [`FileReader`] and [`LogManager`], then
+//! hands control to [`App::run`] for the interactive TUI event loop.
+
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{

@@ -1,3 +1,10 @@
+//! Per-token color coding for well-known values in log lines.
+//!
+//! [`colorize_known_values`] post-processes a rendered ratatui [`Line`],
+//! scanning unstyled spans (no `fg` set) for HTTP methods, HTTP status codes,
+//! IPv4/IPv6 addresses, and UUIDs. Spans already colored by filters or search
+//! are left untouched. Regex patterns are compiled once via [`std::sync::LazyLock`].
+
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use regex::Regex;

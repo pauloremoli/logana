@@ -1,3 +1,10 @@
+//! Mode trait and all mode implementations for the TUI.
+//!
+//! Each mode owns its key-handling logic and state. The active mode is stored
+//! as `Box<dyn Mode>` on [`crate::ui::TabState`]. Unhandled keys return
+//! `KeyResult::Ignored` to fall through to global key handling; commands
+//! are triggered via `KeyResult::ExecuteCommand`.
+
 pub mod app_mode;
 pub mod command_mode;
 pub mod comment_mode;

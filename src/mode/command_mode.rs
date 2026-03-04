@@ -362,11 +362,7 @@ impl Mode for CommandMode {
         (self, KeyResult::Handled)
     }
 
-    fn status_line(&self) -> &str {
-        "[COMMAND] <Esc> cancel  <Enter> execute  <Tab> complete"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[COMMAND]  ",
             Style::default()
@@ -502,7 +498,7 @@ mod tests {
             mode2.render_state(),
             ModeRenderState::Command { .. }
         ));
-        assert!(mode2.status_line().contains("[NORMAL]"));
+        assert!(matches!(mode2.render_state(), ModeRenderState::Normal));
     }
 
     #[tokio::test]
@@ -515,7 +511,10 @@ mod tests {
         // filter_context consumed
         assert!(tab.filter_context.is_none());
         // returned to filter management mode, not normal mode
-        assert!(mode2.status_line().contains("[FILTER]"));
+        assert!(matches!(
+            mode2.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
     }
 
     #[tokio::test]
@@ -679,8 +678,11 @@ mod tests {
     }
 
     #[test]
-    fn test_status_line_contains_command() {
-        assert!(empty_mode().status_line().contains("[COMMAND]"));
+    fn test_mode_bar_content_contains_command() {
+        assert!(matches!(
+            empty_mode().render_state(),
+            ModeRenderState::Command { .. }
+        ));
     }
 
     #[tokio::test]

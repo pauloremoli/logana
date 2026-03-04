@@ -1,3 +1,10 @@
+//! JSON log parser supporting tracing, bunyan, GELF, and similar formats.
+//!
+//! Zero-copy field extraction via [`parse_json_line`]; semantic classification
+//! via [`classify_json_fields`] / [`classify_json_fields_all`]. Format
+//! detection samples the first 200 lines and scores by the proportion that
+//! start with `{` and parse successfully.
+
 use std::collections::HashSet;
 
 use super::types::{DisplayParts, LogFormatParser, SpanInfo};

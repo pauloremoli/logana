@@ -68,11 +68,7 @@ impl Mode for DockerSelectMode {
         (self, KeyResult::Handled)
     }
 
-    fn status_line(&self) -> &str {
-        "[DOCKER] <j/k> navigate  <Enter> attach  <Esc> cancel"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[DOCKER]  ",
             Style::default()
@@ -292,9 +288,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_status_line() {
+    async fn test_mode_bar_content() {
         let mode = DockerSelectMode::new(sample_containers());
-        assert!(mode.status_line().contains("[DOCKER]"));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::DockerSelect { .. }
+        ));
     }
 
     #[tokio::test]

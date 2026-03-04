@@ -208,11 +208,7 @@ impl Mode for ValueColorsMode {
         (self, KeyResult::Handled)
     }
 
-    fn status_line(&self) -> &str {
-        "[VALUE COLORS] <Space> toggle  <a> all  <n> none  <Enter> apply  <Esc> cancel"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[VALUE COLORS]  ",
             Style::default()
@@ -539,9 +535,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_status_line() {
+    async fn test_mode_bar_content() {
         let mode = ValueColorsMode::new(sample_groups(), HashSet::new());
-        assert!(mode.status_line().contains("[VALUE COLORS]"));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::ValueColors { .. }
+        ));
     }
 
     #[tokio::test]

@@ -1,15 +1,10 @@
-// ---------------------------------------------------------------------------
-// Common Log Format (CLF) and Combined Log Format parser
-// ---------------------------------------------------------------------------
-//
-// CLF:      host ident authuser [date] "request" status bytes
-// Combined: host ident authuser [date] "request" status bytes "referer" "user-agent"
-//
-// Example CLF:
-//   127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /index.html HTTP/1.0" 200 2326
-//
-// Example Combined:
-//   127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /index.html HTTP/1.0" 200 2326 "http://www.example.com/" "Mozilla/5.0"
+//! Common Log Format (CLF) and Combined Log Format parser.
+//!
+//! - **CLF**:      `host ident authuser [date] "request" status bytes`
+//! - **Combined**: CLF + `"referer" "user-agent"`
+//!
+//! Fields with value `"-"` (ident, authuser, bytes, referer, user_agent) are
+//! omitted from `extra_fields`. Status must be a 3-digit number or `"-"`.
 
 use std::collections::HashSet;
 

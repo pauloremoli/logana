@@ -1,3 +1,10 @@
+//! Popup and modal renderers: confirm dialogs, field selector, value colors,
+//! Docker container picker, keybindings help, and comment editor.
+//!
+//! Each popup is rendered as a floating overlay using ratatui's [`Clear`]
+//! widget. Popup state is carried by the corresponding [`crate::mode`] variant
+//! and exposed to the renderer via [`crate::mode::app_mode::ModeRenderState`].
+
 use ratatui::{
     Frame,
     prelude::*,

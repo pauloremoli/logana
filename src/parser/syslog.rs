@@ -1,6 +1,10 @@
-// ---------------------------------------------------------------------------
-// Syslog parser: RFC 3164 (BSD) and RFC 5424
-// ---------------------------------------------------------------------------
+//! Syslog parser supporting RFC 3164 (BSD syslog) and RFC 5424.
+//!
+//! - **RFC 3164**: `<PRI>Mmm DD HH:MM:SS hostname app[pid]: message`
+//! - **RFC 5424**: `<PRI>VER TIMESTAMP HOSTNAME APP PROCID MSGID [SD] MSG`
+//!
+//! Priority is decoded as `facility * 8 + severity`; severity maps to
+//! `ERROR` (0–3), `WARN` (4), `INFO` (5–6), `DEBUG` (7).
 
 use std::collections::HashSet;
 

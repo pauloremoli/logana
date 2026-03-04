@@ -154,8 +154,6 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `parse_full_timestamp` — `Www YYYY-MM-DD HH:MM:SS TZ` (weekday-prefixed full timestamp)
   - `parse_datetime_timestamp` — `YYYY-MM-DD HH:MM:SS[.mmm][,mmm]` (logback, Python, Spring Boot; supports `.` and `,` as fractional separator, optional timezone)
   - `parse_slash_datetime` — `YYYY/MM/DD HH:MM:SS[.frac]` (nginx error, Go standard log)
-  - `parse_dmesg_timestamp` — `[ seconds.usecs]` (Linux kernel ring buffer)
-  - `parse_apache_error_timestamp` — `[Www Mmm DD HH:MM:SS.usecs YYYY]` (Apache 2.4 error log)
 - **`normalize_level(token) -> Option<&'static str>`**: Maps level keywords (case-insensitive) to canonical strings: TRACE, DEBUG, INFO, NOTICE, WARN, ERROR, FATAL. Recognizes abbreviations (TRC, DBG, INF, WRN, ERR, FTL, CRIT, EMERG, ALERT).
 - **`is_level_keyword(token) -> bool`**: Returns true if the token is a recognized log level keyword.
 - **Constants**: `WEEKDAYS`, `BSD_MONTHS` — used across parsers for date validation.
@@ -182,28 +180,6 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **Key rule**: All sub-strategies require a recognizable level keyword — prevents claiming journalctl/syslog lines that lack level info.
 - **`detect_score`**: Proportion of parsed lines × 0.95 (yields to more specific parsers on ties).
 
-### Web Error Parser (parser/web_error.rs)
-
-- **`WebErrorParser`** implements `LogFormatParser`. Handles nginx and Apache 2.4 error log formats.
-- **nginx error**: `YYYY/MM/DD HH:MM:SS [level] pid#tid: *connid msg, key: val, ...` — slash-date timestamp, bracketed level, trailing `client`/`server`/`request`/etc. key-value pairs extracted as extra fields.
-- **Apache 2.4 error**: `[Www Mmm DD HH:MM:SS.us YYYY] [module:level] [pid N:tid N] msg` — double-bracket pattern, module extracted as extra field.
-- **`detect_score`**: Proportion of sample lines that parse successfully.
-
-### Dmesg Parser (parser/dmesg.rs)
-
-- **`DmesgParser`** implements `LogFormatParser`. Parses Linux kernel ring buffer output.
-- **Format**: `[ seconds.usecs] message` — bracketed boot-relative timestamp with optional leading spaces.
-- **Subsystem extraction**: If the message contains a `subsystem ...:` pattern (e.g., `usb 1-1:`), the subsystem is extracted as the `target` field.
-- **No level field**: dmesg text output does not carry priority information.
-- **`detect_score`**: Proportion of sample lines with valid `[seconds.usecs]` prefix.
-
-### Kubernetes CRI Parser (parser/kube_cri.rs)
-
-- **`KubeCriParser`** implements `LogFormatParser`. Handles the Kubernetes Container Runtime Interface log format.
-- **Format**: `ISO_TIMESTAMP stdout|stderr F|P message` — ISO 8601 timestamp, stream indicator, full/partial flag, then message.
-- **Extra fields**: `stream` (stdout/stderr); partial lines with `P` flag add a `partial=true` extra field.
-- **Very distinctive**: The `stdout`/`stderr` + `F`/`P` combination makes false positives extremely unlikely.
-- **`detect_score`**: Proportion of sample lines that match the strict CRI format.
 
 ### Filter Pipeline (filters.rs)
 
@@ -250,7 +226,6 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **`build_filter_manager() -> (FilterManager, Vec<Style>)`**: Converts enabled `FilterDef`s into a renderable `FilterManager` + parallel style palette (one `Style` per enabled filter, indexed by `StyleId`). Skips `@date:` prefixed patterns (date filters are applied separately in `refresh_visible()`).
 - **Marks**: `toggle_mark`, `is_marked`, `get_marked_indices`, `get_marked_lines(&FileReader)`.
 - **Comments**: `add_comment(text, line_indices)`, `get_comments() -> &[Comment]`, `has_comment(line_idx) -> bool`, `set_comments(Vec<Comment>)`, `remove_comment(index)`, `clear_all_marks_and_comments()`. Multiple comment groups can share the same log lines.
-- **DB bridge**: Filter mutations are fully `async` — all methods on `LogManager` are `async fn` and `await` their DB calls directly. On construction, filters are loaded from DB via `reload_filters_from_db().await`.
 - **File hash**: `compute_file_hash(path)` hashes file size + mtime for change detection.
 
 ### Database (db.rs)
@@ -260,7 +235,8 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **`FilterStore`**: `get_filters`, `get_filters_for_source`, `clear_filters_for_source`, `replace_all_filters`, `insert_filter`, `delete_filter`, `toggle_filter`, `update_filter_pattern`, `update_filter_color`, `swap_filter_order`.
 - **`FileContextStore`**: `save_file_context`, `load_file_context`.
 - **`SessionStore`**: `save_session(&[String])`, `load_session() -> Vec<String>` — persists the ordered list of open tabs across runs.
-- In-memory mode (`Database::in_memory()`) for tests; migration support.
+- In-memory mode (`Database::in_memory()`) for tests; runs the same migration path.
+- **Schema versioning**: `PRAGMA user_version` tracks the applied schema version. `run_migrations()` reads the current version and calls `migrate_to_vN()` only for versions not yet applied. Each migration runs exactly once. To add a new migration: add `migrate_to_vN` with the required SQL and an `if version < N` block in `run_migrations`.
 - Shared via `Arc<Database>`; callers use `.await` directly within the tokio runtime.
 
 ### Search (search.rs)
@@ -277,11 +253,11 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **`ExportTemplate`**: Parsed template with `header`, `comment_group`, and optional `marked_lines`/`footer` sections.
 - **`ExportData`**: Bundles filename, comments, marked indices, and file reader for rendering.
 - **`parse_template(raw)`**: Extracts sections from raw template text.
-- **`load_template(name)`**: Resolves template files — checks `~/.config/logana/templates/{name}.txt` first, falls back to `./templates/{name}.txt` (same pattern as `Theme::from_file`).
-- **`list_templates()`**: Scans both directories for `.txt` files, dedupes, sorts (same pattern as `Theme::list_available_themes`).
+- **`load_template(name)`**: Resolves template files — checks `~/.config/logana/templates/{name}.txt` first, falls back to `./templates/{name}.txt` (dev), then to `BUNDLED_TEMPLATES` embedded in the binary (same pattern as `Theme::from_file`).
+- **`list_templates()`**: Seeds from `BUNDLED_TEMPLATES`, then overlays names from local `templates/` and `~/.config/logana/templates/`. User-config and local names shadow bundled ones (same pattern as `Theme::list_available_themes`).
 - **`render_export(template, data)`**: Renders the full document — header with filename/date, then comments and standalone marked lines interleaved in log order (consecutive standalone marks are grouped). Lines are rendered through the detected format parser (same as the TUI display) when available; falls back to raw bytes for plain text logs.
 - **`complete_template(partial)`**: Fuzzy-match completion for template names.
-- **Bundled templates**: `templates/markdown.txt` (Markdown with fenced code blocks), `templates/jira.txt` (Jira wiki with `{noformat}` blocks).
+- **Bundled templates**: `markdown` and `jira` are embedded in the binary via `include_str!` — available without any installation step.
 - **`:export <path> [-t <template>]`** command: default template is `markdown`. Tab-completes both file paths and template names (`-t`/`--template` flag).
 
 ### UI (ui/)

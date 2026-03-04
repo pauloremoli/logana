@@ -60,11 +60,7 @@ impl Mode for SearchMode {
         }
     }
 
-    fn status_line(&self) -> &str {
-        "[SEARCH] <Esc> cancel  <Enter> search"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[SEARCH]  ",
             Style::default()
@@ -265,7 +261,10 @@ mod tests {
     }
 
     #[test]
-    fn test_status_line_contains_search() {
-        assert!(forward_mode("").status_line().contains("[SEARCH]"));
+    fn test_mode_bar_content_contains_search() {
+        assert!(matches!(
+            forward_mode("").render_state(),
+            ModeRenderState::Search { .. }
+        ));
     }
 }

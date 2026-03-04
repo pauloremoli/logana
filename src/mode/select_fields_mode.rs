@@ -89,11 +89,7 @@ impl Mode for SelectFieldsMode {
         (self, KeyResult::Handled)
     }
 
-    fn status_line(&self) -> &str {
-        "[SELECT FIELDS] <Space> toggle  <J/K> reorder  <Enter> apply  <Esc> cancel  <a> all  <n> none"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[SELECT FIELDS]  ",
             Style::default()
@@ -325,9 +321,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_status_line() {
+    async fn test_mode_bar_content() {
         let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
-        assert!(mode.status_line().contains("[SELECT FIELDS]"));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::SelectFields { .. }
+        ));
     }
 
     #[tokio::test]

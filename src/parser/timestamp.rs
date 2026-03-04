@@ -1,10 +1,9 @@
-// ---------------------------------------------------------------------------
-// Shared timestamp parsing utilities
-// ---------------------------------------------------------------------------
-//
-// Centralises all timestamp recognition used by the various format parsers.
-// Each function returns `Option<(&str, usize)>` where the string is the
-// matched timestamp slice and the usize is the number of bytes consumed.
+//! Shared timestamp parsing utilities used across all log format parsers.
+//!
+//! Each function returns `Option<(&str, usize)>` where the `&str` is the
+//! matched timestamp slice borrowed from the input and `usize` is the number
+//! of bytes consumed. All functions are `pub(crate)` — internal to the parser
+//! module.
 
 /// Weekday abbreviations used by `journalctl -o short-full`.
 pub(crate) const WEEKDAYS: &[&str] = &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -226,124 +225,6 @@ pub(crate) fn parse_datetime_timestamp(s: &str) -> Option<(&str, usize)> {
     Some((&s[..end], end))
 }
 
-/// Parse `YYYY/MM/DD HH:MM:SS[.frac]` (nginx error log, Go standard log).
-pub(crate) fn parse_slash_datetime(s: &str) -> Option<(&str, usize)> {
-    // Minimum: "YYYY/MM/DD HH:MM:SS" = 19 chars
-    if s.len() < 19 {
-        return None;
-    }
-    let b = s.as_bytes();
-    if !b[0].is_ascii_digit()
-        || !b[1].is_ascii_digit()
-        || !b[2].is_ascii_digit()
-        || !b[3].is_ascii_digit()
-        || b[4] != b'/'
-        || !b[5].is_ascii_digit()
-        || !b[6].is_ascii_digit()
-        || b[7] != b'/'
-        || !b[8].is_ascii_digit()
-        || !b[9].is_ascii_digit()
-        || b[10] != b' '
-    {
-        return None;
-    }
-    if !b[11].is_ascii_digit()
-        || !b[12].is_ascii_digit()
-        || b[13] != b':'
-        || !b[14].is_ascii_digit()
-        || !b[15].is_ascii_digit()
-        || b[16] != b':'
-        || !b[17].is_ascii_digit()
-        || !b[18].is_ascii_digit()
-    {
-        return None;
-    }
-    let mut end = 19;
-    // Optional fractional seconds
-    if end < s.len() && b[end] == b'.' {
-        end += 1;
-        while end < s.len() && b[end].is_ascii_digit() {
-            end += 1;
-        }
-    }
-    Some((&s[..end], end))
-}
-
-/// Parse dmesg kernel timestamp: `[ seconds.usecs]` or `[seconds.usecs]`.
-/// Handles variable-width seconds with optional leading spaces.
-pub(crate) fn parse_dmesg_timestamp(s: &str) -> Option<(&str, usize)> {
-    if s.len() < 4 {
-        return None;
-    }
-    let b = s.as_bytes();
-    if b[0] != b'[' {
-        return None;
-    }
-    // Skip spaces after '['
-    let mut pos = 1;
-    while pos < b.len() && b[pos] == b' ' {
-        pos += 1;
-    }
-    // Need at least one digit
-    if pos >= b.len() || !b[pos].is_ascii_digit() {
-        return None;
-    }
-    // Consume digits (seconds)
-    while pos < b.len() && b[pos].is_ascii_digit() {
-        pos += 1;
-    }
-    // Must have a dot
-    if pos >= b.len() || b[pos] != b'.' {
-        return None;
-    }
-    pos += 1;
-    // Consume fractional digits
-    let frac_start = pos;
-    while pos < b.len() && b[pos].is_ascii_digit() {
-        pos += 1;
-    }
-    if pos == frac_start {
-        return None;
-    }
-    // Must end with ']'
-    if pos >= b.len() || b[pos] != b']' {
-        return None;
-    }
-    pos += 1;
-    Some((&s[..pos], pos))
-}
-
-/// Parse Apache 2.4 error log timestamp: `[Www Mmm DD HH:MM:SS.usecs YYYY]` or
-/// `[Www Mmm DD HH:MM:SS YYYY]`.
-pub(crate) fn parse_apache_error_timestamp(s: &str) -> Option<(&str, usize)> {
-    // Minimum: "[Mon Jan 01 00:00:00 2024]" = 26 chars
-    if s.len() < 26 {
-        return None;
-    }
-    let b = s.as_bytes();
-    if b[0] != b'[' {
-        return None;
-    }
-    let weekday = &s[1..4];
-    if !WEEKDAYS.contains(&weekday) {
-        return None;
-    }
-    if b[4] != b' ' {
-        return None;
-    }
-    let month = &s[5..8];
-    if !BSD_MONTHS.contains(&month) {
-        return None;
-    }
-    if b[8] != b' ' {
-        return None;
-    }
-    // Find closing bracket
-    let close = s[1..].find(']')?;
-    let ts = &s[..close + 2]; // includes [ and ]
-    Some((ts, close + 2))
-}
-
 // ---------------------------------------------------------------------------
 // Level normalization
 // ---------------------------------------------------------------------------
@@ -491,82 +372,6 @@ mod tests {
     fn test_parse_datetime_iso_not_datetime() {
         // ISO timestamps have 'T' not ' ' at position 10
         assert!(parse_datetime_timestamp("2024-01-15T10:30:00 rest").is_none());
-    }
-
-    // ── Slash datetime ────────────────────────────────────────────────
-
-    #[test]
-    fn test_parse_slash_datetime_basic() {
-        let (ts, consumed) = parse_slash_datetime("2024/01/15 10:30:00 rest").unwrap();
-        assert_eq!(ts, "2024/01/15 10:30:00");
-        assert_eq!(consumed, 19);
-    }
-
-    #[test]
-    fn test_parse_slash_datetime_with_frac() {
-        let (ts, _) = parse_slash_datetime("2024/01/15 10:30:00.123456 rest").unwrap();
-        assert_eq!(ts, "2024/01/15 10:30:00.123456");
-    }
-
-    #[test]
-    fn test_parse_slash_datetime_not_slash() {
-        assert!(parse_slash_datetime("2024-01-15 10:30:00 rest").is_none());
-    }
-
-    // ── dmesg timestamp ───────────────────────────────────────────────
-
-    #[test]
-    fn test_parse_dmesg_basic() {
-        let (ts, consumed) = parse_dmesg_timestamp("[    0.000000] rest").unwrap();
-        assert_eq!(ts, "[    0.000000]");
-        assert_eq!(consumed, 14);
-    }
-
-    #[test]
-    fn test_parse_dmesg_large_seconds() {
-        let (ts, _) = parse_dmesg_timestamp("[12345.678901] rest").unwrap();
-        assert_eq!(ts, "[12345.678901]");
-    }
-
-    #[test]
-    fn test_parse_dmesg_no_bracket() {
-        assert!(parse_dmesg_timestamp("12345.678901] rest").is_none());
-    }
-
-    #[test]
-    fn test_parse_dmesg_no_dot() {
-        assert!(parse_dmesg_timestamp("[12345] rest").is_none());
-    }
-
-    // ── Apache error timestamp ────────────────────────────────────────
-
-    #[test]
-    fn test_parse_apache_error_basic() {
-        let (ts, consumed) =
-            parse_apache_error_timestamp("[Mon Jan 15 10:30:00.123456 2024] rest").unwrap();
-        assert_eq!(ts, "[Mon Jan 15 10:30:00.123456 2024]");
-        assert_eq!(consumed, 33);
-    }
-
-    #[test]
-    fn test_parse_apache_error_no_frac() {
-        let (ts, _) = parse_apache_error_timestamp("[Fri Dec 31 23:59:59 2024] rest").unwrap();
-        assert_eq!(ts, "[Fri Dec 31 23:59:59 2024]");
-    }
-
-    #[test]
-    fn test_parse_apache_error_not_bracket() {
-        assert!(parse_apache_error_timestamp("Mon Jan 15 10:30:00 2024] rest").is_none());
-    }
-
-    #[test]
-    fn test_parse_apache_error_bad_weekday() {
-        assert!(parse_apache_error_timestamp("[Xxx Jan 15 10:30:00 2024] rest").is_none());
-    }
-
-    #[test]
-    fn test_parse_apache_error_bad_month() {
-        assert!(parse_apache_error_timestamp("[Mon Xxx 15 10:30:00 2024] rest").is_none());
     }
 
     // ── normalize_level ───────────────────────────────────────────────

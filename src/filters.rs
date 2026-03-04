@@ -1,3 +1,10 @@
+//! Filter pipeline: pattern matching, visibility computation, and span rendering.
+//!
+//! [`FilterManager`] evaluates enabled `FilterDef`s against log lines in
+//! parallel via rayon. Literal patterns use Aho-Corasick; patterns with regex
+//! metacharacters fall back to the `regex` crate. [`render_line`] flattens
+//! overlapping styled spans into a ratatui [`Line`].
+
 use aho_corasick::AhoCorasick;
 use ratatui::text::{Line, Span};
 use regex::Regex;

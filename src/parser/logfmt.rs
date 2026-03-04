@@ -1,12 +1,10 @@
-// ---------------------------------------------------------------------------
-// Logfmt parser: key=value pairs
-// ---------------------------------------------------------------------------
-//
-// Handles logs formatted as space-separated `key=value` pairs, commonly used
-// by Go slog, Heroku, Grafana Loki, and 12-factor apps.
-//
-// Example:
-//   time=2024-01-01T00:00:00Z level=info msg="request handled" status=200
+//! Logfmt `key=value` parser for Go slog, Heroku, Grafana Loki, and 12-factor apps.
+//!
+//! Parses space-separated `key=value` pairs; quoted values support backslash
+//! escapes. Requires ≥ 3 pairs to match; lines starting with `{` are skipped
+//! (handled by [`super::json::JsonParser`]).
+//!
+//! Example: `time=2024-01-01T00:00:00Z level=info msg="request handled" status=200`
 
 use std::collections::HashSet;
 

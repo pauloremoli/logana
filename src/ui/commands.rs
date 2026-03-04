@@ -1,3 +1,10 @@
+//! Command handler — implements all 30+ TUI commands.
+//!
+//! [`run_command`] is the single dispatch point called by
+//! [`crate::ui::app::App::execute_command_str`]. Commands include: `filter`,
+//! `exclude`, `set-color`, `export`, `wrap`, `open`, `docker`, `date-filter`,
+//! `fields`, `select-fields`, `value-colors`, `tail`, and more.
+
 use clap::Parser;
 use std::collections::HashSet;
 

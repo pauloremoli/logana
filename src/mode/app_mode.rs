@@ -1,3 +1,10 @@
+//! Core mode trait, render state enum, and shared mode infrastructure.
+//!
+//! [`Mode`] is the central trait: `handle_key` consumes `Box<Self>` and
+//! returns a new `(Box<dyn Mode>, KeyResult)`. [`ModeRenderState`] is an
+//! ISP-compliant enum — each variant carries exactly the data its popup
+//! renderer needs, avoiding optional trait methods.
+
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
@@ -14,8 +21,7 @@ use crate::{
 
 /// Rendering state returned by each mode via `Mode::render_state()`.
 ///
-/// Each variant carries exactly the data the rendering layer needs for that mode,
-/// satisfying the Interface Segregation Principle: modes only expose what they own.
+/// Each variant carries exactly the data the rendering layer needs for that mode.
 #[derive(Debug, Clone)]
 pub enum ModeRenderState {
     Normal,
@@ -78,16 +84,8 @@ pub trait Mode: std::fmt::Debug + Send {
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult);
 
-    fn status_line(&self) -> &str;
-
-    /// Like `status_line` but returns a styled `Line` with `<KEY> action` spans.
-    /// Default implementation wraps the static status string in theme text color.
-    fn dynamic_status_line(&self, _kb: &Keybindings, theme: &Theme) -> Line<'static> {
-        Line::from(Span::styled(
-            self.status_line().to_string(),
-            Style::default().fg(theme.text),
-        ))
-    }
+    /// Returns a styled mode bar `Line` with `<KEY> action` spans based on the active keybindings.
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static>;
 
     /// Returns the rendering state for this mode.
     ///
@@ -168,11 +166,7 @@ impl Mode for ConfirmRestoreMode {
         }
     }
 
-    fn status_line(&self) -> &str {
-        "[RESTORE] Restore previous session?  <y> yes  <n> no"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[RESTORE]  ",
             Style::default()
@@ -223,11 +217,7 @@ impl Mode for ConfirmRestoreSessionMode {
         }
     }
 
-    fn status_line(&self) -> &str {
-        "[RESTORE SESSION] Restore last session?  <y> yes  <n> no"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[RESTORE SESSION]  ",
             Style::default()
@@ -281,11 +271,7 @@ impl Mode for ConfirmOpenDirMode {
         }
     }
 
-    fn status_line(&self) -> &str {
-        "[OPEN DIR] Open files from directory?  <y> yes  <n> no"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let n = self.files.len();
         let dir = self.dir.clone();
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
@@ -450,11 +436,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_confirm_restore_status_line() {
+    async fn test_confirm_restore_mode_bar_content() {
         let mode = ConfirmRestoreMode {
             context: default_context(),
         };
-        assert!(mode.status_line().contains("[RESTORE]"));
+        assert!(matches!(mode.render_state(), ModeRenderState::ConfirmRestore));
     }
 
     #[tokio::test]
@@ -463,7 +449,6 @@ mod tests {
         let mode = ConfirmRestoreMode {
             context: ctx.clone(),
         };
-        assert!(mode.status_line().contains("[RESTORE]"));
         assert!(matches!(
             mode.render_state(),
             ModeRenderState::ConfirmRestore
@@ -529,11 +514,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_confirm_session_status_line() {
+    async fn test_confirm_session_mode_bar_content() {
         let mode = ConfirmRestoreSessionMode {
             files: vec!["file.log".to_string()],
         };
-        assert!(mode.status_line().contains("[RESTORE SESSION]"));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::ConfirmRestoreSession { .. }
+        ));
     }
 
     #[tokio::test]
@@ -678,12 +666,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_confirm_open_dir_status_line_contains_open_dir() {
+    async fn test_confirm_open_dir_mode_bar_content() {
         let mode = ConfirmOpenDirMode {
             dir: "/tmp".to_string(),
             files: vec!["/tmp/a.log".to_string()],
         };
-        assert!(mode.status_line().contains("[OPEN DIR]"));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::ConfirmOpenDir { .. }
+        ));
     }
 
     #[tokio::test]

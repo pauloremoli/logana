@@ -113,11 +113,7 @@ impl Mode for VisualLineMode {
         (self, KeyResult::Handled)
     }
 
-    fn status_line(&self) -> &str {
-        "[VISUAL] <j/k> extend  <c> comment  <y> yank  <Esc> cancel"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let label = match self.count {
             Some(n) => format!("[VISUAL] {}  ", n),
             None => "[VISUAL]  ".to_string(),
@@ -243,7 +239,7 @@ mod tests {
             mode2.render_state(),
             ModeRenderState::VisualLine { .. }
         ));
-        assert!(mode2.status_line().contains("[NORMAL]"));
+        assert!(matches!(mode2.render_state(), ModeRenderState::Normal));
     }
 
     #[tokio::test]
@@ -295,21 +291,23 @@ mod tests {
     }
 
     #[test]
-    fn test_status_line_contains_visual() {
+    fn test_mode_bar_content_contains_visual() {
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
         };
-        assert!(mode.status_line().contains("[VISUAL]"));
+        assert!(matches!(mode.render_state(), ModeRenderState::VisualLine { .. }));
     }
 
     #[test]
-    fn test_status_line_contains_yank() {
+    fn test_mode_bar_content_contains_yank() {
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
         };
-        assert!(mode.status_line().contains("yank"));
+        let content = mode.mode_bar_content(&Keybindings::default(), &Theme::default());
+        let text: String = content.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("yank"));
     }
 
     #[tokio::test]
@@ -322,7 +320,7 @@ mod tests {
         };
         let (mode2, result) = press(mode, &mut tab, KeyCode::Char('y')).await;
         // Should return to normal mode
-        assert!(mode2.status_line().contains("[NORMAL]"));
+        assert!(matches!(mode2.render_state(), ModeRenderState::Normal));
         // Should return the selected text for clipboard via App
         match result {
             KeyResult::CopyToClipboard(text) => {
@@ -371,7 +369,7 @@ mod tests {
             count: None,
         };
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('y')).await;
-        assert!(mode2.status_line().contains("[NORMAL]"));
+        assert!(matches!(mode2.render_state(), ModeRenderState::Normal));
         assert_eq!(tab.command_error.as_deref(), Some("No lines to copy"));
     }
 

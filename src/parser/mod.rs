@@ -1,30 +1,31 @@
+//! Log format detection and parser registry.
+//!
+//! [`detect_format`] samples up to 200 lines and returns the [`LogFormatParser`]
+//! with the highest confidence score. Registered parsers in priority order:
+//! [`JsonParser`], [`SyslogParser`], [`JournalctlParser`], [`ClfParser`],
+//! [`LogfmtParser`], [`CommonLogParser`] (0.95× score penalty as catch-all).
+
 pub mod clf;
 pub mod common_log;
-pub mod dmesg;
 pub mod journalctl;
 pub mod json;
-pub mod kube_cri;
 pub mod logfmt;
 pub mod syslog;
 pub(crate) mod timestamp;
 pub mod types;
-pub mod web_error;
 
 // Re-export all public items for backward-compatible access via `crate::parser::*`.
 pub use clf::ClfParser;
 pub use common_log::CommonLogParser;
-pub use dmesg::DmesgParser;
 pub use journalctl::JournalctlParser;
 pub use json::{
     JsonField, JsonParser, LEVEL_KEYS, LogFormat, LogLine, MESSAGE_KEYS, TARGET_KEYS,
     TIMESTAMP_KEYS, build_display_json, classify_json_fields, classify_json_fields_all,
     detect_json_format, parse_json_line,
 };
-pub use kube_cri::KubeCriParser;
 pub use logfmt::LogfmtParser;
 pub use syslog::SyslogParser;
 pub use types::{DisplayParts, LogFormatParser, SpanInfo, format_span_col};
-pub use web_error::WebErrorParser;
 
 /// Sample lines, try all registered parsers, return best match.
 pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
@@ -37,10 +38,7 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
         Box::new(SyslogParser),
         Box::new(JournalctlParser),
         Box::new(ClfParser),
-        Box::new(KubeCriParser),
-        Box::new(WebErrorParser),
         Box::new(LogfmtParser),
-        Box::new(DmesgParser),
         // CommonLogParser last — broadest catch-all with 0.95× score penalty
         Box::new(CommonLogParser),
     ];
@@ -187,46 +185,6 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_format_dmesg() {
-        let lines: Vec<&[u8]> = vec![
-            b"[    0.000000] Linux version 6.1.0",
-            b"[    0.123456] Command line: BOOT_IMAGE=/vmlinuz",
-        ];
-        let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "dmesg");
-    }
-
-    #[test]
-    fn test_detect_format_kube_cri() {
-        let lines: Vec<&[u8]> = vec![
-            b"2024-01-15T10:30:00.123456789Z stdout F Hello, World!",
-            b"2024-01-15T10:30:01.123456789Z stderr F Error occurred",
-        ];
-        let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "kube-cri");
-    }
-
-    #[test]
-    fn test_detect_format_nginx_error() {
-        let lines: Vec<&[u8]> = vec![
-            b"2024/01/15 10:30:00 [error] 1234#5678: *99 open() failed",
-            b"2024/01/15 10:30:01 [warn] 1234#5678: *100 something else",
-        ];
-        let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "web-error");
-    }
-
-    #[test]
-    fn test_detect_format_apache_error() {
-        let lines: Vec<&[u8]> = vec![
-            b"[Mon Jan 15 10:30:00.123456 2024] [core:error] [pid 1234:tid 5678] File not found",
-            b"[Mon Jan 15 10:30:01.123456 2024] [ssl:warn] [pid 1234:tid 5678] Weak cipher",
-        ];
-        let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "web-error");
-    }
-
-    #[test]
     fn test_detect_format_common_log_env_logger() {
         let lines: Vec<&[u8]> = vec![
             b"[2024-07-24T10:00:00Z INFO  myapp] Starting server",
@@ -304,13 +262,4 @@ mod tests {
         assert_eq!(parser.name(), "journalctl");
     }
 
-    #[test]
-    fn test_kube_cri_beats_common_log() {
-        let lines: Vec<&[u8]> = vec![
-            b"2024-01-15T10:30:00Z stdout F INFO hello",
-            b"2024-01-15T10:30:01Z stderr F ERROR world",
-        ];
-        let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "kube-cri");
-    }
 }

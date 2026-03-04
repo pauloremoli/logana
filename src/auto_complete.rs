@@ -1,3 +1,9 @@
+//! Tab completion for the command bar.
+//!
+//! Provides completions for commands, color names, file paths, theme names,
+//! and export template names. [`expand_tilde`] and [`shell_split`] are shared
+//! helpers used by the command executor.
+
 pub struct CommandInfo {
     pub name: &'static str,
     pub usage: &'static str,

@@ -1,3 +1,10 @@
+//! Filter, mark, and annotation state management with SQLite persistence.
+//!
+//! [`LogManager`] owns `filter_defs`, `marks`, and `comments` in memory and
+//! bridges to the database via `async fn` methods. `build_filter_manager`
+//! converts enabled [`FilterDef`]s into a renderable [`FilterManager`] +
+//! parallel style palette, skipping `@date:` prefixed entries.
+
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

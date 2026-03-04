@@ -1,3 +1,10 @@
+//! Zero-copy log file I/O backed by memory-mapped files.
+//!
+//! [`FileReader`] uses `memmap2` for files or a `Vec<u8>` for stdin/tests.
+//! Line offsets are indexed at startup via `memchr` for O(1) random access.
+//! [`FileReader::spawn_process_stream`] spawns a child process and streams
+//! its output as complete lines, used by the `docker` command.
+
 use memchr::{memchr_iter, memchr2};
 use memmap2::Mmap;
 use std::{fs::File, io};

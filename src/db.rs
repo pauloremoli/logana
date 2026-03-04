@@ -1,3 +1,10 @@
+//! SQLite persistence layer via sqlx.
+//!
+//! Three trait abstractions: [`FilterStore`], [`FileContextStore`],
+//! [`SessionStore`]. Schema versioning uses `PRAGMA user_version`;
+//! `run_migrations` applies each migration exactly once.
+//! [`Database::in_memory`] creates an in-memory DB for tests.
+
 use anyhow::Result;
 use async_trait::async_trait;
 use sqlx::Row;
@@ -116,6 +123,21 @@ impl Database {
     }
 
     async fn run_migrations(&self) -> Result<()> {
+        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&self.pool)
+            .await?;
+
+        if version < 1 {
+            self.migrate_to_v1().await?;
+            sqlx::query("PRAGMA user_version = 1")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn migrate_to_v1(&self) -> Result<()> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS filters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,23 +154,6 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
-        // Migration: add source_file column if it doesn't exist (for existing databases)
-        let _ = sqlx::query("ALTER TABLE filters ADD COLUMN source_file TEXT NOT NULL DEFAULT ''")
-            .execute(&self.pool)
-            .await;
-
-        // Migration: add match_only column if it doesn't exist (for existing databases)
-        let _ = sqlx::query("ALTER TABLE filters ADD COLUMN match_only INTEGER NOT NULL DEFAULT 1")
-            .execute(&self.pool)
-            .await;
-
-        // Migration: flip match_only default for existing filters without custom colors
-        let _ = sqlx::query(
-            "UPDATE filters SET match_only = 1 WHERE match_only = 0 AND fg_color IS NULL AND bg_color IS NULL",
-        )
-        .execute(&self.pool)
-        .await;
-
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS file_context (
                 source_file TEXT PRIMARY KEY,
@@ -159,51 +164,15 @@ impl Database {
                 show_sidebar INTEGER NOT NULL DEFAULT 1,
                 horizontal_scroll INTEGER NOT NULL DEFAULT 0,
                 marked_lines TEXT NOT NULL DEFAULT '[]',
-                file_hash TEXT
+                file_hash TEXT,
+                show_line_numbers INTEGER NOT NULL DEFAULT 1,
+                annotations_json TEXT NOT NULL DEFAULT '[]',
+                show_status_bar INTEGER NOT NULL DEFAULT 1,
+                show_borders INTEGER NOT NULL DEFAULT 1
             )",
         )
         .execute(&self.pool)
         .await?;
-
-        // Migration: add marked_lines column if it doesn't exist
-        let _ = sqlx::query(
-            "ALTER TABLE file_context ADD COLUMN marked_lines TEXT NOT NULL DEFAULT '[]'",
-        )
-        .execute(&self.pool)
-        .await;
-
-        // Migration: add file_hash column if it doesn't exist
-        let _ = sqlx::query("ALTER TABLE file_context ADD COLUMN file_hash TEXT")
-            .execute(&self.pool)
-            .await;
-
-        // Migration: add show_line_numbers column if it doesn't exist
-        let _ = sqlx::query(
-            "ALTER TABLE file_context ADD COLUMN show_line_numbers INTEGER NOT NULL DEFAULT 1",
-        )
-        .execute(&self.pool)
-        .await;
-
-        // Migration: add annotations_json column if it doesn't exist
-        let _ = sqlx::query(
-            "ALTER TABLE file_context ADD COLUMN annotations_json TEXT NOT NULL DEFAULT '[]'",
-        )
-        .execute(&self.pool)
-        .await;
-
-        // Migration: add show_status_bar column if it doesn't exist
-        let _ = sqlx::query(
-            "ALTER TABLE file_context ADD COLUMN show_status_bar INTEGER NOT NULL DEFAULT 1",
-        )
-        .execute(&self.pool)
-        .await;
-
-        // Migration: add show_borders column if it doesn't exist
-        let _ = sqlx::query(
-            "ALTER TABLE file_context ADD COLUMN show_borders INTEGER NOT NULL DEFAULT 1",
-        )
-        .execute(&self.pool)
-        .await;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS session_tabs (

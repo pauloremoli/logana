@@ -1,8 +1,22 @@
+//! Template-based export of analysis (annotations + marked lines).
+//!
+//! Template syntax: `{{#section}}...{{/section}}` with placeholders
+//! `{{filename}}`, `{{date}}`, `{{commentary}}`, `{{lines}}`, `{{line_numbers}}`.
+//! Templates are resolved from `~/.config/logana/templates/` → `templates/`
+//! (dev CWD) → bundled templates embedded via `include_str!`.
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
 use crate::auto_complete::fuzzy_match;
+
+/// Templates embedded into the binary at compile time.
+/// Lookup order: user config dir → local `templates/` (dev) → here.
+static BUNDLED_TEMPLATES: &[(&str, &str)] = &[
+    ("markdown", include_str!("../templates/markdown.txt")),
+    ("jira", include_str!("../templates/jira.txt")),
+];
 use crate::file_reader::FileReader;
 use crate::parser::LogFormatParser;
 use crate::types::{Comment, FieldLayout};
@@ -59,6 +73,8 @@ fn extract_section_optional(raw: &str, name: &str) -> Option<String> {
 }
 
 /// Load a template by name, checking the user config directory first, then bundled templates.
+///
+/// Lookup order: `~/.config/logana/templates/` → local `templates/` (dev) → bundled binary data.
 pub fn load_template(name: &str) -> Result<ExportTemplate, String> {
     let filename = format!("{}.txt", name);
     let config_path =
@@ -72,39 +88,49 @@ pub fn load_template(name: &str) -> Result<ExportTemplate, String> {
         fs::read_to_string(&local_path)
             .map_err(|e| format!("Failed to read template {:?}: {}", local_path, e))?
     } else {
-        return Err(format!(
-            "Template '{}' not found in config dir or local templates/",
-            name
-        ));
+        BUNDLED_TEMPLATES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, raw)| raw.to_string())
+            .ok_or_else(|| {
+                format!(
+                    "Template '{}' not found in config dir, local templates/, or bundled templates",
+                    name
+                )
+            })?
     };
 
     parse_template(&data)
 }
 
-/// List all available template names (without extension), scanning both directories.
+/// List all available template names (without extension).
+///
+/// Seeded from bundled templates, then overlaid with names from local `templates/` and
+/// `~/.config/logana/templates/`. User-config and local names shadow bundled ones.
 pub fn list_templates() -> Vec<String> {
-    let mut paths = vec![];
-    if let Ok(entries) = fs::read_dir("templates") {
-        for entry in entries.flatten() {
-            paths.push(entry.path());
-        }
-    }
-    if let Some(config_dir) = dirs::config_dir() {
-        let user_templates = config_dir.join("logana/templates");
-        if let Ok(entries) = fs::read_dir(user_templates) {
+    let mut set: HashSet<String> = BUNDLED_TEMPLATES
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
+
+    let mut add_from_dir = |dir: &Path| {
+        if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
-                paths.push(entry.path());
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("txt") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        set.insert(stem.to_string());
+                    }
+                }
             }
         }
+    };
+
+    add_from_dir(Path::new("templates"));
+    if let Some(config_dir) = dirs::config_dir() {
+        add_from_dir(&config_dir.join("logana/templates"));
     }
-    let mut set = HashSet::new();
-    for path in paths {
-        if path.extension().and_then(|ext| ext.to_str()) == Some("txt")
-            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-        {
-            set.insert(stem.to_string());
-        }
-    }
+
     let mut names: Vec<String> = set.into_iter().collect();
     names.sort();
     names
@@ -667,7 +693,7 @@ mod tests {
     fn test_load_template_nonexistent() {
         let result = load_template("nonexistent_xyz_template");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
+        assert!(result.unwrap_err().contains("not found in config dir"));
     }
 
     #[test]

@@ -1,3 +1,9 @@
+//! Shared data types used across the crate.
+//!
+//! Core types: [`LogLevel`], [`FilterType`], [`FilterDef`], [`ColorConfig`],
+//! [`SearchResult`], [`FieldLayout`], `Annotation`, `FileContext`, and
+//! [`DockerContainer`].
+
 use std::str::FromStr;
 
 use ratatui::style::Color;

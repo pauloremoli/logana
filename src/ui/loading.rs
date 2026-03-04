@@ -1,3 +1,9 @@
+//! File, stdin, and Docker tab loading; file watchers; session restore.
+//!
+//! Handles opening files (mmap), piped stdin (byte accumulation), Docker log
+//! streams ([`crate::file_reader::FileReader::spawn_process_stream`]),
+//! directory listings, and restoring previously saved sessions from the DB.
+
 use std::collections::VecDeque;
 
 use crate::db::FileContextStore;
@@ -434,6 +440,7 @@ mod tests {
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
+    use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
     use crate::ui::StdinLoadState;
     use std::collections::VecDeque;
@@ -796,7 +803,10 @@ mod tests {
         app.restore_session(vec![]).await;
 
         // Mode should be unchanged (still NormalMode from make_app).
-        assert!(app.tabs[0].mode.status_line().contains("[NORMAL]"));
+        assert!(matches!(
+            app.tabs[0].mode.render_state(),
+            ModeRenderState::Normal
+        ));
     }
 
     #[tokio::test]
@@ -807,14 +817,20 @@ mod tests {
         // With an empty vec it returns before setting mode, so mode stays Normal.
         // Verify the empty-vec early return path.
         app.restore_session(vec![]).await;
-        assert!(app.tabs[0].mode.status_line().contains("[NORMAL]"));
+        assert!(matches!(
+            app.tabs[0].mode.render_state(),
+            ModeRenderState::Normal
+        ));
 
         // With a non-empty vec, mode is set to NormalMode at the start.
         // Use a non-existent file so begin_file_load fails gracefully
         // and skip_or_fail_load handles it.
         app.restore_session(vec!["/nonexistent/file.log".to_string()])
             .await;
-        assert!(app.tabs[0].mode.status_line().contains("[NORMAL]"));
+        assert!(matches!(
+            app.tabs[0].mode.render_state(),
+            ModeRenderState::Normal
+        ));
     }
 
     #[tokio::test]
@@ -997,7 +1013,10 @@ mod tests {
         ];
         app.restore_session(files).await;
         // Mode should be NormalMode after restore attempt.
-        assert!(app.tabs[0].mode.status_line().contains("[NORMAL]"));
+        assert!(matches!(
+            app.tabs[0].mode.render_state(),
+            ModeRenderState::Normal
+        ));
     }
 
     #[tokio::test]

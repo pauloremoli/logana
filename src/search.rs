@@ -1,3 +1,9 @@
+//! Regex-based search over visible log lines with wrapping navigation.
+//!
+//! [`Search`] operates on `visible_indices` only (respects active filters).
+//! Builds a [`Vec<SearchResult>`] with byte-position match spans, then
+//! provides wrapping [`Search::next_match`] / [`Search::previous_match`].
+
 use crate::file_reader::FileReader;
 use crate::types::SearchResult;
 use regex::Regex;

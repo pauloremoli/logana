@@ -1,15 +1,13 @@
-// ---------------------------------------------------------------------------
-// Journalctl text output parser
-// ---------------------------------------------------------------------------
-//
-// Handles `journalctl` output formats that the SyslogParser does not cover:
-//   - short-iso:     2024-02-22T10:15:30+0000 hostname unit[pid]: message
-//   - short-precise: Feb 22 10:15:30.123456 hostname unit[pid]: message
-//   - short-full:    Mon 2024-02-22 10:15:30 UTC hostname unit[pid]: message
-//
-// The default `journalctl -o short` output (BSD timestamp without priority)
-// is already handled by `SyslogParser`, so `JournalctlParser` yields a lower
-// detect_score when the input looks like plain BSD syslog.
+//! Journalctl text output parser.
+//!
+//! Handles `journalctl` output formats that [`super::syslog::SyslogParser`] does not cover:
+//! - `short-iso`:     `2024-02-22T10:15:30+0000 hostname unit[pid]: message`
+//! - `short-precise`: `Feb 22 10:15:30.123456 hostname unit[pid]: message`
+//! - `short-full`:    `Mon 2024-02-22 10:15:30 UTC hostname unit[pid]: message`
+//!
+//! The default `journalctl -o short` output (BSD timestamp without priority)
+//! is already handled by `SyslogParser`, so [`JournalctlParser`] yields a lower
+//! `detect_score` when the input looks like plain BSD syslog.
 
 use std::collections::HashSet;
 

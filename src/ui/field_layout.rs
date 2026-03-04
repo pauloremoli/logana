@@ -1,3 +1,10 @@
+//! Structured field layout helpers for log line rendering.
+//!
+//! [`apply_field_layout`] converts a [`DisplayParts`] and a [`FieldLayout`]
+//! into an ordered `Vec<String>` of column values. [`line_row_count`] computes
+//! wrap-aware terminal row height for a line. [`default_cols`] and [`get_col`]
+//! handle column name resolution including all canonical key aliases.
+
 use std::collections::HashSet;
 
 use unicode_width::UnicodeWidthStr;

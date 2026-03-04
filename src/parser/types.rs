@@ -1,6 +1,8 @@
-// ---------------------------------------------------------------------------
-// Log format abstraction: trait, types, detection
-// ---------------------------------------------------------------------------
+//! Log format abstraction: trait, shared types, and span utilities.
+//!
+//! [`LogFormatParser`] is the core trait implemented by every format parser.
+//! [`DisplayParts`] is the zero-copy, format-agnostic representation of a
+//! parsed log line. All field slices borrow from the original line bytes.
 
 /// Span context extracted from a structured log line (e.g. tracing JSON).
 #[derive(Debug)]

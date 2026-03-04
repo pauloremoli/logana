@@ -1,3 +1,9 @@
+//! Core TUI types: [`App`], [`TabState`], [`KeyResult`], and [`LoadContext`].
+//!
+//! [`App`] owns the tab list, global theme, and shared [`Keybindings`].
+//! [`TabState`] owns the per-tab file reader, log manager, format parser,
+//! visible indices, scroll state, and active mode.
+
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 

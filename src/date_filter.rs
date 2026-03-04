@@ -1,14 +1,13 @@
-// ---------------------------------------------------------------------------
-// Date/time filter for log lines
-// ---------------------------------------------------------------------------
-//
-// Parses user expressions like `01:00:00 .. 02:00:00` or `> Feb 21 01:00:00`
-// and matches them against timestamps extracted by log format parsers.
-//
-// Date filters are stored as regular `FilterDef` entries with the pattern
-// prefixed by `@date:` and `FilterType::Include`.  The `@date:` prefix is
-// intentionally an invalid regex/substring so it never conflicts with text
-// filters.
+//! Date/time filter for log lines.
+//!
+//! Parses user expressions like `01:00:00 .. 02:00:00` or `> Feb 21 01:00:00`
+//! and matches them against timestamps extracted by log format parsers.
+//!
+//! Date filters are stored as regular [`crate::types::FilterDef`] entries with
+//! the pattern prefixed by `@date:` and `FilterType::Include`. The `@date:`
+//! prefix is intentionally an invalid regex/substring so it never conflicts
+//! with text filters. Applied as a post-processing `retain()` step after the
+//! text-based [`crate::filters::FilterManager`] runs.
 
 use crate::parser::timestamp::BSD_MONTHS;
 use crate::types::FilterDef;

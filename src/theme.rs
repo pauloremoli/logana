@@ -1,3 +1,10 @@
+//! JSON-based theme loading and color management.
+//!
+//! Lookup order: `~/.config/logana/themes/` → `themes/` (dev CWD) → bundled
+//! themes embedded at compile time via `include_str!`. Bundled themes:
+//! atomic, dracula, gruvbox-dark, jandedobbeleer, monokai, nord, paradox,
+//! solarized, tokyonight. Colors accept `"#RRGGBB"` or `[r, g, b]`.
+
 use anyhow::Context;
 use ratatui::style::Color;
 use serde::de::Error;

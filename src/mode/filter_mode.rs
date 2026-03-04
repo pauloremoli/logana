@@ -280,11 +280,7 @@ impl Mode for FilterManagementMode {
         )
     }
 
-    fn status_line(&self) -> &str {
-        "[FILTER] <t> date  <Space> toggle  <d> delete  <e> edit  <c> color  <J/K> move  <A> tog.all  <C> clear  <Esc> exit"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[FILTER]  ",
             Style::default()
@@ -421,11 +417,7 @@ impl Mode for FilterEditMode {
         }
     }
 
-    fn status_line(&self) -> &str {
-        "[FILTER EDIT] <Esc> cancel  <Enter> save"
-    }
-
-    fn dynamic_status_line(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[FILTER EDIT]  ",
             Style::default()
@@ -711,8 +703,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_status_line_contains_filter() {
-        assert!(filter_mode(0).status_line().contains("[FILTER]"));
+    async fn test_mode_bar_content_contains_filter() {
+        assert!(matches!(
+            filter_mode(0).render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
     }
 
     #[tokio::test]
@@ -748,7 +743,7 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let mode = edit_mode(None, "err");
         let (mode2, _) = press_edit(mode, &mut tab, KeyCode::Char('o')).await;
-        assert!(mode2.status_line().contains("[FILTER EDIT]"));
+        assert!(matches!(mode2.render_state(), ModeRenderState::FilterEdit));
     }
 
     #[tokio::test]
@@ -758,7 +753,7 @@ mod tests {
         let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Backspace).await;
         assert!(matches!(result, KeyResult::Handled));
         // Mode should still be FilterEditMode
-        assert!(mode2.status_line().contains("[FILTER EDIT]"));
+        assert!(matches!(mode2.render_state(), ModeRenderState::FilterEdit));
     }
 
     #[tokio::test]
