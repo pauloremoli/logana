@@ -178,6 +178,7 @@ impl App {
             }
         } else if kb.global.new_tab.matches(key, modifiers) {
             let history = self.tabs[self.active_tab].command_history.clone();
+            self.tabs[self.active_tab].command_error = None;
             self.tabs[self.active_tab].mode =
                 Box::new(CommandMode::with_history("open ".to_string(), 5, history));
         }

@@ -113,6 +113,7 @@ impl Mode for NormalMode {
         if kb.normal.command_mode.matches(key, modifiers) {
             let history = tab.command_history.clone();
             tab.g_key_pressed = false;
+            tab.command_error = None;
             self.count = None;
             return (
                 Box::new(CommandMode::with_history(String::new(), 0, history)),
@@ -142,6 +143,7 @@ impl Mode for NormalMode {
         if kb.normal.filter_include.matches(key, modifiers) {
             let history = tab.command_history.clone();
             tab.g_key_pressed = false;
+            tab.command_error = None;
             self.count = None;
             return (
                 Box::new(CommandMode::with_history("filter ".to_string(), 7, history)),
@@ -152,6 +154,7 @@ impl Mode for NormalMode {
         if kb.normal.filter_exclude.matches(key, modifiers) {
             let history = tab.command_history.clone();
             tab.g_key_pressed = false;
+            tab.command_error = None;
             self.count = None;
             return (
                 Box::new(CommandMode::with_history(
@@ -595,6 +598,22 @@ mod tests {
             }
             other => panic!("expected Command, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_command_error_cleared_on_filter_include_shortcut() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.command_error = Some("previous error".to_string());
+        press(&mut tab, KeyCode::Char('i'), KeyModifiers::NONE).await;
+        assert!(tab.command_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_command_error_cleared_on_colon() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.command_error = Some("previous error".to_string());
+        press(&mut tab, KeyCode::Char(':'), KeyModifiers::NONE).await;
+        assert!(tab.command_error.is_none());
     }
 
     #[tokio::test]

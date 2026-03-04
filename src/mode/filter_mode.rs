@@ -192,6 +192,7 @@ impl Mode for FilterManagementMode {
                 };
                 let len = cmd.len();
                 let history = tab.command_history.clone();
+                tab.command_error = None;
                 return (
                     Box::new(CommandMode::with_history(cmd, len, history)),
                     KeyResult::Handled,
@@ -223,6 +224,7 @@ impl Mode for FilterManagementMode {
             }
             let len = cmd.len();
             let history = tab.command_history.clone();
+            tab.command_error = None;
             return (
                 Box::new(CommandMode::with_history(cmd, len, history)),
                 KeyResult::Handled,
@@ -258,6 +260,7 @@ impl Mode for FilterManagementMode {
 
         if kb.filter.add_date_filter.matches(key, modifiers) {
             let history = tab.command_history.clone();
+            tab.command_error = None;
             return (
                 Box::new(CommandMode::with_history(
                     "date-filter ".to_string(),
@@ -688,6 +691,23 @@ mod tests {
             ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
             other => panic!("expected FilterManagement, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_command_error_cleared_on_date_filter_shortcut() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.command_error = Some("previous error".to_string());
+        press(filter_mode(0), &mut tab, KeyCode::Char('t')).await;
+        assert!(tab.command_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_command_error_cleared_on_edit_filter() {
+        let mut tab = make_tab(&["line"]).await;
+        add_filter(&mut tab, "error", FilterType::Include).await;
+        tab.command_error = Some("previous error".to_string());
+        press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        assert!(tab.command_error.is_none());
     }
 
     #[tokio::test]
