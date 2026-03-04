@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::parser::{DisplayParts, format_span_col};
+use crate::parser::{DisplayParts, LogFormatParser, format_span_col};
 use crate::types::FieldLayout;
 
 /// Number of terminal rows a line occupies when wrapped to `inner_width` columns.
@@ -35,6 +35,30 @@ pub(crate) fn count_wrapped_lines(text: &str, width: usize) -> usize {
         }
     }
     lines
+}
+
+/// Row count for a line, using the structured rendering width when a parser is
+/// available. In wrap mode with structured log formats (e.g. JSON tracing logs),
+/// raw bytes can be much longer than the rendered output, causing `line_row_count`
+/// on raw bytes to underestimate how many lines fit in the viewport. This function
+/// uses the actual rendered-column text width instead.
+pub(crate) fn effective_row_count(
+    line_bytes: &[u8],
+    inner_width: usize,
+    parser: Option<&dyn LogFormatParser>,
+    layout: &FieldLayout,
+    hidden_fields: &HashSet<String>,
+) -> usize {
+    if let Some(p) = parser
+        && let Some(parts) = p.parse_line(line_bytes)
+    {
+        let cols = apply_field_layout(&parts, layout, hidden_fields);
+        if !cols.is_empty() {
+            let rendered = cols.join(" ");
+            return line_row_count(rendered.as_bytes(), inner_width);
+        }
+    }
+    line_row_count(line_bytes, inner_width)
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +205,7 @@ pub(crate) fn apply_field_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::SpanInfo;
+    use crate::parser::{JsonParser, SpanInfo};
 
     // -----------------------------------------------------------------------
     // line_row_count
@@ -411,6 +435,63 @@ mod tests {
         hidden.insert("timestamp".to_string());
         let cols = apply_field_layout(&p, &layout, &hidden);
         assert_eq!(cols.len(), 2); // level + message
+    }
+
+    // -----------------------------------------------------------------------
+    // effective_row_count
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_effective_row_count_no_parser_uses_raw_bytes() {
+        let hidden = HashSet::new();
+        let layout = FieldLayout::default();
+        assert_eq!(effective_row_count(b"hello world", 80, None, &layout, &hidden), 1);
+        // ceil(11/5) = 3
+        assert_eq!(effective_row_count(b"hello world", 5, None, &layout, &hidden), 3);
+    }
+
+    #[test]
+    fn test_effective_row_count_with_parser_uses_rendered_width() {
+        // A JSON line that is long in raw bytes but short when structured-rendered.
+        let json = br#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","target":"app","fields":{"message":"ok"}}"#;
+        let parser = JsonParser;
+        let layout = FieldLayout::default();
+        let hidden = HashSet::new();
+        // Raw bytes are ~94 chars; at width=20 that's 5 rows.
+        assert_eq!(line_row_count(json, 20), 5);
+        // Structured render is much shorter; effective_row_count should be < 5.
+        let result = effective_row_count(json, 20, Some(&parser), &layout, &hidden);
+        assert!(result < 5, "structured rendering should produce fewer rows than raw bytes");
+    }
+
+    #[test]
+    fn test_effective_row_count_parse_failure_falls_back_to_raw() {
+        let parser = JsonParser;
+        let layout = FieldLayout::default();
+        let hidden = HashSet::new();
+        // Non-JSON input: parse returns None → falls back to raw byte width.
+        let raw = b"plain text log line that is not json";
+        assert_eq!(
+            effective_row_count(raw, 20, Some(&parser), &layout, &hidden),
+            line_row_count(raw, 20)
+        );
+    }
+
+    #[test]
+    fn test_effective_row_count_all_hidden_falls_back_to_raw() {
+        let parser = JsonParser;
+        let layout = FieldLayout::default();
+        // Hide every known field so cols is empty → falls back to raw.
+        let mut hidden = HashSet::new();
+        for key in ["timestamp", "level", "target", "message"] {
+            hidden.insert(key.to_string());
+        }
+        let json = br#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","target":"app","fields":{"message":"ok"}}"#;
+        let raw_rows = line_row_count(json, 20);
+        assert_eq!(
+            effective_row_count(json, 20, Some(&parser), &layout, &hidden),
+            raw_rows
+        );
     }
 
     #[test]

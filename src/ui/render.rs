@@ -20,7 +20,7 @@ use crate::value_colors::colorize_known_values;
 
 use crate::mode::app_mode::ModeRenderState;
 
-use super::field_layout::{apply_field_layout, count_wrapped_lines, line_row_count};
+use super::field_layout::{apply_field_layout, count_wrapped_lines, effective_row_count};
 use super::{App, LoadContext};
 
 impl App {
@@ -295,6 +295,11 @@ impl App {
 
         let wrap = self.tabs[self.active_tab].wrap;
 
+        // Clone early so both the viewport row-count closure and the flat_map
+        // rendering closure can use them without re-borrowing `self`.
+        let hidden_fields = self.tabs[self.active_tab].hidden_fields.clone();
+        let field_layout = self.tabs[self.active_tab].field_layout.clone();
+
         // Clamp scroll_offset
         if num_visible == 0 {
             self.tabs[self.active_tab].scroll_offset = 0;
@@ -305,75 +310,84 @@ impl App {
         let scroll_offset = self.tabs[self.active_tab].scroll_offset;
         let viewport_offset = self.tabs[self.active_tab].viewport_offset;
 
-        let new_viewport = if scroll_offset < viewport_offset {
-            scroll_offset
-        } else if wrap && inner_width > 0 && num_visible > 0 {
-            let rows_used: usize = (viewport_offset..=scroll_offset)
-                .map(|i| {
-                    let li = self.tabs[self.active_tab].visible_indices[i];
-                    line_row_count(
-                        self.tabs[self.active_tab].file_reader.get_line(li),
-                        inner_width,
-                    )
-                })
-                .sum();
-            if rows_used > visible_height {
-                let mut rows = 0usize;
-                let mut new_vp = scroll_offset + 1;
-                loop {
-                    if new_vp == 0 {
-                        break;
+        // Compute new_viewport and end in a scoped block so the shared borrow of
+        // `self.tabs[active_tab]` (for detected_format) is released before the
+        // mutable write to viewport_offset below.
+        let (new_viewport, end) = {
+            let tab = &self.tabs[self.active_tab];
+            let parser = tab.detected_format.as_deref();
+            // In wrap mode, use the structured-rendering width when a format is
+            // detected: raw JSON/tracing bytes can be 3-5× wider than the rendered
+            // columns, causing the viewport to show far fewer lines than it should.
+            let row_count = |li: usize| -> usize {
+                effective_row_count(
+                    tab.file_reader.get_line(li),
+                    inner_width,
+                    parser,
+                    &field_layout,
+                    &hidden_fields,
+                )
+            };
+
+            let new_viewport = if scroll_offset < viewport_offset {
+                scroll_offset
+            } else if wrap && inner_width > 0 && num_visible > 0 {
+                let rows_used: usize = (viewport_offset..=scroll_offset)
+                    .map(|i| row_count(tab.visible_indices[i]))
+                    .sum();
+                if rows_used > visible_height {
+                    let mut rows = 0usize;
+                    let mut new_vp = scroll_offset + 1;
+                    loop {
+                        if new_vp == 0 {
+                            break;
+                        }
+                        new_vp -= 1;
+                        let h = row_count(tab.visible_indices[new_vp]);
+                        if rows + h > visible_height {
+                            new_vp += 1;
+                            break;
+                        }
+                        rows += h;
+                        if new_vp == 0 {
+                            break;
+                        }
                     }
-                    new_vp -= 1;
-                    let li = self.tabs[self.active_tab].visible_indices[new_vp];
-                    let h = line_row_count(
-                        self.tabs[self.active_tab].file_reader.get_line(li),
-                        inner_width,
-                    );
+                    new_vp.min(scroll_offset)
+                } else {
+                    viewport_offset
+                }
+            } else if visible_height > 0 && scroll_offset >= viewport_offset + visible_height {
+                scroll_offset - visible_height + 1
+            } else {
+                viewport_offset
+            };
+
+            let start = new_viewport;
+            let end = if wrap && inner_width > 0 {
+                let mut rows = 0usize;
+                let mut e = start;
+                while e < num_visible {
+                    let h = row_count(tab.visible_indices[e]);
                     if rows + h > visible_height {
-                        new_vp += 1;
                         break;
                     }
                     rows += h;
-                    if new_vp == 0 {
-                        break;
-                    }
+                    e += 1;
                 }
-                new_vp.min(scroll_offset)
+                if e == start && start < num_visible {
+                    e = start + 1;
+                }
+                e
             } else {
-                viewport_offset
-            }
-        } else if visible_height > 0 && scroll_offset >= viewport_offset + visible_height {
-            scroll_offset - visible_height + 1
-        } else {
-            viewport_offset
+                (start + visible_height).min(num_visible)
+            };
+
+            (new_viewport, end)
         };
 
         self.tabs[self.active_tab].viewport_offset = new_viewport;
         let start = new_viewport;
-
-        let end = if wrap && inner_width > 0 {
-            let mut rows = 0usize;
-            let mut e = start;
-            while e < num_visible {
-                let li = self.tabs[self.active_tab].visible_indices[e];
-                let h = line_row_count(
-                    self.tabs[self.active_tab].file_reader.get_line(li),
-                    inner_width,
-                );
-                if rows + h > visible_height {
-                    break;
-                }
-                rows += h;
-                e += 1;
-            }
-            if e == start && start < num_visible {
-                e = start + 1;
-            }
-            e
-        } else {
-            (start + visible_height).min(num_visible)
-        };
 
         let (filter_manager, mut styles) = self.tabs[self.active_tab]
             .log_manager
@@ -397,9 +411,6 @@ impl App {
         let theme = &self.theme;
         let level_colors = self.tabs[self.active_tab].level_colors;
         let current_scroll = self.tabs[self.active_tab].scroll_offset;
-        // Clone the hidden-field set so the closure doesn't borrow `self` while iterating.
-        let hidden_fields = self.tabs[self.active_tab].hidden_fields.clone();
-        let field_layout = self.tabs[self.active_tab].field_layout.clone();
         // Pre-compute visual selection range (indices into visible_indices space).
         let visual_range: Option<(usize, usize)> = visual_anchor.map(|anchor| {
             let lo = anchor.min(current_scroll);
@@ -655,9 +666,11 @@ impl App {
         frame.render_widget(paragraph, logs_area);
 
         if num_visible > 0 {
-            let mut scrollbar_state = ScrollbarState::new(num_visible)
-                .position(start)
-                .viewport_content_length(end.saturating_sub(start));
+            // content_length = max_scroll ensures position/content_length == 1.0
+            // when at the last entry, so the thumb reaches the bottom of the track.
+            let max_scroll = num_visible.saturating_sub(visible_height);
+            let mut scrollbar_state = ScrollbarState::new(max_scroll.max(1))
+                .position(start);
             frame.render_stateful_widget(
                 Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
                 logs_area,
