@@ -10,6 +10,7 @@ Press `V` in normal mode to enter visual line mode. The current line becomes the
 |---|---|
 | `j` / `k` | Extend selection down / up |
 | `c` | Attach a comment to the selected lines |
+| `m` | Mark / unmark all selected lines (toggles group) |
 | `y` | Yank (copy) selected lines to system clipboard |
 | `Esc` | Cancel |
 
@@ -20,18 +21,25 @@ Selected lines are highlighted in the log panel.
 With lines selected in visual mode, press `c` to open the comment editor:
 
 - Type your multiline comment
-- `Enter` — new line
+- `Enter` — insert new line
 - `Backspace` — delete character / merge lines
 - `Left` / `Right` — move cursor (wraps between lines)
 - `Up` / `Down` — move between rows
-- `Ctrl+S` — save the comment
+- `Ctrl+Enter` — save the comment
 - `Esc` — cancel without saving
 
 After saving, annotated lines show a `◆` marker in the gutter.
 
 ## Editing and Deleting Comments
 
-In normal mode, move to an annotated line and press `c` to reopen the comment editor pre-filled with the existing text. In the editor, press `Ctrl+D` to delete the comment entirely.
+In normal mode, move to an annotated line and:
+
+| Key | Action |
+|---|---|
+| `e` | Open the comment editor pre-filled with the existing text |
+| `d` | Delete the comment on the current line |
+
+Inside the editor, `Ctrl+D` also deletes the comment.
 
 Press `C` in normal mode to clear **all** marks and comments for the current tab.
 

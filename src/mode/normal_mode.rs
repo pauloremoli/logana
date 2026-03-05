@@ -397,6 +397,26 @@ impl Mode for NormalMode {
             return (self, KeyResult::Handled);
         }
 
+        if kb.normal.delete_comment.matches(key, modifiers) {
+            if let Some(&line_idx) = tab.visible_indices.get(tab.scroll_offset) {
+                let comments = tab.log_manager.get_comments();
+                if let Some(idx) = comments
+                    .iter()
+                    .position(|c| c.line_indices.contains(&line_idx))
+                {
+                    tab.log_manager.remove_comment(idx);
+                    tab.refresh_visible();
+                    tab.g_key_pressed = false;
+                    self.count = None;
+                    return (self, KeyResult::Handled);
+                }
+                tab.command_error = Some("No comment on this line".to_string());
+            }
+            tab.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
         if kb.normal.show_keybindings.matches(key, modifiers) {
             tab.g_key_pressed = false;
             self.count = None;
@@ -1118,12 +1138,12 @@ mod tests {
     // ── Edit comment ────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_c_on_commented_line_opens_edit_mode() {
+    async fn test_e_on_commented_line_opens_edit_mode() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
         tab.log_manager.add_comment("my comment".into(), vec![0]);
         tab.scroll_offset = 0;
 
-        let (mode, result) = press(&mut tab, KeyCode::Char('c'), KeyModifiers::NONE).await;
+        let (mode, result) = press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
         match mode.render_state() {
             ModeRenderState::Comment { lines, .. } => {
@@ -1134,17 +1154,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_c_on_non_commented_line_shows_error() {
+    async fn test_e_on_non_commented_line_shows_error() {
         let mut tab = make_tab(&["line0", "line1"]).await;
         tab.scroll_offset = 0;
 
-        let (mode, result) = press(&mut tab, KeyCode::Char('c'), KeyModifiers::NONE).await;
+        let (mode, result) = press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(matches!(mode.render_state(), ModeRenderState::Normal));
         assert_eq!(
             tab.command_error.as_deref(),
             Some("No comment on this line")
         );
+    }
+
+    // ── Delete comment ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_d_on_commented_line_deletes_comment() {
+        let mut tab = make_tab(&["line0", "line1", "line2"]).await;
+        tab.log_manager.add_comment("to delete".into(), vec![0]);
+        tab.log_manager.add_comment("keep".into(), vec![2]);
+        tab.scroll_offset = 0;
+
+        let (mode, result) = press(&mut tab, KeyCode::Char('d'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(matches!(mode.render_state(), ModeRenderState::Normal));
+        let comments = tab.log_manager.get_comments();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "keep");
+    }
+
+    #[tokio::test]
+    async fn test_d_on_non_commented_line_shows_error() {
+        let mut tab = make_tab(&["line0", "line1"]).await;
+        tab.scroll_offset = 0;
+
+        let (_mode, result) = press(&mut tab, KeyCode::Char('d'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert_eq!(
+            tab.command_error.as_deref(),
+            Some("No comment on this line")
+        );
+        assert!(tab.log_manager.get_comments().is_empty());
     }
 
     #[tokio::test]

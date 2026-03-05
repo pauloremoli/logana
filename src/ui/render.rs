@@ -260,7 +260,8 @@ impl App {
 
         // Comment popup renders over everything except the loading bar.
         if let Some((lines, cursor_row, cursor_col, line_count)) = comment_popup {
-            self.render_comment_popup(frame, &lines, cursor_row, cursor_col, line_count);
+            let kb = self.tabs[self.active_tab].keybindings.clone();
+            self.render_comment_popup(frame, &lines, cursor_row, cursor_col, line_count, &kb);
         }
 
         // Select-fields popup renders over everything except the loading bar.

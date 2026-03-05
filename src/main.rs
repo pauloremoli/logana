@@ -8,7 +8,11 @@ use anyhow::Result;
 use clap::Parser;
 use crossterm::{
     ExecutableCommand,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
+    terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        supports_keyboard_enhancement,
+    },
 };
 use logana::config::Config;
 use logana::db::Database;
@@ -144,6 +148,12 @@ async fn main() -> Result<()> {
     let res = {
         enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
+        let keyboard_enhanced = supports_keyboard_enhancement().unwrap_or(false);
+        if keyboard_enhanced {
+            stdout().execute(PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+            ))?;
+        }
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
         terminal.clear()?;
 
@@ -184,6 +194,9 @@ async fn main() -> Result<()> {
 
         let app_result = app.run(&mut terminal).await;
 
+        if keyboard_enhanced {
+            stdout().execute(PopKeyboardEnhancementFlags)?;
+        }
         disable_raw_mode()?;
         stdout().execute(LeaveAlternateScreen)?;
         app_result

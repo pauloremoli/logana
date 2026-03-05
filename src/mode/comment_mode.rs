@@ -22,11 +22,11 @@ use crate::{
 ///
 /// Keys:
 ///   Char          → insert at cursor
-///   Enter         → split line (insert newline)
+///   Enter         → split line (insert newline, configurable)
 ///   Backspace     → delete char / merge with previous line
 ///   Left/Right    → move cursor within / across lines
 ///   Up/Down       → move cursor between rows
-///   Ctrl+S        → save comment and return to NormalMode (configurable)
+///   Ctrl+Enter    → save comment and return to NormalMode (configurable)
 ///   Esc           → cancel, discard text, return to NormalMode
 #[derive(Debug)]
 pub struct CommentMode {
@@ -80,6 +80,17 @@ impl Mode for CommentMode {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
         let comment_kb = tab.keybindings.comment.clone();
 
+        // Insert newline: split current line at cursor (configurable, default Enter)
+        // Checked first so it runs before save — Enter = newline is the common case.
+        if comment_kb.newline.matches(key, modifiers) {
+            let rest = self.lines[self.cursor_row][self.cursor_col..].to_string();
+            self.lines[self.cursor_row].truncate(self.cursor_col);
+            self.cursor_row += 1;
+            self.lines.insert(self.cursor_row, rest);
+            self.cursor_col = 0;
+            return (self, KeyResult::Handled);
+        }
+
         // Save (configurable, default Ctrl+S)
         if comment_kb.save.matches(key, modifiers) {
             let text = self.lines.join("\n");
@@ -112,14 +123,6 @@ impl Mode for CommentMode {
         }
 
         match key {
-            // Insert newline: split current line at cursor
-            KeyCode::Enter => {
-                let rest = self.lines[self.cursor_row][self.cursor_col..].to_string();
-                self.lines[self.cursor_row].truncate(self.cursor_col);
-                self.cursor_row += 1;
-                self.lines.insert(self.cursor_row, rest);
-                self.cursor_col = 0;
-            }
             // Delete / merge with previous line
             KeyCode::Backspace => {
                 if self.cursor_col > 0 {
@@ -191,6 +194,7 @@ impl Mode for CommentMode {
             ),
             Span::styled("type text  ", Style::default().fg(theme.text)),
         ];
+        status_entry(&mut spans, kb.comment.newline.display(), "newline", theme);
         status_entry(&mut spans, kb.comment.save.display(), "save", theme);
         if self.editing_index.is_some() {
             status_entry(&mut spans, kb.comment.delete.display(), "delete", theme);
@@ -321,7 +325,7 @@ mod tests {
         let mut mode = CommentMode::new(vec![0, 1, 2]);
         mode.lines = vec!["line one".to_string(), "line two".to_string()];
         let (mode2, result) =
-            press(mode, &mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
+            press(mode, &mut tab, KeyCode::Enter, KeyModifiers::CONTROL).await;
         assert!(matches!(result, KeyResult::Handled));
         // returned to NormalMode
         assert!(!matches!(
@@ -480,7 +484,7 @@ mod tests {
         let mut mode = CommentMode::edit(0, "original".to_string(), vec![0, 1]);
         mode.lines = vec!["updated text".to_string()];
         let (mode2, result) =
-            press(mode, &mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
+            press(mode, &mut tab, KeyCode::Enter, KeyModifiers::CONTROL).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(!matches!(
             mode2.render_state(),

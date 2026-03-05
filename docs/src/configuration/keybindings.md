@@ -36,8 +36,8 @@ Multiple alternatives:
 
 ```json
 "normal": {
-  "add_include_filter": "i",
-  "add_exclude_filter": "o",
+  "filter_include": "i",
+  "filter_exclude": "o",
   "open_filter_manager": "f",
   "toggle_filters": "F",
   "search_forward": "/",
@@ -47,6 +47,7 @@ Multiple alternatives:
   "mark_line": "m",
   "toggle_marks_view": "M",
   "enter_visual_mode": "V",
+  "yank_marked": "Y",
   "open_ui_options": "u",
   "show_keybindings": "F1",
   "open_command_mode": ":",
@@ -55,7 +56,10 @@ Multiple alternatives:
   "goto_first_line": "g",
   "goto_last_line": "G",
   "toggle_status_bar": "b",
-  "toggle_borders": "B"
+  "toggle_borders": "B",
+  "edit_comment": "e",
+  "delete_comment": "d",
+  "clear_all": "C"
 }
 ```
 
@@ -92,6 +96,7 @@ Multiple alternatives:
 ```json
 "visual_line": {
   "comment": "c",
+  "mark": "m",
   "yank": "y"
 }
 ```
@@ -99,8 +104,11 @@ Multiple alternatives:
 ## Comment (Annotation) Mode
 
 ```json
-"annotation": {
-  "save": "Ctrl+S"
+"comment": {
+  "newline": "Enter",
+  "save": "Ctrl+Enter",
+  "cancel": "Esc",
+  "delete": "Ctrl+d"
 }
 ```
 

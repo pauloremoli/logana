@@ -347,7 +347,10 @@ fn default_clear_all() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('C'), KeyModifiers::NONE)])
 }
 fn default_edit_comment() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('c'), KeyModifiers::NONE)])
+    KeyBindings(vec![KeyBinding(KeyCode::Char('e'), KeyModifiers::NONE)])
+}
+fn default_delete_comment() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('d'), KeyModifiers::NONE)])
 }
 fn default_normal_filter_include() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('i'), KeyModifiers::NONE)])
@@ -442,6 +445,8 @@ pub struct NormalKeybindings {
     pub clear_all: KeyBindings,
     #[serde(default = "default_edit_comment")]
     pub edit_comment: KeyBindings,
+    #[serde(default = "default_delete_comment")]
+    pub delete_comment: KeyBindings,
     #[serde(default = "default_normal_filter_include")]
     pub filter_include: KeyBindings,
     #[serde(default = "default_normal_filter_exclude")]
@@ -474,6 +479,7 @@ impl Default for NormalKeybindings {
             show_keybindings: default_show_keybindings(),
             clear_all: default_clear_all(),
             edit_comment: default_edit_comment(),
+            delete_comment: default_delete_comment(),
             filter_include: default_normal_filter_include(),
             filter_exclude: default_normal_filter_exclude(),
             enter_ui_mode: default_enter_ui_mode(),
@@ -617,7 +623,10 @@ impl Default for GlobalKeybindings {
 // ---------------------------------------------------------------------------
 
 fn default_comment_save() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('s'), KeyModifiers::CONTROL)])
+    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::CONTROL)])
+}
+fn default_comment_newline() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
 }
 fn default_comment_cancel() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
@@ -628,9 +637,12 @@ fn default_comment_delete() -> KeyBindings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommentKeybindings {
-    /// Key to save the comment and return to Normal mode.
+    /// Key to save the comment and return to Normal mode (default: Enter).
     #[serde(default = "default_comment_save")]
     pub save: KeyBindings,
+    /// Key to insert a newline inside the comment (default: Shift+Enter).
+    #[serde(default = "default_comment_newline")]
+    pub newline: KeyBindings,
     /// Key to cancel the comment and return to Normal mode.
     #[serde(default = "default_comment_cancel")]
     pub cancel: KeyBindings,
@@ -643,6 +655,7 @@ impl Default for CommentKeybindings {
     fn default() -> Self {
         Self {
             save: default_comment_save(),
+            newline: default_comment_newline(),
             cancel: default_comment_cancel(),
             delete: default_comment_delete(),
         }
@@ -1093,6 +1106,7 @@ impl Keybindings {
             ("normal.show_keybindings", &self.normal.show_keybindings),
             ("normal.clear_all", &self.normal.clear_all),
             ("normal.edit_comment", &self.normal.edit_comment),
+            ("normal.delete_comment", &self.normal.delete_comment),
             ("global.quit", &self.global.quit),
             ("global.next_tab", &self.global.next_tab),
             ("global.prev_tab", &self.global.prev_tab),
@@ -2074,7 +2088,11 @@ mod tests {
         assert!(kb.clear_all.matches(KeyCode::Char('C'), KeyModifiers::NONE));
         assert!(
             kb.edit_comment
-                .matches(KeyCode::Char('c'), KeyModifiers::NONE)
+                .matches(KeyCode::Char('e'), KeyModifiers::NONE)
+        );
+        assert!(
+            kb.delete_comment
+                .matches(KeyCode::Char('d'), KeyModifiers::NONE)
         );
     }
 
@@ -2132,7 +2150,8 @@ mod tests {
     #[test]
     fn test_comment_keybindings_default() {
         let kb = CommentKeybindings::default();
-        assert!(kb.save.matches(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(kb.save.matches(KeyCode::Enter, KeyModifiers::CONTROL));
+        assert!(kb.newline.matches(KeyCode::Enter, KeyModifiers::NONE));
         assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
         assert!(kb.delete.matches(KeyCode::Char('d'), KeyModifiers::CONTROL));
     }

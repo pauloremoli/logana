@@ -1035,6 +1035,7 @@ impl App {
         cursor_row: usize,
         cursor_col: usize,
         line_count: usize,
+        kb: &Keybindings,
     ) {
         let area = frame.area();
         let popup_width = area.width.saturating_sub(8).clamp(40, 70);
@@ -1092,24 +1093,39 @@ impl App {
         );
 
         // Footer hints
+        let key_style = Style::default()
+            .fg(self.theme.text_highlight_fg)
+            .add_modifier(Modifier::BOLD);
+        let txt_style = Style::default().fg(self.theme.text);
+        let br_style = Style::default().fg(self.theme.border);
+        let mut footer_spans: Vec<Span<'static>> = Vec::new();
+        popup_entry(
+            &mut footer_spans,
+            kb.comment.newline.display(),
+            "newline",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut footer_spans,
+            kb.comment.save.display(),
+            "save",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut footer_spans,
+            kb.comment.cancel.display(),
+            "cancel",
+            key_style,
+            txt_style,
+            br_style,
+        );
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    "[Ctrl+S]",
-                    Style::default()
-                        .fg(self.theme.text_highlight_fg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" Save  ", Style::default().fg(self.theme.text)),
-                Span::styled(
-                    "[Esc]",
-                    Style::default()
-                        .fg(self.theme.text_highlight_fg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" Cancel", Style::default().fg(self.theme.text)),
-            ]))
-            .style(Style::default().bg(self.theme.root_bg)),
+            Paragraph::new(Line::from(footer_spans))
+                .style(Style::default().bg(self.theme.root_bg)),
             chunks[2],
         );
 
