@@ -166,7 +166,21 @@ impl Mode for FilterManagementMode {
                 tab.filter_context = Some(selected);
                 let cmd = if let Some(expr) = pattern.strip_prefix(crate::date_filter::DATE_PREFIX)
                 {
-                    format!("date-filter {}", expr)
+                    let mut c = String::from("date-filter");
+                    if let Some(cfg) = &cc {
+                        if let Some(fg) = cfg.fg {
+                            c.push_str(&format!(" --fg {}", fg));
+                        }
+                        if let Some(bg) = cfg.bg {
+                            c.push_str(&format!(" --bg {}", bg));
+                        }
+                        if !cfg.match_only {
+                            c.push_str(" -l");
+                        }
+                    }
+                    c.push(' ');
+                    c.push_str(expr);
+                    c
                 } else {
                     let mut c = if ft == FilterType::Include {
                         String::from("filter")
@@ -220,6 +234,9 @@ impl Mode for FilterManagementMode {
                 }
                 if let Some(bg) = cfg.bg {
                     cmd.push_str(&format!(" --bg {}", bg));
+                }
+                if !cfg.match_only {
+                    cmd.push_str(" -l");
                 }
             }
             let len = cmd.len();

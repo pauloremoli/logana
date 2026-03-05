@@ -84,7 +84,7 @@ async fn test_filter_include_reduces_visible() {
     let reader = FileReader::new(path).unwrap();
 
     // No filters → all lines visible
-    let (fm, _) = manager.build_filter_manager();
+    let (fm, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
     assert_eq!(visible.len(), 7);
 
@@ -92,7 +92,7 @@ async fn test_filter_include_reduces_visible() {
     manager
         .add_filter_with_color("Connection".into(), FilterType::Include, None, None, true)
         .await;
-    let (fm, _) = manager.build_filter_manager();
+    let (fm, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
     assert_eq!(visible.len(), 2);
     // Lines 1 and 4 contain "Connection"
@@ -111,7 +111,7 @@ async fn test_filter_exclude_removes_lines() {
     manager
         .add_filter_with_color("INFO".into(), FilterType::Exclude, None, None, true)
         .await;
-    let (fm, _) = manager.build_filter_manager();
+    let (fm, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
 
     // Lines 0 and 4 contain "INFO"; 7 total - 2 = 5
@@ -136,7 +136,7 @@ async fn test_filter_include_and_exclude() {
     manager
         .add_filter_with_color("failed".into(), FilterType::Exclude, None, None, true)
         .await;
-    let (fm, _) = manager.build_filter_manager();
+    let (fm, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
 
     // Line 1: "Connection failed" — top Exclude wins → hidden
@@ -159,7 +159,7 @@ async fn test_disabled_filter_is_ignored() {
     manager.toggle_filter(id).await; // disable it
 
     // Disabled → no active include filters → all lines visible
-    let (fm, _) = manager.build_filter_manager();
+    let (fm, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
     assert_eq!(visible.len(), 7);
 }
@@ -268,7 +268,7 @@ async fn test_filter_regex_pattern() {
     manager
         .add_filter_with_color("INFO|ERROR".into(), FilterType::Include, None, None, true)
         .await;
-    let (fm, _) = manager.build_filter_manager();
+    let (fm, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
 
     // Lines 0 (INFO), 1 (ERROR), 4 (INFO) → 3 lines
@@ -316,7 +316,7 @@ async fn test_search_on_visible_lines() {
     manager
         .add_filter_with_color("INFO".into(), FilterType::Include, None, None, true)
         .await;
-    let (fm, _) = manager.build_filter_manager();
+    let (fm, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
     assert_eq!(visible.len(), 2);
 

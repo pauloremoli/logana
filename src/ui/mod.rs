@@ -162,7 +162,7 @@ impl TabState {
         } else if !self.filtering_enabled {
             self.visible_indices = (0..self.file_reader.line_count()).collect();
         } else {
-            let (fm, _) = self.log_manager.build_filter_manager();
+            let (fm, _, _) = self.log_manager.build_filter_manager();
             self.visible_indices = fm.compute_visible(&self.file_reader);
         }
 
@@ -175,7 +175,7 @@ impl TabState {
                 let line = self.file_reader.get_line(idx);
                 match parser.parse_line(line) {
                     Some(parts) => match parts.timestamp {
-                        Some(ts) => date_filters.iter().all(|df| df.matches(ts)),
+                        Some(ts) => crate::date_filter::matches_any(&date_filters, ts),
                         None => true, // lines without timestamps pass through
                     },
                     None => true, // unparseable lines pass through
@@ -762,6 +762,49 @@ mod tests {
         };
         tab.apply_file_context(&ctx);
         assert!(!tab.show_borders);
+    }
+
+    // ── date filter integration with refresh_visible ──────────────────
+    // OR combination logic is unit-tested in date_filter::tests::matches_any.
+    // These tests verify that refresh_visible correctly applies date filters.
+
+    async fn make_tab_with_date_filter(lines: &[&str], expr: &str) -> TabState {
+        let mut tab = make_tab(lines).await;
+        let pattern = format!("{}{}", crate::date_filter::DATE_PREFIX, expr);
+        tab.log_manager
+            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .await;
+        tab.refresh_visible();
+        tab
+    }
+
+    #[tokio::test]
+    async fn test_date_filter_keeps_matching_lines() {
+        let lines = [
+            r#"{"timestamp":"2024-01-01T01:30:00Z","level":"INFO","msg":"in range"}"#,
+            r#"{"timestamp":"2024-01-01T05:00:00Z","level":"INFO","msg":"out of range"}"#,
+        ];
+        let tab = make_tab_with_date_filter(&lines, "01:00 .. 02:00").await;
+        assert_eq!(tab.visible_indices, vec![0]);
+    }
+
+    #[tokio::test]
+    async fn test_date_filter_two_non_overlapping_ranges_union() {
+        let lines = [
+            r#"{"timestamp":"2024-01-01T01:30:00Z","level":"INFO","msg":"first range"}"#,
+            r#"{"timestamp":"2024-01-01T02:30:00Z","level":"INFO","msg":"between"}"#,
+            r#"{"timestamp":"2024-01-01T03:30:00Z","level":"INFO","msg":"second range"}"#,
+        ];
+        let mut tab = make_tab(&lines).await;
+        for expr in &["01:00 .. 02:00", "03:00 .. 04:00"] {
+            let pattern = format!("{}{}", crate::date_filter::DATE_PREFIX, expr);
+            tab.log_manager
+                .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+                .await;
+        }
+        tab.refresh_visible();
+        // Lines in either range are visible; the line between is hidden.
+        assert_eq!(tab.visible_indices, vec![0, 2]);
     }
 }
 

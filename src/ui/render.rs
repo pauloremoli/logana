@@ -77,7 +77,10 @@ impl App {
         };
         let selected_filter_idx = match &render_state {
             ModeRenderState::FilterManagement { selected_index } => *selected_index,
-            _ => 0,
+            // When CommandMode is entered from the filter menu (set-color, filter-edit),
+            // filter_context holds the originating filter index — use it so the sidebar
+            // keeps the correct filter highlighted throughout the command.
+            _ => self.tabs[self.active_tab].filter_context.unwrap_or(0),
         };
         let keybindings = self.tabs[self.active_tab].keybindings.clone();
         let status_line = self.tabs[self.active_tab]
@@ -407,7 +410,7 @@ impl App {
         self.tabs[self.active_tab].viewport_offset = new_viewport;
         let start = new_viewport;
 
-        let (filter_manager, mut styles) = self.tabs[self.active_tab]
+        let (filter_manager, mut styles, date_filter_styles) = self.tabs[self.active_tab]
             .log_manager
             .build_filter_manager();
         let search_style = Style::default()
@@ -565,6 +568,25 @@ impl App {
                             // all spans land at the correct visible positions.
                             let rendered = cols.join(" ");
                             let mut collector = filter_manager.evaluate_line(rendered.as_bytes());
+                            // Apply date filter styles: timestamp-only or full line.
+                            if let Some(ts) = parts.timestamp {
+                                for dfs in &date_filter_styles {
+                                    if dfs.filter.matches(ts) {
+                                        collector.with_priority(500);
+                                        if dfs.match_only {
+                                            if let Some(ts_pos) = rendered.find(ts) {
+                                                collector.push(
+                                                    ts_pos,
+                                                    ts_pos + ts.len(),
+                                                    dfs.style_id,
+                                                );
+                                            }
+                                        } else {
+                                            collector.push(0, rendered.len(), dfs.style_id);
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(ref regex) = search_regex {
                                 collector.with_priority(1000);
                                 for (i, m) in regex.find_iter(&rendered).enumerate() {

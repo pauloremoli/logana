@@ -124,6 +124,13 @@ pub enum Commands {
     DateFilter {
         /// Date filter expression (e.g. "01:00 .. 02:00", "> 2024-02-22")
         expr: Vec<String>,
+        #[arg(long)]
+        fg: Option<String>,
+        #[arg(long)]
+        bg: Option<String>,
+        /// Apply color to the whole line instead of only the timestamp
+        #[arg(short = 'l')]
+        line_mode: bool,
     },
     /// Toggle tail mode (always scroll to last line on new content)
     Tail,

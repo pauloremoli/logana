@@ -9,18 +9,28 @@
 //! with text filters. Applied as a post-processing `retain()` step after the
 //! text-based [`crate::filters::FilterManager`] runs.
 
+use crate::filters::StyleId;
 use crate::parser::timestamp::BSD_MONTHS;
 use crate::types::FilterDef;
 
 /// The `@date:` prefix used in `FilterDef.pattern` to mark date filters.
 pub const DATE_PREFIX: &str = "@date:";
 
+/// A date filter paired with a `StyleId` for timestamp highlighting.
+#[derive(Debug, Clone)]
+pub struct DateFilterStyle {
+    pub filter: DateFilter,
+    pub style_id: StyleId,
+    /// When `false`, the style is applied to the whole line instead of just the timestamp.
+    pub match_only: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ComparisonOp {
+pub enum ComparisonOp {
     Gt,
     Ge,
     Lt,
@@ -28,13 +38,13 @@ pub(crate) enum ComparisonOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ComparisonMode {
+pub enum ComparisonMode {
     TimeOnly,
     FullDatetime,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct DateBound {
+pub struct DateBound {
     /// Seconds since midnight (only meaningful when mode == TimeOnly).
     time_val: Option<u32>,
     /// Canonical `"YYYY-MM-DD HH:MM:SS.ffffff"` string (mode == FullDatetime).
@@ -42,7 +52,7 @@ pub(crate) struct DateBound {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum DateFilter {
+pub enum DateFilter {
     Range {
         mode: ComparisonMode,
         lower: DateBound,
@@ -665,6 +675,15 @@ pub(crate) fn extract_date_filters(filter_defs: &[FilterDef]) -> Vec<DateFilter>
         .collect()
 }
 
+/// Returns `true` when `timestamp` passes **at least one** of the active date
+/// filters (OR semantics). An empty filter list always returns `true`.
+pub(crate) fn matches_any(filters: &[DateFilter], timestamp: &str) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+    filters.iter().any(|df| df.matches(timestamp))
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -1106,5 +1125,49 @@ mod tests {
     fn test_normalize_iso_no_tz() {
         let n = normalize_log_timestamp("2024-02-22T10:15:30").unwrap();
         assert_eq!(n.canonical, "2024-02-22 10:15:30.000000");
+    }
+
+    // ── matches_any ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_matches_any_empty_filters_always_true() {
+        assert!(matches_any(&[], "2024-01-01T01:30:00Z"));
+        assert!(matches_any(&[], ""));
+    }
+
+    #[test]
+    fn test_matches_any_single_filter_match() {
+        let df = parse_date_filter("01:00 .. 02:00").unwrap();
+        assert!(matches_any(&[df], "2024-01-01T01:30:00Z"));
+    }
+
+    #[test]
+    fn test_matches_any_single_filter_no_match() {
+        let df = parse_date_filter("01:00 .. 02:00").unwrap();
+        assert!(!matches_any(&[df], "2024-01-01T03:30:00Z"));
+    }
+
+    #[test]
+    fn test_matches_any_two_non_overlapping_ranges_first_matches() {
+        let df1 = parse_date_filter("01:00 .. 02:00").unwrap();
+        let df2 = parse_date_filter("03:00 .. 04:00").unwrap();
+        // 01:30 is in the first range only → should pass.
+        assert!(matches_any(&[df1, df2], "2024-01-01T01:30:00Z"));
+    }
+
+    #[test]
+    fn test_matches_any_two_non_overlapping_ranges_second_matches() {
+        let df1 = parse_date_filter("01:00 .. 02:00").unwrap();
+        let df2 = parse_date_filter("03:00 .. 04:00").unwrap();
+        // 03:30 is in the second range only → should pass.
+        assert!(matches_any(&[df1, df2], "2024-01-01T03:30:00Z"));
+    }
+
+    #[test]
+    fn test_matches_any_two_non_overlapping_ranges_neither_matches() {
+        let df1 = parse_date_filter("01:00 .. 02:00").unwrap();
+        let df2 = parse_date_filter("03:00 .. 04:00").unwrap();
+        // 02:30 is between the two ranges → should not pass.
+        assert!(!matches_any(&[df1, df2], "2024-01-01T02:30:00Z"));
     }
 }

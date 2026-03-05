@@ -14,6 +14,7 @@ use ratatui::style::Style;
 
 use crate::db::{Database, FilterStore};
 use crate::file_reader::FileReader;
+use crate::date_filter::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
 use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter};
 use crate::types::{ColorConfig, Comment, FilterDef, FilterType, parse_color};
 
@@ -314,21 +315,48 @@ impl LogManager {
 
     // ── Filter-manager construction ──────────────────────────────────────────
 
-    /// Build a `FilterManager` and its associated `Vec<Style>` from the current
-    /// enabled filter definitions.
+    /// Build a `FilterManager`, its associated `Vec<Style>`, and date filter styles
+    /// from the current enabled filter definitions.
     ///
-    /// `StyleId` is the index into the returned `Vec<Style>`.
-    pub fn build_filter_manager(&self) -> (FilterManager, Vec<Style>) {
+    /// `StyleId` is the index into the returned `Vec<Style>`. Date filters with a
+    /// `color_config` are returned separately in `Vec<DateFilterStyle>` so the render
+    /// path can highlight the timestamp column of matching lines.
+    pub fn build_filter_manager(&self) -> (FilterManager, Vec<Style>, Vec<DateFilterStyle>) {
         let mut filters: Vec<Box<dyn crate::filters::Filter>> = Vec::new();
         let mut styles: Vec<Style> = Vec::new();
+        let mut date_filter_styles: Vec<DateFilterStyle> = Vec::new();
         let mut has_include = false;
 
-        for (style_idx, def) in self.filter_defs.iter().filter(|f| f.enabled).enumerate() {
-            // Date filters are applied separately in refresh_visible().
-            if def.pattern.starts_with(crate::date_filter::DATE_PREFIX) {
+        let mut style_idx: usize = 0;
+        for def in self.filter_defs.iter().filter(|f| f.enabled) {
+            // Date filters are applied separately in refresh_visible() for visibility,
+            // but we collect their styles here for timestamp highlighting.
+            if def.pattern.starts_with(DATE_PREFIX) {
+                if let Some(cc) = &def.color_config
+                    && (cc.fg.is_some() || cc.bg.is_some())
+                    && let Ok(df) = parse_date_filter(&def.pattern[DATE_PREFIX.len()..])
+                {
+                    let style_id = style_idx as StyleId;
+                    style_idx += 1;
+                    let mut s = Style::default();
+                    if let Some(fg) = cc.fg {
+                        s = s.fg(fg);
+                    }
+                    if let Some(bg) = cc.bg {
+                        s = s.bg(bg);
+                    }
+                    styles.push(s);
+                    date_filter_styles.push(DateFilterStyle {
+                        filter: df,
+                        style_id,
+                        match_only: cc.match_only,
+                    });
+                }
                 continue;
             }
+
             let style_id = style_idx as StyleId;
+            style_idx += 1;
 
             let style = def
                 .color_config
@@ -368,7 +396,7 @@ impl LogManager {
         // Reserve the last slot for search highlights (StyleId = styles.len()).
         // The caller appends the search style.
 
-        (FilterManager::new(filters, has_include), styles)
+        (FilterManager::new(filters, has_include), styles, date_filter_styles)
     }
 
     // ── File hash ────────────────────────────────────────────────────────────
@@ -536,7 +564,7 @@ mod tests {
         mgr.add_filter_with_color("ERROR".into(), FilterType::Include, None, None, true)
             .await;
 
-        let (fm, styles) = mgr.build_filter_manager();
+        let (fm, styles, _) = mgr.build_filter_manager();
         assert_eq!(styles.len(), 1);
         assert!(fm.is_visible(b"ERROR: something bad"));
         assert!(!fm.is_visible(b"INFO: all good"));
@@ -548,7 +576,7 @@ mod tests {
         mgr.add_filter_with_color("DEBUG".into(), FilterType::Exclude, None, None, true)
             .await;
 
-        let (fm, _styles) = mgr.build_filter_manager();
+        let (fm, _styles, _) = mgr.build_filter_manager();
         assert!(fm.is_visible(b"INFO: something"));
         assert!(!fm.is_visible(b"DEBUG: verbose"));
     }
@@ -561,7 +589,7 @@ mod tests {
         let id = mgr.get_filters()[0].id;
         mgr.toggle_filter(id).await; // disable it
 
-        let (fm, _) = mgr.build_filter_manager();
+        let (fm, _, _) = mgr.build_filter_manager();
         // No enabled include filters → everything visible
         assert!(fm.is_visible(b"INFO: all good"));
         assert!(fm.is_visible(b"ERROR: bad"));
