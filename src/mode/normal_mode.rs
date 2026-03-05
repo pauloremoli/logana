@@ -265,7 +265,7 @@ impl Mode for NormalMode {
                 .as_ref()
                 .and_then(|parser| parser.parse_line(bytes))
                 .map(|parts| {
-                    apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields).join(" ")
+                    apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields, tab.show_keys).join(" ")
                 })
                 .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned());
             return (self, KeyResult::CopyToClipboard(text));
@@ -287,7 +287,7 @@ impl Mode for NormalMode {
                         .as_ref()
                         .and_then(|parser| parser.parse_line(bytes))
                         .map(|parts| {
-                            apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields)
+                            apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields, tab.show_keys)
                                 .join(" ")
                         })
                         .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())

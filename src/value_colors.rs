@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn test_disabled_all_categories_no_coloring() {
         let mut colors = default_colors();
-        for group in colors.grouped_categories() {
+        for group in colors.grouped_categories(None) {
             for (key, _, _) in group.children {
                 colors.disabled.insert(key.to_string());
             }

@@ -137,6 +137,16 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "tail",
         description: "Toggle tail mode — when on, always scrolls to the last line as new content arrives",
     },
+    CommandInfo {
+        name: "show-keys",
+        usage: "show-keys",
+        description: "Show field keys alongside values in structured log display (e.g. method=GET instead of GET)",
+    },
+    CommandInfo {
+        name: "hide-keys",
+        usage: "hide-keys",
+        description: "Show only values in structured log display, hiding field keys (default)",
+    },
 ];
 
 /// Commands whose last argument is a file path and should receive path auto-completion.

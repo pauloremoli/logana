@@ -72,7 +72,7 @@ A multiline comment attached to a group of log lines. Multiple comments can exis
 
 **FieldLayout**: `{ columns: Option<Vec<String>>, columns_order: Option<Vec<String>> }` — when `columns` is `Some`, only the listed column names are shown in that order; `None` restores default display order. `columns_order` stores the full ordered list (enabled + disabled) for modal reopening. Held by `TabState`; not persisted.
 
-**FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll, comments, show_mode_bar, show_borders).
+**FileContext**: Per-source session state (scroll_offset, search_query, wrap, sidebar, marked_lines, file_hash, show_line_numbers, horizontal_scroll, comments, show_mode_bar, show_borders, show_keys).
 
 ## Architecture Layers
 
@@ -97,7 +97,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `detect_score(&self, sample: &[&[u8]]) -> f64` — confidence score (0.0–1.0) for format detection
   - `name(&self) -> &str` — human-readable format name
 - **`detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>>`**: Tries all registered parsers (JsonParser, SyslogParser, JournalctlParser, ClfParser, KubeCriParser, WebErrorParser, LogfmtParser, DmesgParser, CommonLogParser), returns the one with the highest score above 0.0. More specific parsers naturally score higher; CommonLogParser applies a 0.95× penalty to yield to more specific parsers on ties.
-- **`format_span_col(&SpanInfo) -> String`**: Formats span as `name: k=v, k=v`.
+- **`format_span_col(&SpanInfo, show_keys: bool) -> String`**: Formats span as `name: v1 v2` (values only, default) or `name: k1=v1 k2=v2` (key=value pairs when `show_keys=true`).
 - **Detection priority** (by score competition): JsonParser (lines must start with `{`), SyslogParser (requires `<PRI>` or BSD timestamp), JournalctlParser (ISO/BSD + valid hostname + unit), ClfParser (strict request/status pattern), KubeCriParser (ISO + stdout/stderr + F/P), WebErrorParser (slash-date + bracketed level or Apache double-bracket), LogfmtParser (≥3 key=value pairs), DmesgParser (bracketed seconds.usecs), CommonLogParser (broadest catch-all, 0.95× penalty).
 
 ### JSON Parser (parser/json.rs)
@@ -176,9 +176,13 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - **Python prod**: `DATETIME - target - LEVEL - msg` — dash-delimited, level in 4th position.
   - **loguru**: `DATETIME | LEVEL | location - msg` — pipe `|` separators.
   - **structlog**: `DATETIME [level] msg key=val...` — `[level]` in brackets, trailing key-value pairs.
+  - **tracing-subscriber fmt (with spans)**: `TIMESTAMP LEVEL  span_name{k=v ...}: target: message` — detects the `name{...}: ` span prefix; bails early (falls through to generic) if no span present. Handles unquoted and quoted (`"..."`) values. Used at runtime when span context is active; startup lines (no span) are handled by the generic fallback.
   - **Generic fallback**: `TIMESTAMP LEVEL rest-as-message` — any recognized timestamp + level keyword, with optional `target::` or `target:` extraction.
 - **Key rule**: All sub-strategies require a recognizable level keyword — prevents claiming journalctl/syslog lines that lack level info.
+- **`try_parse_span_prefix(s)`**: Detects `identifier{k=v ...}: ` prefix; returns `(Some(SpanInfo), remaining)` if found, else `(None, s)`.
+- **`parse_tracing_span_fields(s)`**: Parses space-separated `key=value` pairs inside the braces; handles quoted (`"value"`) and unquoted values.
 - **`detect_score`**: Proportion of parsed lines × 0.95 (yields to more specific parsers on ties).
+- **Field discovery**: `collect_field_names` emits `"span"` (the formatted column) plus dotted names like `"span.method"`, `"span.uri"` for each discovered span sub-field, enabling `:fields` and `:select-fields` to expose span sub-fields.
 
 
 ### Filter Pipeline (filters.rs)
@@ -237,6 +241,8 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **`SessionStore`**: `save_session(&[String])`, `load_session() -> Vec<String>` — persists the ordered list of open tabs across runs.
 - In-memory mode (`Database::in_memory()`) for tests; runs the same migration path.
 - **Schema versioning**: `PRAGMA user_version` tracks the applied schema version. `run_migrations()` reads the current version and calls `migrate_to_vN()` only for versions not yet applied. Each migration runs exactly once. To add a new migration: add `migrate_to_vN` with the required SQL and an `if version < N` block in `run_migrations`.
+  - **v1**: Initial schema (`filters`, `file_context`, `session_tabs` tables).
+  - **v2**: `ALTER TABLE file_context ADD COLUMN show_keys INTEGER NOT NULL DEFAULT 0` — persists the show/hide-keys display preference per file.
 - Shared via `Arc<Database>`; callers use `.await` directly within the tokio runtime.
 
 ### Search (search.rs)
@@ -251,7 +257,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **Template-based export** of analysis (comments + marked lines) to formatted documents (Markdown, Jira wiki, or custom).
 - **Template syntax**: Section markers `{{#name}}...{{/name}}` with recognized sections: `header` (once), `comment_group` (per comment/mark entry), and optional `footer` (once). Placeholders: `{{filename}}`, `{{date}}`, `{{commentary}}`, `{{lines}}`, `{{line_numbers}}`.
 - **`ExportTemplate`**: Parsed template with `header`, `comment_group`, and optional `marked_lines`/`footer` sections.
-- **`ExportData`**: Bundles filename, comments, marked indices, and file reader for rendering.
+- **`ExportData`**: Bundles filename, comments, marked indices, file reader, and `show_keys: bool` for rendering (respects per-tab key display setting).
 - **`parse_template(raw)`**: Extracts sections from raw template text.
 - **`load_template(name)`**: Resolves template files — checks `~/.config/logana/templates/{name}.txt` first, falls back to `./templates/{name}.txt` (dev), then to `BUNDLED_TEMPLATES` embedded in the binary (same pattern as `Theme::from_file`).
 - **`list_templates()`**: Seeds from `BUNDLED_TEMPLATES`, then overlays names from local `templates/` and `~/.config/logana/templates/`. User-config and local names shadow bundled ones (same pattern as `Theme::list_available_themes`).
@@ -274,6 +280,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `keybindings: Arc<Keybindings>` — shared keybinding config (cloned from `App` on tab creation)
   - `show_mode_bar: bool` — whether the bottom status/mode bar is visible (default `true`; toggled with `b`)
   - `show_borders: bool` — whether all panel borders (logs, sidebar, status bar) are visible (default `true`; toggled with `B`)
+  - `show_keys: bool` — whether structured field keys are shown alongside values in parsed log columns (default `false`; toggled via `:show-keys` / `:hide-keys` commands). Persisted in `FileContext`.
   - `mode: Box<dyn Mode>`, `command_history: Vec<String>`, `search: Search`, plus display flags
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
 - **Mode structs**: `NormalMode { count }`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `ConfirmOpenDirMode`, `VisualLineMode { anchor, count }`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`, `UiMode { sidebar, status_bar, borders, wrap }`.
@@ -290,7 +297,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 7. Apply value-based coloring (`colorize_known_values`) to spans with no `fg` set — HTTP methods, status codes, and IP addresses get per-token colors from `theme.value_colors`. Spans already colored by filters or search are left untouched.
 8. `line_row_count(bytes, inner_width)` uses `unicode_width` to compute `ceil(display_width / inner_width)`, keeping wrap-aware viewport math precise.
 
-**Structured field layout**: `apply_field_layout(&DisplayParts, &FieldLayout, &HashSet<String>) -> Vec<String>` — module-level helper that routes through `default_cols` (all columns, default order) or picks specific columns via `get_col`, with name-based hidden-field filtering. Column name resolution: `get_col()` checks all aliases from `TIMESTAMP_KEYS`, `LEVEL_KEYS`, `TARGET_KEYS`, `MESSAGE_KEYS` arrays to map raw JSON key names to `DisplayParts` slots, plus `span` and dotted sub-field names (`span.*`, `fields.*`). Tab completion for the `fields` command completes against the five canonical names plus dynamically discovered field names from the first 200 visible log lines (`TabState::collect_field_names()`, which delegates to the detected format parser's `collect_field_names`).
+**Structured field layout**: `apply_field_layout(&DisplayParts, &FieldLayout, &HashSet<String>, show_keys: bool) -> Vec<String>` — module-level helper that routes through `default_cols` (all columns, default order) or picks specific columns via `get_col`, with name-based hidden-field filtering. `show_keys` controls whether extra field and span values are rendered as `key=value` pairs or values-only. Column name resolution: `get_col()` checks all aliases from `TIMESTAMP_KEYS`, `LEVEL_KEYS`, `TARGET_KEYS`, `MESSAGE_KEYS` arrays to map raw JSON key names to `DisplayParts` slots, plus `span` and dotted sub-field names (`span.*`, `fields.*`). Tab completion for the `fields` command completes against the five canonical names plus dynamically discovered field names from the first 200 visible log lines (`TabState::collect_field_names()`, which delegates to the detected format parser's `collect_field_names`).
 **Format auto-detection**: On tab creation, the first 200 lines are sampled and passed to `detect_format()`, which tries all registered parsers and stores the best match in `TabState::detected_format`. The rendering pipeline dispatches through the trait: `detected_format.as_ref().and_then(|parser| parser.parse_line(line_bytes))`. If no format is detected, lines fall back to raw byte rendering.
 **Select-fields mode** (`:select-fields`): floating popup showing all discovered structured fields with checkboxes. `j`/`k` navigate, `Space` toggle, `J`/`K` reorder, `a`/`n` enable/disable all, `Enter` apply, `Esc` cancel. Implemented by `SelectFieldsMode` in `src/mode/select_fields_mode.rs`.
 **Go-to-line** (`:N`): Typing a bare number in command mode (e.g. `:500`) jumps to that 1-based line number. If the target line is hidden by filters, jumps to the closest visible line (binary search on `visible_indices`, picks the nearer neighbour). Line 0 returns an error; numbers beyond the file jump to the last visible line. Implemented via `TabState::goto_line()` with a fast-path check in `run_command` before clap parsing.
@@ -302,7 +309,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 **Conflict validation**: at startup `Keybindings::validate()` checks for overlapping bindings within each mode scope; conflicts are printed to stderr and logged as warnings.
 **Multi-tab**: Tab/Shift+Tab switch, Ctrl+t open, Ctrl+w close
 **Command mode** (`:`) with highlight-then-accept tab completion, history, live hints. Tab/BackTab cycle a highlight over completions in the hint area without changing input; Enter accepts the highlighted completion into the input (single match = accept+execute immediately). `CommandMode::compute_completions()` encapsulates the 5-tier completion logic (color → template → file path → theme → command name). `completion_index()` trait method exposes the active highlight to the renderer.
-**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `export`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`, `docker`, `value-colors`, `date-filter`, `tail`
+**Commands**: `filter`, `exclude`, `set-color`, `export-marked`, `export`, `save-filters`, `load-filters`, `wrap`, `set-theme`, `level-colors`, `open`, `close-tab`, `hide-field`, `show-field`, `show-all-fields`, `fields [col...]`, `select-fields`, `docker`, `value-colors`, `date-filter`, `tail`, `show-keys` (show field keys alongside values, e.g. `method=GET`), `hide-keys` (show values only, e.g. `GET`; default)
 **UI mode** (`u`): display-only toggles — sidebar (`s`), status bar (`b`), borders (`B`), wrap (`w`). Stays open until `Esc`. Status bar shows current ON/OFF state for each toggle. `UiMode` stores a snapshot of tab display flags to render state without access to `TabState` in `dynamic_status_line`.
 **Quick filter shortcuts** (Normal mode): `i` → opens CommandMode prefilled with `"filter "` (include), `o` → opens CommandMode prefilled with `"exclude "` (exclude). These allow adding filters without entering Filter Management mode.
 **Open directory**: `logana <dir>` or `:open <dir>` lists flat (non-recursive), non-hidden regular files in the directory and shows a `ConfirmOpenDirMode` popup. Confirming opens each file in its own tab. Empty directories are rejected with an error before the TUI starts (for CLI) or as a command error (for `:open`). `list_dir_files(path) -> Vec<String>` in `ui/mod.rs` implements the listing logic.
@@ -337,7 +344,7 @@ Example `~/.config/logana/config.json`:
 ### Theme (theme.rs)
 
 - **Lookup order**: `~/.config/logana/themes/` (user override) → `themes/` relative to CWD (dev) → bundled themes embedded in the binary at compile time via `include_str!`. User-config always wins; bundled themes are always available regardless of install location.
-- **Bundled themes** (`BUNDLED_THEMES` static): atomic, dracula, gruvbox-dark, jandedobbeleer, monokai, nord, paradox, solarized, tokyonight.
+- **Bundled themes** (`BUNDLED_THEMES` static, 19 total): dark: catppuccin-mocha, catppuccin-macchiato, dracula, everforest-dark, gruvbox-dark, jandedobbeleer, kanagawa, monokai, nord, onedark, paradox, rose-pine, solarized, tokyonight, atomic. Light: catppuccin-latte, everforest-light, onelight, rose-pine-dawn.
 - Colors: hex `"#RRGGBB"` or RGB array `[r, g, b]`
 - Default: Dracula theme (loaded from bundled data; hardcoded fallback if parse fails)
 - Fields: `root_bg`, `border`, `border_title`, `text`, `text_highlight`, `cursor_fg`, `trace_fg`, `debug_fg`, `notice_fg`, `warning_fg`, `error_fg`, `fatal_fg`, `search_fg`, `visual_select_bg`, `visual_select_fg`, `mark_bg`, `mark_fg`, `value_colors`

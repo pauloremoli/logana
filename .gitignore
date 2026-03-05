@@ -2,3 +2,4 @@ target/
 logs/
 .claude
 tarpaulin-report.html
+docs/book/

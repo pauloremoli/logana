@@ -108,16 +108,13 @@ impl LogManager {
             self.filter_defs.iter().map(|f| f.id).max().unwrap_or(0) + 1
         };
 
-        self.filter_defs.insert(
-            0,
-            FilterDef {
-                id: next_id,
-                pattern,
-                filter_type,
-                enabled: true,
-                color_config,
-            },
-        );
+        self.filter_defs.push(FilterDef {
+            id: next_id,
+            pattern,
+            filter_type,
+            enabled: true,
+            color_config,
+        });
     }
 
     pub async fn toggle_filter(&mut self, id: usize) {
@@ -454,11 +451,11 @@ mod tests {
 
         let filters = mgr.get_filters();
         assert_eq!(filters.len(), 2);
-        // Newest first: "debug" was added second so it sits at index 0
-        assert_eq!(filters[0].pattern, "debug");
-        assert_eq!(filters[0].filter_type, FilterType::Exclude);
-        assert_eq!(filters[1].pattern, "error");
-        assert_eq!(filters[1].filter_type, FilterType::Include);
+        // Oldest first: "error" was added first so it sits at index 0
+        assert_eq!(filters[0].pattern, "error");
+        assert_eq!(filters[0].filter_type, FilterType::Include);
+        assert_eq!(filters[1].pattern, "debug");
+        assert_eq!(filters[1].filter_type, FilterType::Exclude);
     }
 
     #[tokio::test]
@@ -484,10 +481,10 @@ mod tests {
             .await;
         let id = mgr.get_filters()[0].id;
 
-        // "debug" was added second → it is at index 0; removing it leaves "error"
+        // "error" was added first → it is at index 0; removing it leaves "debug"
         mgr.remove_filter(id).await;
         assert_eq!(mgr.get_filters().len(), 1);
-        assert_eq!(mgr.get_filters()[0].pattern, "error");
+        assert_eq!(mgr.get_filters()[0].pattern, "debug");
     }
 
     #[tokio::test]
@@ -511,26 +508,26 @@ mod tests {
         mgr.add_filter_with_color("third".into(), FilterType::Include, None, None, true)
             .await;
 
-        // After three inserts (newest first): ["third", "second", "first"]
+        // After three inserts (oldest first): ["first", "second", "third"]
         // "second" is at index 1
         let id_second = mgr.get_filters()[1].id;
         mgr.move_filter_up(id_second).await;
 
-        // Swaps [1] and [0]: ["second", "third", "first"]
-        let filters = mgr.get_filters();
-        assert_eq!(filters[0].pattern, "second");
-        assert_eq!(filters[1].pattern, "third");
-        assert_eq!(filters[2].pattern, "first");
-
-        // "third" is now at index 1
-        let id_third = mgr.get_filters()[1].id;
-        mgr.move_filter_down(id_third).await;
-
-        // Swaps [1] and [2]: ["second", "first", "third"]
+        // Swaps [1] and [0]: ["second", "first", "third"]
         let filters = mgr.get_filters();
         assert_eq!(filters[0].pattern, "second");
         assert_eq!(filters[1].pattern, "first");
         assert_eq!(filters[2].pattern, "third");
+
+        // "first" is now at index 1
+        let id_at_1 = mgr.get_filters()[1].id;
+        mgr.move_filter_down(id_at_1).await;
+
+        // Swaps [1] and [2]: ["second", "third", "first"]
+        let filters = mgr.get_filters();
+        assert_eq!(filters[0].pattern, "second");
+        assert_eq!(filters[1].pattern, "third");
+        assert_eq!(filters[2].pattern, "first");
     }
 
     #[tokio::test]
@@ -616,10 +613,10 @@ mod tests {
 
         let filters = mgr2.get_filters();
         assert_eq!(filters.len(), 2);
-        // save_filters preserves in-memory order (newest first): ["debug", "error"]
+        // save_filters preserves in-memory order (oldest first): ["error", "debug"]
         // replace_all_filters assigns display_order 0, 1 to that slice → same order on reload
-        assert_eq!(filters[0].pattern, "debug");
-        assert_eq!(filters[1].pattern, "error");
+        assert_eq!(filters[0].pattern, "error");
+        assert_eq!(filters[1].pattern, "debug");
     }
 
     #[tokio::test]

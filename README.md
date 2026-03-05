@@ -31,12 +31,12 @@ Detected automatically on open — no flags or config required:
 
 | Format | Examples |
 |---|---|
-| JSON | tracing-subscriber, bunyan, pino, any structured JSON logger |
+| JSON | tracing-subscriber JSON, bunyan, pino, any structured JSON logger |
 | Syslog | RFC 3164 (BSD), RFC 5424 |
 | Journalctl | short-iso, short-precise, short-full |
 | Common / Combined Log | Apache access, nginx access |
 | Logfmt | Go `slog`, Heroku, Grafana Loki |
-| Common log family | env_logger, tracing fmt, logback, log4j2, Spring Boot, Python logging, loguru, structlog |
+| Common log family | env_logger, tracing-subscriber fmt (with/without spans), logback, log4j2, Spring Boot, Python logging, loguru, structlog |
 ---
 
 ## Installation
@@ -313,7 +313,11 @@ All keybindings have sensible defaults — the config file is entirely optional.
 
 ## Themes
 
-9 themes are bundled: `atomic`, `dracula`, `gruvbox-dark`, `jandedobbeleer`, `monokai`, `nord`, `paradox`, `solarized`, `tokyonight`.
+19 themes are bundled:
+
+**Dark:** `catppuccin-mocha`, `catppuccin-macchiato`, `dracula`, `everforest-dark`, `gruvbox-dark`, `jandedobbeleer`, `kanagawa`, `monokai`, `nord`, `onedark`, `paradox`, `rose-pine`, `solarized`, `tokyonight`, `atomic`
+
+**Light:** `catppuccin-latte`, `everforest-light`, `onelight`, `rose-pine-dawn`
 
 ```sh
 :set-theme nord
@@ -331,6 +335,20 @@ Place custom themes (JSON) in `~/.config/logana/themes/`. Colors accept hex (`"#
 | `~/.config/logana/config.json` | Keybindings, theme, UI defaults |
 | `~/.config/logana/themes/` | Custom themes |
 | `~/.config/logana/templates/` | Custom export templates |
+
+---
+
+## Documentation
+
+Full documentation is in the `docs/` directory, built with [mdbook](https://rust-lang.github.io/mdBook/).
+
+```sh
+cargo install mdbook       # install once
+
+cd docs
+mdbook build               # build to docs/book/
+mdbook serve               # build + serve at http://localhost:3000 with live reload
+```
 
 ---
 

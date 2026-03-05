@@ -10,6 +10,8 @@ use async_trait::async_trait;
 use sqlx::Row;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
+use std::collections::HashSet;
+
 use crate::types::{ColorConfig, Comment, FilterDef, FilterType};
 
 #[async_trait]
@@ -44,7 +46,9 @@ pub struct FileContext {
     pub scroll_offset: usize,
     pub search_query: String,
     pub wrap: bool,
-    pub level_colors: bool,
+    /// Set of log-level keys whose colour is disabled (e.g. `"trace"`, `"error"`).
+    /// Stored as a JSON array in `level_colors_disabled` column.
+    pub level_colors_disabled: HashSet<String>,
     pub show_sidebar: bool,
     pub horizontal_scroll: usize,
     pub marked_lines: Vec<usize>,
@@ -53,6 +57,7 @@ pub struct FileContext {
     pub comments: Vec<Comment>,
     pub show_mode_bar: bool,
     pub show_borders: bool,
+    pub show_keys: bool,
 }
 
 #[async_trait]
@@ -134,6 +139,20 @@ impl Database {
                 .await?;
         }
 
+        if version < 2 {
+            self.migrate_to_v2().await?;
+            sqlx::query("PRAGMA user_version = 2")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if version < 3 {
+            self.migrate_to_v3().await?;
+            sqlx::query("PRAGMA user_version = 3")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -182,6 +201,36 @@ impl Database {
         )
         .execute(&self.pool)
         .await?;
+
+        Ok(())
+    }
+
+    async fn migrate_to_v2(&self) -> Result<()> {
+        sqlx::query(
+            "ALTER TABLE file_context ADD COLUMN show_keys INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&self.pool)
+        .await
+        .ok(); // column may already exist on fresh DBs created from v1 schema
+        Ok(())
+    }
+
+    async fn migrate_to_v3(&self) -> Result<()> {
+        // Add a JSON column for per-level colour disabling.
+        sqlx::query(
+            "ALTER TABLE file_context ADD COLUMN level_colors_disabled TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&self.pool)
+        .await
+        .ok(); // column may already exist on fresh DBs
+
+        // Convert old rows where level_colors = 0 (all levels disabled) to the new format.
+        sqlx::query(
+            "UPDATE file_context SET level_colors_disabled = '[\"trace\",\"debug\",\"info\",\"notice\",\"warning\",\"error\",\"fatal\"]' WHERE level_colors = 0 AND level_colors_disabled = '[]'",
+        )
+        .execute(&self.pool)
+        .await
+        .ok();
 
         Ok(())
     }
@@ -235,15 +284,15 @@ impl FilterStore for Database {
         source_file: Option<&str>,
     ) -> Result<i64> {
         let source = source_file.unwrap_or("");
-        let min_order: Option<i64> = sqlx::query(
-            "SELECT MIN(display_order) as min_order FROM filters WHERE source_file = ?",
+        let max_order: Option<i64> = sqlx::query(
+            "SELECT MAX(display_order) as max_order FROM filters WHERE source_file = ?",
         )
         .bind(source)
         .fetch_one(&self.pool)
         .await?
-        .get("min_order");
+        .get("max_order");
 
-        let next_order = min_order.unwrap_or(1) - 1;
+        let next_order = max_order.unwrap_or(0) + 1;
 
         let (fg, bg, match_only) = match color_config {
             Some(cc) => (
@@ -434,9 +483,15 @@ impl FileContextStore for Database {
             serde_json::to_string(&ctx.marked_lines).unwrap_or_else(|_| "[]".to_string());
         let comments_json =
             serde_json::to_string(&ctx.comments).unwrap_or_else(|_| "[]".to_string());
+        let level_colors_disabled_json = serde_json::to_string(
+            &ctx.level_colors_disabled.iter().collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string());
+        // Also keep the legacy `level_colors` column up-to-date for any old readers.
+        let level_colors_legacy = ctx.level_colors_disabled.is_empty() as i32;
         sqlx::query(
-            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_file) DO UPDATE SET
                 scroll_offset = excluded.scroll_offset,
                 search_query = excluded.search_query,
@@ -449,13 +504,15 @@ impl FileContextStore for Database {
                 show_line_numbers = excluded.show_line_numbers,
                 annotations_json = excluded.annotations_json,
                 show_status_bar = excluded.show_status_bar,
-                show_borders = excluded.show_borders",
+                show_borders = excluded.show_borders,
+                show_keys = excluded.show_keys,
+                level_colors_disabled = excluded.level_colors_disabled",
         )
         .bind(&ctx.source_file)
         .bind(ctx.scroll_offset as i64)
         .bind(&ctx.search_query)
         .bind(ctx.wrap as i32)
-        .bind(ctx.level_colors as i32)
+        .bind(level_colors_legacy)
         .bind(ctx.show_sidebar as i32)
         .bind(ctx.horizontal_scroll as i64)
         .bind(&marked_json)
@@ -464,6 +521,8 @@ impl FileContextStore for Database {
         .bind(&comments_json)
         .bind(ctx.show_mode_bar as i32)
         .bind(ctx.show_borders as i32)
+        .bind(ctx.show_keys as i32)
+        .bind(&level_colors_disabled_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -471,7 +530,7 @@ impl FileContextStore for Database {
 
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
         let row = sqlx::query(
-            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders
+            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled
              FROM file_context WHERE source_file = ?",
         )
         .bind(source_file)
@@ -483,12 +542,28 @@ impl FileContextStore for Database {
             let marked_lines: Vec<usize> = serde_json::from_str(&marked_json).unwrap_or_default();
             let comments_json: String = r.try_get("annotations_json").unwrap_or_default();
             let comments: Vec<Comment> = serde_json::from_str(&comments_json).unwrap_or_default();
+            let level_colors_disabled: HashSet<String> = r
+                .try_get::<String, _>("level_colors_disabled")
+                .ok()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                .map(|v| v.into_iter().collect())
+                .unwrap_or_else(|| {
+                    // Legacy fallback: old level_colors = 0 meant all levels disabled.
+                    if r.get::<i32, _>("level_colors") == 0 {
+                        ["trace", "debug", "notice", "warning", "error", "fatal"]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect()
+                    } else {
+                        HashSet::new()
+                    }
+                });
             FileContext {
                 source_file: r.get::<String, _>("source_file"),
                 scroll_offset: r.get::<i64, _>("scroll_offset") as usize,
                 search_query: r.get::<String, _>("search_query"),
                 wrap: r.get::<i32, _>("wrap") != 0,
-                level_colors: r.get::<i32, _>("level_colors") != 0,
+                level_colors_disabled,
                 show_sidebar: r.get::<i32, _>("show_sidebar") != 0,
                 horizontal_scroll: r.get::<i64, _>("horizontal_scroll") as usize,
                 marked_lines,
@@ -497,6 +572,7 @@ impl FileContextStore for Database {
                 comments,
                 show_mode_bar: r.try_get::<i32, _>("show_status_bar").unwrap_or(1) != 0,
                 show_borders: r.try_get::<i32, _>("show_borders").unwrap_or(1) != 0,
+                show_keys: r.try_get::<i32, _>("show_keys").unwrap_or(0) != 0,
             }
         }))
     }
@@ -554,26 +630,26 @@ mod tests {
 
         let filters = db.get_filters().await.unwrap();
         assert_eq!(filters.len(), 2);
-        // Newest first: "debug" was inserted second, so it has the lower display_order
-        assert_eq!(filters[0].pattern, "debug");
-        assert_eq!(filters[0].filter_type, FilterType::Exclude);
+        // Oldest first: "error" was inserted first, so it has the lower display_order
+        assert_eq!(filters[0].pattern, "error");
+        assert_eq!(filters[0].filter_type, FilterType::Include);
         assert!(filters[0].enabled);
-        assert_eq!(filters[1].pattern, "error");
-        assert_eq!(filters[1].filter_type, FilterType::Include);
+        assert_eq!(filters[1].pattern, "debug");
+        assert_eq!(filters[1].filter_type, FilterType::Exclude);
 
-        // Toggle id1 ("error", now at index 1)
+        // Toggle id1 ("error", at index 0)
         db.toggle_filter(id1).await.unwrap();
         let filters = db.get_filters().await.unwrap();
-        assert!(!filters[1].enabled);
+        assert!(!filters[0].enabled);
 
         db.toggle_filter(id1).await.unwrap();
         let filters = db.get_filters().await.unwrap();
-        assert!(filters[1].enabled);
+        assert!(filters[0].enabled);
 
-        // Update pattern of id1 ("error" → "warning", still at index 1)
+        // Update pattern of id1 ("error" → "warning", still at index 0)
         db.update_filter_pattern(id1, "warning").await.unwrap();
         let filters = db.get_filters().await.unwrap();
-        assert_eq!(filters[1].pattern, "warning");
+        assert_eq!(filters[0].pattern, "warning");
 
         // Delete
         db.delete_filter(id2).await.unwrap();
@@ -640,14 +716,14 @@ mod tests {
             .unwrap();
 
         let filters = db.get_filters().await.unwrap();
-        // Newest first: "second" was inserted last so it has the lower display_order
-        assert_eq!(filters[0].pattern, "second");
-        assert_eq!(filters[1].pattern, "first");
+        // Oldest first: "first" was inserted first so it has the lower display_order
+        assert_eq!(filters[0].pattern, "first");
+        assert_eq!(filters[1].pattern, "second");
 
         db.swap_filter_order(id1, id2).await.unwrap();
         let filters = db.get_filters().await.unwrap();
-        assert_eq!(filters[0].pattern, "first");
-        assert_eq!(filters[1].pattern, "second");
+        assert_eq!(filters[0].pattern, "second");
+        assert_eq!(filters[1].pattern, "first");
     }
 
     #[tokio::test]
@@ -750,7 +826,7 @@ mod tests {
             scroll_offset: 42,
             search_query: "ERROR".to_string(),
             wrap: false,
-            level_colors: true,
+            level_colors_disabled: HashSet::new(),
             show_sidebar: false,
             horizontal_scroll: 10,
             marked_lines: vec![1, 5, 10],
@@ -759,6 +835,7 @@ mod tests {
             comments: vec![],
             show_mode_bar: true,
             show_borders: true,
+            show_keys: false,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -770,7 +847,7 @@ mod tests {
         assert_eq!(loaded.scroll_offset, 42);
         assert_eq!(loaded.search_query, "ERROR");
         assert!(!loaded.wrap);
-        assert!(loaded.level_colors);
+        assert!(loaded.level_colors_disabled.is_empty());
         assert!(!loaded.show_sidebar);
         assert_eq!(loaded.horizontal_scroll, 10);
         assert_eq!(loaded.marked_lines, vec![1, 5, 10]);
@@ -787,7 +864,7 @@ mod tests {
             scroll_offset: 10,
             search_query: "".to_string(),
             wrap: true,
-            level_colors: true,
+            level_colors_disabled: HashSet::new(),
             show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![0, 3],
@@ -796,6 +873,7 @@ mod tests {
             comments: vec![],
             show_mode_bar: true,
             show_borders: true,
+            show_keys: false,
         };
         db.save_file_context(&ctx1).await.unwrap();
 
@@ -804,7 +882,10 @@ mod tests {
             scroll_offset: 99,
             search_query: "WARN".to_string(),
             wrap: false,
-            level_colors: false,
+            level_colors_disabled: ["trace", "debug", "info", "notice", "warning", "error", "fatal"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             show_sidebar: false,
             horizontal_scroll: 5,
             marked_lines: vec![2, 7],
@@ -813,6 +894,7 @@ mod tests {
             comments: vec![],
             show_mode_bar: false,
             show_borders: false,
+            show_keys: false,
         };
         db.save_file_context(&ctx2).await.unwrap();
 
@@ -844,7 +926,7 @@ mod tests {
             scroll_offset: 0,
             search_query: String::new(),
             wrap: true,
-            level_colors: true,
+            level_colors_disabled: HashSet::new(),
             show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
@@ -862,6 +944,7 @@ mod tests {
             ],
             show_mode_bar: true,
             show_borders: true,
+            show_keys: false,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -887,7 +970,7 @@ mod tests {
             scroll_offset: 0,
             search_query: String::new(),
             wrap: true,
-            level_colors: true,
+            level_colors_disabled: HashSet::new(),
             show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
@@ -896,6 +979,7 @@ mod tests {
             comments: vec![],
             show_mode_bar: false,
             show_borders: false,
+            show_keys: false,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -907,5 +991,36 @@ mod tests {
 
         assert!(!loaded.show_mode_bar);
         assert!(!loaded.show_borders);
+    }
+
+    #[tokio::test]
+    async fn test_file_context_show_keys_persisted() {
+        let db = setup_db().await;
+
+        let ctx = FileContext {
+            source_file: "/tmp/show_keys.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            wrap: true,
+            level_colors_disabled: HashSet::new(),
+            show_sidebar: true,
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            show_line_numbers: true,
+            comments: vec![],
+            show_mode_bar: true,
+            show_borders: true,
+            show_keys: true,
+        };
+        db.save_file_context(&ctx).await.unwrap();
+
+        let loaded = db
+            .load_file_context("/tmp/show_keys.log")
+            .await
+            .unwrap()
+            .expect("context should exist");
+
+        assert!(loaded.show_keys);
     }
 }

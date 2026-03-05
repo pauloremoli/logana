@@ -55,11 +55,12 @@ pub(crate) fn effective_row_count(
     parser: Option<&dyn LogFormatParser>,
     layout: &FieldLayout,
     hidden_fields: &HashSet<String>,
+    show_keys: bool,
 ) -> usize {
     if let Some(p) = parser
         && let Some(parts) = p.parse_line(line_bytes)
     {
-        let cols = apply_field_layout(&parts, layout, hidden_fields);
+        let cols = apply_field_layout(&parts, layout, hidden_fields, show_keys);
         if !cols.is_empty() {
             let rendered = cols.join(" ");
             return line_row_count(rendered.as_bytes(), inner_width);
@@ -72,9 +73,9 @@ pub(crate) fn effective_row_count(
 // Structured field layout helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn get_col(p: &DisplayParts<'_>, name: &str) -> Option<String> {
+pub(crate) fn get_col(p: &DisplayParts<'_>, name: &str, show_keys: bool) -> Option<String> {
     match name {
-        "span" => p.span.as_ref().map(format_span_col),
+        "span" => p.span.as_ref().map(|s| format_span_col(s, show_keys)),
         n => {
             // Resolve dotted span sub-field names (e.g. "span.name", "span.method").
             if let Some(suffix) = n.strip_prefix("span.") {
@@ -121,7 +122,7 @@ pub(crate) fn get_col(p: &DisplayParts<'_>, name: &str) -> Option<String> {
     }
 }
 
-fn default_cols(p: &DisplayParts<'_>) -> Vec<String> {
+fn default_cols(p: &DisplayParts<'_>, show_keys: bool) -> Vec<String> {
     let mut cols = Vec::new();
     if let Some(ts) = p.timestamp {
         cols.push(ts.to_string());
@@ -133,10 +134,14 @@ fn default_cols(p: &DisplayParts<'_>) -> Vec<String> {
         cols.push(tgt.to_string());
     }
     if let Some(span) = &p.span {
-        cols.push(format_span_col(span));
+        cols.push(format_span_col(span, show_keys));
     }
-    for (_key, value) in &p.extra_fields {
-        cols.push(value.to_string());
+    for (key, value) in &p.extra_fields {
+        if show_keys {
+            cols.push(format!("{key}={value}"));
+        } else {
+            cols.push(value.to_string());
+        }
     }
     if let Some(msg) = p.message {
         cols.push(msg.to_string());
@@ -148,10 +153,14 @@ pub(crate) fn apply_field_layout(
     p: &DisplayParts<'_>,
     layout: &FieldLayout,
     hidden_fields: &HashSet<String>,
+    show_keys: bool,
 ) -> Vec<String> {
     let cols = match &layout.columns {
-        None => default_cols(p),
-        Some(names) => names.iter().filter_map(|name| get_col(p, name)).collect(),
+        None => default_cols(p, show_keys),
+        Some(names) => names
+            .iter()
+            .filter_map(|name| get_col(p, name, show_keys))
+            .collect(),
     };
     if hidden_fields.is_empty() {
         cols
@@ -160,7 +169,7 @@ pub(crate) fn apply_field_layout(
         names
             .iter()
             .filter(|name| !hidden_fields.contains(name.as_str()))
-            .filter_map(|name| get_col(p, name))
+            .filter_map(|name| get_col(p, name, show_keys))
             .collect()
     } else {
         // Default layout — rebuild without hidden fields.
@@ -191,11 +200,15 @@ pub(crate) fn apply_field_layout(
         if !hidden_fields.contains("span")
             && let Some(span) = &p.span
         {
-            cols.push(format_span_col(span));
+            cols.push(format_span_col(span, show_keys));
         }
         for (key, value) in &p.extra_fields {
             if !hidden_fields.contains(*key) {
-                cols.push(value.to_string());
+                if show_keys {
+                    cols.push(format!("{key}={value}"));
+                } else {
+                    cols.push(value.to_string());
+                }
             }
         }
         if !crate::parser::MESSAGE_KEYS
@@ -297,7 +310,7 @@ mod tests {
     fn test_get_col_timestamp() {
         let p = make_parts();
         assert_eq!(
-            get_col(&p, "timestamp"),
+            get_col(&p, "timestamp", false),
             Some("2024-01-01T00:00:00Z".to_string())
         );
     }
@@ -305,26 +318,26 @@ mod tests {
     #[test]
     fn test_get_col_level() {
         let p = make_parts();
-        let result = get_col(&p, "level").unwrap();
+        let result = get_col(&p, "level", false).unwrap();
         assert!(result.starts_with("INFO"));
     }
 
     #[test]
     fn test_get_col_message() {
         let p = make_parts();
-        assert_eq!(get_col(&p, "message"), Some("hello world".to_string()));
+        assert_eq!(get_col(&p, "message", false), Some("hello world".to_string()));
     }
 
     #[test]
     fn test_get_col_span_name() {
         let p = make_parts();
-        assert_eq!(get_col(&p, "span.name"), Some("handler".to_string()));
+        assert_eq!(get_col(&p, "span.name", false), Some("handler".to_string()));
     }
 
     #[test]
     fn test_get_col_dotted_span_field() {
         let p = make_parts();
-        assert_eq!(get_col(&p, "span.method"), Some("GET".to_string()));
+        assert_eq!(get_col(&p, "span.method", false), Some("GET".to_string()));
     }
 
     #[test]
@@ -332,7 +345,7 @@ mod tests {
         let p = make_parts();
         // "fields.message" should resolve to the message slot
         assert_eq!(
-            get_col(&p, "fields.message"),
+            get_col(&p, "fields.message", false),
             Some("hello world".to_string())
         );
     }
@@ -340,24 +353,33 @@ mod tests {
     #[test]
     fn test_get_col_extra_field() {
         let p = make_parts();
-        assert_eq!(get_col(&p, "count"), Some("42".to_string()));
+        assert_eq!(get_col(&p, "count", false), Some("42".to_string()));
     }
 
     #[test]
     fn test_get_col_unknown_returns_none() {
         let p = make_parts();
-        assert_eq!(get_col(&p, "nonexistent"), None);
+        assert_eq!(get_col(&p, "nonexistent", false), None);
     }
 
     #[test]
     fn test_get_col_alias_resolution() {
         let p = make_parts();
         // "lvl" is an alias for level
-        assert!(get_col(&p, "lvl").is_some());
+        assert!(get_col(&p, "lvl", false).is_some());
         // "msg" is an alias for message
-        assert!(get_col(&p, "msg").is_some());
+        assert!(get_col(&p, "msg", false).is_some());
         // "ts" is an alias for timestamp
-        assert!(get_col(&p, "ts").is_some());
+        assert!(get_col(&p, "ts", false).is_some());
+    }
+
+    #[test]
+    fn test_get_col_span_show_keys() {
+        let p = make_parts();
+        // show_keys=false: values only
+        assert_eq!(get_col(&p, "span", false), Some("handler: GET".to_string())); // single value, no separator difference
+        // show_keys=true: key=value pairs
+        assert_eq!(get_col(&p, "span", true), Some("handler: method=GET".to_string()));
     }
 
     // -----------------------------------------------------------------------
@@ -367,7 +389,7 @@ mod tests {
     #[test]
     fn test_default_cols_all_fields() {
         let p = make_parts();
-        let cols = default_cols(&p);
+        let cols = default_cols(&p, false);
         // Should have: timestamp, level, target, span, extra(count), message = 6
         assert_eq!(cols.len(), 6);
         assert!(cols[0].contains("2024"));
@@ -386,7 +408,7 @@ mod tests {
             extra_fields: vec![],
             message: Some("only message"),
         };
-        let cols = default_cols(&p);
+        let cols = default_cols(&p, false);
         assert_eq!(cols.len(), 1);
         assert_eq!(cols[0], "only message");
     }
@@ -400,7 +422,7 @@ mod tests {
         let p = make_parts();
         let layout = FieldLayout::default();
         let hidden = HashSet::new();
-        let cols = apply_field_layout(&p, &layout, &hidden);
+        let cols = apply_field_layout(&p, &layout, &hidden, false);
         assert_eq!(cols.len(), 6);
     }
 
@@ -412,7 +434,7 @@ mod tests {
             columns_order: None,
         };
         let hidden = HashSet::new();
-        let cols = apply_field_layout(&p, &layout, &hidden);
+        let cols = apply_field_layout(&p, &layout, &hidden, false);
         assert_eq!(cols.len(), 2);
     }
 
@@ -422,7 +444,7 @@ mod tests {
         let layout = FieldLayout::default();
         let mut hidden = HashSet::new();
         hidden.insert("timestamp".to_string());
-        let cols = apply_field_layout(&p, &layout, &hidden);
+        let cols = apply_field_layout(&p, &layout, &hidden, false);
         // Should have 5 (all minus timestamp)
         assert_eq!(cols.len(), 5);
     }
@@ -440,7 +462,7 @@ mod tests {
         };
         let mut hidden = HashSet::new();
         hidden.insert("timestamp".to_string());
-        let cols = apply_field_layout(&p, &layout, &hidden);
+        let cols = apply_field_layout(&p, &layout, &hidden, false);
         assert_eq!(cols.len(), 2); // level + message
     }
 
@@ -453,12 +475,12 @@ mod tests {
         let hidden = HashSet::new();
         let layout = FieldLayout::default();
         assert_eq!(
-            effective_row_count(b"hello world", 80, None, &layout, &hidden),
+            effective_row_count(b"hello world", 80, None, &layout, &hidden, false),
             1
         );
         // ceil(11/5) = 3
         assert_eq!(
-            effective_row_count(b"hello world", 5, None, &layout, &hidden),
+            effective_row_count(b"hello world", 5, None, &layout, &hidden, false),
             3
         );
     }
@@ -473,7 +495,7 @@ mod tests {
         // Raw bytes are ~94 chars; at width=20 that's 5 rows.
         assert_eq!(line_row_count(json, 20), 5);
         // Structured render is much shorter; effective_row_count should be < 5.
-        let result = effective_row_count(json, 20, Some(&parser), &layout, &hidden);
+        let result = effective_row_count(json, 20, Some(&parser), &layout, &hidden, false);
         assert!(
             result < 5,
             "structured rendering should produce fewer rows than raw bytes"
@@ -488,7 +510,7 @@ mod tests {
         // Non-JSON input: parse returns None → falls back to raw byte width.
         let raw = b"plain text log line that is not json";
         assert_eq!(
-            effective_row_count(raw, 20, Some(&parser), &layout, &hidden),
+            effective_row_count(raw, 20, Some(&parser), &layout, &hidden, false),
             line_row_count(raw, 20)
         );
     }
@@ -505,7 +527,7 @@ mod tests {
         let json = br#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","target":"app","fields":{"message":"ok"}}"#;
         let raw_rows = line_row_count(json, 20);
         assert_eq!(
-            effective_row_count(json, 20, Some(&parser), &layout, &hidden),
+            effective_row_count(json, 20, Some(&parser), &layout, &hidden, false),
             raw_rows
         );
     }
@@ -517,7 +539,7 @@ mod tests {
         let mut hidden = HashSet::new();
         // "lvl" is an alias for level — hiding it should hide the level column
         hidden.insert("lvl".to_string());
-        let cols = apply_field_layout(&p, &layout, &hidden);
+        let cols = apply_field_layout(&p, &layout, &hidden, false);
         // Should have 5 (all minus level)
         assert_eq!(cols.len(), 5);
     }

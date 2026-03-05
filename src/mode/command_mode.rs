@@ -134,6 +134,10 @@ pub enum Commands {
     },
     /// Toggle tail mode (always scroll to last line on new content)
     Tail,
+    /// Show field keys alongside values (e.g. key=value) in structured log display
+    ShowKeys,
+    /// Hide field keys and show only values in structured log display
+    HideKeys,
 }
 
 #[derive(Debug)]

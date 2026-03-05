@@ -261,6 +261,9 @@ impl App {
                     KeyResult::ApplyValueColors(disabled) => {
                         self.theme.value_colors.disabled = disabled;
                     }
+                    KeyResult::ApplyLevelColors(disabled) => {
+                        self.tabs[self.active_tab].level_colors_disabled = disabled;
+                    }
                     KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
                     KeyResult::OpenFiles(paths) => {
                         for path in paths {
@@ -305,6 +308,9 @@ impl App {
             KeyResult::DockerAttach(id, name) => self.open_docker_logs(id, name).await,
             KeyResult::ApplyValueColors(disabled) => {
                 self.theme.value_colors.disabled = disabled;
+            }
+            KeyResult::ApplyLevelColors(disabled) => {
+                self.tabs[self.active_tab].level_colors_disabled = disabled;
             }
             KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
             KeyResult::OpenFiles(paths) => {

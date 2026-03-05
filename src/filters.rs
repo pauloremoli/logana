@@ -333,6 +333,16 @@ impl FilterManager {
         collector
     }
 
+    /// Run all filters and add styling spans into an existing collector.
+    /// Use this when you need to pre-seed the collector with other spans
+    /// (e.g. process colors) before filter spans are added.
+    pub fn evaluate_into(&self, collector: &mut MatchCollector<'_>) {
+        let line = collector.line;
+        for filter in &self.filters {
+            filter.evaluate(line, collector);
+        }
+    }
+
     /// Compute visible line indices from a `FileReader` using Rayon parallel processing.
     /// The returned indices are in ascending order.
     pub fn compute_visible(&self, reader: &crate::file_reader::FileReader) -> Vec<usize> {

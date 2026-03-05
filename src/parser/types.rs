@@ -45,18 +45,28 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &str;
 }
 
-/// Format a `SpanInfo` as a display string: `name: v, v` or just `name`.
-pub fn format_span_col(s: &SpanInfo<'_>) -> String {
+/// Format a `SpanInfo` as a display string.
+///
+/// - `show_keys = false` → `name: v1, v2` (values only, current default)
+/// - `show_keys = true`  → `name: k1=v1 k2=v2` (key=value pairs)
+pub fn format_span_col(s: &SpanInfo<'_>, show_keys: bool) -> String {
     if s.fields.is_empty() {
         return s.name.to_string();
     }
-    let kv = s
-        .fields
-        .iter()
-        .map(|(_, v)| v.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{}: {}", s.name, kv)
+    let body: String = if show_keys {
+        s.fields
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        s.fields
+            .iter()
+            .map(|(_, v)| v.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    format!("{}: {}", s.name, body)
 }
 
 #[cfg(test)]
@@ -80,15 +90,25 @@ mod tests {
             name: "request",
             fields: vec![],
         };
-        assert_eq!(format_span_col(&span), "request");
+        assert_eq!(format_span_col(&span, false), "request");
+        assert_eq!(format_span_col(&span, true), "request");
     }
 
     #[test]
-    fn test_format_span_col_with_fields() {
+    fn test_format_span_col_values_only() {
         let span = SpanInfo {
             name: "request",
             fields: vec![("method", "GET"), ("uri", "/health")],
         };
-        assert_eq!(format_span_col(&span), "request: GET, /health");
+        assert_eq!(format_span_col(&span, false), "request: GET /health");
+    }
+
+    #[test]
+    fn test_format_span_col_with_keys() {
+        let span = SpanInfo {
+            name: "request",
+            fields: vec![("method", "GET"), ("uri", "/health")],
+        };
+        assert_eq!(format_span_col(&span, true), "request: method=GET uri=/health");
     }
 }

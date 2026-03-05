@@ -20,15 +20,43 @@ use crate::auto_complete::fuzzy_match;
 /// Lookup order: user config dir → local `themes/` (dev) → here.
 static BUNDLED_THEMES: &[(&str, &str)] = &[
     ("atomic", include_str!("../themes/atomic.json")),
+    (
+        "catppuccin-latte",
+        include_str!("../themes/catppuccin-latte.json"),
+    ),
+    (
+        "catppuccin-macchiato",
+        include_str!("../themes/catppuccin-macchiato.json"),
+    ),
+    (
+        "catppuccin-mocha",
+        include_str!("../themes/catppuccin-mocha.json"),
+    ),
     ("dracula", include_str!("../themes/dracula.json")),
+    (
+        "everforest-dark",
+        include_str!("../themes/everforest-dark.json"),
+    ),
+    (
+        "everforest-light",
+        include_str!("../themes/everforest-light.json"),
+    ),
     ("gruvbox-dark", include_str!("../themes/gruvbox-dark.json")),
     (
         "jandedobbeleer",
         include_str!("../themes/jandedobbeleer.json"),
     ),
+    ("kanagawa", include_str!("../themes/kanagawa.json")),
     ("monokai", include_str!("../themes/monokai.json")),
     ("nord", include_str!("../themes/nord.json")),
+    ("onedark", include_str!("../themes/onedark.json")),
+    ("onelight", include_str!("../themes/onelight.json")),
     ("paradox", include_str!("../themes/paradox.json")),
+    ("rose-pine", include_str!("../themes/rose-pine.json")),
+    (
+        "rose-pine-dawn",
+        include_str!("../themes/rose-pine-dawn.json"),
+    ),
     ("solarized", include_str!("../themes/solarized.json")),
     ("tokyonight", include_str!("../themes/tokyonight.json")),
 ];
@@ -177,7 +205,15 @@ pub struct ValueColorGroup {
 
 impl ValueColors {
     /// Returns categories organised into groups.
-    pub fn grouped_categories(&self) -> Vec<ValueColorGroup> {
+    ///
+    /// `process_representative` is the color shown in the swatch for the
+    /// "Process colors" entry (typically the first color from `Theme::process_colors`).
+    pub fn grouped_categories(
+        &self,
+        process_representative: Option<Color>,
+    ) -> Vec<ValueColorGroup> {
+        let process_swatch =
+            process_representative.unwrap_or(Color::Rgb(255, 85, 85)); // dracula red fallback
         vec![
             ValueColorGroup {
                 label: "HTTP methods",
@@ -207,6 +243,10 @@ impl ValueColors {
                 label: "Identifiers",
                 children: vec![("uuid", "UUIDs", self.uuid)],
             },
+            ValueColorGroup {
+                label: "Process",
+                children: vec![("process_colors", "Process / logger colors", process_swatch)],
+            },
         ]
     }
 
@@ -221,6 +261,20 @@ pub struct Theme {
     pub root_bg: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
     pub border: Color,
+    /// Background colour for the cursor line, command bar, and search bar.
+    ///
+    /// Defaults to `border` when not present in the theme file — the
+    /// `from_file` loader backfills it automatically, so existing theme JSON
+    /// files keep working unchanged. Set this explicitly to decouple panel
+    /// borders from interactive highlights (useful for light themes where
+    /// `border` might be a subtle separator, but the cursor/command bar needs
+    /// more contrast).
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_cursor_bg"
+    )]
+    pub cursor_bg: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
     pub border_title: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
@@ -238,7 +292,7 @@ pub struct Theme {
     )]
     pub text_highlight_bg: Color,
     /// Foreground colour used for the currently-selected (cursor) line.
-    /// Should contrast well against the `border` colour used as the cursor background.
+    /// Should contrast well against `cursor_bg`.
     #[serde(
         serialize_with = "color_to_str",
         deserialize_with = "color_from_str",
@@ -257,6 +311,12 @@ pub struct Theme {
         default = "default_debug_fg"
     )]
     pub debug_fg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_info_fg"
+    )]
+    pub info_fg: Color,
     #[serde(
         serialize_with = "color_to_str",
         deserialize_with = "color_from_str",
@@ -408,6 +468,9 @@ impl<'de> serde::de::DeserializeSeed<'de> for ColorDeserializer {
     }
 }
 
+fn default_cursor_bg() -> Color {
+    Color::Rgb(98, 114, 164) // #6272a4 — dracula border; overridden by from_file preprocessing
+}
 fn default_text_highlight_fg() -> Color {
     Color::Rgb(255, 184, 108) // #ffb86c
 }
@@ -419,6 +482,9 @@ fn default_trace_fg() -> Color {
 }
 fn default_debug_fg() -> Color {
     Color::Rgb(139, 233, 253) // cyan (Dracula cyan)
+}
+fn default_info_fg() -> Color {
+    Color::Rgb(248, 248, 242) // same as default text (Dracula foreground)
 }
 fn default_notice_fg() -> Color {
     Color::Rgb(248, 248, 242) // same as default text (Dracula foreground)
@@ -516,7 +582,18 @@ impl Theme {
                     )
                 })?
         };
-        let config: Theme = serde_json::from_str(&data)?;
+        // Backfill `cursor_bg` from `border` so themes that pre-date the split
+        // continue to work without any change to their JSON files.
+        let mut json_val: serde_json::Value = serde_json::from_str(&data)?;
+        if !json_val
+            .get("cursor_bg")
+            .is_some_and(|v| !v.is_null())
+        {
+            if let Some(border) = json_val.get("border").cloned() {
+                json_val["cursor_bg"] = border;
+            }
+        }
+        let config: Theme = serde_json::from_value(json_val)?;
         Ok(config)
     }
 }
@@ -526,6 +603,7 @@ impl Default for Theme {
         Theme::from_file("dracula.json").unwrap_or_else(|_| Theme {
             root_bg: Color::Rgb(40, 42, 54),
             border: Color::Rgb(98, 114, 164),
+            cursor_bg: Color::Rgb(98, 114, 164), // dracula: same as border
             border_title: Color::Rgb(248, 248, 242),
             text: Color::Rgb(248, 248, 242),
             text_highlight_fg: default_text_highlight_fg(),
@@ -533,6 +611,7 @@ impl Default for Theme {
             cursor_fg: Color::Rgb(28, 28, 28),
             trace_fg: default_trace_fg(),
             debug_fg: default_debug_fg(),
+            info_fg: default_info_fg(),
             notice_fg: default_notice_fg(),
             error_fg: Color::Rgb(255, 85, 85),
             warning_fg: Color::Rgb(241, 250, 140),
@@ -598,8 +677,8 @@ mod tests {
     #[test]
     fn test_grouped_categories_structure() {
         let vc = ValueColors::default();
-        let groups = vc.grouped_categories();
-        assert_eq!(groups.len(), 4);
+        let groups = vc.grouped_categories(None);
+        assert_eq!(groups.len(), 5);
         assert_eq!(groups[0].label, "HTTP methods");
         assert_eq!(groups[0].children.len(), 6);
         assert_eq!(groups[1].label, "Status codes");
@@ -608,12 +687,15 @@ mod tests {
         assert_eq!(groups[2].children.len(), 1);
         assert_eq!(groups[3].label, "Identifiers");
         assert_eq!(groups[3].children.len(), 1);
+        assert_eq!(groups[4].label, "Process");
+        assert_eq!(groups[4].children.len(), 1);
+        assert_eq!(groups[4].children[0].0, "process_colors");
     }
 
     #[test]
     fn test_grouped_categories_keys_and_labels() {
         let vc = ValueColors::default();
-        let groups = vc.grouped_categories();
+        let groups = vc.grouped_categories(None);
         // HTTP methods group
         let http = &groups[0].children;
         assert_eq!(http[0].0, "http_get");
@@ -628,14 +710,27 @@ mod tests {
         assert_eq!(groups[2].children[0].0, "ip_address");
         // Identifiers
         assert_eq!(groups[3].children[0].0, "uuid");
+        // Process
+        assert_eq!(groups[4].children[0].0, "process_colors");
     }
 
     #[test]
     fn test_grouped_categories_uses_current_colors() {
         let mut vc = ValueColors::default();
         vc.http_get = Color::Rgb(1, 2, 3);
-        let groups = vc.grouped_categories();
+        let groups = vc.grouped_categories(None);
         assert_eq!(groups[0].children[0].2, Color::Rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn test_grouped_categories_process_representative() {
+        let vc = ValueColors::default();
+        let custom = Color::Rgb(10, 20, 30);
+        let groups = vc.grouped_categories(Some(custom));
+        assert_eq!(groups[4].children[0].2, custom);
+        // Falls back to dracula red when None
+        let groups_none = vc.grouped_categories(None);
+        assert_eq!(groups_none[4].children[0].2, Color::Rgb(255, 85, 85));
     }
 
     // ── ValueColors::is_disabled ────────────────────────────────────────
@@ -692,6 +787,7 @@ mod tests {
         let theme = Theme::default();
         assert_eq!(theme.trace_fg, Color::Rgb(98, 114, 164));
         assert_eq!(theme.debug_fg, Color::Rgb(139, 233, 253));
+        assert_eq!(theme.info_fg, Color::Rgb(248, 248, 242));
         assert_eq!(theme.notice_fg, Color::Rgb(248, 248, 242));
         assert_eq!(theme.fatal_fg, Color::Rgb(255, 85, 85));
         assert_eq!(theme.cursor_fg, Color::Rgb(28, 28, 28));
@@ -740,7 +836,9 @@ mod tests {
 
     #[test]
     fn test_theme_deserialize_missing_optional_fields_use_defaults() {
-        // Build a minimal theme JSON without trace_fg, debug_fg, notice_fg, fatal_fg, cursor_fg
+        // Build a minimal theme JSON without optional fields (including cursor_bg).
+        // cursor_bg falls back to default_cursor_bg() when deserialized directly;
+        // Theme::from_file() uses preprocessing to copy border → cursor_bg instead.
         let json = r##"{
             "root_bg": "#282a36",
             "border": "#6272a4",
@@ -752,8 +850,10 @@ mod tests {
             "process_colors": ["#ff5555", "#50fa7b"]
         }"##;
         let theme: Theme = serde_json::from_str(json).unwrap();
+        assert_eq!(theme.cursor_bg, default_cursor_bg());
         assert_eq!(theme.trace_fg, default_trace_fg());
         assert_eq!(theme.debug_fg, default_debug_fg());
+        assert_eq!(theme.info_fg, default_info_fg());
         assert_eq!(theme.notice_fg, default_notice_fg());
         assert_eq!(theme.fatal_fg, default_fatal_fg());
         assert_eq!(theme.cursor_fg, default_cursor_fg());
@@ -796,6 +896,50 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap().root_bg, Color::Rgb(40, 42, 54));
+    }
+
+    #[test]
+    fn test_theme_from_file_cursor_bg_backfilled_from_border() {
+        // Themes without cursor_bg get it automatically copied from border
+        // by the preprocessing step in from_file_with_config_dir.
+        let temp = tempdir().unwrap();
+        let theme_dir = temp.path().join("logana").join("themes");
+        fs::create_dir_all(&theme_dir).unwrap();
+        let json = r##"{
+            "root_bg": "#282a36",
+            "border": "#6272a4",
+            "border_title": "#f8f8f2",
+            "text": "#f8f8f2",
+            "error_fg": "#ff5555",
+            "warning_fg": "#f1fa8c",
+            "process_colors": ["#ff5555"]
+        }"##;
+        fs::write(theme_dir.join("minimal.json"), json).unwrap();
+        let theme =
+            Theme::from_file_with_config_dir("minimal.json", Some(temp.path())).unwrap();
+        assert_eq!(theme.cursor_bg, Color::Rgb(98, 114, 164)); // = border
+    }
+
+    #[test]
+    fn test_theme_from_file_cursor_bg_explicit_overrides_border() {
+        let temp = tempdir().unwrap();
+        let theme_dir = temp.path().join("logana").join("themes");
+        fs::create_dir_all(&theme_dir).unwrap();
+        let json = r##"{
+            "root_bg": "#fafafa",
+            "border": "#d0d0d0",
+            "cursor_bg": "#aaaaaa",
+            "border_title": "#383a42",
+            "text": "#383a42",
+            "error_fg": "#e45649",
+            "warning_fg": "#c18401",
+            "process_colors": ["#e45649"]
+        }"##;
+        fs::write(theme_dir.join("explicit.json"), json).unwrap();
+        let theme =
+            Theme::from_file_with_config_dir("explicit.json", Some(temp.path())).unwrap();
+        assert_eq!(theme.border, Color::Rgb(0xd0, 0xd0, 0xd0));
+        assert_eq!(theme.cursor_bg, Color::Rgb(0xaa, 0xaa, 0xaa)); // explicit, not border
     }
 
     #[test]

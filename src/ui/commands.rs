@@ -120,6 +120,7 @@ impl App {
                     parser: tab.detected_format.as_deref(),
                     field_layout: &tab.field_layout,
                     hidden_fields: &tab.hidden_fields,
+                    show_keys: tab.show_keys,
                 };
                 let output = crate::export::render_export(&tpl, &data);
                 std::fs::write(&path, output).map_err(|e| format!("Failed to write: {}", e))?;
@@ -150,7 +151,36 @@ impl App {
                     !self.tabs[self.active_tab].show_line_numbers;
             }
             Some(Commands::LevelColors) => {
-                self.tabs[self.active_tab].level_colors = !self.tabs[self.active_tab].level_colors;
+                use crate::mode::value_colors_mode::{
+                    ValueColorEntry, ValueColorGroup as VCGroup, ValueColorsMode,
+                };
+                let disabled = &self.tabs[self.active_tab].level_colors_disabled;
+                let levels: Vec<(&str, &str, ratatui::style::Color)> = vec![
+                    ("trace", "TRACE", self.theme.trace_fg),
+                    ("debug", "DEBUG", self.theme.debug_fg),
+                    ("info", "INFO", self.theme.info_fg),
+                    ("notice", "NOTICE", self.theme.notice_fg),
+                    ("warning", "WARNING", self.theme.warning_fg),
+                    ("error", "ERROR", self.theme.error_fg),
+                    ("fatal", "FATAL", self.theme.fatal_fg),
+                ];
+                let groups = vec![VCGroup {
+                    label: "Log levels".to_string(),
+                    children: levels
+                        .into_iter()
+                        .map(|(key, label, color)| ValueColorEntry {
+                            key: key.to_string(),
+                            label: label.to_string(),
+                            color,
+                            enabled: !disabled.contains(key),
+                        })
+                        .collect(),
+                }];
+                let original_disabled = disabled.clone();
+                self.tabs[self.active_tab].mode = Box::new(
+                    ValueColorsMode::new_level_colors(groups, original_disabled),
+                );
+                return Ok(true);
             }
             Some(Commands::SetTheme { theme_name }) => {
                 let theme_filename = format!("{}.json", theme_name.to_lowercase());
@@ -319,10 +349,11 @@ impl App {
             Some(Commands::ValueColors) => {
                 use crate::mode::value_colors_mode::{ValueColorEntry, ValueColorGroup as VCGroup};
                 let disabled = &self.theme.value_colors.disabled;
+                let process_representative = self.theme.process_colors.first().copied();
                 let groups: Vec<VCGroup> = self
                     .theme
                     .value_colors
-                    .grouped_categories()
+                    .grouped_categories(process_representative)
                     .into_iter()
                     .map(|g| VCGroup {
                         label: g.label.to_string(),
@@ -387,6 +418,12 @@ impl App {
                     let new_count = tab.visible_indices.len();
                     tab.scroll_offset = new_count.saturating_sub(1);
                 }
+            }
+            Some(Commands::ShowKeys) => {
+                self.tabs[self.active_tab].show_keys = true;
+            }
+            Some(Commands::HideKeys) => {
+                self.tabs[self.active_tab].show_keys = false;
             }
             None => {}
         }
@@ -471,13 +508,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_level_colors_toggle() {
+    async fn test_level_colors_opens_dialog() {
         let mut app = make_app(&["line1"]).await;
-        assert!(app.tab().level_colors);
-        app.run_command("level-colors").await.unwrap();
-        assert!(!app.tab().level_colors);
-        app.run_command("level-colors").await.unwrap();
-        assert!(app.tab().level_colors);
+        let default_disabled: std::collections::HashSet<String> =
+            ["trace", "debug", "info", "notice"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(app.tabs[0].level_colors_disabled, default_disabled);
+        let result = app.run_command("level-colors").await.unwrap();
+        assert!(result);
+        assert!(matches!(
+            app.tabs[0].mode.render_state(),
+            ModeRenderState::LevelColors { .. }
+        ));
     }
 
     #[tokio::test]
@@ -661,6 +702,22 @@ mod tests {
         // Empty input parses to None command, returns Ok(false)
         assert!(result.is_ok());
         assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_show_keys_command() {
+        let mut app = make_app(&["line"]).await;
+        assert!(!app.tab().show_keys);
+        app.run_command("show-keys").await.unwrap();
+        assert!(app.tab().show_keys);
+    }
+
+    #[tokio::test]
+    async fn test_hide_keys_command() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].show_keys = true;
+        app.run_command("hide-keys").await.unwrap();
+        assert!(!app.tab().show_keys);
     }
 
     #[tokio::test]

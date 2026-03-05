@@ -65,6 +65,11 @@ pub enum ModeRenderState {
         search: String,
         selected: usize,
     },
+    LevelColors {
+        groups: Vec<ValueColorGroup>,
+        search: String,
+        selected: usize,
+    },
     ConfirmRestore,
     ConfirmRestoreSession {
         files: Vec<String>,
@@ -326,7 +331,7 @@ mod tests {
             scroll_offset: 5,
             search_query: String::new(),
             wrap: false,
-            level_colors: false,
+            level_colors_disabled: ["trace", "debug", "info", "notice", "warning", "error", "fatal"].iter().map(|s| s.to_string()).collect(),
             show_sidebar: false,
             horizontal_scroll: 3,
             marked_lines: vec![],
@@ -335,6 +340,7 @@ mod tests {
             comments: vec![],
             show_mode_bar: true,
             show_borders: true,
+            show_keys: false,
         }
     }
 
@@ -376,7 +382,7 @@ mod tests {
         assert_eq!(tab.scroll_offset, 5);
         assert!(!tab.wrap);
         assert!(!tab.show_sidebar);
-        assert!(!tab.level_colors);
+        assert!(!tab.level_colors_disabled.is_empty());
         assert!(!tab.show_line_numbers);
         assert_eq!(tab.horizontal_scroll, 3);
     }

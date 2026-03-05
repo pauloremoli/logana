@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use super::timestamp::{
     is_level_keyword, normalize_level, parse_datetime_timestamp, parse_iso_timestamp,
 };
-use super::types::{DisplayParts, LogFormatParser};
+use super::types::{DisplayParts, LogFormatParser, SpanInfo};
 
 /// Zero-copy parser for the TIMESTAMP + LEVEL + TARGET + MESSAGE family.
 #[derive(Debug)]
@@ -107,6 +107,107 @@ fn try_env_logger(s: &str) -> Option<DisplayParts<'_>> {
     if !msg.is_empty() {
         parts.message = Some(msg);
     }
+    Some(parts)
+}
+
+// ---------------------------------------------------------------------------
+// Tracing-subscriber span helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a span prefix `name{k=v ...}: ` from `s`.
+///
+/// Returns `(Some(SpanInfo), rest_after_colon_space)` on success, or
+/// `(None, s)` unchanged if the prefix is not present.
+fn try_parse_span_prefix(s: &str) -> (Option<SpanInfo<'_>>, &str) {
+    let brace = match s.find('{') {
+        Some(p) => p,
+        None => return (None, s),
+    };
+    let name = &s[..brace];
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return (None, s);
+    }
+    let after_open = brace + 1;
+    let close = match s[after_open..].find('}') {
+        Some(p) => after_open + p,
+        None => return (None, s),
+    };
+    let after = &s[close + 1..];
+    if !after.starts_with(": ") {
+        return (None, s);
+    }
+    let fields = parse_tracing_span_fields(&s[after_open..close]);
+    (Some(SpanInfo { name, fields }), &after[2..])
+}
+
+/// Parse `key=value` pairs from a span body string (zero-copy).
+///
+/// Handles quoted values (`key="hello world"`) and unquoted values
+/// (`key=GET`, `key=/api/path`). Pairs are whitespace-separated.
+fn parse_tracing_span_fields(s: &str) -> Vec<(&str, &str)> {
+    let mut fields = Vec::new();
+    let mut rest = s.trim();
+    while !rest.is_empty() {
+        let eq = match rest.find('=') {
+            Some(p) => p,
+            None => break,
+        };
+        let key = rest[..eq].trim();
+        if key.is_empty() {
+            break;
+        }
+        let val_src = &rest[eq + 1..];
+        let (val, consumed) = if let Some(inner) = val_src.strip_prefix('"') {
+            match inner.find('"') {
+                Some(close) => (&val_src[1..1 + close], 1 + close + 1),
+                None => (inner, val_src.len()),
+            }
+        } else {
+            match val_src.find(' ') {
+                Some(sp) => (&val_src[..sp], sp),
+                None => (val_src, val_src.len()),
+            }
+        };
+        fields.push((key, val));
+        rest = rest[eq + 1 + consumed..].trim_start();
+    }
+    fields
+}
+
+/// Rust tracing-subscriber fmt: `ISO LEVEL  span{k=v}: target: message`.
+///
+/// Only matches when a span prefix is present; non-span lines are handled by
+/// `try_generic` which already correctly parses `TIMESTAMP LEVEL target: msg`.
+fn try_tracing_fmt(s: &str) -> Option<DisplayParts<'_>> {
+    let (timestamp, consumed) = parse_iso_timestamp(s)?;
+    let rest = s.get(consumed..)?.trim_start();
+    let space = rest.find(' ')?;
+    let level = normalize_level(&rest[..space])?;
+    let rest = rest[space..].trim_start();
+
+    let (span, rest) = try_parse_span_prefix(rest);
+    let span = span?; // bail — non-span lines fall through to try_generic
+
+    let mut parts = DisplayParts {
+        timestamp: Some(timestamp),
+        level: Some(level),
+        span: Some(span),
+        ..Default::default()
+    };
+
+    if let Some(colon) = rest.find(": ") {
+        let target = &rest[..colon];
+        if !target.is_empty() {
+            parts.target = Some(target);
+        }
+        let msg = &rest[colon + 2..];
+        if !msg.is_empty() {
+            parts.message = Some(msg);
+        }
+    } else if !rest.is_empty() {
+        parts.message = Some(rest);
+    }
+
     Some(parts)
 }
 
@@ -527,6 +628,9 @@ impl LogFormatParser for CommonLogParser {
         if let Some(parts) = try_python_prod(s) {
             return Some(parts);
         }
+        if let Some(parts) = try_tracing_fmt(s) {
+            return Some(parts);
+        }
         if let Some(parts) = try_generic(s) {
             return Some(parts);
         }
@@ -543,6 +647,7 @@ impl LogFormatParser for CommonLogParser {
         let mut has_timestamp = false;
         let mut has_level = false;
         let mut has_target = false;
+        let mut has_span = false;
         let mut has_message = false;
 
         for &line in lines {
@@ -555,6 +660,15 @@ impl LogFormatParser for CommonLogParser {
                 }
                 if parts.target.is_some() {
                     has_target = true;
+                }
+                if let Some(ref span) = parts.span {
+                    has_span = true;
+                    for (key, _) in &span.fields {
+                        let dotted = format!("span.{key}");
+                        if seen.insert(dotted.clone()) {
+                            extras.push(dotted);
+                        }
+                    }
                 }
                 if parts.message.is_some() {
                     has_message = true;
@@ -574,6 +688,9 @@ impl LogFormatParser for CommonLogParser {
         }
         if has_level {
             result.push("level".to_string());
+        }
+        if has_span {
+            result.push("span".to_string());
         }
         if has_target {
             result.push("target".to_string());
@@ -974,6 +1091,146 @@ mod tests {
     fn test_name() {
         let parser = CommonLogParser;
         assert_eq!(parser.name(), "common-log");
+    }
+
+    // ── tracing-subscriber span helpers ──────────────────────────────
+
+    #[test]
+    fn test_parse_tracing_span_fields_unquoted() {
+        let fields = parse_tracing_span_fields("method=GET uri=/api/store-settings version=HTTP/1.1");
+        assert_eq!(fields, vec![
+            ("method", "GET"),
+            ("uri", "/api/store-settings"),
+            ("version", "HTTP/1.1"),
+        ]);
+    }
+
+    #[test]
+    fn test_parse_tracing_span_fields_quoted() {
+        let fields = parse_tracing_span_fields(r#"id="0.5" name="payments""#);
+        assert_eq!(fields, vec![("id", "0.5"), ("name", "payments")]);
+    }
+
+    #[test]
+    fn test_parse_tracing_span_fields_empty() {
+        let fields = parse_tracing_span_fields("");
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn test_try_parse_span_prefix_unquoted() {
+        let s = r#"request{method=GET uri=/api/items version=HTTP/1.1}: tower_http: started"#;
+        let (span, rest) = try_parse_span_prefix(s);
+        let span = span.unwrap();
+        assert_eq!(span.name, "request");
+        assert_eq!(span.fields, vec![
+            ("method", "GET"),
+            ("uri", "/api/items"),
+            ("version", "HTTP/1.1"),
+        ]);
+        assert_eq!(rest, "tower_http: started");
+    }
+
+    #[test]
+    fn test_try_parse_span_prefix_quoted() {
+        let s = r#"Actor{id="0.5" name="payments"}: api_server::actors: msg"#;
+        let (span, rest) = try_parse_span_prefix(s);
+        let span = span.unwrap();
+        assert_eq!(span.name, "Actor");
+        assert_eq!(span.fields, vec![("id", "0.5"), ("name", "payments")]);
+        assert_eq!(rest, "api_server::actors: msg");
+    }
+
+    #[test]
+    fn test_try_parse_span_prefix_no_brace() {
+        let (span, rest) = try_parse_span_prefix("tower_http::trace: started");
+        assert!(span.is_none());
+        assert_eq!(rest, "tower_http::trace: started");
+    }
+
+    #[test]
+    fn test_try_parse_span_prefix_no_colon_space_after_brace() {
+        // `}` not followed by `: ` — not a span prefix
+        let (span, rest) = try_parse_span_prefix("something{foo=bar}message");
+        assert!(span.is_none());
+        assert_eq!(rest, "something{foo=bar}message");
+    }
+
+    // ── try_tracing_fmt ───────────────────────────────────────────────
+
+    #[test]
+    fn test_tracing_fmt_request_span() {
+        let line = b"2026-03-05T10:55:16.661990Z DEBUG request{method=GET uri=/api/store-settings version=HTTP/1.1}: tower_http::trace::on_request: started processing request";
+        let parser = CommonLogParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("2026-03-05T10:55:16.661990Z"));
+        assert_eq!(parts.level, Some("DEBUG"));
+        assert_eq!(parts.target, Some("tower_http::trace::on_request"));
+        assert_eq!(parts.message, Some("started processing request"));
+        let span = parts.span.unwrap();
+        assert_eq!(span.name, "request");
+        assert_eq!(span.fields, vec![
+            ("method", "GET"),
+            ("uri", "/api/store-settings"),
+            ("version", "HTTP/1.1"),
+        ]);
+    }
+
+    #[test]
+    fn test_tracing_fmt_actor_span_quoted_fields() {
+        let line = br#"2026-03-05T10:44:59.381757Z DEBUG Actor{id="0.5" name="payments"}: api_server::actors::payment: PaymentMsg::CheckExpiredPix"#;
+        let parser = CommonLogParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.level, Some("DEBUG"));
+        assert_eq!(parts.target, Some("api_server::actors::payment"));
+        assert_eq!(parts.message, Some("PaymentMsg::CheckExpiredPix"));
+        let span = parts.span.unwrap();
+        assert_eq!(span.name, "Actor");
+        assert_eq!(span.fields, vec![("id", "0.5"), ("name", "payments")]);
+    }
+
+    #[test]
+    fn test_tracing_fmt_no_span_still_parses() {
+        // Startup lines without a span still parse via try_generic
+        let line = b"2026-03-05T10:44:59.378731Z INFO  api_server API server listening on 0.0.0.0:3001";
+        let parser = CommonLogParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("2026-03-05T10:44:59.378731Z"));
+        assert_eq!(parts.level, Some("INFO"));
+        assert!(parts.span.is_none());
+    }
+
+    #[test]
+    fn test_collect_field_names_includes_span_dotted() {
+        let parser = CommonLogParser;
+        let lines: Vec<&[u8]> = vec![
+            b"2026-03-05T10:55:16.661990Z DEBUG request{method=GET uri=/api/store-settings version=HTTP/1.1}: tower_http::trace::on_request: started processing request",
+            b"2026-03-05T10:55:16.662071Z DEBUG request{method=GET uri=/api/store-settings version=HTTP/1.1}: api_server::routes::catalog: get_store_settings",
+        ];
+        let names = parser.collect_field_names(&lines);
+        assert!(names.contains(&"span".to_string()));
+        assert!(names.contains(&"span.method".to_string()));
+        assert!(names.contains(&"span.uri".to_string()));
+        assert!(names.contains(&"span.version".to_string()));
+        assert!(names.contains(&"target".to_string()));
+        assert!(names.contains(&"message".to_string()));
+    }
+
+    #[test]
+    fn test_detect_score_mixed_startup_and_span_lines() {
+        // Format detection from startup-only sample should still yield common-log,
+        // and span lines should parse once the parser is applied to the full log.
+        let parser = CommonLogParser;
+        let startup: Vec<&[u8]> = vec![
+            b"2026-03-05T10:44:59.378731Z INFO  api_server SMTP_HOST not set",
+            b"2026-03-05T10:44:59.382274Z INFO  api_server API server listening on 0.0.0.0:3001",
+        ];
+        let score = parser.detect_score(&startup);
+        assert!(score > 0.0, "startup lines should yield positive score");
+
+        // Span lines also parse correctly
+        let span_line = b"2026-03-05T10:55:16.661990Z DEBUG request{method=GET uri=/api/store-settings version=HTTP/1.1}: tower_http::trace::on_request: started processing request";
+        assert!(parser.parse_line(span_line).is_some());
     }
 
     // ── Priority: CommonLogParser should NOT match journalctl lines ──

@@ -13,6 +13,13 @@ use crate::{
     ui::{KeyResult, TabState},
 };
 
+/// Which kind of colours dialog this mode represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorsDialogKind {
+    ValueColors,
+    LevelColors,
+}
+
 /// A single toggleable colour category (leaf node).
 #[derive(Debug, Clone)]
 pub struct ValueColorEntry {
@@ -48,6 +55,7 @@ pub struct ValueColorsMode {
     pub selected: usize,
     /// Snapshot of disabled keys on entry — restored on Esc cancel.
     original_disabled: HashSet<String>,
+    pub kind: ColorsDialogKind,
 }
 
 impl ValueColorsMode {
@@ -57,6 +65,20 @@ impl ValueColorsMode {
             search: String::new(),
             selected: 0,
             original_disabled,
+            kind: ColorsDialogKind::ValueColors,
+        }
+    }
+
+    pub fn new_level_colors(
+        groups: Vec<ValueColorGroup>,
+        original_disabled: HashSet<String>,
+    ) -> Self {
+        ValueColorsMode {
+            groups,
+            search: String::new(),
+            selected: 0,
+            original_disabled,
+            kind: ColorsDialogKind::LevelColors,
         }
     }
 
@@ -106,6 +128,13 @@ impl ValueColorsMode {
         }
     }
 
+    fn make_result(&self, disabled: HashSet<String>) -> KeyResult {
+        match self.kind {
+            ColorsDialogKind::ValueColors => KeyResult::ApplyValueColors(disabled),
+            ColorsDialogKind::LevelColors => KeyResult::ApplyLevelColors(disabled),
+        }
+    }
+
     fn clamp_selected(&mut self) {
         let count = self.visible_rows().len();
         if count == 0 {
@@ -133,10 +162,8 @@ impl Mode for ValueColorsMode {
                 self.selected = 0;
                 return (self, KeyResult::Handled);
             }
-            return (
-                Box::new(NormalMode::default()),
-                KeyResult::ApplyValueColors(self.original_disabled.clone()),
-            );
+            let result = self.make_result(self.original_disabled.clone());
+            return (Box::new(NormalMode::default()), result);
         }
 
         if kb.value_colors.apply.matches(key, modifiers) {
@@ -147,10 +174,8 @@ impl Mode for ValueColorsMode {
                 .filter(|e| !e.enabled)
                 .map(|e| e.key.clone())
                 .collect();
-            return (
-                Box::new(NormalMode::default()),
-                KeyResult::ApplyValueColors(disabled),
-            );
+            let result = self.make_result(disabled);
+            return (Box::new(NormalMode::default()), result);
         }
 
         if kb.navigation.scroll_down.matches(key, modifiers) {
@@ -209,8 +234,12 @@ impl Mode for ValueColorsMode {
     }
 
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let title = match self.kind {
+            ColorsDialogKind::ValueColors => "[VALUE COLORS]  ",
+            ColorsDialogKind::LevelColors => "[LEVEL COLORS]  ",
+        };
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
-            "[VALUE COLORS]  ",
+            title,
             Style::default()
                 .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
@@ -234,10 +263,17 @@ impl Mode for ValueColorsMode {
     }
 
     fn render_state(&self) -> ModeRenderState {
-        ModeRenderState::ValueColors {
-            groups: self.groups.clone(),
-            search: self.search.clone(),
-            selected: self.selected,
+        match self.kind {
+            ColorsDialogKind::ValueColors => ModeRenderState::ValueColors {
+                groups: self.groups.clone(),
+                search: self.search.clone(),
+                selected: self.selected,
+            },
+            ColorsDialogKind::LevelColors => ModeRenderState::LevelColors {
+                groups: self.groups.clone(),
+                search: self.search.clone(),
+                selected: self.selected,
+            },
         }
     }
 }

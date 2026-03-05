@@ -40,6 +40,7 @@ pub struct ExportData<'a> {
     pub parser: Option<&'a dyn LogFormatParser>,
     pub field_layout: &'a FieldLayout,
     pub hidden_fields: &'a HashSet<String>,
+    pub show_keys: bool,
 }
 
 /// Parse raw template text into an `ExportTemplate`.
@@ -267,7 +268,7 @@ fn render_line_content(line_bytes: &[u8], data: &ExportData) -> String {
     if let Some(parser) = data.parser
         && let Some(parts) = parser.parse_line(line_bytes)
     {
-        let cols = apply_field_layout(&parts, data.field_layout, data.hidden_fields);
+        let cols = apply_field_layout(&parts, data.field_layout, data.hidden_fields, data.show_keys);
         if !cols.is_empty() {
             return cols.join(" ");
         }
@@ -404,6 +405,7 @@ mod tests {
             parser: None,
             field_layout: &DEFAULT_LAYOUT,
             hidden_fields: &EMPTY_HIDDEN,
+            show_keys: false,
         }
     }
 
@@ -634,6 +636,7 @@ mod tests {
             parser: Some(parser.as_ref()),
             field_layout: &layout,
             hidden_fields: &hidden,
+            show_keys: false,
         };
         let output = render_export(&simple_template(), &data);
         // Should contain the parsed/formatted output, not raw JSON
@@ -679,6 +682,7 @@ mod tests {
             parser: Some(parser.as_ref()),
             field_layout: &layout,
             hidden_fields: &hidden,
+            show_keys: false,
         };
         let output = render_export(&simple_template(), &data);
         // With only level+message columns, timestamp should NOT be in the output

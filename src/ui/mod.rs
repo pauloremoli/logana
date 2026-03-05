@@ -36,6 +36,7 @@ pub enum KeyResult {
     RestoreSession(Vec<String>),
     DockerAttach(String, String),
     ApplyValueColors(std::collections::HashSet<String>),
+    ApplyLevelColors(std::collections::HashSet<String>),
     CopyToClipboard(String),
     OpenFiles(Vec<String>),
 }
@@ -85,7 +86,9 @@ pub struct TabState {
     pub horizontal_scroll: usize,
     pub search: Search,
     pub command_error: Option<String>,
-    pub level_colors: bool,
+    /// Set of log-level keys whose colour is disabled (e.g. `"trace"`, `"error"`).
+    /// An empty set means all level colours are enabled.
+    pub level_colors_disabled: HashSet<String>,
     pub filtering_enabled: bool,
     pub show_marks_only: bool,
     pub filter_context: Option<usize>,
@@ -105,6 +108,9 @@ pub struct TabState {
     pub detected_format: Option<Box<dyn LogFormatParser>>,
     /// When true, always scroll to the last visible line when new content arrives.
     pub tail_mode: bool,
+    /// When true, structured fields (spans, extra fields) are shown as `key=value`;
+    /// when false (default), only values are shown.
+    pub show_keys: bool,
     /// Whether the mode bar is shown at the bottom.
     pub show_mode_bar: bool,
     /// Whether panel borders (logs, sidebar, mode bar) are drawn.
@@ -132,7 +138,10 @@ impl TabState {
             horizontal_scroll: 0,
             search: Search::new(),
             command_error: None,
-            level_colors: true,
+            level_colors_disabled: ["trace", "debug", "info", "notice"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             filtering_enabled: true,
             show_marks_only: false,
             filter_context: None,
@@ -146,6 +155,7 @@ impl TabState {
             keybindings: Arc::new(Keybindings::default()),
             detected_format,
             tail_mode: false,
+            show_keys: false,
             show_mode_bar: true,
             show_borders: true,
         };
@@ -202,7 +212,7 @@ impl TabState {
             && let Some(parts) = parser.parse_line(bytes)
         {
             let cols =
-                field_layout::apply_field_layout(&parts, &self.field_layout, &self.hidden_fields);
+                field_layout::apply_field_layout(&parts, &self.field_layout, &self.hidden_fields, self.show_keys);
             if !cols.is_empty() {
                 return cols.join(" ");
             }
@@ -282,7 +292,7 @@ impl TabState {
             scroll_offset: self.scroll_offset,
             search_query: self.search.get_pattern().unwrap_or_default().to_string(),
             wrap: self.wrap,
-            level_colors: self.level_colors,
+            level_colors_disabled: self.level_colors_disabled.clone(),
             show_sidebar: self.show_sidebar,
             horizontal_scroll: self.horizontal_scroll,
             marked_lines,
@@ -291,18 +301,20 @@ impl TabState {
             comments,
             show_mode_bar: self.show_mode_bar,
             show_borders: self.show_borders,
+            show_keys: self.show_keys,
         })
     }
 
     pub fn apply_file_context(&mut self, ctx: &FileContext) {
         self.scroll_offset = ctx.scroll_offset;
         self.wrap = ctx.wrap;
-        self.level_colors = ctx.level_colors;
+        self.level_colors_disabled = ctx.level_colors_disabled.clone();
         self.show_sidebar = ctx.show_sidebar;
         self.show_line_numbers = ctx.show_line_numbers;
         self.horizontal_scroll = ctx.horizontal_scroll;
         self.show_mode_bar = ctx.show_mode_bar;
         self.show_borders = ctx.show_borders;
+        self.show_keys = ctx.show_keys;
         if !ctx.marked_lines.is_empty() {
             self.log_manager.set_marks(ctx.marked_lines.clone());
         }
@@ -532,7 +544,9 @@ mod tests {
         assert_eq!(ctx.source_file, "test.log");
         assert_eq!(ctx.scroll_offset, 0);
         assert!(ctx.wrap);
-        assert!(ctx.level_colors);
+        let expected_disabled: std::collections::HashSet<String> =
+            ["trace", "debug", "info", "notice"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(ctx.level_colors_disabled, expected_disabled);
         assert!(ctx.show_sidebar);
         assert!(ctx.show_line_numbers);
     }
@@ -548,12 +562,17 @@ mod tests {
     async fn test_apply_file_context_full() {
         let mut tab =
             make_tab_with_source(&["line1", "line2", "line3", "line4", "line5"], "test.log").await;
+        let all_disabled: std::collections::HashSet<String> =
+            ["trace", "debug", "info", "notice", "warning", "error", "fatal"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         let ctx = FileContext {
             source_file: "test.log".to_string(),
             scroll_offset: 3,
             search_query: "line".to_string(),
             wrap: false,
-            level_colors: false,
+            level_colors_disabled: all_disabled.clone(),
             show_sidebar: false,
             horizontal_scroll: 5,
             marked_lines: vec![0, 2],
@@ -565,11 +584,12 @@ mod tests {
             }],
             show_mode_bar: false,
             show_borders: false,
+            show_keys: false,
         };
         tab.apply_file_context(&ctx);
         assert_eq!(tab.scroll_offset, 3);
         assert!(!tab.wrap);
-        assert!(!tab.level_colors);
+        assert_eq!(tab.level_colors_disabled, all_disabled);
         assert!(!tab.show_sidebar);
         assert!(!tab.show_line_numbers);
         assert_eq!(tab.horizontal_scroll, 5);
@@ -586,7 +606,7 @@ mod tests {
             scroll_offset: 0,
             search_query: String::new(),
             wrap: true,
-            level_colors: true,
+            level_colors_disabled: HashSet::new(),
             show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
@@ -595,10 +615,11 @@ mod tests {
             comments: vec![],
             show_mode_bar: true,
             show_borders: true,
+            show_keys: false,
         };
         tab.apply_file_context(&ctx);
         assert!(tab.wrap);
-        assert!(tab.level_colors);
+        assert!(tab.level_colors_disabled.is_empty());
         assert!(tab.show_sidebar);
         assert!(tab.show_line_numbers);
         assert_eq!(tab.scroll_offset, 0);
@@ -735,7 +756,7 @@ mod tests {
             scroll_offset: 0,
             search_query: String::new(),
             wrap: true,
-            level_colors: true,
+            level_colors_disabled: HashSet::new(),
             show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
@@ -744,6 +765,7 @@ mod tests {
             comments: vec![],
             show_mode_bar: false,
             show_borders: true,
+            show_keys: false,
         };
         tab.apply_file_context(&ctx);
         assert!(!tab.show_mode_bar);
@@ -757,7 +779,7 @@ mod tests {
             scroll_offset: 0,
             search_query: String::new(),
             wrap: true,
-            level_colors: true,
+            level_colors_disabled: HashSet::new(),
             show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
@@ -766,6 +788,7 @@ mod tests {
             comments: vec![],
             show_mode_bar: true,
             show_borders: false,
+            show_keys: false,
         };
         tab.apply_file_context(&ctx);
         assert!(!tab.show_borders);

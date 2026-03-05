@@ -20,7 +20,9 @@ use crate::auto_complete::{
     complete_color, complete_file_path, extract_color_partial, find_command_completions,
 };
 use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
-use crate::filters::{CURRENT_SEARCH_STYLE_ID, SEARCH_STYLE_ID, render_line};
+use crate::filters::{
+    CURRENT_SEARCH_STYLE_ID, FilterManager, MatchCollector, SEARCH_STYLE_ID, render_line,
+};
 use crate::theme::complete_theme;
 use crate::types::{FilterType, LogLevel};
 use crate::value_colors::colorize_known_values;
@@ -120,12 +122,18 @@ impl App {
             Vec<crate::mode::value_colors_mode::ValueColorGroup>,
             String,
             usize,
+            &'static str,
         )> = match &render_state {
             ModeRenderState::ValueColors {
                 groups,
                 search,
                 selected,
-            } => Some((groups.clone(), search.clone(), *selected)),
+            } => Some((groups.clone(), search.clone(), *selected, "Value Colors")),
+            ModeRenderState::LevelColors {
+                groups,
+                search,
+                selected,
+            } => Some((groups.clone(), search.clone(), *selected, "Level Colors")),
             _ => None,
         };
         let confirm_open_dir: Option<(String, Vec<String>)> = match &render_state {
@@ -265,9 +273,9 @@ impl App {
             self.render_docker_select_popup(frame, &containers, selected, error.as_deref());
         }
 
-        // Value colors toggle popup.
-        if let Some((groups, search, selected)) = value_colors_state {
-            self.render_value_colors_popup(frame, &groups, &search, selected);
+        // Value colors / level colors popup.
+        if let Some((groups, search, selected, title)) = value_colors_state {
+            self.render_value_colors_popup(frame, &groups, &search, selected, title);
         }
 
         // Keybindings help popup renders over everything except the loading bar.
@@ -320,6 +328,7 @@ impl App {
         // rendering closure can use them without re-borrowing `self`.
         let hidden_fields = self.tabs[self.active_tab].hidden_fields.clone();
         let field_layout = self.tabs[self.active_tab].field_layout.clone();
+        let show_keys = self.tabs[self.active_tab].show_keys;
 
         // Clamp scroll_offset
         if num_visible == 0 {
@@ -347,6 +356,7 @@ impl App {
                     parser,
                     &field_layout,
                     &hidden_fields,
+                    show_keys,
                 )
             };
 
@@ -410,15 +420,24 @@ impl App {
         self.tabs[self.active_tab].viewport_offset = new_viewport;
         let start = new_viewport;
 
-        let (filter_manager, mut styles, date_filter_styles) = self.tabs[self.active_tab]
-            .log_manager
-            .build_filter_manager();
+        let (filter_manager, mut styles, date_filter_styles) =
+            if self.tabs[self.active_tab].filtering_enabled {
+                self.tabs[self.active_tab].log_manager.build_filter_manager()
+            } else {
+                (FilterManager::empty(), Vec::new(), Vec::new())
+            };
         let search_style = Style::default()
             .fg(self.theme.search_fg)
             .bg(self.theme.text_highlight_fg);
         let current_search_style = Style::default()
             .fg(self.theme.text_highlight_fg)
             .bg(self.theme.search_fg);
+        // Reserve style slots for process colors right after filter styles.
+        let process_style_start = styles.len() as u8;
+        let process_colors_len = self.theme.process_colors.len();
+        for &color in &self.theme.process_colors {
+            styles.push(Style::default().fg(color));
+        }
         styles.resize(256, Style::default());
         styles[255] = search_style;
         styles[254] = current_search_style;
@@ -446,7 +465,7 @@ impl App {
             .cloned();
 
         let theme = &self.theme;
-        let level_colors = self.tabs[self.active_tab].level_colors;
+        let level_colors_disabled = &self.tabs[self.active_tab].level_colors_disabled;
         let current_scroll = self.tabs[self.active_tab].scroll_offset;
         // Pre-compute visual selection range (indices into visible_indices space).
         let visual_range: Option<(usize, usize)> = visual_anchor.map(|anchor| {
@@ -508,14 +527,30 @@ impl App {
                     .unwrap_or(false);
 
                 let mut base_style = Style::default().fg(theme.text);
-                if level_colors {
+                if level_colors_disabled.len() < 7 {
+                    // At least one level has colour enabled.
                     match LogLevel::detect_from_bytes(line_bytes) {
-                        LogLevel::Trace => base_style = base_style.fg(theme.trace_fg),
-                        LogLevel::Debug => base_style = base_style.fg(theme.debug_fg),
-                        LogLevel::Notice => base_style = base_style.fg(theme.notice_fg),
-                        LogLevel::Warning => base_style = base_style.fg(theme.warning_fg),
-                        LogLevel::Error => base_style = base_style.fg(theme.error_fg),
-                        LogLevel::Fatal => base_style = base_style.fg(theme.fatal_fg),
+                        LogLevel::Trace if !level_colors_disabled.contains("trace") => {
+                            base_style = base_style.fg(theme.trace_fg)
+                        }
+                        LogLevel::Debug if !level_colors_disabled.contains("debug") => {
+                            base_style = base_style.fg(theme.debug_fg)
+                        }
+                        LogLevel::Info if !level_colors_disabled.contains("info") => {
+                            base_style = base_style.fg(theme.info_fg)
+                        }
+                        LogLevel::Notice if !level_colors_disabled.contains("notice") => {
+                            base_style = base_style.fg(theme.notice_fg)
+                        }
+                        LogLevel::Warning if !level_colors_disabled.contains("warning") => {
+                            base_style = base_style.fg(theme.warning_fg)
+                        }
+                        LogLevel::Error if !level_colors_disabled.contains("error") => {
+                            base_style = base_style.fg(theme.error_fg)
+                        }
+                        LogLevel::Fatal if !level_colors_disabled.contains("fatal") => {
+                            base_style = base_style.fg(theme.fatal_fg)
+                        }
                         _ => {}
                     }
                 }
@@ -527,7 +562,7 @@ impl App {
                 }
 
                 let render_style = if is_current {
-                    Style::default().fg(theme.cursor_fg).bg(theme.border)
+                    Style::default().fg(theme.cursor_fg).bg(theme.cursor_bg)
                 } else {
                     base_style
                 };
@@ -543,7 +578,7 @@ impl App {
                     .as_ref()
                     .and_then(|parser| parser.parse_line(line_bytes))
                     .map(|parts| {
-                        let cols = apply_field_layout(&parts, &field_layout, &hidden_fields);
+                        let cols = apply_field_layout(&parts, &field_layout, &hidden_fields, show_keys);
 
                         // Determine which occurrence index (if any) is current for this line.
                         let current_occ = current_search_info
@@ -569,7 +604,32 @@ impl App {
                             // Evaluate filters AND search against the rendered string so
                             // all spans land at the correct visible positions.
                             let rendered = cols.join(" ");
-                            let mut collector = filter_manager.evaluate_line(rendered.as_bytes());
+                            let mut collector = MatchCollector::new(rendered.as_bytes());
+                            // Colour the target + pid columns using the per-process palette.
+                            if process_colors_len > 0
+                                && !theme.value_colors.is_disabled("process_colors")
+                            {
+                                if let Some(target) = parts.target {
+                                    let idx = stable_hash(target) % process_colors_len;
+                                    let sid = process_style_start.saturating_add(idx as u8);
+                                    if let Some((s, e)) = find_col_range(&cols, target) {
+                                        collector.push(s, e, sid);
+                                    }
+                                    // Also colour the pid column so that formats like
+                                    // journalctl (unit[pid]) show both name and id coloured.
+                                    if let Some((_, pid_val)) =
+                                        parts.extra_fields.iter().find(|(k, _)| *k == "pid")
+                                    {
+                                        let pid_sid = process_style_start.saturating_add(
+                                            (stable_hash(target) % process_colors_len) as u8,
+                                        );
+                                        if let Some((s, e)) = find_col_range(&cols, pid_val) {
+                                            collector.push(s, e, pid_sid);
+                                        }
+                                    }
+                                }
+                            }
+                            filter_manager.evaluate_into(&mut collector);
                             // Apply date filter styles: timestamp-only or full line.
                             if let Some(ts) = parts.timestamp {
                                 for dfs in &date_filter_styles {
@@ -760,7 +820,7 @@ impl App {
                 .style(
                     Style::default()
                         .fg(self.theme.cursor_fg)
-                        .bg(self.theme.border),
+                        .bg(self.theme.cursor_bg),
                 )
                 .wrap(Wrap { trim: false });
             let input_area = chunks[chunk_idx];
@@ -938,7 +998,7 @@ impl App {
                 .style(
                     Style::default()
                         .fg(self.theme.cursor_fg)
-                        .bg(self.theme.border),
+                        .bg(self.theme.cursor_bg),
                 )
                 .wrap(Wrap { trim: false });
             let input_area = chunks[chunk_idx];
@@ -954,7 +1014,7 @@ impl App {
                 .bg(self.theme.root_bg);
             let highlight_style = Style::default()
                 .fg(self.theme.root_bg)
-                .bg(self.theme.border);
+                .bg(self.theme.cursor_bg);
 
             if let Some(err) = &self.tabs[self.active_tab].command_error {
                 let error_paragraph = Paragraph::new(err.as_str())
@@ -970,7 +1030,7 @@ impl App {
                         .flat_map(|(i, name)| {
                             let color = name.parse::<Color>().unwrap_or(Color::White);
                             let style = if completion_index == Some(i) {
-                                Style::default().fg(color).bg(self.theme.border)
+                                Style::default().fg(color).bg(self.theme.cursor_bg)
                             } else {
                                 Style::default().fg(color).bg(self.theme.root_bg)
                             };
@@ -1218,6 +1278,24 @@ impl App {
     }
 }
 
+/// djb2-style hash for stable per-process color assignment.
+fn stable_hash(s: &str) -> usize {
+    s.bytes()
+        .fold(5381usize, |acc, b| acc.wrapping_mul(33).wrapping_add(b as usize))
+}
+
+/// Find the byte range of `target` within the space-joined rendered column string.
+fn find_col_range(cols: &[String], target: &str) -> Option<(usize, usize)> {
+    let mut offset = 0;
+    for col in cols {
+        if col.as_str() == target {
+            return Some((offset, offset + col.len()));
+        }
+        offset += col.len() + 1; // +1 for the space separator
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1416,7 +1494,9 @@ mod tests {
             "ERROR error occurred",
         ])
         .await;
-        assert!(app.tabs[0].level_colors);
+        let default_disabled: std::collections::HashSet<String> =
+            ["trace", "debug", "info", "notice"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(app.tabs[0].level_colors_disabled, default_disabled);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1430,7 +1510,7 @@ mod tests {
             "ERROR error occurred",
         ])
         .await;
-        app.tabs[0].level_colors = false;
+        app.tabs[0].level_colors_disabled = ["trace", "debug", "info", "notice", "warning", "error", "fatal"].iter().map(|s| s.to_string()).collect();
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1654,5 +1734,25 @@ mod tests {
             .search("something", &visible, |li| texts.get(&li).cloned());
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[test]
+    fn test_stable_hash_consistent() {
+        assert_eq!(stable_hash("my_service"), stable_hash("my_service"));
+        assert_ne!(stable_hash("service_a"), stable_hash("service_b"));
+    }
+
+    #[test]
+    fn test_find_col_range_found() {
+        let cols = vec!["timestamp".to_string(), "INFO".to_string(), "my_crate".to_string()];
+        assert_eq!(find_col_range(&cols, "INFO"), Some((10, 14)));
+        assert_eq!(find_col_range(&cols, "my_crate"), Some((15, 23)));
+        assert_eq!(find_col_range(&cols, "timestamp"), Some((0, 9)));
+    }
+
+    #[test]
+    fn test_find_col_range_not_found() {
+        let cols = vec!["timestamp".to_string(), "INFO".to_string()];
+        assert_eq!(find_col_range(&cols, "missing"), None);
     }
 }

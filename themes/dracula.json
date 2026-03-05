@@ -1,11 +1,13 @@
 {
   "root_bg": "#282a36",
   "border": "#6272a4",
+  "cursor_bg": "#6272a4",
   "border_title": "#f8f8f2",
   "text": "#f8f8f2",
   "text_highlight_fg": "#ffb86c",
   "text_highlight_bg": "#7a4a10",
   "cursor_fg": "#1c1c1c",
+  "info_fg":    "#f8f8f2",
   "error_fg": "#ff5555",
   "warning_fg": "#f1fa8c",
   "search_fg": "#1c1c1c",

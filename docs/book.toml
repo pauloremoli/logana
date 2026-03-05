@@ -1,0 +1,16 @@
+[book]
+title = "logana"
+description = "A fast, keyboard-driven terminal log viewer and analyzer"
+authors = ["Paulo Remoli"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/pauloremoli/logana"
+edit-url-template = "https://github.com/pauloremoli/logana/edit/main/docs/src/{path}"
+
+[output.html.fold]
+enable = true
+level = 1

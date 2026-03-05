@@ -256,6 +256,7 @@ impl App {
         groups: &[crate::mode::value_colors_mode::ValueColorGroup],
         search: &str,
         selected: usize,
+        title: &str,
     ) {
         use crate::auto_complete::fuzzy_match as fmatch;
         use crate::mode::value_colors_mode::ValueColorRow;
@@ -306,7 +307,7 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.theme.border_title))
-            .title(" Value Colors ")
+            .title(format!(" {} ", title))
             .title_style(
                 Style::default()
                     .fg(self.theme.text_highlight_fg)
@@ -1167,7 +1168,7 @@ mod tests {
             scroll_offset: 0,
             search_query: String::new(),
             wrap: true,
-            level_colors: true,
+            level_colors_disabled: std::collections::HashSet::new(),
             show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
@@ -1176,6 +1177,7 @@ mod tests {
             comments: vec![],
             show_mode_bar: true,
             show_borders: true,
+            show_keys: false,
         };
         app.tabs[0].mode = Box::new(ConfirmRestoreMode { context });
         let mut terminal = make_terminal();
