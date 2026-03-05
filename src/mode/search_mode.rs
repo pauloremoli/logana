@@ -32,7 +32,9 @@ impl Mode for SearchMode {
         if kb.confirm.matches(key, modifiers) {
             let visible = tab.visible_indices.clone();
             let texts = tab.collect_display_texts(&visible);
-            let _ = tab.search.search(&self.input, &visible, |li| texts.get(&li).cloned());
+            let _ = tab
+                .search
+                .search(&self.input, &visible, |li| texts.get(&li).cloned());
             tab.search.set_forward(self.forward);
             // Navigate to the first match relative to the current line.
             let current_line_idx = tab
@@ -64,7 +66,9 @@ impl Mode for SearchMode {
                     } else {
                         let visible = tab.visible_indices.clone();
                         let texts = tab.collect_display_texts(&visible);
-                        let _ = tab.search.search(&self.input, &visible, |li| texts.get(&li).cloned());
+                        let _ = tab
+                            .search
+                            .search(&self.input, &visible, |li| texts.get(&li).cloned());
                         self.seed_incremental_position(tab);
                     }
                     (self, KeyResult::Handled)
@@ -73,7 +77,9 @@ impl Mode for SearchMode {
                     self.input.push(c);
                     let visible = tab.visible_indices.clone();
                     let texts = tab.collect_display_texts(&visible);
-                    let _ = tab.search.search(&self.input, &visible, |li| texts.get(&li).cloned());
+                    let _ = tab
+                        .search
+                        .search(&self.input, &visible, |li| texts.get(&li).cloned());
                     self.seed_incremental_position(tab);
                     (self, KeyResult::Handled)
                 }
@@ -218,7 +224,10 @@ mod tests {
         assert!(tab.search.get_pattern().is_some());
         let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(!matches!(mode2.render_state(), ModeRenderState::Search { .. }));
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::Search { .. }
+        ));
         assert!(tab.search.get_pattern().is_none());
         assert!(tab.search.get_results().is_empty());
     }

@@ -440,7 +440,10 @@ mod tests {
         let mode = ConfirmRestoreMode {
             context: default_context(),
         };
-        assert!(matches!(mode.render_state(), ModeRenderState::ConfirmRestore));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::ConfirmRestore
+        ));
     }
 
     #[tokio::test]

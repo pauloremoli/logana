@@ -344,7 +344,12 @@ impl App {
                 );
                 return Ok(true);
             }
-            Some(Commands::DateFilter { expr, fg, bg, line_mode }) => {
+            Some(Commands::DateFilter {
+                expr,
+                fg,
+                bg,
+                line_mode,
+            }) => {
                 let tab = &self.tabs[self.active_tab];
                 if tab.detected_format.is_none() {
                     return Err(

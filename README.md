@@ -338,6 +338,3 @@ Place custom themes (JSON) in `~/.config/logana/themes/`. Colors accept hex (`"#
 
 ---
 
-## License
-
-MIT

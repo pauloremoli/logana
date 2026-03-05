@@ -261,5 +261,4 @@ mod tests {
         let parser = detect_format(&lines).unwrap();
         assert_eq!(parser.name(), "journalctl");
     }
-
 }

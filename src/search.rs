@@ -106,8 +106,10 @@ impl Search {
             } else {
                 self.current_result_index -= 1;
             }
-            self.current_occurrence_index =
-                self.results[self.current_result_index].matches.len().saturating_sub(1);
+            self.current_occurrence_index = self.results[self.current_result_index]
+                .matches
+                .len()
+                .saturating_sub(1);
         }
         Some(&self.results[self.current_result_index])
     }
@@ -201,8 +203,10 @@ impl Search {
             } else {
                 self.current_result_index = pos - 1;
             }
-            self.current_occurrence_index =
-                self.results[self.current_result_index].matches.len().saturating_sub(1);
+            self.current_occurrence_index = self.results[self.current_result_index]
+                .matches
+                .len()
+                .saturating_sub(1);
         } else {
             // pos = index of first result with line_idx >= current line.
             // Position cursor at pos so previous_match() retreats to pos-1.
@@ -491,8 +495,8 @@ mod tests {
         search.set_forward(true);
         // start at result 0 (line 0)
         assert_eq!(search.get_current_match().unwrap().line_idx, 0);
-        assert_eq!(search.go_next().unwrap().line_idx, 2);  // advances
-        assert_eq!(search.go_prev().unwrap().line_idx, 0);  // retreats
+        assert_eq!(search.go_next().unwrap().line_idx, 2); // advances
+        assert_eq!(search.go_prev().unwrap().line_idx, 0); // retreats
         Ok(())
     }
 

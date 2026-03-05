@@ -22,7 +22,10 @@ static BUNDLED_THEMES: &[(&str, &str)] = &[
     ("atomic", include_str!("../themes/atomic.json")),
     ("dracula", include_str!("../themes/dracula.json")),
     ("gruvbox-dark", include_str!("../themes/gruvbox-dark.json")),
-    ("jandedobbeleer", include_str!("../themes/jandedobbeleer.json")),
+    (
+        "jandedobbeleer",
+        include_str!("../themes/jandedobbeleer.json"),
+    ),
     ("monokai", include_str!("../themes/monokai.json")),
     ("nord", include_str!("../themes/nord.json")),
     ("paradox", include_str!("../themes/paradox.json")),
@@ -450,8 +453,10 @@ impl Theme {
     }
 
     fn list_available_themes_from(config_dir: Option<&Path>) -> Vec<String> {
-        let mut set: std::collections::HashSet<String> =
-            BUNDLED_THEMES.iter().map(|(name, _)| name.to_string()).collect();
+        let mut set: std::collections::HashSet<String> = BUNDLED_THEMES
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
 
         let mut add_from_dir = |dir: &Path| {
             if let Ok(entries) = std::fs::read_dir(dir) {

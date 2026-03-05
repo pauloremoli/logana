@@ -201,7 +201,8 @@ impl TabState {
         if let Some(parser) = &self.detected_format
             && let Some(parts) = parser.parse_line(bytes)
         {
-            let cols = field_layout::apply_field_layout(&parts, &self.field_layout, &self.hidden_fields);
+            let cols =
+                field_layout::apply_field_layout(&parts, &self.field_layout, &self.hidden_fields);
             if !cols.is_empty() {
                 return cols.join(" ");
             }
@@ -212,8 +213,14 @@ impl TabState {
     /// Build a lookup map of display text for each of the given `indices`.
     /// Collecting up-front allows callers to pass the map into `Search::search`
     /// without conflicting borrows on `self.search`.
-    pub fn collect_display_texts(&self, indices: &[usize]) -> std::collections::HashMap<usize, String> {
-        indices.iter().map(|&li| (li, self.get_display_text(li))).collect()
+    pub fn collect_display_texts(
+        &self,
+        indices: &[usize],
+    ) -> std::collections::HashMap<usize, String> {
+        indices
+            .iter()
+            .map(|&li| (li, self.get_display_text(li)))
+            .collect()
     }
 
     pub fn scroll_to_line_idx(&mut self, line_idx: usize) {
@@ -807,4 +814,3 @@ mod tests {
         assert_eq!(tab.visible_indices, vec![0, 2]);
     }
 }
-

@@ -444,7 +444,10 @@ mod tests {
     #[test]
     fn test_mode_bar_content_contains_comment() {
         let mode = CommentMode::new(vec![0]);
-        assert!(matches!(mode.render_state(), ModeRenderState::Comment { .. }));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::Comment { .. }
+        ));
     }
 
     // ── Edit mode tests ─────────────────────────────────────────────────

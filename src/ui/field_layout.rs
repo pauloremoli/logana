@@ -452,9 +452,15 @@ mod tests {
     fn test_effective_row_count_no_parser_uses_raw_bytes() {
         let hidden = HashSet::new();
         let layout = FieldLayout::default();
-        assert_eq!(effective_row_count(b"hello world", 80, None, &layout, &hidden), 1);
+        assert_eq!(
+            effective_row_count(b"hello world", 80, None, &layout, &hidden),
+            1
+        );
         // ceil(11/5) = 3
-        assert_eq!(effective_row_count(b"hello world", 5, None, &layout, &hidden), 3);
+        assert_eq!(
+            effective_row_count(b"hello world", 5, None, &layout, &hidden),
+            3
+        );
     }
 
     #[test]
@@ -468,7 +474,10 @@ mod tests {
         assert_eq!(line_row_count(json, 20), 5);
         // Structured render is much shorter; effective_row_count should be < 5.
         let result = effective_row_count(json, 20, Some(&parser), &layout, &hidden);
-        assert!(result < 5, "structured rendering should produce fewer rows than raw bytes");
+        assert!(
+            result < 5,
+            "structured rendering should produce fewer rows than raw bytes"
+        );
     }
 
     #[test]

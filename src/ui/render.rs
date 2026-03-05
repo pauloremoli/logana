@@ -41,15 +41,15 @@ impl App {
         // avoiding holding a borrow over the rest of rendering.
         let render_state = self.tabs[self.active_tab].mode.render_state();
 
-        let persistent_pattern: Option<String> =
-            if matches!(render_state, ModeRenderState::Normal) {
-                self.tabs[self.active_tab]
-                    .search
-                    .get_pattern()
-                    .map(|p| p.to_string())
-            } else {
-                None
-            };
+        let persistent_pattern: Option<String> = if matches!(render_state, ModeRenderState::Normal)
+        {
+            self.tabs[self.active_tab]
+                .search
+                .get_pattern()
+                .map(|p| p.to_string())
+        } else {
+            None
+        };
         let has_input_bar = matches!(
             render_state,
             ModeRenderState::Command { .. } | ModeRenderState::Search { .. }
@@ -431,7 +431,9 @@ impl App {
             let ri = self.tabs[self.active_tab].search.get_current_match_index();
             Some((
                 search_results[ri].line_idx,
-                self.tabs[self.active_tab].search.get_current_occurrence_index(),
+                self.tabs[self.active_tab]
+                    .search
+                    .get_current_occurrence_index(),
             ))
         };
         let search_map: HashMap<usize, &crate::types::SearchResult> =
@@ -736,8 +738,7 @@ impl App {
             // content_length = max_scroll ensures position/content_length == 1.0
             // when at the last entry, so the thumb reaches the bottom of the track.
             let max_scroll = num_visible.saturating_sub(visible_height);
-            let mut scrollbar_state = ScrollbarState::new(max_scroll.max(1))
-                .position(start);
+            let mut scrollbar_state = ScrollbarState::new(max_scroll.max(1)).position(start);
             frame.render_stateful_widget(
                 Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
                 logs_area,
@@ -756,7 +757,11 @@ impl App {
         if let Some((input_str, forward, is_active)) = search_input {
             let prefix = if forward { "/" } else { "?" };
             let search_line = Paragraph::new(format!("{}{}", prefix, input_str))
-                .style(Style::default().fg(self.theme.cursor_fg).bg(self.theme.border))
+                .style(
+                    Style::default()
+                        .fg(self.theme.cursor_fg)
+                        .bg(self.theme.border),
+                )
                 .wrap(Wrap { trim: false });
             let input_area = chunks[chunk_idx];
             frame.render_widget(search_line, input_area);
@@ -775,7 +780,9 @@ impl App {
                 } else if total == 0 {
                     "  no matches".to_string()
                 } else {
-                    let current = self.tabs[self.active_tab].search.get_current_occurrence_number();
+                    let current = self.tabs[self.active_tab]
+                        .search
+                        .get_current_occurrence_number();
                     format!("  match {} / {}", current, total)
                 }
             } else {
@@ -928,7 +935,11 @@ impl App {
         if let Some((input_text, cursor_pos)) = command_input {
             let input_prefix = ":";
             let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
-                .style(Style::default().fg(self.theme.cursor_fg).bg(self.theme.border))
+                .style(
+                    Style::default()
+                        .fg(self.theme.cursor_fg)
+                        .bg(self.theme.border),
+                )
                 .wrap(Wrap { trim: false });
             let input_area = chunks[chunk_idx];
             frame.render_widget(command_line, input_area);
@@ -1638,7 +1649,9 @@ mod tests {
         let visible = app.tabs[0].visible_indices.clone();
         let tab = &mut app.tabs[0];
         let texts = tab.collect_display_texts(&visible);
-        let _ = tab.search.search("something", &visible, |li| texts.get(&li).cloned());
+        let _ = tab
+            .search
+            .search("something", &visible, |li| texts.get(&li).cloned());
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }

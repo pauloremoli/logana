@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use ratatui::style::Style;
 
+use crate::date_filter::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
 use crate::db::{Database, FilterStore};
 use crate::file_reader::FileReader;
-use crate::date_filter::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
 use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter};
 use crate::types::{ColorConfig, Comment, FilterDef, FilterType, parse_color};
 
@@ -396,7 +396,11 @@ impl LogManager {
         // Reserve the last slot for search highlights (StyleId = styles.len()).
         // The caller appends the search style.
 
-        (FilterManager::new(filters, has_include), styles, date_filter_styles)
+        (
+            FilterManager::new(filters, has_include),
+            styles,
+            date_filter_styles,
+        )
     }
 
     // ── File hash ────────────────────────────────────────────────────────────

@@ -296,7 +296,10 @@ mod tests {
             anchor: 0,
             count: None,
         };
-        assert!(matches!(mode.render_state(), ModeRenderState::VisualLine { .. }));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::VisualLine { .. }
+        ));
     }
 
     #[test]
