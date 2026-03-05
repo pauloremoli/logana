@@ -12,7 +12,7 @@ Open a file, pipe stdin, or stream Docker containers — logana auto-detects the
 
 ## Features
 
-- **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, nginx, Apache, dmesg, Kubernetes CRI, and more
+- **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, and more
 - **Real-time filtering** — include/exclude patterns (literal or regex), date-range filters, instant preview
 - **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; per-file restore on reopen
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; show/hide/reorder per session
@@ -37,10 +37,6 @@ Detected automatically on open — no flags or config required:
 | Common / Combined Log | Apache access, nginx access |
 | Logfmt | Go `slog`, Heroku, Grafana Loki |
 | Common log family | env_logger, tracing fmt, logback, log4j2, Spring Boot, Python logging, loguru, structlog |
-| Web error | nginx error log, Apache 2.4 error log |
-| dmesg | Linux kernel ring buffer |
-| Kubernetes CRI | Container Runtime Interface log format |
-
 ---
 
 ## Installation

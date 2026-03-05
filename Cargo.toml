@@ -11,6 +11,12 @@ keywords = ["log", "tui", "viewer", "terminal", "analyzer"]
 categories = ["command-line-utilities", "development-tools::debugging"]
 exclude = [".github", "pkg"]
 
+[package.metadata.wix]
+upgrade-guid = "40A718EC-7645-458F-A8AB-6DE8BC5A8183"
+path-guid = "0D696C66-ABEF-4551-A553-0530BA66BEC7"
+license = false
+eula = false
+
 [dependencies]
 anyhow            = { version = "1.0",    default-features = false, features = ["std"] }
 clap              = { version = "4.5",    default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
@@ -41,17 +47,7 @@ tempfile = "3.10"
 [profile.release]
 debug = true
 
-[workspace.metadata.dist]
-cargo-dist-version = "0.28.0"
-ci = ["github"]
-installers = ["shell", "powershell", "homebrew"]
-tap = "pauloremoli/homebrew-logana"
-publish-jobs = ["homebrew"]
-targets = [
-  "x86_64-unknown-linux-gnu",
-  "aarch64-unknown-linux-gnu",
-  "x86_64-apple-darwin",
-  "aarch64-apple-darwin",
-  "x86_64-pc-windows-msvc",
-]
-pr-run-mode = "plan"
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
