@@ -108,6 +108,8 @@ pub struct TabState {
     pub detected_format: Option<Box<dyn LogFormatParser>>,
     /// When true, always scroll to the last visible line when new content arrives.
     pub tail_mode: bool,
+    /// When true, the format parser is bypassed and lines are shown as raw bytes.
+    pub raw_mode: bool,
     /// When true, structured fields (spans, extra fields) are shown as `key=value`;
     /// when false (default), only values are shown.
     pub show_keys: bool,
@@ -155,6 +157,7 @@ impl TabState {
             keybindings: Arc::new(Keybindings::default()),
             detected_format,
             tail_mode: false,
+            raw_mode: false,
             show_keys: false,
             show_mode_bar: true,
             show_borders: true,
@@ -302,6 +305,7 @@ impl TabState {
             show_mode_bar: self.show_mode_bar,
             show_borders: self.show_borders,
             show_keys: self.show_keys,
+            raw_mode: self.raw_mode,
         })
     }
 
@@ -315,6 +319,7 @@ impl TabState {
         self.show_mode_bar = ctx.show_mode_bar;
         self.show_borders = ctx.show_borders;
         self.show_keys = ctx.show_keys;
+        self.raw_mode = ctx.raw_mode;
         if !ctx.marked_lines.is_empty() {
             self.log_manager.set_marks(ctx.marked_lines.clone());
         }
@@ -585,6 +590,7 @@ mod tests {
             show_mode_bar: false,
             show_borders: false,
             show_keys: false,
+            raw_mode: false,
         };
         tab.apply_file_context(&ctx);
         assert_eq!(tab.scroll_offset, 3);
@@ -616,6 +622,7 @@ mod tests {
             show_mode_bar: true,
             show_borders: true,
             show_keys: false,
+            raw_mode: false,
         };
         tab.apply_file_context(&ctx);
         assert!(tab.wrap);
@@ -766,6 +773,7 @@ mod tests {
             show_mode_bar: false,
             show_borders: true,
             show_keys: false,
+            raw_mode: false,
         };
         tab.apply_file_context(&ctx);
         assert!(!tab.show_mode_bar);
@@ -789,6 +797,7 @@ mod tests {
             show_mode_bar: true,
             show_borders: false,
             show_keys: false,
+            raw_mode: false,
         };
         tab.apply_file_context(&ctx);
         assert!(!tab.show_borders);

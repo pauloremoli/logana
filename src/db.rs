@@ -58,6 +58,8 @@ pub struct FileContext {
     pub show_mode_bar: bool,
     pub show_borders: bool,
     pub show_keys: bool,
+    /// When true, the format parser is bypassed and lines are shown as raw bytes.
+    pub raw_mode: bool,
 }
 
 #[async_trait]
@@ -153,6 +155,13 @@ impl Database {
                 .await?;
         }
 
+        if version < 4 {
+            self.migrate_to_v4().await?;
+            sqlx::query("PRAGMA user_version = 4")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -232,6 +241,16 @@ impl Database {
         .await
         .ok();
 
+        Ok(())
+    }
+
+    async fn migrate_to_v4(&self) -> Result<()> {
+        sqlx::query(
+            "ALTER TABLE file_context ADD COLUMN raw_mode INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&self.pool)
+        .await
+        .ok(); // column may already exist on fresh DBs
         Ok(())
     }
 }
@@ -490,8 +509,8 @@ impl FileContextStore for Database {
         // Also keep the legacy `level_colors` column up-to-date for any old readers.
         let level_colors_legacy = ctx.level_colors_disabled.is_empty() as i32;
         sqlx::query(
-            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled, raw_mode)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_file) DO UPDATE SET
                 scroll_offset = excluded.scroll_offset,
                 search_query = excluded.search_query,
@@ -506,7 +525,8 @@ impl FileContextStore for Database {
                 show_status_bar = excluded.show_status_bar,
                 show_borders = excluded.show_borders,
                 show_keys = excluded.show_keys,
-                level_colors_disabled = excluded.level_colors_disabled",
+                level_colors_disabled = excluded.level_colors_disabled,
+                raw_mode = excluded.raw_mode",
         )
         .bind(&ctx.source_file)
         .bind(ctx.scroll_offset as i64)
@@ -523,6 +543,7 @@ impl FileContextStore for Database {
         .bind(ctx.show_borders as i32)
         .bind(ctx.show_keys as i32)
         .bind(&level_colors_disabled_json)
+        .bind(ctx.raw_mode as i32)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -530,7 +551,7 @@ impl FileContextStore for Database {
 
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
         let row = sqlx::query(
-            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled
+            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled, raw_mode
              FROM file_context WHERE source_file = ?",
         )
         .bind(source_file)
@@ -573,6 +594,7 @@ impl FileContextStore for Database {
                 show_mode_bar: r.try_get::<i32, _>("show_status_bar").unwrap_or(1) != 0,
                 show_borders: r.try_get::<i32, _>("show_borders").unwrap_or(1) != 0,
                 show_keys: r.try_get::<i32, _>("show_keys").unwrap_or(0) != 0,
+                raw_mode: r.try_get::<i32, _>("raw_mode").unwrap_or(0) != 0,
             }
         }))
     }
@@ -836,6 +858,7 @@ mod tests {
             show_mode_bar: true,
             show_borders: true,
             show_keys: false,
+            raw_mode: false,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -874,6 +897,7 @@ mod tests {
             show_mode_bar: true,
             show_borders: true,
             show_keys: false,
+            raw_mode: false,
         };
         db.save_file_context(&ctx1).await.unwrap();
 
@@ -895,6 +919,7 @@ mod tests {
             show_mode_bar: false,
             show_borders: false,
             show_keys: false,
+            raw_mode: false,
         };
         db.save_file_context(&ctx2).await.unwrap();
 
@@ -945,6 +970,7 @@ mod tests {
             show_mode_bar: true,
             show_borders: true,
             show_keys: false,
+            raw_mode: false,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -980,6 +1006,7 @@ mod tests {
             show_mode_bar: false,
             show_borders: false,
             show_keys: false,
+            raw_mode: false,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1012,6 +1039,7 @@ mod tests {
             show_mode_bar: true,
             show_borders: true,
             show_keys: true,
+            raw_mode: false,
         };
         db.save_file_context(&ctx).await.unwrap();
 

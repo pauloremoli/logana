@@ -329,6 +329,7 @@ impl App {
         let hidden_fields = self.tabs[self.active_tab].hidden_fields.clone();
         let field_layout = self.tabs[self.active_tab].field_layout.clone();
         let show_keys = self.tabs[self.active_tab].show_keys;
+        let raw_mode = self.tabs[self.active_tab].raw_mode;
 
         // Clamp scroll_offset
         if num_visible == 0 {
@@ -345,7 +346,7 @@ impl App {
         // mutable write to viewport_offset below.
         let (new_viewport, end) = {
             let tab = &self.tabs[self.active_tab];
-            let parser = tab.detected_format.as_deref();
+            let parser = if raw_mode { None } else { tab.detected_format.as_deref() };
             // In wrap mode, use the structured-rendering width when a format is
             // detected: raw JSON/tracing bytes can be 3-5× wider than the rendered
             // columns, causing the viewport to show far fewer lines than it should.
@@ -573,10 +574,14 @@ impl App {
                 // Known-field values are shown without their key names. Unknown fields
                 // and span context are rendered as key=value before the message.
                 // Filter visibility decisions still use the raw bytes (unaffected).
-                let structured_line: Option<Line<'static>> = self.tabs[self.active_tab]
-                    .detected_format
-                    .as_ref()
-                    .and_then(|parser| parser.parse_line(line_bytes))
+                let structured_line: Option<Line<'static>> = if raw_mode {
+                    None
+                } else {
+                    self.tabs[self.active_tab]
+                        .detected_format
+                        .as_ref()
+                        .and_then(|parser| parser.parse_line(line_bytes))
+                }
                     .map(|parts| {
                         let cols = apply_field_layout(&parts, &field_layout, &hidden_fields, show_keys);
 
@@ -755,7 +760,7 @@ impl App {
 
         let tail_mode = self.tabs[self.active_tab].tail_mode;
         let logs_title = format!(
-            "{} ({}){}",
+            "{} ({}){}{}",
             self.tabs[self.active_tab]
                 .log_manager
                 .source_file()
@@ -768,7 +773,8 @@ impl App {
                 })
                 .unwrap_or(String::from("Logs")),
             num_visible,
-            if tail_mode { " [TAIL]" } else { "" }
+            if tail_mode { " [TAIL]" } else { "" },
+            if raw_mode { " [RAW]" } else { "" }
         );
 
         let logs_block = if show_borders {

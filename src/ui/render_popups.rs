@@ -1178,6 +1178,7 @@ mod tests {
             show_mode_bar: true,
             show_borders: true,
             show_keys: false,
+            raw_mode: false,
         };
         app.tabs[0].mode = Box::new(ConfirmRestoreMode { context });
         let mut terminal = make_terminal();

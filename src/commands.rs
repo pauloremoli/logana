@@ -147,6 +147,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "hide-keys",
         description: "Show only values in structured log display, hiding field keys (default)",
     },
+    CommandInfo {
+        name: "raw",
+        usage: "raw",
+        description: "Toggle raw mode — disables the format parser and shows unformatted log lines",
+    },
 ];
 
 /// Commands whose last argument is a file path and should receive path auto-completion.

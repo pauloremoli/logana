@@ -341,6 +341,7 @@ mod tests {
             show_mode_bar: true,
             show_borders: true,
             show_keys: false,
+            raw_mode: false,
         }
     }
 

@@ -117,7 +117,7 @@ impl App {
                     comments: tab.log_manager.get_comments(),
                     marked_indices: tab.log_manager.get_marked_indices(),
                     file_reader: &tab.file_reader,
-                    parser: tab.detected_format.as_deref(),
+                    parser: if tab.raw_mode { None } else { tab.detected_format.as_deref() },
                     field_layout: &tab.field_layout,
                     hidden_fields: &tab.hidden_fields,
                     show_keys: tab.show_keys,
@@ -425,6 +425,10 @@ impl App {
             Some(Commands::HideKeys) => {
                 self.tabs[self.active_tab].show_keys = false;
             }
+            Some(Commands::Raw) => {
+                let tab = &mut self.tabs[self.active_tab];
+                tab.raw_mode = !tab.raw_mode;
+            }
             None => {}
         }
         Ok(false)
@@ -718,6 +722,16 @@ mod tests {
         app.tabs[0].show_keys = true;
         app.run_command("hide-keys").await.unwrap();
         assert!(!app.tab().show_keys);
+    }
+
+    #[tokio::test]
+    async fn test_raw_toggle() {
+        let mut app = make_app(&["line"]).await;
+        assert!(!app.tab().raw_mode);
+        app.run_command("raw").await.unwrap();
+        assert!(app.tab().raw_mode);
+        app.run_command("raw").await.unwrap();
+        assert!(!app.tab().raw_mode);
     }
 
     #[tokio::test]

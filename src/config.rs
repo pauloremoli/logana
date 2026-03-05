@@ -659,6 +659,9 @@ fn default_visual_comment() -> KeyBindings {
 fn default_visual_yank() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('y'), KeyModifiers::NONE)])
 }
+fn default_visual_mark() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('m'), KeyModifiers::NONE)])
+}
 fn default_visual_exit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
@@ -673,6 +676,8 @@ pub struct VisualLineKeybindings {
     pub comment: KeyBindings,
     #[serde(default = "default_visual_yank")]
     pub yank: KeyBindings,
+    #[serde(default = "default_visual_mark")]
+    pub mark: KeyBindings,
     #[serde(default = "default_visual_exit")]
     pub exit: KeyBindings,
 }
@@ -682,6 +687,7 @@ impl Default for VisualLineKeybindings {
         Self {
             comment: default_visual_comment(),
             yank: default_visual_yank(),
+            mark: default_visual_mark(),
             exit: default_visual_exit(),
         }
     }
@@ -1117,6 +1123,7 @@ impl Keybindings {
             ("navigation.scroll_up", &nav.scroll_up),
             ("visual_line.comment", &self.visual_line.comment),
             ("visual_line.yank", &self.visual_line.yank),
+            ("visual_line.mark", &self.visual_line.mark),
             ("visual_line.exit", &self.visual_line.exit),
         ];
 

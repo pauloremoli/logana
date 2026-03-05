@@ -138,6 +138,8 @@ pub enum Commands {
     ShowKeys,
     /// Hide field keys and show only values in structured log display
     HideKeys,
+    /// Toggle raw mode — disable the format parser and show unformatted log lines
+    Raw,
 }
 
 #[derive(Debug)]

@@ -77,6 +77,28 @@ impl Mode for VisualLineMode {
                 return (Box::new(CommentMode::new(line_indices)), KeyResult::Handled);
             }
             return (Box::new(NormalMode::default()), KeyResult::Handled);
+        } else if kb.visual_line.mark.matches(key, modifiers) {
+            // Mark/unmark all selected lines as a group.
+            // If every selected line is already marked → unmark all; otherwise → mark all.
+            if !tab.visible_indices.is_empty() {
+                let max_idx = tab.visible_indices.len() - 1;
+                let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
+                let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
+                let line_indices: Vec<usize> = tab.visible_indices[lo..=hi].to_vec();
+                let all_marked = line_indices.iter().all(|&i| tab.log_manager.is_marked(i));
+                if all_marked {
+                    for idx in &line_indices {
+                        tab.log_manager.toggle_mark(*idx);
+                    }
+                } else {
+                    for idx in &line_indices {
+                        if !tab.log_manager.is_marked(*idx) {
+                            tab.log_manager.toggle_mark(*idx);
+                        }
+                    }
+                }
+            }
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         } else if kb.visual_line.yank.matches(key, modifiers) {
             // Yank (copy) selected lines to clipboard
             if tab.visible_indices.is_empty() {
@@ -91,8 +113,7 @@ impl Mode for VisualLineMode {
                 .iter()
                 .map(|&idx| {
                     let bytes = tab.file_reader.get_line(idx);
-                    tab.detected_format
-                        .as_ref()
+                    if tab.raw_mode { None } else { tab.detected_format.as_ref() }
                         .and_then(|parser| parser.parse_line(bytes))
                         .map(|parts| {
                             apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields, tab.show_keys)
@@ -147,6 +168,7 @@ impl Mode for VisualLineMode {
             theme,
         );
         status_entry(&mut spans, kb.visual_line.yank.display(), "yank", theme);
+        status_entry(&mut spans, kb.visual_line.mark.display(), "mark", theme);
         status_entry(&mut spans, kb.visual_line.exit.display(), "cancel", theme);
         Line::from(spans)
     }
@@ -358,6 +380,73 @@ mod tests {
                 assert!(!text.contains('{'), "expected formatted text, got raw JSON");
                 assert!(text.contains("hello"));
                 assert!(text.contains("world"));
+            }
+            other => panic!("expected CopyToClipboard, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_m_marks_all_selected_lines() {
+        let mut tab = make_tab(&["a", "b", "c", "d"]).await;
+        tab.scroll_offset = 3;
+        let mode = VisualLineMode { anchor: 1, count: None };
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Char('m')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(matches!(mode2.render_state(), ModeRenderState::Normal));
+        // Lines at visible indices 1, 2, 3 should be marked.
+        assert!(tab.log_manager.is_marked(1));
+        assert!(tab.log_manager.is_marked(2));
+        assert!(tab.log_manager.is_marked(3));
+        assert!(!tab.log_manager.is_marked(0));
+    }
+
+    #[tokio::test]
+    async fn test_m_unmarks_when_all_already_marked() {
+        let mut tab = make_tab(&["a", "b", "c"]).await;
+        tab.log_manager.toggle_mark(0);
+        tab.log_manager.toggle_mark(1);
+        tab.log_manager.toggle_mark(2);
+        tab.scroll_offset = 2;
+        let mode = VisualLineMode { anchor: 0, count: None };
+        let (_, _) = press(mode, &mut tab, KeyCode::Char('m')).await;
+        // All were marked → all should now be unmarked.
+        assert!(!tab.log_manager.is_marked(0));
+        assert!(!tab.log_manager.is_marked(1));
+        assert!(!tab.log_manager.is_marked(2));
+    }
+
+    #[tokio::test]
+    async fn test_m_marks_all_when_partially_marked() {
+        let mut tab = make_tab(&["a", "b", "c"]).await;
+        tab.log_manager.toggle_mark(0); // only first is marked
+        tab.scroll_offset = 2;
+        let mode = VisualLineMode { anchor: 0, count: None };
+        let (_, _) = press(mode, &mut tab, KeyCode::Char('m')).await;
+        // Partial marks → mark all.
+        assert!(tab.log_manager.is_marked(0));
+        assert!(tab.log_manager.is_marked(1));
+        assert!(tab.log_manager.is_marked(2));
+    }
+
+    #[tokio::test]
+    async fn test_y_raw_mode_yanks_raw_bytes() {
+        let mut tab = make_tab(&[
+            r#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","message":"hello"}"#,
+        ])
+        .await;
+        assert!(tab.detected_format.is_some());
+        tab.raw_mode = true;
+        tab.scroll_offset = 0;
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
+        let (_, result) = press(mode, &mut tab, KeyCode::Char('y')).await;
+        match result {
+            KeyResult::CopyToClipboard(text) => {
+                // Raw mode: should preserve the original JSON, not format columns.
+                assert!(text.contains('{'), "expected raw JSON, got formatted text");
+                assert!(text.contains("hello"));
             }
             other => panic!("expected CopyToClipboard, got {:?}", other),
         }
