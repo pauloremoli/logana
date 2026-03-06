@@ -42,7 +42,16 @@ time              = { version = "0.3",    default-features = false, features = [
 arboard           = "3"
 
 [dev-dependencies]
-tempfile = "3.10"
+tempfile  = "3.10"
+criterion = { version = "0.5", default-features = false, features = ["rayon", "html_reports"] }
+
+[[bench]]
+name    = "file_reader"
+harness = false
+
+[[bench]]
+name    = "visible_lines"
+harness = false
 
 [profile.release]
 debug = true

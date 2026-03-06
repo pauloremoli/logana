@@ -31,16 +31,15 @@ impl Mode for SearchMode {
         let kb = tab.keybindings.search.clone();
         if kb.confirm.matches(key, modifiers) {
             let visible = tab.visible_indices.clone();
-            let texts = tab.collect_display_texts(&visible);
+            let texts = tab.collect_display_texts(visible.iter());
             let _ = tab
                 .search
-                .search(&self.input, &visible, |li| texts.get(&li).cloned());
+                .search(&self.input, visible.iter(), |li| texts.get(&li).cloned());
             tab.search.set_forward(self.forward);
             // Navigate to the first match relative to the current line.
             let current_line_idx = tab
                 .visible_indices
-                .get(tab.scroll_offset)
-                .copied()
+                .get_opt(tab.scroll_offset)
                 .unwrap_or(0);
             tab.search
                 .set_position_for_search(current_line_idx, self.forward);
@@ -65,10 +64,10 @@ impl Mode for SearchMode {
                         tab.search.clear();
                     } else {
                         let visible = tab.visible_indices.clone();
-                        let texts = tab.collect_display_texts(&visible);
+                        let texts = tab.collect_display_texts(visible.iter());
                         let _ = tab
                             .search
-                            .search(&self.input, &visible, |li| texts.get(&li).cloned());
+                            .search(&self.input, visible.iter(), |li| texts.get(&li).cloned());
                         self.seed_incremental_position(tab);
                     }
                     (self, KeyResult::Handled)
@@ -76,10 +75,10 @@ impl Mode for SearchMode {
                 KeyCode::Char(c) => {
                     self.input.push(c);
                     let visible = tab.visible_indices.clone();
-                    let texts = tab.collect_display_texts(&visible);
+                    let texts = tab.collect_display_texts(visible.iter());
                     let _ = tab
                         .search
-                        .search(&self.input, &visible, |li| texts.get(&li).cloned());
+                        .search(&self.input, visible.iter(), |li| texts.get(&li).cloned());
                     self.seed_incremental_position(tab);
                     (self, KeyResult::Handled)
                 }
@@ -114,8 +113,7 @@ impl SearchMode {
     fn seed_incremental_position(&self, tab: &mut TabState) {
         let current_line_idx = tab
             .visible_indices
-            .get(tab.scroll_offset)
-            .copied()
+            .get_opt(tab.scroll_offset)
             .unwrap_or(0);
         tab.search
             .set_position_for_search(current_line_idx, self.forward);
@@ -133,7 +131,7 @@ mod tests {
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
-    use crate::ui::{KeyResult, TabState};
+    use crate::ui::{KeyResult, TabState, VisibleLines};
     use std::sync::Arc;
 
     async fn make_tab(lines: &[&str]) -> TabState {
@@ -214,12 +212,12 @@ mod tests {
     #[tokio::test]
     async fn test_esc_returns_normal_mode_and_clears_search() {
         let mut tab = make_tab(&["error line"]).await;
-        tab.visible_indices = vec![0];
+        tab.visible_indices = VisibleLines::Filtered(vec![0]);
         // Simulate incremental search having run
         let visible = tab.visible_indices.clone();
-        let texts = tab.collect_display_texts(&visible);
+        let texts = tab.collect_display_texts(visible.iter());
         tab.search
-            .search("error", &visible, |li| texts.get(&li).cloned())
+            .search("error", visible.iter(), |li| texts.get(&li).cloned())
             .unwrap();
         assert!(tab.search.get_pattern().is_some());
         let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Esc).await;
@@ -309,7 +307,7 @@ mod tests {
     async fn test_typing_char_updates_search_results() {
         // Use plain text lines that won't trigger the structured-log format parser.
         let mut tab = make_tab(&["needle in haystack", "nothing here", "needle again"]).await;
-        tab.visible_indices = vec![0, 1, 2];
+        tab.visible_indices = VisibleLines::Filtered(vec![0, 1, 2]);
         press(forward_mode("needl"), &mut tab, KeyCode::Char('e')).await;
         assert_eq!(tab.search.get_results().len(), 2);
     }
@@ -318,7 +316,7 @@ mod tests {
     async fn test_backspace_updates_search_results() {
         // Use plain text lines that won't trigger the structured-log format parser.
         let mut tab = make_tab(&["needle in haystack", "nothing here", "needle again"]).await;
-        tab.visible_indices = vec![0, 1, 2];
+        tab.visible_indices = VisibleLines::Filtered(vec![0, 1, 2]);
         // Start with "needles" (no match), backspace to "needle" (2 matches)
         press(forward_mode("needles"), &mut tab, KeyCode::Backspace).await;
         assert_eq!(tab.search.get_results().len(), 2);
@@ -327,7 +325,7 @@ mod tests {
     #[tokio::test]
     async fn test_backspace_to_empty_clears_results() {
         let mut tab = make_tab(&["error: disk full"]).await;
-        tab.visible_indices = vec![0];
+        tab.visible_indices = VisibleLines::Filtered(vec![0]);
         press(forward_mode("e"), &mut tab, KeyCode::Backspace).await;
         assert!(tab.search.get_results().is_empty());
         assert!(tab.search.get_pattern().is_none());

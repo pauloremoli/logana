@@ -5,7 +5,7 @@
 //! [`FileReader::spawn_process_stream`] spawns a child process and streams
 //! its output as complete lines, used by the `docker` command.
 
-use memchr::{memchr_iter, memchr2};
+use memchr::{memchr_iter, memchr3_iter};
 use memmap2::Mmap;
 use std::{fs::File, io};
 use tokio::{
@@ -63,34 +63,58 @@ impl FileReader {
     pub fn new(path: &str) -> io::Result<Self> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
-        if memchr2(b'\x1b', b'\r', &mmap).is_some() {
+        let len = mmap.len();
+
+        // Single pass: scan for '\n', '\x1b', '\r' simultaneously.
+        // For the common (no-ANSI) case this halves I/O vs the previous two-pass
+        // approach (memchr2 check then compute_line_starts).
+        let mut starts = vec![0usize];
+        let mut has_ansi = false;
+        for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &mmap) {
+            if mmap[pos] == b'\n' {
+                let next = pos + 1;
+                if next <= len {
+                    starts.push(next);
+                }
+            } else {
+                has_ansi = true;
+                break;
+            }
+        }
+
+        if has_ansi {
             let stripped = strip_ansi_escapes(&mmap);
             let line_starts = compute_line_starts(&stripped);
-            Ok(FileReader {
-                storage: Storage::Bytes(stripped),
-                line_starts,
-            })
-        } else {
-            let line_starts = compute_line_starts(&mmap);
-            Ok(FileReader {
-                storage: Storage::Mmap(mmap),
-                line_starts,
-            })
+            return Ok(FileReader { storage: Storage::Bytes(stripped), line_starts });
         }
+
+        Ok(FileReader { storage: Storage::Mmap(mmap), line_starts: starts })
     }
 
     /// Build a `FileReader` from an in-memory byte buffer (e.g. stdin content).
     pub fn from_bytes(data: Vec<u8>) -> Self {
-        let data = if memchr2(b'\x1b', b'\r', &data).is_some() {
-            strip_ansi_escapes(&data)
-        } else {
-            data
-        };
-        let line_starts = compute_line_starts(&data);
-        FileReader {
-            storage: Storage::Bytes(data),
-            line_starts,
+        // Single pass: scan for '\n', '\x1b', '\r' simultaneously.
+        let mut starts = vec![0usize];
+        let mut has_ansi = false;
+        for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &data) {
+            if data[pos] == b'\n' {
+                let next = pos + 1;
+                if next <= data.len() {
+                    starts.push(next);
+                }
+            } else {
+                has_ansi = true;
+                break;
+            }
         }
+
+        if has_ansi {
+            let data = strip_ansi_escapes(&data);
+            let line_starts = compute_line_starts(&data);
+            return FileReader { storage: Storage::Bytes(data), line_starts };
+        }
+
+        FileReader { storage: Storage::Bytes(data), line_starts: starts }
     }
 
     /// Stream stdin asynchronously, flushing complete lines every second.
@@ -179,44 +203,42 @@ impl FileReader {
         let mmap = unsafe { Mmap::map(&file)? };
         let len = mmap.len();
 
-        // If the file contains ANSI escape sequences or CR characters, strip them
-        // and re-index the clean bytes in one pass (stripping is O(n) anyway).
-        if memchr2(b'\x1b', b'\r', &mmap).is_some() {
-            let stripped = strip_ansi_escapes(&mmap);
-            let starts = compute_line_starts(&stripped);
-            let _ = progress_tx.send(1.0);
-            return Ok(FileReader {
-                storage: Storage::Bytes(stripped),
-                line_starts: starts,
-            });
-        }
-
+        // Single pass: scan for '\n', '\x1b', '\r' simultaneously.
+        // For the common (no-ANSI) case this halves I/O vs. the previous approach
+        // (upfront memchr2 check + separate memchr_iter indexing loop).
+        // Progress is reported per 4 MiB chunk; on ANSI fallback we send 1.0 at the end.
         const CHUNK: usize = 4 * 1024 * 1024; // 4 MiB
         let mut starts = vec![0usize];
-
+        let mut has_ansi = false;
         let mut offset = 0;
-        while offset < len {
+
+        'scan: while offset < len {
             let end = (offset + CHUNK).min(len);
-            for pos in memchr_iter(b'\n', &mmap[offset..end]) {
-                let abs = offset + pos + 1;
-                if abs <= len {
-                    starts.push(abs);
+            for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &mmap[offset..end]) {
+                let abs = offset + pos;
+                if mmap[abs] == b'\n' {
+                    let next = abs + 1;
+                    if next <= len {
+                        starts.push(next);
+                    }
+                } else {
+                    has_ansi = true;
+                    break 'scan;
                 }
             }
-            let progress = if total_bytes > 0 {
-                end as f64 / total_bytes as f64
-            } else {
-                1.0
-            };
-            // Ignore send error — receiver may have been dropped.
+            let progress = if total_bytes > 0 { end as f64 / total_bytes as f64 } else { 1.0 };
             let _ = progress_tx.send(progress);
             offset = end;
         }
 
-        Ok(FileReader {
-            storage: Storage::Mmap(mmap),
-            line_starts: starts,
-        })
+        if has_ansi {
+            let stripped = strip_ansi_escapes(&mmap);
+            let line_starts = compute_line_starts(&stripped);
+            let _ = progress_tx.send(1.0);
+            return Ok(FileReader { storage: Storage::Bytes(stripped), line_starts });
+        }
+
+        Ok(FileReader { storage: Storage::Mmap(mmap), line_starts: starts })
     }
 
     /// Total number of lines (including any final partial line without a trailing newline).

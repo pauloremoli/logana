@@ -324,7 +324,7 @@ async fn test_search_on_visible_lines() {
     // Search for "Application" within visible lines only
     let mut search = Search::new();
     search
-        .search("Application", &visible, |li| {
+        .search("Application", visible.iter().copied(), |li| {
             Some(String::from_utf8_lossy(reader.get_line(li)).into_owned())
         })
         .unwrap();

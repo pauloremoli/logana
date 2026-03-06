@@ -235,7 +235,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.mark_line.matches(key, modifiers) {
-            if let Some(&line_idx) = tab.visible_indices.get(tab.scroll_offset) {
+            if let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) {
                 tab.log_manager.toggle_mark(line_idx);
             }
             tab.g_key_pressed = false;
@@ -258,7 +258,7 @@ impl Mode for NormalMode {
                 tab.command_error = Some("No visible lines".to_string());
                 return (self, KeyResult::Handled);
             }
-            let idx = tab.visible_indices[tab.scroll_offset.min(tab.visible_indices.len() - 1)];
+            let idx = tab.visible_indices.get(tab.scroll_offset.min(tab.visible_indices.len() - 1));
             let bytes = tab.file_reader.get_line(idx);
             let text = tab
                 .detected_format
@@ -372,7 +372,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.edit_comment.matches(key, modifiers) {
-            if let Some(&line_idx) = tab.visible_indices.get(tab.scroll_offset) {
+            if let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) {
                 let comments = tab.log_manager.get_comments();
                 if let Some(idx) = comments
                     .iter()
@@ -398,7 +398,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.delete_comment.matches(key, modifiers) {
-            if let Some(&line_idx) = tab.visible_indices.get(tab.scroll_offset) {
+            if let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) {
                 let comments = tab.log_manager.get_comments();
                 if let Some(idx) = comments
                     .iter()
@@ -510,7 +510,7 @@ mod tests {
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
-    use crate::ui::{KeyResult, TabState};
+    use crate::ui::{KeyResult, TabState, VisibleLines};
     use std::sync::Arc;
 
     async fn make_tab(lines: &[&str]) -> TabState {
@@ -721,11 +721,11 @@ mod tests {
     #[tokio::test]
     async fn test_esc_clears_active_search() {
         let mut tab = make_tab(&["error line", "info line"]).await;
-        tab.visible_indices = vec![0, 1];
+        tab.visible_indices = VisibleLines::Filtered(vec![0, 1]);
         let visible = tab.visible_indices.clone();
-        let texts = tab.collect_display_texts(&visible);
+        let texts = tab.collect_display_texts(visible.iter());
         tab.search
-            .search("error", &visible, |li| texts.get(&li).cloned())
+            .search("error", visible.iter(), |li| texts.get(&li).cloned())
             .unwrap();
         assert!(tab.search.get_pattern().is_some());
         let (_, result) = press(&mut tab, KeyCode::Esc, KeyModifiers::NONE).await;
@@ -889,7 +889,7 @@ mod tests {
 
         press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
 
-        assert_eq!(tab.visible_indices, vec![0, 2]);
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
     }
 
     #[tokio::test]

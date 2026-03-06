@@ -68,14 +68,108 @@ pub fn list_dir_files(path: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// VisibleLines
+// ---------------------------------------------------------------------------
+
+/// Efficient representation of which file lines are currently visible.
+///
+/// `All(n)` covers the common no-filter case: every index `i` maps to itself,
+/// so no allocation is needed. `Filtered` holds the explicit subset produced
+/// by the filter pipeline or marks-only view.
+#[derive(Clone, Debug, PartialEq)]
+pub enum VisibleLines {
+    /// All N file lines are visible; `visible[i] == i` for any `i < n`.
+    All(usize),
+    /// An explicit, sorted subset of file-line indices.
+    Filtered(Vec<usize>),
+}
+
+impl VisibleLines {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::All(n) => *n,
+            Self::Filtered(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// File-line index at visible position `pos`. Panics if out of bounds.
+    pub fn get(&self, pos: usize) -> usize {
+        match self {
+            Self::All(_) => pos,
+            Self::Filtered(v) => v[pos],
+        }
+    }
+
+    /// File-line index at visible position `pos`, or `None` if out of bounds.
+    pub fn get_opt(&self, pos: usize) -> Option<usize> {
+        match self {
+            Self::All(n) => if pos < *n { Some(pos) } else { None },
+            Self::Filtered(v) => v.get(pos).copied(),
+        }
+    }
+
+    /// Visible position of file-line `line_idx`, or `None` if not visible.
+    pub fn position_of(&self, line_idx: usize) -> Option<usize> {
+        match self {
+            Self::All(n) => if line_idx < *n { Some(line_idx) } else { None },
+            Self::Filtered(v) => v.iter().position(|&i| i == line_idx),
+        }
+    }
+
+    /// Iterate file-line indices for all visible positions in order.
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        let len = self.len();
+        (0..len).map(move |i| self.get(i))
+    }
+
+    /// Binary search for file-line index `target`.
+    /// Returns `Ok(pos)` if found, `Err(insert_pos)` otherwise.
+    pub fn binary_search(&self, target: usize) -> Result<usize, usize> {
+        match self {
+            Self::All(n) => {
+                if target < *n { Ok(target) } else { Err(*n) }
+            }
+            Self::Filtered(v) => v.binary_search(&target),
+        }
+    }
+
+    /// Retain only positions where `f(file_line_idx)` is true.
+    /// Converts `All` to `Filtered` when any line is removed.
+    pub fn retain(&mut self, mut f: impl FnMut(usize) -> bool) {
+        match self {
+            Self::All(n) => {
+                let filtered: Vec<usize> = (0..*n).filter(|&i| f(i)).collect();
+                *self = Self::Filtered(filtered);
+            }
+            Self::Filtered(v) => v.retain(|&i| f(i)),
+        }
+    }
+
+    /// Collect file-line indices for visible positions `lo..=hi` into a `Vec`.
+    pub fn slice_to_vec(&self, lo: usize, hi: usize) -> Vec<usize> {
+        (lo..=hi).map(|i| self.get(i)).collect()
+    }
+}
+
+impl Default for VisibleLines {
+    fn default() -> Self {
+        Self::All(0)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TabState
 // ---------------------------------------------------------------------------
 
 pub struct TabState {
     pub file_reader: FileReader,
     pub log_manager: LogManager,
-    /// Indices into `file_reader` of lines currently visible under the active filters.
-    pub visible_indices: Vec<usize>,
+    /// Which file lines are currently visible under the active filters.
+    pub visible_indices: VisibleLines,
     pub mode: Box<dyn Mode>,
     pub scroll_offset: usize,
     pub viewport_offset: usize,
@@ -129,7 +223,7 @@ impl TabState {
         let mut tab = TabState {
             file_reader,
             log_manager,
-            visible_indices: Vec::new(),
+            visible_indices: VisibleLines::default(),
             mode: Box::new(NormalMode::default()),
             scroll_offset: 0,
             viewport_offset: 0,
@@ -171,12 +265,13 @@ impl TabState {
         if self.show_marks_only {
             let mut indices = self.log_manager.get_marked_indices();
             indices.retain(|&i| i < self.file_reader.line_count());
-            self.visible_indices = indices;
+            self.visible_indices = VisibleLines::Filtered(indices);
         } else if !self.filtering_enabled {
-            self.visible_indices = (0..self.file_reader.line_count()).collect();
+            // No allocation: All(n) represents identity mapping i→i.
+            self.visible_indices = VisibleLines::All(self.file_reader.line_count());
         } else {
             let (fm, _, _) = self.log_manager.build_filter_manager();
-            self.visible_indices = fm.compute_visible(&self.file_reader);
+            self.visible_indices = VisibleLines::Filtered(fm.compute_visible(&self.file_reader));
         }
 
         // Apply date filters as a post-processing step.
@@ -184,7 +279,7 @@ impl TabState {
         if !date_filters.is_empty()
             && let Some(parser) = &self.detected_format
         {
-            self.visible_indices.retain(|&idx| {
+            self.visible_indices.retain(|idx| {
                 let line = self.file_reader.get_line(idx);
                 match parser.parse_line(line) {
                     Some(parts) => match parts.timestamp {
@@ -223,21 +318,18 @@ impl TabState {
         String::from_utf8_lossy(bytes).into_owned()
     }
 
-    /// Build a lookup map of display text for each of the given `indices`.
+    /// Build a lookup map of display text for each index yielded by `indices`.
     /// Collecting up-front allows callers to pass the map into `Search::search`
     /// without conflicting borrows on `self.search`.
     pub fn collect_display_texts(
         &self,
-        indices: &[usize],
+        indices: impl Iterator<Item = usize>,
     ) -> std::collections::HashMap<usize, String> {
-        indices
-            .iter()
-            .map(|&li| (li, self.get_display_text(li)))
-            .collect()
+        indices.map(|li| (li, self.get_display_text(li))).collect()
     }
 
     pub fn scroll_to_line_idx(&mut self, line_idx: usize) {
-        if let Some(index) = self.visible_indices.iter().position(|&i| i == line_idx) {
+        if let Some(index) = self.visible_indices.position_of(line_idx) {
             self.scroll_offset = index;
         }
     }
@@ -255,7 +347,7 @@ impl TabState {
         let target_idx = line_number - 1; // convert to 0-based file index
 
         // Binary search for the target in visible_indices.
-        match self.visible_indices.binary_search(&target_idx) {
+        match self.visible_indices.binary_search(target_idx) {
             Ok(pos) => {
                 // Exact match — the line is visible.
                 self.scroll_offset = pos;
@@ -271,8 +363,8 @@ impl TabState {
                 };
                 let best = match (before, after) {
                     (Some(b), Some(a)) => {
-                        let dist_b = target_idx - self.visible_indices[b];
-                        let dist_a = self.visible_indices[a] - target_idx;
+                        let dist_b = target_idx - self.visible_indices.get(b);
+                        let dist_a = self.visible_indices.get(a) - target_idx;
                         if dist_b <= dist_a { b } else { a }
                     }
                     (Some(b), None) => b,
@@ -327,10 +419,11 @@ impl TabState {
             self.log_manager.set_comments(ctx.comments.clone());
         }
         if !ctx.search_query.is_empty() {
-            let texts = self.collect_display_texts(&self.visible_indices.clone());
+            let visible = self.visible_indices.clone();
+            let texts = self.collect_display_texts(visible.iter());
             let _ = self
                 .search
-                .search(&ctx.search_query, &self.visible_indices, |li| {
+                .search(&ctx.search_query, visible.iter(), |li| {
                     texts.get(&li).cloned()
                 });
         }
@@ -346,11 +439,9 @@ impl TabState {
             None => return Vec::new(),
         };
         const SAMPLE_LIMIT: usize = 200;
-        let indices = &self.visible_indices;
-        let limit = indices.len().min(SAMPLE_LIMIT);
-        let lines: Vec<&[u8]> = indices[..limit]
-            .iter()
-            .map(|&idx| self.file_reader.get_line(idx))
+        let limit = self.visible_indices.len().min(SAMPLE_LIMIT);
+        let lines: Vec<&[u8]> = (0..limit)
+            .map(|i| self.file_reader.get_line(self.visible_indices.get(i)))
             .collect();
         parser.collect_field_names(&lines)
     }
@@ -497,7 +588,7 @@ mod tests {
         tab.log_manager.toggle_mark(2);
         tab.show_marks_only = true;
         tab.refresh_visible();
-        assert_eq!(tab.visible_indices, vec![0, 2]);
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
     }
 
     #[tokio::test]
@@ -707,7 +798,7 @@ mod tests {
     async fn test_goto_line_hidden_finds_closest() {
         let mut tab = make_tab(&["a", "b", "c", "d", "e"]).await;
         // Simulate filter hiding lines 1 and 2 (keep 0, 3, 4)
-        tab.visible_indices = vec![0, 3, 4];
+        tab.visible_indices = VisibleLines::Filtered(vec![0, 3, 4]);
         // Go to line 2 (idx 1) — hidden, closest visible is idx 0
         tab.goto_line(2).unwrap();
         assert_eq!(tab.scroll_offset, 0); // idx 0 is at position 0
@@ -717,7 +808,7 @@ mod tests {
     async fn test_goto_line_hidden_prefers_closer_after() {
         let mut tab = make_tab(&["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]).await;
         // Visible: 0, 5, 9
-        tab.visible_indices = vec![0, 5, 9];
+        tab.visible_indices = VisibleLines::Filtered(vec![0, 5, 9]);
         // Go to line 4 (idx 3) — equidistant: idx 0 (dist 3) vs idx 5 (dist 2) → pick 5
         tab.goto_line(4).unwrap();
         assert_eq!(tab.scroll_offset, 1); // idx 5 is at position 1
@@ -726,7 +817,7 @@ mod tests {
     #[tokio::test]
     async fn test_goto_line_hidden_prefers_closer_before() {
         let mut tab = make_tab(&["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]).await;
-        tab.visible_indices = vec![0, 5, 9];
+        tab.visible_indices = VisibleLines::Filtered(vec![0, 5, 9]);
         // Go to line 7 (idx 6) — idx 5 (dist 1) vs idx 9 (dist 3) → pick 5
         tab.goto_line(7).unwrap();
         assert_eq!(tab.scroll_offset, 1); // idx 5 is at position 1
@@ -735,7 +826,7 @@ mod tests {
     #[tokio::test]
     async fn test_goto_line_empty_visible_indices() {
         let mut tab = make_tab(&["a", "b"]).await;
-        tab.visible_indices = vec![];
+        tab.visible_indices = VisibleLines::Filtered(vec![]);
         // Should not panic, just no-op
         tab.goto_line(1).unwrap();
         assert_eq!(tab.scroll_offset, 0);
@@ -824,7 +915,7 @@ mod tests {
             r#"{"timestamp":"2024-01-01T05:00:00Z","level":"INFO","msg":"out of range"}"#,
         ];
         let tab = make_tab_with_date_filter(&lines, "01:00 .. 02:00").await;
-        assert_eq!(tab.visible_indices, vec![0]);
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0]));
     }
 
     #[tokio::test]
@@ -843,6 +934,6 @@ mod tests {
         }
         tab.refresh_visible();
         // Lines in either range are visible; the line between is hidden.
-        assert_eq!(tab.visible_indices, vec![0, 2]);
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
     }
 }

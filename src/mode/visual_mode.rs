@@ -72,7 +72,7 @@ impl Mode for VisualLineMode {
             let max_idx = tab.visible_indices.len() - 1;
             let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
             let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
-            let line_indices: Vec<usize> = tab.visible_indices[lo..=hi].to_vec();
+            let line_indices = tab.visible_indices.slice_to_vec(lo, hi);
             if !line_indices.is_empty() {
                 return (Box::new(CommentMode::new(line_indices)), KeyResult::Handled);
             }
@@ -84,7 +84,7 @@ impl Mode for VisualLineMode {
                 let max_idx = tab.visible_indices.len() - 1;
                 let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
                 let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
-                let line_indices: Vec<usize> = tab.visible_indices[lo..=hi].to_vec();
+                let line_indices = tab.visible_indices.slice_to_vec(lo, hi);
                 let all_marked = line_indices.iter().all(|&i| tab.log_manager.is_marked(i));
                 if all_marked {
                     for idx in &line_indices {
@@ -108,7 +108,7 @@ impl Mode for VisualLineMode {
             let max_idx = tab.visible_indices.len() - 1;
             let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
             let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
-            let line_indices = &tab.visible_indices[lo..=hi];
+            let line_indices = tab.visible_indices.slice_to_vec(lo, hi);
             let text: String = line_indices
                 .iter()
                 .map(|&idx| {

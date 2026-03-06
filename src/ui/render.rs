@@ -366,7 +366,7 @@ impl App {
                 scroll_offset
             } else if wrap && inner_width > 0 && num_visible > 0 {
                 let rows_used: usize = (viewport_offset..=scroll_offset)
-                    .map(|i| row_count(tab.visible_indices[i]))
+                    .map(|i| row_count(tab.visible_indices.get(i)))
                     .sum();
                 if rows_used > visible_height {
                     let mut rows = 0usize;
@@ -376,7 +376,7 @@ impl App {
                             break;
                         }
                         new_vp -= 1;
-                        let h = row_count(tab.visible_indices[new_vp]);
+                        let h = row_count(tab.visible_indices.get(new_vp));
                         if rows + h > visible_height {
                             new_vp += 1;
                             break;
@@ -401,7 +401,7 @@ impl App {
                 let mut rows = 0usize;
                 let mut e = start;
                 while e < num_visible {
-                    let h = row_count(tab.visible_indices[e]);
+                    let h = row_count(tab.visible_indices.get(e));
                     if rows + h > visible_height {
                         break;
                     }
@@ -498,7 +498,7 @@ impl App {
             let ann_set: HashSet<usize> = line_indices.iter().cloned().collect();
             let mut first_for_ann: Option<usize> = None;
             for abs_vi in start..end {
-                let li = self.tabs[self.active_tab].visible_indices[abs_vi];
+                let li = self.tabs[self.active_tab].visible_indices.get(abs_vi);
                 if ann_set.contains(&li) {
                     // First comment wins when a line belongs to multiple groups.
                     vis_comment_map.entry(abs_vi).or_insert(cmt_idx);
@@ -516,11 +516,9 @@ impl App {
             .add_modifier(Modifier::BOLD);
         let banner_text_style = Style::default().fg(theme.text);
 
-        let log_lines: Vec<Line> = self.tabs[self.active_tab].visible_indices[start..end]
-            .iter()
-            .enumerate()
-            .flat_map(|(vis_idx, &line_idx)| {
-                let abs_vis_idx = start + vis_idx;
+        let log_lines: Vec<Line> = (start..end)
+            .flat_map(|abs_vis_idx| {
+                let line_idx = self.tabs[self.active_tab].visible_indices.get(abs_vis_idx);
                 let line_bytes = self.tabs[self.active_tab].file_reader.get_line(line_idx);
                 let is_current = abs_vis_idx == current_scroll;
                 let is_marked = self.tabs[self.active_tab].log_manager.is_marked(line_idx);
@@ -1735,10 +1733,10 @@ mod tests {
         app.execute_command_str("filter INFO".to_string()).await;
         let visible = app.tabs[0].visible_indices.clone();
         let tab = &mut app.tabs[0];
-        let texts = tab.collect_display_texts(&visible);
+        let texts = tab.collect_display_texts(visible.iter());
         let _ = tab
             .search
-            .search("something", &visible, |li| texts.get(&li).cloned());
+            .search("something", visible.iter(), |li| texts.get(&li).cloned());
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }

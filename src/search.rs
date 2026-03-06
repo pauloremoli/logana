@@ -47,7 +47,7 @@ impl Search {
     pub fn search(
         &mut self,
         pattern_str: &str,
-        visible_indices: &[usize],
+        visible_indices: impl Iterator<Item = usize>,
         get_text: impl Fn(usize) -> Option<String>,
     ) -> anyhow::Result<()> {
         let pattern = if self.case_sensitive {
@@ -60,7 +60,7 @@ impl Search {
         self.current_result_index = 0;
         self.current_occurrence_index = 0;
 
-        for &line_idx in visible_indices {
+        for line_idx in visible_indices {
             let text = match get_text(line_idx) {
                 Some(t) => t,
                 None => continue,
@@ -285,7 +285,7 @@ mod tests {
         ]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("test", &all, raw_text(&reader))?;
+        search.search("test", all.iter().copied(), raw_text(&reader))?;
 
         let results = search.get_results();
         assert_eq!(results.len(), 2); // lines 0 and 3
@@ -307,7 +307,7 @@ mod tests {
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
         search.set_case_sensitive(false);
-        search.search("test", &all, raw_text(&reader))?;
+        search.search("test", all.iter().copied(), raw_text(&reader))?;
 
         let results = search.get_results();
         assert_eq!(results.len(), 3); // lines 0, 1, 3
@@ -322,7 +322,7 @@ mod tests {
         let (_f, reader) = make_reader(&["This is a line"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("nomatch", &all, raw_text(&reader))?;
+        search.search("nomatch", all.iter().copied(), raw_text(&reader))?;
         assert!(search.get_results().is_empty());
         Ok(())
     }
@@ -332,7 +332,7 @@ mod tests {
         let (_f, reader) = make_reader(&["test line", "nothing", "another test"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("test", &all, raw_text(&reader))?;
+        search.search("test", all.iter().copied(), raw_text(&reader))?;
 
         // starts at index 0 → line_idx 0
         assert_eq!(search.get_current_match().unwrap().line_idx, 0);
@@ -355,7 +355,7 @@ mod tests {
         // Only search visible lines (0 and 2 pass the filter)
         let visible = vec![0usize, 2];
         let mut search = Search::new();
-        search.search("bad", &visible, raw_text(&reader))?;
+        search.search("bad", visible.iter().copied(), raw_text(&reader))?;
 
         let results = search.get_results();
         assert_eq!(results.len(), 2);
@@ -378,7 +378,7 @@ mod tests {
         let (_f, reader) = make_reader(&["foo foo foo", "foo"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("foo", &all, raw_text(&reader))?;
+        search.search("foo", all.iter().copied(), raw_text(&reader))?;
 
         assert_eq!(search.get_current_match().unwrap().line_idx, 0); // occ 0
         search.next_match();
@@ -395,7 +395,7 @@ mod tests {
         let (_f, reader) = make_reader(&["foo foo", "foo"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("foo", &all, raw_text(&reader))?;
+        search.search("foo", all.iter().copied(), raw_text(&reader))?;
         // advance to line 1
         search.next_match();
         search.next_match();
@@ -412,7 +412,7 @@ mod tests {
         let (_f, reader) = make_reader(&["test test", "nothing", "test"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("test", &all, raw_text(&reader))?;
+        search.search("test", all.iter().copied(), raw_text(&reader))?;
         // line 0: 2 occurrences, line 2: 1 occurrence → total 3
         assert_eq!(search.get_total_match_count(), 3);
         Ok(())
@@ -430,7 +430,7 @@ mod tests {
         let (_f, reader) = make_reader(&["test test", "test"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("test", &all, raw_text(&reader))?;
+        search.search("test", all.iter().copied(), raw_text(&reader))?;
         assert_eq!(search.get_current_occurrence_number(), 1); // result=0, occ=0
         search.next_match(); // stays on line 0, advances to occ=1
         assert_eq!(search.get_current_occurrence_number(), 2);
@@ -450,7 +450,7 @@ mod tests {
         let (_f, reader) = make_reader(&["test a", "test b", "test c"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("test", &all, raw_text(&reader))?;
+        search.search("test", all.iter().copied(), raw_text(&reader))?;
         assert_eq!(search.get_current_match_index(), 0);
         search.next_match();
         assert_eq!(search.get_current_match_index(), 1);
@@ -464,7 +464,7 @@ mod tests {
         let (_f, reader) = make_reader(&["test line"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("test", &all, raw_text(&reader))?;
+        search.search("test", all.iter().copied(), raw_text(&reader))?;
         assert!(!search.get_results().is_empty());
         assert!(search.get_pattern().is_some());
         search.clear();
@@ -491,7 +491,7 @@ mod tests {
         let (_f, reader) = make_reader(&["foo", "bar", "foo"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("foo", &all, raw_text(&reader))?;
+        search.search("foo", all.iter().copied(), raw_text(&reader))?;
         search.set_forward(true);
         // start at result 0 (line 0)
         assert_eq!(search.get_current_match().unwrap().line_idx, 0);
@@ -506,7 +506,7 @@ mod tests {
         let (_f, reader) = make_reader(&["foo", "bar", "foo"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("foo", &all, raw_text(&reader))?;
+        search.search("foo", all.iter().copied(), raw_text(&reader))?;
         search.set_forward(false);
         // start at result 0 (line 0)
         assert_eq!(search.get_current_match().unwrap().line_idx, 0);
@@ -522,7 +522,7 @@ mod tests {
         let (_f, reader) = make_reader(&["foo"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("foo", &all, raw_text(&reader))?;
+        search.search("foo", all.iter().copied(), raw_text(&reader))?;
         search.set_forward(false);
         assert!(!search.is_forward());
         search.clear();
@@ -536,7 +536,7 @@ mod tests {
         let (_f, reader) = make_reader(&["foo", "bar", "foo", "bar", "foo"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("foo", &all, raw_text(&reader))?;
+        search.search("foo", all.iter().copied(), raw_text(&reader))?;
 
         // From line 1: first result at/after line 1 → line 2.
         search.set_position_for_search(1, true);
@@ -558,7 +558,7 @@ mod tests {
         let (_f, reader) = make_reader(&["foo", "bar", "foo", "bar", "foo"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("foo", &all, raw_text(&reader))?;
+        search.search("foo", all.iter().copied(), raw_text(&reader))?;
 
         // From line 3: last result strictly before line 3 → line 2.
         search.set_position_for_search(3, false);
@@ -579,7 +579,7 @@ mod tests {
         let (_f, reader) = make_reader(&["foo foo", "foo"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("foo", &all, raw_text(&reader))?;
+        search.search("foo", all.iter().copied(), raw_text(&reader))?;
         assert_eq!(search.get_current_occurrence_index(), 0);
         search.next_match();
         assert_eq!(search.get_current_occurrence_index(), 1);
@@ -593,7 +593,7 @@ mod tests {
         let (_f, reader) = make_reader(&["foo foo", "foo"]);
         let all: Vec<usize> = (0..reader.line_count()).collect();
         let mut search = Search::new();
-        search.search("foo", &all, raw_text(&reader))?;
+        search.search("foo", all.iter().copied(), raw_text(&reader))?;
         // current is line 0, occ 0
         assert_eq!(search.get_current_occurrence_for_line(0), Some(0));
         assert_eq!(search.get_current_occurrence_for_line(1), None);
