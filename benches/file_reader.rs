@@ -7,7 +7,7 @@
 //! Run with:
 //!   cargo bench --bench file_reader
 
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use logana::file_reader::FileReader;
 use std::io::Write as _;
 use tempfile::NamedTempFile;

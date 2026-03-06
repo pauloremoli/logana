@@ -283,13 +283,8 @@ impl App {
             let state = self.file_load_state.take().unwrap();
             match load_result {
                 Ok(result) => {
-                    self.on_load_success(
-                        state.path,
-                        state.total_bytes,
-                        state.on_complete,
-                        result,
-                    )
-                    .await
+                    self.on_load_success(state.path, state.total_bytes, state.on_complete, result)
+                        .await
                 }
                 Err(_) => self.skip_or_fail_load(state.on_complete).await,
             }
@@ -322,8 +317,7 @@ impl App {
                 // Use precomputed visible indices when available (single-pass optimisation);
                 // otherwise fall back to a full compute_visible scan.
                 if let Some(visible) = result.precomputed_visible {
-                    self.tabs[0].visible_indices =
-                        super::VisibleLines::Filtered(visible);
+                    self.tabs[0].visible_indices = super::VisibleLines::Filtered(visible);
                 } else {
                     self.tabs[0].refresh_visible();
                 }
@@ -942,7 +936,10 @@ mod tests {
         let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let fr = FileReader::from_bytes(b"loaded\n".to_vec());
-        let _ = result_tx.send(Ok(FileLoadResult { reader: fr, precomputed_visible: None }));
+        let _ = result_tx.send(Ok(FileLoadResult {
+            reader: fr,
+            precomputed_visible: None,
+        }));
         drop(progress_tx);
 
         app.file_load_state = Some(super::FileLoadState {
@@ -974,7 +971,10 @@ mod tests {
             b"{\"level\":\"INFO\",\"msg\":\"hello\"}\n{\"level\":\"WARN\",\"msg\":\"world\"}\n"
                 .to_vec(),
         );
-        let _ = result_tx.send(Ok(FileLoadResult { reader: fr, precomputed_visible: None }));
+        let _ = result_tx.send(Ok(FileLoadResult {
+            reader: fr,
+            precomputed_visible: None,
+        }));
         drop(progress_tx);
 
         app.file_load_state = Some(super::FileLoadState {

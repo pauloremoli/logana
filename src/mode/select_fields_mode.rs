@@ -51,10 +51,12 @@ impl Mode for SelectFieldsMode {
             let all_ordered: Vec<String> = self.fields.iter().map(|(n, _)| n.clone()).collect();
             tab.field_layout.columns = Some(enabled);
             tab.field_layout.columns_order = Some(all_ordered);
+            tab.invalidate_parse_cache();
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
         if kb.select_fields.cancel.matches(key, modifiers) {
             tab.field_layout = std::mem::take(&mut self.original_layout);
+            tab.invalidate_parse_cache();
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
         if kb.navigation.scroll_down.matches(key, modifiers) {

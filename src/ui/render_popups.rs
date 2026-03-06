@@ -1124,8 +1124,7 @@ impl App {
             br_style,
         );
         frame.render_widget(
-            Paragraph::new(Line::from(footer_spans))
-                .style(Style::default().bg(self.theme.root_bg)),
+            Paragraph::new(Line::from(footer_spans)).style(Style::default().bg(self.theme.root_bg)),
             chunks[2],
         );
 

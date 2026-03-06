@@ -258,14 +258,17 @@ impl Mode for NormalMode {
                 tab.command_error = Some("No visible lines".to_string());
                 return (self, KeyResult::Handled);
             }
-            let idx = tab.visible_indices.get(tab.scroll_offset.min(tab.visible_indices.len() - 1));
+            let idx = tab
+                .visible_indices
+                .get(tab.scroll_offset.min(tab.visible_indices.len() - 1));
             let bytes = tab.file_reader.get_line(idx);
             let text = tab
                 .detected_format
                 .as_ref()
                 .and_then(|parser| parser.parse_line(bytes))
                 .map(|parts| {
-                    apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields, tab.show_keys).join(" ")
+                    apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields, tab.show_keys)
+                        .join(" ")
                 })
                 .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned());
             return (self, KeyResult::CopyToClipboard(text));
@@ -287,8 +290,13 @@ impl Mode for NormalMode {
                         .as_ref()
                         .and_then(|parser| parser.parse_line(bytes))
                         .map(|parts| {
-                            apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields, tab.show_keys)
-                                .join(" ")
+                            apply_field_layout(
+                                &parts,
+                                &tab.field_layout,
+                                &tab.hidden_fields,
+                                tab.show_keys,
+                            )
+                            .join(" ")
                         })
                         .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
                 })

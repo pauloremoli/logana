@@ -109,6 +109,9 @@ mod tests {
             name: "request",
             fields: vec![("method", "GET"), ("uri", "/health")],
         };
-        assert_eq!(format_span_col(&span, true), "request: method=GET uri=/health");
+        assert_eq!(
+            format_span_col(&span, true),
+            "request: method=GET uri=/health"
+        );
     }
 }

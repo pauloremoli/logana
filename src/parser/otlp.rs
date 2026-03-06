@@ -528,7 +528,8 @@ mod tests {
 
     #[test]
     fn test_parse_otlp_json_body_string_value_object() {
-        let line = br#"{"timeUnixNano":"1","severityText":"WARN","body":{"stringValue":"disk full"}}"#;
+        let line =
+            br#"{"timeUnixNano":"1","severityText":"WARN","body":{"stringValue":"disk full"}}"#;
         let parser = OtlpParser;
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.message, Some("disk full"));

@@ -113,13 +113,22 @@ impl Mode for VisualLineMode {
                 .iter()
                 .map(|&idx| {
                     let bytes = tab.file_reader.get_line(idx);
-                    if tab.raw_mode { None } else { tab.detected_format.as_ref() }
-                        .and_then(|parser| parser.parse_line(bytes))
-                        .map(|parts| {
-                            apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields, tab.show_keys)
-                                .join(" ")
-                        })
-                        .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
+                    if tab.raw_mode {
+                        None
+                    } else {
+                        tab.detected_format.as_ref()
+                    }
+                    .and_then(|parser| parser.parse_line(bytes))
+                    .map(|parts| {
+                        apply_field_layout(
+                            &parts,
+                            &tab.field_layout,
+                            &tab.hidden_fields,
+                            tab.show_keys,
+                        )
+                        .join(" ")
+                    })
+                    .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -389,7 +398,10 @@ mod tests {
     async fn test_m_marks_all_selected_lines() {
         let mut tab = make_tab(&["a", "b", "c", "d"]).await;
         tab.scroll_offset = 3;
-        let mode = VisualLineMode { anchor: 1, count: None };
+        let mode = VisualLineMode {
+            anchor: 1,
+            count: None,
+        };
         let (mode2, result) = press(mode, &mut tab, KeyCode::Char('m')).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(matches!(mode2.render_state(), ModeRenderState::Normal));
@@ -407,7 +419,10 @@ mod tests {
         tab.log_manager.toggle_mark(1);
         tab.log_manager.toggle_mark(2);
         tab.scroll_offset = 2;
-        let mode = VisualLineMode { anchor: 0, count: None };
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
         let (_, _) = press(mode, &mut tab, KeyCode::Char('m')).await;
         // All were marked → all should now be unmarked.
         assert!(!tab.log_manager.is_marked(0));
@@ -420,7 +435,10 @@ mod tests {
         let mut tab = make_tab(&["a", "b", "c"]).await;
         tab.log_manager.toggle_mark(0); // only first is marked
         tab.scroll_offset = 2;
-        let mode = VisualLineMode { anchor: 0, count: None };
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
         let (_, _) = press(mode, &mut tab, KeyCode::Char('m')).await;
         // Partial marks → mark all.
         assert!(tab.log_manager.is_marked(0));
@@ -430,10 +448,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_y_raw_mode_yanks_raw_bytes() {
-        let mut tab = make_tab(&[
-            r#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","message":"hello"}"#,
-        ])
-        .await;
+        let mut tab =
+            make_tab(&[r#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","message":"hello"}"#])
+                .await;
         assert!(tab.detected_format.is_some());
         tab.raw_mode = true;
         tab.scroll_offset = 0;

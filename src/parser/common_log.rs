@@ -1097,12 +1097,16 @@ mod tests {
 
     #[test]
     fn test_parse_tracing_span_fields_unquoted() {
-        let fields = parse_tracing_span_fields("method=GET uri=/api/store-settings version=HTTP/1.1");
-        assert_eq!(fields, vec![
-            ("method", "GET"),
-            ("uri", "/api/store-settings"),
-            ("version", "HTTP/1.1"),
-        ]);
+        let fields =
+            parse_tracing_span_fields("method=GET uri=/api/store-settings version=HTTP/1.1");
+        assert_eq!(
+            fields,
+            vec![
+                ("method", "GET"),
+                ("uri", "/api/store-settings"),
+                ("version", "HTTP/1.1"),
+            ]
+        );
     }
 
     #[test]
@@ -1123,11 +1127,14 @@ mod tests {
         let (span, rest) = try_parse_span_prefix(s);
         let span = span.unwrap();
         assert_eq!(span.name, "request");
-        assert_eq!(span.fields, vec![
-            ("method", "GET"),
-            ("uri", "/api/items"),
-            ("version", "HTTP/1.1"),
-        ]);
+        assert_eq!(
+            span.fields,
+            vec![
+                ("method", "GET"),
+                ("uri", "/api/items"),
+                ("version", "HTTP/1.1"),
+            ]
+        );
         assert_eq!(rest, "tower_http: started");
     }
 
@@ -1169,11 +1176,14 @@ mod tests {
         assert_eq!(parts.message, Some("started processing request"));
         let span = parts.span.unwrap();
         assert_eq!(span.name, "request");
-        assert_eq!(span.fields, vec![
-            ("method", "GET"),
-            ("uri", "/api/store-settings"),
-            ("version", "HTTP/1.1"),
-        ]);
+        assert_eq!(
+            span.fields,
+            vec![
+                ("method", "GET"),
+                ("uri", "/api/store-settings"),
+                ("version", "HTTP/1.1"),
+            ]
+        );
     }
 
     #[test]
@@ -1192,7 +1202,8 @@ mod tests {
     #[test]
     fn test_tracing_fmt_no_span_still_parses() {
         // Startup lines without a span still parse via try_generic
-        let line = b"2026-03-05T10:44:59.378731Z INFO  api_server API server listening on 0.0.0.0:3001";
+        let line =
+            b"2026-03-05T10:44:59.378731Z INFO  api_server API server listening on 0.0.0.0:3001";
         let parser = CommonLogParser;
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2026-03-05T10:44:59.378731Z"));

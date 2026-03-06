@@ -325,7 +325,10 @@ mod tests {
     #[test]
     fn test_get_col_message() {
         let p = make_parts();
-        assert_eq!(get_col(&p, "message", false), Some("hello world".to_string()));
+        assert_eq!(
+            get_col(&p, "message", false),
+            Some("hello world".to_string())
+        );
     }
 
     #[test]
@@ -379,7 +382,10 @@ mod tests {
         // show_keys=false: values only
         assert_eq!(get_col(&p, "span", false), Some("handler: GET".to_string())); // single value, no separator difference
         // show_keys=true: key=value pairs
-        assert_eq!(get_col(&p, "span", true), Some("handler: method=GET".to_string()));
+        assert_eq!(
+            get_col(&p, "span", true),
+            Some("handler: method=GET".to_string())
+        );
     }
 
     // -----------------------------------------------------------------------

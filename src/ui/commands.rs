@@ -61,13 +61,29 @@ impl App {
                         .log_manager
                         .remove_filter(old_id)
                         .await;
+                    // Editing a filter means removing then re-adding; do a full refresh.
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .add_filter_with_color(pattern, FilterType::Exclude, None, None, true)
+                        .await;
+                    self.tabs[self.active_tab].scroll_offset = 0;
+                    self.tabs[self.active_tab].refresh_visible();
+                } else {
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .add_filter_with_color(
+                            pattern.clone(),
+                            FilterType::Exclude,
+                            None,
+                            None,
+                            true,
+                        )
+                        .await;
+                    self.tabs[self.active_tab].scroll_offset = 0;
+                    // Opt-5: incremental exclude — only re-check visible lines instead of
+                    // scanning the entire file again via refresh_visible/compute_visible.
+                    self.tabs[self.active_tab].apply_incremental_exclude(&pattern);
                 }
-                self.tabs[self.active_tab]
-                    .log_manager
-                    .add_filter_with_color(pattern, FilterType::Exclude, None, None, true)
-                    .await;
-                self.tabs[self.active_tab].scroll_offset = 0;
-                self.tabs[self.active_tab].refresh_visible();
             }
             Some(Commands::SetColor { fg, bg, line_mode }) => {
                 let selected_filter_index = self.tabs[self.active_tab].filter_context.unwrap_or(0);
@@ -117,7 +133,11 @@ impl App {
                     comments: tab.log_manager.get_comments(),
                     marked_indices: tab.log_manager.get_marked_indices(),
                     file_reader: &tab.file_reader,
-                    parser: if tab.raw_mode { None } else { tab.detected_format.as_deref() },
+                    parser: if tab.raw_mode {
+                        None
+                    } else {
+                        tab.detected_format.as_deref()
+                    },
                     field_layout: &tab.field_layout,
                     hidden_fields: &tab.hidden_fields,
                     show_keys: tab.show_keys,
@@ -177,9 +197,8 @@ impl App {
                         .collect(),
                 }];
                 let original_disabled = disabled.clone();
-                self.tabs[self.active_tab].mode = Box::new(
-                    ValueColorsMode::new_level_colors(groups, original_disabled),
-                );
+                self.tabs[self.active_tab].mode =
+                    Box::new(ValueColorsMode::new_level_colors(groups, original_disabled));
                 return Ok(true);
             }
             Some(Commands::SetTheme { theme_name }) => {
@@ -235,14 +254,17 @@ impl App {
             Some(Commands::HideField { field }) => {
                 let tab = &mut self.tabs[self.active_tab];
                 tab.hidden_fields.insert(field);
+                tab.invalidate_parse_cache();
             }
             Some(Commands::ShowField { field }) => {
                 let tab = &mut self.tabs[self.active_tab];
                 tab.hidden_fields.remove(&field);
+                tab.invalidate_parse_cache();
             }
             Some(Commands::ShowAllFields) => {
                 let tab = &mut self.tabs[self.active_tab];
                 tab.hidden_fields.clear();
+                tab.invalidate_parse_cache();
             }
             Some(Commands::SelectFields) => {
                 let tab = &mut self.tabs[self.active_tab];
@@ -420,14 +442,19 @@ impl App {
                 }
             }
             Some(Commands::ShowKeys) => {
-                self.tabs[self.active_tab].show_keys = true;
+                let tab = &mut self.tabs[self.active_tab];
+                tab.show_keys = true;
+                tab.invalidate_parse_cache();
             }
             Some(Commands::HideKeys) => {
-                self.tabs[self.active_tab].show_keys = false;
+                let tab = &mut self.tabs[self.active_tab];
+                tab.show_keys = false;
+                tab.invalidate_parse_cache();
             }
             Some(Commands::Raw) => {
                 let tab = &mut self.tabs[self.active_tab];
                 tab.raw_mode = !tab.raw_mode;
+                tab.invalidate_parse_cache();
             }
             None => {}
         }
@@ -515,7 +542,10 @@ mod tests {
     async fn test_level_colors_opens_dialog() {
         let mut app = make_app(&["line1"]).await;
         let default_disabled: std::collections::HashSet<String> =
-            ["trace", "debug", "info", "notice"].iter().map(|s| s.to_string()).collect();
+            ["trace", "debug", "info", "notice"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         assert_eq!(app.tabs[0].level_colors_disabled, default_disabled);
         let result = app.run_command("level-colors").await.unwrap();
         assert!(result);

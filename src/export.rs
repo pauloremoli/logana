@@ -268,7 +268,12 @@ fn render_line_content(line_bytes: &[u8], data: &ExportData) -> String {
     if let Some(parser) = data.parser
         && let Some(parts) = parser.parse_line(line_bytes)
     {
-        let cols = apply_field_layout(&parts, data.field_layout, data.hidden_fields, data.show_keys);
+        let cols = apply_field_layout(
+            &parts,
+            data.field_layout,
+            data.hidden_fields,
+            data.show_keys,
+        );
         if !cols.is_empty() {
             return cols.join(" ");
         }

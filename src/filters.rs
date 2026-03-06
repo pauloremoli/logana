@@ -33,56 +33,60 @@ pub trait Filter: Send + Sync {
 }
 
 /// Render a line using the collected match spans and a styles array.
-/// Spans are sorted by (start, priority) so higher-priority spans overwrite lower ones.
+///
+/// Overlapping spans are resolved by priority: higher-priority spans overwrite lower ones.
+/// Uses a boundary-sweep approach — collect all span endpoints, sort them, then for each
+/// interval pick the highest-priority covering span. This avoids per-span Vec allocations.
 pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -> Line<'a> {
     if col.spans.is_empty() {
         let text = std::str::from_utf8(col.line).unwrap_or("").to_string();
         return Line::from(text);
     }
 
-    // Sort spans by start position; for ties, higher priority wins (applied last → overwrites).
+    let line_len = col.line.len();
+
+    // Sort by priority DESC so the first match in the inner scan is always the highest priority.
     let mut sorted = col.spans.clone();
-    sorted.sort_by(|a, b| a.start.cmp(&b.start).then(a.priority.cmp(&b.priority)));
+    sorted.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.start.cmp(&b.start)));
 
-    // Flatten overlapping spans: split the line into non-overlapping segments.
-    // We build a list of (start, end, style) events and emit them left-to-right.
-    let mut events: Vec<(usize, usize, StyleId)> = Vec::with_capacity(sorted.len() * 2);
+    // Collect unique boundary points from valid spans.
+    let mut boundaries: Vec<usize> = Vec::with_capacity(sorted.len() * 2 + 2);
+    boundaries.push(0);
+    boundaries.push(line_len);
+    for s in &sorted {
+        if s.start < s.end && s.end <= line_len {
+            boundaries.push(s.start);
+            boundaries.push(s.end);
+        }
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
 
-    for span in &sorted {
-        if span.start >= span.end || span.end > col.line.len() {
+    // For each interval [b[i], b[i+1]) find the highest-priority covering span (first in sorted).
+    // Merge adjacent intervals that share the same style to minimise Span count.
+    let mut events: Vec<(usize, usize, StyleId)> = Vec::with_capacity(boundaries.len());
+    for w in boundaries.windows(2) {
+        let (seg_s, seg_e) = (w[0], w[1]);
+        if seg_s >= seg_e {
             continue;
         }
-        // Use a simple interval-colouring: later spans (higher priority due to sort) overwrite.
-        // Insert this span, splitting any already-inserted spans that overlap.
-        let new = (span.start, span.end, span.style);
-
-        let mut merged: Vec<(usize, usize, StyleId)> = Vec::with_capacity(events.len() + 2);
-        let mut inserted = false;
-
-        for &(es, ee, eid) in &events {
-            if ee <= new.0 || es >= new.1 {
-                // No overlap
-                merged.push((es, ee, eid));
-            } else {
-                // Overlap — keep the parts of existing span outside the new span
-                if es < new.0 {
-                    merged.push((es, new.0, eid));
-                }
-                if ee > new.1 {
-                    merged.push((new.1, ee, eid));
-                }
+        let best = sorted
+            .iter()
+            .find(|s| s.start <= seg_s && s.end >= seg_e && s.start < s.end && s.end <= line_len)
+            .map(|s| s.style);
+        if let Some(style) = best {
+            if let Some(last) = events.last_mut()
+                && last.1 == seg_s
+                && last.2 == style
+            {
+                last.1 = seg_e;
+                continue;
             }
+            events.push((seg_s, seg_e, style));
         }
-        if !inserted {
-            merged.push(new);
-            inserted = true;
-        }
-        let _ = inserted;
-        merged.sort_by_key(|&(s, _, _)| s);
-        events = merged;
     }
 
-    // Build ratatui spans
+    // Build ratatui spans from events, filling unstyled gaps with raw text.
     let mut spans: Vec<Span<'a>> = Vec::new();
     let mut pos = 0usize;
 
@@ -107,7 +111,7 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
         pos = end.max(pos);
     }
 
-    if pos < col.line.len() {
+    if pos < line_len {
         let text = std::str::from_utf8(&col.line[pos..])
             .unwrap_or("")
             .to_string();

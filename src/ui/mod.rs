@@ -4,12 +4,16 @@
 //! [`TabState`] owns the per-tab file reader, log manager, format parser,
 //! visible indices, scroll state, and active mode.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use ratatui::style::Style;
+
 use crate::config::Keybindings;
+use crate::date_filter::DateFilterStyle;
 use crate::db::FileContext;
 use crate::file_reader::FileReader;
+use crate::filters::FilterManager;
 use crate::log_manager::LogManager;
 use crate::mode::app_mode::Mode;
 use crate::mode::normal_mode::NormalMode;
@@ -107,7 +111,13 @@ impl VisibleLines {
     /// File-line index at visible position `pos`, or `None` if out of bounds.
     pub fn get_opt(&self, pos: usize) -> Option<usize> {
         match self {
-            Self::All(n) => if pos < *n { Some(pos) } else { None },
+            Self::All(n) => {
+                if pos < *n {
+                    Some(pos)
+                } else {
+                    None
+                }
+            }
             Self::Filtered(v) => v.get(pos).copied(),
         }
     }
@@ -115,7 +125,13 @@ impl VisibleLines {
     /// Visible position of file-line `line_idx`, or `None` if not visible.
     pub fn position_of(&self, line_idx: usize) -> Option<usize> {
         match self {
-            Self::All(n) => if line_idx < *n { Some(line_idx) } else { None },
+            Self::All(n) => {
+                if line_idx < *n {
+                    Some(line_idx)
+                } else {
+                    None
+                }
+            }
             Self::Filtered(v) => v.iter().position(|&i| i == line_idx),
         }
     }
@@ -131,7 +147,11 @@ impl VisibleLines {
     pub fn binary_search(&self, target: usize) -> Result<usize, usize> {
         match self {
             Self::All(n) => {
-                if target < *n { Ok(target) } else { Err(*n) }
+                if target < *n {
+                    Ok(target)
+                } else {
+                    Err(*n)
+                }
             }
             Self::Filtered(v) => v.binary_search(&target),
         }
@@ -159,6 +179,27 @@ impl Default for VisibleLines {
     fn default() -> Self {
         Self::All(0)
     }
+}
+
+// ---------------------------------------------------------------------------
+// CachedParsedLine
+// ---------------------------------------------------------------------------
+
+/// Cached output of parsing and rendering a structured log line.
+/// Keyed by file-line index; invalidated by incrementing `TabState::parse_cache_gen`.
+pub struct CachedParsedLine {
+    /// `apply_field_layout` columns joined with spaces; empty string when all cols are hidden.
+    pub rendered: String,
+    /// Parsed level string (e.g. `"INFO"`) for level-colour lookup.
+    pub level: Option<String>,
+    /// Parsed timestamp string for date-filter highlighting.
+    pub timestamp: Option<String>,
+    /// Parsed target string for process-colour assignment.
+    pub target: Option<String>,
+    /// Value of the `pid` extra field, for process-colour pairing.
+    pub pid: Option<String>,
+    /// True when `apply_field_layout` returned an empty Vec (all columns hidden).
+    pub all_cols_hidden: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +252,19 @@ pub struct TabState {
     pub show_mode_bar: bool,
     /// Whether panel borders (logs, sidebar, mode bar) are drawn.
     pub show_borders: bool,
+    /// Cached filter manager, rebuilt only in `refresh_visible`. Shared via `Arc` so
+    /// the render path can clone the pointer (O(1)) instead of rebuilding Aho-Corasick.
+    pub filter_manager_arc: Arc<FilterManager>,
+    /// Filter highlight styles parallel to `filter_manager_arc`.
+    pub filter_styles: Vec<Style>,
+    /// Date-filter highlight styles parallel to `filter_manager_arc`.
+    pub filter_date_styles: Vec<DateFilterStyle>,
+    /// Monotonically increasing counter; bumped in `refresh_visible` and whenever the
+    /// field layout or display mode changes. Cache entries with a stale generation are
+    /// re-computed on the next render.
+    pub parse_cache_gen: u64,
+    /// Per-line parse cache: file-line index → (generation, CachedParsedLine).
+    pub parse_cache: HashMap<usize, (u64, CachedParsedLine)>,
 }
 
 impl TabState {
@@ -255,6 +309,11 @@ impl TabState {
             show_keys: false,
             show_mode_bar: true,
             show_borders: true,
+            filter_manager_arc: Arc::new(FilterManager::empty()),
+            filter_styles: Vec::new(),
+            filter_date_styles: Vec::new(),
+            parse_cache_gen: 0,
+            parse_cache: HashMap::new(),
         };
         tab.refresh_visible();
         tab
@@ -262,16 +321,34 @@ impl TabState {
 
     /// Recompute which file lines are visible under the current filters.
     pub fn refresh_visible(&mut self) {
+        // Invalidate the parse cache: field layout, filters, or file content may have changed.
+        self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
+        self.parse_cache.clear();
+
         if self.show_marks_only {
             let mut indices = self.log_manager.get_marked_indices();
             indices.retain(|&i| i < self.file_reader.line_count());
             self.visible_indices = VisibleLines::Filtered(indices);
+            // Rebuild filter cache so the render path always has a valid manager.
+            let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+            self.filter_manager_arc = Arc::new(fm);
+            self.filter_styles = styles;
+            self.filter_date_styles = date_filter_styles;
         } else if !self.filtering_enabled {
             // No allocation: All(n) represents identity mapping i→i.
             self.visible_indices = VisibleLines::All(self.file_reader.line_count());
+            // Keep an empty manager so the render path produces no filter highlights.
+            self.filter_manager_arc = Arc::new(FilterManager::empty());
+            self.filter_styles = Vec::new();
+            self.filter_date_styles = Vec::new();
         } else {
-            let (fm, _, _) = self.log_manager.build_filter_manager();
-            self.visible_indices = VisibleLines::Filtered(fm.compute_visible(&self.file_reader));
+            // Build once: compute_visible uses the same manager the render path will clone.
+            let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+            let visible = fm.compute_visible(&self.file_reader);
+            self.filter_manager_arc = Arc::new(fm);
+            self.filter_styles = styles;
+            self.filter_date_styles = date_filter_styles;
+            self.visible_indices = VisibleLines::Filtered(visible);
         }
 
         // Apply date filters as a post-processing step.
@@ -309,8 +386,12 @@ impl TabState {
         if let Some(parser) = &self.detected_format
             && let Some(parts) = parser.parse_line(bytes)
         {
-            let cols =
-                field_layout::apply_field_layout(&parts, &self.field_layout, &self.hidden_fields, self.show_keys);
+            let cols = field_layout::apply_field_layout(
+                &parts,
+                &self.field_layout,
+                &self.hidden_fields,
+                self.show_keys,
+            );
             if !cols.is_empty() {
                 return cols.join(" ");
             }
@@ -377,6 +458,43 @@ impl TabState {
         Ok(())
     }
 
+    /// Apply a new exclude filter incrementally against the currently visible lines,
+    /// avoiding a full `compute_visible` scan of the entire file.
+    ///
+    /// Only safe for pure-text exclude additions when no include-filter-only changes are needed.
+    /// The filter manager cache is rebuilt afterward so render highlights stay correct.
+    pub fn apply_incremental_exclude(&mut self, pattern: &str) {
+        use crate::filters::{FilterDecision, MatchCollector, build_filter};
+        if let Some(filter) = build_filter(pattern, FilterDecision::Exclude, true, 0) {
+            self.visible_indices.retain(|line_idx| {
+                let line = self.file_reader.get_line(line_idx);
+                let mut dummy = MatchCollector::new(line);
+                !matches!(filter.evaluate(line, &mut dummy), FilterDecision::Exclude)
+            });
+        }
+        // Rebuild filter manager cache so the render path sees the updated filters.
+        let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+        self.filter_manager_arc = Arc::new(fm);
+        self.filter_styles = styles;
+        self.filter_date_styles = date_filter_styles;
+        // Invalidate parse cache (filter change affects highlight output).
+        self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
+        self.parse_cache.clear();
+        // Clamp scroll.
+        if self.visible_indices.is_empty() {
+            self.scroll_offset = 0;
+        } else {
+            self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
+        }
+    }
+
+    /// Bump the parse cache generation so that all cached render outputs are re-computed
+    /// on the next frame. Call this whenever the field layout or display mode changes.
+    pub fn invalidate_parse_cache(&mut self) {
+        self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
+        self.parse_cache.clear();
+    }
+
     pub fn to_file_context(&self) -> Option<FileContext> {
         let source = self.log_manager.source_file()?;
         let marked_lines = self.log_manager.get_marked_indices();
@@ -421,11 +539,9 @@ impl TabState {
         if !ctx.search_query.is_empty() {
             let visible = self.visible_indices.clone();
             let texts = self.collect_display_texts(visible.iter());
-            let _ = self
-                .search
-                .search(&ctx.search_query, visible.iter(), |li| {
-                    texts.get(&li).cloned()
-                });
+            let _ = self.search.search(&ctx.search_query, visible.iter(), |li| {
+                texts.get(&li).cloned()
+            });
         }
     }
 
@@ -479,7 +595,8 @@ pub struct FileLoadState {
     /// Current progress fraction (0.0–1.0); updated by the background task.
     pub progress_rx: tokio::sync::watch::Receiver<f64>,
     /// Delivers the finished [`crate::file_reader::FileLoadResult`] (or error) when indexing is done.
-    pub result_rx: tokio::sync::oneshot::Receiver<std::io::Result<crate::file_reader::FileLoadResult>>,
+    pub result_rx:
+        tokio::sync::oneshot::Receiver<std::io::Result<crate::file_reader::FileLoadResult>>,
     pub total_bytes: u64,
     pub on_complete: LoadContext,
 }
@@ -641,7 +758,10 @@ mod tests {
         assert_eq!(ctx.scroll_offset, 0);
         assert!(ctx.wrap);
         let expected_disabled: std::collections::HashSet<String> =
-            ["trace", "debug", "info", "notice"].iter().map(|s| s.to_string()).collect();
+            ["trace", "debug", "info", "notice"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         assert_eq!(ctx.level_colors_disabled, expected_disabled);
         assert!(ctx.show_sidebar);
         assert!(ctx.show_line_numbers);
@@ -658,11 +778,12 @@ mod tests {
     async fn test_apply_file_context_full() {
         let mut tab =
             make_tab_with_source(&["line1", "line2", "line3", "line4", "line5"], "test.log").await;
-        let all_disabled: std::collections::HashSet<String> =
-            ["trace", "debug", "info", "notice", "warning", "error", "fatal"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+        let all_disabled: std::collections::HashSet<String> = [
+            "trace", "debug", "info", "notice", "warning", "error", "fatal",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let ctx = FileContext {
             source_file: "test.log".to_string(),
             scroll_offset: 3,
@@ -935,5 +1056,81 @@ mod tests {
         tab.refresh_visible();
         // Lines in either range are visible; the line between is hidden.
         assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
+    }
+
+    // ── Opt-1: filter manager cache ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_refresh_visible_populates_filter_cache() {
+        let mut tab = make_tab(&["error line", "info line", "error again"]).await;
+        tab.log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.refresh_visible();
+        // Cache is set and reflects the filter.
+        assert!(tab.filter_manager_arc.is_visible(b"error line"));
+        assert!(!tab.filter_manager_arc.is_visible(b"info line"));
+    }
+
+    #[tokio::test]
+    async fn test_filtering_disabled_cache_is_empty_manager() {
+        let mut tab = make_tab(&["error line", "info line"]).await;
+        tab.log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.filtering_enabled = false;
+        tab.refresh_visible();
+        // When filtering is disabled the cached manager is empty (everything visible).
+        assert!(tab.filter_manager_arc.is_visible(b"info line"));
+        assert!(tab.filter_styles.is_empty());
+    }
+
+    // ── Opt-4: parse cache invalidation ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_refresh_visible_increments_parse_cache_gen() {
+        let mut tab = make_tab(&["line"]).await;
+        let old_gen = tab.parse_cache_gen;
+        tab.refresh_visible();
+        assert!(tab.parse_cache_gen > old_gen);
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_parse_cache_increments_gen() {
+        let mut tab = make_tab(&["line"]).await;
+        let old_gen = tab.parse_cache_gen;
+        tab.invalidate_parse_cache();
+        assert!(tab.parse_cache_gen > old_gen);
+        assert!(tab.parse_cache.is_empty());
+    }
+
+    // ── Opt-5: incremental exclude ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_apply_incremental_exclude_filters_visible() {
+        let mut tab = make_tab(&["error line", "info line", "error again", "debug line"]).await;
+        // Start with all lines visible.
+        assert_eq!(tab.visible_indices.len(), 4);
+        // Apply incremental exclude for "error" — removes lines 0 and 2.
+        tab.apply_incremental_exclude("error");
+        assert_eq!(tab.visible_indices.len(), 2);
+        // Remaining visible lines should be "info" and "debug".
+        assert_eq!(tab.visible_indices.get(0), 1);
+        assert_eq!(tab.visible_indices.get(1), 3);
+    }
+
+    #[tokio::test]
+    async fn test_apply_incremental_exclude_updates_filter_cache() {
+        let mut tab = make_tab(&["line a", "line b"]).await;
+        tab.log_manager
+            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.refresh_visible();
+        let old_gen = tab.parse_cache_gen;
+        tab.apply_incremental_exclude("line b");
+        // Parse cache generation must be bumped.
+        assert!(tab.parse_cache_gen > old_gen);
+        // Only "line a" remains visible.
+        assert_eq!(tab.visible_indices.len(), 1);
     }
 }

@@ -331,7 +331,12 @@ mod tests {
             scroll_offset: 5,
             search_query: String::new(),
             wrap: false,
-            level_colors_disabled: ["trace", "debug", "info", "notice", "warning", "error", "fatal"].iter().map(|s| s.to_string()).collect(),
+            level_colors_disabled: [
+                "trace", "debug", "info", "notice", "warning", "error", "fatal",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
             show_sidebar: false,
             horizontal_scroll: 3,
             marked_lines: vec![],

@@ -215,8 +215,13 @@ async fn main() -> Result<()> {
         // Kick off the background file load now that the TUI is visible.
         if background_file_load {
             if let Some(path) = source_path {
-                app.begin_file_load(path, LoadContext::ReplaceInitialTab, startup_predicate, args.tail)
-                    .await;
+                app.begin_file_load(
+                    path,
+                    LoadContext::ReplaceInitialTab,
+                    startup_predicate,
+                    args.tail,
+                )
+                .await;
             }
         } else if stdin_is_piped {
             app.begin_stdin_load().await;
@@ -279,8 +284,7 @@ mod tests {
 
     #[test]
     fn test_args_filters_long() {
-        let args =
-            Args::try_parse_from(["logana", "file.log", "--filters", "my.json"]).unwrap();
+        let args = Args::try_parse_from(["logana", "file.log", "--filters", "my.json"]).unwrap();
         assert_eq!(args.filters, Some("my.json".to_string()));
     }
 

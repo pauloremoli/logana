@@ -324,8 +324,7 @@ mod tests {
         let mut tab = make_tab().await;
         let mut mode = CommentMode::new(vec![0, 1, 2]);
         mode.lines = vec!["line one".to_string(), "line two".to_string()];
-        let (mode2, result) =
-            press(mode, &mut tab, KeyCode::Enter, KeyModifiers::CONTROL).await;
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Enter, KeyModifiers::CONTROL).await;
         assert!(matches!(result, KeyResult::Handled));
         // returned to NormalMode
         assert!(!matches!(
@@ -483,8 +482,7 @@ mod tests {
 
         let mut mode = CommentMode::edit(0, "original".to_string(), vec![0, 1]);
         mode.lines = vec!["updated text".to_string()];
-        let (mode2, result) =
-            press(mode, &mut tab, KeyCode::Enter, KeyModifiers::CONTROL).await;
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Enter, KeyModifiers::CONTROL).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(!matches!(
             mode2.render_state(),

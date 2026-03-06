@@ -212,8 +212,7 @@ impl ValueColors {
         &self,
         process_representative: Option<Color>,
     ) -> Vec<ValueColorGroup> {
-        let process_swatch =
-            process_representative.unwrap_or(Color::Rgb(255, 85, 85)); // dracula red fallback
+        let process_swatch = process_representative.unwrap_or(Color::Rgb(255, 85, 85)); // dracula red fallback
         vec![
             ValueColorGroup {
                 label: "HTTP methods",
@@ -585,9 +584,7 @@ impl Theme {
         // Backfill `cursor_bg` from `border` so themes that pre-date the split
         // continue to work without any change to their JSON files.
         let mut json_val: serde_json::Value = serde_json::from_str(&data)?;
-        if json_val
-            .get("cursor_bg")
-            .is_none_or(|v| v.is_null())
+        if json_val.get("cursor_bg").is_none_or(|v| v.is_null())
             && let Some(border) = json_val.get("border").cloned()
         {
             json_val["cursor_bg"] = border;
@@ -914,8 +911,7 @@ mod tests {
             "process_colors": ["#ff5555"]
         }"##;
         fs::write(theme_dir.join("minimal.json"), json).unwrap();
-        let theme =
-            Theme::from_file_with_config_dir("minimal.json", Some(temp.path())).unwrap();
+        let theme = Theme::from_file_with_config_dir("minimal.json", Some(temp.path())).unwrap();
         assert_eq!(theme.cursor_bg, Color::Rgb(98, 114, 164)); // = border
     }
 
@@ -935,8 +931,7 @@ mod tests {
             "process_colors": ["#e45649"]
         }"##;
         fs::write(theme_dir.join("explicit.json"), json).unwrap();
-        let theme =
-            Theme::from_file_with_config_dir("explicit.json", Some(temp.path())).unwrap();
+        let theme = Theme::from_file_with_config_dir("explicit.json", Some(temp.path())).unwrap();
         assert_eq!(theme.border, Color::Rgb(0xd0, 0xd0, 0xd0));
         assert_eq!(theme.cursor_bg, Color::Rgb(0xaa, 0xaa, 0xaa)); // explicit, not border
     }

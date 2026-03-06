@@ -102,10 +102,16 @@ impl FileReader {
         if has_ansi {
             let stripped = strip_ansi_escapes(&mmap);
             let line_starts = compute_line_starts(&stripped);
-            return Ok(FileReader { storage: Storage::Bytes(stripped), line_starts });
+            return Ok(FileReader {
+                storage: Storage::Bytes(stripped),
+                line_starts,
+            });
         }
 
-        Ok(FileReader { storage: Storage::Mmap(mmap), line_starts: starts })
+        Ok(FileReader {
+            storage: Storage::Mmap(mmap),
+            line_starts: starts,
+        })
     }
 
     /// Build a `FileReader` from an in-memory byte buffer (e.g. stdin content).
@@ -128,10 +134,16 @@ impl FileReader {
         if has_ansi {
             let data = strip_ansi_escapes(&data);
             let line_starts = compute_line_starts(&data);
-            return FileReader { storage: Storage::Bytes(data), line_starts };
+            return FileReader {
+                storage: Storage::Bytes(data),
+                line_starts,
+            };
         }
 
-        FileReader { storage: Storage::Bytes(data), line_starts: starts }
+        FileReader {
+            storage: Storage::Bytes(data),
+            line_starts: starts,
+        }
     }
 
     /// Stream stdin asynchronously, flushing complete lines every second.
@@ -262,7 +274,11 @@ impl FileReader {
                     break 'scan;
                 }
             }
-            let progress = if total_bytes > 0 { end as f64 / total_bytes as f64 } else { 1.0 };
+            let progress = if total_bytes > 0 {
+                end as f64 / total_bytes as f64
+            } else {
+                1.0
+            };
             let _ = progress_tx.send(progress);
             offset = end;
         }
@@ -271,9 +287,15 @@ impl FileReader {
             let stripped = strip_ansi_escapes(&mmap);
             let line_starts = compute_line_starts(&stripped);
             let _ = progress_tx.send(1.0);
-            FileReader { storage: Storage::Bytes(stripped), line_starts }
+            FileReader {
+                storage: Storage::Bytes(stripped),
+                line_starts,
+            }
         } else {
-            FileReader { storage: Storage::Mmap(mmap), line_starts: starts }
+            FileReader {
+                storage: Storage::Mmap(mmap),
+                line_starts: starts,
+            }
         };
 
         // Phase 2: evaluate the predicate on each line when provided.
@@ -297,7 +319,10 @@ impl FileReader {
             }
         });
 
-        Ok(FileLoadResult { reader, precomputed_visible })
+        Ok(FileLoadResult {
+            reader,
+            precomputed_visible,
+        })
     }
 
     /// Total number of lines (including any final partial line without a trailing newline).
@@ -1156,7 +1181,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_nonexistent() {
-        let result = FileReader::load("/tmp/nonexistent_logana_load_test.log".to_string(), None, false).await;
+        let result = FileReader::load(
+            "/tmp/nonexistent_logana_load_test.log".to_string(),
+            None,
+            false,
+        )
+        .await;
         assert!(result.is_err());
     }
 

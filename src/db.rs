@@ -215,12 +215,10 @@ impl Database {
     }
 
     async fn migrate_to_v2(&self) -> Result<()> {
-        sqlx::query(
-            "ALTER TABLE file_context ADD COLUMN show_keys INTEGER NOT NULL DEFAULT 0",
-        )
-        .execute(&self.pool)
-        .await
-        .ok(); // column may already exist on fresh DBs created from v1 schema
+        sqlx::query("ALTER TABLE file_context ADD COLUMN show_keys INTEGER NOT NULL DEFAULT 0")
+            .execute(&self.pool)
+            .await
+            .ok(); // column may already exist on fresh DBs created from v1 schema
         Ok(())
     }
 
@@ -245,12 +243,10 @@ impl Database {
     }
 
     async fn migrate_to_v4(&self) -> Result<()> {
-        sqlx::query(
-            "ALTER TABLE file_context ADD COLUMN raw_mode INTEGER NOT NULL DEFAULT 0",
-        )
-        .execute(&self.pool)
-        .await
-        .ok(); // column may already exist on fresh DBs
+        sqlx::query("ALTER TABLE file_context ADD COLUMN raw_mode INTEGER NOT NULL DEFAULT 0")
+            .execute(&self.pool)
+            .await
+            .ok(); // column may already exist on fresh DBs
         Ok(())
     }
 }
@@ -502,10 +498,9 @@ impl FileContextStore for Database {
             serde_json::to_string(&ctx.marked_lines).unwrap_or_else(|_| "[]".to_string());
         let comments_json =
             serde_json::to_string(&ctx.comments).unwrap_or_else(|_| "[]".to_string());
-        let level_colors_disabled_json = serde_json::to_string(
-            &ctx.level_colors_disabled.iter().collect::<Vec<_>>(),
-        )
-        .unwrap_or_else(|_| "[]".to_string());
+        let level_colors_disabled_json =
+            serde_json::to_string(&ctx.level_colors_disabled.iter().collect::<Vec<_>>())
+                .unwrap_or_else(|_| "[]".to_string());
         // Also keep the legacy `level_colors` column up-to-date for any old readers.
         let level_colors_legacy = ctx.level_colors_disabled.is_empty() as i32;
         sqlx::query(
@@ -906,10 +901,12 @@ mod tests {
             scroll_offset: 99,
             search_query: "WARN".to_string(),
             wrap: false,
-            level_colors_disabled: ["trace", "debug", "info", "notice", "warning", "error", "fatal"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            level_colors_disabled: [
+                "trace", "debug", "info", "notice", "warning", "error", "fatal",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
             show_sidebar: false,
             horizontal_scroll: 5,
             marked_lines: vec![2, 7],

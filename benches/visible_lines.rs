@@ -12,9 +12,9 @@
 //! Run with:
 //!   cargo bench --bench visible_lines
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use logana::file_reader::FileReader;
-use logana::filters::{build_filter, FilterDecision, FilterManager};
+use logana::filters::{FilterDecision, FilterManager, build_filter};
 
 // ---------------------------------------------------------------------------
 // Data generator
@@ -27,9 +27,7 @@ fn plain_log_bytes(lines: usize) -> Vec<u8> {
         let level = if i % 10 == 0 { "ERROR" } else { "INFO " };
         std::io::Write::write_fmt(
             &mut buf,
-            format_args!(
-                "2024-01-01T00:00:00Z {level} myapp::server: request id={i} status=200\n"
-            ),
+            format_args!("2024-01-01T00:00:00Z {level} myapp::server: request id={i} status=200\n"),
         )
         .unwrap();
     }

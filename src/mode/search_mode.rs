@@ -37,10 +37,7 @@ impl Mode for SearchMode {
                 .search(&self.input, visible.iter(), |li| texts.get(&li).cloned());
             tab.search.set_forward(self.forward);
             // Navigate to the first match relative to the current line.
-            let current_line_idx = tab
-                .visible_indices
-                .get_opt(tab.scroll_offset)
-                .unwrap_or(0);
+            let current_line_idx = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
             tab.search
                 .set_position_for_search(current_line_idx, self.forward);
             let result = if self.forward {
@@ -111,10 +108,7 @@ impl SearchMode {
     /// After an incremental search, position the "current" occurrence highlight
     /// at the match closest to the cursor line (without scrolling).
     fn seed_incremental_position(&self, tab: &mut TabState) {
-        let current_line_idx = tab
-            .visible_indices
-            .get_opt(tab.scroll_offset)
-            .unwrap_or(0);
+        let current_line_idx = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
         tab.search
             .set_position_for_search(current_line_idx, self.forward);
         if self.forward {

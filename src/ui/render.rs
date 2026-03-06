@@ -20,9 +20,7 @@ use crate::auto_complete::{
     complete_color, complete_file_path, extract_color_partial, find_command_completions,
 };
 use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
-use crate::filters::{
-    CURRENT_SEARCH_STYLE_ID, FilterManager, MatchCollector, SEARCH_STYLE_ID, render_line,
-};
+use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
 use crate::theme::complete_theme;
 use crate::types::{FilterType, LogLevel};
 use crate::value_colors::colorize_known_values;
@@ -347,7 +345,11 @@ impl App {
         // mutable write to viewport_offset below.
         let (new_viewport, end) = {
             let tab = &self.tabs[self.active_tab];
-            let parser = if raw_mode { None } else { tab.detected_format.as_deref() };
+            let parser = if raw_mode {
+                None
+            } else {
+                tab.detected_format.as_deref()
+            };
             // In wrap mode, use the structured-rendering width when a format is
             // detected: raw JSON/tracing bytes can be 3-5× wider than the rendered
             // columns, causing the viewport to show far fewer lines than it should.
@@ -422,12 +424,18 @@ impl App {
         self.tabs[self.active_tab].viewport_offset = new_viewport;
         let start = new_viewport;
 
-        let (filter_manager, mut styles, date_filter_styles) =
-            if self.tabs[self.active_tab].filtering_enabled {
-                self.tabs[self.active_tab].log_manager.build_filter_manager()
-            } else {
-                (FilterManager::empty(), Vec::new(), Vec::new())
-            };
+        // Clone the filter manager Arc (O(1) atomic increment) instead of rebuilding
+        // Aho-Corasick every frame. The cache was set in the most recent refresh_visible().
+        let filter_manager_arc = self.tabs[self.active_tab].filter_manager_arc.clone();
+        let filter_manager = &*filter_manager_arc;
+        let (mut styles, date_filter_styles) = if self.tabs[self.active_tab].filtering_enabled {
+            (
+                self.tabs[self.active_tab].filter_styles.clone(),
+                self.tabs[self.active_tab].filter_date_styles.clone(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let search_style = Style::default()
             .fg(self.theme.search_fg)
             .bg(self.theme.text_highlight_fg);
@@ -443,6 +451,80 @@ impl App {
         styles.resize(256, Style::default());
         styles[255] = search_style;
         styles[254] = current_search_style;
+
+        // Pre-populate the parse cache for every line in the current viewport.
+        // Parsing (JSON, logfmt, etc.) is the most expensive per-line operation; caching it
+        // means subsequent frames at the same scroll position pay only a HashMap lookup.
+        // This block must run before `search_results` borrows `self.tabs`, as the cache
+        // write requires a mutable borrow of `self.tabs[active_tab].parse_cache`.
+        {
+            let cache_gen = self.tabs[self.active_tab].parse_cache_gen;
+            let mut new_entries: Vec<(usize, super::CachedParsedLine)> = Vec::new();
+            {
+                let tab = &self.tabs[self.active_tab];
+                if !raw_mode && let Some(parser) = tab.detected_format.as_deref() {
+                    for vi in start..end {
+                        let line_idx = tab.visible_indices.get(vi);
+                        // Skip if already cached at the current generation.
+                        if tab
+                            .parse_cache
+                            .get(&line_idx)
+                            .map(|(g, _)| *g == cache_gen)
+                            .unwrap_or(false)
+                        {
+                            continue;
+                        }
+                        let line_bytes = tab.file_reader.get_line(line_idx);
+                        if let Some(parts) = parser.parse_line(line_bytes) {
+                            let cols = apply_field_layout(
+                                &parts,
+                                &tab.field_layout,
+                                &tab.hidden_fields,
+                                tab.show_keys,
+                            );
+                            let all_cols_hidden = cols.is_empty();
+                            // Opt-6: build the joined string with a pre-sized buffer
+                            // instead of `cols.join(" ")` (avoids intermediate allocation).
+                            let rendered = if all_cols_hidden {
+                                String::new()
+                            } else {
+                                let cap: usize =
+                                    cols.iter().map(|c| c.len()).sum::<usize>() + cols.len();
+                                let mut buf = String::with_capacity(cap);
+                                for (i, col) in cols.iter().enumerate() {
+                                    if i > 0 {
+                                        buf.push(' ');
+                                    }
+                                    buf.push_str(col);
+                                }
+                                buf
+                            };
+                            new_entries.push((
+                                line_idx,
+                                super::CachedParsedLine {
+                                    rendered,
+                                    level: parts.level.map(|s| s.to_string()),
+                                    timestamp: parts.timestamp.map(|s| s.to_string()),
+                                    target: parts.target.map(|s| s.to_string()),
+                                    pid: parts
+                                        .extra_fields
+                                        .iter()
+                                        .find(|(k, _)| *k == "pid")
+                                        .map(|(_, v)| v.to_string()),
+                                    all_cols_hidden,
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+            // Write new entries now that the shared borrow of `tab` is released.
+            for (line_idx, entry) in new_entries {
+                self.tabs[self.active_tab]
+                    .parse_cache
+                    .insert(line_idx, (cache_gen, entry));
+            }
+        }
 
         let search_results = self.tabs[self.active_tab].search.get_results();
         // Pre-compute which line holds the current occurrence and which index within it.
@@ -526,10 +608,23 @@ impl App {
                     .map(|(lo, hi)| abs_vis_idx >= lo && abs_vis_idx <= hi)
                     .unwrap_or(false);
 
+                // Opt-3: use the cached level string for structured lines instead of
+                // re-scanning raw bytes with detect_from_bytes on every frame.
+                let parse_gen = self.tabs[self.active_tab].parse_cache_gen;
+                let cached = self.tabs[self.active_tab]
+                    .parse_cache
+                    .get(&line_idx)
+                    .filter(|(g, _)| *g == parse_gen)
+                    .map(|(_, c)| c);
+
                 let mut base_style = Style::default().fg(theme.text);
                 if level_colors_disabled.len() < 7 {
                     // At least one level has colour enabled.
-                    match LogLevel::detect_from_bytes(line_bytes) {
+                    let level = cached
+                        .and_then(|c| c.level.as_deref())
+                        .map(LogLevel::parse_level)
+                        .unwrap_or_else(|| LogLevel::detect_from_bytes(line_bytes));
+                    match level {
                         LogLevel::Trace if !level_colors_disabled.contains("trace") => {
                             base_style = base_style.fg(theme.trace_fg)
                         }
@@ -573,22 +668,15 @@ impl App {
                 // Known-field values are shown without their key names. Unknown fields
                 // and span context are rendered as key=value before the message.
                 // Filter visibility decisions still use the raw bytes (unaffected).
-                let structured_line: Option<Line<'static>> = if raw_mode {
-                    None
-                } else {
-                    self.tabs[self.active_tab]
-                        .detected_format
-                        .as_ref()
-                        .and_then(|parser| parser.parse_line(line_bytes))
-                }
-                    .map(|parts| {
-                        let cols = apply_field_layout(&parts, &field_layout, &hidden_fields, show_keys);
-
+                // Opt-4: use the cached parse result so parse_line is called at most once
+                // per line per viewport refresh rather than once per line per frame.
+                let structured_line: Option<Line<'static>> =
+                    cached.filter(|_| !raw_mode).map(|c| {
                         // Determine which occurrence index (if any) is current for this line.
                         let current_occ = current_search_info
                             .and_then(|(cl, co)| if cl == line_idx { Some(co) } else { None });
 
-                        if cols.is_empty() {
+                        if c.all_cols_hidden {
                             // All fields hidden — fall back to raw bytes with filter +
                             // search highlighting (raw-byte positions are correct here).
                             let mut collector = filter_manager.evaluate_line(line_bytes);
@@ -605,36 +693,34 @@ impl App {
                             }
                             render_line(&collector, &styles)
                         } else {
-                            // Evaluate filters AND search against the rendered string so
+                            // Evaluate filters AND search against the cached rendered string so
                             // all spans land at the correct visible positions.
-                            let rendered = cols.join(" ");
+                            let rendered = &c.rendered;
                             let mut collector = MatchCollector::new(rendered.as_bytes());
                             // Colour the target + pid columns using the per-process palette.
                             if process_colors_len > 0
                                 && !theme.value_colors.is_disabled("process_colors")
-                                && let Some(target) = parts.target
+                                && let Some(target) = c.target.as_deref()
                             {
                                 let idx = stable_hash(target) % process_colors_len;
                                 let sid = process_style_start.saturating_add(idx as u8);
-                                if let Some((s, e)) = find_col_range(&cols, target) {
-                                    collector.push(s, e, sid);
+                                if let Some(pos) = rendered.find(target) {
+                                    collector.push(pos, pos + target.len(), sid);
                                 }
                                 // Also colour the pid column so that formats like
                                 // journalctl (unit[pid]) show both name and id coloured.
-                                if let Some((_, pid_val)) =
-                                    parts.extra_fields.iter().find(|(k, _)| *k == "pid")
-                                {
+                                if let Some(pid_val) = c.pid.as_deref() {
                                     let pid_sid = process_style_start.saturating_add(
                                         (stable_hash(target) % process_colors_len) as u8,
                                     );
-                                    if let Some((s, e)) = find_col_range(&cols, pid_val) {
-                                        collector.push(s, e, pid_sid);
+                                    if let Some(pos) = rendered.find(pid_val) {
+                                        collector.push(pos, pos + pid_val.len(), pid_sid);
                                     }
                                 }
                             }
                             filter_manager.evaluate_into(&mut collector);
                             // Apply date filter styles: timestamp-only or full line.
-                            if let Some(ts) = parts.timestamp {
+                            if let Some(ts) = c.timestamp.as_deref() {
                                 for dfs in &date_filter_styles {
                                     if dfs.filter.matches(ts) {
                                         collector.with_priority(500);
@@ -654,7 +740,7 @@ impl App {
                             }
                             if let Some(ref regex) = search_regex {
                                 collector.with_priority(1000);
-                                for (i, m) in regex.find_iter(&rendered).enumerate() {
+                                for (i, m) in regex.find_iter(rendered).enumerate() {
                                     let sid = if current_occ == Some(i) {
                                         CURRENT_SEARCH_STYLE_ID
                                     } else {
@@ -1284,20 +1370,9 @@ impl App {
 
 /// djb2-style hash for stable per-process color assignment.
 fn stable_hash(s: &str) -> usize {
-    s.bytes()
-        .fold(5381usize, |acc, b| acc.wrapping_mul(33).wrapping_add(b as usize))
-}
-
-/// Find the byte range of `target` within the space-joined rendered column string.
-fn find_col_range(cols: &[String], target: &str) -> Option<(usize, usize)> {
-    let mut offset = 0;
-    for col in cols {
-        if col.as_str() == target {
-            return Some((offset, offset + col.len()));
-        }
-        offset += col.len() + 1; // +1 for the space separator
-    }
-    None
+    s.bytes().fold(5381usize, |acc, b| {
+        acc.wrapping_mul(33).wrapping_add(b as usize)
+    })
 }
 
 #[cfg(test)]
@@ -1499,7 +1574,10 @@ mod tests {
         ])
         .await;
         let default_disabled: std::collections::HashSet<String> =
-            ["trace", "debug", "info", "notice"].iter().map(|s| s.to_string()).collect();
+            ["trace", "debug", "info", "notice"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         assert_eq!(app.tabs[0].level_colors_disabled, default_disabled);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -1514,7 +1592,12 @@ mod tests {
             "ERROR error occurred",
         ])
         .await;
-        app.tabs[0].level_colors_disabled = ["trace", "debug", "info", "notice", "warning", "error", "fatal"].iter().map(|s| s.to_string()).collect();
+        app.tabs[0].level_colors_disabled = [
+            "trace", "debug", "info", "notice", "warning", "error", "fatal",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1744,19 +1827,5 @@ mod tests {
     fn test_stable_hash_consistent() {
         assert_eq!(stable_hash("my_service"), stable_hash("my_service"));
         assert_ne!(stable_hash("service_a"), stable_hash("service_b"));
-    }
-
-    #[test]
-    fn test_find_col_range_found() {
-        let cols = vec!["timestamp".to_string(), "INFO".to_string(), "my_crate".to_string()];
-        assert_eq!(find_col_range(&cols, "INFO"), Some((10, 14)));
-        assert_eq!(find_col_range(&cols, "my_crate"), Some((15, 23)));
-        assert_eq!(find_col_range(&cols, "timestamp"), Some((0, 9)));
-    }
-
-    #[test]
-    fn test_find_col_range_not_found() {
-        let cols = vec!["timestamp".to_string(), "INFO".to_string()];
-        assert_eq!(find_col_range(&cols, "missing"), None);
     }
 }
