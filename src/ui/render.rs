@@ -367,10 +367,19 @@ impl App {
             let new_viewport = if scroll_offset < viewport_offset {
                 scroll_offset
             } else if wrap && inner_width > 0 && num_visible > 0 {
-                let rows_used: usize = (viewport_offset..=scroll_offset)
-                    .map(|i| row_count(tab.visible_indices.get(i)))
-                    .sum();
-                if rows_used > visible_height {
+                // Fast path: if the line gap alone exceeds visible_height, the
+                // viewport is definitely stale — skip the O(N) row-count sum.
+                // Each line occupies at least 1 terminal row, so
+                // (scroll_offset - viewport_offset) > visible_height guarantees
+                // rows_used > visible_height without iterating every line.
+                let gap = scroll_offset.saturating_sub(viewport_offset);
+                let overflowed = gap > visible_height || {
+                    let rows_used: usize = (viewport_offset..=scroll_offset)
+                        .map(|i| row_count(tab.visible_indices.get(i)))
+                        .sum();
+                    rows_used > visible_height
+                };
+                if overflowed {
                     let mut rows = 0usize;
                     let mut new_vp = scroll_offset + 1;
                     loop {

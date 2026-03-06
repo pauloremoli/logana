@@ -177,6 +177,34 @@ impl App {
         tail: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>> {
         Box::pin(async move {
+            // Tail preview: read the last 64 KiB synchronously so the end of
+            // the file is visible immediately while the full index builds in
+            // the background. Only applied for the initial tab (not session
+            // restores) and only when no filter predicate is in play (a
+            // predicate requires the full index to compute visible indices).
+            if tail
+                && predicate.is_none()
+                && let LoadContext::ReplaceInitialTab = context
+                && !self.tabs.is_empty()
+            {
+                const PREVIEW_BYTES: u64 = 64 * 1024;
+                if let Ok(preview) = FileReader::from_file_tail(&path, PREVIEW_BYTES) {
+                    let last = preview.line_count().saturating_sub(1);
+                    // Detect log format from the preview lines so
+                    // structured rendering works during the load wait.
+                    let sample_limit = preview.line_count().min(200);
+                    if sample_limit > 0 {
+                        let sample: Vec<&[u8]> =
+                            (0..sample_limit).map(|j| preview.get_line(j)).collect();
+                        self.tabs[0].detected_format =
+                            crate::parser::detect_format(&sample);
+                    }
+                    self.tabs[0].file_reader = preview;
+                    self.tabs[0].refresh_visible();
+                    self.tabs[0].scroll_offset = last;
+                }
+            }
+
             match FileReader::load(path.clone(), predicate, tail).await {
                 Ok(handle) => {
                     self.file_load_state = Some(FileLoadState {

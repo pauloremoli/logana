@@ -100,8 +100,7 @@ impl FileReader {
         }
 
         if has_ansi {
-            let stripped = strip_ansi_escapes(&mmap);
-            let line_starts = compute_line_starts(&stripped);
+            let (stripped, line_starts) = strip_ansi_and_index(&mmap);
             return Ok(FileReader {
                 storage: Storage::Bytes(stripped),
                 line_starts,
@@ -132,10 +131,9 @@ impl FileReader {
         }
 
         if has_ansi {
-            let data = strip_ansi_escapes(&data);
-            let line_starts = compute_line_starts(&data);
+            let (stripped, line_starts) = strip_ansi_and_index(&data);
             return FileReader {
-                storage: Storage::Bytes(data),
+                storage: Storage::Bytes(stripped),
                 line_starts,
             };
         }
@@ -144,6 +142,37 @@ impl FileReader {
             storage: Storage::Bytes(data),
             line_starts: starts,
         }
+    }
+
+    /// Read the last `preview_bytes` of `path` synchronously and return a
+    /// `FileReader` containing only those lines.
+    ///
+    /// This is used by the `--tail` fast path to display the end of a large
+    /// file immediately while the full background index is still being built.
+    /// Because we seek to near the end of the file the call returns in
+    /// milliseconds regardless of file size.
+    ///
+    /// The first (potentially partial) line of the read chunk is dropped so
+    /// that every line in the returned reader is complete.
+    pub fn from_file_tail(path: &str, preview_bytes: u64) -> io::Result<Self> {
+        use std::io::{Read, Seek};
+        let mut file = File::open(path)?;
+        let total_len = file.metadata()?.len();
+        let offset = total_len.saturating_sub(preview_bytes);
+        file.seek(io::SeekFrom::Start(offset))?;
+        let read_len = (total_len - offset) as usize;
+        let mut buf = vec![0u8; read_len];
+        file.read_exact(&mut buf)?;
+        // Drop the first (likely partial) line so every line is complete.
+        let start = if offset > 0 {
+            buf.iter()
+                .position(|&b| b == b'\n')
+                .map(|p| p + 1)
+                .unwrap_or(buf.len())
+        } else {
+            0
+        };
+        Ok(Self::from_bytes(buf[start..].to_vec()))
     }
 
     /// Stream stdin asynchronously, flushing complete lines every second.
@@ -284,8 +313,7 @@ impl FileReader {
         }
 
         let reader = if has_ansi {
-            let stripped = strip_ansi_escapes(&mmap);
-            let line_starts = compute_line_starts(&stripped);
+            let (stripped, line_starts) = strip_ansi_and_index(&mmap);
             let _ = progress_tx.send(1.0);
             FileReader {
                 storage: Storage::Bytes(stripped),
@@ -628,12 +656,83 @@ fn strip_ansi_escapes(input: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// compute_line_starts (used by synchronous constructors)
+// strip_ansi_and_index
+// ---------------------------------------------------------------------------
+
+/// Strip ANSI escape sequences from `input` and collect line-start offsets in
+/// one pass — eliminating the separate [`compute_line_starts`] scan over the
+/// stripped output.
+///
+/// Returns `(stripped_bytes, line_starts)` where `line_starts[i]` is the byte
+/// offset of the first byte of line `i` in the returned `Vec<u8>`.
+fn strip_ansi_and_index(input: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    let mut out = Vec::with_capacity(input.len());
+    let mut starts = vec![0usize];
+    let mut i = 0;
+    while i < input.len() {
+        match input[i] {
+            b'\x1b' => {
+                i += 1;
+                if i >= input.len() {
+                    break;
+                }
+                match input[i] {
+                    b'[' => {
+                        // CSI: ESC [ {param/intermediate bytes} {final byte 0x40–0x7E}
+                        i += 1;
+                        while i < input.len() {
+                            let b = input[i];
+                            i += 1;
+                            if (0x40..=0x7E).contains(&b) {
+                                break;
+                            }
+                        }
+                    }
+                    b']' => {
+                        // OSC: ESC ] … BEL  or  ESC ] … ESC \
+                        i += 1;
+                        while i < input.len() {
+                            let b = input[i];
+                            i += 1;
+                            if b == b'\x07' {
+                                break;
+                            }
+                            if b == b'\x1b' && i < input.len() && input[i] == b'\\' {
+                                i += 1;
+                                break;
+                            }
+                        }
+                    }
+                    _ => {
+                        i += 1; // two-byte ESC sequence (e.g. ESC M, ESC =)
+                    }
+                }
+            }
+            b'\r' => {
+                i += 1; // strip CR so \r\n becomes \n
+            }
+            b'\n' => {
+                out.push(b'\n');
+                i += 1;
+                starts.push(out.len()); // next line starts at current output length
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    (out, starts)
+}
+
+// ---------------------------------------------------------------------------
+// compute_line_starts (test reference implementation)
 // ---------------------------------------------------------------------------
 
 /// Computes the byte offsets of the start of every line in `data`.
 /// The first element is always `0`.  The last element points one past the
 /// final newline (i.e. to the beginning of a potential final partial line).
+#[cfg(test)]
 fn compute_line_starts(data: &[u8]) -> Vec<usize> {
     let mut starts = vec![0usize];
     for pos in memchr_iter(b'\n', data) {
@@ -1308,6 +1407,177 @@ mod tests {
             !text.contains("\x1b["),
             "ANSI codes should be stripped, got: {text}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_ansi_and_index
+    // -----------------------------------------------------------------------
+
+    fn strip_bytes(input: &[u8]) -> Vec<u8> {
+        strip_ansi_and_index(input).0
+    }
+
+    fn index_bytes(input: &[u8]) -> Vec<usize> {
+        strip_ansi_and_index(input).1
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_plain() {
+        // No ANSI codes — output equals input, starts are identical to
+        // compute_line_starts.
+        let input = b"hello\nworld\n";
+        assert_eq!(strip_bytes(input), input);
+        assert_eq!(index_bytes(input), compute_line_starts(input));
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_csi() {
+        // CSI colour codes are stripped; content bytes and newlines kept.
+        let input = b"\x1b[32mgreen\x1b[0m\nplain\n";
+        let expected_bytes = b"green\nplain\n";
+        let (out, starts) = strip_ansi_and_index(input);
+        assert_eq!(out, expected_bytes);
+        assert_eq!(starts, compute_line_starts(expected_bytes));
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_osc_bel() {
+        // OSC sequence terminated by BEL.
+        let input = b"\x1b]0;title\x07line\n";
+        let expected_bytes = b"line\n";
+        let (out, starts) = strip_ansi_and_index(input);
+        assert_eq!(out, expected_bytes);
+        assert_eq!(starts, compute_line_starts(expected_bytes));
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_osc_string_terminator() {
+        // OSC sequence terminated by ESC \.
+        let input = b"\x1b]0;title\x1b\\line\n";
+        let expected_bytes = b"line\n";
+        let (out, starts) = strip_ansi_and_index(input);
+        assert_eq!(out, expected_bytes);
+        assert_eq!(starts, compute_line_starts(expected_bytes));
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_two_byte_esc() {
+        // Two-byte escape sequence (ESC + one byte, not [ or ]).
+        let input = b"\x1b=text\n";
+        let expected_bytes = b"text\n";
+        let (out, starts) = strip_ansi_and_index(input);
+        assert_eq!(out, expected_bytes);
+        assert_eq!(starts, compute_line_starts(expected_bytes));
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_cr_stripped() {
+        // Bare \r is stripped; \r\n becomes just \n.
+        let input = b"line1\r\nline2\r\n";
+        let expected_bytes = b"line1\nline2\n";
+        let (out, starts) = strip_ansi_and_index(input);
+        assert_eq!(out, expected_bytes);
+        assert_eq!(starts, compute_line_starts(expected_bytes));
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_multiline_ansi() {
+        // Multiple lines each with ANSI codes — matches separate strip + index.
+        let input = b"\x1b[32mfoo\x1b[0m\n\x1b[34mbar\x1b[0m\nbaz\n";
+        let stripped = strip_ansi_escapes(input);
+        let expected_starts = compute_line_starts(&stripped);
+        let (out, starts) = strip_ansi_and_index(input);
+        assert_eq!(out, stripped);
+        assert_eq!(starts, expected_starts);
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_no_trailing_newline() {
+        // Last line has no newline — starts has one entry (just 0).
+        let input = b"\x1b[1mhello\x1b[0m";
+        let stripped = strip_ansi_escapes(input);
+        let expected_starts = compute_line_starts(&stripped);
+        let (out, starts) = strip_ansi_and_index(input);
+        assert_eq!(out, stripped);
+        assert_eq!(starts, expected_starts);
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_esc_at_end() {
+        // Dangling ESC at end of input is silently dropped.
+        let input = b"text\n\x1b";
+        let stripped = strip_ansi_escapes(input);
+        let (out, starts) = strip_ansi_and_index(input);
+        assert_eq!(out, stripped);
+        assert_eq!(starts, compute_line_starts(&stripped));
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_empty() {
+        let (out, starts) = strip_ansi_and_index(b"");
+        assert!(out.is_empty());
+        assert_eq!(starts, vec![0usize]);
+    }
+
+    // -----------------------------------------------------------------------
+    // from_file_tail
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_from_file_tail_returns_last_lines() {
+        let mut f = NamedTempFile::new().unwrap();
+        for i in 0..1000usize {
+            writeln!(f, "line {i}").unwrap();
+        }
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap();
+
+        let reader = FileReader::from_file_tail(path, 512).unwrap();
+        let n = reader.line_count();
+        assert!(n > 0, "should have at least one line");
+        // The last line of the preview must match the last line of the full file.
+        let last_preview = reader.get_line(n - 1);
+        assert_eq!(last_preview, b"line 999");
+    }
+
+    #[test]
+    fn test_from_file_tail_all_lines_complete() {
+        let mut f = NamedTempFile::new().unwrap();
+        for i in 0..500usize {
+            writeln!(f, "entry {i} data").unwrap();
+        }
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap();
+
+        // Every line returned must be a complete "entry N data" line.
+        let reader = FileReader::from_file_tail(path, 1024).unwrap();
+        for i in 0..reader.line_count() {
+            let line = reader.get_line(i);
+            assert!(
+                line.starts_with(b"entry "),
+                "partial line leaked: {:?}",
+                std::str::from_utf8(line)
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_file_tail_small_file_fits_in_preview() {
+        // When the file is smaller than preview_bytes the whole file is returned.
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "only line").unwrap();
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap();
+
+        let reader = FileReader::from_file_tail(path, 64 * 1024).unwrap();
+        assert_eq!(reader.line_count(), 1);
+        assert_eq!(reader.get_line(0), b"only line");
+    }
+
+    #[test]
+    fn test_from_file_tail_nonexistent_returns_error() {
+        let result = FileReader::from_file_tail("/tmp/logana_no_such_file_tail.log", 1024);
+        assert!(result.is_err());
     }
 
     // -----------------------------------------------------------------------
