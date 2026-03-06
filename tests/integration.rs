@@ -305,6 +305,34 @@ async fn test_clear_filters() {
 }
 
 #[tokio::test]
+async fn test_single_pass_predicate_matches_compute_visible() {
+    // Verify that the single-pass visible-line computation (VisibilityPredicate
+    // evaluated during indexing) produces the same result as compute_visible run
+    // after the load completes — the two paths must be equivalent.
+    let (_db, mut manager) = setup().await;
+    let file = create_sample_log_file();
+    let path = file.path().to_str().unwrap().to_string();
+
+    manager
+        .add_filter_with_color("INFO".into(), FilterType::Include, None, None, true)
+        .await;
+    let (fm, _, _) = manager.build_filter_manager();
+
+    // Post-load path: compute_visible on the already-indexed reader.
+    let reader = FileReader::new(&path).unwrap();
+    let expected = fm.compute_visible(&reader);
+
+    // Single-pass path: predicate evaluated during indexing.
+    let pred: logana::file_reader::VisibilityPredicate =
+        Box::new(move |line: &[u8]| fm.is_visible(line));
+    let handle = FileReader::load(path, Some(pred), false).await.unwrap();
+    let result = handle.result_rx.await.unwrap().unwrap();
+    let precomputed = result.precomputed_visible.unwrap();
+
+    assert_eq!(precomputed, expected);
+}
+
+#[tokio::test]
 async fn test_search_on_visible_lines() {
     use logana::search::Search;
 

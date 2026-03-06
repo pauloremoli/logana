@@ -68,6 +68,24 @@ Export the current filter set to a JSON file, and reload it later:
 
 This is useful for sharing filter sets across machines or between log files with similar structure.
 
+## Preloading Filters at Startup
+
+Pass `--filters` (or `-f`) on the command line to apply a saved filter set before the TUI opens:
+
+```sh
+logana app.log --filters my-filters.json
+```
+
+The filters are evaluated in a single pass during file indexing, so the filtered view is ready as soon as loading completes — no separate computation step. The same filters remain active for interactive use once the TUI is open (you can add, remove, or edit them normally).
+
+Combined with `--tail`, the last matching line is shown immediately after loading:
+
+```sh
+logana app.log --filters errors.json --tail
+```
+
+> **Tip:** Save your most-used filter sets with `:save-filters` once, then reuse them from the command line.
+
 ## Sections
 
 - [Text Filters](text-filters.md) — include/exclude patterns, regex syntax

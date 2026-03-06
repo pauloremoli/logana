@@ -15,6 +15,15 @@ tail -f app.log | logana
 
 # Stream a Docker container
 logana            # then type :docker
+
+# Preload a saved filter set — filters are applied in a single pass during indexing
+logana app.log --filters my-filters.json
+
+# Start at the end of the file with tail mode enabled
+logana app.log --tail
+
+# Combined: preload filters and jump to the last matching line immediately
+logana app.log --filters my-filters.json --tail
 ```
 
 ## First Steps

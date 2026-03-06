@@ -585,13 +585,12 @@ impl Theme {
         // Backfill `cursor_bg` from `border` so themes that pre-date the split
         // continue to work without any change to their JSON files.
         let mut json_val: serde_json::Value = serde_json::from_str(&data)?;
-        if !json_val
+        if json_val
             .get("cursor_bg")
-            .is_some_and(|v| !v.is_null())
+            .is_none_or(|v| v.is_null())
+            && let Some(border) = json_val.get("border").cloned()
         {
-            if let Some(border) = json_val.get("border").cloned() {
-                json_val["cursor_bg"] = border;
-            }
+            json_val["cursor_bg"] = border;
         }
         let config: Theme = serde_json::from_value(json_val)?;
         Ok(config)

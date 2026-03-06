@@ -478,8 +478,8 @@ pub struct FileLoadState {
     pub path: String,
     /// Current progress fraction (0.0–1.0); updated by the background task.
     pub progress_rx: tokio::sync::watch::Receiver<f64>,
-    /// Delivers the finished `FileReader` (or error) when indexing is done.
-    pub result_rx: tokio::sync::oneshot::Receiver<std::io::Result<FileReader>>,
+    /// Delivers the finished [`crate::file_reader::FileLoadResult`] (or error) when indexing is done.
+    pub result_rx: tokio::sync::oneshot::Receiver<std::io::Result<crate::file_reader::FileLoadResult>>,
     pub total_bytes: u64,
     pub on_complete: LoadContext,
 }

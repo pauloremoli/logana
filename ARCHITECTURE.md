@@ -26,7 +26,7 @@ src/
   db.rs           - SQLite layer via sqlx (FilterStore, FileContextStore traits)
   search.rs       - Regex search with match positions and wrapping navigation
   ui/             - Ratatui TUI module directory
-    mod.rs         - Types (KeyResult, LoadContext, TabState, App structs)
+    mod.rs         - Types (KeyResult, LoadContext, TabState, App structs, VisibleLines enum)
     app.rs         - App lifecycle: new(), run(), key dispatch, save/close, execute_command_str()
     commands.rs    - run_command() — 30+ command handler
     loading.rs     - File/stdin/docker loading, file watchers, session restore
@@ -76,10 +76,12 @@ A multiline comment attached to a group of log lines. Multiple comments can exis
 ### File I/O (file_reader.rs)
 
 - **FileReader**: Zero-copy random access backed by either a `memmap2::Mmap` (files) or a `Vec<u8>` (stdin / tests).
-- **Line indexing**: `memchr::memchr_iter` scans for `\n` bytes at startup, building a `Vec<usize>` of line start offsets in one pass.
+- **Line indexing**: `memchr::memchr3_iter` scans simultaneously for `\n`, `\x1b`, and `\r` in a single pass. On the first ESC/CR byte ANSI is detected — the raw bytes are stripped and re-indexed; otherwise line starts are collected in the same loop with no extra scan.
 - **`get_line(idx)`**: O(1) slice into the backing storage — no heap allocation per line.
 - **`line_count()`**: Skips the phantom empty entry after a trailing newline.
 - **`from_bytes(Vec<u8>)`**: Used for stdin input and in-memory test data.
+- **`load(path, predicate, tail) -> FileLoadHandle`**: Starts background indexing via `spawn_blocking`. `predicate: Option<VisibilityPredicate>` — when `Some`, each line is tested after indexing and the matching indices are stored in `FileLoadResult::precomputed_visible`, avoiding a separate `compute_visible` call after load. `tail=true` evaluates the predicate in reverse (last line first) so the tail is confirmed earliest; result is returned in ascending order. When `predicate` is `None`, `precomputed_visible` is `None` and `refresh_visible` runs after load.
+- **`VisibilityPredicate`**: `Box<dyn Fn(&[u8]) -> bool + Send + Sync>` — passed from `main.rs` as a closure over a `FilterManager`, keeping `file_reader.rs` free of filter dependencies.
 - **`spawn_process_stream(program, args)`**: Spawns a child process, merges stdout+stderr via mpsc, strips ANSI, and delivers complete lines every 500 ms through a `watch::Receiver<Vec<u8>>`. Used by the `docker` command.
 
 ### Format Abstraction (parser/)
@@ -245,7 +247,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 ### Search (search.rs)
 
 - Regex-based search over `visible_indices` only (respects active filters).
-- `Search::search(pattern, &[usize], &FileReader)` — builds `Vec<SearchResult>` with byte-position match spans.
+- `Search::search(pattern, impl Iterator<Item=usize>, &FileReader)` — accepts an iterator so both `VisibleLines::All` and `VisibleLines::Filtered` can be passed without materialising a `Vec`. Builds `Vec<SearchResult>` with byte-position match spans.
 - Wrapping `next_match()` / `previous_match()` navigation.
 - Case sensitivity toggle (`set_case_sensitive`).
 
@@ -270,7 +272,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `file_reader: FileReader` — the backing log data
   - `log_manager: LogManager` — filter defs and marks
   - `detected_format: Option<Box<dyn LogFormatParser>>` — auto-detected log format parser (sampled on tab creation)
-  - `visible_indices: Vec<usize>` — indices of currently visible lines under active filters
+  - `visible_indices: VisibleLines` — virtual representation of visible line indices: `All(n)` when no filters are active (O(1), zero allocation), `Filtered(Vec<usize>)` when filters or marks narrow the set
   - `scroll_offset: usize` — selected line (index into `visible_indices`)
   - `viewport_offset: usize` — first rendered line (index into `visible_indices`)
   - `visible_height: usize` — content rows available (updated each render frame)
@@ -282,7 +284,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
 - **Mode structs**: `NormalMode { count }`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `ConfirmOpenDirMode`, `VisualLineMode { anchor, count }`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`, `UiMode { sidebar, status_bar, borders, wrap }`.
 - **`ModeRenderState` enum** (ISP-compliant): Each mode implements `render_state() -> ModeRenderState`, returning a typed variant carrying exactly the data its renderer needs. Variants: `Normal`, `Command { input, cursor, completion_index }`, `Search { query, forward }`, `FilterManagement { selected_index }`, `FilterEdit`, `VisualLine { anchor }`, `Comment { lines, cursor_row, cursor_col, line_count }`, `KeybindingsHelp { scroll, search }`, `SelectFields { fields, selected }`, `DockerSelect { containers, selected, error }`, `ValueColors { groups, search, selected }`, `ConfirmRestore`, `ConfirmRestoreSession { files }`, `ConfirmOpenDir { dir, files }`. The renderer does a single `match` on the enum instead of calling many optional trait methods.
-- **`refresh_visible()`**: Rebuilds `visible_indices` by calling `FilterManager::compute_visible(&file_reader)`, then applies date filters as a post-processing `retain()` step (see Date Filter section).
+- **`refresh_visible()`**: Rebuilds `visible_indices`. With no active filters or marks, sets `VisibleLines::All(n)` — a zero-allocation O(1) operation. With filters, calls `FilterManager::compute_visible(&file_reader)` and wraps the result in `VisibleLines::Filtered`. Date filters are then applied as a post-processing `retain()` step (see Date Filter section).
 
 **Rendering pipeline (per frame)**:
 1. Compute `visible_height = logs_area.height - border_size` where `border_size` is 2 when `show_borders` is `true`, 0 otherwise.
@@ -360,6 +362,7 @@ Example `~/.config/logana/config.json`:
 ## Key Patterns
 
 - **Zero-copy reads**: `FileReader::get_line` returns `&[u8]` slices directly into the mmap — no per-line allocation.
+- **Virtual visible lines**: `VisibleLines::All(n)` stores only a count, so the no-filter case (the common case for large files) allocates nothing and provides O(1) random access via arithmetic. `Filtered(Vec<usize>)` is only materialised when filters or marks are active.
 - **Parallel filter evaluation**: `FilterManager::compute_visible` uses `rayon::into_par_iter()` over line indices; order is preserved by rayon's indexed parallel iterator.
 - **Dual filter backends**: Aho-Corasick for literals (O(n) multi-pattern), Regex fallback for metacharacter patterns. Selected automatically by `build_filter`.
 - **StyleId dispatch**: 256-slot `Vec<Style>` indexed by `u8` avoids per-span HashMap lookups at render time.
@@ -368,17 +371,25 @@ Example `~/.config/logana/config.json`:
 - **Repository pattern**: `FilterStore` / `FileContextStore` traits enable in-memory SQLite for tests.
 - **Session persistence**: Filters + UI context saved per `source_file`; hash-verified restore prompt on reopen. Docker tabs are stored as `"docker:name"` and restored by detecting the prefix (re-spawns `docker logs -f` by container name).
 
+## CLI Flags
+
+- **`<file>`** (positional, optional) — file or directory to open. Omit to read from stdin.
+- **`-f` / `--filters <path>`** — path to a JSON filter file (saved via `:save-filters`). Filters are loaded before the TUI starts and used for the single-pass visible-line computation during indexing. The loaded filters are also active for interactive use (add/remove/edit) once the TUI is open.
+- **`-t` / `--tail`** — start at the end of the file and enable tail mode. When combined with `--filters`, the predicate is evaluated backward (last line first) so the tail view is ready immediately after loading; the result is returned in ascending order. Without `--filters`, the file is indexed normally and the scroll position is jumped to the last visible line after load.
+
 ## App Lifecycle
 
-1. Parse CLI args (optional file path or directory path).
-2. Init tokio runtime + SQLite DB (`~/.local/share/logana/logana.db`).
-3. Load `Config` from `~/.config/logana/config.json` (or defaults on missing/parse error).
-4. Build `FileReader` from file path (mmap) or stdin (bytes). For directory args, start with an empty reader.
-5. Build `LogManager` — loads filters from DB for this source.
-6. Enter terminal raw mode, create `App` with theme and `Arc<Keybindings>`.
-7. If a file was opened: check for saved `FileContext`, prompt per-file restore (`ConfirmRestoreMode`). If a directory was given: set `ConfirmOpenDirMode` with the listed files. If no file and no piped data: check for a saved session (`session_tabs`), prompt session restore (`ConfirmRestoreSessionMode`). On confirm, all session files are opened and their per-file contexts auto-applied without additional prompts.
-8. **Event loop** (250ms poll): render frame → wait for key event → handle key → repeat.
-9. On exit: save `FileContext` for each tab + save the session (list of open source files), restore terminal.
+1. Parse CLI args (optional file path or directory path, optional `--filters`, optional `--tail`).
+2. Validate file path and filter file path (if provided) before entering the TUI.
+3. Init tokio runtime + SQLite DB (`~/.local/share/logana/logana.db`).
+4. Load `Config` from `~/.config/logana/config.json` (or defaults on missing/parse error).
+5. Enter terminal raw mode, create `App` with empty placeholder `FileReader`, theme, and `Arc<Keybindings>`.
+6. If `--filters` was given: call `log_manager.load_filters(path)`, then extract a `VisibilityPredicate` from `build_filter_manager()`. Set `app.startup_tail = args.tail`.
+7. Kick off `begin_file_load(path, context, predicate, tail)` — indexing runs in a background thread via `spawn_blocking`.
+8. If a directory was given: set `ConfirmOpenDirMode`. If stdin is piped: begin stdin streaming.
+9. **Event loop** (250ms poll): render frame → wait for key event → handle key → `advance_file_load` polls the background result channel each frame.
+10. On load complete (`on_load_success`): if `precomputed_visible` is `Some`, set `VisibleLines::Filtered` directly (skips `refresh_visible`). If `startup_tail`, set `tail_mode = true` and jump `scroll_offset` to the last visible line. Check for saved `FileContext` and prompt restore if found.
+11. On exit: save `FileContext` for each tab + save the session (list of open source files), restore terminal.
 
 ## Dependencies
 
@@ -386,7 +397,8 @@ anyhow, clap (derive), regex, ratatui 0.30, crossterm 0.29, serde/serde_json, se
 
 ## Testing
 
-- **Unit tests**: db.rs, filters.rs, file_reader.rs, log_manager.rs, search.rs, types.rs, ui/app.rs, ui/commands.rs, ui/field_layout.rs, auto_complete.rs, export.rs, parser/types.rs, parser/mod.rs, parser/json.rs, parser/syslog.rs, parser/journalctl.rs, parser/clf.rs, parser/timestamp.rs, parser/logfmt.rs, parser/common_log.rs, parser/web_error.rs, parser/dmesg.rs, parser/kube_cri.rs, value_colors.rs, date_filter.rs, mode/annotation_mode.rs, mode/visual_mode.rs, mode/app_mode.rs, mode/select_fields_mode.rs, mode/value_colors_mode.rs, mode/normal_mode.rs, mode/ui_mode.rs, config.rs, ui/mod.rs — 1246 tests total
-- **Integration tests** (tests/integration.rs): FileReader line access, filter include/exclude/regex/disabled, marks, search on visible lines, filter CRUD — 15 tests
-- **Stdin tests** (tests/stdin.rs): pipe input end-to-end — 14 tests
-- **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80%)
+- **Unit tests**: co-located with each module (`#[cfg(test)]`). Each module tests its own logic in isolation — parsers are tested against representative log line samples, modes are tested by constructing a `TabState` and asserting on the returned `KeyResult` and state mutations, DB traits are tested against an in-memory SQLite instance.
+- **Integration tests** (`tests/integration.rs`): end-to-end flows exercising `FileReader` → `FilterManager` → `Search` together, without the TUI layer.
+- **Stdin tests** (`tests/stdin.rs`): pipe input end-to-end.
+- **Benchmarks** (`benches/`): Criterion benchmarks for `FileReader` (plain and ANSI paths, file and byte-slice variants) and `VisibleLines` (collect-all cost and `FilterManager::compute_visible` under various filter configurations). Used to measure performance of the file reading and visible-line pipeline.
+- **CI**: cargo fmt → clippy → test → tarpaulin coverage (enforces 80% threshold).

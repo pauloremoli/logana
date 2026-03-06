@@ -17,4 +17,5 @@ Open a file, pipe stdin, or stream Docker containers — logana auto-detects the
 | **Visual line selection** | Select a range, yank to clipboard, or attach a comment |
 | **Annotations** | Attach multiline comments to log lines; export to Markdown or Jira |
 | **Value coloring** | HTTP methods, status codes, IP addresses, and UUIDs colored automatically |
+| **Startup filters** | `--filters <file>` preloads a saved filter set in a single indexing pass; `--tail` jumps to the last matching line immediately |
 | **Fully configurable** | All keybindings remappable via `~/.config/logana/config.json`; 9 bundled themes |

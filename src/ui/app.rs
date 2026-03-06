@@ -44,6 +44,8 @@ pub struct App {
     pub show_mode_bar_default: bool,
     /// Default show_borders value applied to new tabs.
     pub show_borders_default: bool,
+    /// When true, the initial file tab starts in tail mode (set by `--tail`).
+    pub startup_tail: bool,
 }
 
 impl std::fmt::Debug for App {
@@ -111,6 +113,7 @@ impl App {
             clipboard: None,
             show_mode_bar_default: true,
             show_borders_default: true,
+            startup_tail: false,
         }
     }
 

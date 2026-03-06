@@ -14,20 +14,37 @@ use tokio::{
     task::spawn_blocking,
 };
 
+/// A predicate used to test line visibility during file loading.
+///
+/// Takes raw line bytes and returns `true` if the line should be included in
+/// the visible set. Passed to [`FileReader::load`] for the single-pass
+/// optimisation; `None` skips the phase-2 filter evaluation entirely.
+pub type VisibilityPredicate = Box<dyn Fn(&[u8]) -> bool + Send + Sync>;
+
 // ---------------------------------------------------------------------------
 // FileLoadHandle
 // ---------------------------------------------------------------------------
+
+/// Result returned through [`FileLoadHandle::result_rx`] when indexing completes.
+///
+/// `precomputed_visible` is `Some` only when a visibility predicate was passed
+/// to [`FileReader::load`]; it contains the ascending sorted indices of all
+/// lines that satisfy the predicate, computed during the load pass itself.
+pub struct FileLoadResult {
+    pub reader: FileReader,
+    pub precomputed_visible: Option<Vec<usize>>,
+}
 
 /// Handle returned by [`FileReader::load`].
 ///
 /// * `progress_rx` — watch channel carrying the current progress fraction
 ///   (0.0 – 1.0).  Updated in ~4 MiB increments by the background task.
-/// * `result_rx`   — oneshot channel; receives the completed [`FileReader`]
+/// * `result_rx`   — oneshot channel; receives the completed [`FileLoadResult`]
 ///   (or an IO error) when indexing finishes.
 /// * `total_bytes` — size of the file in bytes (for display).
 pub struct FileLoadHandle {
     pub progress_rx: watch::Receiver<f64>,
-    pub result_rx: oneshot::Receiver<io::Result<FileReader>>,
+    pub result_rx: oneshot::Receiver<io::Result<FileLoadResult>>,
     pub total_bytes: u64,
 }
 
@@ -174,13 +191,24 @@ impl FileReader {
     /// in the background.  The caller polls `handle.result_rx.try_recv()` each
     /// frame and reads `*handle.progress_rx.borrow()` for live progress.
     ///
-    pub async fn load(path: String) -> io::Result<FileLoadHandle> {
+    /// `predicate` — when `Some`, each line is tested after indexing and the
+    /// matching indices are stored in [`FileLoadResult::precomputed_visible`],
+    /// avoiding a separate `compute_visible` call after the load completes.
+    ///
+    /// `tail` — when `true`, the predicate is evaluated from the last line
+    /// backward so that lines near the end of the file are confirmed visible
+    /// first; the result is always returned in ascending order.
+    pub async fn load(
+        path: String,
+        predicate: Option<VisibilityPredicate>,
+        tail: bool,
+    ) -> io::Result<FileLoadHandle> {
         let total_bytes = std::fs::metadata(&path)?.len();
         let (progress_tx, progress_rx) = watch::channel(0.0_f64);
         let (result_tx, result_rx) = oneshot::channel();
 
         spawn_blocking(move || {
-            let result = Self::index_chunked(&path, total_bytes, progress_tx);
+            let result = Self::index_chunked(&path, total_bytes, progress_tx, predicate, tail);
             // Ignore send error — UI may have quit before we finish.
             let _ = result_tx.send(result);
         });
@@ -194,16 +222,24 @@ impl FileReader {
 
     /// Index the file in 4 MiB chunks, sending progress updates after each
     /// chunk.  Produces the same `line_starts` as `compute_line_starts`.
+    ///
+    /// Phase 1 (always): forward scan building `line_starts` + ANSI detection.
+    /// Phase 2 (when `predicate` is `Some`): evaluate visibility on each line.
+    ///   - `tail=false`: forward parallel scan via rayon.
+    ///   - `tail=true`: backward sequential scan so tail lines are evaluated first;
+    ///     result is reversed to restore ascending order.
     fn index_chunked(
         path: &str,
         total_bytes: u64,
         progress_tx: watch::Sender<f64>,
-    ) -> io::Result<Self> {
+        predicate: Option<VisibilityPredicate>,
+        tail: bool,
+    ) -> io::Result<FileLoadResult> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
         let len = mmap.len();
 
-        // Single pass: scan for '\n', '\x1b', '\r' simultaneously.
+        // Phase 1: scan for '\n', '\x1b', '\r' simultaneously.
         // For the common (no-ANSI) case this halves I/O vs. the previous approach
         // (upfront memchr2 check + separate memchr_iter indexing loop).
         // Progress is reported per 4 MiB chunk; on ANSI fallback we send 1.0 at the end.
@@ -231,14 +267,37 @@ impl FileReader {
             offset = end;
         }
 
-        if has_ansi {
+        let reader = if has_ansi {
             let stripped = strip_ansi_escapes(&mmap);
             let line_starts = compute_line_starts(&stripped);
             let _ = progress_tx.send(1.0);
-            return Ok(FileReader { storage: Storage::Bytes(stripped), line_starts });
-        }
+            FileReader { storage: Storage::Bytes(stripped), line_starts }
+        } else {
+            FileReader { storage: Storage::Mmap(mmap), line_starts: starts }
+        };
 
-        Ok(FileReader { storage: Storage::Mmap(mmap), line_starts: starts })
+        // Phase 2: evaluate the predicate on each line when provided.
+        let precomputed_visible = predicate.map(|pred| {
+            let count = reader.line_count();
+            if tail {
+                // Evaluate from the last line backward so lines near the tail
+                // are confirmed first; reverse at the end to restore ascending order.
+                let mut visible: Vec<usize> = (0..count)
+                    .rev()
+                    .filter(|&i| pred(reader.get_line(i)))
+                    .collect();
+                visible.reverse();
+                visible
+            } else {
+                use rayon::prelude::*;
+                (0..count)
+                    .into_par_iter()
+                    .filter(|&i| pred(reader.get_line(i)))
+                    .collect()
+            }
+        });
+
+        Ok(FileLoadResult { reader, precomputed_visible })
     }
 
     /// Total number of lines (including any final partial line without a trailing newline).
@@ -572,6 +631,92 @@ mod tests {
 
     fn make(content: &[u8]) -> FileReader {
         FileReader::from_bytes(content.to_vec())
+    }
+
+    fn make_tmp(lines: &[&str]) -> NamedTempFile {
+        let mut f = NamedTempFile::new().unwrap();
+        for line in lines {
+            writeln!(f, "{}", line).unwrap();
+        }
+        f
+    }
+
+    #[tokio::test]
+    async fn test_load_no_predicate_no_precomputed_visible() {
+        let f = make_tmp(&["line1", "line2"]);
+        let path = f.path().to_str().unwrap().to_string();
+        let handle = FileReader::load(path, None, false).await.unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+        assert!(result.precomputed_visible.is_none());
+        assert_eq!(result.reader.line_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_load_predicate_forward_filters_correctly() {
+        let f = make_tmp(&["ERROR: bad", "INFO: ok", "ERROR: also bad"]);
+        let path = f.path().to_str().unwrap().to_string();
+        let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
+            Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
+        let handle = FileReader::load(path, Some(pred), false).await.unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(result.precomputed_visible, Some(vec![0, 2]));
+    }
+
+    #[tokio::test]
+    async fn test_load_predicate_tail_result_is_ascending() {
+        let f = make_tmp(&["ERROR: first", "INFO: skip", "ERROR: last"]);
+        let path = f.path().to_str().unwrap().to_string();
+        let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
+            Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
+        let handle = FileReader::load(path, Some(pred), true).await.unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+        let visible = result.precomputed_visible.unwrap();
+        // Backward evaluation, but result must be sorted ascending.
+        assert_eq!(visible, vec![0, 2]);
+        assert!(visible.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[tokio::test]
+    async fn test_load_predicate_ansi_file_indices_correct() {
+        // ANSI file: predicate must evaluate against stripped bytes and indices
+        // must reference stripped-line positions (same as get_line returns).
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "\x1b[32mERROR\x1b[0m: red").unwrap(); // line 0 — contains ERROR
+        writeln!(f, "\x1b[32mINFO\x1b[0m: green").unwrap(); // line 1 — skipped
+        writeln!(f, "\x1b[31mERROR\x1b[0m: also red").unwrap(); // line 2 — contains ERROR
+        let path = f.path().to_str().unwrap().to_string();
+
+        let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
+            Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
+        let handle = FileReader::load(path, Some(pred), false).await.unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+
+        // Predicate operates on stripped bytes ("ERROR: red", etc.)
+        assert_eq!(result.precomputed_visible, Some(vec![0, 2]));
+        // Verify get_line also returns stripped bytes — indices are consistent.
+        assert_eq!(result.reader.get_line(0), b"ERROR: red");
+        assert_eq!(result.reader.get_line(2), b"ERROR: also red");
+    }
+
+    #[tokio::test]
+    async fn test_load_predicate_tail_all_match() {
+        let f = make_tmp(&["a", "b", "c"]);
+        let path = f.path().to_str().unwrap().to_string();
+        let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> = Box::new(|_| true);
+        let handle = FileReader::load(path, Some(pred), true).await.unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(result.precomputed_visible, Some(vec![0, 1, 2]));
+    }
+
+    #[tokio::test]
+    async fn test_load_predicate_none_match() {
+        let f = make_tmp(&["INFO: ok", "DEBUG: verbose"]);
+        let path = f.path().to_str().unwrap().to_string();
+        let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
+            Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
+        let handle = FileReader::load(path, Some(pred), false).await.unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(result.precomputed_visible, Some(vec![]));
     }
 
     #[test]
@@ -971,12 +1116,12 @@ mod tests {
         writeln!(f, "line 3").unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path).await.unwrap();
+        let handle = FileReader::load(path, None, false).await.unwrap();
         assert!(handle.total_bytes > 0);
 
-        let reader = handle.result_rx.await.unwrap().unwrap();
-        assert_eq!(reader.line_count(), 3);
-        assert_eq!(reader.get_line(0), b"line 1");
+        let result = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(result.reader.line_count(), 3);
+        assert_eq!(result.reader.get_line(0), b"line 1");
     }
 
     #[tokio::test]
@@ -987,9 +1132,9 @@ mod tests {
         }
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path).await.unwrap();
-        let reader = handle.result_rx.await.unwrap().unwrap();
-        assert_eq!(reader.line_count(), 100);
+        let handle = FileReader::load(path, None, false).await.unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(result.reader.line_count(), 100);
 
         // After completion, progress should be 1.0
         let progress = *handle.progress_rx.borrow();
@@ -1002,16 +1147,16 @@ mod tests {
         f.write_all(b"\x1b[31mred\x1b[0m\nplain\n").unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path).await.unwrap();
-        let reader = handle.result_rx.await.unwrap().unwrap();
-        assert_eq!(reader.line_count(), 2);
-        assert_eq!(reader.get_line(0), b"red");
-        assert_eq!(reader.get_line(1), b"plain");
+        let handle = FileReader::load(path, None, false).await.unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(result.reader.line_count(), 2);
+        assert_eq!(result.reader.get_line(0), b"red");
+        assert_eq!(result.reader.get_line(1), b"plain");
     }
 
     #[tokio::test]
     async fn test_load_nonexistent() {
-        let result = FileReader::load("/tmp/nonexistent_logana_load_test.log".to_string()).await;
+        let result = FileReader::load("/tmp/nonexistent_logana_load_test.log".to_string(), None, false).await;
         assert!(result.is_err());
     }
 
@@ -1020,9 +1165,9 @@ mod tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path).await.unwrap();
-        let reader = handle.result_rx.await.unwrap().unwrap();
-        assert_eq!(reader.line_count(), 0);
+        let handle = FileReader::load(path, None, false).await.unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+        assert_eq!(result.reader.line_count(), 0);
     }
 
     // -----------------------------------------------------------------------

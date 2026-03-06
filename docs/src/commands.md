@@ -1,5 +1,17 @@
 # Commands
 
+## CLI Flags
+
+These flags are passed when launching logana from the shell:
+
+| Flag | Description |
+|---|---|
+| `<file>` | File or directory to open. Omit to read from stdin. |
+| `-f`, `--filters <path>` | Preload a saved filter set (JSON). Filters are applied in a single pass during indexing and remain active for interactive use. |
+| `-t`, `--tail` | Start at the end of the file and enable tail mode. Combined with `--filters`, the last matching line is available immediately after loading. |
+
+## In-App Commands
+
 Press `:` in normal mode to open command mode. Tab completes commands, flags, colors, themes, and file paths. Command history is navigable with `Up` / `Down`.
 
 ## Filtering

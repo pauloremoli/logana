@@ -69,7 +69,7 @@ fn severity_number_to_level(num_str: &str) -> Option<&'static str> {
 
 /// Extract a scalar string from an OTLP `AnyValue` object such as
 /// `{"stringValue":"GET"}`, `{"intValue":"42"}`, `{"boolValue":"true"}`.
-fn extract_any_value_str<'a>(value: &'a str) -> Option<&'a str> {
+fn extract_any_value_str(value: &str) -> Option<&str> {
     let fields = parse_json_line(value.as_bytes())?;
     for f in &fields {
         if matches!(
@@ -164,7 +164,7 @@ fn parse_otlp_attr_array<'a>(array_str: &'a str) -> Vec<(&'a str, &'a str)> {
 }
 
 /// Parse OTel SDK flat-dict attributes: `{"http.method":"GET","service.name":"svc"}`
-fn parse_sdk_attr_dict<'a>(dict_str: &'a str) -> Vec<(&'a str, &'a str)> {
+fn parse_sdk_attr_dict(dict_str: &str) -> Vec<(&str, &str)> {
     parse_json_line(dict_str.as_bytes())
         .unwrap_or_default()
         .into_iter()

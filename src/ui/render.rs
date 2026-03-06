@@ -612,24 +612,23 @@ impl App {
                             // Colour the target + pid columns using the per-process palette.
                             if process_colors_len > 0
                                 && !theme.value_colors.is_disabled("process_colors")
+                                && let Some(target) = parts.target
                             {
-                                if let Some(target) = parts.target {
-                                    let idx = stable_hash(target) % process_colors_len;
-                                    let sid = process_style_start.saturating_add(idx as u8);
-                                    if let Some((s, e)) = find_col_range(&cols, target) {
-                                        collector.push(s, e, sid);
-                                    }
-                                    // Also colour the pid column so that formats like
-                                    // journalctl (unit[pid]) show both name and id coloured.
-                                    if let Some((_, pid_val)) =
-                                        parts.extra_fields.iter().find(|(k, _)| *k == "pid")
-                                    {
-                                        let pid_sid = process_style_start.saturating_add(
-                                            (stable_hash(target) % process_colors_len) as u8,
-                                        );
-                                        if let Some((s, e)) = find_col_range(&cols, pid_val) {
-                                            collector.push(s, e, pid_sid);
-                                        }
+                                let idx = stable_hash(target) % process_colors_len;
+                                let sid = process_style_start.saturating_add(idx as u8);
+                                if let Some((s, e)) = find_col_range(&cols, target) {
+                                    collector.push(s, e, sid);
+                                }
+                                // Also colour the pid column so that formats like
+                                // journalctl (unit[pid]) show both name and id coloured.
+                                if let Some((_, pid_val)) =
+                                    parts.extra_fields.iter().find(|(k, _)| *k == "pid")
+                                {
+                                    let pid_sid = process_style_start.saturating_add(
+                                        (stable_hash(target) % process_colors_len) as u8,
+                                    );
+                                    if let Some((s, e)) = find_col_range(&cols, pid_val) {
+                                        collector.push(s, e, pid_sid);
                                     }
                                 }
                             }

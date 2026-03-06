@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 
 use crate::db::FileContextStore;
-use crate::file_reader::FileReader;
+use crate::file_reader::{FileReader, VisibilityPredicate};
 use crate::log_manager::LogManager;
 use crate::mode::app_mode::ConfirmRestoreMode;
 use crate::mode::normal_mode::NormalMode;
@@ -146,7 +146,7 @@ impl App {
                 self.restore_docker_tab(&next).await;
                 continue;
             }
-            // Regular file — hand off to background loader
+            // Regular file — hand off to background loader (no predicate for session restore).
             self.begin_file_load(
                 next,
                 LoadContext::SessionRestoreTab {
@@ -154,6 +154,8 @@ impl App {
                     total,
                     initial_tab_idx,
                 },
+                None,
+                false,
             )
             .await;
             return;
@@ -171,9 +173,11 @@ impl App {
         &mut self,
         path: String,
         context: LoadContext,
+        predicate: Option<VisibilityPredicate>,
+        tail: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>> {
         Box::pin(async move {
-            match FileReader::load(path.clone()).await {
+            match FileReader::load(path.clone(), predicate, tail).await {
                 Ok(handle) => {
                     self.file_load_state = Some(FileLoadState {
                         path,
@@ -278,12 +282,12 @@ impl App {
         if let Some(load_result) = done_result {
             let state = self.file_load_state.take().unwrap();
             match load_result {
-                Ok(file_reader) => {
+                Ok(result) => {
                     self.on_load_success(
                         state.path,
                         state.total_bytes,
                         state.on_complete,
-                        file_reader,
+                        result,
                     )
                     .await
                 }
@@ -298,14 +302,14 @@ impl App {
         path: String,
         total_bytes: u64,
         context: LoadContext,
-        file_reader: FileReader,
+        result: crate::file_reader::FileLoadResult,
     ) {
         match context {
             LoadContext::ReplaceInitialTab => {
                 if self.tabs.is_empty() {
                     return;
                 }
-                self.tabs[0].file_reader = file_reader;
+                self.tabs[0].file_reader = result.reader;
                 // Re-detect format now that real data is available (the tab was
                 // created with an empty placeholder reader).
                 let limit = self.tabs[0].file_reader.line_count().min(200);
@@ -315,7 +319,20 @@ impl App {
                         .collect();
                     self.tabs[0].detected_format = crate::parser::detect_format(&sample);
                 }
-                self.tabs[0].refresh_visible();
+                // Use precomputed visible indices when available (single-pass optimisation);
+                // otherwise fall back to a full compute_visible scan.
+                if let Some(visible) = result.precomputed_visible {
+                    self.tabs[0].visible_indices =
+                        super::VisibleLines::Filtered(visible);
+                } else {
+                    self.tabs[0].refresh_visible();
+                }
+                // Apply startup tail: jump to the last visible line and enable tail mode.
+                if self.startup_tail {
+                    self.tabs[0].tail_mode = true;
+                    self.tabs[0].scroll_offset =
+                        self.tabs[0].visible_indices.len().saturating_sub(1);
+                }
                 if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     self.tabs[0].mode = Box::new(ConfirmRestoreMode { context: ctx });
                 }
@@ -335,7 +352,7 @@ impl App {
                     .unwrap_or(&path)
                     .to_string();
                 let log_manager = LogManager::new(self.db.clone(), Some(path.clone())).await;
-                let mut tab = TabState::new(file_reader, log_manager, title);
+                let mut tab = TabState::new(result.reader, log_manager, title);
                 tab.keybindings = self.keybindings.clone();
                 tab.show_mode_bar = self.show_mode_bar_default;
                 tab.show_borders = self.show_borders_default;
@@ -438,7 +455,7 @@ mod tests {
     use super::*;
     use crate::config::Keybindings;
     use crate::db::Database;
-    use crate::file_reader::FileReader;
+    use crate::file_reader::{FileLoadResult, FileReader};
     use crate::log_manager::LogManager;
     use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
@@ -912,7 +929,7 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), b"data\n").unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
-        app.begin_file_load(path.clone(), LoadContext::ReplaceInitialTab)
+        app.begin_file_load(path.clone(), LoadContext::ReplaceInitialTab, None, false)
             .await;
         assert!(app.file_load_state.is_some());
         assert_eq!(app.file_load_state.as_ref().unwrap().path, path);
@@ -925,7 +942,7 @@ mod tests {
         let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let fr = FileReader::from_bytes(b"loaded\n".to_vec());
-        let _ = result_tx.send(Ok(fr));
+        let _ = result_tx.send(Ok(FileLoadResult { reader: fr, precomputed_visible: None }));
         drop(progress_tx);
 
         app.file_load_state = Some(super::FileLoadState {
@@ -957,7 +974,7 @@ mod tests {
             b"{\"level\":\"INFO\",\"msg\":\"hello\"}\n{\"level\":\"WARN\",\"msg\":\"world\"}\n"
                 .to_vec(),
         );
-        let _ = result_tx.send(Ok(fr));
+        let _ = result_tx.send(Ok(FileLoadResult { reader: fr, precomputed_visible: None }));
         drop(progress_tx);
 
         app.file_load_state = Some(super::FileLoadState {

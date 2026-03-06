@@ -16,7 +16,7 @@ use crossterm::{
 };
 use logana::config::Config;
 use logana::db::Database;
-use logana::file_reader::FileReader;
+use logana::file_reader::{FileReader, VisibilityPredicate};
 use logana::log_manager::LogManager;
 use logana::mode::app_mode::ConfirmOpenDirMode;
 use logana::theme::Theme;
@@ -31,6 +31,17 @@ use tracing::error;
 struct Args {
     /// Optional file to process. If not provided, reads from stdin.
     file: Option<String>,
+
+    /// Path to a JSON filter file to preload (e.g. saved with :save-filters).
+    /// Filters are applied in a single pass during file indexing.
+    #[arg(short = 'f', long)]
+    filters: Option<String>,
+
+    /// Start at the end of the file and enable tail mode.
+    /// When combined with --filters, the predicate is evaluated from the last
+    /// line backward so the tail is available immediately after loading.
+    #[arg(short = 't', long)]
+    tail: bool,
 }
 
 fn get_db_path() -> String {
@@ -104,11 +115,19 @@ async fn main() -> Result<()> {
     })?;
     let db = Arc::new(db);
 
-    // Validate the path before entering the TUI (gives a clean error message).
+    // Validate the file path before entering the TUI (gives a clean error message).
     if let Some(ref path) = file_path
         && let Err(msg) = validate_file_arg(path)
     {
         eprintln!("Error: {}", msg);
+        std::process::exit(1);
+    }
+
+    // Validate the filter file path before entering the TUI.
+    if let Some(ref fpath) = args.filters
+        && let Err(msg) = validate_file_arg(fpath)
+    {
+        eprintln!("Error (--filters): {}", msg);
         std::process::exit(1);
     }
 
@@ -171,10 +190,32 @@ async fn main() -> Result<()> {
         app.tabs[0].show_mode_bar = show_mode_bar;
         app.tabs[0].show_borders = show_borders;
 
+        // If a filter file was provided, load it into the initial tab's log manager
+        // so filters are active both for the single-pass optimisation and for
+        // interactive use (add/remove/edit in filter management mode).
+        if let Some(ref fpath) = args.filters
+            && let Err(e) = app.tabs[0].log_manager.load_filters(fpath).await
+        {
+            eprintln!("Warning: could not load filters from '{}': {}", fpath, e);
+        }
+
+        // Mark the initial tab for tail mode so on_load_success can apply it.
+        app.startup_tail = args.tail;
+
+        // Build a visibility predicate for the single-pass optimisation when both
+        // a filter file and a background file load are in play.
+        let startup_predicate: Option<VisibilityPredicate> =
+            if background_file_load && args.filters.is_some() {
+                let (fm, _, _) = app.tabs[0].log_manager.build_filter_manager();
+                Some(Box::new(move |line: &[u8]| fm.is_visible(line)))
+            } else {
+                None
+            };
+
         // Kick off the background file load now that the TUI is visible.
         if background_file_load {
             if let Some(path) = source_path {
-                app.begin_file_load(path, LoadContext::ReplaceInitialTab)
+                app.begin_file_load(path, LoadContext::ReplaceInitialTab, startup_predicate, args.tail)
                     .await;
             }
         } else if stdin_is_piped {
@@ -220,12 +261,53 @@ mod tests {
     fn test_args_no_file() {
         let args = Args::try_parse_from(["logana"]).unwrap();
         assert!(args.file.is_none());
+        assert!(args.filters.is_none());
+        assert!(!args.tail);
     }
 
     #[test]
     fn test_args_with_file() {
         let args = Args::try_parse_from(["logana", "/var/log/syslog"]).unwrap();
         assert_eq!(args.file, Some("/var/log/syslog".to_string()));
+    }
+
+    #[test]
+    fn test_args_filters_short() {
+        let args = Args::try_parse_from(["logana", "file.log", "-f", "my.json"]).unwrap();
+        assert_eq!(args.filters, Some("my.json".to_string()));
+    }
+
+    #[test]
+    fn test_args_filters_long() {
+        let args =
+            Args::try_parse_from(["logana", "file.log", "--filters", "my.json"]).unwrap();
+        assert_eq!(args.filters, Some("my.json".to_string()));
+    }
+
+    #[test]
+    fn test_args_tail_short() {
+        let args = Args::try_parse_from(["logana", "file.log", "-t"]).unwrap();
+        assert!(args.tail);
+    }
+
+    #[test]
+    fn test_args_tail_long() {
+        let args = Args::try_parse_from(["logana", "file.log", "--tail"]).unwrap();
+        assert!(args.tail);
+    }
+
+    #[test]
+    fn test_args_tail_default_false() {
+        let args = Args::try_parse_from(["logana", "file.log"]).unwrap();
+        assert!(!args.tail);
+    }
+
+    #[test]
+    fn test_args_filters_and_tail_combined() {
+        let args =
+            Args::try_parse_from(["logana", "file.log", "-f", "filters.json", "-t"]).unwrap();
+        assert_eq!(args.filters, Some("filters.json".to_string()));
+        assert!(args.tail);
     }
 
     #[test]
