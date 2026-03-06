@@ -1,5 +1,0 @@
-[Mon Oct 10 13:55:36.123 2024] [error] [pid 1234] Failed to start server
-[Mon Oct 10 13:56:10.456 2024] [warn] [pid 1235] Connection slow
-[Mon Oct 10 13:57:45.789 2024] [notice] [pid 1236] Child process started
-[Mon Oct 10 13:58:12.012 2024] [error] [pid 1237] Out of memory
-[Mon Oct 10 13:59:05.345 2024] [crit] [pid 1238] Disk full

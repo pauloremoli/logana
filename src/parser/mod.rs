@@ -2,14 +2,16 @@
 //!
 //! [`detect_format`] samples up to 200 lines and returns the [`LogFormatParser`]
 //! with the highest confidence score. Registered parsers in priority order:
-//! [`JsonParser`], [`SyslogParser`], [`JournalctlParser`], [`ClfParser`],
-//! [`LogfmtParser`], [`CommonLogParser`] (0.95× score penalty as catch-all).
+//! [`OtlpParser`] (scores up to 1.5 to beat JSON), [`JsonParser`], [`SyslogParser`],
+//! [`JournalctlParser`], [`ClfParser`], [`LogfmtParser`],
+//! [`CommonLogParser`] (0.95× score penalty as catch-all).
 
 pub mod clf;
 pub mod common_log;
 pub mod journalctl;
 pub mod json;
 pub mod logfmt;
+pub mod otlp;
 pub mod syslog;
 pub(crate) mod timestamp;
 pub mod types;
@@ -24,6 +26,7 @@ pub use json::{
     detect_json_format, parse_json_line,
 };
 pub use logfmt::LogfmtParser;
+pub use otlp::OtlpParser;
 pub use syslog::SyslogParser;
 pub use types::{DisplayParts, LogFormatParser, SpanInfo, format_span_col};
 
@@ -34,6 +37,8 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
     }
 
     let parsers: Vec<Box<dyn LogFormatParser>> = vec![
+        // OtlpParser scores up to 1.5 to beat JsonParser (max 1.0) on OTLP files
+        Box::new(OtlpParser),
         Box::new(JsonParser),
         Box::new(SyslogParser),
         Box::new(JournalctlParser),
@@ -247,6 +252,37 @@ mod tests {
         let fields = parse_json_line(lines[0]).unwrap();
         let parts = classify_json_fields_all(&fields);
         assert_eq!(parts.message, Some("A short message"));
+    }
+
+    #[test]
+    fn test_detect_format_otlp_json() {
+        let lines: Vec<&[u8]> = vec![
+            br#"{"timeUnixNano":"1700000000000000000","severityNumber":9,"severityText":"INFO","body":{"stringValue":"request received"},"attributes":[{"key":"service.name","value":{"stringValue":"my-service"}}]}"#,
+            br#"{"timeUnixNano":"1700000001000000000","severityNumber":13,"severityText":"WARN","body":{"stringValue":"slow response"},"attributes":[]}"#,
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "otlp");
+    }
+
+    #[test]
+    fn test_detect_format_otel_sdk_json() {
+        let lines: Vec<&[u8]> = vec![
+            br#"{"timestamp":"2024-01-01T00:00:00.000000Z","severity_text":"INFO","severity_number":9,"body":"request received","attributes":{"service.name":"my-service"}}"#,
+            br#"{"timestamp":"2024-01-01T00:00:01.000000Z","severity_text":"WARN","severity_number":13,"body":"slow response","attributes":{}}"#,
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "otlp");
+    }
+
+    #[test]
+    fn test_otlp_beats_json() {
+        // OTLP lines are valid JSON, but OtlpParser should win
+        let lines: Vec<&[u8]> = vec![
+            br#"{"timeUnixNano":"1700000000000000000","severityNumber":9,"body":{"stringValue":"msg"},"attributes":[]}"#,
+            br#"{"timeUnixNano":"1700000001000000000","severityNumber":13,"body":{"stringValue":"warn"},"attributes":[]}"#,
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "otlp");
     }
 
     // ── Priority: specific parsers beat common-log ────────────────────

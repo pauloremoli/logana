@@ -6,23 +6,45 @@ logana detects the log format automatically by sampling the first lines of the f
 
 | Format | Examples |
 |---|---|
+| OpenTelemetry (OTLP) | OTLP/JSON protobuf-JSON encoding, OTel SDK JSON |
 | JSON | tracing-subscriber JSON, bunyan, pino, any structured JSON logger |
 | Syslog | RFC 3164 (BSD), RFC 5424 |
 | Journalctl | short-iso, short-precise, short-full |
 | Common / Combined Log | Apache access, nginx access |
 | Logfmt | Go `slog`, Heroku, Grafana Loki |
 | Common log family | env_logger, tracing-subscriber fmt (with/without spans), logback, log4j2, Spring Boot, Python logging, loguru, structlog |
-| nginx / Apache error | Error log format |
-| dmesg | Linux kernel ring buffer |
-| Kubernetes CRI | Container runtime interface log format |
 
 ## Detection
 
-All registered parsers score a confidence value (0.0–1.0) against the first 200 lines of the file. The parser with the highest score above 0.0 is selected. More specific parsers naturally score higher on their format; the common log parser applies a 0.95× penalty to yield to more specific parsers on ties.
+All registered parsers score a confidence value against the first 200 lines of the file. The parser with the highest score above 0.0 is selected. More specific parsers naturally score higher on their format; the common log parser applies a 0.95× penalty to yield to more specific parsers on ties. The OTLP parser scores up to 1.5 (above the 1.0 maximum for plain JSON) so it wins when OpenTelemetry fields are present.
 
 The detected format name is shown in the status bar.
 
 ## Format Details
+
+### OpenTelemetry (OTLP)
+
+Two JSON-based OTel log formats are supported:
+
+**OTLP/JSON** (protobuf-JSON encoding — exported by collectors):
+```json
+{"timeUnixNano":"1700000000000000000","severityNumber":9,"severityText":"INFO","body":{"stringValue":"request received"},"attributes":[{"key":"service.name","value":{"stringValue":"my-svc"}}]}
+```
+- Timestamp: `timeUnixNano` (nanosecond epoch string)
+- Severity: `severityNumber` (1–4=TRACE, 5–8=DEBUG, 9–12=INFO, 13–16=WARN, 17–20=ERROR, 21–24=FATAL) and/or `severityText`
+- Body: `body.stringValue` (AnyValue object encoding)
+- Attributes: array of `{key, value}` objects
+
+**OTel SDK JSON** (emitted directly by SDKs):
+```json
+{"timestamp":"2024-01-01T00:00:00.000Z","severity_text":"INFO","severity_number":9,"body":"request received","attributes":{"service.name":"my-svc"}}
+```
+- Timestamp: `timestamp` (ISO 8601)
+- Severity: `severity_text` and/or `severity_number`
+- Body: direct string value
+- Attributes: flat `{key: value}` dict
+
+Both formats surface `service.name`, `code.namespace`, `logger`, and similar target attributes as the **target** column.
 
 ### JSON
 
@@ -94,20 +116,3 @@ Rust applications using `tracing-subscriber`'s default `fmt` output produce line
 
 Both forms are handled: span lines are parsed into a `span` column with `name` and `fields`; non-span lines fall through to the generic fallback.
 
-### nginx / Apache Error
-
-Error log formats distinct from access logs:
-- nginx: `YYYY/MM/DD HH:MM:SS [level] pid#tid: *cid message, ...`
-- Apache 2.4: `[Www Mon DD HH:MM:SS.usec YYYY] [module:level] [pid tid] message`
-
-### dmesg
-
-Linux kernel ring buffer output: `[seconds.usecs] message`
-
-The bracketed timestamp is normalized; the rest is the message.
-
-### Kubernetes CRI
-
-Container runtime interface format: `ISO STDOUT/STDERR F/P message`
-
-`F` = full line, `P` = partial line. Partial lines are concatenated.

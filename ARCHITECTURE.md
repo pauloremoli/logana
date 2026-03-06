@@ -19,9 +19,6 @@ src/
     clf.rs         - Common Log Format + Combined Log Format parser (ClfParser implementing LogFormatParser)
     logfmt.rs      - Logfmt key=value parser: Go slog, Heroku, Grafana Loki (LogfmtParser implementing LogFormatParser)
     common_log.rs  - Timestamp+LEVEL+target family: env_logger, tracing fmt, logback, Spring Boot, Python, loguru, structlog (CommonLogParser implementing LogFormatParser)
-    web_error.rs   - Nginx error log + Apache 2.4 error log (WebErrorParser implementing LogFormatParser)
-    dmesg.rs       - Linux kernel ring buffer / dmesg output (DmesgParser implementing LogFormatParser)
-    kube_cri.rs    - Kubernetes CRI log format (KubeCriParser implementing LogFormatParser)
   date_filter.rs  - Date/time filter: parsing, timestamp normalization, matching (DateFilter)
   file_reader.rs  - Memory-mapped file I/O with SIMD line indexing (FileReader)
   filters.rs      - Filter pipeline: Filter trait, SubstringFilter, RegexFilter, FilterManager, render_line
@@ -96,9 +93,9 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `collect_field_names(&self, lines: &[&[u8]]) -> Vec<String>` — discover field names by sampling
   - `detect_score(&self, sample: &[&[u8]]) -> f64` — confidence score (0.0–1.0) for format detection
   - `name(&self) -> &str` — human-readable format name
-- **`detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>>`**: Tries all registered parsers (JsonParser, SyslogParser, JournalctlParser, ClfParser, KubeCriParser, WebErrorParser, LogfmtParser, DmesgParser, CommonLogParser), returns the one with the highest score above 0.0. More specific parsers naturally score higher; CommonLogParser applies a 0.95× penalty to yield to more specific parsers on ties.
+- **`detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>>`**: Tries all registered parsers (OtlpParser, JsonParser, SyslogParser, JournalctlParser, ClfParser, LogfmtParser, CommonLogParser), returns the one with the highest score above 0.0. More specific parsers naturally score higher; CommonLogParser applies a 0.95× penalty to yield to more specific parsers on ties.
 - **`format_span_col(&SpanInfo, show_keys: bool) -> String`**: Formats span as `name: v1 v2` (values only, default) or `name: k1=v1 k2=v2` (key=value pairs when `show_keys=true`).
-- **Detection priority** (by score competition): JsonParser (lines must start with `{`), SyslogParser (requires `<PRI>` or BSD timestamp), JournalctlParser (ISO/BSD + valid hostname + unit), ClfParser (strict request/status pattern), KubeCriParser (ISO + stdout/stderr + F/P), WebErrorParser (slash-date + bracketed level or Apache double-bracket), LogfmtParser (≥3 key=value pairs), DmesgParser (bracketed seconds.usecs), CommonLogParser (broadest catch-all, 0.95× penalty).
+- **Detection priority** (by score competition): OtlpParser (scores up to 1.5 to beat JSON), JsonParser (lines must start with `{`), SyslogParser (requires `<PRI>` or BSD timestamp), JournalctlParser (ISO/BSD + valid hostname + unit), ClfParser (strict request/status pattern), LogfmtParser (≥3 key=value pairs), CommonLogParser (broadest catch-all, 0.95× penalty).
 
 ### JSON Parser (parser/json.rs)
 

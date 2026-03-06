@@ -1,5 +1,0 @@
-2024-01-15 10:30:00,123 - myapp - INFO - User login succeeded
-2024-01-15 10:31:01,456 - myapp - WARNING - Slow query detected
-2024-01-15 10:32:02,789 - myapp - ERROR - Connection failed
-2024-01-15 10:33:03,012 - myapp - INFO - Cache hit
-WARNING:root:Deprecated function used

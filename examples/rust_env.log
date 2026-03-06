@@ -1,5 +1,0 @@
-[2024-01-15T10:30:00Z INFO myapp::auth] User login succeeded
-[2024-01-15T10:31:00Z WARN myapp::db] Slow query detected
-[2024-01-15T10:32:00Z ERROR myapp::network] Connection failed
-[2024-01-15T10:33:00Z INFO myapp::cache] Cache hit
-[2024-01-15T10:34:00Z DEBUG myapp::api] Request received
