@@ -67,6 +67,21 @@ pub struct SearchHandle {
     pub navigate: bool,
 }
 
+// ---------------------------------------------------------------------------
+// FilterHandle
+// ---------------------------------------------------------------------------
+
+/// Handle for a background filter computation task spawned by
+/// [`TabState::begin_filter_refresh`].
+pub struct FilterHandle {
+    /// Receives the computed visible-line indices. Never sent when cancelled.
+    pub result_rx: oneshot::Receiver<Vec<usize>>,
+    /// Set to `true` to abort the in-flight computation early.
+    pub cancel: Arc<AtomicBool>,
+    /// Live fraction-complete (0.0–1.0) polled each frame for the progress bar.
+    pub progress_rx: watch::Receiver<f64>,
+}
+
 /// List the flat (non-recursive), non-hidden regular files in `path`.
 /// Returns absolute path strings sorted by name.
 /// Returns an empty Vec for non-existent or unreadable paths.
@@ -273,7 +288,8 @@ pub struct TabState {
     /// Active keybindings for this tab (shared with App, overwritten after TabState::new).
     pub keybindings: Arc<Keybindings>,
     /// Auto-detected log format parser for structured display (None = raw bytes).
-    pub detected_format: Option<Box<dyn LogFormatParser>>,
+    /// Stored behind an `Arc` so it can be shared with background filter tasks (O(1) clone).
+    pub detected_format: Option<Arc<dyn LogFormatParser>>,
     /// When true, always scroll to the last visible line when new content arrives.
     pub tail_mode: bool,
     /// When true, the format parser is bypassed and lines are shown as raw bytes.
@@ -303,6 +319,8 @@ pub struct TabState {
     pub parse_cache: HashMap<usize, (u64, CachedParsedLine)>,
     /// In-flight background search, if one is running.
     pub search_handle: Option<SearchHandle>,
+    /// In-flight background filter computation, if one is running.
+    pub filter_handle: Option<FilterHandle>,
     /// Memoized result of `collect_field_names`: (parse_cache_gen, names).
     /// Invalidated automatically when `parse_cache_gen` advances.
     pub field_names_cache: Option<(u64, Vec<String>)>,
@@ -322,7 +340,7 @@ impl TabState {
         // Sample up to 200 lines for format detection.
         let sample_limit = file_reader.line_count().min(200);
         let sample: Vec<&[u8]> = (0..sample_limit).map(|i| file_reader.get_line(i)).collect();
-        let detected_format = detect_format(&sample);
+        let detected_format = detect_format(&sample).map(Arc::from);
 
         let mut tab = TabState {
             file_reader,
@@ -367,6 +385,7 @@ impl TabState {
             parse_cache_gen: 0,
             parse_cache: HashMap::new(),
             search_handle: None,
+            filter_handle: None,
             field_names_cache: None,
             render_cache_gen: 0,
             search_result_gen: 0,
@@ -657,6 +676,189 @@ impl TabState {
         });
     }
 
+    /// Start a background filter computation over the entire file.
+    ///
+    /// Fast paths (no filters, marks-only, leaving marks-only, filtering disabled) run
+    /// synchronously in O(1) or O(marks). The slow path (active text/date filters over
+    /// the full file) spawns a [`tokio::task::spawn_blocking`] task, stores a
+    /// [`FilterHandle`], and returns immediately so the UI stays responsive.
+    ///
+    /// Any in-flight filter computation is cancelled before the new one starts.
+    pub fn begin_filter_refresh(&mut self) {
+        // Cancel any in-flight filter computation.
+        if let Some(ref h) = self.filter_handle {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
+        self.filter_handle = None;
+
+        // Invalidate parse/render caches — filters or content changed.
+        self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
+        self.parse_cache.clear();
+        self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
+        self.render_line_cache.clear();
+
+        let has_active_filters = self.show_marks_only
+            || self.log_manager.get_filters().iter().any(|f| f.enabled);
+
+        if !has_active_filters {
+            // Fast path: no filters — O(1), no allocation.
+            self.saved_filter_view = None;
+            self.visible_indices = VisibleLines::All(self.file_reader.line_count());
+            self.filter_manager_arc = Arc::new(FilterManager::empty());
+            self.filter_styles = Vec::new();
+            self.filter_date_styles = Vec::new();
+            if self.visible_indices.is_empty() {
+                self.scroll_offset = 0;
+            } else {
+                self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
+            }
+            return;
+        }
+
+        if self.show_marks_only {
+            // Marks-only: O(marks count) — sync.
+            if self.saved_filter_view.is_none() {
+                self.saved_filter_view = Some((
+                    self.visible_indices.clone(),
+                    self.filter_manager_arc.clone(),
+                    self.filter_styles.clone(),
+                    self.filter_date_styles.clone(),
+                ));
+            } else {
+                self.saved_filter_view = None;
+            }
+            let mut indices = self.log_manager.get_marked_indices();
+            indices.retain(|&i| i < self.file_reader.line_count());
+            self.visible_indices = VisibleLines::Filtered(indices);
+            let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+            self.filter_manager_arc = Arc::new(fm);
+            self.filter_styles = styles;
+            self.filter_date_styles = date_filter_styles;
+            if self.visible_indices.is_empty() {
+                self.scroll_offset = 0;
+            } else {
+                self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
+            }
+            return;
+        }
+
+        if let Some((saved_visible, saved_fm, saved_styles, saved_date_styles)) =
+            self.saved_filter_view.take()
+        {
+            // Leaving marks-only: restore saved filter view — O(1).
+            self.visible_indices = saved_visible;
+            self.filter_manager_arc = saved_fm;
+            self.filter_styles = saved_styles;
+            self.filter_date_styles = saved_date_styles;
+            if self.visible_indices.is_empty() {
+                self.scroll_offset = 0;
+            } else {
+                self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
+            }
+            return;
+        }
+
+        if !self.filtering_enabled {
+            // Filtering disabled: show all lines — O(1).
+            self.visible_indices = VisibleLines::All(self.file_reader.line_count());
+            self.filter_manager_arc = Arc::new(FilterManager::empty());
+            self.filter_styles = Vec::new();
+            self.filter_date_styles = Vec::new();
+            if self.visible_indices.is_empty() {
+                self.scroll_offset = 0;
+            } else {
+                self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
+            }
+            return;
+        }
+
+        // Slow path: active text/date filters require a full file scan.
+        let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+        // Update immediately so render highlights reflect new filters before results arrive.
+        self.filter_manager_arc = Arc::new(fm);
+        self.filter_styles = styles;
+        self.filter_date_styles = date_filter_styles;
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let (result_tx, result_rx) = oneshot::channel();
+        let (progress_tx, progress_rx) = watch::channel(0.0_f64);
+
+        let file_reader = self.file_reader.clone();
+        let fm_arc = self.filter_manager_arc.clone();
+        let date_filters =
+            crate::date_filter::extract_date_filters(self.log_manager.get_filters());
+        let parser = self.detected_format.clone();
+        let line_count = self.file_reader.line_count();
+
+        tokio::task::spawn_blocking(move || {
+            use rayon::prelude::*;
+            use std::sync::atomic::AtomicUsize;
+
+            let counter = AtomicUsize::new(0);
+
+            // Phase 1: text filters (0 – 50% progress).
+            let text_visible: Vec<usize> = (0..line_count)
+                .into_par_iter()
+                .filter(|&i| {
+                    if cancel_clone.load(Ordering::Relaxed) {
+                        return false;
+                    }
+                    let n = counter.fetch_add(1, Ordering::Relaxed);
+                    if n.is_multiple_of(10_000) && line_count > 0 {
+                        let _ = progress_tx.send(n as f64 / line_count as f64 * 0.5);
+                    }
+                    fm_arc.is_visible(file_reader.get_line(i))
+                })
+                .collect();
+
+            if cancel_clone.load(Ordering::Relaxed) {
+                return;
+            }
+
+            // Phase 2: date filters (50 – 100% progress).
+            let visible = if !date_filters.is_empty() && let Some(ref p) = parser {
+                let parser: &dyn LogFormatParser = p.as_ref();
+                counter.store(0, Ordering::Relaxed);
+                let phase2_total = text_visible.len();
+                text_visible
+                    .par_iter()
+                    .copied()
+                    .filter(|&idx| {
+                        if cancel_clone.load(Ordering::Relaxed) {
+                            return false;
+                        }
+                        let n = counter.fetch_add(1, Ordering::Relaxed);
+                        if n.is_multiple_of(10_000) && phase2_total > 0 {
+                            let _ =
+                                progress_tx.send(0.5 + n as f64 / phase2_total as f64 * 0.5);
+                        }
+                        let line = file_reader.get_line(idx);
+                        match parser.parse_line(line) {
+                            Some(parts) => match parts.timestamp {
+                                Some(ts) => crate::date_filter::matches_any(&date_filters, ts),
+                                None => true,
+                            },
+                            None => true,
+                        }
+                    })
+                    .collect()
+            } else {
+                text_visible
+            };
+
+            if !cancel_clone.load(Ordering::Relaxed) {
+                let _ = result_tx.send(visible);
+            }
+        });
+
+        self.filter_handle = Some(FilterHandle {
+            result_rx,
+            cancel,
+            progress_rx,
+        });
+    }
+
     /// Jump to a 1-based line number, or the closest visible line if the
     /// target is hidden by filters.  Returns an error message when the
     /// line number is invalid (zero).
@@ -909,6 +1111,8 @@ pub struct FileLoadState {
         tokio::sync::oneshot::Receiver<std::io::Result<crate::file_reader::FileLoadResult>>,
     pub total_bytes: u64,
     pub on_complete: LoadContext,
+    /// Set to `true` to abort the in-flight indexing task early (e.g. on tab close).
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// Tracks an in-progress stdin stream.  Kept separate from `file_load_state`
@@ -1689,5 +1893,92 @@ mod tests {
         tab.refresh_visible();
         // Both marked lines must remain visible regardless of the date filter.
         assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 1]));
+    }
+
+    // ── begin_filter_refresh ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_fast_path_no_filters() {
+        let mut tab = make_tab(&["a", "b", "c"]).await;
+        tab.begin_filter_refresh();
+        // No active filters → All(n) synchronously, no background handle.
+        assert!(tab.filter_handle.is_none());
+        assert_eq!(tab.visible_indices, VisibleLines::All(3));
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_fast_path_filtering_disabled() {
+        let mut tab = make_tab(&["a", "b", "c"]).await;
+        tab.log_manager
+            .add_filter_with_color("a".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.filtering_enabled = false;
+        tab.begin_filter_refresh();
+        // Filtering disabled: All(n) synchronously.
+        assert!(tab.filter_handle.is_none());
+        assert_eq!(tab.visible_indices, VisibleLines::All(3));
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_fast_path_marks_only() {
+        let mut tab = make_tab(&["a", "b", "c"]).await;
+        tab.log_manager.toggle_mark(0);
+        tab.log_manager.toggle_mark(2);
+        tab.show_marks_only = true;
+        tab.begin_filter_refresh();
+        // Marks-only: O(marks) sync, no background handle.
+        assert!(tab.filter_handle.is_none());
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_spawns_background_for_active_filters() {
+        let mut tab = make_tab(&["error line", "info line", "error again"]).await;
+        tab.log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.begin_filter_refresh();
+        // Slow path: background handle is present.
+        assert!(tab.filter_handle.is_some());
+        // Await the result and verify correctness.
+        let h = tab.filter_handle.take().unwrap();
+        let visible = h.result_rx.await.unwrap();
+        assert_eq!(visible, vec![0, 2]);
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_cancels_previous_handle() {
+        let mut tab = make_tab(&["x", "y", "z"]).await;
+        tab.log_manager
+            .add_filter_with_color("x".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.begin_filter_refresh();
+        let cancel_1 = tab
+            .filter_handle
+            .as_ref()
+            .unwrap()
+            .cancel
+            .clone();
+        // Trigger a second refresh — the first handle's cancel flag must be set.
+        tab.begin_filter_refresh();
+        assert!(
+            cancel_1.load(std::sync::atomic::Ordering::Relaxed),
+            "first handle's cancel should be true after second begin_filter_refresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_advance_filter_computation_applies_result() {
+        let mut tab = make_tab(&["foo bar", "baz", "foo baz"]).await;
+        tab.log_manager
+            .add_filter_with_color("foo".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.begin_filter_refresh();
+        assert!(tab.filter_handle.is_some());
+        // Await the background task's result and simulate advance_filter_computation.
+        let h = tab.filter_handle.take().unwrap();
+        let visible = h.result_rx.await.unwrap();
+        tab.visible_indices = VisibleLines::Filtered(visible);
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
     }
 }

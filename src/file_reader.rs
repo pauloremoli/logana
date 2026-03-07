@@ -9,6 +9,8 @@ use memchr::{memchr_iter, memchr3_iter};
 use memmap2::Mmap;
 #[cfg(unix)]
 use memmap2::{Advice, UncheckedAdvice};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fs::File, io};
 use tokio::{
     spawn,
@@ -294,13 +296,15 @@ impl FileReader {
         path: String,
         predicate: Option<VisibilityPredicate>,
         tail: bool,
+        cancel: Arc<AtomicBool>,
     ) -> io::Result<FileLoadHandle> {
         let total_bytes = std::fs::metadata(&path)?.len();
         let (progress_tx, progress_rx) = watch::channel(0.0_f64);
         let (result_tx, result_rx) = oneshot::channel();
 
         spawn_blocking(move || {
-            let result = Self::index_chunked(&path, total_bytes, progress_tx, predicate, tail);
+            let result =
+                Self::index_chunked(&path, total_bytes, progress_tx, predicate, tail, &cancel);
             // Ignore send error — UI may have quit before we finish.
             let _ = result_tx.send(result);
         });
@@ -326,6 +330,7 @@ impl FileReader {
         progress_tx: watch::Sender<f64>,
         predicate: Option<VisibilityPredicate>,
         tail: bool,
+        cancel: &AtomicBool,
     ) -> io::Result<FileLoadResult> {
         let file = File::open(path)?;
         let scan_mmap = unsafe { Mmap::map(&file)? };
@@ -345,6 +350,9 @@ impl FileReader {
         let mut offset = 0;
 
         'scan: while offset < len {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
+            }
             let end = (offset + CHUNK).min(len);
             for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &scan_mmap[offset..end]) {
                 let abs = offset + pos;
@@ -874,7 +882,7 @@ mod tests {
     async fn test_load_no_predicate_no_precomputed_visible() {
         let f = make_tmp(&["line1", "line2"]);
         let path = f.path().to_str().unwrap().to_string();
-        let handle = FileReader::load(path, None, false).await.unwrap();
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false))).await.unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert!(result.precomputed_visible.is_none());
         assert_eq!(result.reader.line_count(), 2);
@@ -886,7 +894,7 @@ mod tests {
         let path = f.path().to_str().unwrap().to_string();
         let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
             Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
-        let handle = FileReader::load(path, Some(pred), false).await.unwrap();
+        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false))).await.unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![0, 2]));
     }
@@ -897,7 +905,7 @@ mod tests {
         let path = f.path().to_str().unwrap().to_string();
         let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
             Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
-        let handle = FileReader::load(path, Some(pred), true).await.unwrap();
+        let handle = FileReader::load(path, Some(pred), true, Arc::new(AtomicBool::new(false))).await.unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         let visible = result.precomputed_visible.unwrap();
         // Backward evaluation, but result must be sorted ascending.
@@ -917,7 +925,7 @@ mod tests {
 
         let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
             Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
-        let handle = FileReader::load(path, Some(pred), false).await.unwrap();
+        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false))).await.unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
 
         // Predicate operates on stripped bytes ("ERROR: red", etc.)
@@ -932,7 +940,7 @@ mod tests {
         let f = make_tmp(&["a", "b", "c"]);
         let path = f.path().to_str().unwrap().to_string();
         let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> = Box::new(|_| true);
-        let handle = FileReader::load(path, Some(pred), true).await.unwrap();
+        let handle = FileReader::load(path, Some(pred), true, Arc::new(AtomicBool::new(false))).await.unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![0, 1, 2]));
     }
@@ -943,7 +951,7 @@ mod tests {
         let path = f.path().to_str().unwrap().to_string();
         let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
             Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
-        let handle = FileReader::load(path, Some(pred), false).await.unwrap();
+        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false))).await.unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![]));
     }
@@ -1345,7 +1353,7 @@ mod tests {
         writeln!(f, "line 3").unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false).await.unwrap();
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false))).await.unwrap();
         assert!(handle.total_bytes > 0);
 
         let result = handle.result_rx.await.unwrap().unwrap();
@@ -1361,7 +1369,7 @@ mod tests {
         }
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false).await.unwrap();
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false))).await.unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.reader.line_count(), 100);
 
@@ -1376,7 +1384,7 @@ mod tests {
         f.write_all(b"\x1b[31mred\x1b[0m\nplain\n").unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false).await.unwrap();
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false))).await.unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.reader.line_count(), 2);
         assert_eq!(result.reader.get_line(0), b"red");
@@ -1389,6 +1397,7 @@ mod tests {
             "/tmp/nonexistent_logana_load_test.log".to_string(),
             None,
             false,
+            Arc::new(AtomicBool::new(false)),
         )
         .await;
         assert!(result.is_err());
@@ -1399,9 +1408,21 @@ mod tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false).await.unwrap();
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false))).await.unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.reader.line_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_load_cancel_returns_error() {
+        let f = make_tmp(&["line1", "line2", "line3"]);
+        let path = f.path().to_str().unwrap().to_string();
+        let cancel = Arc::new(AtomicBool::new(true)); // pre-cancelled
+        let handle = FileReader::load(path, None, false, cancel).await.unwrap();
+        let result = handle.result_rx.await.unwrap();
+        // The load should have returned an Interrupted error because cancel was pre-set.
+        assert!(result.is_err());
+        assert_eq!(result.err().unwrap().kind(), std::io::ErrorKind::Interrupted);
     }
 
     // -----------------------------------------------------------------------

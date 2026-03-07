@@ -325,7 +325,14 @@ async fn test_single_pass_predicate_matches_compute_visible() {
     // Single-pass path: predicate evaluated during indexing.
     let pred: logana::file_reader::VisibilityPredicate =
         Box::new(move |line: &[u8]| fm.is_visible(line));
-    let handle = FileReader::load(path, Some(pred), false).await.unwrap();
+    let handle = FileReader::load(
+        path,
+        Some(pred),
+        false,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
     let result = handle.result_rx.await.unwrap().unwrap();
     let precomputed = result.precomputed_visible.unwrap();
 

@@ -257,6 +257,30 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 - Case sensitivity toggle (`set_case_sensitive`).
 - `results` is always sorted by `line_idx`; render uses binary search (`binary_search_by_key`) for O(log N) per-line lookup with zero allocation per frame.
 
+### Background Filter Computation (ui/mod.rs + ui/loading.rs)
+
+Filter changes triggered by user input (toggle, add, delete, clear) call `begin_filter_refresh()` instead of the synchronous `refresh_visible()`. This keeps the TUI responsive on large files.
+
+- **`FilterHandle`**: Stored on `TabState` while a filter computation is in flight.
+  - `result_rx: oneshot::Receiver<Vec<usize>>` — resolves with the new visible-line indices.
+  - `cancel: Arc<AtomicBool>` — set to `true` to abort early; checked every 10 000 lines in the rayon loop.
+  - `progress_rx: watch::Receiver<f64>` — [0.0, 1.0] progress fraction shown as "Filtering…" in the tab bar.
+- **Fast paths** (synchronous, O(1) or O(marks)):
+  1. No active filters → `VisibleLines::All(n)`, no task spawned.
+  2. `show_marks_only = true` → apply marks directly.
+  3. Leaving marks-only → restore `saved_filter_view` (saved on marks-only entry).
+  4. `filtering_enabled = false` → `VisibleLines::All(n)`.
+- **Slow path**: active text/date filters require scanning the full file. `begin_filter_refresh()` updates `filter_manager_arc` immediately (so highlights render with the new filter), then spawns a `spawn_blocking` task: phase 1 (text filters via `FilterManager::is_visible`) → phase 2 (date filters via parser + `matches_any`) → sends `Vec<usize>` on the oneshot.
+- **`App::advance_filter_computation()`**: Called each frame; calls `try_recv()` on each tab's `filter_handle`. On success, applies `visible_indices` and clamps `scroll_offset`.
+- **Tab bar indicator**: When a tab has a `filter_handle`, its tab-bar label shows "Filtering…".
+- **Cancellation**: A new `begin_filter_refresh()` call cancels the previous `FilterHandle` before spawning. `App::close_tab()` also cancels the in-flight filter handle on the closing tab.
+
+### Background File Load Cancellation (file_reader.rs + ui/loading.rs)
+
+- **`FileLoadState::cancel: Arc<AtomicBool>`**: Added to `FileLoadState`. Set to `true` when a tab is closed via `App::close_tab()` before the load completes.
+- **`FileReader::load(cancel: Arc<AtomicBool>)`**: Passes cancel through to `index_chunked()`.
+- **`index_chunked(cancel)`**: Checks `cancel.load(Relaxed)` at the start of each 4 MiB chunk. On cancellation returns `Err(ErrorKind::Interrupted)`, which causes `advance_file_load` to call `skip_or_fail_load` (removes the placeholder tab gracefully).
+
 ### Background Search (ui/mod.rs)
 
 Search is performed asynchronously to keep the TUI responsive on large files.
@@ -301,7 +325,7 @@ Search is performed asynchronously to keep the TUI responsive on large files.
 - **`TabState`** owns:
   - `file_reader: FileReader` — the backing log data
   - `log_manager: LogManager` — filter defs and marks
-  - `detected_format: Option<Box<dyn LogFormatParser>>` — auto-detected log format parser (sampled on tab creation)
+  - `detected_format: Option<Arc<dyn LogFormatParser>>` — auto-detected log format parser (sampled on tab creation); stored behind `Arc` so background filter tasks can clone it in O(1)
   - `visible_indices: VisibleLines` — virtual representation of visible line indices: `All(n)` when no filters are active (O(1), zero allocation), `Filtered(Vec<usize>)` when filters or marks narrow the set
   - `scroll_offset: usize` — selected line (index into `visible_indices`)
   - `viewport_offset: usize` — first rendered line (index into `visible_indices`)
@@ -319,7 +343,8 @@ Search is performed asynchronously to keep the TUI responsive on large files.
 - **`Mode` trait**: Each mode owns its key-handling logic via `handle_key(self: Box<Self>, tab, key, modifiers) -> (Box<dyn Mode>, KeyResult)`. Unhandled keys return `KeyResult::Ignored`, falling through to `App::handle_global_key` (quit, Tab switch, Ctrl+w/t). `KeyResult::ExecuteCommand(cmd)` triggers `App::execute_command_str`.
 - **Mode structs**: `NormalMode { count }`, `CommandMode` (with tab completion, history), `FilterManagementMode`, `FilterEditMode`, `SearchMode`, `ConfirmRestoreMode`, `ConfirmRestoreSessionMode`, `ConfirmOpenDirMode`, `VisualLineMode { anchor, count }`, `CommentMode`, `KeybindingsHelpMode`, `SelectFieldsMode`, `DockerSelectMode`, `ValueColorsMode`, `UiMode { sidebar, status_bar, borders, wrap }`.
 - **`ModeRenderState` enum** (ISP-compliant): Each mode implements `render_state() -> ModeRenderState`, returning a typed variant carrying exactly the data its renderer needs. Variants: `Normal`, `Command { input, cursor, completion_index }`, `Search { query, forward }`, `FilterManagement { selected_index }`, `FilterEdit`, `VisualLine { anchor }`, `Comment { lines, cursor_row, cursor_col, line_count }`, `KeybindingsHelp { scroll, search }`, `SelectFields { fields, selected }`, `DockerSelect { containers, selected, error }`, `ValueColors { groups, search, selected }`, `ConfirmRestore`, `ConfirmRestoreSession { files }`, `ConfirmOpenDir { dir, files }`. The renderer does a single `match` on the enum instead of calling many optional trait methods.
-- **`refresh_visible()`**: Rebuilds `visible_indices`. With no active filters or marks, sets `VisibleLines::All(n)` — a zero-allocation O(1) operation. With filters, calls `FilterManager::compute_visible(&file_reader)` and wraps the result in `VisibleLines::Filtered`. Date filters are then applied as a post-processing `retain()` step (see Date Filter section). Always rebuilds `filter_manager_arc`, `filter_styles`, and `filter_date_styles`, then bumps `parse_cache_gen` and clears `parse_cache`.
+- **`refresh_visible()`**: Synchronous rebuild of `visible_indices`. With no active filters or marks, sets `VisibleLines::All(n)` — a zero-allocation O(1) operation. With filters, calls `FilterManager::compute_visible(&file_reader)` and wraps the result in `VisibleLines::Filtered`. Date filters are then applied as a post-processing `retain()` step (see Date Filter section). Always rebuilds `filter_manager_arc`, `filter_styles`, and `filter_date_styles`, then bumps `parse_cache_gen` and clears `parse_cache`. Used internally (file load completion, initial preview, stdin updates).
+- **`begin_filter_refresh()`**: Non-blocking replacement for `refresh_visible()`, used in response to user filter/mark changes. Takes fast paths synchronously (no filters → `All(n)`, marks-only, leaving marks-only, filtering disabled). For the slow path (active text/date filters over the full file), updates `filter_manager_arc` immediately for render highlights, then spawns a `tokio::task::spawn_blocking` task that calls `FilterManager::is_visible()` per line (with progress updates every 10 000 lines) and delivers results via a `FilterHandle`. `advance_filter_computation()` picks up the result each frame.
 - **`apply_incremental_exclude(pattern)`**: Additive fast-path for new exclude filters — compiles the pattern and calls `VisibleLines::retain()` to remove matching lines from the current visible set, then updates the filter manager cache. Avoids scanning the full file when only lines need to be removed. Falls back to `refresh_visible()` when editing an existing filter.
 - **`invalidate_parse_cache()`**: Bumps `parse_cache_gen` and clears `parse_cache`. Called whenever field layout, display mode, raw mode, or show-keys toggles change.
 

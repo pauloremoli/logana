@@ -164,7 +164,7 @@ impl Mode for ConfirmRestoreMode {
             tab.log_manager.clear_filters().await;
             tab.log_manager.set_marks(vec![]);
             tab.log_manager.set_comments(vec![]);
-            tab.refresh_visible();
+            tab.begin_filter_refresh();
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else {
             (self, KeyResult::Handled)

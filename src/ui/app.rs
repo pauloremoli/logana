@@ -157,7 +157,29 @@ impl App {
     }
 
     pub async fn close_tab(&mut self) -> bool {
+        use std::sync::atomic::Ordering;
         self.save_tab_context(&self.tabs[self.active_tab]).await;
+
+        // Cancel any in-flight search and filter computation on the closing tab.
+        let tab = &self.tabs[self.active_tab];
+        if let Some(ref h) = tab.search_handle {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(ref h) = tab.filter_handle {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
+
+        // Cancel the background file load if it belongs to this tab.
+        if let Some(ref fls) = self.file_load_state
+            && (matches!(&fls.on_complete,
+                    super::LoadContext::ReplaceTab { tab_idx } if *tab_idx == self.active_tab)
+                || matches!(&fls.on_complete, super::LoadContext::ReplaceInitialTab if self.active_tab == 0)
+                || matches!(&fls.on_complete,
+                    super::LoadContext::SessionRestoreTab { tab_idx, .. } if *tab_idx == self.active_tab))
+        {
+            fls.cancel.store(true, Ordering::Relaxed);
+        }
+
         if self.tabs.len() <= 1 {
             return true; // signal to quit
         }
@@ -242,11 +264,12 @@ impl App {
         loop {
             terminal.draw(|frame| self.ui(frame))?;
 
-            // Poll for background load completion, file watch updates, and search.
+            // Poll for background load completion, file watch updates, search, and filter.
             self.advance_file_load().await;
             self.advance_stdin_load().await;
             self.advance_file_watches();
             self.advance_search();
+            self.advance_filter_computation();
 
             let poll_timeout = tick_rate
                 .checked_sub(last_tick.elapsed())
@@ -377,6 +400,24 @@ mod tests {
     use crate::log_manager::LogManager;
     use crate::types::FilterType;
     use std::sync::Arc;
+
+    /// Awaits all pending background filter computations across all tabs.
+    /// Use in tests after triggering filter commands so visible_indices is up-to-date.
+    async fn await_filter_computations(app: &mut App) {
+        for tab in &mut app.tabs {
+            if let Some(h) = tab.filter_handle.take() {
+                if let Ok(visible) = h.result_rx.await {
+                    tab.visible_indices = crate::ui::VisibleLines::Filtered(visible);
+                    if tab.visible_indices.is_empty() {
+                        tab.scroll_offset = 0;
+                    } else {
+                        tab.scroll_offset =
+                            tab.scroll_offset.min(tab.visible_indices.len() - 1);
+                    }
+                }
+            }
+        }
+    }
 
     async fn make_tab(lines: &[&str]) -> (FileReader, LogManager) {
         let data: Vec<u8> = lines.join("\n").into_bytes();
@@ -558,6 +599,7 @@ mod tests {
 
         app.execute_command_str("enable-filters".to_string()).await;
         assert!(app.tab().log_manager.get_filters()[0].enabled);
+        await_filter_computations(&mut app).await;
         assert_eq!(app.tab().visible_indices.len(), 1);
     }
 
@@ -574,6 +616,7 @@ mod tests {
 
         app.execute_command_str("filtering".to_string()).await;
         assert!(app.tab().filtering_enabled);
+        await_filter_computations(&mut app).await;
         assert_eq!(app.tab().visible_indices.len(), 1);
     }
 

@@ -1452,14 +1452,24 @@ impl App {
             (tab_idx, pct)
         });
 
+        // Collect which tabs are currently computing a filter in the background.
+        let filtering_tabs: Vec<usize> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.filter_handle.is_some())
+            .map(|(i, _)| i)
+            .collect();
+
         let tab_spans: Vec<Span> = self
             .tabs
             .iter()
             .enumerate()
             .flat_map(|(i, t)| {
                 let is_active = i == self.active_tab;
-                let label = match loading_info {
-                    Some((idx, pct)) if idx == i => format!(" {} {}% ", t.title, pct),
+                let label = match (loading_info, filtering_tabs.contains(&i)) {
+                    (Some((idx, pct)), _) if idx == i => format!(" {} {}% ", t.title, pct),
+                    (_, true) => format!(" {} Filtering… ", t.title),
                     _ => format!(" {} ", t.title),
                 };
                 let style = if is_active {
@@ -1893,6 +1903,7 @@ mod tests {
             result_rx,
             total_bytes: 1000,
             on_complete: super::super::LoadContext::ReplaceInitialTab,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         let mut terminal = make_terminal();
         // _progress_tx is kept alive until after draw

@@ -5,6 +5,8 @@
 //! directory listings, and restoring previously saved sessions from the DB.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::db::FileContextStore;
 use crate::file_reader::{FileReader, VisibilityPredicate};
@@ -232,7 +234,8 @@ impl App {
                     let sample_limit = preview.line_count().min(200);
                     let sample: Vec<&[u8]> =
                         (0..sample_limit).map(|j| preview.get_line(j)).collect();
-                    self.tabs[0].detected_format = crate::parser::detect_format(&sample);
+                    self.tabs[0].detected_format =
+                        crate::parser::detect_format(&sample).map(Arc::from);
                     self.tabs[0].file_reader = preview;
                     if let Some(ref pred) = predicate {
                         let visible: Vec<usize> = (0..self.tabs[0].file_reader.line_count())
@@ -251,7 +254,8 @@ impl App {
                 }
             }
 
-            match FileReader::load(path.clone(), predicate, tail).await {
+            let cancel = Arc::new(AtomicBool::new(false));
+            match FileReader::load(path.clone(), predicate, tail, cancel.clone()).await {
                 Ok(handle) => {
                     self.file_load_state = Some(FileLoadState {
                         path,
@@ -259,6 +263,7 @@ impl App {
                         result_rx: handle.result_rx,
                         total_bytes: handle.total_bytes,
                         on_complete: context,
+                        cancel,
                     });
                 }
                 Err(_) => self.skip_or_fail_load(context).await,
@@ -386,7 +391,8 @@ impl App {
                     let sample: Vec<&[u8]> = (0..limit)
                         .map(|j| self.tabs[0].file_reader.get_line(j))
                         .collect();
-                    self.tabs[0].detected_format = crate::parser::detect_format(&sample);
+                    self.tabs[0].detected_format =
+                        crate::parser::detect_format(&sample).map(Arc::from);
                 }
                 // Use precomputed visible indices when available (single-pass optimisation);
                 // otherwise fall back to a full compute_visible scan.
@@ -421,7 +427,8 @@ impl App {
                     let sample: Vec<&[u8]> = (0..limit)
                         .map(|j| self.tabs[tab_idx].file_reader.get_line(j))
                         .collect();
-                    self.tabs[tab_idx].detected_format = crate::parser::detect_format(&sample);
+                    self.tabs[tab_idx].detected_format =
+                        crate::parser::detect_format(&sample).map(Arc::from);
                 }
                 self.tabs[tab_idx].refresh_visible();
                 let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
@@ -446,7 +453,8 @@ impl App {
                     let sample: Vec<&[u8]> = (0..limit)
                         .map(|j| self.tabs[tab_idx].file_reader.get_line(j))
                         .collect();
-                    self.tabs[tab_idx].detected_format = crate::parser::detect_format(&sample);
+                    self.tabs[tab_idx].detected_format =
+                        crate::parser::detect_format(&sample).map(Arc::from);
                 }
                 if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     self.tabs[tab_idx].apply_file_context(&ctx);
@@ -497,7 +505,8 @@ impl App {
                         let sample: Vec<&[u8]> = (0..limit)
                             .map(|j| self.tabs[i].file_reader.get_line(j))
                             .collect();
-                        self.tabs[i].detected_format = crate::parser::detect_format(&sample);
+                        self.tabs[i].detected_format =
+                            crate::parser::detect_format(&sample).map(Arc::from);
                     }
                     self.tabs[i].refresh_visible();
                     if tail_mode {
@@ -545,6 +554,28 @@ impl App {
                     tab.search.previous_match();
                 }
                 tab.scroll_to_current_search_match();
+            }
+        }
+    }
+
+    /// Poll each tab's in-flight background filter computation for completion.
+    ///
+    /// Called every frame from the event loop (non-blocking: `try_recv`).
+    /// On completion, the visible indices and scroll offset are updated.
+    pub(super) fn advance_filter_computation(&mut self) {
+        for tab in &mut self.tabs {
+            let Some(ref mut h) = tab.filter_handle else {
+                continue;
+            };
+            let Ok(visible) = h.result_rx.try_recv() else {
+                continue;
+            };
+            tab.filter_handle = None;
+            tab.visible_indices = super::VisibleLines::Filtered(visible);
+            if tab.visible_indices.is_empty() {
+                tab.scroll_offset = 0;
+            } else {
+                tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
             }
         }
     }
@@ -606,6 +637,7 @@ mod tests {
     use crate::ui::StdinLoadState;
     use std::collections::VecDeque;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     async fn make_app(lines: &[&str]) -> App {
         let data: Vec<u8> = lines.join("\n").into_bytes();
@@ -1160,6 +1192,7 @@ mod tests {
             result_rx,
             total_bytes: 7,
             on_complete: LoadContext::ReplaceInitialTab,
+            cancel: Arc::new(AtomicBool::new(false)),
         });
 
         app.advance_file_load().await;
@@ -1195,6 +1228,7 @@ mod tests {
             result_rx,
             total_bytes: 60,
             on_complete: LoadContext::ReplaceInitialTab,
+            cancel: Arc::new(AtomicBool::new(false)),
         });
 
         app.advance_file_load().await;
@@ -1223,6 +1257,7 @@ mod tests {
             result_rx,
             total_bytes: 0,
             on_complete: LoadContext::ReplaceInitialTab,
+            cancel: Arc::new(AtomicBool::new(false)),
         });
 
         app.advance_file_load().await;

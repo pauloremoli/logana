@@ -71,7 +71,7 @@ impl App {
                 if can_incremental {
                     self.tabs[self.active_tab].apply_incremental_include(&pattern);
                 } else {
-                    self.tabs[self.active_tab].refresh_visible();
+                    self.tabs[self.active_tab].begin_filter_refresh();
                 }
             }
             Some(Commands::Exclude { pattern }) => {
@@ -86,7 +86,7 @@ impl App {
                         .add_filter_with_color(pattern, FilterType::Exclude, None, None, true)
                         .await;
                     self.tabs[self.active_tab].scroll_offset = 0;
-                    self.tabs[self.active_tab].refresh_visible();
+                    self.tabs[self.active_tab].begin_filter_refresh();
                 } else {
                     self.tabs[self.active_tab]
                         .log_manager
@@ -126,7 +126,7 @@ impl App {
                         .log_manager
                         .set_color_config(filter_id, fg.as_deref(), bg.as_deref(), match_only)
                         .await;
-                    self.tabs[self.active_tab].refresh_visible();
+                    self.tabs[self.active_tab].begin_filter_refresh();
                 }
             }
             Some(Commands::ExportMarked { path }) => {
@@ -179,7 +179,7 @@ impl App {
                         .load_filters(&path)
                         .await
                         .map_err(|e| format!("Failed to load filters: {}", e))?;
-                    self.tabs[self.active_tab].refresh_visible();
+                    self.tabs[self.active_tab].begin_filter_refresh();
                 }
             }
             Some(Commands::Wrap) => {
@@ -253,26 +253,26 @@ impl App {
             }
             Some(Commands::ClearFilters) => {
                 self.tabs[self.active_tab].log_manager.clear_filters().await;
-                self.tabs[self.active_tab].refresh_visible();
+                self.tabs[self.active_tab].begin_filter_refresh();
             }
             Some(Commands::DisableFilters) => {
                 self.tabs[self.active_tab]
                     .log_manager
                     .disable_all_filters()
                     .await;
-                self.tabs[self.active_tab].refresh_visible();
+                self.tabs[self.active_tab].begin_filter_refresh();
             }
             Some(Commands::EnableFilters) => {
                 self.tabs[self.active_tab]
                     .log_manager
                     .enable_all_filters()
                     .await;
-                self.tabs[self.active_tab].refresh_visible();
+                self.tabs[self.active_tab].begin_filter_refresh();
             }
             Some(Commands::Filtering) => {
                 let tab = &mut self.tabs[self.active_tab];
                 tab.filtering_enabled = !tab.filtering_enabled;
-                tab.refresh_visible();
+                tab.begin_filter_refresh();
             }
             Some(Commands::HideField { field }) => {
                 let tab = &mut self.tabs[self.active_tab];
@@ -454,7 +454,7 @@ impl App {
                         !line_mode,
                     )
                     .await;
-                self.tabs[self.active_tab].refresh_visible();
+                self.tabs[self.active_tab].begin_filter_refresh();
             }
             Some(Commands::Tail) => {
                 let tab = &mut self.tabs[self.active_tab];
@@ -495,7 +495,24 @@ mod tests {
     use crate::theme::Theme;
     use crate::types::FilterType;
     use crate::ui::app::App;
+    use crate::ui::VisibleLines;
     use std::sync::Arc;
+
+    async fn await_filter_computations(app: &mut App) {
+        for tab in &mut app.tabs {
+            if let Some(h) = tab.filter_handle.take() {
+                if let Ok(visible) = h.result_rx.await {
+                    tab.visible_indices = VisibleLines::Filtered(visible);
+                    if tab.visible_indices.is_empty() {
+                        tab.scroll_offset = 0;
+                    } else {
+                        tab.scroll_offset =
+                            tab.scroll_offset.min(tab.visible_indices.len() - 1);
+                    }
+                }
+            }
+        }
+    }
 
     async fn make_app(lines: &[&str]) -> App {
         let data: Vec<u8> = lines.join("\n").into_bytes();
@@ -733,6 +750,7 @@ mod tests {
         assert_eq!(app.tab().visible_indices.len(), 2);
         // Adding a second include filter expands the visible set back.
         app.run_command("filter info").await.unwrap();
+        await_filter_computations(&mut app).await;
         assert_eq!(app.tab().visible_indices.len(), 3);
     }
 

@@ -134,7 +134,7 @@ impl Mode for NormalMode {
 
         if kb.normal.toggle_filtering.matches(key, modifiers) {
             tab.filtering_enabled = !tab.filtering_enabled;
-            tab.refresh_visible();
+            tab.begin_filter_refresh();
             tab.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
@@ -245,7 +245,7 @@ impl Mode for NormalMode {
 
         if kb.normal.toggle_marks_only.matches(key, modifiers) {
             tab.show_marks_only = !tab.show_marks_only;
-            tab.refresh_visible();
+            tab.begin_filter_refresh();
             tab.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
@@ -371,7 +371,7 @@ impl Mode for NormalMode {
         if kb.normal.clear_all.matches(key, modifiers) {
             tab.log_manager.clear_all_marks_and_comments();
             tab.command_error = Some("Cleared all marks and comments".to_string());
-            tab.refresh_visible();
+            tab.begin_filter_refresh();
             tab.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
@@ -411,7 +411,7 @@ impl Mode for NormalMode {
                     .position(|c| c.line_indices.contains(&line_idx))
                 {
                     tab.log_manager.remove_comment(idx);
-                    tab.refresh_visible();
+                    tab.begin_filter_refresh();
                     tab.g_key_pressed = false;
                     self.count = None;
                     return (self, KeyResult::Handled);

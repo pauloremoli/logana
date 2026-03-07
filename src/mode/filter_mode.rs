@@ -69,7 +69,7 @@ impl Mode for FilterManagementMode {
             let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
             if let Some(id) = filter_id {
                 tab.log_manager.toggle_filter(id).await;
-                tab.refresh_visible();
+                tab.begin_filter_refresh();
             }
             return (
                 Box::new(FilterManagementMode {
@@ -83,7 +83,7 @@ impl Mode for FilterManagementMode {
             let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
             if let Some(id) = filter_id {
                 tab.log_manager.remove_filter(id).await;
-                tab.refresh_visible();
+                tab.begin_filter_refresh();
                 let remaining_len = tab.log_manager.get_filters().len();
                 let new_idx = if remaining_len > 0 && selected >= remaining_len {
                     remaining_len - 1
@@ -109,7 +109,7 @@ impl Mode for FilterManagementMode {
             let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
             if let Some(id) = filter_id {
                 tab.log_manager.move_filter_up(id).await;
-                tab.refresh_visible();
+                tab.begin_filter_refresh();
                 let new_idx = selected.saturating_sub(1);
                 return (
                     Box::new(FilterManagementMode {
@@ -130,7 +130,7 @@ impl Mode for FilterManagementMode {
             let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
             if let Some(id) = filter_id {
                 tab.log_manager.move_filter_down(id).await;
-                tab.refresh_visible();
+                tab.begin_filter_refresh();
                 let total = tab.log_manager.get_filters().len();
                 let new_idx = if selected + 1 < total {
                     selected + 1
@@ -255,7 +255,7 @@ impl Mode for FilterManagementMode {
             } else {
                 tab.log_manager.enable_all_filters().await;
             }
-            tab.refresh_visible();
+            tab.begin_filter_refresh();
             return (
                 Box::new(FilterManagementMode {
                     selected_filter_index: selected,
@@ -266,7 +266,7 @@ impl Mode for FilterManagementMode {
 
         if kb.filter.clear_all_filters.matches(key, modifiers) {
             tab.log_manager.clear_filters().await;
-            tab.refresh_visible();
+            tab.begin_filter_refresh();
             return (
                 Box::new(FilterManagementMode {
                     selected_filter_index: 0,
@@ -424,7 +424,7 @@ impl Mode for FilterEditMode {
         if kb.filter_edit.confirm.matches(key, modifiers) {
             if let Some(id) = self.filter_id {
                 tab.log_manager.edit_filter(id, self.filter_input).await;
-                tab.refresh_visible();
+                tab.begin_filter_refresh();
             }
             return (
                 Box::new(FilterManagementMode {
