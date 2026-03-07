@@ -93,6 +93,10 @@ pub fn list_dir_files(path: &str) -> Vec<String> {
     files
 }
 
+/// Snapshot of the filter-driven view: visible indices + filter manager + styles.
+/// Saved on marks-only entry and restored on exit to avoid re-running compute_visible.
+type FilterViewSnapshot = (VisibleLines, Arc<FilterManager>, Vec<Style>, Vec<DateFilterStyle>);
+
 // ---------------------------------------------------------------------------
 // VisibleLines
 // ---------------------------------------------------------------------------
@@ -288,6 +292,9 @@ pub struct TabState {
     pub filter_styles: Vec<Style>,
     /// Date-filter highlight styles parallel to `filter_manager_arc`.
     pub filter_date_styles: Vec<DateFilterStyle>,
+    /// Filter view saved when entering marks-only mode. Restored on exit so
+    /// the O(file_size) `compute_visible` scan is not repeated.
+    saved_filter_view: Option<FilterViewSnapshot>,
     /// Monotonically increasing counter; bumped in `refresh_visible` and whenever the
     /// field layout or display mode changes. Cache entries with a stale generation are
     /// re-computed on the next render.
@@ -356,6 +363,7 @@ impl TabState {
             filter_manager_arc: Arc::new(FilterManager::empty()),
             filter_styles: Vec::new(),
             filter_date_styles: Vec::new(),
+            saved_filter_view: None,
             parse_cache_gen: 0,
             parse_cache: HashMap::new(),
             search_handle: None,
@@ -376,6 +384,7 @@ impl TabState {
         let has_active_filters = self.show_marks_only
             || self.log_manager.get_filters().iter().any(|f| f.enabled);
         if !has_active_filters {
+            self.saved_filter_view = None;
             self.visible_indices = VisibleLines::All(self.file_reader.line_count());
             self.filter_manager_arc = Arc::new(FilterManager::empty());
             self.filter_styles = Vec::new();
@@ -396,6 +405,20 @@ impl TabState {
         self.render_line_cache.clear();
 
         if self.show_marks_only {
+            // Save the pre-marks-only filter view so we can restore it in O(1) on toggle-off,
+            // avoiding a full O(file_size) compute_visible scan.
+            // If saved_filter_view is already Some, a filter change fired while we were already
+            // in marks-only mode — the saved view is now stale, so discard it.
+            if self.saved_filter_view.is_none() {
+                self.saved_filter_view = Some((
+                    self.visible_indices.clone(),
+                    self.filter_manager_arc.clone(),
+                    self.filter_styles.clone(),
+                    self.filter_date_styles.clone(),
+                ));
+            } else {
+                self.saved_filter_view = None;
+            }
             let mut indices = self.log_manager.get_marked_indices();
             indices.retain(|&i| i < self.file_reader.line_count());
             self.visible_indices = VisibleLines::Filtered(indices);
@@ -404,6 +427,14 @@ impl TabState {
             self.filter_manager_arc = Arc::new(fm);
             self.filter_styles = styles;
             self.filter_date_styles = date_filter_styles;
+        } else if let Some((saved_visible, saved_fm, saved_styles, saved_date_styles)) =
+            self.saved_filter_view.take()
+        {
+            // Leaving marks-only: restore the saved filter view — O(1), no file scan.
+            self.visible_indices = saved_visible;
+            self.filter_manager_arc = saved_fm;
+            self.filter_styles = saved_styles;
+            self.filter_date_styles = saved_date_styles;
         } else if !self.filtering_enabled {
             // No allocation: All(n) represents identity mapping i→i.
             self.visible_indices = VisibleLines::All(self.file_reader.line_count());
@@ -1539,6 +1570,57 @@ mod tests {
         tab.refresh_visible();
         assert_eq!(tab.parse_cache_gen, old_parse);
         assert_eq!(tab.render_cache_gen, old_render);
+    }
+
+    #[tokio::test]
+    async fn test_marks_only_toggle_restores_filter_view_without_rescan() {
+        // Set up a tab with an active include filter so compute_visible is required
+        // on the first call, but the toggle-off should NOT re-run it.
+        let mut tab = make_tab(&["hello", "world", "hello world"]).await;
+        tab.log_manager
+            .add_filter_with_color("hello".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.filtering_enabled = true;
+        tab.refresh_visible();
+        // Filter view: lines 0 and 2 ("hello" matches).
+        assert_eq!(tab.visible_indices.len(), 2);
+        let visible_before = tab.visible_indices.clone();
+
+        // Toggle marks-only ON.
+        tab.show_marks_only = true;
+        tab.refresh_visible();
+        // No marks → empty.
+        assert_eq!(tab.visible_indices.len(), 0);
+        // saved_filter_view was populated.
+        assert!(tab.saved_filter_view.is_some());
+
+        // Toggle marks-only OFF — must restore without a file scan.
+        tab.show_marks_only = false;
+        tab.refresh_visible();
+        assert_eq!(tab.visible_indices, visible_before);
+        // saved_filter_view consumed.
+        assert!(tab.saved_filter_view.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_marks_only_filter_change_invalidates_saved_view() {
+        // If a filter fires refresh_visible while already in marks-only mode,
+        // the saved view must be cleared (it would be stale).
+        let mut tab = make_tab(&["hello", "world"]).await;
+        tab.log_manager
+            .add_filter_with_color("hello".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.filtering_enabled = true;
+        tab.refresh_visible();
+
+        // Enter marks-only — saves filter view.
+        tab.show_marks_only = true;
+        tab.refresh_visible();
+        assert!(tab.saved_filter_view.is_some());
+
+        // Simulate a filter change while in marks-only mode.
+        tab.refresh_visible();
+        assert!(tab.saved_filter_view.is_none());
     }
 
     #[tokio::test]
