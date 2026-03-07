@@ -343,9 +343,8 @@ impl Mode for NormalMode {
 
         if kb.normal.next_match.matches(key, modifiers) {
             // `n` continues in the original search direction (vim semantics).
-            if let Some(result) = tab.search.go_next() {
-                let line_idx = result.line_idx;
-                tab.scroll_to_line_idx(line_idx);
+            if tab.search.go_next().is_some() {
+                tab.scroll_to_current_search_match();
             }
             tab.g_key_pressed = false;
             self.count = None;
@@ -354,9 +353,8 @@ impl Mode for NormalMode {
 
         if kb.normal.prev_match.matches(key, modifiers) {
             // `N` reverses the original search direction (vim semantics).
-            if let Some(result) = tab.search.go_prev() {
-                let line_idx = result.line_idx;
-                tab.scroll_to_line_idx(line_idx);
+            if tab.search.go_prev().is_some() {
+                tab.scroll_to_current_search_match();
             }
             tab.g_key_pressed = false;
             self.count = None;

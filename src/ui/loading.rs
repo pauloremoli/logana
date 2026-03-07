@@ -473,10 +473,7 @@ impl App {
                 } else {
                     tab.search.previous_match();
                 }
-                if let Some(r) = tab.search.get_current_match() {
-                    let line_idx = r.line_idx;
-                    tab.scroll_to_line_idx(line_idx);
-                }
+                tab.scroll_to_current_search_match();
             }
         }
     }

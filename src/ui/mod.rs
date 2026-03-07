@@ -250,6 +250,7 @@ pub struct TabState {
     pub filter_context: Option<usize>,
     pub editing_filter_id: Option<usize>,
     pub visible_height: usize,
+    pub visible_width: usize,
     pub title: String,
     pub command_history: Vec<String>,
     /// Active file watcher for this tab (None for stdin tabs or tabs not yet watching).
@@ -320,6 +321,7 @@ impl TabState {
             filter_context: None,
             editing_filter_id: None,
             visible_height: 0,
+            visible_width: 0,
             title,
             command_history: Vec::new(),
             watch_state: None,
@@ -436,6 +438,37 @@ impl TabState {
     pub fn scroll_to_line_idx(&mut self, line_idx: usize) {
         if let Some(index) = self.visible_indices.position_of(line_idx) {
             self.scroll_offset = index;
+        }
+    }
+
+    /// Scroll vertically to the current search match and, when wrap is off,
+    /// also center the match occurrence horizontally.
+    pub fn scroll_to_current_search_match(&mut self) {
+        let Some(result) = self.search.get_current_match() else {
+            return;
+        };
+        let line_idx = result.line_idx;
+        let occurrence_idx = self.search.get_current_occurrence_index();
+
+        let h_scroll = if !self.wrap && self.visible_width > 0 {
+            result.matches.get(occurrence_idx).map(|&(start, end)| {
+                let line = self.file_reader.get_line(line_idx);
+                let prefix_bytes = &line[..start.min(line.len())];
+                let col =
+                    unicode_width::UnicodeWidthStr::width(std::str::from_utf8(prefix_bytes).unwrap_or(""));
+                let match_bytes = &line[start.min(line.len())..end.min(line.len())];
+                let match_width =
+                    unicode_width::UnicodeWidthStr::width(std::str::from_utf8(match_bytes).unwrap_or(""));
+                let match_center = col + match_width / 2;
+                match_center.saturating_sub(self.visible_width / 2)
+            })
+        } else {
+            None
+        };
+
+        self.scroll_to_line_idx(line_idx);
+        if let Some(h) = h_scroll {
+            self.horizontal_scroll = h;
         }
     }
 
@@ -842,6 +875,47 @@ mod tests {
         let mut tab = make_tab(&["line1", "line2", "line3", "line4", "line5"]).await;
         tab.scroll_to_line_idx(999);
         assert_eq!(tab.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_to_current_search_match_centers_horizontally() {
+        // Line with 100 leading spaces before "needle" — match starts at byte 100.
+        let line = format!("{}needle", " ".repeat(100));
+        let mut tab = make_tab(&[&line]).await;
+        tab.wrap = false;
+        tab.visible_width = 40;
+        // Build search results manually and point the cursor at them.
+        let visible = tab.visible_indices.clone();
+        let texts = tab.collect_display_texts(visible.iter());
+        tab.search
+            .search("needle", visible.iter(), |li| texts.get(&li).cloned())
+            .unwrap();
+        tab.search.set_forward(true);
+        tab.search.next_match();
+        tab.scroll_to_current_search_match();
+        // match_center ≈ 100 + 3 = 103 (col of "needle" start + half of 6-char width)
+        // expected h_scroll = 103 - 20 = 83
+        assert_eq!(tab.scroll_offset, 0);
+        assert_eq!(tab.horizontal_scroll, 83);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_to_current_search_match_no_hscroll_when_wrapped() {
+        let line = format!("{}needle", " ".repeat(100));
+        let mut tab = make_tab(&[&line]).await;
+        tab.wrap = true;
+        tab.visible_width = 40;
+        tab.horizontal_scroll = 0;
+        let visible = tab.visible_indices.clone();
+        let texts = tab.collect_display_texts(visible.iter());
+        tab.search
+            .search("needle", visible.iter(), |li| texts.get(&li).cloned())
+            .unwrap();
+        tab.search.set_forward(true);
+        tab.search.next_match();
+        tab.scroll_to_current_search_match();
+        // wrap=true → horizontal scroll must not change
+        assert_eq!(tab.horizontal_scroll, 0);
     }
 
     #[tokio::test]

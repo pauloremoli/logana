@@ -320,6 +320,7 @@ impl App {
         };
         let inner_width =
             (logs_area.width as usize).saturating_sub(horizontal_shrink + ln_prefix_width);
+        self.tabs[self.active_tab].visible_width = inner_width;
 
         let wrap = self.tabs[self.active_tab].wrap;
 
