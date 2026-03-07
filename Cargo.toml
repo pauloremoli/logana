@@ -53,6 +53,10 @@ harness = false
 name    = "visible_lines"
 harness = false
 
+[[bench]]
+name    = "render_pipeline"
+harness = false
+
 [profile.release]
 debug = true
 
