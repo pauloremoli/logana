@@ -182,25 +182,33 @@ impl App {
             // the background. Only applied for the initial tab (not session
             // restores) and only when no filter predicate is in play (a
             // predicate requires the full index to compute visible indices).
-            if tail
-                && predicate.is_none()
+            const PREVIEW_BYTES: u64 = 64 * 1024;
+            if predicate.is_none()
                 && let LoadContext::ReplaceInitialTab = context
                 && !self.tabs.is_empty()
             {
-                const PREVIEW_BYTES: u64 = 64 * 1024;
-                if let Ok(preview) = FileReader::from_file_tail(&path, PREVIEW_BYTES) {
-                    let last = preview.line_count().saturating_sub(1);
-                    // Detect log format from the preview lines so
-                    // structured rendering works during the load wait.
-                    let sample_limit = preview.line_count().min(200);
-                    if sample_limit > 0 {
+                let preview_result = if tail {
+                    FileReader::from_file_tail(&path, PREVIEW_BYTES)
+                } else {
+                    FileReader::from_file_head(&path, PREVIEW_BYTES)
+                };
+                if let Ok(preview) = preview_result {
+                    if preview.line_count() > 0 {
+                        // Detect log format from the preview lines so structured
+                        // rendering works during the load wait.
+                        let sample_limit = preview.line_count().min(200);
                         let sample: Vec<&[u8]> =
                             (0..sample_limit).map(|j| preview.get_line(j)).collect();
                         self.tabs[0].detected_format = crate::parser::detect_format(&sample);
+                        self.tabs[0].file_reader = preview;
+                        self.tabs[0].refresh_visible();
+                        if tail {
+                            // Jump to the last visible line in tail mode.
+                            self.tabs[0].scroll_offset =
+                                self.tabs[0].visible_indices.len().saturating_sub(1);
+                        }
+                        // Non-tail: stay at line 0; user sees the top of the file immediately.
                     }
-                    self.tabs[0].file_reader = preview;
-                    self.tabs[0].refresh_visible();
-                    self.tabs[0].scroll_offset = last;
                 }
             }
 

@@ -203,6 +203,29 @@ impl FileReader {
         Ok(Self::from_bytes(buf[start..].to_vec()))
     }
 
+    /// Read the first `preview_bytes` of `path` synchronously and return a
+    /// `FileReader` containing only those complete lines.
+    ///
+    /// Used by the non-tail fast path to display the beginning of a large file
+    /// immediately while the full background index is still being built.
+    /// The last (potentially partial) line of the read chunk is dropped so that
+    /// every line in the returned reader is complete.
+    pub fn from_file_head(path: &str, preview_bytes: u64) -> io::Result<Self> {
+        use std::io::Read;
+        let mut file = File::open(path)?;
+        let total_len = file.metadata()?.len();
+        let read_len = total_len.min(preview_bytes) as usize;
+        let mut buf = vec![0u8; read_len];
+        file.read_exact(&mut buf)?;
+        // Truncate to the last complete line so no partial line leaks out.
+        if let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') {
+            buf.truncate(last_nl + 1);
+        } else {
+            buf.clear();
+        }
+        Ok(Self::from_bytes(buf))
+    }
+
     /// Stream stdin asynchronously, flushing complete lines every second.
     ///
     /// Returns a `watch::Receiver<Vec<u8>>` whose value is replaced each time a
@@ -1659,6 +1682,66 @@ mod tests {
     #[test]
     fn test_from_file_tail_nonexistent_returns_error() {
         let result = FileReader::from_file_tail("/tmp/logana_no_such_file_tail.log", 1024);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // from_file_head
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_from_file_head_returns_first_lines() {
+        let mut f = NamedTempFile::new().unwrap();
+        for i in 0..1000usize {
+            writeln!(f, "line {i}").unwrap();
+        }
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap();
+
+        let reader = FileReader::from_file_head(path, 512).unwrap();
+        let n = reader.line_count();
+        assert!(n > 0, "should have at least one line");
+        // The first line of the preview must match the first line of the full file.
+        assert_eq!(reader.get_line(0), b"line 0");
+    }
+
+    #[test]
+    fn test_from_file_head_all_lines_complete() {
+        let mut f = NamedTempFile::new().unwrap();
+        for i in 0..500usize {
+            writeln!(f, "entry {i} data").unwrap();
+        }
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap();
+
+        // Every line returned must be a complete "entry N data" line.
+        let reader = FileReader::from_file_head(path, 1024).unwrap();
+        for i in 0..reader.line_count() {
+            let line = reader.get_line(i);
+            assert!(
+                line.starts_with(b"entry "),
+                "partial line leaked: {:?}",
+                std::str::from_utf8(line)
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_file_head_small_file_fits_in_preview() {
+        // When the file is smaller than preview_bytes the whole file is returned.
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "only line").unwrap();
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap();
+
+        let reader = FileReader::from_file_head(path, 64 * 1024).unwrap();
+        assert_eq!(reader.line_count(), 1);
+        assert_eq!(reader.get_line(0), b"only line");
+    }
+
+    #[test]
+    fn test_from_file_head_nonexistent_returns_error() {
+        let result = FileReader::from_file_head("/tmp/logana_no_such_file_head.log", 1024);
         assert!(result.is_err());
     }
 
