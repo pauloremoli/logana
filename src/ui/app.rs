@@ -238,10 +238,11 @@ impl App {
         loop {
             terminal.draw(|frame| self.ui(frame))?;
 
-            // Poll for background load completion and file watch updates each frame.
+            // Poll for background load completion, file watch updates, and search.
             self.advance_file_load().await;
             self.advance_stdin_load().await;
             self.advance_file_watches();
+            self.advance_search();
 
             let poll_timeout = tick_rate
                 .checked_sub(last_tick.elapsed())

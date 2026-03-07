@@ -30,27 +30,44 @@ impl Mode for SearchMode {
         }
         let kb = tab.keybindings.search.clone();
         if kb.confirm.matches(key, modifiers) {
-            let visible = tab.visible_indices.clone();
-            let texts = tab.collect_display_texts(visible.iter());
-            let _ = tab
-                .search
-                .search(&self.input, visible.iter(), |li| texts.get(&li).cloned());
-            tab.search.set_forward(self.forward);
-            // Navigate to the first match relative to the current line.
-            let current_line_idx = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
-            tab.search
-                .set_position_for_search(current_line_idx, self.forward);
-            let result = if self.forward {
-                tab.search.next_match()
-            } else {
-                tab.search.previous_match()
-            };
-            if let Some(r) = result {
-                let line_idx = r.line_idx;
-                tab.scroll_to_line_idx(line_idx);
+            // If a search for this exact pattern is already in flight, just
+            // flip navigate=true so advance_search() scrolls on completion.
+            if let Some(ref mut h) = tab.search_handle
+                && h.pattern == self.input
+            {
+                h.navigate = true;
+                return (Box::new(NormalMode::default()), KeyResult::Handled);
             }
+            // If results for this pattern are already complete, navigate now.
+            let pattern_matches = tab
+                .search
+                .get_pattern()
+                .map(|p| p == self.input.as_str())
+                .unwrap_or(false);
+            if tab.search_handle.is_none() && pattern_matches {
+                let forward = self.forward;
+                let current = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
+                tab.search.set_forward(forward);
+                tab.search.set_position_for_search(current, forward);
+                if forward {
+                    tab.search.next_match();
+                } else {
+                    tab.search.previous_match();
+                }
+                if let Some(r) = tab.search.get_current_match() {
+                    let line_idx = r.line_idx;
+                    tab.scroll_to_line_idx(line_idx);
+                }
+                return (Box::new(NormalMode::default()), KeyResult::Handled);
+            }
+            // Otherwise start a fresh background search with navigate=true.
+            tab.begin_search(&self.input, self.forward, true);
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else if kb.cancel.matches(key, modifiers) {
+            if let Some(ref h) = tab.search_handle {
+                h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            tab.search_handle = None;
             tab.search.clear();
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else {
@@ -58,25 +75,19 @@ impl Mode for SearchMode {
                 KeyCode::Backspace => {
                     self.input.pop();
                     if self.input.is_empty() {
+                        if let Some(ref h) = tab.search_handle {
+                            h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        tab.search_handle = None;
                         tab.search.clear();
                     } else {
-                        let visible = tab.visible_indices.clone();
-                        let texts = tab.collect_display_texts(visible.iter());
-                        let _ = tab
-                            .search
-                            .search(&self.input, visible.iter(), |li| texts.get(&li).cloned());
-                        self.seed_incremental_position(tab);
+                        tab.begin_search(&self.input, self.forward, false);
                     }
                     (self, KeyResult::Handled)
                 }
                 KeyCode::Char(c) => {
                     self.input.push(c);
-                    let visible = tab.visible_indices.clone();
-                    let texts = tab.collect_display_texts(visible.iter());
-                    let _ = tab
-                        .search
-                        .search(&self.input, visible.iter(), |li| texts.get(&li).cloned());
-                    self.seed_incremental_position(tab);
+                    tab.begin_search(&self.input, self.forward, false);
                     (self, KeyResult::Handled)
                 }
                 _ => (self, KeyResult::Handled),
@@ -104,20 +115,6 @@ impl Mode for SearchMode {
     }
 }
 
-impl SearchMode {
-    /// After an incremental search, position the "current" occurrence highlight
-    /// at the match closest to the cursor line (without scrolling).
-    fn seed_incremental_position(&self, tab: &mut TabState) {
-        let current_line_idx = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
-        tab.search
-            .set_position_for_search(current_line_idx, self.forward);
-        if self.forward {
-            tab.search.next_match();
-        } else {
-            tab.search.previous_match();
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -134,6 +131,32 @@ mod tests {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
         TabState::new(file_reader, log_manager, "test".to_string())
+    }
+
+    /// Wait for any in-flight background search to complete and apply results.
+    async fn drain_search(tab: &mut TabState) {
+        if let Some(h) = tab.search_handle.take() {
+            let forward = h.forward;
+            let navigate = h.navigate;
+            if let Ok((results, regex)) = h.result_rx.await {
+                tab.search.set_results(results, regex);
+                tab.search.set_forward(forward);
+                if navigate && !tab.search.get_results().is_empty() {
+                    let current =
+                        tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
+                    tab.search.set_position_for_search(current, forward);
+                    if forward {
+                        tab.search.next_match();
+                    } else {
+                        tab.search.previous_match();
+                    }
+                    if let Some(r) = tab.search.get_current_match() {
+                        let line_idx = r.line_idx;
+                        tab.scroll_to_line_idx(line_idx);
+                    }
+                }
+            }
+        }
     }
 
     fn forward_mode(input: &str) -> SearchMode {
@@ -270,6 +293,7 @@ mod tests {
         let mut tab = make_tab(&["line0", "line1", "error here", "line3"]).await;
         tab.visible_height = 10;
         press(forward_mode("error"), &mut tab, KeyCode::Enter).await;
+        drain_search(&mut tab).await;
         assert_eq!(tab.scroll_offset, 2);
     }
 
@@ -303,6 +327,7 @@ mod tests {
         let mut tab = make_tab(&["needle in haystack", "nothing here", "needle again"]).await;
         tab.visible_indices = VisibleLines::Filtered(vec![0, 1, 2]);
         press(forward_mode("needl"), &mut tab, KeyCode::Char('e')).await;
+        drain_search(&mut tab).await;
         assert_eq!(tab.search.get_results().len(), 2);
     }
 
@@ -313,6 +338,7 @@ mod tests {
         tab.visible_indices = VisibleLines::Filtered(vec![0, 1, 2]);
         // Start with "needles" (no match), backspace to "needle" (2 matches)
         press(forward_mode("needles"), &mut tab, KeyCode::Backspace).await;
+        drain_search(&mut tab).await;
         assert_eq!(tab.search.get_results().len(), 2);
     }
 

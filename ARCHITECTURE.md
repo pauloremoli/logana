@@ -77,11 +77,14 @@ A multiline comment attached to a group of log lines. Multiple comments can exis
 
 - **FileReader**: Zero-copy random access backed by either a `memmap2::Mmap` (files) or a `Vec<u8>` (stdin / tests).
 - **Line indexing**: `memchr::memchr3_iter` scans simultaneously for `\n`, `\x1b`, and `\r` in a single pass. On the first ESC/CR byte ANSI is detected — the raw bytes are stripped and re-indexed; otherwise line starts are collected in the same loop with no extra scan.
+- **`strip_ansi_and_index(input) -> (Vec<u8>, Vec<usize>)`**: Single-pass ANSI stripping + line indexing. Handles CSI sequences (`ESC [` … final byte), OSC sequences (terminated by `BEL` or `ST`), two-byte ESC sequences, and `\r` stripping. Emits `line_starts` inline when each `\n` is written — eliminates the second O(N) scan over stripped data that a separate `compute_line_starts` call would require.
 - **`get_line(idx)`**: O(1) slice into the backing storage — no heap allocation per line.
 - **`line_count()`**: Skips the phantom empty entry after a trailing newline.
 - **`from_bytes(Vec<u8>)`**: Used for stdin input and in-memory test data.
+- **`from_file_tail(path, preview_bytes) -> io::Result<Self>`**: Reads only the last `preview_bytes` of a file synchronously (without mmap), drops the first partial line, and returns a `FileReader::from_bytes`. Used by `begin_file_load` to provide immediate tail preview before the background indexing job completes — makes `--tail` on large files feel instant.
 - **`load(path, predicate, tail) -> FileLoadHandle`**: Starts background indexing via `spawn_blocking`. `predicate: Option<VisibilityPredicate>` — when `Some`, each line is tested after indexing and the matching indices are stored in `FileLoadResult::precomputed_visible`, avoiding a separate `compute_visible` call after load. `tail=true` evaluates the predicate in reverse (last line first) so the tail is confirmed earliest; result is returned in ascending order. When `predicate` is `None`, `precomputed_visible` is `None` and `refresh_visible` runs after load.
 - **`VisibilityPredicate`**: `Box<dyn Fn(&[u8]) -> bool + Send + Sync>` — passed from `main.rs` as a closure over a `FilterManager`, keeping `file_reader.rs` free of filter dependencies.
+- **Scan mmap / access mmap split**: Both `new()` and `index_chunked()` use two separate mmaps. The *scan mmap* is created for the indexing phase (`MADV_SEQUENTIAL` set for prefetch throughput), then explicitly `drop`ped when scanning is done — `munmap()` is guaranteed to remove all its pages from process RSS immediately. A fresh *access mmap* is then created with zero RSS; `get_line` faults in only the specific 4 KiB page(s) it needs. This is more reliable than `MADV_DONTNEED`, which is advisory and ignored by the Linux kernel for file-backed shared mappings. `UncheckedAdvice::DontNeed` is still applied after the predicate phase-2 (when a filter predicate re-faults every page during `index_chunked`). All hints are `#[cfg(unix)]` no-ops on other platforms.
 - **`spawn_process_stream(program, args)`**: Spawns a child process, merges stdout+stderr via mpsc, strips ANSI, and delivers complete lines every 500 ms through a `watch::Receiver<Vec<u8>>`. Used by the `docker` command.
 
 ### Format Abstraction (parser/)
@@ -248,8 +251,34 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 
 - Regex-based search over `visible_indices` only (respects active filters).
 - `Search::search(pattern, impl Iterator<Item=usize>, &FileReader)` — accepts an iterator so both `VisibleLines::All` and `VisibleLines::Filtered` can be passed without materialising a `Vec`. Builds `Vec<SearchResult>` with byte-position match spans.
+- `set_pattern(regex, forward)` — pre-sets the active regex without replacing results, used during background search so highlights appear immediately as the user types.
+- `set_results(results, regex)` — called when the background task delivers its results; replaces the result set and updates the pattern atomically.
 - Wrapping `next_match()` / `previous_match()` navigation.
 - Case sensitivity toggle (`set_case_sensitive`).
+- `results` is always sorted by `line_idx`; render uses binary search (`binary_search_by_key`) for O(log N) per-line lookup with zero allocation per frame.
+
+### Background Search (ui/mod.rs)
+
+Search is performed asynchronously to keep the TUI responsive on large files.
+
+- **`SearchHandle`**: Stored on `TabState` while a search is in flight.
+  - `result_rx: oneshot::Receiver<(Vec<SearchResult>, Regex)>` — resolves when the task finishes.
+  - `cancel: Arc<AtomicBool>` — set to `true` to abort the task early (checked every 10 000 lines).
+  - `progress_rx: watch::Receiver<f64>` — [0.0, 1.0] progress fraction polled each frame for the status bar.
+  - `pattern: String`, `forward: bool`, `navigate: bool` — remembered so `confirm` can flip `navigate=true` without re-issuing a search.
+- **`TabState::begin_search(pattern, forward, navigate)`**:
+  1. Cancels any in-flight search via `cancel.store(true, Relaxed)`.
+  2. Validates the regex upfront (returns early on invalid pattern).
+  3. Pre-sets the pattern via `search.set_pattern(re.clone(), forward)` — highlights render immediately.
+  4. Clones `file_reader` (O(1) Arc clone of mmap + line index).
+  5. Materialises `visible: Vec<usize>` from `visible_indices`.
+  6. Spawns a `tokio::task::spawn_blocking` closure that iterates visible lines, checks the cancel flag every 10 000 lines, sends progress via the watch channel, and resolves the oneshot with `(Vec<SearchResult>, Regex)`.
+  7. Stores a `SearchHandle` on `tab.search_handle`.
+- **`App::advance_search()`**: Called each frame in the event loop (after `advance_file_watches`). Calls `result_rx.try_recv()` non-blockingly; on success calls `search.set_results(...)` and, when `navigate=true`, scrolls to the first/previous match.
+- **Enter fast-paths** (in `SearchMode::handle_key`):
+  1. In-flight search with same pattern → set `handle.navigate = true`, exit to `NormalMode` without spawning a new task.
+  2. Search already complete for same pattern → navigate directly, no new task.
+  3. Otherwise → `begin_search(..., navigate=true)`.
 
 ### Export (export.rs)
 
@@ -295,7 +324,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
 **Rendering pipeline (per frame)**:
 1. Compute `visible_height = logs_area.height - border_size` where `border_size` is 2 when `show_borders` is `true`, 0 otherwise.
 2. Compute `inner_width` (terminal columns available inside borders, minus line-number prefix).
-3. Wrap-aware viewport adjustment: when wrap is ON, sums terminal rows (via `line_row_count`) from `viewport_offset` to `scroll_offset`; scrolls when total exceeds `visible_height`.
+3. Wrap-aware viewport adjustment: when wrap is ON, checks if `scroll_offset - viewport_offset > visible_height` first (O(1) fast-path for large jumps, e.g. `G` on a large file). Only if the gap is small enough does it sum terminal rows via `line_row_count` from `viewport_offset` to `scroll_offset`; scrolls when total exceeds `visible_height`. Without this fast-path, `G` on a large file required summing row counts for every visible line.
 4. Wrap-aware `end` computation: walks from `start` accumulating `line_row_count()` until `visible_height` is filled.
 5. Clone `tab.filter_manager_arc` (O(1) atomic increment) and `tab.filter_styles`/`tab.filter_date_styles`. No `build_filter_manager()` call per frame.
 6. **Parse cache pre-population**: for each line in `[start..end)`, if not cached at the current `parse_cache_gen`, call `parser.parse_line()` + `apply_field_layout()`, join columns into a pre-sized `String::with_capacity` buffer (sum of column lengths + separators), and store a `CachedParsedLine` with `rendered`, `level`, `timestamp`, `target`, `pid`, `all_cols_hidden`. This block runs before search results borrow `tab.search` to satisfy the borrow checker.
@@ -381,6 +410,10 @@ Example `~/.config/logana/config.json`:
 - **Parse cache** (`parse_cache`): `HashMap<usize, (gen, CachedParsedLine)>` caches `parse_line` + `apply_field_layout` + column join per visible line. Entries are validated by generation counter and pre-populated in a batch before the render loop. Invalidated on filter, field layout, display mode, or raw mode changes.
 - **Incremental exclude**: Adding a new exclude filter calls `apply_incremental_exclude` which runs `VisibleLines::retain()` on the current visible set — O(visible) instead of O(total file lines). Only falls back to full `refresh_visible()` when editing an existing filter.
 - **Pre-sized join buffer**: Column strings are joined into a `String::with_capacity(sum_of_col_lens + separators)` to avoid intermediate allocations from `Vec::join`.
+- **Tail preview**: `begin_file_load` with `tail=true` calls `FileReader::from_file_tail` synchronously before spawning the background indexing job. The last ~64 KiB of the file is read, parsed, and set as the initial `file_reader` with `scroll_offset` at the last line. The background job replaces this preview with the full index when complete.
+- **Scan/access mmap split**: After scanning, the scan mmap is `drop`ped — `munmap()` is guaranteed to evict all its pages from process RSS (unlike `MADV_DONTNEED`, which is advisory and ignored by the Linux kernel for file-backed shared mappings). A fresh mmap is then created for `get_line` access with zero initial RSS. `MADV_SEQUENTIAL` on the scan mmap and `MADV_RANDOM` on the access mmap are applied as hints; `MADV_DONTNEED` is still used after predicate phase-2 in `index_chunked` since that re-faults all pages.
+- **Background search / `FileReader` clone**: `FileReader` is `Clone` via `Arc`-wrapped storage (`Arc<Mmap>` or `Arc<Vec<u8>>`) and `Arc<Vec<usize>>` line index — clone is O(1) atomic reference increments. `begin_search` clones the reader into a `spawn_blocking` task; the task and the UI share memory with zero copy.
+- **Binary-search render lookup**: `search_results` is sorted by `line_idx`. Each render frame uses a `binary_search_by_key` closure (O(log N)) rather than a `HashMap` built per frame (O(N) + allocation). Zero allocation per frame for the common case.
 
 ## CLI Flags
 

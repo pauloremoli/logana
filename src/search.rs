@@ -130,6 +130,27 @@ impl Search {
         self.case_sensitive = case_sensitive;
     }
 
+    pub fn is_case_sensitive(&self) -> bool {
+        self.case_sensitive
+    }
+
+    /// Pre-set the compiled pattern without replacing results.
+    ///
+    /// Used by background search to enable highlighting immediately while the
+    /// scan is still in progress (stale results remain visible).
+    pub fn set_pattern(&mut self, pattern: Regex, forward: bool) {
+        self.pattern = Some(pattern);
+        self.forward = forward;
+    }
+
+    /// Replace results once a background search completes.
+    pub fn set_results(&mut self, results: Vec<crate::types::SearchResult>, pattern: Regex) {
+        self.results = results;
+        self.pattern = Some(pattern);
+        self.current_result_index = 0;
+        self.current_occurrence_index = 0;
+    }
+
     /// Store the search direction so that `go_next` / `go_prev` respect vim semantics:
     /// `n` repeats in the original direction, `N` reverses it.
     pub fn set_forward(&mut self, forward: bool) {

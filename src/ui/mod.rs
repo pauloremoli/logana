@@ -5,9 +5,11 @@
 //! visible indices, scroll state, and active mode.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ratatui::style::Style;
+use tokio::sync::{oneshot, watch};
 
 use crate::config::Keybindings;
 use crate::date_filter::DateFilterStyle;
@@ -19,7 +21,7 @@ use crate::mode::app_mode::Mode;
 use crate::mode::normal_mode::NormalMode;
 use crate::parser::{LogFormatParser, detect_format};
 use crate::search::Search;
-use crate::types::FieldLayout;
+use crate::types::{FieldLayout, SearchResult};
 
 mod app;
 mod commands;
@@ -43,6 +45,25 @@ pub enum KeyResult {
     ApplyLevelColors(std::collections::HashSet<String>),
     CopyToClipboard(String),
     OpenFiles(Vec<String>),
+}
+
+// ---------------------------------------------------------------------------
+// SearchHandle
+// ---------------------------------------------------------------------------
+
+/// Handle for a background search task spawned by [`TabState::begin_search`].
+pub struct SearchHandle {
+    /// Receives the completed results. `None` means the search was cancelled.
+    pub result_rx: oneshot::Receiver<(Vec<SearchResult>, regex::Regex)>,
+    /// Set to `true` to cancel the in-flight search early.
+    pub cancel: Arc<AtomicBool>,
+    /// Live fraction-complete (0.0–1.0) updated as lines are scanned.
+    pub progress_rx: watch::Receiver<f64>,
+    /// Pattern string shown in the "Searching…" status bar.
+    pub pattern: String,
+    pub forward: bool,
+    /// When `true`, scroll to the first match once results arrive.
+    pub navigate: bool,
 }
 
 /// List the flat (non-recursive), non-hidden regular files in `path`.
@@ -265,6 +286,8 @@ pub struct TabState {
     pub parse_cache_gen: u64,
     /// Per-line parse cache: file-line index → (generation, CachedParsedLine).
     pub parse_cache: HashMap<usize, (u64, CachedParsedLine)>,
+    /// In-flight background search, if one is running.
+    pub search_handle: Option<SearchHandle>,
 }
 
 impl TabState {
@@ -314,6 +337,7 @@ impl TabState {
             filter_date_styles: Vec::new(),
             parse_cache_gen: 0,
             parse_cache: HashMap::new(),
+            search_handle: None,
         };
         tab.refresh_visible();
         tab
@@ -413,6 +437,78 @@ impl TabState {
         if let Some(index) = self.visible_indices.position_of(line_idx) {
             self.scroll_offset = index;
         }
+    }
+
+    /// Start a background search for `pattern` over the current visible lines.
+    ///
+    /// Any in-flight search is cancelled immediately.  Results are delivered
+    /// via [`SearchHandle`] and polled each frame by `App::advance_search`.
+    /// When `navigate` is true the view scrolls to the first match on completion.
+    pub fn begin_search(&mut self, pattern: &str, forward: bool, navigate: bool) {
+        // Cancel any in-flight search.
+        if let Some(ref h) = self.search_handle {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
+        self.search_handle = None;
+
+        if pattern.is_empty() {
+            self.search.clear();
+            return;
+        }
+
+        let case_sensitive = self.search.is_case_sensitive();
+        let regex_str = if case_sensitive {
+            pattern.to_string()
+        } else {
+            format!("(?i){}", pattern)
+        };
+        let Ok(re) = regex::Regex::new(&regex_str) else {
+            return;
+        };
+
+        // Pre-set the pattern so highlights appear immediately (stale results).
+        self.search.set_pattern(re.clone(), forward);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let (result_tx, result_rx) = oneshot::channel();
+        let (progress_tx, progress_rx) = watch::channel(0.0_f64);
+
+        // Clone the file reader (O(1) — just increments Arc ref-counts).
+        let file_reader = self.file_reader.clone();
+        let visible: Vec<usize> = self.visible_indices.iter().collect();
+        let total = visible.len();
+
+        tokio::task::spawn_blocking(move || {
+            let mut results: Vec<SearchResult> = Vec::new();
+            for (i, &line_idx) in visible.iter().enumerate() {
+                if cancel_clone.load(Ordering::Relaxed) {
+                    return;
+                }
+                let line = file_reader.get_line(line_idx);
+                let text = String::from_utf8_lossy(line);
+                let matches: Vec<(usize, usize)> = re
+                    .find_iter(text.as_ref())
+                    .map(|m| (m.start(), m.end()))
+                    .collect();
+                if !matches.is_empty() {
+                    results.push(SearchResult { line_idx, matches });
+                }
+                if i % 10_000 == 0 && total > 0 {
+                    let _ = progress_tx.send(i as f64 / total as f64);
+                }
+            }
+            let _ = result_tx.send((results, re));
+        });
+
+        self.search_handle = Some(SearchHandle {
+            result_rx,
+            cancel,
+            progress_rx,
+            pattern: pattern.to_string(),
+            forward,
+            navigate,
+        });
     }
 
     /// Jump to a 1-based line number, or the closest visible line if the

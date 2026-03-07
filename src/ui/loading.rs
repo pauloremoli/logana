@@ -444,6 +444,43 @@ impl App {
         }
     }
 
+    /// Poll each tab's in-flight background search for completion.
+    ///
+    /// Called every frame from the event loop (non-blocking: `try_recv`).
+    /// On completion, results are written into `tab.search` and the view
+    /// is scrolled to the first match when `navigate` was set.
+    pub(super) fn advance_search(&mut self) {
+        for tab in &mut self.tabs {
+            let Some(ref mut h) = tab.search_handle else {
+                continue;
+            };
+            let Ok((results, regex)) = h.result_rx.try_recv() else {
+                continue;
+            };
+            let forward = h.forward;
+            let navigate = h.navigate;
+            tab.search_handle = None;
+
+            tab.search.set_results(results, regex);
+            tab.search.set_forward(forward);
+
+            if navigate && !tab.search.get_results().is_empty() {
+                let current_line_idx =
+                    tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
+                tab.search.set_position_for_search(current_line_idx, forward);
+                if forward {
+                    tab.search.next_match();
+                } else {
+                    tab.search.previous_match();
+                }
+                if let Some(r) = tab.search.get_current_match() {
+                    let line_idx = r.line_idx;
+                    tab.scroll_to_line_idx(line_idx);
+                }
+            }
+        }
+    }
+
     /// Called when a file load fails or the file cannot be opened.
     async fn skip_or_fail_load(&mut self, context: LoadContext) {
         if let LoadContext::SessionRestoreTab {

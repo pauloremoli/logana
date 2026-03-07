@@ -6,6 +6,8 @@
 //! its output as complete lines, used by the `docker` command.
 
 use memchr::{memchr_iter, memchr3_iter};
+#[cfg(unix)]
+use memmap2::{Advice, UncheckedAdvice};
 use memmap2::Mmap;
 use std::{fs::File, io};
 use tokio::{
@@ -53,10 +55,14 @@ pub struct FileLoadHandle {
 // ---------------------------------------------------------------------------
 
 /// Backing storage for a `FileReader`: either a memory-mapped file or an
-/// in-memory buffer (used for stdin / test data).
+/// in-memory buffer (used for stdin / tests).
+///
+/// Both variants are wrapped in `Arc` so `FileReader` can be cloned cheaply
+/// (O(1) reference-count increment) for background search tasks.
+#[derive(Clone)]
 enum Storage {
-    Mmap(Mmap),
-    Bytes(Vec<u8>),
+    Mmap(std::sync::Arc<Mmap>),
+    Bytes(std::sync::Arc<Vec<u8>>),
 }
 
 impl Storage {
@@ -70,25 +76,33 @@ impl Storage {
 
 /// A fast, random-access log file reader backed by a memory-mapped file or
 /// an in-memory byte buffer.
+///
+/// Cloning is O(1): both the storage and the line-start index are
+/// `Arc`-wrapped so clones share the same backing data.
+#[derive(Clone)]
 pub struct FileReader {
     storage: Storage,
-    line_starts: Vec<usize>,
+    line_starts: std::sync::Arc<Vec<usize>>,
 }
 
 impl FileReader {
     /// Memory-map `path` and index all line starts synchronously.
     pub fn new(path: &str) -> io::Result<Self> {
         let file = File::open(path)?;
-        let mmap = unsafe { Mmap::map(&file)? };
-        let len = mmap.len();
+        let scan_mmap = unsafe { Mmap::map(&file)? };
+        let len = scan_mmap.len();
+
+        // Hint sequential access so the kernel prefetches ahead during the scan.
+        #[cfg(unix)]
+        let _ = scan_mmap.advise(Advice::Sequential);
 
         // Single pass: scan for '\n', '\x1b', '\r' simultaneously.
         // For the common (no-ANSI) case this halves I/O vs the previous two-pass
         // approach (memchr2 check then compute_line_starts).
         let mut starts = vec![0usize];
         let mut has_ansi = false;
-        for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &mmap) {
-            if mmap[pos] == b'\n' {
+        for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &scan_mmap) {
+            if scan_mmap[pos] == b'\n' {
                 let next = pos + 1;
                 if next <= len {
                     starts.push(next);
@@ -100,16 +114,30 @@ impl FileReader {
         }
 
         if has_ansi {
-            let (stripped, line_starts) = strip_ansi_and_index(&mmap);
+            // Strip into a Vec<u8>; scan_mmap is dropped here so munmap
+            // reclaims the pages — no explicit DontNeed needed.
+            let (stripped, line_starts) = strip_ansi_and_index(&scan_mmap);
             return Ok(FileReader {
-                storage: Storage::Bytes(stripped),
-                line_starts,
+                storage: Storage::Bytes(std::sync::Arc::new(stripped)),
+                line_starts: std::sync::Arc::new(line_starts),
             });
         }
 
+        // Drop the scan mmap. munmap() is guaranteed to remove all its pages
+        // from the process RSS immediately — unlike MADV_DONTNEED which is
+        // merely advisory and can be ignored by the kernel for file-backed
+        // shared mappings.
+        drop(scan_mmap);
+
+        // Fresh mmap for on-demand access: zero pages in RSS until get_line
+        // faults in only the specific 4 KiB page(s) it needs.
+        let access_mmap = unsafe { Mmap::map(&file)? };
+        #[cfg(unix)]
+        let _ = access_mmap.advise(Advice::Random);
+
         Ok(FileReader {
-            storage: Storage::Mmap(mmap),
-            line_starts: starts,
+            storage: Storage::Mmap(std::sync::Arc::new(access_mmap)),
+            line_starts: std::sync::Arc::new(starts),
         })
     }
 
@@ -133,14 +161,14 @@ impl FileReader {
         if has_ansi {
             let (stripped, line_starts) = strip_ansi_and_index(&data);
             return FileReader {
-                storage: Storage::Bytes(stripped),
-                line_starts,
+                storage: Storage::Bytes(std::sync::Arc::new(stripped)),
+                line_starts: std::sync::Arc::new(line_starts),
             };
         }
 
         FileReader {
-            storage: Storage::Bytes(data),
-            line_starts: starts,
+            storage: Storage::Bytes(std::sync::Arc::new(data)),
+            line_starts: std::sync::Arc::new(starts),
         }
     }
 
@@ -277,8 +305,12 @@ impl FileReader {
         tail: bool,
     ) -> io::Result<FileLoadResult> {
         let file = File::open(path)?;
-        let mmap = unsafe { Mmap::map(&file)? };
-        let len = mmap.len();
+        let scan_mmap = unsafe { Mmap::map(&file)? };
+        let len = scan_mmap.len();
+
+        // Hint sequential access so the kernel prefetches ahead during the scan.
+        #[cfg(unix)]
+        let _ = scan_mmap.advise(Advice::Sequential);
 
         // Phase 1: scan for '\n', '\x1b', '\r' simultaneously.
         // For the common (no-ANSI) case this halves I/O vs. the previous approach
@@ -291,9 +323,9 @@ impl FileReader {
 
         'scan: while offset < len {
             let end = (offset + CHUNK).min(len);
-            for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &mmap[offset..end]) {
+            for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &scan_mmap[offset..end]) {
                 let abs = offset + pos;
-                if mmap[abs] == b'\n' {
+                if scan_mmap[abs] == b'\n' {
                     let next = abs + 1;
                     if next <= len {
                         starts.push(next);
@@ -313,16 +345,30 @@ impl FileReader {
         }
 
         let reader = if has_ansi {
-            let (stripped, line_starts) = strip_ansi_and_index(&mmap);
+            // Strip into a Vec<u8>; scan_mmap is dropped here so munmap
+            // reclaims the pages — no explicit DontNeed needed.
+            let (stripped, line_starts) = strip_ansi_and_index(&scan_mmap);
+            drop(scan_mmap);
             let _ = progress_tx.send(1.0);
             FileReader {
-                storage: Storage::Bytes(stripped),
-                line_starts,
+                storage: Storage::Bytes(std::sync::Arc::new(stripped)),
+                line_starts: std::sync::Arc::new(line_starts),
             }
         } else {
+            // Drop the scan mmap. munmap() is guaranteed to remove all its
+            // pages from process RSS immediately — unlike MADV_DONTNEED which
+            // is advisory and can be ignored for file-backed shared mappings.
+            drop(scan_mmap);
+
+            // Fresh mmap for on-demand access: zero pages in RSS until
+            // get_line faults in only the specific page(s) it needs.
+            let access_mmap = unsafe { Mmap::map(&file)? };
+            #[cfg(unix)]
+            let _ = access_mmap.advise(Advice::Random);
+
             FileReader {
-                storage: Storage::Mmap(mmap),
-                line_starts: starts,
+                storage: Storage::Mmap(std::sync::Arc::new(access_mmap)),
+                line_starts: std::sync::Arc::new(starts),
             }
         };
 
@@ -346,6 +392,18 @@ impl FileReader {
                     .collect()
             }
         });
+
+        // If phase 2 ran, the predicate accessed every line and re-faulted all
+        // pages into RSS. Release them now — only the viewport pages will be
+        // re-faulted during rendering.
+        if precomputed_visible.is_some()
+            && let Storage::Mmap(ref m) = reader.storage
+        {
+            // SAFETY: phase 2 is complete; no borrows of the mmap data remain
+            // (the predicate closures are done and the Arc has count 1 here).
+            #[cfg(unix)]
+            let _ = unsafe { (**m).unchecked_advise(UncheckedAdvice::DontNeed) };
+        }
 
         Ok(FileLoadResult {
             reader,
@@ -407,21 +465,27 @@ impl FileReader {
             return;
         }
         // Convert mmap to owned bytes before extending.
-        let old_storage = std::mem::replace(&mut self.storage, Storage::Bytes(Vec::new()));
-        let mut data = match old_storage {
-            Storage::Bytes(v) => v,
+        let old_storage = std::mem::replace(
+            &mut self.storage,
+            Storage::Bytes(std::sync::Arc::new(Vec::new())),
+        );
+        let mut data: Vec<u8> = match old_storage {
+            Storage::Bytes(v) => {
+                std::sync::Arc::try_unwrap(v).unwrap_or_else(|arc| (*arc).clone())
+            }
             Storage::Mmap(m) => m.to_vec(),
         };
         let offset = data.len();
         data.extend_from_slice(new_data);
         // Extend line_starts incrementally — only scan the new bytes.
+        let starts = std::sync::Arc::make_mut(&mut self.line_starts);
         for pos in memchr_iter(b'\n', &data[offset..]) {
             let abs = offset + pos + 1;
             if abs <= data.len() {
-                self.line_starts.push(abs);
+                starts.push(abs);
             }
         }
-        self.storage = Storage::Bytes(data);
+        self.storage = Storage::Bytes(std::sync::Arc::new(data));
     }
 
     /// Spawn a child process and stream its combined stdout+stderr output.

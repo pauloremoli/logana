@@ -548,8 +548,16 @@ impl App {
                     .get_current_occurrence_index(),
             ))
         };
-        let search_map: HashMap<usize, &crate::types::SearchResult> =
-            search_results.iter().map(|r| (r.line_idx, r)).collect();
+        // search_results is sorted by line_idx (scanned in order), so use
+        // binary search instead of a HashMap — O(log N) per lookup, zero
+        // allocation, and avoids the O(N) HashMap build on every render frame
+        // that caused 100% CPU when there were millions of search results.
+        let find_search_result = |line_idx: usize| -> Option<&crate::types::SearchResult> {
+            search_results
+                .binary_search_by_key(&line_idx, |r| r.line_idx)
+                .ok()
+                .map(|i| &search_results[i])
+        };
         // Clone the compiled regex once so the JSON render path can re-match against
         // the rendered string (raw-byte positions from search_map don't map there).
         let search_regex = self.tabs[self.active_tab]
@@ -689,7 +697,7 @@ impl App {
                             // All fields hidden — fall back to raw bytes with filter +
                             // search highlighting (raw-byte positions are correct here).
                             let mut collector = filter_manager.evaluate_line(line_bytes);
-                            if let Some(sr) = search_map.get(&line_idx) {
+                            if let Some(sr) = find_search_result(line_idx) {
                                 collector.with_priority(1000);
                                 for (i, &(s, e)) in sr.matches.iter().enumerate() {
                                     let sid = if current_occ == Some(i) {
@@ -770,7 +778,7 @@ impl App {
                     structured_line
                 } else {
                     let mut collector = filter_manager.evaluate_line(line_bytes);
-                    if let Some(sr) = search_map.get(&line_idx) {
+                    if let Some(sr) = find_search_result(line_idx) {
                         collector.with_priority(1000);
                         for (i, &(s, e)) in sr.matches.iter().enumerate() {
                             let sid = if current_occ == Some(i) {
@@ -957,6 +965,40 @@ impl App {
     }
 
     fn render_loading_status_bar(&mut self, frame: &mut Frame<'_>) {
+        // Background search in progress takes priority over file-loading bar.
+        if let Some(ref h) = self.tabs[self.active_tab].search_handle {
+            let progress = *h.progress_rx.borrow();
+            let bar_width = 20_usize;
+            let filled = ((progress * bar_width as f64) as usize).min(bar_width);
+            let bar = format!(
+                "{}{}",
+                "\u{2588}".repeat(filled),
+                "\u{2591}".repeat(bar_width - filled),
+            );
+            let pct = (progress * 100.0) as usize;
+            let text = format!(" Searching \"{}\"  {} {}% ", h.pattern, bar, pct);
+            let area = frame.area();
+            if area.height == 0 {
+                return;
+            }
+            let bar_rect = ratatui::layout::Rect::new(
+                area.x,
+                area.y + area.height.saturating_sub(1),
+                area.width,
+                1,
+            );
+            frame.render_widget(ratatui::widgets::Clear, bar_rect);
+            frame.render_widget(
+                Paragraph::new(text).style(
+                    Style::default()
+                        .fg(self.theme.root_bg)
+                        .bg(self.theme.text_highlight_fg),
+                ),
+                bar_rect,
+            );
+            return;
+        }
+
         let s = match self.file_load_state.as_ref() {
             Some(s) => s,
             None => return,
