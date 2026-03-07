@@ -52,8 +52,14 @@ impl KeyBinding {
                     !modifiers.contains(KeyModifiers::CONTROL)
                         && !modifiers.contains(KeyModifiers::ALT)
                 }
-                // For non-character keys (Enter, Tab, F-keys …) SHIFT changes the
-                // key meaning, so require an exact SHIFT match.
+                // BackTab already encodes Shift; terminals may or may not set the
+                // SHIFT modifier bit alongside it, so ignore SHIFT here too.
+                KeyCode::BackTab => {
+                    !modifiers.contains(KeyModifiers::CONTROL)
+                        && !modifiers.contains(KeyModifiers::ALT)
+                }
+                // For other non-character keys (Enter, Tab, F-keys …) SHIFT changes
+                // the key meaning, so require an exact SHIFT match.
                 _ => {
                     let shift_ok = has_shift == modifiers.contains(KeyModifiers::SHIFT);
                     shift_ok
@@ -1523,6 +1529,22 @@ mod tests {
     fn test_parse_shift_tab_case_insensitive() {
         let kb = KeyBinding::parse("shift+tab").unwrap();
         assert_eq!(kb, KeyBinding(KeyCode::BackTab, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_backtab_matches_with_shift_modifier() {
+        // Some terminals send BackTab with the SHIFT bit set; the binding
+        // (BackTab, NONE) must still match because BackTab already encodes Shift.
+        let kb = KeyBinding(KeyCode::BackTab, KeyModifiers::NONE);
+        assert!(kb.matches(KeyCode::BackTab, KeyModifiers::NONE));
+        assert!(kb.matches(KeyCode::BackTab, KeyModifiers::SHIFT));
+    }
+
+    #[test]
+    fn test_backtab_does_not_match_with_ctrl() {
+        let kb = KeyBinding(KeyCode::BackTab, KeyModifiers::NONE);
+        assert!(!kb.matches(KeyCode::BackTab, KeyModifiers::CONTROL));
+        assert!(!kb.matches(KeyCode::BackTab, KeyModifiers::CONTROL | KeyModifiers::SHIFT));
     }
 
     #[test]

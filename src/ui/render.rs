@@ -37,6 +37,12 @@ impl App {
 
         let has_multiple_tabs = self.tabs.len() > 1;
 
+        // Extract search progress up front so later rendering has no active borrow.
+        let search_progress: Option<(String, f64)> =
+            self.tabs[self.active_tab].search_handle.as_ref().map(|h| {
+                (h.pattern.clone(), *h.progress_rx.borrow())
+            });
+
         // Extract mode-derived state up front via a single render_state() call,
         // avoiding holding a borrow over the rest of rendering.
         let render_state = self.tabs[self.active_tab].mode.render_state();
@@ -175,6 +181,11 @@ impl App {
                 self.compute_hint_height(&command_input, inner_width, completion_index);
             constraints.push(Constraint::Length(hint_height)); // hint line(s)
         }
+        let search_bar_chunk_idx = search_progress.as_ref().map(|_| {
+            let idx = constraints.len();
+            constraints.push(Constraint::Length(1)); // search progress bar
+            idx
+        });
         if show_mode_bar {
             if !show_borders {
                 constraints.push(Constraint::Length(1)); // visual gap above mode bar
@@ -243,6 +254,26 @@ impl App {
             if let Some(&status_area) = chunks.last() {
                 frame.render_widget(command_list, status_area);
             }
+        }
+
+        if let (Some((pattern, progress)), Some(idx)) = (search_progress, search_bar_chunk_idx) {
+            let bar_width = 20_usize;
+            let filled = ((progress * bar_width as f64) as usize).min(bar_width);
+            let bar = format!(
+                "{}{}",
+                "\u{2588}".repeat(filled),
+                "\u{2591}".repeat(bar_width - filled),
+            );
+            let pct = (progress * 100.0) as usize;
+            let text = format!(" Searching \"{}\"  {} {}% ", pattern, bar, pct);
+            frame.render_widget(
+                Paragraph::new(text).style(
+                    Style::default()
+                        .fg(self.theme.root_bg)
+                        .bg(self.theme.text_highlight_fg),
+                ),
+                chunks[idx],
+            );
         }
 
         // Session restore modal renders on top of the full TUI so stdin content
@@ -966,40 +997,6 @@ impl App {
     }
 
     fn render_loading_status_bar(&mut self, frame: &mut Frame<'_>) {
-        // Background search in progress takes priority over file-loading bar.
-        if let Some(ref h) = self.tabs[self.active_tab].search_handle {
-            let progress = *h.progress_rx.borrow();
-            let bar_width = 20_usize;
-            let filled = ((progress * bar_width as f64) as usize).min(bar_width);
-            let bar = format!(
-                "{}{}",
-                "\u{2588}".repeat(filled),
-                "\u{2591}".repeat(bar_width - filled),
-            );
-            let pct = (progress * 100.0) as usize;
-            let text = format!(" Searching \"{}\"  {} {}% ", h.pattern, bar, pct);
-            let area = frame.area();
-            if area.height == 0 {
-                return;
-            }
-            let bar_rect = ratatui::layout::Rect::new(
-                area.x,
-                area.y + area.height.saturating_sub(1),
-                area.width,
-                1,
-            );
-            frame.render_widget(ratatui::widgets::Clear, bar_rect);
-            frame.render_widget(
-                Paragraph::new(text).style(
-                    Style::default()
-                        .fg(self.theme.root_bg)
-                        .bg(self.theme.text_highlight_fg),
-                ),
-                bar_rect,
-            );
-            return;
-        }
-
         let s = match self.file_load_state.as_ref() {
             Some(s) => s,
             None => return,

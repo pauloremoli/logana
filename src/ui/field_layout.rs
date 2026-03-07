@@ -7,19 +7,74 @@
 
 use std::collections::HashSet;
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::UnicodeWidthChar;
 
 use crate::parser::{DisplayParts, LogFormatParser, format_span_col};
 use crate::types::FieldLayout;
 
-/// Number of terminal rows a line occupies when wrapped to `inner_width` columns.
+/// Number of terminal rows a line occupies when word-wrapped to `inner_width` columns.
+///
+/// Simulates ratatui `Wrap { trim: false }` behavior:
+/// - Words that fit on the current row are placed there.
+/// - Words that don't fit are moved to the next row.
+/// - Words wider than `inner_width` are split at character boundaries across rows.
+///
 /// Returns 1 when `inner_width` is 0 or the line is empty.
 pub(crate) fn line_row_count(bytes: &[u8], inner_width: usize) -> usize {
     if inner_width == 0 {
         return 1;
     }
-    let w = UnicodeWidthStr::width(std::str::from_utf8(bytes).unwrap_or(""));
-    if w == 0 { 1 } else { w.div_ceil(inner_width) }
+    let text = std::str::from_utf8(bytes).unwrap_or("");
+    if text.is_empty() {
+        return 1;
+    }
+
+    let mut rows = 1usize;
+    let mut col = 0usize; // current column (unicode width)
+    let mut word_w = 0usize; // accumulated width of the current non-whitespace word
+
+    for ch in text.chars() {
+        if ch.is_ascii_whitespace() {
+            // Commit the pending word before placing the whitespace character.
+            if word_w > 0 {
+                if col > 0 && col + word_w > inner_width {
+                    // Word doesn't fit on current row: move to next.
+                    rows += 1;
+                    col = 0;
+                }
+                if col == 0 && word_w > inner_width {
+                    // Word is wider than a full row: split at character boundaries.
+                    rows += word_w.div_ceil(inner_width) - 1;
+                    col = word_w % inner_width;
+                } else {
+                    col += word_w;
+                }
+                word_w = 0;
+            }
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if col + cw > inner_width {
+                rows += 1;
+                col = cw; // trim: false — keep the space on the new row
+            } else {
+                col += cw;
+            }
+        } else {
+            word_w += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+    }
+
+    // Commit any remaining word.
+    if word_w > 0 {
+        if col > 0 && col + word_w > inner_width {
+            rows += 1;
+            col = 0;
+        }
+        if col == 0 && word_w > inner_width {
+            rows += word_w.div_ceil(inner_width) - 1;
+        }
+    }
+
+    rows
 }
 
 /// Simulate word-wrap of `text` into a box of `width` columns and return the
@@ -248,8 +303,35 @@ mod tests {
 
     #[test]
     fn test_line_row_count_wraps_to_two_rows() {
-        // 10 chars in width 6 → ceil(10/6) = 2
+        // Single word, 10 chars in width 6 → ceil(10/6) = 2 (same as char-wrap for single words)
         assert_eq!(line_row_count(b"0123456789", 6), 2);
+    }
+
+    #[test]
+    fn test_line_row_count_word_wrap_exceeds_char_wrap() {
+        // "hello world test abc" (20 chars) in width 7:
+        //   char-wrap: ceil(20/7) = 3 rows
+        //   word-wrap: "hello"(5) → col 5; space → col 6;
+        //              "world"(5) doesn't fit → row 2; space → col 6;
+        //              "test"(4) doesn't fit → row 3; space → col 5;
+        //              "abc"(3) doesn't fit → row 4.
+        assert_eq!(line_row_count(b"hello world test abc", 7), 4);
+    }
+
+    #[test]
+    fn test_line_row_count_long_word_spans_many_rows() {
+        // Single word of 15 chars in width 5 → ceil(15/5) = 3 rows
+        assert_eq!(line_row_count(b"aaaaaaaaaaaaaaa", 5), 3);
+    }
+
+    #[test]
+    fn test_line_row_count_long_word_plus_short_word() {
+        // "aaaaaaaaaa b" — long word (10 chars) in width 7, then " b"
+        // Long word: col=0, 10>7 → rows += ceil(10/7)-1=1 → rows=2, col=10%7=3
+        // space: col+1=4 ≤ 7 → col=4
+        // "b" (1 char): col+1=5 ≤ 7 → col=5
+        // Result: 2 rows
+        assert_eq!(line_row_count(b"aaaaaaaaaa b", 7), 2);
     }
 
     #[test]
