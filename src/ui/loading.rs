@@ -464,6 +464,7 @@ impl App {
 
             tab.search.set_results(results, regex);
             tab.search.set_forward(forward);
+            tab.search_result_gen = tab.search_result_gen.wrapping_add(1);
 
             if navigate && !tab.search.get_results().is_empty() {
                 let current_line_idx = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);

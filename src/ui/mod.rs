@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::style::Style;
+use ratatui::text::Line;
 use tokio::sync::{oneshot, watch};
 
 use crate::config::Keybindings;
@@ -292,6 +293,15 @@ pub struct TabState {
     /// Memoized result of `collect_field_names`: (parse_cache_gen, names).
     /// Invalidated automatically when `parse_cache_gen` advances.
     pub field_names_cache: Option<(u64, Vec<String>)>,
+    /// Bumped whenever rendered output could change: filter/layout changes (alongside
+    /// `parse_cache_gen`), value_colors toggles, or theme changes.
+    pub render_cache_gen: u64,
+    /// Bumped when search results are delivered or cleared.
+    pub search_result_gen: u64,
+    /// Cached content lines (result of evaluate_line + render_line + colorize_known_values,
+    /// before applying cursor/mark/visual style and line numbers).
+    /// Key: line_idx → (render_cache_gen, search_result_gen, current_occ, Line<'static>).
+    pub render_line_cache: HashMap<usize, (u64, u64, Option<usize>, Line<'static>)>,
 }
 
 impl TabState {
@@ -344,6 +354,9 @@ impl TabState {
             parse_cache: HashMap::new(),
             search_handle: None,
             field_names_cache: None,
+            render_cache_gen: 0,
+            search_result_gen: 0,
+            render_line_cache: HashMap::new(),
         };
         tab.refresh_visible();
         tab
@@ -354,6 +367,8 @@ impl TabState {
         // Invalidate the parse cache: field layout, filters, or file content may have changed.
         self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
         self.parse_cache.clear();
+        self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
+        self.render_line_cache.clear();
 
         if self.show_marks_only {
             let mut indices = self.log_manager.get_marked_indices();
@@ -383,7 +398,9 @@ impl TabState {
 
         // Apply date filters as a post-processing step in parallel.
         let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
-        if !date_filters.is_empty()
+        if self.filtering_enabled
+            && !self.show_marks_only
+            && !date_filters.is_empty()
             && let Some(parser) = &self.detected_format
         {
             use rayon::prelude::*;
@@ -515,6 +532,7 @@ impl TabState {
 
         if pattern.is_empty() {
             self.search.clear();
+            self.search_result_gen = self.search_result_gen.wrapping_add(1);
             return;
         }
 
@@ -542,24 +560,34 @@ impl TabState {
         let total = visible.len();
 
         tokio::task::spawn_blocking(move || {
-            let mut results: Vec<SearchResult> = Vec::new();
-            for (i, &line_idx) in visible.iter().enumerate() {
-                if cancel_clone.load(Ordering::Relaxed) {
-                    return;
-                }
-                let line = file_reader.get_line(line_idx);
-                let text = String::from_utf8_lossy(line);
-                let matches: Vec<(usize, usize)> = re
-                    .find_iter(text.as_ref())
-                    .map(|m| (m.start(), m.end()))
-                    .collect();
-                if !matches.is_empty() {
-                    results.push(SearchResult { line_idx, matches });
-                }
-                if i % 10_000 == 0 && total > 0 {
-                    let _ = progress_tx.send(i as f64 / total as f64);
-                }
-            }
+            use rayon::prelude::*;
+            use std::sync::atomic::AtomicUsize;
+            let counter = AtomicUsize::new(0);
+            let re_for_search = re.clone();
+            let results: Vec<SearchResult> = visible
+                .par_iter()
+                .copied()
+                .filter_map(|line_idx| {
+                    if cancel_clone.load(Ordering::Relaxed) {
+                        return None;
+                    }
+                    let i = counter.fetch_add(1, Ordering::Relaxed);
+                    if i % 10_000 == 0 && total > 0 {
+                        let _ = progress_tx.send(i as f64 / total as f64);
+                    }
+                    let line = file_reader.get_line(line_idx);
+                    let text = String::from_utf8_lossy(line);
+                    let matches: Vec<(usize, usize)> = re_for_search
+                        .find_iter(text.as_ref())
+                        .map(|m| (m.start(), m.end()))
+                        .collect();
+                    if matches.is_empty() {
+                        None
+                    } else {
+                        Some(SearchResult { line_idx, matches })
+                    }
+                })
+                .collect();
             let _ = result_tx.send((results, re));
         });
 
@@ -625,12 +653,20 @@ impl TabState {
     /// The filter manager cache is rebuilt afterward so render highlights stay correct.
     pub fn apply_incremental_include(&mut self, pattern: &str) {
         use crate::filters::{FilterDecision, MatchCollector, build_filter};
+        use rayon::prelude::*;
         if let Some(filter) = build_filter(pattern, FilterDecision::Include, true, 0) {
-            self.visible_indices.retain(|line_idx| {
-                let line = self.file_reader.get_line(line_idx);
-                let mut dummy = MatchCollector::new(line);
-                matches!(filter.evaluate(line, &mut dummy), FilterDecision::Include)
-            });
+            let file_reader = &self.file_reader;
+            let indices: Vec<usize> = self.visible_indices.iter().collect();
+            let new_visible: Vec<usize> = indices
+                .par_iter()
+                .copied()
+                .filter(|&line_idx| {
+                    let line = file_reader.get_line(line_idx);
+                    let mut dummy = MatchCollector::new(line);
+                    matches!(filter.evaluate(line, &mut dummy), FilterDecision::Include)
+                })
+                .collect();
+            self.visible_indices = VisibleLines::Filtered(new_visible);
         }
         // Rebuild filter manager cache so the render path sees the updated filters.
         let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
@@ -655,12 +691,20 @@ impl TabState {
     /// The filter manager cache is rebuilt afterward so render highlights stay correct.
     pub fn apply_incremental_exclude(&mut self, pattern: &str) {
         use crate::filters::{FilterDecision, MatchCollector, build_filter};
+        use rayon::prelude::*;
         if let Some(filter) = build_filter(pattern, FilterDecision::Exclude, true, 0) {
-            self.visible_indices.retain(|line_idx| {
-                let line = self.file_reader.get_line(line_idx);
-                let mut dummy = MatchCollector::new(line);
-                !matches!(filter.evaluate(line, &mut dummy), FilterDecision::Exclude)
-            });
+            let file_reader = &self.file_reader;
+            let indices: Vec<usize> = self.visible_indices.iter().collect();
+            let new_visible: Vec<usize> = indices
+                .par_iter()
+                .copied()
+                .filter(|&line_idx| {
+                    let line = file_reader.get_line(line_idx);
+                    let mut dummy = MatchCollector::new(line);
+                    !matches!(filter.evaluate(line, &mut dummy), FilterDecision::Exclude)
+                })
+                .collect();
+            self.visible_indices = VisibleLines::Filtered(new_visible);
         }
         // Rebuild filter manager cache so the render path sees the updated filters.
         let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
@@ -683,6 +727,8 @@ impl TabState {
     pub fn invalidate_parse_cache(&mut self) {
         self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
         self.parse_cache.clear();
+        self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
+        self.render_line_cache.clear();
     }
 
     pub fn to_file_context(&self) -> Option<FileContext> {
@@ -826,8 +872,6 @@ pub use app::App;
 mod tests {
     use super::*;
     use crate::db::{Database, FileContext};
-
-    // ── list_dir_files ────────────────────────────────────────────────
 
     #[test]
     fn test_list_dir_files_basic() {
@@ -1136,8 +1180,6 @@ mod tests {
         assert!(tab.detected_format.is_none());
     }
 
-    // ── goto_line ─────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_goto_line_exact_visible() {
         let mut tab = make_tab(&["a", "b", "c", "d", "e"]).await;
@@ -1347,8 +1389,6 @@ mod tests {
         assert_eq!(tab.visible_indices.get(0), 1);
     }
 
-    // ── Opt-1: filter manager cache ───────────────────────────────────
-
     #[tokio::test]
     async fn test_refresh_visible_populates_filter_cache() {
         let mut tab = make_tab(&["error line", "info line", "error again"]).await;
@@ -1374,8 +1414,6 @@ mod tests {
         assert!(tab.filter_styles.is_empty());
     }
 
-    // ── Opt-4: parse cache invalidation ──────────────────────────────
-
     #[tokio::test]
     async fn test_refresh_visible_increments_parse_cache_gen() {
         let mut tab = make_tab(&["line"]).await;
@@ -1392,8 +1430,6 @@ mod tests {
         assert!(tab.parse_cache_gen > old_gen);
         assert!(tab.parse_cache.is_empty());
     }
-
-    // ── Opt-2: incremental include ────────────────────────────────────
 
     #[tokio::test]
     async fn test_apply_incremental_include_narrows_visible() {
@@ -1425,8 +1461,6 @@ mod tests {
         assert_eq!(tab.scroll_offset, 0);
     }
 
-    // ── Opt-5: incremental exclude ────────────────────────────────────
-
     #[tokio::test]
     async fn test_apply_incremental_exclude_filters_visible() {
         let mut tab = make_tab(&["error line", "info line", "error again", "debug line"]).await;
@@ -1453,5 +1487,79 @@ mod tests {
         assert!(tab.parse_cache_gen > old_gen);
         // Only "line a" remains visible.
         assert_eq!(tab.visible_indices.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_visible_bumps_render_cache_gen() {
+        let mut tab = make_tab(&["line"]).await;
+        let old = tab.render_cache_gen;
+        tab.refresh_visible();
+        assert!(tab.render_cache_gen > old);
+        assert!(tab.render_line_cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_parse_cache_bumps_render_cache_gen() {
+        let mut tab = make_tab(&["line"]).await;
+        let old = tab.render_cache_gen;
+        tab.invalidate_parse_cache();
+        assert!(tab.render_cache_gen > old);
+        assert!(tab.render_line_cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_begin_search_clear_bumps_search_result_gen() {
+        let mut tab = make_tab(&["line"]).await;
+        let old = tab.search_result_gen;
+        tab.begin_search("", true, false);
+        assert!(tab.search_result_gen > old);
+    }
+
+    #[tokio::test]
+    async fn test_begin_search_nonempty_does_not_bump_search_result_gen() {
+        // search_result_gen is only bumped on advance_search (when results arrive),
+        // not on begin_search itself for non-empty patterns.
+        let mut tab = make_tab(&["line"]).await;
+        let old = tab.search_result_gen;
+        tab.begin_search("line", true, false);
+        // begin_search with a pattern spawns a background task; gen not bumped yet
+        assert_eq!(tab.search_result_gen, old);
+    }
+
+    #[tokio::test]
+    async fn test_date_filter_not_applied_when_filtering_disabled() {
+        let lines = [
+            r#"{"timestamp":"2024-01-01T01:30:00Z","level":"INFO","msg":"in range"}"#,
+            r#"{"timestamp":"2024-01-01T05:00:00Z","level":"INFO","msg":"out of range"}"#,
+        ];
+        let mut tab = make_tab(&lines).await;
+        let pattern = format!("{}01:00 .. 02:00", crate::date_filter::DATE_PREFIX);
+        tab.log_manager
+            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .await;
+        tab.filtering_enabled = false;
+        tab.refresh_visible();
+        // Both lines must be visible even though only the first matches the date filter.
+        assert_eq!(tab.visible_indices.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_date_filter_not_applied_in_marks_only_mode() {
+        let lines = [
+            r#"{"timestamp":"2024-01-01T01:30:00Z","level":"INFO","msg":"in range"}"#,
+            r#"{"timestamp":"2024-01-01T05:00:00Z","level":"INFO","msg":"out of range"}"#,
+        ];
+        let mut tab = make_tab(&lines).await;
+        let pattern = format!("{}01:00 .. 02:00", crate::date_filter::DATE_PREFIX);
+        tab.log_manager
+            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .await;
+        // Mark both lines, including the one outside the date range.
+        tab.log_manager.toggle_mark(0);
+        tab.log_manager.toggle_mark(1);
+        tab.show_marks_only = true;
+        tab.refresh_visible();
+        // Both marked lines must remain visible regardless of the date filter.
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 1]));
     }
 }

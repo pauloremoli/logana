@@ -449,6 +449,26 @@ impl FileReader {
         &data[start..end]
     }
 
+    /// Hint the kernel to prefetch the mmap pages covering lines `first_line..=last_line`.
+    /// Called before the render loop so async I/O can overlap with CPU work.
+    /// No-op for in-memory (stdin/test) readers or on non-Unix platforms.
+    #[cfg(unix)]
+    pub fn advise_viewport(&self, first_line: usize, last_line: usize) {
+        if let Storage::Mmap(ref m) = self.storage {
+            let len = m.len();
+            let start = self.line_starts.get(first_line).copied().unwrap_or(0);
+            let end = self
+                .line_starts
+                .get(last_line + 1)
+                .copied()
+                .unwrap_or(len)
+                .min(len);
+            if end > start {
+                let _ = m.advise_range(Advice::WillNeed, start, end - start);
+            }
+        }
+    }
+
     /// Iterate over `(line_index, line_bytes)` pairs.
     pub fn iter(&self) -> impl Iterator<Item = (usize, &[u8])> {
         (0..self.line_count()).map(move |i| (i, self.get_line(i)))

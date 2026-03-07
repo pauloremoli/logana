@@ -1088,11 +1088,8 @@ impl App {
         // Separator
         let sep_text = "─".repeat(chunks[1].width as usize);
         frame.render_widget(
-            Paragraph::new(sep_text).style(
-                Style::default()
-                    .fg(self.theme.text)
-                    .bg(self.theme.root_bg),
-            ),
+            Paragraph::new(sep_text)
+                .style(Style::default().fg(self.theme.text).bg(self.theme.root_bg)),
             chunks[1],
         );
 

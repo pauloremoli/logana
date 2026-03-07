@@ -202,8 +202,7 @@ fn bench_incremental_include_vs_full(c: &mut Criterion) {
         let visible_count = pre_filtered.len();
 
         // Include filter being added.
-        let include_filter =
-            build_filter("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let include_filter = build_filter("ERROR", FilterDecision::Include, false, 0).unwrap();
 
         group.throughput(Throughput::Elements(total_lines as u64));
 

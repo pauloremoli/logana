@@ -362,11 +362,20 @@ impl App {
         let show_keys = self.tabs[self.active_tab].show_keys;
         let raw_mode = self.tabs[self.active_tab].raw_mode;
 
-        // Clamp scroll_offset
+        // Clamp scroll_offset and viewport_offset when the visible set has shrunk.
         if num_visible == 0 {
             self.tabs[self.active_tab].scroll_offset = 0;
-        } else if self.tabs[self.active_tab].scroll_offset >= num_visible {
-            self.tabs[self.active_tab].scroll_offset = num_visible - 1;
+            self.tabs[self.active_tab].viewport_offset = 0;
+        } else {
+            if self.tabs[self.active_tab].scroll_offset >= num_visible {
+                self.tabs[self.active_tab].scroll_offset = num_visible - 1;
+            }
+            if self.tabs[self.active_tab].viewport_offset >= num_visible {
+                // viewport_offset is stale (e.g. filter contracted the visible set);
+                // reset it so the cursor stays visible and the viewport fills backward.
+                self.tabs[self.active_tab].viewport_offset =
+                    num_visible.saturating_sub(visible_height);
+            }
         }
 
         let scroll_offset = self.tabs[self.active_tab].scroll_offset;
@@ -459,11 +468,78 @@ impl App {
                 (start + visible_height).min(num_visible)
             };
 
+            // If the viewport reached the end of visible lines before filling the
+            // screen (blank rows at bottom), push new_viewport backward to use all
+            // available rows. This happens after filter toggles that shrink the
+            // visible set while viewport_offset was near the old end.
+            let (new_viewport, end) = if end == num_visible && num_visible > 0 {
+                let filled_start = if wrap && inner_width > 0 {
+                    let mut rows = 0usize;
+                    let mut s = num_visible;
+                    loop {
+                        if s == 0 {
+                            break;
+                        }
+                        s -= 1;
+                        let h = row_count(tab.visible_indices.get(s));
+                        if rows + h > visible_height {
+                            s += 1;
+                            break;
+                        }
+                        rows += h;
+                        if s == 0 {
+                            break;
+                        }
+                    }
+                    s
+                } else {
+                    num_visible.saturating_sub(visible_height)
+                };
+                if filled_start < new_viewport {
+                    let adj_end = if wrap && inner_width > 0 {
+                        let mut rows = 0usize;
+                        let mut e = filled_start;
+                        while e < num_visible {
+                            let h = row_count(tab.visible_indices.get(e));
+                            if rows + h > visible_height {
+                                break;
+                            }
+                            rows += h;
+                            e += 1;
+                        }
+                        if e == filled_start && filled_start < num_visible {
+                            e += 1;
+                        }
+                        e
+                    } else {
+                        num_visible
+                    };
+                    (filled_start, adj_end)
+                } else {
+                    (new_viewport, end)
+                }
+            } else {
+                (new_viewport, end)
+            };
+
             (new_viewport, end)
         };
 
         self.tabs[self.active_tab].viewport_offset = new_viewport;
         let start = new_viewport;
+
+        // advise the kernel to prefetch mmap pages for the current viewport so
+        // async I/O can overlap with the CPU work of setting up styles and the render loop.
+        #[cfg(unix)]
+        if start < end && !self.tabs[self.active_tab].visible_indices.is_empty() {
+            let first = self.tabs[self.active_tab].visible_indices.get(start);
+            let last = self.tabs[self.active_tab]
+                .visible_indices
+                .get((end - 1).max(start));
+            self.tabs[self.active_tab]
+                .file_reader
+                .advise_viewport(first, last);
+        }
 
         // Clone the filter manager Arc (O(1) atomic increment) instead of rebuilding
         // Aho-Corasick every frame. The cache was set in the most recent refresh_visible().
@@ -524,7 +600,7 @@ impl App {
                                 tab.show_keys,
                             );
                             let all_cols_hidden = cols.is_empty();
-                            // Opt-6: build the joined string with a pre-sized buffer
+                            // Build the joined string with a pre-sized buffer
                             // instead of `cols.join(" ")` (avoids intermediate allocation).
                             let rendered = if all_cols_hidden {
                                 String::new()
@@ -647,84 +723,100 @@ impl App {
             .add_modifier(Modifier::BOLD);
         let banner_text_style = Style::default().fg(theme.text);
 
-        let log_lines: Vec<Line> = (start..end)
-            .flat_map(|abs_vis_idx| {
-                let line_idx = self.tabs[self.active_tab].visible_indices.get(abs_vis_idx);
-                let line_bytes = self.tabs[self.active_tab].file_reader.get_line(line_idx);
-                let is_current = abs_vis_idx == current_scroll;
-                let is_marked = self.tabs[self.active_tab].log_manager.is_marked(line_idx);
-                let is_visual_selected = visual_range
-                    .map(|(lo, hi)| abs_vis_idx >= lo && abs_vis_idx <= hi)
-                    .unwrap_or(false);
+        // Read render cache generation keys once before the loop.
+        let render_gen = self.tabs[self.active_tab].render_cache_gen;
+        let search_gen = self.tabs[self.active_tab].search_result_gen;
+        // Misses collected here; batch-inserted after the loop to satisfy the borrow checker.
+        let mut render_cache_misses: Vec<(usize, Option<usize>, Line<'static>)> = Vec::new();
 
-                // Opt-3: use the cached level string for structured lines instead of
-                // re-scanning raw bytes with detect_from_bytes on every frame.
-                let parse_gen = self.tabs[self.active_tab].parse_cache_gen;
-                let cached = self.tabs[self.active_tab]
-                    .parse_cache
-                    .get(&line_idx)
-                    .filter(|(g, _)| *g == parse_gen)
-                    .map(|(_, c)| c);
+        let mut log_lines: Vec<Line> = Vec::new();
+        for abs_vis_idx in start..end {
+            let line_idx = self.tabs[self.active_tab].visible_indices.get(abs_vis_idx);
+            let line_bytes = self.tabs[self.active_tab].file_reader.get_line(line_idx);
+            let is_current = abs_vis_idx == current_scroll;
+            let is_marked = self.tabs[self.active_tab].log_manager.is_marked(line_idx);
+            let is_visual_selected = visual_range
+                .map(|(lo, hi)| abs_vis_idx >= lo && abs_vis_idx <= hi)
+                .unwrap_or(false);
 
-                let mut base_style = Style::default().fg(theme.text);
-                if level_colors_disabled.len() < 7 {
-                    // At least one level has colour enabled.
-                    let level = cached
-                        .and_then(|c| c.level.as_deref())
-                        .map(LogLevel::parse_level)
-                        .unwrap_or_else(|| LogLevel::detect_from_bytes(line_bytes));
-                    match level {
-                        LogLevel::Trace if !level_colors_disabled.contains("trace") => {
-                            base_style = base_style.fg(theme.trace_fg)
-                        }
-                        LogLevel::Debug if !level_colors_disabled.contains("debug") => {
-                            base_style = base_style.fg(theme.debug_fg)
-                        }
-                        LogLevel::Info if !level_colors_disabled.contains("info") => {
-                            base_style = base_style.fg(theme.info_fg)
-                        }
-                        LogLevel::Notice if !level_colors_disabled.contains("notice") => {
-                            base_style = base_style.fg(theme.notice_fg)
-                        }
-                        LogLevel::Warning if !level_colors_disabled.contains("warning") => {
-                            base_style = base_style.fg(theme.warning_fg)
-                        }
-                        LogLevel::Error if !level_colors_disabled.contains("error") => {
-                            base_style = base_style.fg(theme.error_fg)
-                        }
-                        LogLevel::Fatal if !level_colors_disabled.contains("fatal") => {
-                            base_style = base_style.fg(theme.fatal_fg)
-                        }
-                        _ => {}
+            // Use the cached level string for structured lines instead of
+            // re-scanning raw bytes with detect_from_bytes on every frame.
+            let parse_gen = self.tabs[self.active_tab].parse_cache_gen;
+            let cached = self.tabs[self.active_tab]
+                .parse_cache
+                .get(&line_idx)
+                .filter(|(g, _)| *g == parse_gen)
+                .map(|(_, c)| c);
+
+            let mut base_style = Style::default().fg(theme.text);
+            if level_colors_disabled.len() < 7 {
+                // At least one level has colour enabled.
+                let level = cached
+                    .and_then(|c| c.level.as_deref())
+                    .map(LogLevel::parse_level)
+                    .unwrap_or_else(|| LogLevel::detect_from_bytes(line_bytes));
+                match level {
+                    LogLevel::Trace if !level_colors_disabled.contains("trace") => {
+                        base_style = base_style.fg(theme.trace_fg)
                     }
+                    LogLevel::Debug if !level_colors_disabled.contains("debug") => {
+                        base_style = base_style.fg(theme.debug_fg)
+                    }
+                    LogLevel::Info if !level_colors_disabled.contains("info") => {
+                        base_style = base_style.fg(theme.info_fg)
+                    }
+                    LogLevel::Notice if !level_colors_disabled.contains("notice") => {
+                        base_style = base_style.fg(theme.notice_fg)
+                    }
+                    LogLevel::Warning if !level_colors_disabled.contains("warning") => {
+                        base_style = base_style.fg(theme.warning_fg)
+                    }
+                    LogLevel::Error if !level_colors_disabled.contains("error") => {
+                        base_style = base_style.fg(theme.error_fg)
+                    }
+                    LogLevel::Fatal if !level_colors_disabled.contains("fatal") => {
+                        base_style = base_style.fg(theme.fatal_fg)
+                    }
+                    _ => {}
                 }
-                if is_marked {
-                    base_style = base_style.fg(theme.mark_fg).bg(theme.mark_bg);
-                }
-                if is_visual_selected {
-                    base_style = visual_style;
-                }
+            }
+            if is_marked {
+                base_style = base_style.fg(theme.mark_fg).bg(theme.mark_bg);
+            }
+            if is_visual_selected {
+                base_style = visual_style;
+            }
 
-                let render_style = if is_current {
-                    Style::default().fg(theme.cursor_fg).bg(theme.cursor_bg)
-                } else {
-                    base_style
-                };
+            let render_style = if is_current {
+                Style::default().fg(theme.cursor_fg).bg(theme.cursor_bg)
+            } else {
+                base_style
+            };
 
+            // Determine which occurrence index (if any) is current for this line.
+            let current_occ = current_search_info
+                .and_then(|(cl, co)| if cl == line_idx { Some(co) } else { None });
+
+            // Item 1: check the render cache before running the expensive pipeline.
+            let content_line: Line<'static> = if let Some((_, _, _, cached_line)) = self.tabs
+                [self.active_tab]
+                .render_line_cache
+                .get(&line_idx)
+                .filter(|(rg, sg, occ, _)| {
+                    *rg == render_gen && *sg == search_gen && *occ == current_occ
+                }) {
+                cached_line.clone()
+            } else {
                 // For structured lines, render columns and run filter evaluation
                 // against the rendered string so match-only highlights apply correctly.
                 //   timestamp  level  target  span_name: k=v, k=v  extra=val  message
                 // Known-field values are shown without their key names. Unknown fields
                 // and span context are rendered as key=value before the message.
                 // Filter visibility decisions still use the raw bytes (unaffected).
-                // Opt-4: use the cached parse result so parse_line is called at most once
+                // Use the cached parse result so parse_line is called at most once
                 // per line per viewport refresh rather than once per line per frame.
                 let structured_line: Option<Line<'static>> =
                     cached.filter(|_| !raw_mode).map(|c| {
-                        // Determine which occurrence index (if any) is current for this line.
-                        let current_occ = current_search_info
-                            .and_then(|(cl, co)| if cl == line_idx { Some(co) } else { None });
-
                         if c.all_cols_hidden {
                             // All fields hidden — fall back to raw bytes with filter +
                             // search highlighting (raw-byte positions are correct here).
@@ -802,10 +894,6 @@ impl App {
                         }
                     });
 
-                // Determine which occurrence index (if any) is current for this line.
-                let current_occ = current_search_info
-                    .and_then(|(cl, co)| if cl == line_idx { Some(co) } else { None });
-
                 let mut line = if let Some(structured_line) = structured_line {
                     structured_line
                 } else {
@@ -824,72 +912,79 @@ impl App {
                     render_line(&collector, &styles)
                 };
                 line = colorize_known_values(line, &theme.value_colors);
-                // Use line-level base style so per-span highlights (search, filters) are
-                // preserved on the cursor line. Spans with explicit fg/bg override the base.
-                line = line.style(render_style);
+                render_cache_misses.push((line_idx, current_occ, line.clone()));
+                line
+            };
 
-                if show_line_numbers {
-                    let line_num = line_idx + 1;
-                    // Tree character: │ for mid-group lines, └ for the last line of a group,
-                    // space for non-commented lines.
-                    let (tree_char, ln_fg) = if let Some(&cmt_idx) =
-                        vis_comment_map.get(&abs_vis_idx)
-                    {
-                        let next_same = vis_comment_map.get(&(abs_vis_idx + 1)) == Some(&cmt_idx);
-                        let ch = if next_same { "│" } else { "└" };
-                        (ch, theme.text_highlight_fg)
-                    } else {
-                        (" ", theme.border)
-                    };
-                    // Format: {tree_char}{line_num right-aligned}{space}
-                    // Total width = 1 + line_number_width + 1 = ln_prefix_width ✓
-                    let line_num_str = format!(
-                        "{}{:>width$} ",
-                        tree_char,
-                        line_num,
-                        width = line_number_width
-                    );
-                    let line_num_style = Style::default().fg(ln_fg).add_modifier(Modifier::DIM);
-                    let mut all_spans = vec![Span::styled(line_num_str, line_num_style)];
-                    // Extra indent padding for lines nested under a comment banner.
-                    if vis_comment_map.contains_key(&abs_vis_idx) {
-                        all_spans.push(Span::raw("  "));
-                    }
-                    all_spans.extend(line.spans);
-                    line = Line::from(all_spans).style(render_style);
-                }
+            // Use line-level base style so per-span highlights (search, filters) are
+            // preserved on the cursor line. Spans with explicit fg/bg override the base.
+            let mut line = content_line.style(render_style);
 
-                // Optionally prepend a comment banner before the first commented line in view.
-                // Tree-prefix strings are ln_prefix_width wide so comment text aligns with
-                // log content:  "├" + "─"*(w-2) + " "  and  "│" + " "*(w-2) + " "
-                let mut result: Vec<Line> = Vec::new();
-                if let Some(&cmt_idx) = banner_at.get(&abs_vis_idx) {
-                    let (_, text) = &comments_for_render[cmt_idx];
-                    let (first_prefix, cont_prefix) = if show_line_numbers && ln_prefix_width >= 2 {
-                        (
-                            format!("├{} ", "─".repeat(ln_prefix_width - 2)),
-                            format!("│{} ", " ".repeat(ln_prefix_width - 2)),
-                        )
-                    } else {
-                        ("├── ".to_string(), "│   ".to_string())
-                    };
-                    for (i, text_line) in text.lines().enumerate() {
-                        let (prefix, p_style) = if i == 0 {
-                            (first_prefix.clone(), banner_prefix_style)
-                        } else {
-                            (cont_prefix.clone(), banner_text_style)
-                        };
-                        let spans = vec![
-                            Span::styled(prefix, p_style),
-                            Span::styled(text_line.to_string(), banner_text_style),
-                        ];
-                        result.push(Line::from(spans).style(banner_text_style));
-                    }
+            if show_line_numbers {
+                let line_num = line_idx + 1;
+                // Tree character: │ for mid-group lines, └ for the last line of a group,
+                // space for non-commented lines.
+                let (tree_char, ln_fg) = if let Some(&cmt_idx) = vis_comment_map.get(&abs_vis_idx) {
+                    let next_same = vis_comment_map.get(&(abs_vis_idx + 1)) == Some(&cmt_idx);
+                    let ch = if next_same { "│" } else { "└" };
+                    (ch, theme.text_highlight_fg)
+                } else {
+                    (" ", theme.border)
+                };
+                // Format: {tree_char}{line_num right-aligned}{space}
+                // Total width = 1 + line_number_width + 1 = ln_prefix_width ✓
+                let line_num_str = format!(
+                    "{}{:>width$} ",
+                    tree_char,
+                    line_num,
+                    width = line_number_width
+                );
+                let line_num_style = Style::default().fg(ln_fg).add_modifier(Modifier::DIM);
+                let mut all_spans = vec![Span::styled(line_num_str, line_num_style)];
+                // Extra indent padding for lines nested under a comment banner.
+                if vis_comment_map.contains_key(&abs_vis_idx) {
+                    all_spans.push(Span::raw("  "));
                 }
-                result.push(line);
-                result
-            })
-            .collect();
+                all_spans.extend(line.spans);
+                line = Line::from(all_spans).style(render_style);
+            }
+
+            // Optionally prepend a comment banner before the first commented line in view.
+            // Tree-prefix strings are ln_prefix_width wide so comment text aligns with
+            // log content:  "├" + "─"*(w-2) + " "  and  "│" + " "*(w-2) + " "
+            if let Some(&cmt_idx) = banner_at.get(&abs_vis_idx) {
+                let (_, text) = &comments_for_render[cmt_idx];
+                let (first_prefix, cont_prefix) = if show_line_numbers && ln_prefix_width >= 2 {
+                    (
+                        format!("├{} ", "─".repeat(ln_prefix_width - 2)),
+                        format!("│{} ", " ".repeat(ln_prefix_width - 2)),
+                    )
+                } else {
+                    ("├── ".to_string(), "│   ".to_string())
+                };
+                for (i, text_line) in text.lines().enumerate() {
+                    let (prefix, p_style) = if i == 0 {
+                        (first_prefix.clone(), banner_prefix_style)
+                    } else {
+                        (cont_prefix.clone(), banner_text_style)
+                    };
+                    let spans = vec![
+                        Span::styled(prefix, p_style),
+                        Span::styled(text_line.to_string(), banner_text_style),
+                    ];
+                    log_lines.push(Line::from(spans).style(banner_text_style));
+                }
+            }
+            log_lines.push(line);
+        }
+
+        // Batch-insert render cache misses now that the immutable borrow of tabs is released.
+        for (line_idx, current_occ, content_line) in render_cache_misses {
+            self.tabs[self.active_tab].render_line_cache.insert(
+                line_idx,
+                (render_gen, search_gen, current_occ, content_line),
+            );
+        }
 
         let tail_mode = self.tabs[self.active_tab].tail_mode;
         let logs_title = format!(
@@ -989,11 +1084,8 @@ impl App {
             } else {
                 "  Type pattern and press Enter to search".to_string()
             };
-            let hint = Paragraph::new(hint_text).style(
-                Style::default()
-                    .fg(self.theme.text)
-                    .bg(self.theme.root_bg),
-            );
+            let hint = Paragraph::new(hint_text)
+                .style(Style::default().fg(self.theme.text).bg(self.theme.root_bg));
             frame.render_widget(hint, hint_area);
         }
     }
@@ -1150,9 +1242,7 @@ impl App {
             }
 
             let hint_area = chunks[chunk_idx + 1];
-            let normal_style = Style::default()
-                .fg(self.theme.text)
-                .bg(self.theme.root_bg);
+            let normal_style = Style::default().fg(self.theme.text).bg(self.theme.root_bg);
             let highlight_style = Style::default()
                 .fg(self.theme.cursor_fg)
                 .bg(self.theme.cursor_bg);
@@ -1401,9 +1491,7 @@ impl App {
                             .bg(self.theme.text_highlight_bg)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default()
-                            .fg(self.theme.text)
-                            .bg(self.theme.root_bg)
+                        Style::default().fg(self.theme.text).bg(self.theme.root_bg)
                     };
                     vec![
                         Span::styled(label, style),
@@ -1460,7 +1548,6 @@ mod tests {
         Terminal::new(TestBackend::new(80, 24)).unwrap()
     }
 
-    // 1. Basic normal mode rendering with 10 lines
     #[tokio::test]
     async fn test_ui_normal_mode_basic() {
         let lines: Vec<&str> = (0..10)
@@ -1482,7 +1569,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 2. Sidebar hidden
     #[tokio::test]
     async fn test_ui_no_sidebar() {
         let mut app = make_app(&["line A", "line B", "line C"]).await;
@@ -1491,7 +1577,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 3. Command mode rendering
     #[tokio::test]
     async fn test_ui_command_mode() {
         let mut app = make_app(&["log line"]).await;
@@ -1500,7 +1585,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 4. Command mode with error
     #[tokio::test]
     async fn test_ui_command_mode_error() {
         let mut app = make_app(&["log line"]).await;
@@ -1510,7 +1594,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 5. Command mode with completion index
     #[tokio::test]
     async fn test_ui_command_mode_completion_index() {
         let mut app = make_app(&["log line"]).await;
@@ -1525,7 +1608,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 6. Search mode forward
     #[tokio::test]
     async fn test_ui_search_mode_forward() {
         let mut app = make_app(&["hello world", "test line"]).await;
@@ -1537,7 +1619,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 7. Search mode backward
     #[tokio::test]
     async fn test_ui_search_mode_backward() {
         let mut app = make_app(&["hello world", "test line"]).await;
@@ -1549,7 +1630,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 8. Search mode with empty input
     #[tokio::test]
     async fn test_ui_search_mode_empty() {
         let mut app = make_app(&["hello world"]).await;
@@ -1561,7 +1641,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 9. Filter management mode with filters
     #[tokio::test]
     async fn test_ui_filter_management_mode() {
         let mut app = make_app(&["INFO something", "ERROR bad thing"]).await;
@@ -1593,7 +1672,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 10. Visual line mode
     #[tokio::test]
     async fn test_ui_visual_line_mode() {
         let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
@@ -1605,7 +1683,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 11. Lines with marks
     #[tokio::test]
     async fn test_ui_with_marks() {
         let mut app = make_app(&["line 0", "line 1", "line 2", "line 3"]).await;
@@ -1615,7 +1692,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 12. Level colors enabled (default)
     #[tokio::test]
     async fn test_ui_level_colors() {
         let mut app = make_app(&[
@@ -1634,7 +1710,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 13. Level colors disabled
     #[tokio::test]
     async fn test_ui_no_level_colors() {
         let mut app = make_app(&[
@@ -1653,7 +1728,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 14. Line numbers shown (default)
     #[tokio::test]
     async fn test_ui_with_line_numbers() {
         let mut app = make_app(&["line A", "line B"]).await;
@@ -1662,7 +1736,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 15. Line numbers hidden
     #[tokio::test]
     async fn test_ui_without_line_numbers() {
         let mut app = make_app(&["line A", "line B"]).await;
@@ -1671,7 +1744,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 16. Lines with comments
     #[tokio::test]
     async fn test_ui_with_comments() {
         let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
@@ -1682,7 +1754,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 17. Wrap enabled (default) with long lines
     #[tokio::test]
     async fn test_ui_wrap_enabled() {
         let long_line = "A".repeat(200);
@@ -1692,7 +1763,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 18. Wrap disabled
     #[tokio::test]
     async fn test_ui_wrap_disabled() {
         let long_line = "B".repeat(200);
@@ -1702,7 +1772,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 19. Horizontal scroll with wrap disabled
     #[tokio::test]
     async fn test_ui_horizontal_scroll() {
         let long_line = "C".repeat(200);
@@ -1713,7 +1782,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 20. Empty file
     #[tokio::test]
     async fn test_ui_empty_file() {
         let mut app = make_app(&[]).await;
@@ -1721,7 +1789,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 21. JSON structured format auto-detection
     #[tokio::test]
     async fn test_ui_json_structured() {
         let mut app = make_app(&[
@@ -1733,7 +1800,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 22. Structured format with all fields hidden
     #[tokio::test]
     async fn test_ui_structured_all_hidden() {
         let mut app = make_app(&[
@@ -1747,7 +1813,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 23. Multiple tabs
     #[tokio::test]
     async fn test_ui_multiple_tabs() {
         let mut app = make_app(&["tab1 line"]).await;
@@ -1761,7 +1826,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 24. Filtering disabled
     #[tokio::test]
     async fn test_ui_filtering_disabled() {
         let mut app = make_app(&["line 0", "line 1"]).await;
@@ -1770,7 +1834,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 25. Marks-only mode
     #[tokio::test]
     async fn test_ui_marks_only() {
         let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
@@ -1781,7 +1844,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 26. Confirm restore session mode
     #[tokio::test]
     async fn test_ui_confirm_restore_session() {
         let mut app = make_app(&[]).await;
@@ -1792,7 +1854,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 27. compute_hint_height with None input returns 1
     #[tokio::test]
     async fn test_compute_hint_height_empty() {
         let app = make_app(&["line"]).await;
@@ -1800,7 +1861,6 @@ mod tests {
         assert_eq!(result, 1);
     }
 
-    // 28. compute_hint_height with matching command
     #[tokio::test]
     async fn test_compute_hint_height_matching_command() {
         let app = make_app(&["line"]).await;
@@ -1809,7 +1869,6 @@ mod tests {
         assert!(result >= 1);
     }
 
-    // 29. compute_hint_height with command error
     #[tokio::test]
     async fn test_compute_hint_height_error() {
         let mut app = make_app(&["line"]).await;
@@ -1819,7 +1878,6 @@ mod tests {
         assert!(result >= 1);
     }
 
-    // 30. Very small terminal
     #[tokio::test]
     async fn test_ui_small_terminal() {
         let mut app = make_app(&["hello", "world"]).await;
@@ -1827,7 +1885,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 31. Scroll offset beyond visible lines
     #[tokio::test]
     async fn test_ui_scroll_beyond_visible() {
         let mut app = make_app(&["line 0", "line 1"]).await;
@@ -1836,7 +1893,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 32. Loading status bar with progress
     #[tokio::test]
     async fn test_ui_loading_status_bar() {
         let mut app = make_app(&["placeholder"]).await;
@@ -1854,7 +1910,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // 33. Filters and search combined
     #[tokio::test]
     async fn test_ui_filters_and_search() {
         let mut app = make_app(&[
@@ -1878,5 +1933,39 @@ mod tests {
     fn test_stable_hash_consistent() {
         assert_eq!(stable_hash("my_service"), stable_hash("my_service"));
         assert_ne!(stable_hash("service_a"), stable_hash("service_b"));
+    }
+
+    // Before the fix, toggling a filter that reduces num_visible left viewport_offset
+    // pointing near the old end, causing the cursor to sit at the top of the viewport
+    // with blank rows below even though more visible lines existed above.
+    #[tokio::test]
+    async fn test_ui_viewport_fills_backward_after_filter_toggle() {
+        // 50 lines, terminal height 24 → visible_height = 23 (1 row for title).
+        let lines: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
+        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let mut app = make_app(&line_refs).await;
+
+        // Simulate state after scrolling to the end of 50 lines.
+        app.tabs[0].scroll_offset = 49;
+        app.tabs[0].viewport_offset = 49;
+
+        // Add a filter that keeps only lines 0..30 (those containing a single digit
+        // or two-digit number < 30).
+        app.execute_command_str("include-filter line [012][0-9]$".to_string())
+            .await;
+        // After the filter, visible = 30 lines; scroll_offset clamped to 29 by render.
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        // viewport_offset must have been pulled back so the full visible_height is used.
+        // With 30 visible lines and visible_height=23, the latest valid start is 30-23=7.
+        let vp = app.tabs[0].viewport_offset;
+        let visible = app.tabs[0].visible_indices.len();
+        let visible_height = 23; // 24-row terminal minus 1 title row (no borders)
+        assert!(
+            vp + visible_height >= visible,
+            "viewport_offset {vp} leaves blank rows: {visible} visible lines, height {visible_height}"
+        );
     }
 }

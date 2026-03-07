@@ -66,7 +66,7 @@ impl App {
                     )
                     .await;
                 self.tabs[self.active_tab].scroll_offset = 0;
-                // Opt-2: incremental include — only re-check visible lines instead of
+                // Incremental include — only re-check visible lines instead of
                 // scanning the entire file again via refresh_visible/compute_visible.
                 if can_incremental {
                     self.tabs[self.active_tab].apply_incremental_include(&pattern);
@@ -99,7 +99,7 @@ impl App {
                         )
                         .await;
                     self.tabs[self.active_tab].scroll_offset = 0;
-                    // Opt-5: incremental exclude — only re-check visible lines instead of
+                    // Incremental exclude — only re-check visible lines instead of
                     // scanning the entire file again via refresh_visible/compute_visible.
                     self.tabs[self.active_tab].apply_incremental_exclude(&pattern);
                 }
@@ -224,6 +224,10 @@ impl App {
                 let theme_filename = format!("{}.json", theme_name.to_lowercase());
                 self.theme = Theme::from_file(&theme_filename)
                     .map_err(|e| format!("Failed to load theme '{}': {}", theme_name, e))?;
+                for tab in &mut self.tabs {
+                    tab.render_cache_gen = tab.render_cache_gen.wrapping_add(1);
+                    tab.render_line_cache.clear();
+                }
             }
             Some(Commands::Open { path }) => {
                 let path = expand_tilde(&path);

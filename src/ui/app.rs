@@ -268,6 +268,10 @@ impl App {
                     KeyResult::DockerAttach(id, name) => self.open_docker_logs(id, name).await,
                     KeyResult::ApplyValueColors(disabled) => {
                         self.theme.value_colors.disabled = disabled;
+                        for tab in &mut self.tabs {
+                            tab.render_cache_gen = tab.render_cache_gen.wrapping_add(1);
+                            tab.render_line_cache.clear();
+                        }
                     }
                     KeyResult::ApplyLevelColors(disabled) => {
                         self.tabs[self.active_tab].level_colors_disabled = disabled;

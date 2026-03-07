@@ -33,18 +33,12 @@ static BUNDLED_THEMES: &[(&str, &str)] = &[
         include_str!("../themes/catppuccin-mocha.json"),
     ),
     ("dracula", include_str!("../themes/dracula.json")),
-    (
-        "github-dark",
-        include_str!("../themes/github-dark.json"),
-    ),
+    ("github-dark", include_str!("../themes/github-dark.json")),
     (
         "github-dark-dimmed",
         include_str!("../themes/github-dark-dimmed.json"),
     ),
-    (
-        "github-light",
-        include_str!("../themes/github-light.json"),
-    ),
+    ("github-light", include_str!("../themes/github-light.json")),
     (
         "everforest-dark",
         include_str!("../themes/everforest-dark.json"),
