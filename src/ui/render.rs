@@ -36,6 +36,8 @@ impl App {
         frame.render_widget(Block::default().bg(self.theme.root_bg), size);
 
         let has_multiple_tabs = self.tabs.len() > 1;
+        let is_loading = self.file_load_state.is_some();
+        let show_tab_bar = has_multiple_tabs || is_loading;
 
         // Extract mode-derived state up front via a single render_state() call,
         // avoiding holding a borrow over the rest of rendering.
@@ -160,7 +162,7 @@ impl App {
         };
 
         let mut constraints = vec![];
-        if has_multiple_tabs {
+        if show_tab_bar {
             constraints.push(Constraint::Length(1)); // Tab bar
         }
         constraints.push(Constraint::Min(1)); // Main content
@@ -183,7 +185,7 @@ impl App {
 
         let mut chunk_idx = 0;
 
-        self.render_tab_bar(frame, has_multiple_tabs, &chunks, &mut chunk_idx);
+        self.render_tab_bar(frame, show_tab_bar, &chunks, &mut chunk_idx);
 
         let main_chunk = chunks[chunk_idx];
         chunk_idx += 1;
@@ -256,13 +258,13 @@ impl App {
             self.render_confirm_open_dir_modal(frame, &dir, &files);
         }
 
-        // Comment popup renders over everything except the loading bar.
+        // Comment popup renders over everything.
         if let Some((lines, cursor_row, cursor_col, line_count)) = comment_popup {
             let kb = self.tabs[self.active_tab].keybindings.clone();
             self.render_comment_popup(frame, &lines, cursor_row, cursor_col, line_count, &kb);
         }
 
-        // Select-fields popup renders over everything except the loading bar.
+        // Select-fields popup renders over everything.
         if let Some((fields, selected)) = select_fields_state {
             self.render_select_fields_popup(frame, &fields, selected);
         }
@@ -277,18 +279,11 @@ impl App {
             self.render_value_colors_popup(frame, &groups, &search, selected, title);
         }
 
-        // Keybindings help popup renders over everything except the loading bar.
+        // Keybindings help popup renders over everything.
         if let Some((scroll, search)) = help_state {
             self.render_keybindings_help_popup(frame, &keybindings, scroll, &search);
         }
 
-        // Loading status bar renders last, above the mode bar.
-        let loading_bottom_offset = if show_mode_bar {
-            status_height + if !show_borders { 1 } else { 0 }
-        } else {
-            0
-        };
-        self.render_loading_status_bar(frame, loading_bottom_offset);
     }
 
     fn render_logs_panel(
@@ -1114,58 +1109,6 @@ impl App {
         }
     }
 
-    fn render_loading_status_bar(&mut self, frame: &mut Frame<'_>, bottom_offset: u16) {
-        let s = match self.file_load_state.as_ref() {
-            Some(s) => s,
-            None => return,
-        };
-        let progress = *s.progress_rx.borrow();
-        let subtitle = match &s.on_complete {
-            LoadContext::SessionRestoreTab {
-                remaining, total, ..
-            } => {
-                let current = total - remaining.len();
-                format!(
-                    "({}/{}) {}",
-                    current,
-                    total,
-                    std::path::Path::new(&s.path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&s.path)
-                )
-            }
-            LoadContext::ReplaceInitialTab => std::path::Path::new(&s.path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&s.path)
-                .to_string(),
-        };
-
-        let (bar, pct) = progress_bar_str(progress);
-        let text = format!(" Loading {}  {} {}% ", subtitle, bar, pct);
-
-        let area = frame.area();
-        if area.height == 0 {
-            return;
-        }
-        let bar_rect = ratatui::layout::Rect::new(
-            area.x,
-            area.y + area.height.saturating_sub(1 + bottom_offset),
-            area.width,
-            1,
-        );
-        frame.render_widget(ratatui::widgets::Clear, bar_rect);
-        frame.render_widget(
-            Paragraph::new(text).style(
-                Style::default()
-                    .fg(self.theme.search_fg)
-                    .bg(self.theme.text_highlight_fg),
-            ),
-            bar_rect,
-        );
-    }
-
     /// Compute how many rows the command-mode hint area needs (1–3).
     fn compute_hint_height(
         &self,
@@ -1487,40 +1430,56 @@ impl App {
     fn render_tab_bar(
         &mut self,
         frame: &mut Frame<'_>,
-        has_multiple_tabs: bool,
+        show_tab_bar: bool,
         chunks: &std::rc::Rc<[Rect]>,
         chunk_idx: &mut usize,
     ) {
-        if has_multiple_tabs {
-            let tab_bar_area = chunks[*chunk_idx];
-            *chunk_idx += 1;
-
-            let tab_spans: Vec<Span> = self
-                .tabs
-                .iter()
-                .enumerate()
-                .flat_map(|(i, t)| {
-                    let is_active = i == self.active_tab;
-                    let label = format!(" {} ", t.title);
-                    let style = if is_active {
-                        Style::default()
-                            .fg(self.theme.text)
-                            .bg(self.theme.text_highlight_bg)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(self.theme.text).bg(self.theme.root_bg)
-                    };
-                    vec![
-                        Span::styled(label, style),
-                        Span::styled(" ", Style::default().bg(self.theme.root_bg)),
-                    ]
-                })
-                .collect();
-
-            let tab_bar = Paragraph::new(Line::from(tab_spans))
-                .style(Style::default().bg(self.theme.root_bg));
-            frame.render_widget(tab_bar, tab_bar_area);
+        if !show_tab_bar {
+            return;
         }
+
+        let tab_bar_area = chunks[*chunk_idx];
+        *chunk_idx += 1;
+
+        // Determine which tab (if any) is currently loading, and at what progress.
+        let loading_info: Option<(usize, usize)> = self.file_load_state.as_ref().map(|s| {
+            let pct = (*s.progress_rx.borrow() * 100.0) as usize;
+            let tab_idx = match &s.on_complete {
+                LoadContext::ReplaceInitialTab => 0,
+                LoadContext::ReplaceTab { tab_idx } => *tab_idx,
+                LoadContext::SessionRestoreTab { tab_idx, .. } => *tab_idx,
+            };
+            (tab_idx, pct)
+        });
+
+        let tab_spans: Vec<Span> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .flat_map(|(i, t)| {
+                let is_active = i == self.active_tab;
+                let label = match loading_info {
+                    Some((idx, pct)) if idx == i => format!(" {} {}% ", t.title, pct),
+                    _ => format!(" {} ", t.title),
+                };
+                let style = if is_active {
+                    Style::default()
+                        .fg(self.theme.text)
+                        .bg(self.theme.text_highlight_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(self.theme.text).bg(self.theme.root_bg)
+                };
+                vec![
+                    Span::styled(label, style),
+                    Span::styled(" ", Style::default().bg(self.theme.root_bg)),
+                ]
+            })
+            .collect();
+
+        let tab_bar = Paragraph::new(Line::from(tab_spans))
+            .style(Style::default().bg(self.theme.root_bg));
+        frame.render_widget(tab_bar, tab_bar_area);
     }
 }
 
@@ -1924,7 +1883,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ui_loading_status_bar() {
+    async fn test_ui_loading_progress_in_tab_name() {
         let mut app = make_app(&["placeholder"]).await;
         let (_progress_tx, progress_rx) = tokio::sync::watch::channel(0.5f64);
         let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -1938,6 +1897,14 @@ mod tests {
         let mut terminal = make_terminal();
         // _progress_tx is kept alive until after draw
         terminal.draw(|f| app.ui(f)).unwrap();
+
+        // Tab bar (row 0) should show the tab title with progress percentage.
+        let tab_row = row_content(terminal.backend().buffer(), 0);
+        assert!(
+            tab_row.contains("50%"),
+            "tab bar row should contain progress percentage; got: {:?}",
+            tab_row,
+        );
     }
 
     #[tokio::test]

@@ -888,8 +888,11 @@ impl std::fmt::Debug for TabState {
 pub enum LoadContext {
     /// Replace the placeholder file_reader in the initial tab (startup).
     ReplaceInitialTab,
-    /// Open as a new tab; continue with any remaining session-restore files.
+    /// Replace the file_reader of an existing tab created with a preview.
+    ReplaceTab { tab_idx: usize },
+    /// Update the preview tab at `tab_idx` with the full reader; continue session restore.
     SessionRestoreTab {
+        tab_idx: usize,
         remaining: VecDeque<String>,
         total: usize,
         initial_tab_idx: usize,

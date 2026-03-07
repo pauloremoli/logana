@@ -29,33 +29,33 @@ impl App {
             .and_then(|c| c.to_str().map(|s| s.to_string()))
             .unwrap_or_else(|| path.to_string());
 
-        let file_reader =
-            FileReader::new(path).map_err(|e| format!("Failed to read '{}': {}", path, e))?;
-        let log_manager = LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
-
         let title = file_path_obj
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(path)
             .to_string();
 
-        let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        let mut tab = TabState::new(file_reader, log_manager, title);
+        // Show a preview immediately (~1 000 lines), then load the full index in the background.
+        const PREVIEW_BYTES: u64 = 256 * 1024;
+        let preview = FileReader::from_file_head(path, PREVIEW_BYTES)
+            .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
+        let log_manager = LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
+        let mut tab = TabState::new(preview, log_manager, title);
         tab.keybindings = self.keybindings.clone();
         tab.show_mode_bar = self.show_mode_bar_default;
         tab.show_borders = self.show_borders_default;
+        tab.refresh_visible();
 
         if let Ok(Some(ctx)) = self.db.load_file_context(&abs_path).await {
             tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
         }
 
-        let watch_rx = FileReader::spawn_file_watcher(abs_path.clone(), file_size).await;
-        tab.watch_state = Some(FileWatchState {
-            new_data_rx: watch_rx,
-        });
-
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
+        let tab_idx = self.active_tab;
+
+        self.begin_file_load(abs_path, LoadContext::ReplaceTab { tab_idx }, None, false)
+            .await;
         Ok(())
     }
 
@@ -127,17 +127,14 @@ impl App {
             let next = match remaining.pop_front() {
                 Some(n) => n,
                 None => {
-                    // Queue exhausted — remove the placeholder tab if it exists
-                    if self.tabs.len() > 1 {
-                        let is_placeholder = self.tabs[initial_tab_idx]
-                            .log_manager
-                            .source_file()
-                            .is_none()
-                            && self.tabs[initial_tab_idx].file_reader.line_count() == 0;
-                        if is_placeholder {
-                            self.tabs.remove(initial_tab_idx);
-                            self.active_tab = 0;
-                        }
+                    // Queue exhausted — remove the placeholder if it was never replaced.
+                    if self.tabs.len() > 1
+                        && initial_tab_idx < self.tabs.len()
+                        && self.tabs[initial_tab_idx].log_manager.source_file().is_none()
+                        && self.tabs[initial_tab_idx].file_reader.line_count() == 0
+                    {
+                        self.tabs.remove(initial_tab_idx);
+                        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
                     }
                     return;
                 }
@@ -146,10 +143,48 @@ impl App {
                 self.restore_docker_tab(&next).await;
                 continue;
             }
-            // Regular file — hand off to background loader (no predicate for session restore).
+            // Regular file — create a preview tab immediately (~1 000 lines), then load the full
+            // index in the background.
+            const PREVIEW_BYTES: u64 = 256 * 1024;
+            let preview = FileReader::from_file_head(&next, PREVIEW_BYTES)
+                .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
+            let title = std::path::Path::new(&next)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&next)
+                .to_string();
+            let log_manager = LogManager::new(self.db.clone(), Some(next.clone())).await;
+            let mut tab = TabState::new(preview, log_manager, title);
+            tab.keybindings = self.keybindings.clone();
+            tab.show_mode_bar = self.show_mode_bar_default;
+            tab.show_borders = self.show_borders_default;
+            tab.refresh_visible();
+            let abs_path = std::fs::canonicalize(&next)
+                .ok()
+                .and_then(|c| c.to_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| next.clone());
+            if let Ok(Some(ctx)) = self.db.load_file_context(&abs_path).await {
+                tab.apply_file_context(&ctx);
+                tab.refresh_visible();
+            }
+            self.tabs.push(tab);
+            let mut tab_idx = self.tabs.len() - 1;
+
+            // If the initial placeholder is still empty and active, remove it now and
+            // switch immediately to the new file tab so the user sees content right away.
+            let placeholder_is_empty = initial_tab_idx < tab_idx
+                && self.tabs[initial_tab_idx].log_manager.source_file().is_none()
+                && self.tabs[initial_tab_idx].file_reader.line_count() == 0;
+            if placeholder_is_empty {
+                self.tabs.remove(initial_tab_idx);
+                tab_idx -= 1; // pushed after the placeholder, so index shifts by one
+            }
+            self.active_tab = tab_idx;
+
             self.begin_file_load(
                 next,
                 LoadContext::SessionRestoreTab {
+                    tab_idx,
                     remaining,
                     total,
                     initial_tab_idx,
@@ -177,14 +212,11 @@ impl App {
         tail: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>> {
         Box::pin(async move {
-            // Tail preview: read the last 64 KiB synchronously so the end of
-            // the file is visible immediately while the full index builds in
-            // the background. Only applied for the initial tab (not session
-            // restores) and only when no filter predicate is in play (a
-            // predicate requires the full index to compute visible indices).
-            const PREVIEW_BYTES: u64 = 64 * 1024;
-            if predicate.is_none()
-                && let LoadContext::ReplaceInitialTab = context
+            // Initial-tab preview: show the first/last 256 KiB (~1 000 lines) immediately
+            // while the full index builds in the background. Not applied when a filter
+            // predicate is in play (the predicate requires the full index).
+            const PREVIEW_BYTES: u64 = 256 * 1024;
+            if let LoadContext::ReplaceInitialTab = context
                 && !self.tabs.is_empty()
             {
                 let preview_result = if tail {
@@ -192,23 +224,30 @@ impl App {
                 } else {
                     FileReader::from_file_head(&path, PREVIEW_BYTES)
                 };
-                if let Ok(preview) = preview_result {
-                    if preview.line_count() > 0 {
-                        // Detect log format from the preview lines so structured
-                        // rendering works during the load wait.
-                        let sample_limit = preview.line_count().min(200);
-                        let sample: Vec<&[u8]> =
-                            (0..sample_limit).map(|j| preview.get_line(j)).collect();
-                        self.tabs[0].detected_format = crate::parser::detect_format(&sample);
-                        self.tabs[0].file_reader = preview;
+                if let Ok(preview) = preview_result
+                    && preview.line_count() > 0
+                {
+                    // Detect log format from the preview lines so structured
+                    // rendering works during the load wait.
+                    let sample_limit = preview.line_count().min(200);
+                    let sample: Vec<&[u8]> =
+                        (0..sample_limit).map(|j| preview.get_line(j)).collect();
+                    self.tabs[0].detected_format = crate::parser::detect_format(&sample);
+                    self.tabs[0].file_reader = preview;
+                    if let Some(ref pred) = predicate {
+                        let visible: Vec<usize> = (0..self.tabs[0].file_reader.line_count())
+                            .filter(|&i| pred(self.tabs[0].file_reader.get_line(i)))
+                            .collect();
+                        self.tabs[0].visible_indices = super::VisibleLines::Filtered(visible);
+                    } else {
                         self.tabs[0].refresh_visible();
-                        if tail {
-                            // Jump to the last visible line in tail mode.
-                            self.tabs[0].scroll_offset =
-                                self.tabs[0].visible_indices.len().saturating_sub(1);
-                        }
-                        // Non-tail: stay at line 0; user sees the top of the file immediately.
                     }
+                    if tail {
+                        // Jump to the last visible line in tail mode.
+                        self.tabs[0].scroll_offset =
+                            self.tabs[0].visible_indices.len().saturating_sub(1);
+                    }
+                    // Non-tail: stay at line 0; user sees the top of the file immediately.
                 }
             }
 
@@ -372,29 +411,51 @@ impl App {
                     new_data_rx: watch_rx,
                 });
             }
+            LoadContext::ReplaceTab { tab_idx } => {
+                if tab_idx >= self.tabs.len() {
+                    return;
+                }
+                self.tabs[tab_idx].file_reader = result.reader;
+                let limit = self.tabs[tab_idx].file_reader.line_count().min(200);
+                if limit > 0 {
+                    let sample: Vec<&[u8]> = (0..limit)
+                        .map(|j| self.tabs[tab_idx].file_reader.get_line(j))
+                        .collect();
+                    self.tabs[tab_idx].detected_format = crate::parser::detect_format(&sample);
+                }
+                self.tabs[tab_idx].refresh_visible();
+                let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
+                self.tabs[tab_idx].watch_state = Some(FileWatchState {
+                    new_data_rx: watch_rx,
+                });
+            }
             LoadContext::SessionRestoreTab {
+                tab_idx,
                 remaining,
                 total,
                 initial_tab_idx,
             } => {
-                let title = std::path::Path::new(&path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&path)
-                    .to_string();
-                let log_manager = LogManager::new(self.db.clone(), Some(path.clone())).await;
-                let mut tab = TabState::new(result.reader, log_manager, title);
-                tab.keybindings = self.keybindings.clone();
-                tab.show_mode_bar = self.show_mode_bar_default;
-                tab.show_borders = self.show_borders_default;
-                if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
-                    tab.apply_file_context(&ctx);
+                if tab_idx >= self.tabs.len() {
+                    self.continue_session_restore(remaining, total, initial_tab_idx)
+                        .await;
+                    return;
                 }
-                let watch_rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
-                tab.watch_state = Some(FileWatchState {
+                self.tabs[tab_idx].file_reader = result.reader;
+                let limit = self.tabs[tab_idx].file_reader.line_count().min(200);
+                if limit > 0 {
+                    let sample: Vec<&[u8]> = (0..limit)
+                        .map(|j| self.tabs[tab_idx].file_reader.get_line(j))
+                        .collect();
+                    self.tabs[tab_idx].detected_format = crate::parser::detect_format(&sample);
+                }
+                if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
+                    self.tabs[tab_idx].apply_file_context(&ctx);
+                }
+                self.tabs[tab_idx].refresh_visible();
+                let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
+                self.tabs[tab_idx].watch_state = Some(FileWatchState {
                     new_data_rx: watch_rx,
                 });
-                self.tabs.push(tab);
 
                 self.continue_session_restore(remaining, total, initial_tab_idx)
                     .await;
@@ -490,16 +551,33 @@ impl App {
 
     /// Called when a file load fails or the file cannot be opened.
     async fn skip_or_fail_load(&mut self, context: LoadContext) {
-        if let LoadContext::SessionRestoreTab {
-            remaining,
-            total,
-            initial_tab_idx,
-        } = context
-        {
-            self.continue_session_restore(remaining, total, initial_tab_idx)
-                .await;
+        match context {
+            LoadContext::SessionRestoreTab {
+                tab_idx,
+                remaining,
+                total,
+                initial_tab_idx,
+            } => {
+                // Remove the preview tab created before the load started.
+                if tab_idx < self.tabs.len() && self.tabs.len() > 1 {
+                    self.tabs.remove(tab_idx);
+                    self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+                }
+                self.continue_session_restore(remaining, total, initial_tab_idx)
+                    .await;
+            }
+            LoadContext::ReplaceTab { tab_idx } => {
+                // Remove the placeholder preview tab; no further action needed.
+                if tab_idx < self.tabs.len() {
+                    self.tabs.remove(tab_idx);
+                    if self.active_tab >= self.tabs.len() {
+                        self.active_tab = self.tabs.len().saturating_sub(1);
+                    }
+                }
+            }
+            // ReplaceInitialTab failure: stay with the empty initial tab.
+            LoadContext::ReplaceInitialTab => {}
         }
-        // ReplaceInitialTab failure: stay with the empty initial tab.
     }
 
     /// Begin a session restore: kick off the first file load (or docker tab).
@@ -867,16 +945,22 @@ mod tests {
     #[tokio::test]
     async fn test_skip_or_fail_load_session_restore() {
         let mut app = make_app(&[]).await;
-        assert_eq!(app.tabs.len(), 1);
+        // Simulate the preview tab created before the background load starts.
+        let preview_reader = FileReader::from_bytes(vec![]);
+        let log_manager = LogManager::new(app.db.clone(), None).await;
+        let preview_tab = TabState::new(preview_reader, log_manager, "preview.log".to_string());
+        app.tabs.push(preview_tab);
+        assert_eq!(app.tabs.len(), 2);
 
         app.skip_or_fail_load(LoadContext::SessionRestoreTab {
+            tab_idx: 1, // the preview tab, not the initial placeholder
             remaining: VecDeque::new(),
             total: 1,
             initial_tab_idx: 0,
         })
         .await;
 
-        // App should still be functional.
+        // Preview tab removed; initial tab remains.
         assert_eq!(app.tabs.len(), 1);
     }
 
@@ -986,7 +1070,9 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active_tab, 1);
-        assert!(app.tabs[1].watch_state.is_some());
+        // Preview is shown immediately; watcher is set up after background load completes.
+        assert!(app.tabs[1].file_reader.line_count() > 0, "preview should be populated");
+        assert!(app.file_load_state.is_some(), "background load should be in progress");
     }
 
     #[tokio::test]
@@ -1163,6 +1249,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_session_restore_switches_to_preview_tab_immediately() {
+        // Startup state: one placeholder tab (empty, no source file).
+        let mut app = make_app(&[]).await;
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab, 0);
+
+        // Write a real file so from_file_head succeeds.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"line one\nline two\n").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        let queue: std::collections::VecDeque<String> = std::iter::once(path).collect();
+        app.continue_session_restore(queue, 1, 0).await;
+
+        // Placeholder should be gone; only the preview tab remains.
+        assert_eq!(app.tabs.len(), 1, "placeholder tab should be removed immediately");
+        assert_eq!(app.active_tab, 0);
+        assert!(
+            app.tabs[0].file_reader.line_count() > 0,
+            "preview tab should have content"
+        );
+    }
+
+    #[tokio::test]
     async fn test_continue_session_restore_empty_queue() {
         let mut app = make_app(&[]).await;
         let queue = VecDeque::new();
@@ -1189,5 +1299,76 @@ mod tests {
         assert!(app.stdin_load_state.is_none());
         app.begin_stdin_load().await;
         assert!(app.stdin_load_state.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_session_restore_preview_applies_file_context() {
+        use crate::db::{FileContext, FileContextStore};
+        use std::collections::HashSet;
+
+        let mut app = make_app(&[]).await;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"line one\nline two\nline three\n").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let abs_path = std::fs::canonicalize(tmp.path())
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let ctx = FileContext {
+            source_file: abs_path.clone(),
+            scroll_offset: 2,
+            search_query: String::new(),
+            wrap: false,
+            level_colors_disabled: HashSet::new(),
+            show_sidebar: true,
+            horizontal_scroll: 0,
+            marked_lines: vec![1],
+            file_hash: None,
+            show_line_numbers: true,
+            comments: vec![],
+            show_mode_bar: true,
+            show_borders: true,
+            show_keys: true,
+            raw_mode: false,
+        };
+        app.db.save_file_context(&ctx).await.unwrap();
+
+        let queue: std::collections::VecDeque<String> = std::iter::once(path).collect();
+        app.continue_session_restore(queue, 1, 0).await;
+
+        // Preview tab should have context applied before the full load completes.
+        assert_eq!(app.tabs.len(), 1, "placeholder should be replaced by preview tab");
+        assert!(!app.tabs[0].wrap, "wrap=false from context should be applied");
+        assert_eq!(
+            app.tabs[0].log_manager.get_marked_indices(),
+            vec![1],
+            "marks should be loaded from context"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_begin_file_load_predicate_shows_filtered_preview() {
+        use crate::ui::VisibleLines;
+
+        let mut app = make_app(&["placeholder"]).await;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"match line\nskip line\nmatch again\n").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        let pred: crate::file_reader::VisibilityPredicate =
+            Box::new(|line: &[u8]| line.starts_with(b"match"));
+
+        app.begin_file_load(path, LoadContext::ReplaceInitialTab, Some(pred), false)
+            .await;
+
+        // Preview should be filtered: only lines starting with "match".
+        assert!(
+            matches!(&app.tabs[0].visible_indices, VisibleLines::Filtered(v) if v.len() == 2),
+            "filtered preview should contain only matching lines"
+        );
     }
 }
