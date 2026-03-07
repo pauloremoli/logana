@@ -289,6 +289,9 @@ pub struct TabState {
     pub parse_cache: HashMap<usize, (u64, CachedParsedLine)>,
     /// In-flight background search, if one is running.
     pub search_handle: Option<SearchHandle>,
+    /// Memoized result of `collect_field_names`: (parse_cache_gen, names).
+    /// Invalidated automatically when `parse_cache_gen` advances.
+    pub field_names_cache: Option<(u64, Vec<String>)>,
 }
 
 impl TabState {
@@ -340,6 +343,7 @@ impl TabState {
             parse_cache_gen: 0,
             parse_cache: HashMap::new(),
             search_handle: None,
+            field_names_cache: None,
         };
         tab.refresh_visible();
         tab
@@ -377,21 +381,44 @@ impl TabState {
             self.visible_indices = VisibleLines::Filtered(visible);
         }
 
-        // Apply date filters as a post-processing step.
+        // Apply date filters as a post-processing step in parallel.
         let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
         if !date_filters.is_empty()
             && let Some(parser) = &self.detected_format
         {
-            self.visible_indices.retain(|idx| {
-                let line = self.file_reader.get_line(idx);
-                match parser.parse_line(line) {
-                    Some(parts) => match parts.timestamp {
-                        Some(ts) => crate::date_filter::matches_any(&date_filters, ts),
-                        None => true, // lines without timestamps pass through
-                    },
-                    None => true, // unparseable lines pass through
-                }
-            });
+            use rayon::prelude::*;
+            let file_reader = &self.file_reader;
+            let parser: &dyn LogFormatParser = parser.as_ref();
+            let indices: Vec<usize> = match &self.visible_indices {
+                VisibleLines::All(n) => (0..*n)
+                    .into_par_iter()
+                    .filter(|&idx| {
+                        let line = file_reader.get_line(idx);
+                        match parser.parse_line(line) {
+                            Some(parts) => match parts.timestamp {
+                                Some(ts) => crate::date_filter::matches_any(&date_filters, ts),
+                                None => true,
+                            },
+                            None => true,
+                        }
+                    })
+                    .collect(),
+                VisibleLines::Filtered(v) => v
+                    .par_iter()
+                    .copied()
+                    .filter(|&idx| {
+                        let line = file_reader.get_line(idx);
+                        match parser.parse_line(line) {
+                            Some(parts) => match parts.timestamp {
+                                Some(ts) => crate::date_filter::matches_any(&date_filters, ts),
+                                None => true,
+                            },
+                            None => true,
+                        }
+                    })
+                    .collect(),
+            };
+            self.visible_indices = VisibleLines::Filtered(indices);
         }
 
         // Clamp scroll_offset so it never points past the end of the new visible set.
@@ -589,6 +616,38 @@ impl TabState {
         Ok(())
     }
 
+    /// Apply the first include filter incrementally against the currently visible lines,
+    /// avoiding a full `compute_visible` scan of the entire file.
+    ///
+    /// Only safe when there are no pre-existing enabled include filters — in that case
+    /// the visible set is "all lines minus excludes" and retaining the matching subset
+    /// is equivalent to a full recompute (O(visible) instead of O(all)).
+    /// The filter manager cache is rebuilt afterward so render highlights stay correct.
+    pub fn apply_incremental_include(&mut self, pattern: &str) {
+        use crate::filters::{FilterDecision, MatchCollector, build_filter};
+        if let Some(filter) = build_filter(pattern, FilterDecision::Include, true, 0) {
+            self.visible_indices.retain(|line_idx| {
+                let line = self.file_reader.get_line(line_idx);
+                let mut dummy = MatchCollector::new(line);
+                matches!(filter.evaluate(line, &mut dummy), FilterDecision::Include)
+            });
+        }
+        // Rebuild filter manager cache so the render path sees the updated filters.
+        let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+        self.filter_manager_arc = Arc::new(fm);
+        self.filter_styles = styles;
+        self.filter_date_styles = date_filter_styles;
+        // Invalidate parse cache (filter change affects highlight output).
+        self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
+        self.parse_cache.clear();
+        // Clamp scroll.
+        if self.visible_indices.is_empty() {
+            self.scroll_offset = 0;
+        } else {
+            self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
+        }
+    }
+
     /// Apply a new exclude filter incrementally against the currently visible lines,
     /// avoiding a full `compute_visible` scan of the entire file.
     ///
@@ -680,7 +739,22 @@ impl TabState {
     /// format parser. Returns canonical names first, then extras sorted
     /// alphabetically. For JSON, container fields (`fields`, `span`) are
     /// expanded into dotted sub-field names.
-    pub fn collect_field_names(&self) -> Vec<String> {
+    ///
+    /// Results are memoized per `parse_cache_gen` so repeated calls within the
+    /// same filter/layout state (e.g. rapid tab-completions) pay only a clone.
+    pub fn collect_field_names(&mut self) -> Vec<String> {
+        let current_gen = self.parse_cache_gen;
+        if let Some((cached_gen, ref names)) = self.field_names_cache
+            && cached_gen == current_gen
+        {
+            return names.clone();
+        }
+        let names = self.compute_field_names();
+        self.field_names_cache = Some((current_gen, names.clone()));
+        names
+    }
+
+    fn compute_field_names(&self) -> Vec<String> {
         let parser = match &self.detected_format {
             Some(p) => p,
             None => return Vec::new(),
@@ -1021,18 +1095,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_collect_field_names_no_format() {
-        let tab = make_tab(&["plain text line", "another line"]).await;
+        let mut tab = make_tab(&["plain text line", "another line"]).await;
         let fields = tab.collect_field_names();
         assert!(fields.is_empty());
     }
 
     #[tokio::test]
     async fn test_collect_field_names_json_format() {
-        let tab = make_tab(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        let mut tab = make_tab(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
         let fields = tab.collect_field_names();
         assert!(!fields.is_empty());
         assert!(fields.contains(&"level".to_string()));
         assert!(fields.contains(&"msg".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_collect_field_names_cached() {
+        let mut tab = make_tab(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
+        let first = tab.collect_field_names();
+        let gen_before = tab.parse_cache_gen;
+        let second = tab.collect_field_names();
+        // Result must be identical and the gen must not have changed (cache hit).
+        assert_eq!(first, second);
+        assert_eq!(tab.parse_cache_gen, gen_before);
+        // After invalidating the cache the result is recomputed but still equal.
+        tab.invalidate_parse_cache();
+        let third = tab.collect_field_names();
+        assert_eq!(first, third);
     }
 
     #[tokio::test]
@@ -1230,6 +1319,34 @@ mod tests {
         assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
     }
 
+    #[tokio::test]
+    async fn test_date_filter_bsd_bound_against_iso_timestamps() {
+        // BSD-format bound ("Jan 23") has year 0000. ISO timestamps have a real
+        // year (e.g. 2024). Without year-stripping, "2024-01-20..." > "0000-01-23..."
+        // is always true, causing dates before Jan 23 to pass incorrectly.
+        let lines = [
+            r#"{"timestamp":"2024-01-20T10:00:00Z","level":"INFO","msg":"before"}"#,
+            r#"{"timestamp":"2024-01-25T10:00:00Z","level":"INFO","msg":"after"}"#,
+        ];
+        let tab = make_tab_with_date_filter(&lines, "> Jan 23").await;
+        // Only the Jan 25 line should be visible.
+        assert_eq!(tab.visible_indices.len(), 1);
+        assert_eq!(tab.visible_indices.get(0), 1);
+    }
+
+    #[tokio::test]
+    async fn test_date_filter_bsd_range_against_iso_timestamps() {
+        let lines = [
+            r#"{"timestamp":"2024-01-19T10:00:00Z","level":"INFO","msg":"before range"}"#,
+            r#"{"timestamp":"2024-01-21T10:00:00Z","level":"INFO","msg":"in range"}"#,
+            r#"{"timestamp":"2024-01-25T10:00:00Z","level":"INFO","msg":"after range"}"#,
+        ];
+        let tab = make_tab_with_date_filter(&lines, "Jan 20 .. Jan 23").await;
+        // Only the Jan 21 line is within the range.
+        assert_eq!(tab.visible_indices.len(), 1);
+        assert_eq!(tab.visible_indices.get(0), 1);
+    }
+
     // ── Opt-1: filter manager cache ───────────────────────────────────
 
     #[tokio::test]
@@ -1274,6 +1391,38 @@ mod tests {
         tab.invalidate_parse_cache();
         assert!(tab.parse_cache_gen > old_gen);
         assert!(tab.parse_cache.is_empty());
+    }
+
+    // ── Opt-2: incremental include ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_apply_incremental_include_narrows_visible() {
+        let mut tab = make_tab(&["error line", "info line", "error again", "debug line"]).await;
+        assert_eq!(tab.visible_indices.len(), 4);
+        // Only lines containing "error" should remain.
+        tab.apply_incremental_include("error");
+        assert_eq!(tab.visible_indices.len(), 2);
+        assert_eq!(tab.visible_indices.get(0), 0);
+        assert_eq!(tab.visible_indices.get(1), 2);
+    }
+
+    #[tokio::test]
+    async fn test_apply_incremental_include_updates_filter_cache() {
+        let mut tab = make_tab(&["line a", "line b"]).await;
+        let old_gen = tab.parse_cache_gen;
+        tab.apply_incremental_include("line a");
+        // Parse cache generation must be bumped.
+        assert!(tab.parse_cache_gen > old_gen);
+        assert_eq!(tab.visible_indices.len(), 1);
+        assert_eq!(tab.visible_indices.get(0), 0);
+    }
+
+    #[tokio::test]
+    async fn test_apply_incremental_include_no_match_empty() {
+        let mut tab = make_tab(&["error line", "info line"]).await;
+        tab.apply_incremental_include("NOMATCH");
+        assert!(tab.visible_indices.is_empty());
+        assert_eq!(tab.scroll_offset, 0);
     }
 
     // ── Opt-5: incremental exclude ────────────────────────────────────

@@ -628,8 +628,17 @@ impl DateFilter {
                 }
                 ComparisonMode::FullDatetime => {
                     let c = &norm.canonical;
-                    c >= lower.datetime_val.as_ref().unwrap()
-                        && c <= upper.datetime_val.as_ref().unwrap()
+                    let lo = lower.datetime_val.as_ref().unwrap();
+                    let hi = upper.datetime_val.as_ref().unwrap();
+                    // Strip the year prefix when bounds use BSD "0000" year.
+                    let (c_cmp, lo_cmp, hi_cmp): (&str, &str, &str) =
+                        if let Some(lo_stripped) = lo.strip_prefix("0000-") {
+                            let hi_stripped = hi.strip_prefix("0000-").unwrap_or(&hi[5..]);
+                            (&c[5..], lo_stripped, hi_stripped)
+                        } else {
+                            (c, lo, hi)
+                        };
+                    c_cmp >= lo_cmp && c_cmp <= hi_cmp
                 }
             },
             DateFilter::Comparison { mode, op, bound } => match mode {
@@ -646,11 +655,20 @@ impl DateFilter {
                 ComparisonMode::FullDatetime => {
                     let c = &norm.canonical;
                     let b = bound.datetime_val.as_ref().unwrap();
+                    // BSD-format bounds have year "0000" (no year in syslog timestamps).
+                    // Comparing "2024-01-20..." > "0000-01-23..." is always true due to the
+                    // year prefix, so strip it when the bound is year-less.
+                    let (c_cmp, b_cmp): (&str, &str) =
+                        if let Some(b_stripped) = b.strip_prefix("0000-") {
+                            (&c[5..], b_stripped)
+                        } else {
+                            (c, b)
+                        };
                     match op {
-                        ComparisonOp::Gt => c > b,
-                        ComparisonOp::Ge => c >= b,
-                        ComparisonOp::Lt => c < b,
-                        ComparisonOp::Le => c <= b,
+                        ComparisonOp::Gt => c_cmp > b_cmp,
+                        ComparisonOp::Ge => c_cmp >= b_cmp,
+                        ComparisonOp::Lt => c_cmp < b_cmp,
+                        ComparisonOp::Le => c_cmp <= b_cmp,
                     }
                 }
             },
@@ -986,6 +1004,26 @@ mod tests {
         assert!(df.matches("2024-02-23T00:00:00Z"));
         assert!(!df.matches("2024-02-22T00:00:00Z"));
         assert!(!df.matches("2024-02-21T23:59:59Z"));
+    }
+
+    #[test]
+    fn test_matches_bsd_bound_against_iso_timestamp() {
+        // BSD bound has year 0000; ISO log timestamps have a real year.
+        // "2024-01-20..." must NOT be > "0000-01-23..." (Jan 20 < Jan 23).
+        let df = parse_date_filter("> Jan 23").unwrap();
+        assert!(!df.matches("2024-01-20T10:00:00Z")); // before Jan 23
+        assert!(!df.matches("2024-01-23T00:00:00Z")); // exactly Jan 23 (strict >)
+        assert!(df.matches("2024-01-25T10:00:00Z")); // after Jan 23
+    }
+
+    #[test]
+    fn test_matches_bsd_range_against_iso_timestamps() {
+        let df = parse_date_filter("Jan 20 .. Jan 23").unwrap();
+        assert!(!df.matches("2024-01-19T23:59:59Z")); // before range
+        assert!(df.matches("2024-01-20T00:00:00Z")); // lower bound
+        assert!(df.matches("2024-01-21T12:00:00Z")); // inside
+        assert!(df.matches("2024-01-23T00:00:00Z")); // upper bound
+        assert!(!df.matches("2024-01-24T00:00:00Z")); // after range
     }
 
     #[test]

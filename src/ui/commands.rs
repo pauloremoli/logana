@@ -36,6 +36,19 @@ impl App {
                 bg,
                 line_mode,
             }) => {
+                // Check eligibility for incremental include BEFORE mutating state.
+                // Safe when: not editing, filtering enabled, not marks-only, and no
+                // pre-existing enabled include filters (current visible == all minus excludes).
+                let can_incremental = self.tabs[self.active_tab].editing_filter_id.is_none() && {
+                    let tab = &self.tabs[self.active_tab];
+                    tab.filtering_enabled
+                        && !tab.show_marks_only
+                        && !tab.log_manager.get_filters().iter().any(|f| {
+                            f.enabled
+                                && f.filter_type == FilterType::Include
+                                && !f.pattern.starts_with(crate::date_filter::DATE_PREFIX)
+                        })
+                };
                 if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
                     self.tabs[self.active_tab]
                         .log_manager
@@ -45,7 +58,7 @@ impl App {
                 self.tabs[self.active_tab]
                     .log_manager
                     .add_filter_with_color(
-                        pattern,
+                        pattern.clone(),
                         FilterType::Include,
                         fg.as_deref(),
                         bg.as_deref(),
@@ -53,7 +66,13 @@ impl App {
                     )
                     .await;
                 self.tabs[self.active_tab].scroll_offset = 0;
-                self.tabs[self.active_tab].refresh_visible();
+                // Opt-2: incremental include — only re-check visible lines instead of
+                // scanning the entire file again via refresh_visible/compute_visible.
+                if can_incremental {
+                    self.tabs[self.active_tab].apply_incremental_include(&pattern);
+                } else {
+                    self.tabs[self.active_tab].refresh_visible();
+                }
             }
             Some(Commands::Exclude { pattern }) => {
                 if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
@@ -692,6 +711,25 @@ mod tests {
             .unwrap();
         assert!(!cc.match_only);
         assert_eq!(cc.fg, Some(ratatui::style::Color::Green));
+    }
+
+    #[tokio::test]
+    async fn test_filter_incremental_include_first_filter() {
+        let mut app = make_app(&["error line", "info line", "error again"]).await;
+        // No existing include filters → incremental path used; only "error" lines remain.
+        app.run_command("filter error").await.unwrap();
+        assert_eq!(app.tab().visible_indices.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_filter_incremental_include_second_filter_falls_back() {
+        // Second include filter expands visible set → must fall back to full refresh.
+        let mut app = make_app(&["error line", "info line", "error again"]).await;
+        app.run_command("filter error").await.unwrap();
+        assert_eq!(app.tab().visible_indices.len(), 2);
+        // Adding a second include filter expands the visible set back.
+        app.run_command("filter info").await.unwrap();
+        assert_eq!(app.tab().visible_indices.len(), 3);
     }
 
     #[tokio::test]
