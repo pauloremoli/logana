@@ -6,9 +6,9 @@
 //! its output as complete lines, used by the `docker` command.
 
 use memchr::{memchr_iter, memchr3_iter};
+use memmap2::Mmap;
 #[cfg(unix)]
 use memmap2::{Advice, UncheckedAdvice};
-use memmap2::Mmap;
 use std::{fs::File, io};
 use tokio::{
     spawn,
@@ -470,9 +470,7 @@ impl FileReader {
             Storage::Bytes(std::sync::Arc::new(Vec::new())),
         );
         let mut data: Vec<u8> = match old_storage {
-            Storage::Bytes(v) => {
-                std::sync::Arc::try_unwrap(v).unwrap_or_else(|arc| (*arc).clone())
-            }
+            Storage::Bytes(v) => std::sync::Arc::try_unwrap(v).unwrap_or_else(|arc| (*arc).clone()),
             Storage::Mmap(m) => m.to_vec(),
         };
         let offset = data.len();

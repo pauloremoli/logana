@@ -201,6 +201,8 @@ async fn main() -> Result<()> {
 
         // Mark the initial tab for tail mode so on_load_success can apply it.
         app.startup_tail = args.tail;
+        // Suppress the previous-session restore prompt when --filters was provided.
+        app.startup_filters = args.filters.is_some();
 
         // Build a visibility predicate for the single-pass optimisation when both
         // a filter file and a background file load are in play.

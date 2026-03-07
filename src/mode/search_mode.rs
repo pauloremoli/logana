@@ -112,7 +112,6 @@ impl Mode for SearchMode {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,8 +138,7 @@ mod tests {
                 tab.search.set_results(results, regex);
                 tab.search.set_forward(forward);
                 if navigate && !tab.search.get_results().is_empty() {
-                    let current =
-                        tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
+                    let current = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
                     tab.search.set_position_for_search(current, forward);
                     if forward {
                         tab.search.next_match();

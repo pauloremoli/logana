@@ -196,8 +196,7 @@ impl App {
                     if sample_limit > 0 {
                         let sample: Vec<&[u8]> =
                             (0..sample_limit).map(|j| preview.get_line(j)).collect();
-                        self.tabs[0].detected_format =
-                            crate::parser::detect_format(&sample);
+                        self.tabs[0].detected_format = crate::parser::detect_format(&sample);
                     }
                     self.tabs[0].file_reader = preview;
                     self.tabs[0].refresh_visible();
@@ -355,7 +354,9 @@ impl App {
                     self.tabs[0].scroll_offset =
                         self.tabs[0].visible_indices.len().saturating_sub(1);
                 }
-                if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
+                if !self.startup_filters
+                    && let Ok(Some(ctx)) = self.db.load_file_context(&path).await
+                {
                     self.tabs[0].mode = Box::new(ConfirmRestoreMode { context: ctx });
                 }
                 let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
@@ -465,9 +466,9 @@ impl App {
             tab.search.set_forward(forward);
 
             if navigate && !tab.search.get_results().is_empty() {
-                let current_line_idx =
-                    tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
-                tab.search.set_position_for_search(current_line_idx, forward);
+                let current_line_idx = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
+                tab.search
+                    .set_position_for_search(current_line_idx, forward);
                 if forward {
                     tab.search.next_match();
                 } else {
@@ -977,6 +978,60 @@ mod tests {
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active_tab, 1);
         assert!(app.tabs[1].watch_state.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_startup_filters_suppresses_restore_prompt() {
+        use crate::db::{FileContext, FileContextStore};
+        use crate::mode::app_mode::ModeRenderState;
+        use std::collections::HashSet;
+
+        let mut app = make_app(&[]).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"line1\n").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        // Persist a previous FileContext so restore would normally be offered.
+        let ctx = FileContext {
+            source_file: path.clone(),
+            scroll_offset: 5,
+            search_query: String::new(),
+            wrap: true,
+            level_colors_disabled: HashSet::new(),
+            show_sidebar: false,
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            show_line_numbers: true,
+            comments: vec![],
+            show_mode_bar: true,
+            show_borders: true,
+            show_keys: true,
+            raw_mode: false,
+        };
+        app.db.save_file_context(&ctx).await.unwrap();
+
+        // With startup_filters=true the restore prompt must be suppressed.
+        app.startup_filters = true;
+        app.begin_file_load(path.clone(), LoadContext::ReplaceInitialTab, None, false)
+            .await;
+        app.advance_file_load().await;
+        // Load may still be in progress; drain it.
+        for _ in 0..100 {
+            if app.file_load_state.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            app.advance_file_load().await;
+        }
+
+        assert!(
+            !matches!(
+                app.tabs[0].mode.render_state(),
+                ModeRenderState::ConfirmRestore
+            ),
+            "restore prompt must not appear when --filters was given"
+        );
     }
 
     #[tokio::test]

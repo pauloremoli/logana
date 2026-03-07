@@ -5,8 +5,8 @@
 //! visible indices, scroll state, and active mode.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::style::Style;
 use tokio::sync::{oneshot, watch};
@@ -454,11 +454,13 @@ impl TabState {
             result.matches.get(occurrence_idx).map(|&(start, end)| {
                 let line = self.file_reader.get_line(line_idx);
                 let prefix_bytes = &line[..start.min(line.len())];
-                let col =
-                    unicode_width::UnicodeWidthStr::width(std::str::from_utf8(prefix_bytes).unwrap_or(""));
+                let col = unicode_width::UnicodeWidthStr::width(
+                    std::str::from_utf8(prefix_bytes).unwrap_or(""),
+                );
                 let match_bytes = &line[start.min(line.len())..end.min(line.len())];
-                let match_width =
-                    unicode_width::UnicodeWidthStr::width(std::str::from_utf8(match_bytes).unwrap_or(""));
+                let match_width = unicode_width::UnicodeWidthStr::width(
+                    std::str::from_utf8(match_bytes).unwrap_or(""),
+                );
                 let match_center = col + match_width / 2;
                 match_center.saturating_sub(self.visible_width / 2)
             })

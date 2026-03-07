@@ -38,10 +38,10 @@ impl App {
         let has_multiple_tabs = self.tabs.len() > 1;
 
         // Extract search progress up front so later rendering has no active borrow.
-        let search_progress: Option<(String, f64)> =
-            self.tabs[self.active_tab].search_handle.as_ref().map(|h| {
-                (h.pattern.clone(), *h.progress_rx.borrow())
-            });
+        let search_progress: Option<(String, f64)> = self.tabs[self.active_tab]
+            .search_handle
+            .as_ref()
+            .map(|h| (h.pattern.clone(), *h.progress_rx.borrow()));
 
         // Extract mode-derived state up front via a single render_state() call,
         // avoiding holding a borrow over the rest of rendering.

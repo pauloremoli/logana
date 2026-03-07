@@ -46,6 +46,9 @@ pub struct App {
     pub show_borders_default: bool,
     /// When true, the initial file tab starts in tail mode (set by `--tail`).
     pub startup_tail: bool,
+    /// When true, filters were supplied via `--filters` and the previous-session
+    /// restore prompt must be suppressed so it cannot overwrite them.
+    pub startup_filters: bool,
 }
 
 impl std::fmt::Debug for App {
@@ -114,6 +117,7 @@ impl App {
             show_mode_bar_default: true,
             show_borders_default: true,
             startup_tail: false,
+            startup_filters: false,
         }
     }
 

@@ -1544,7 +1544,10 @@ mod tests {
     fn test_backtab_does_not_match_with_ctrl() {
         let kb = KeyBinding(KeyCode::BackTab, KeyModifiers::NONE);
         assert!(!kb.matches(KeyCode::BackTab, KeyModifiers::CONTROL));
-        assert!(!kb.matches(KeyCode::BackTab, KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+        assert!(!kb.matches(
+            KeyCode::BackTab,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        ));
     }
 
     #[test]
