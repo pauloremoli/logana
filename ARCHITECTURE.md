@@ -32,7 +32,7 @@ src/
     loading.rs     - File/stdin/docker loading, file watchers, session restore
     render.rs      - Main render: ui(), render_logs_panel, tab bar, sidebar, command bar, input bar
     render_popups.rs - Popup/modal renders: confirm restore, select fields, value colors, docker, keybindings help, comment editor
-    field_layout.rs  - Standalone helpers: get_col, default_cols, apply_field_layout, line_row_count, count_wrapped_lines
+    field_layout.rs  - Standalone helpers: get_col, default_cols, apply_field_layout, line_row_count, count_wrapped_lines, effective_row_count
   export.rs       - Template-based export of analysis (comments + marked lines) to Markdown, Jira, etc.
   theme.rs        - JSON-based theme loading and color management (Theme, ValueColors)
   value_colors.rs - Per-token color coding for HTTP methods, status codes, IP addresses
@@ -199,7 +199,7 @@ Trait-based log format parsing. New parsers are added by implementing a single t
   - `evaluate_line(&[u8]) -> MatchCollector` — collects styled byte spans for rendering.
   - `is_visible(&[u8]) -> bool` — logic: if any enabled Include filter exists, line must match one; any Exclude match hides the line regardless.
 - **`MatchCollector`**: Accumulates `MatchSpan { start, end, style: StyleId, priority }` for a single line.
-- **`StyleId`** (`u8`): Index into the 256-slot styles array. `SEARCH_STYLE_ID = u8::MAX = 255` is reserved for search highlights.
+- **`StyleId`** (`u8`): Index into the 256-slot styles array. `SEARCH_STYLE_ID = u8::MAX = 255` is reserved for search highlights; `CURRENT_SEARCH_STYLE_ID = u8::MAX - 1 = 254` is reserved for the currently-selected search occurrence (rendered with a distinct style from other matches).
 - **`render_line(&MatchCollector, &[Style]) -> Line`**: Flattens overlapping spans into a ratatui `Line` using a boundary-sweep algorithm. Spans are sorted by priority (desc). All start/end byte positions are collected as boundary points, sorted and deduplicated. For each interval `[seg_s, seg_e)`, the first (highest-priority) covering span determines the style. Adjacent intervals with the same style are merged. This is O(S log S) in the number of spans, with no per-span Vec allocation.
 
 ### Date Filter (date_filter.rs)
@@ -279,6 +279,7 @@ Search is performed asynchronously to keep the TUI responsive on large files.
   1. In-flight search with same pattern → set `handle.navigate = true`, exit to `NormalMode` without spawning a new task.
   2. Search already complete for same pattern → navigate directly, no new task.
   3. Otherwise → `begin_search(..., navigate=true)`.
+- **`TabState::scroll_to_current_search_match()`**: Scrolls vertically to the current match via `scroll_to_line_idx` and, when wrap is off, also adjusts `horizontal_scroll` to center the matched byte span in the viewport. Centering uses `visible_width` (terminal columns of the log area, stored on `TabState` and updated each render frame) to compute `match_center.saturating_sub(visible_width / 2)`. Called by `n`/`N` and search confirm instead of the old `scroll_to_line_idx`-only path.
 
 ### Export (export.rs)
 
@@ -305,6 +306,7 @@ Search is performed asynchronously to keep the TUI responsive on large files.
   - `scroll_offset: usize` — selected line (index into `visible_indices`)
   - `viewport_offset: usize` — first rendered line (index into `visible_indices`)
   - `visible_height: usize` — content rows available (updated each render frame)
+  - `visible_width: usize` — content columns available (updated each render frame; used by `scroll_to_current_search_match` to center matches horizontally)
   - `keybindings: Arc<Keybindings>` — shared keybinding config (cloned from `App` on tab creation)
   - `show_mode_bar: bool` — whether the bottom status/mode bar is visible (default `true`; toggled with `b`)
   - `show_borders: bool` — whether all panel borders (logs, sidebar, status bar) are visible (default `true`; toggled with `B`)
@@ -324,13 +326,13 @@ Search is performed asynchronously to keep the TUI responsive on large files.
 **Rendering pipeline (per frame)**:
 1. Compute `visible_height = logs_area.height - border_size` where `border_size` is 2 when `show_borders` is `true`, 0 otherwise.
 2. Compute `inner_width` (terminal columns available inside borders, minus line-number prefix).
-3. Wrap-aware viewport adjustment: when wrap is ON, checks if `scroll_offset - viewport_offset > visible_height` first (O(1) fast-path for large jumps, e.g. `G` on a large file). Only if the gap is small enough does it sum terminal rows via `line_row_count` from `viewport_offset` to `scroll_offset`; scrolls when total exceeds `visible_height`. Without this fast-path, `G` on a large file required summing row counts for every visible line.
-4. Wrap-aware `end` computation: walks from `start` accumulating `line_row_count()` until `visible_height` is filled.
+3. Wrap-aware viewport adjustment: when wrap is ON, checks if `scroll_offset - viewport_offset > visible_height` first (O(1) fast-path for large jumps, e.g. `G` on a large file). Only if the gap is small enough does it sum terminal rows via `effective_row_count` from `viewport_offset` to `scroll_offset`; scrolls when total exceeds `visible_height`. Without this fast-path, `G` on a large file required summing row counts for every visible line.
+4. Wrap-aware `end` computation: walks from `start` accumulating `effective_row_count()` until `visible_height` is filled.
 5. Clone `tab.filter_manager_arc` (O(1) atomic increment) and `tab.filter_styles`/`tab.filter_date_styles`. No `build_filter_manager()` call per frame.
 6. **Parse cache pre-population**: for each line in `[start..end)`, if not cached at the current `parse_cache_gen`, call `parser.parse_line()` + `apply_field_layout()`, join columns into a pre-sized `String::with_capacity` buffer (sum of column lengths + separators), and store a `CachedParsedLine` with `rendered`, `level`, `timestamp`, `target`, `pid`, `all_cols_hidden`. This block runs before search results borrow `tab.search` to satisfy the borrow checker.
 7. For each line in `[start..end]`: use the cached `rendered` string (or raw bytes in raw mode). Evaluate filters (`evaluate_line`), overlay search spans at priority 1000, apply level colours (from `cached.level` for structured lines — avoids `detect_from_bytes` rescan) and mark styles, compose final `Line` via `render_line`.
 8. Apply value-based coloring (`colorize_known_values`) to spans with no `fg` set — HTTP methods, status codes, and IP addresses get per-token colors from `theme.value_colors`. Spans already colored by filters or search are left untouched.
-9. `line_row_count(bytes, inner_width)` uses `unicode_width` to compute `ceil(display_width / inner_width)`, keeping wrap-aware viewport math precise.
+9. `effective_row_count(bytes, inner_width, parser, layout, hidden, show_keys)` uses the structured-rendering width when a format parser is active (raw JSON/tracing bytes can be 3–5× wider than rendered columns, causing `line_row_count` on raw bytes to underestimate how many lines fit). Falls back to `line_row_count(bytes, inner_width)` — `unicode_width`-based word-wrap simulation — when no parser is active or parsing fails.
 
 **Structured field layout**: `apply_field_layout(&DisplayParts, &FieldLayout, &HashSet<String>, show_keys: bool) -> Vec<String>` — module-level helper that routes through `default_cols` (all columns, default order) or picks specific columns via `get_col`, with name-based hidden-field filtering. `show_keys` controls whether extra field and span values are rendered as `key=value` pairs or values-only. Column name resolution: `get_col()` checks all aliases from `TIMESTAMP_KEYS`, `LEVEL_KEYS`, `TARGET_KEYS`, `MESSAGE_KEYS` arrays to map raw JSON key names to `DisplayParts` slots, plus `span` and dotted sub-field names (`span.*`, `fields.*`). Tab completion for the `fields` command completes against the five canonical names plus dynamically discovered field names from the first 200 visible log lines (`TabState::collect_field_names()`, which delegates to the detected format parser's `collect_field_names`).
 **Format auto-detection**: On tab creation, the first 200 lines are sampled and passed to `detect_format()`, which tries all registered parsers and stores the best match in `TabState::detected_format`. The rendering pipeline dispatches through the trait: `detected_format.as_ref().and_then(|parser| parser.parse_line(line_bytes))`. If no format is detected, lines fall back to raw byte rendering.
@@ -402,7 +404,7 @@ Example `~/.config/logana/config.json`:
 - **Parallel filter evaluation**: `FilterManager::compute_visible` uses `rayon::into_par_iter()` over line indices; order is preserved by rayon's indexed parallel iterator.
 - **Dual filter backends**: Aho-Corasick for literals (O(n) multi-pattern), Regex fallback for metacharacter patterns. Selected automatically by `build_filter`.
 - **StyleId dispatch**: 256-slot `Vec<Style>` indexed by `u8` avoids per-span HashMap lookups at render time.
-- **Wrap-aware viewport**: `line_row_count` (unicode_width) drives both the scroll trigger and the `[start..end]` window, so the selected line is always on-screen regardless of line length.
+- **Wrap-aware viewport**: `effective_row_count` drives both the scroll trigger and the `[start..end]` window. For structured log formats it uses the rendered column width (not raw bytes) so the viewport is accurate when JSON lines are 3–5× wider than their parsed representation. Falls back to `line_row_count` (unicode_width word-wrap simulation) for plain text.
 - **Async DB access**: All `LogManager` methods are `async fn` and `await` DB calls directly. No `block_on` or manual runtime bridging.
 - **Repository pattern**: `FilterStore` / `FileContextStore` traits enable in-memory SQLite for tests.
 - **Session persistence**: Filters + UI context saved per `source_file`; hash-verified restore prompt on reopen. Docker tabs are stored as `"docker:name"` and restored by detecting the prefix (re-spawns `docker logs -f` by container name).
@@ -428,11 +430,11 @@ Example `~/.config/logana/config.json`:
 3. Init tokio runtime + SQLite DB (`~/.local/share/logana/logana.db`).
 4. Load `Config` from `~/.config/logana/config.json` (or defaults on missing/parse error).
 5. Enter terminal raw mode, create `App` with empty placeholder `FileReader`, theme, and `Arc<Keybindings>`.
-6. If `--filters` was given: call `log_manager.load_filters(path)`, then extract a `VisibilityPredicate` from `build_filter_manager()`. Set `app.startup_tail = args.tail`.
+6. If `--filters` was given: call `log_manager.load_filters(path)`, then extract a `VisibilityPredicate` from `build_filter_manager()`. Set `app.startup_tail = args.tail` and `app.startup_filters = true`.
 7. Kick off `begin_file_load(path, context, predicate, tail)` — indexing runs in a background thread via `spawn_blocking`.
 8. If a directory was given: set `ConfirmOpenDirMode`. If stdin is piped: begin stdin streaming.
 9. **Event loop** (250ms poll): render frame → wait for key event → handle key → `advance_file_load` polls the background result channel each frame.
-10. On load complete (`on_load_success`): if `precomputed_visible` is `Some`, set `VisibleLines::Filtered` directly (skips `refresh_visible`). If `startup_tail`, set `tail_mode = true` and jump `scroll_offset` to the last visible line. Check for saved `FileContext` and prompt restore if found.
+10. On load complete (`on_load_success`): if `precomputed_visible` is `Some`, set `VisibleLines::Filtered` directly (skips `refresh_visible`). If `startup_tail`, set `tail_mode = true` and jump `scroll_offset` to the last visible line. If `startup_filters` is false, check for a saved `FileContext` and prompt restore if found (restore is suppressed when `--filters` was provided, since the user's explicit filter set takes precedence).
 11. On exit: save `FileContext` for each tab + save the session (list of open source files), restore terminal.
 
 ## Dependencies

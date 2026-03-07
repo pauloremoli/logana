@@ -37,6 +37,10 @@ By default, search is case-sensitive. Case sensitivity can be toggled programmat
 
 Matched byte spans are highlighted with the search style (distinct from filter highlight colors). Search highlights take priority over filter highlights — if a search match overlaps a filter-colored span, the search color wins.
 
+The *current* match (the one `n`/`N` is positioned on) is rendered with a distinct highlight color to distinguish it from other occurrences on screen.
+
+When wrap is disabled, navigating to a match with `n` or `N` also adjusts the horizontal scroll to center the matched span in the viewport.
+
 ## Search vs. Filters
 
 | | Search | Filter |
