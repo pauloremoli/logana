@@ -219,6 +219,14 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     // ── Filter Mode ──────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Filter Mode".to_string()));
     rows.push(HelpRow::Entry {
+        action: "Add include filter".into(),
+        keys: f.add_include_filter.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Add exclude filter".into(),
+        keys: f.add_exclude_filter.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Add date filter".into(),
         keys: f.add_date_filter.display(),
     });

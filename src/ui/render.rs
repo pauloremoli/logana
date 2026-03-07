@@ -574,6 +574,15 @@ impl App {
                                 tab.show_keys,
                             );
                             let all_cols_hidden = cols.is_empty();
+                            // Extract strings before consuming `parts` fields.
+                            let level = parts.level.map(|s| s.to_string());
+                            let timestamp = parts.timestamp.map(|s| s.to_string());
+                            let target = parts.target.map(|s| s.to_string());
+                            let pid = parts
+                                .extra_fields
+                                .iter()
+                                .find(|(k, _)| *k == "pid")
+                                .map(|(_, v)| v.to_string());
                             // Build the joined string with a pre-sized buffer
                             // instead of `cols.join(" ")` (avoids intermediate allocation).
                             let rendered = if all_cols_hidden {
@@ -590,19 +599,32 @@ impl App {
                                 }
                                 buf
                             };
+                            // Cache byte offsets of target/pid/timestamp within `rendered`
+                            // so the render loop avoids repeated O(len) `str::find` calls.
+                            let target_offset = target
+                                .as_deref()
+                                .filter(|t| !t.is_empty())
+                                .and_then(|t| rendered.find(t));
+                            let pid_offset = pid
+                                .as_deref()
+                                .filter(|p| !p.is_empty())
+                                .and_then(|p| rendered.find(p));
+                            let timestamp_offset = timestamp
+                                .as_deref()
+                                .filter(|ts| !ts.is_empty())
+                                .and_then(|ts| rendered.find(ts));
                             new_entries.push((
                                 line_idx,
                                 super::CachedParsedLine {
                                     rendered,
-                                    level: parts.level.map(|s| s.to_string()),
-                                    timestamp: parts.timestamp.map(|s| s.to_string()),
-                                    target: parts.target.map(|s| s.to_string()),
-                                    pid: parts
-                                        .extra_fields
-                                        .iter()
-                                        .find(|(k, _)| *k == "pid")
-                                        .map(|(_, v)| v.to_string()),
+                                    level,
+                                    timestamp,
+                                    target,
+                                    pid,
                                     all_cols_hidden,
+                                    target_offset,
+                                    pid_offset,
+                                    timestamp_offset,
                                 },
                             ));
                         }
@@ -669,24 +691,29 @@ impl App {
             .map(|a| (a.line_indices.clone(), a.text.clone()))
             .collect();
 
-        // Two maps built in one pass over comments × visible window:
-        //   banner_at:         abs_vis_idx → cmt_idx  (where a banner header is injected)
-        //   vis_comment_map: abs_vis_idx → cmt_idx  (every visible commented line)
-        // The latter drives the tree characters (│ / └) on log lines.
+        // Build a reverse map: file-line index → first comment index that owns it.
+        // O(total comment lines) instead of the previous O(comments × viewport) double loop.
+        let mut line_cmt_map: HashMap<usize, usize> = HashMap::new();
+        for (cmt_idx, (line_indices, _)) in comments_for_render.iter().enumerate() {
+            for &li in line_indices {
+                // Lowest cmt_idx wins when a line belongs to multiple groups.
+                line_cmt_map.entry(li).or_insert(cmt_idx);
+            }
+        }
+
+        // Single O(viewport) pass to build both render maps:
+        //   banner_at:       abs_vis_idx → cmt_idx  (where to inject a comment banner)
+        //   vis_comment_map: abs_vis_idx → cmt_idx  (drives the tree │/└ characters)
         let mut banner_at: HashMap<usize, usize> = HashMap::new();
         let mut vis_comment_map: HashMap<usize, usize> = HashMap::new();
-        for (cmt_idx, (line_indices, _)) in comments_for_render.iter().enumerate() {
-            let ann_set: HashSet<usize> = line_indices.iter().cloned().collect();
-            let mut first_for_ann: Option<usize> = None;
-            for abs_vi in start..end {
-                let li = self.tabs[self.active_tab].visible_indices.get(abs_vi);
-                if ann_set.contains(&li) {
-                    // First comment wins when a line belongs to multiple groups.
-                    vis_comment_map.entry(abs_vi).or_insert(cmt_idx);
-                    if first_for_ann.is_none() {
-                        first_for_ann = Some(abs_vi);
-                        banner_at.insert(abs_vi, cmt_idx);
-                    }
+        let mut seen_cmts: HashSet<usize> = HashSet::new();
+        for abs_vi in start..end {
+            let li = self.tabs[self.active_tab].visible_indices.get(abs_vi);
+            if let Some(&cmt_idx) = line_cmt_map.get(&li) {
+                vis_comment_map.insert(abs_vi, cmt_idx);
+                if seen_cmts.insert(cmt_idx) {
+                    // First visible line of this comment group: place the banner here.
+                    banner_at.insert(abs_vi, cmt_idx);
                 }
             }
         }
@@ -819,7 +846,8 @@ impl App {
                             {
                                 let idx = stable_hash(target) % process_colors_len;
                                 let sid = process_style_start.saturating_add(idx as u8);
-                                if let Some(pos) = rendered.find(target) {
+                                // Use cached offsets to avoid O(len) `str::find` per render miss.
+                                if let Some(pos) = c.target_offset {
                                     collector.push(pos, pos + target.len(), sid);
                                 }
                                 // Also colour the pid column so that formats like
@@ -828,7 +856,7 @@ impl App {
                                     let pid_sid = process_style_start.saturating_add(
                                         (stable_hash(target) % process_colors_len) as u8,
                                     );
-                                    if let Some(pos) = rendered.find(pid_val) {
+                                    if let Some(pos) = c.pid_offset {
                                         collector.push(pos, pos + pid_val.len(), pid_sid);
                                     }
                                 }
@@ -840,7 +868,7 @@ impl App {
                                     if dfs.filter.matches(ts) {
                                         collector.with_priority(500);
                                         if dfs.match_only {
-                                            if let Some(ts_pos) = rendered.find(ts) {
+                                            if let Some(ts_pos) = c.timestamp_offset {
                                                 collector.push(
                                                     ts_pos,
                                                     ts_pos + ts.len(),

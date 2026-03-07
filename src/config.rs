@@ -522,6 +522,12 @@ fn default_filter_toggle_all() -> KeyBindings {
 fn default_filter_clear_all() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('C'), KeyModifiers::NONE)])
 }
+fn default_filter_add_include() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('i'), KeyModifiers::NONE)])
+}
+fn default_filter_add_exclude() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('o'), KeyModifiers::NONE)])
+}
 fn default_filter_add_date() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('t'), KeyModifiers::NONE)])
 }
@@ -551,6 +557,10 @@ pub struct FilterKeybindings {
     pub toggle_all_filters: KeyBindings,
     #[serde(default = "default_filter_clear_all")]
     pub clear_all_filters: KeyBindings,
+    #[serde(default = "default_filter_add_include")]
+    pub add_include_filter: KeyBindings,
+    #[serde(default = "default_filter_add_exclude")]
+    pub add_exclude_filter: KeyBindings,
     #[serde(default = "default_filter_add_date")]
     pub add_date_filter: KeyBindings,
     #[serde(default = "default_filter_exit")]
@@ -568,6 +578,8 @@ impl Default for FilterKeybindings {
             set_color: default_filter_set_color(),
             toggle_all_filters: default_filter_toggle_all(),
             clear_all_filters: default_filter_clear_all(),
+            add_include_filter: default_filter_add_include(),
+            add_exclude_filter: default_filter_add_exclude(),
             add_date_filter: default_filter_add_date(),
             exit_mode: default_filter_exit(),
         }
@@ -1131,6 +1143,8 @@ impl Keybindings {
             ("filter.set_color", &self.filter.set_color),
             ("filter.toggle_all_filters", &self.filter.toggle_all_filters),
             ("filter.clear_all_filters", &self.filter.clear_all_filters),
+            ("filter.add_include_filter", &self.filter.add_include_filter),
+            ("filter.add_exclude_filter", &self.filter.add_exclude_filter),
             ("filter.add_date_filter", &self.filter.add_date_filter),
             ("filter.exit_mode", &self.filter.exit_mode),
             ("global.quit", &self.global.quit),

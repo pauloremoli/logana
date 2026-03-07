@@ -44,8 +44,6 @@ impl LogManager {
         mgr
     }
 
-    // ── Source file ──────────────────────────────────────────────────────────
-
     pub fn source_file(&self) -> Option<&str> {
         self.source_file.as_deref()
     }
@@ -54,8 +52,6 @@ impl LogManager {
         self.source_file = source;
         self.reload_filters_from_db().await;
     }
-
-    // ── Filter management ────────────────────────────────────────────────────
 
     pub fn get_filters(&self) -> &[FilterDef] {
         &self.filter_defs
@@ -238,8 +234,6 @@ impl LogManager {
         Ok(())
     }
 
-    // ── Marks ────────────────────────────────────────────────────────────────
-
     pub fn toggle_mark(&mut self, line_idx: usize) {
         if self.marks.contains(&line_idx) {
             self.marks.remove(&line_idx);
@@ -272,8 +266,6 @@ impl LogManager {
             .map(|i| reader.get_line(i))
             .collect()
     }
-
-    // ── Comments ──────────────────────────────────────────────────────────────
 
     /// Append a new comment for the given line indices.
     pub fn add_comment(&mut self, text: String, line_indices: Vec<usize>) {
@@ -309,8 +301,6 @@ impl LogManager {
         self.marks.clear();
         self.comments.clear();
     }
-
-    // ── Filter-manager construction ──────────────────────────────────────────
 
     /// Build a `FilterManager`, its associated `Vec<Style>`, and date filter styles
     /// from the current enabled filter definitions.
@@ -400,8 +390,6 @@ impl LogManager {
         )
     }
 
-    // ── File hash ────────────────────────────────────────────────────────────
-
     pub fn compute_file_hash(path: &str) -> Option<String> {
         let metadata = std::fs::metadata(path).ok()?;
         let size = metadata.len();
@@ -416,8 +404,6 @@ impl LogManager {
         modified.hash(&mut hasher);
         Some(format!("{:x}", hasher.finish()))
     }
-
-    // ── Internal helpers ─────────────────────────────────────────────────────
 
     async fn reload_filters_from_db(&mut self) {
         let source = self.source_file.clone();

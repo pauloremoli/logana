@@ -222,6 +222,12 @@ pub struct CachedParsedLine {
     pub pid: Option<String>,
     /// True when `apply_field_layout` returned an empty Vec (all columns hidden).
     pub all_cols_hidden: bool,
+    /// Byte offset of `target` within `rendered`; avoids repeated `str::find` on render misses.
+    pub target_offset: Option<usize>,
+    /// Byte offset of `pid` within `rendered`; avoids repeated `str::find` on render misses.
+    pub pid_offset: Option<usize>,
+    /// Byte offset of `timestamp` within `rendered`; avoids repeated `str::find` on render misses.
+    pub timestamp_offset: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +370,25 @@ impl TabState {
 
     /// Recompute which file lines are visible under the current filters.
     pub fn refresh_visible(&mut self) {
+        // Short-circuit: with no active filters and not in marks-only mode the
+        // visible set is always All(n), regardless of `filtering_enabled`.
+        // Skipping cache invalidation avoids reprocessing every line needlessly.
+        let has_active_filters = self.show_marks_only
+            || self.log_manager.get_filters().iter().any(|f| f.enabled);
+        if !has_active_filters {
+            self.visible_indices = VisibleLines::All(self.file_reader.line_count());
+            self.filter_manager_arc = Arc::new(FilterManager::empty());
+            self.filter_styles = Vec::new();
+            self.filter_date_styles = Vec::new();
+            // Still clamp scroll so it stays valid if the file shrank.
+            if self.visible_indices.is_empty() {
+                self.scroll_offset = 0;
+            } else {
+                self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
+            }
+            return;
+        }
+
         // Invalidate the parse cache: field layout, filters, or file content may have changed.
         self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
         self.parse_cache.clear();
@@ -572,7 +597,7 @@ impl TabState {
                         return None;
                     }
                     let i = counter.fetch_add(1, Ordering::Relaxed);
-                    if i % 10_000 == 0 && total > 0 {
+                    if i.is_multiple_of(10_000) && total > 0 {
                         let _ = progress_tx.send(i as f64 / total as f64);
                     }
                     let line = file_reader.get_line(line_idx);
@@ -1417,6 +1442,9 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_visible_increments_parse_cache_gen() {
         let mut tab = make_tab(&["line"]).await;
+        tab.log_manager
+            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, true)
+            .await;
         let old_gen = tab.parse_cache_gen;
         tab.refresh_visible();
         assert!(tab.parse_cache_gen > old_gen);
@@ -1492,10 +1520,25 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_visible_bumps_render_cache_gen() {
         let mut tab = make_tab(&["line"]).await;
+        tab.log_manager
+            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, true)
+            .await;
         let old = tab.render_cache_gen;
         tab.refresh_visible();
         assert!(tab.render_cache_gen > old);
         assert!(tab.render_line_cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_visible_no_filters_skips_cache_invalidation() {
+        let mut tab = make_tab(&["line"]).await;
+        // No active filters: toggling filtering_enabled must not bust the caches.
+        let old_parse = tab.parse_cache_gen;
+        let old_render = tab.render_cache_gen;
+        tab.filtering_enabled = !tab.filtering_enabled;
+        tab.refresh_visible();
+        assert_eq!(tab.parse_cache_gen, old_parse);
+        assert_eq!(tab.render_cache_gen, old_render);
     }
 
     #[tokio::test]

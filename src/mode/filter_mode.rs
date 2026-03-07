@@ -275,6 +275,28 @@ impl Mode for FilterManagementMode {
             );
         }
 
+        if kb.filter.add_include_filter.matches(key, modifiers) {
+            let history = tab.command_history.clone();
+            tab.command_error = None;
+            return (
+                Box::new(CommandMode::with_history("filter ".to_string(), 7, history)),
+                KeyResult::Handled,
+            );
+        }
+
+        if kb.filter.add_exclude_filter.matches(key, modifiers) {
+            let history = tab.command_history.clone();
+            tab.command_error = None;
+            return (
+                Box::new(CommandMode::with_history(
+                    "exclude ".to_string(),
+                    8,
+                    history,
+                )),
+                KeyResult::Handled,
+            );
+        }
+
         if kb.filter.add_date_filter.matches(key, modifiers) {
             let history = tab.command_history.clone();
             tab.command_error = None;
@@ -304,6 +326,18 @@ impl Mode for FilterManagementMode {
                 .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
+        status_entry(
+            &mut spans,
+            kb.filter.add_include_filter.display(),
+            "filter in",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.filter.add_exclude_filter.display(),
+            "filter out",
+            theme,
+        );
         status_entry(
             &mut spans,
             kb.filter.add_date_filter.display(),
@@ -700,6 +734,42 @@ mod tests {
             ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
             other => panic!("expected FilterManagement, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_i_opens_filter_include_command() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('i')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => assert!(input.starts_with("filter ")),
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_o_opens_filter_exclude_command() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('o')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => assert!(input.starts_with("exclude ")),
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_error_cleared_on_filter_include_shortcut() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.command_error = Some("previous error".to_string());
+        press(filter_mode(0), &mut tab, KeyCode::Char('i')).await;
+        assert!(tab.command_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_command_error_cleared_on_filter_exclude_shortcut() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.command_error = Some("previous error".to_string());
+        press(filter_mode(0), &mut tab, KeyCode::Char('o')).await;
+        assert!(tab.command_error.is_none());
     }
 
     #[tokio::test]

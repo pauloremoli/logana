@@ -35,8 +35,8 @@ pub trait Filter: Send + Sync {
 /// Render a line using the collected match spans and a styles array.
 ///
 /// Overlapping spans are resolved by priority: higher-priority spans overwrite lower ones.
-/// Uses a boundary-sweep approach — collect all span endpoints, sort them, then for each
-/// interval pick the highest-priority covering span. This avoids per-span Vec allocations.
+/// Uses a sweep-line with a max-heap keyed by `(priority, Reverse(start))` so each boundary
+/// interval is resolved in O(log N) instead of the previous O(N) linear scan — O(N log N) total.
 pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -> Line<'a> {
     if col.spans.is_empty() {
         let text = std::str::from_utf8(col.line).unwrap_or("").to_string();
@@ -45,24 +45,42 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
 
     let line_len = col.line.len();
 
-    // Sort by priority DESC so the first match in the inner scan is always the highest priority.
-    let mut sorted = col.spans.clone();
-    sorted.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.start.cmp(&b.start)));
+    // Filter to valid spans and sort by start for the sweep activation step.
+    let mut valid: Vec<(usize, usize, u32, StyleId)> = col
+        .spans
+        .iter()
+        .filter(|s| s.start < s.end && s.end <= line_len)
+        .map(|s| (s.start, s.end, s.priority, s.style))
+        .collect();
+
+    if valid.is_empty() {
+        let text = std::str::from_utf8(col.line).unwrap_or("").to_string();
+        return Line::from(text);
+    }
+
+    valid.sort_unstable_by_key(|&(start, _, _, _)| start);
 
     // Collect unique boundary points from valid spans.
-    let mut boundaries: Vec<usize> = Vec::with_capacity(sorted.len() * 2 + 2);
+    let mut boundaries: Vec<usize> = Vec::with_capacity(valid.len() * 2 + 2);
     boundaries.push(0);
     boundaries.push(line_len);
-    for s in &sorted {
-        if s.start < s.end && s.end <= line_len {
-            boundaries.push(s.start);
-            boundaries.push(s.end);
-        }
+    for &(start, end, _, _) in &valid {
+        boundaries.push(start);
+        boundaries.push(end);
     }
     boundaries.sort_unstable();
     boundaries.dedup();
 
-    // For each interval [b[i], b[i+1]) find the highest-priority covering span (first in sorted).
+    // Sweep-line: heap of (priority, Reverse(start), end, style_id).
+    // Max-heap on priority; Reverse(start) breaks ties in favour of the span that begins
+    // earliest, matching the previous sorted.find() semantics.
+    // For each interval [seg_s, seg_e): activate spans with start ≤ seg_s, lazily expire
+    // those with end ≤ seg_s, then take the heap top as the winner.
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let mut heap: BinaryHeap<(u32, Reverse<usize>, usize, StyleId)> = BinaryHeap::new();
+    let mut span_idx = 0usize;
+
     // Merge adjacent intervals that share the same style to minimise Span count.
     let mut events: Vec<(usize, usize, StyleId)> = Vec::with_capacity(boundaries.len());
     for w in boundaries.windows(2) {
@@ -70,11 +88,18 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
         if seg_s >= seg_e {
             continue;
         }
-        let best = sorted
-            .iter()
-            .find(|s| s.start <= seg_s && s.end >= seg_e && s.start < s.end && s.end <= line_len)
-            .map(|s| s.style);
-        if let Some(style) = best {
+        // Activate all spans whose start ≤ seg_s.
+        while span_idx < valid.len() && valid[span_idx].0 <= seg_s {
+            let (start, end, priority, style) = valid[span_idx];
+            heap.push((priority, Reverse(start), end, style));
+            span_idx += 1;
+        }
+        // Lazily expire spans that no longer cover this interval.
+        while heap.peek().is_some_and(|&(_, _, end, _)| end <= seg_s) {
+            heap.pop();
+        }
+        // The heap top is the highest-priority span covering [seg_s, seg_e).
+        if let Some(&(_, _, _, style)) = heap.peek() {
             if let Some(last) = events.last_mut()
                 && last.1 == seg_s
                 && last.2 == style
@@ -554,5 +579,49 @@ mod tests {
         let col = fm.evaluate_line(line);
         assert!(!col.spans.is_empty());
         assert_eq!(&line[col.spans[0].start..col.spans[0].end], b"ERROR");
+    }
+
+    #[test]
+    fn test_render_line_overlapping_spans_priority() {
+        // Two spans cover the same region. Higher priority must win.
+        let line = b"hello world";
+        let style_lo = ratatui::style::Style::default().fg(ratatui::style::Color::Blue);
+        let style_hi = ratatui::style::Style::default().fg(ratatui::style::Color::Red);
+        let styles = vec![style_lo, style_hi];
+
+        let mut col = MatchCollector::new(line);
+        col.with_priority(0);
+        col.push(0, 5, 0); // "hello" — low priority, style 0 (Blue)
+        col.with_priority(10);
+        col.push(0, 5, 1); // "hello" — high priority, style 1 (Red)
+
+        let rendered = render_line(&col, &styles);
+        let hello_span = rendered
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "hello");
+        assert!(hello_span.is_some());
+        assert_eq!(hello_span.unwrap().style.fg, Some(ratatui::style::Color::Red));
+    }
+
+    #[test]
+    fn test_render_line_adjacent_same_style_merged() {
+        // Two adjacent spans with the same style should be merged into one.
+        let line = b"abcdef";
+        let style = ratatui::style::Style::default().fg(ratatui::style::Color::Green);
+        let styles = vec![style];
+
+        let mut col = MatchCollector::new(line);
+        col.push(0, 3, 0); // "abc"
+        col.push(3, 6, 0); // "def" — same style, adjacent
+
+        let rendered = render_line(&col, &styles);
+        let styled: Vec<_> = rendered
+            .spans
+            .iter()
+            .filter(|s| s.style.fg.is_some())
+            .collect();
+        assert_eq!(styled.len(), 1);
+        assert_eq!(styled[0].content.as_ref(), "abcdef");
     }
 }
