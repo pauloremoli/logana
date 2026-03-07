@@ -37,12 +37,6 @@ impl App {
 
         let has_multiple_tabs = self.tabs.len() > 1;
 
-        // Extract search progress up front so later rendering has no active borrow.
-        let search_progress: Option<(String, f64)> = self.tabs[self.active_tab]
-            .search_handle
-            .as_ref()
-            .map(|h| (h.pattern.clone(), *h.progress_rx.borrow()));
-
         // Extract mode-derived state up front via a single render_state() call,
         // avoiding holding a borrow over the rest of rendering.
         let render_state = self.tabs[self.active_tab].mode.render_state();
@@ -148,11 +142,6 @@ impl App {
         let show_mode_bar = self.tabs[self.active_tab].show_mode_bar;
         let show_borders = self.tabs[self.active_tab].show_borders;
 
-        if is_confirm_restore {
-            self.render_confirm_restore_modal(frame);
-            return;
-        }
-
         // Compute how many rows the mode bar needs so wrapped text is fully visible.
         // When borders are on they consume 1 col on each side (2 total); when off we
         // still reserve 1 col on the left for visual padding.
@@ -181,11 +170,6 @@ impl App {
                 self.compute_hint_height(&command_input, inner_width, completion_index);
             constraints.push(Constraint::Length(hint_height)); // hint line(s)
         }
-        let search_bar_chunk_idx = search_progress.as_ref().map(|_| {
-            let idx = constraints.len();
-            constraints.push(Constraint::Length(1)); // search progress bar
-            idx
-        });
         if show_mode_bar {
             if !show_borders {
                 constraints.push(Constraint::Length(1)); // visual gap above mode bar
@@ -256,24 +240,9 @@ impl App {
             }
         }
 
-        if let (Some((pattern, progress)), Some(idx)) = (search_progress, search_bar_chunk_idx) {
-            let bar_width = 20_usize;
-            let filled = ((progress * bar_width as f64) as usize).min(bar_width);
-            let bar = format!(
-                "{}{}",
-                "\u{2588}".repeat(filled),
-                "\u{2591}".repeat(bar_width - filled),
-            );
-            let pct = (progress * 100.0) as usize;
-            let text = format!(" Searching \"{}\"  {} {}% ", pattern, bar, pct);
-            frame.render_widget(
-                Paragraph::new(text).style(
-                    Style::default()
-                        .fg(self.theme.search_fg)
-                        .bg(self.theme.text_highlight_fg),
-                ),
-                chunks[idx],
-            );
+        // Confirm-restore modal renders on top of the full TUI.
+        if is_confirm_restore {
+            self.render_confirm_restore_modal(frame);
         }
 
         // Session restore modal renders on top of the full TUI so stdin content
@@ -313,8 +282,13 @@ impl App {
             self.render_keybindings_help_popup(frame, &keybindings, scroll, &search);
         }
 
-        // Loading status bar renders last, on top of everything.
-        self.render_loading_status_bar(frame);
+        // Loading status bar renders last, above the mode bar.
+        let loading_bottom_offset = if show_mode_bar {
+            status_height + if !show_borders { 1 } else { 0 }
+        } else {
+            0
+        };
+        self.render_loading_status_bar(frame, loading_bottom_offset);
     }
 
     fn render_logs_panel(
@@ -1087,10 +1061,32 @@ impl App {
             let hint = Paragraph::new(hint_text)
                 .style(Style::default().fg(self.theme.text).bg(self.theme.root_bg));
             frame.render_widget(hint, hint_area);
+
+            let progress_text: Option<String> = self.tabs[self.active_tab]
+                .search_handle
+                .as_ref()
+                .map(|h| {
+                    let (bar, pct) = progress_bar_str(*h.progress_rx.borrow());
+                    format!(" {} {}% ", bar, pct)
+                });
+            if let Some(text) = progress_text {
+                let text_width = text.chars().count() as u16;
+                let x = hint_area.x + (hint_area.width.saturating_sub(text_width)) / 2;
+                let w = hint_area.width.min(text_width);
+                let progress_rect = Rect::new(x, hint_area.y, w, 1);
+                frame.render_widget(
+                    Paragraph::new(text).style(
+                        Style::default()
+                            .fg(self.theme.border)
+                            .bg(self.theme.root_bg),
+                    ),
+                    progress_rect,
+                );
+            }
         }
     }
 
-    fn render_loading_status_bar(&mut self, frame: &mut Frame<'_>) {
+    fn render_loading_status_bar(&mut self, frame: &mut Frame<'_>, bottom_offset: u16) {
         let s = match self.file_load_state.as_ref() {
             Some(s) => s,
             None => return,
@@ -1118,14 +1114,7 @@ impl App {
                 .to_string(),
         };
 
-        let bar_width = 20_usize;
-        let filled = ((progress * bar_width as f64) as usize).min(bar_width);
-        let bar = format!(
-            "{}{}",
-            "\u{2588}".repeat(filled),
-            "\u{2591}".repeat(bar_width - filled),
-        );
-        let pct = (progress * 100.0) as usize;
+        let (bar, pct) = progress_bar_str(progress);
         let text = format!(" Loading {}  {} {}% ", subtitle, bar, pct);
 
         let area = frame.area();
@@ -1134,7 +1123,7 @@ impl App {
         }
         let bar_rect = ratatui::layout::Rect::new(
             area.x,
-            area.y + area.height.saturating_sub(1),
+            area.y + area.height.saturating_sub(1 + bottom_offset),
             area.width,
             1,
         );
@@ -1508,6 +1497,19 @@ impl App {
 }
 
 /// djb2-style hash for stable per-process color assignment.
+/// Returns `(bar, pct)` for a progress fraction in `0.0..=1.0`.
+fn progress_bar_str(progress: f64) -> (String, usize) {
+    const BAR_WIDTH: usize = 20;
+    let filled = ((progress * BAR_WIDTH as f64) as usize).min(BAR_WIDTH);
+    let bar = format!(
+        "{}{}",
+        "\u{2588}".repeat(filled),
+        "\u{2591}".repeat(BAR_WIDTH - filled),
+    );
+    let pct = (progress * 100.0) as usize;
+    (bar, pct)
+}
+
 fn stable_hash(s: &str) -> usize {
     s.bytes().fold(5381usize, |acc, b| {
         acc.wrapping_mul(33).wrapping_add(b as usize)
@@ -1933,6 +1935,70 @@ mod tests {
     fn test_stable_hash_consistent() {
         assert_eq!(stable_hash("my_service"), stable_hash("my_service"));
         assert_ne!(stable_hash("service_a"), stable_hash("service_b"));
+    }
+
+    /// Collect the symbols on a given row of the buffer as a string.
+    fn row_content(buf: &ratatui::buffer::Buffer, y: u16) -> String {
+        let width = buf.area.width;
+        (0..width)
+            .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()))
+            .collect()
+    }
+
+    /// Set up an app with a persistent search handle injected at a given progress level.
+    async fn make_app_with_search(progress: Option<f64>) -> (App, Terminal<TestBackend>) {
+        let mut app = make_app(&["line 0", "line 1"]).await;
+        app.tabs[0].show_mode_bar = false;
+
+        let visible = app.tabs[0].visible_indices.clone();
+        let tab = &mut app.tabs[0];
+        let texts = tab.collect_display_texts(visible.iter());
+        let _ = tab
+            .search
+            .search("line", visible.iter(), |li| texts.get(&li).cloned());
+
+        if let Some(p) = progress {
+            let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+            let (_progress_tx, progress_rx) = tokio::sync::watch::channel(p);
+            app.tabs[0].search_handle = Some(super::super::SearchHandle {
+                result_rx,
+                cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                progress_rx,
+                pattern: "line".to_string(),
+                forward: true,
+                navigate: false,
+            });
+        }
+
+        let terminal = make_terminal(); // 80×24
+        (app, terminal)
+    }
+
+    #[tokio::test]
+    async fn test_search_progress_bar_shown_in_hint_area() {
+        let (mut app, mut terminal) = make_app_with_search(Some(0.5)).await;
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        // With no mode bar the hint row is at y=23 (rows 22=input, 23=hint).
+        let hint_row = row_content(terminal.backend().buffer(), 23);
+        assert!(
+            hint_row.contains('\u{2588}'),
+            "hint row should contain █ when search is in progress; got: {:?}",
+            hint_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_progress_bar_not_shown_without_handle() {
+        let (mut app, mut terminal) = make_app_with_search(None).await;
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        let hint_row = row_content(terminal.backend().buffer(), 23);
+        assert!(
+            !hint_row.contains('\u{2588}'),
+            "hint row should not contain █ without an active search handle; got: {:?}",
+            hint_row,
+        );
     }
 
     // Before the fix, toggling a filter that reduces num_visible left viewport_offset
