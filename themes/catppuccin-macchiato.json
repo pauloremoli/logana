@@ -6,7 +6,7 @@
   "text": "#cad3f5",
   "text_highlight_fg": "#eed49f",
   "text_highlight_bg": "#4a3800",
-  "cursor_fg": "#24273a",
+  "cursor_fg": "#cad3f5",
   "trace_fg": "#494d64",
   "debug_fg": "#91d7e3",
   "info_fg":    "#cad3f5",

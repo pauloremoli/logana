@@ -325,14 +325,14 @@ impl Mode for FilterManagementMode {
         status_entry(&mut spans, kb.filter.edit_filter.display(), "edit", theme);
         status_entry(&mut spans, kb.filter.set_color.display(), "color", theme);
         // Move up/down: <K/J>
-        spans.push(Span::styled("<", Style::default().fg(theme.border)));
+        spans.push(Span::styled("<", Style::default().fg(theme.text)));
         spans.push(Span::styled(
             kb.filter.move_filter_up.display(),
             Style::default()
                 .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled("/", Style::default().fg(theme.border)));
+        spans.push(Span::styled("/", Style::default().fg(theme.text)));
         spans.push(Span::styled(
             kb.filter.move_filter_down.display(),
             Style::default()

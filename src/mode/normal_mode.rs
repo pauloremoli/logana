@@ -491,14 +491,14 @@ impl Mode for NormalMode {
             theme,
         );
         // Tab switching: <next/prev> tabs
-        spans.push(Span::styled("<", Style::default().fg(theme.border)));
+        spans.push(Span::styled("<", Style::default().fg(theme.text)));
         spans.push(Span::styled(
             kb.global.next_tab.display(),
             Style::default()
                 .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled("/", Style::default().fg(theme.border)));
+        spans.push(Span::styled("/", Style::default().fg(theme.text)));
         spans.push(Span::styled(
             kb.global.prev_tab.display(),
             Style::default()

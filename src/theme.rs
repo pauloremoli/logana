@@ -34,6 +34,18 @@ static BUNDLED_THEMES: &[(&str, &str)] = &[
     ),
     ("dracula", include_str!("../themes/dracula.json")),
     (
+        "github-dark",
+        include_str!("../themes/github-dark.json"),
+    ),
+    (
+        "github-dark-dimmed",
+        include_str!("../themes/github-dark-dimmed.json"),
+    ),
+    (
+        "github-light",
+        include_str!("../themes/github-light.json"),
+    ),
+    (
         "everforest-dark",
         include_str!("../themes/everforest-dark.json"),
     ),
@@ -786,7 +798,7 @@ mod tests {
         assert_eq!(theme.info_fg, Color::Rgb(248, 248, 242));
         assert_eq!(theme.notice_fg, Color::Rgb(248, 248, 242));
         assert_eq!(theme.fatal_fg, Color::Rgb(255, 85, 85));
-        assert_eq!(theme.cursor_fg, Color::Rgb(28, 28, 28));
+        assert_eq!(theme.cursor_fg, Color::Rgb(248, 248, 242));
         assert_eq!(theme.search_fg, Color::Rgb(28, 28, 28));
         assert_eq!(theme.visual_select_bg, Color::Rgb(68, 71, 90));
         assert_eq!(theme.visual_select_fg, Color::Rgb(248, 248, 242));

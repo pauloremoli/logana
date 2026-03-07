@@ -36,6 +36,22 @@ When tail mode is active, `[TAIL]` appears in the log panel title.
 
 All filter, search, and annotation features work identically for Docker streams. Filters are persisted per container name, just like file-based logs.
 
+## Piping Docker Compose Logs
+
+You can also pipe `docker compose logs` directly into logana:
+
+```sh
+docker compose logs -f 2>&1 | logana
+```
+
+The `2>&1` redirect is important — without it, Docker's warnings (e.g. unset variable notices) go straight to the terminal and corrupt the TUI display. Merging stderr into stdout ensures everything flows through the pipe and appears as log entries inside logana, where you can filter them as needed.
+
+To suppress the warnings entirely instead:
+
+```sh
+docker compose logs -f 2>/dev/null | logana
+```
+
 ## Requirements
 
 - Docker must be installed and accessible via `docker` in `PATH`.

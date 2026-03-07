@@ -44,7 +44,7 @@ impl App {
             .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
-        let br_style = Style::default().fg(self.theme.border);
+        let br_style = Style::default().fg(self.theme.text);
 
         let mut spans: Vec<Span<'static>> = vec![Span::styled(" ", txt_style)];
         popup_entry(
@@ -171,7 +171,7 @@ impl App {
         // Separator
         let sep = "─".repeat(vsplit[1].width as usize);
         frame.render_widget(
-            Paragraph::new(sep).style(Style::default().fg(self.theme.border)),
+            Paragraph::new(sep).style(Style::default().fg(self.theme.text)),
             vsplit[1],
         );
 
@@ -181,7 +181,7 @@ impl App {
             .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
-        let br_style = Style::default().fg(self.theme.border);
+        let br_style = Style::default().fg(self.theme.text);
         let mut line1: Vec<Span<'static>> = Vec::new();
         popup_entry(
             &mut line1,
@@ -243,7 +243,8 @@ impl App {
             let mut sb_state =
                 ScrollbarState::new(total.saturating_sub(content_h)).position(scroll);
             frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .style(Style::default().fg(self.theme.border)),
                 vsplit[0],
                 &mut sb_state,
             );
@@ -445,7 +446,7 @@ impl App {
         // Separator
         let sep = "\u{2500}".repeat(sep_area.width as usize);
         frame.render_widget(
-            Paragraph::new(sep).style(Style::default().fg(self.theme.border)),
+            Paragraph::new(sep).style(Style::default().fg(self.theme.text)),
             sep_area,
         );
 
@@ -455,7 +456,7 @@ impl App {
             .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
-        let br_style = Style::default().fg(self.theme.border);
+        let br_style = Style::default().fg(self.theme.text);
         let mut line1: Vec<Span<'static>> = Vec::new();
         popup_entry(
             &mut line1,
@@ -483,7 +484,7 @@ impl App {
         );
         line1.push(Span::styled(
             "type to search",
-            Style::default().fg(self.theme.border),
+            Style::default().fg(self.theme.text),
         ));
         let mut line2: Vec<Span<'static>> = Vec::new();
         popup_entry(
@@ -514,7 +515,8 @@ impl App {
             let mut sb_state =
                 ScrollbarState::new(total.saturating_sub(content_h)).position(scroll);
             frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .style(Style::default().fg(self.theme.border)),
                 content_area,
                 &mut sb_state,
             );
@@ -655,7 +657,8 @@ impl App {
                 let mut sb_state =
                     ScrollbarState::new(total.saturating_sub(content_h)).position(scroll);
                 frame.render_stateful_widget(
-                    Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                        .style(Style::default().fg(self.theme.border)),
                     vsplit[0],
                     &mut sb_state,
                 );
@@ -665,7 +668,7 @@ impl App {
         // Separator
         let sep = "─".repeat(vsplit[1].width as usize);
         frame.render_widget(
-            Paragraph::new(sep).style(Style::default().fg(self.theme.border)),
+            Paragraph::new(sep).style(Style::default().fg(self.theme.text)),
             vsplit[1],
         );
 
@@ -676,7 +679,7 @@ impl App {
             .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
-        let br_style = Style::default().fg(self.theme.border);
+        let br_style = Style::default().fg(self.theme.text);
         let mut spans: Vec<Span<'static>> = Vec::new();
         // Navigate up/down combined display
         spans.push(Span::styled("<", br_style));
@@ -775,14 +778,14 @@ impl App {
                     let gap = " ".repeat(key_col.saturating_sub(keys_str.len()));
                     lines.push(Line::from(vec![
                         Span::raw(" "),
-                        Span::styled("<", Style::default().fg(self.theme.border)),
+                        Span::styled("<", Style::default().fg(self.theme.text)),
                         Span::styled(
                             keys_str.to_string(),
                             Style::default()
                                 .fg(self.theme.text_highlight_fg)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(">", Style::default().fg(self.theme.border)),
+                        Span::styled(">", Style::default().fg(self.theme.text)),
                         Span::raw(format!("{}  ", gap)),
                         Span::styled(action_str.to_string(), Style::default().fg(self.theme.text)),
                     ]));
@@ -829,7 +832,7 @@ impl App {
 
         // Search bar
         let search_display = if search.is_empty() {
-            Span::styled("  type to filter…", Style::default().fg(self.theme.border))
+            Span::styled("  type to filter…", Style::default().fg(self.theme.text))
         } else {
             Span::styled(
                 format!("  /{}", search),
@@ -841,7 +844,7 @@ impl App {
         // Separator
         let sep = "─".repeat(vsplit[1].width as usize);
         frame.render_widget(
-            Paragraph::new(sep).style(Style::default().fg(self.theme.border)),
+            Paragraph::new(sep).style(Style::default().fg(self.theme.text)),
             vsplit[1],
         );
 
@@ -855,7 +858,8 @@ impl App {
         if total > inner_h {
             let mut sb_state = ScrollbarState::new(total.saturating_sub(inner_h)).position(scroll);
             frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .style(Style::default().fg(self.theme.border)),
                 content_area,
                 &mut sb_state,
             );
@@ -889,7 +893,7 @@ impl App {
 
         let mut lines: Vec<Line> = vec![Line::from(Span::styled(
             " Files:",
-            Style::default().fg(self.theme.border),
+            Style::default().fg(self.theme.text),
         ))];
         for name in &file_names {
             lines.push(Line::from(Span::styled(
@@ -903,7 +907,7 @@ impl App {
             .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
-        let br_style = Style::default().fg(self.theme.border);
+        let br_style = Style::default().fg(self.theme.text);
         let mut yn_spans: Vec<Span<'static>> = vec![Span::styled(" ", txt_style)];
         popup_entry(
             &mut yn_spans,
@@ -962,7 +966,7 @@ impl App {
         frame.render_widget(ratatui::widgets::Clear, modal_area);
 
         let txt_style = Style::default().fg(self.theme.text);
-        let br_style = Style::default().fg(self.theme.border);
+        let br_style = Style::default().fg(self.theme.text);
         let key_style = Style::default()
             .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
@@ -1086,7 +1090,7 @@ impl App {
         frame.render_widget(
             Paragraph::new(sep_text).style(
                 Style::default()
-                    .fg(self.theme.border)
+                    .fg(self.theme.text)
                     .bg(self.theme.root_bg),
             ),
             chunks[1],
@@ -1097,7 +1101,7 @@ impl App {
             .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
         let txt_style = Style::default().fg(self.theme.text);
-        let br_style = Style::default().fg(self.theme.border);
+        let br_style = Style::default().fg(self.theme.text);
         let mut footer_spans: Vec<Span<'static>> = Vec::new();
         popup_entry(
             &mut footer_spans,

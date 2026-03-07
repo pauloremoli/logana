@@ -107,14 +107,14 @@ pub fn status_entry_dyn(
     action: String,
     theme: &Theme,
 ) {
-    spans.push(Span::styled("<", Style::default().fg(theme.border)));
+    spans.push(Span::styled("<", Style::default().fg(theme.text)));
     spans.push(Span::styled(
         key,
         Style::default()
             .fg(theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD),
     ));
-    spans.push(Span::styled(">", Style::default().fg(theme.border)));
+    spans.push(Span::styled(">", Style::default().fg(theme.text)));
     spans.push(Span::styled(
         format!(" {}  ", action),
         Style::default().fg(theme.text),
@@ -129,14 +129,14 @@ pub fn status_entry(
     action: &'static str,
     theme: &Theme,
 ) {
-    spans.push(Span::styled("<", Style::default().fg(theme.border)));
+    spans.push(Span::styled("<", Style::default().fg(theme.text)));
     spans.push(Span::styled(
         key,
         Style::default()
             .fg(theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD),
     ));
-    spans.push(Span::styled(">", Style::default().fg(theme.border)));
+    spans.push(Span::styled(">", Style::default().fg(theme.text)));
     spans.push(Span::styled(
         format!(" {}  ", action),
         Style::default().fg(theme.text),

@@ -105,14 +105,14 @@ impl Mode for SelectFieldsMode {
             theme,
         );
         // Move up/down
-        spans.push(Span::styled("<", Style::default().fg(theme.border)));
+        spans.push(Span::styled("<", Style::default().fg(theme.text)));
         spans.push(Span::styled(
             kb.select_fields.move_up.display(),
             Style::default()
                 .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled("/", Style::default().fg(theme.border)));
+        spans.push(Span::styled("/", Style::default().fg(theme.text)));
         spans.push(Span::styled(
             kb.select_fields.move_down.display(),
             Style::default()

@@ -269,7 +269,7 @@ impl App {
             frame.render_widget(
                 Paragraph::new(text).style(
                     Style::default()
-                        .fg(self.theme.root_bg)
+                        .fg(self.theme.search_fg)
                         .bg(self.theme.text_highlight_fg),
                 ),
                 chunks[idx],
@@ -939,7 +939,9 @@ impl App {
             let max_scroll = num_visible.saturating_sub(visible_height);
             let mut scrollbar_state = ScrollbarState::new(max_scroll.max(1)).position(start);
             frame.render_stateful_widget(
-                Scrollbar::default().orientation(ScrollbarOrientation::VerticalRight),
+                Scrollbar::default()
+                    .orientation(ScrollbarOrientation::VerticalRight)
+                    .style(Style::default().fg(self.theme.border)),
                 logs_area,
                 &mut scrollbar_state,
             );
@@ -989,7 +991,7 @@ impl App {
             };
             let hint = Paragraph::new(hint_text).style(
                 Style::default()
-                    .fg(self.theme.border)
+                    .fg(self.theme.text)
                     .bg(self.theme.root_bg),
             );
             frame.render_widget(hint, hint_area);
@@ -1048,7 +1050,7 @@ impl App {
         frame.render_widget(
             Paragraph::new(text).style(
                 Style::default()
-                    .fg(self.theme.root_bg)
+                    .fg(self.theme.search_fg)
                     .bg(self.theme.text_highlight_fg),
             ),
             bar_rect,
@@ -1149,10 +1151,10 @@ impl App {
 
             let hint_area = chunks[chunk_idx + 1];
             let normal_style = Style::default()
-                .fg(self.theme.border)
+                .fg(self.theme.text)
                 .bg(self.theme.root_bg);
             let highlight_style = Style::default()
-                .fg(self.theme.root_bg)
+                .fg(self.theme.cursor_fg)
                 .bg(self.theme.cursor_bg);
 
             if let Some(err) = &self.tabs[self.active_tab].command_error {
@@ -1400,7 +1402,7 @@ impl App {
                             .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
-                            .fg(self.theme.border)
+                            .fg(self.theme.text)
                             .bg(self.theme.root_bg)
                     };
                     vec![

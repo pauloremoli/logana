@@ -1,6 +1,6 @@
 # Themes
 
-logana ships with 19 bundled themes and supports fully custom themes via JSON files.
+logana ships with 22 bundled themes and supports fully custom themes via JSON files.
 
 ## Switching Themes
 
@@ -25,6 +25,8 @@ Tab completes theme names. To set the default, add it to `~/.config/logana/confi
 | `catppuccin-mocha` | Pastel purple, the most popular Catppuccin variant |
 | `dracula` | Purple, default theme |
 | `everforest-dark` | Earthy green, easy on the eyes |
+| `github-dark` | GitHub dark — deep navy with blue accents |
+| `github-dark-dimmed` | GitHub dark dimmed — softer navy variant |
 | `gruvbox-dark` | Warm retro browns and yellows |
 | `jandedobbeleer` | Colorful, high contrast |
 | `kanagawa` | Japanese ink — deep blues and warm golds |
@@ -42,6 +44,7 @@ Tab completes theme names. To set the default, add it to `~/.config/logana/confi
 |---|---|
 | `catppuccin-latte` | Pastel, warm cream background |
 | `everforest-light` | Earthy green, warm paper background |
+| `github-light` | GitHub light — clean white with blue accents |
 | `onelight` | Atom-inspired, clean white background |
 | `rose-pine-dawn` | Warm rose tones on a parchment background |
 

@@ -155,14 +155,14 @@ impl Mode for VisualLineMode {
                 .add_modifier(Modifier::BOLD),
         )];
         // Extend up/down
-        spans.push(Span::styled("<", Style::default().fg(theme.border)));
+        spans.push(Span::styled("<", Style::default().fg(theme.text)));
         spans.push(Span::styled(
             kb.navigation.scroll_up.display(),
             Style::default()
                 .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::styled("/", Style::default().fg(theme.border)));
+        spans.push(Span::styled("/", Style::default().fg(theme.text)));
         spans.push(Span::styled(
             kb.navigation.scroll_down.display(),
             Style::default()
