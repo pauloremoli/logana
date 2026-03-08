@@ -184,7 +184,7 @@ async fn main() -> Result<()> {
         .await;
 
         // Apply display defaults from config.
-        app.show_mode_bar_default = show_mode_bar;
+        app.show_mode_bar = show_mode_bar;
         app.show_borders_default = show_borders;
         app.tabs[0].show_mode_bar = show_mode_bar;
         app.tabs[0].show_borders = show_borders;

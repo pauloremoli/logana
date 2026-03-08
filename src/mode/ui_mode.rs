@@ -54,8 +54,8 @@ impl Mode for UiMode {
         }
 
         if kb.ui.toggle_mode_bar.matches(key, modifiers) {
-            tab.show_mode_bar = !tab.show_mode_bar;
-            return (Box::new(UiMode::from_tab(tab)), KeyResult::Handled);
+            // ToggleModeBar is handled at App level so all tabs stay in sync.
+            return (Box::new(UiMode::from_tab(tab)), KeyResult::ToggleModeBar);
         }
 
         if kb.ui.toggle_borders.matches(key, modifiers) {
@@ -160,11 +160,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_b_toggles_mode_bar() {
+    async fn test_b_returns_toggle_mode_bar() {
         let mut tab = make_tab().await;
-        let initial = tab.show_mode_bar;
-        press(&mut tab, KeyCode::Char('b'), KeyModifiers::NONE).await;
-        assert_eq!(tab.show_mode_bar, !initial);
+        let (_, result) = press(&mut tab, KeyCode::Char('b'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::ToggleModeBar));
     }
 
     #[tokio::test]

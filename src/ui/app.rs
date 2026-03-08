@@ -40,8 +40,8 @@ pub struct App {
     pub keybindings: Arc<Keybindings>,
     /// Persistent clipboard instance — kept alive so clipboard managers can read the contents.
     pub clipboard: Option<arboard::Clipboard>,
-    /// Default show_mode_bar value applied to new tabs.
-    pub show_mode_bar_default: bool,
+    /// Global mode bar visibility — applies to all tabs uniformly.
+    pub show_mode_bar: bool,
     /// Default show_borders value applied to new tabs.
     pub show_borders_default: bool,
     /// When true, the initial file tab starts in tail mode (set by `--tail`).
@@ -114,7 +114,7 @@ impl App {
             stdin_load_state: None,
             keybindings,
             clipboard: None,
-            show_mode_bar_default: true,
+            show_mode_bar: true,
             show_borders_default: true,
             startup_tail: false,
             startup_filters: false,
@@ -300,6 +300,12 @@ impl App {
                         self.tabs[self.active_tab].level_colors_disabled = disabled;
                     }
                     KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
+                    KeyResult::ToggleModeBar => {
+                        self.show_mode_bar = !self.show_mode_bar;
+                        for tab in &mut self.tabs {
+                            tab.show_mode_bar = self.show_mode_bar;
+                        }
+                    }
                     KeyResult::OpenFiles(paths) => {
                         for path in paths {
                             if let Err(e) = self.open_file(&path).await {
@@ -348,6 +354,12 @@ impl App {
                 self.tabs[self.active_tab].level_colors_disabled = disabled;
             }
             KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
+            KeyResult::ToggleModeBar => {
+                self.show_mode_bar = !self.show_mode_bar;
+                for tab in &mut self.tabs {
+                    tab.show_mode_bar = self.show_mode_bar;
+                }
+            }
             KeyResult::OpenFiles(paths) => {
                 for path in paths {
                     if let Err(e) = self.open_file(&path).await {

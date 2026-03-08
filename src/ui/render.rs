@@ -154,7 +154,7 @@ impl App {
             _ => None,
         };
 
-        let show_mode_bar = self.tabs[self.active_tab].show_mode_bar;
+        let show_mode_bar = self.show_mode_bar;
         let show_borders = self.tabs[self.active_tab].show_borders;
 
         // Compute how many rows the mode bar needs so wrapped text is fully visible.
@@ -228,7 +228,12 @@ impl App {
             (main_chunk, None)
         };
 
-        self.render_logs_panel(frame, logs_area, visual_anchor, visual_char_selection);
+        let mode_name_for_title = if !show_mode_bar {
+            Some(render_state.mode_name())
+        } else {
+            None
+        };
+        self.render_logs_panel(frame, logs_area, visual_anchor, visual_char_selection, mode_name_for_title);
 
         self.render_side_bar(frame, selected_filter_idx, sidebar_area);
 
@@ -304,6 +309,7 @@ impl App {
         logs_area: Rect,
         visual_anchor: Option<usize>,
         visual_char_selection: Option<(usize, usize)>,
+        mode_name: Option<&str>,
     ) {
         let num_visible = self.tabs[self.active_tab].visible_indices.len();
         let show_borders = self.tabs[self.active_tab].show_borders;
@@ -1025,7 +1031,10 @@ impl App {
 
         let tail_mode = self.tabs[self.active_tab].tail_mode;
         let logs_title = format!(
-            "{} ({}){}{}",
+            "{}{} ({}){}{}",
+            mode_name
+                .map(|m| format!("[{}] ", m))
+                .unwrap_or_default(),
             self.tabs[self.active_tab]
                 .log_manager
                 .source_file()
@@ -1039,7 +1048,7 @@ impl App {
                 .unwrap_or(String::from("Logs")),
             num_visible,
             if tail_mode { " [TAIL]" } else { "" },
-            if raw_mode { " [RAW]" } else { "" }
+            if raw_mode { " [RAW]" } else { "" },
         );
 
         let logs_block = if show_borders {
@@ -1440,12 +1449,19 @@ impl App {
                 })
                 .collect();
 
-            let sidebar_title = if self.tabs[self.active_tab].show_marks_only {
-                "Filters [MARKS ONLY]"
-            } else if self.tabs[self.active_tab].filtering_enabled {
-                "Filters"
+            let active_count = filters.iter().filter(|f| f.enabled).count();
+            let total_count = filters.len();
+            let filter_count_suffix = if total_count > 0 {
+                format!(" [{}/{}]", active_count, total_count)
             } else {
-                "Filters [OFF]"
+                String::new()
+            };
+            let sidebar_title = if self.tabs[self.active_tab].show_marks_only {
+                format!("Filters [MARKS ONLY]{}", filter_count_suffix)
+            } else if self.tabs[self.active_tab].filtering_enabled {
+                format!("Filters{}", filter_count_suffix)
+            } else {
+                format!("Filters [OFF]{}", filter_count_suffix)
             };
             let sidebar_block = if show_borders {
                 Block::default()
@@ -2103,6 +2119,7 @@ mod tests {
     /// Set up an app with a persistent search handle injected at a given progress level.
     async fn make_app_with_search(progress: Option<f64>) -> (App, Terminal<TestBackend>) {
         let mut app = make_app(&["line 0", "line 1"]).await;
+        app.show_mode_bar = false;
         app.tabs[0].show_mode_bar = false;
 
         let visible = app.tabs[0].visible_indices.clone();

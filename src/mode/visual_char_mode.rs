@@ -68,6 +68,17 @@ impl VisualMode {
         }
     }
 
+    /// Refreshes `line_text` from the current scroll position, clamps `cursor_col`
+    /// to the new line length, and resets selection state.
+    /// Called after any motion that changes the active line.
+    fn on_line_change(&mut self, tab: &TabState) {
+        self.line_text = display_line_text(tab);
+        let n = self.line_text.chars().count();
+        self.cursor_col = if n == 0 { 0 } else { self.cursor_col.min(n - 1) };
+        self.anchor_col = None;
+        self.pending_motion = None;
+    }
+
     /// Returns the currently selected text.
     /// Without an anchor, returns the single character under the cursor.
     fn selected_text(&self) -> String {
@@ -109,6 +120,11 @@ impl Mode for VisualMode {
         }
 
         let char_count = self.line_text.chars().count();
+
+        // Clear the gg-chord flag for any key that isn't the go-to-top chord.
+        if !kb.normal.go_to_top_chord.matches(key, modifiers) {
+            tab.g_key_pressed = false;
+        }
 
         if kb.visual.move_left.matches(key, modifiers) {
             self.cursor_col = char_left(self.cursor_col);
@@ -186,6 +202,42 @@ impl Mode for VisualMode {
             );
         } else if kb.visual.exit.matches(key, modifiers) {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
+        } else if kb.navigation.scroll_down.matches(key, modifiers) {
+            tab.scroll_offset = tab.scroll_offset.saturating_add(1);
+            self.on_line_change(tab);
+        } else if kb.navigation.scroll_up.matches(key, modifiers) {
+            tab.scroll_offset = tab.scroll_offset.saturating_sub(1);
+            self.on_line_change(tab);
+        } else if kb.navigation.half_page_down.matches(key, modifiers) {
+            let half = (tab.visible_height / 2).max(1);
+            tab.scroll_offset = tab.scroll_offset.saturating_add(half);
+            self.on_line_change(tab);
+        } else if kb.navigation.half_page_up.matches(key, modifiers) {
+            let half = (tab.visible_height / 2).max(1);
+            tab.scroll_offset = tab.scroll_offset.saturating_sub(half);
+            self.on_line_change(tab);
+        } else if kb.navigation.page_down.matches(key, modifiers) {
+            let page = tab.visible_height.max(1);
+            tab.scroll_offset = tab.scroll_offset.saturating_add(page);
+            self.on_line_change(tab);
+        } else if kb.navigation.page_up.matches(key, modifiers) {
+            let page = tab.visible_height.max(1);
+            tab.scroll_offset = tab.scroll_offset.saturating_sub(page);
+            self.on_line_change(tab);
+        } else if kb.normal.go_to_bottom.matches(key, modifiers) {
+            let n = tab.visible_indices.len();
+            if n > 0 {
+                tab.scroll_offset = n - 1;
+            }
+            self.on_line_change(tab);
+        } else if kb.normal.go_to_top_chord.matches(key, modifiers) {
+            if tab.g_key_pressed {
+                tab.scroll_offset = 0;
+                tab.g_key_pressed = false;
+                self.on_line_change(tab);
+            } else {
+                tab.g_key_pressed = true;
+            }
         }
 
         (self, KeyResult::Handled)
@@ -218,6 +270,18 @@ impl Mode for VisualMode {
                 .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
+        status_entry(
+            &mut spans,
+            kb.navigation.scroll_down.display(),
+            "line↓",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.navigation.scroll_up.display(),
+            "line↑",
+            theme,
+        );
         status_entry(&mut spans, kb.visual.move_left.display(), "char←", theme);
         status_entry(&mut spans, kb.visual.move_right.display(), "char→", theme);
         status_entry(&mut spans, kb.visual.word_forward.display(), "word→", theme);
@@ -1185,5 +1249,172 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::REVERSED)
         );
+    }
+
+    // ── Line navigation ──────────────────────────────────────────────────────
+
+    async fn make_multi_tab(lines: &[&str]) -> TabState {
+        let data = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut tab = TabState::new(file_reader, log_manager, "test".to_string());
+        tab.refresh_visible();
+        tab
+    }
+
+    #[tokio::test]
+    async fn test_j_scrolls_down_and_updates_line_text() {
+        let mut tab = make_multi_tab(&["line0", "line1", "line2"]).await;
+        tab.scroll_offset = 0;
+        let mode = VisualMode::new("line0".to_string());
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 1);
+        match m.render_state() {
+            ModeRenderState::Visual {
+                anchor_col,
+                cursor_col,
+                ..
+            } => {
+                assert_eq!(anchor_col, None);
+                assert_eq!(cursor_col, 0);
+            }
+            other => panic!("expected Visual, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_k_scrolls_up_and_updates_line_text() {
+        let mut tab = make_multi_tab(&["line0", "line1", "line2"]).await;
+        tab.scroll_offset = 2;
+        let mode = VisualMode::new("line2".to_string());
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('k'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 1);
+        assert!(matches!(m.render_state(), ModeRenderState::Visual { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_j_clamps_cursor_col_to_new_line_length() {
+        let mut tab = make_multi_tab(&["long line here", "hi"]).await;
+        tab.scroll_offset = 0;
+        let mut mode = VisualMode::new("long line here".to_string());
+        mode.cursor_col = 10;
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 1);
+        // "hi" has 2 chars; col 10 clamps to 1
+        assert_eq!(cursor_col(m.as_ref()), 1);
+    }
+
+    #[tokio::test]
+    async fn test_j_resets_anchor() {
+        let mut tab = make_multi_tab(&["line0", "line1"]).await;
+        tab.scroll_offset = 0;
+        let mut mode = VisualMode::new("line0".to_string());
+        mode.anchor_col = Some(2);
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        match m.render_state() {
+            ModeRenderState::Visual { anchor_col, .. } => assert_eq!(anchor_col, None),
+            other => panic!("expected Visual, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_k_at_top_stays_at_zero() {
+        let mut tab = make_multi_tab(&["only"]).await;
+        tab.scroll_offset = 0;
+        let mode = VisualMode::new("only".to_string());
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('k'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 0);
+        assert!(matches!(m.render_state(), ModeRenderState::Visual { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_capital_g_goes_to_last_line() {
+        let mut tab = make_multi_tab(&["a", "b", "c"]).await;
+        tab.scroll_offset = 0;
+        let mode = VisualMode::new("a".to_string());
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('G'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 2);
+        assert!(matches!(m.render_state(), ModeRenderState::Visual { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_gg_chord_goes_to_first_line() {
+        let mut tab = make_multi_tab(&["a", "b", "c"]).await;
+        tab.scroll_offset = 2;
+        let mode = VisualMode::new("c".to_string());
+        // first 'g' sets the flag
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 2); // not moved yet
+        assert!(tab.g_key_pressed);
+        // second 'g' jumps to top
+        let (m2, _) = m
+            .handle_key(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 0);
+        assert!(!tab.g_key_pressed);
+        assert!(matches!(m2.render_state(), ModeRenderState::Visual { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_non_g_key_clears_g_flag() {
+        let mut tab = make_multi_tab(&["a", "b"]).await;
+        tab.scroll_offset = 1;
+        tab.g_key_pressed = true;
+        let mode = VisualMode::new("b".to_string());
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('h'), KeyModifiers::NONE)
+            .await;
+        assert!(!tab.g_key_pressed);
+        assert!(matches!(m.render_state(), ModeRenderState::Visual { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_d_half_page_down() {
+        let mut tab = make_multi_tab(&["a", "b", "c", "d", "e"]).await;
+        tab.scroll_offset = 0;
+        tab.visible_height = 4;
+        let mode = VisualMode::new("a".to_string());
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('d'), KeyModifiers::CONTROL)
+            .await;
+        assert_eq!(tab.scroll_offset, 2); // half of 4 = 2
+        assert!(matches!(m.render_state(), ModeRenderState::Visual { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_u_half_page_up() {
+        let mut tab = make_multi_tab(&["a", "b", "c", "d", "e"]).await;
+        tab.scroll_offset = 4;
+        tab.visible_height = 4;
+        let mode = VisualMode::new("e".to_string());
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('u'), KeyModifiers::CONTROL)
+            .await;
+        assert_eq!(tab.scroll_offset, 2);
+        assert!(matches!(m.render_state(), ModeRenderState::Visual { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_mode_bar_contains_line_nav_hints() {
+        let mode = make_mode("hello");
+        let content = mode.mode_bar_content(&Keybindings::default(), &Theme::default());
+        let text: String = content.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("line↓"), "missing line↓ in: {text}");
+        assert!(text.contains("line↑"), "missing line↑ in: {text}");
     }
 }

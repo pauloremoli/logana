@@ -85,6 +85,32 @@ pub enum ModeRenderState {
     },
 }
 
+impl ModeRenderState {
+    /// Returns a short uppercase label for the current mode, used in the tab
+    /// bar when the mode bar is hidden.
+    pub fn mode_name(&self) -> &'static str {
+        match self {
+            ModeRenderState::Normal => "NORMAL",
+            ModeRenderState::Command { .. } => "COMMAND",
+            ModeRenderState::Search { forward: true, .. } => "SEARCH",
+            ModeRenderState::Search { forward: false, .. } => "SEARCH↑",
+            ModeRenderState::FilterManagement { .. } => "FILTER",
+            ModeRenderState::FilterEdit => "FILTER EDIT",
+            ModeRenderState::VisualLine { .. } => "VISUAL LINE",
+            ModeRenderState::Visual { .. } => "VISUAL",
+            ModeRenderState::Comment { .. } => "COMMENT",
+            ModeRenderState::KeybindingsHelp { .. } => "HELP",
+            ModeRenderState::SelectFields { .. } => "FIELDS",
+            ModeRenderState::DockerSelect { .. } => "DOCKER",
+            ModeRenderState::ValueColors { .. } => "VALUE COLORS",
+            ModeRenderState::LevelColors { .. } => "LEVEL COLORS",
+            ModeRenderState::ConfirmRestore
+            | ModeRenderState::ConfirmRestoreSession { .. }
+            | ModeRenderState::ConfirmOpenDir { .. } => "CONFIRM",
+        }
+    }
+}
+
 #[async_trait]
 pub trait Mode: std::fmt::Debug + Send {
     async fn handle_key(
@@ -714,5 +740,121 @@ mod tests {
             }
             other => panic!("expected ConfirmOpenDir, got {:?}", other),
         }
+    }
+
+    // ── ModeRenderState::mode_name ───────────────────────────────────────────
+
+    #[test]
+    fn mode_name_covers_all_variants() {
+        assert_eq!(ModeRenderState::Normal.mode_name(), "NORMAL");
+        assert_eq!(
+            ModeRenderState::Command {
+                input: String::new(),
+                cursor: 0,
+                completion_index: None
+            }
+            .mode_name(),
+            "COMMAND"
+        );
+        assert_eq!(
+            ModeRenderState::Search {
+                query: String::new(),
+                forward: true
+            }
+            .mode_name(),
+            "SEARCH"
+        );
+        assert_eq!(
+            ModeRenderState::Search {
+                query: String::new(),
+                forward: false
+            }
+            .mode_name(),
+            "SEARCH↑"
+        );
+        assert_eq!(
+            ModeRenderState::FilterManagement { selected_index: 0 }.mode_name(),
+            "FILTER"
+        );
+        assert_eq!(ModeRenderState::FilterEdit.mode_name(), "FILTER EDIT");
+        assert_eq!(
+            ModeRenderState::VisualLine { anchor: 0 }.mode_name(),
+            "VISUAL LINE"
+        );
+        assert_eq!(
+            ModeRenderState::Visual {
+                anchor_col: None,
+                cursor_col: 0,
+                pending_motion: false
+            }
+            .mode_name(),
+            "VISUAL"
+        );
+        assert_eq!(
+            ModeRenderState::Comment {
+                lines: vec![],
+                cursor_row: 0,
+                cursor_col: 0,
+                line_count: 0
+            }
+            .mode_name(),
+            "COMMENT"
+        );
+        assert_eq!(
+            ModeRenderState::KeybindingsHelp {
+                scroll: 0,
+                search: String::new()
+            }
+            .mode_name(),
+            "HELP"
+        );
+        assert_eq!(
+            ModeRenderState::SelectFields {
+                fields: vec![],
+                selected: 0
+            }
+            .mode_name(),
+            "FIELDS"
+        );
+        assert_eq!(
+            ModeRenderState::DockerSelect {
+                containers: vec![],
+                selected: 0,
+                error: None
+            }
+            .mode_name(),
+            "DOCKER"
+        );
+        assert_eq!(
+            ModeRenderState::ValueColors {
+                groups: vec![],
+                search: String::new(),
+                selected: 0
+            }
+            .mode_name(),
+            "VALUE COLORS"
+        );
+        assert_eq!(
+            ModeRenderState::LevelColors {
+                groups: vec![],
+                search: String::new(),
+                selected: 0
+            }
+            .mode_name(),
+            "LEVEL COLORS"
+        );
+        assert_eq!(ModeRenderState::ConfirmRestore.mode_name(), "CONFIRM");
+        assert_eq!(
+            ModeRenderState::ConfirmRestoreSession { files: vec![] }.mode_name(),
+            "CONFIRM"
+        );
+        assert_eq!(
+            ModeRenderState::ConfirmOpenDir {
+                dir: String::new(),
+                files: vec![]
+            }
+            .mode_name(),
+            "CONFIRM"
+        );
     }
 }

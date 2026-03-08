@@ -44,7 +44,7 @@ impl App {
         let log_manager = LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
         let mut tab = TabState::new(preview, log_manager, title);
         tab.keybindings = self.keybindings.clone();
-        tab.show_mode_bar = self.show_mode_bar_default;
+        tab.show_mode_bar = self.show_mode_bar;
         tab.show_borders = self.show_borders_default;
         tab.refresh_visible();
 
@@ -70,7 +70,7 @@ impl App {
 
         let mut tab = TabState::new(file_reader, log_manager, title);
         tab.keybindings = self.keybindings.clone();
-        tab.show_mode_bar = self.show_mode_bar_default;
+        tab.show_mode_bar = self.show_mode_bar;
         tab.show_borders = self.show_borders_default;
 
         match FileReader::spawn_process_stream("docker", &["logs", "-f", &container_id]).await {
@@ -97,7 +97,7 @@ impl App {
 
         let mut tab = TabState::new(file_reader, log_manager, title);
         tab.keybindings = self.keybindings.clone();
-        tab.show_mode_bar = self.show_mode_bar_default;
+        tab.show_mode_bar = self.show_mode_bar;
         tab.show_borders = self.show_borders_default;
 
         match FileReader::spawn_process_stream("docker", &["logs", "-f", name]).await {
@@ -161,7 +161,7 @@ impl App {
             let log_manager = LogManager::new(self.db.clone(), Some(next.clone())).await;
             let mut tab = TabState::new(preview, log_manager, title);
             tab.keybindings = self.keybindings.clone();
-            tab.show_mode_bar = self.show_mode_bar_default;
+            tab.show_mode_bar = self.show_mode_bar;
             tab.show_borders = self.show_borders_default;
             tab.refresh_visible();
             let abs_path = std::fs::canonicalize(&next)
@@ -349,7 +349,7 @@ impl App {
                 let log_manager = LogManager::new(self.db.clone(), None).await;
                 let mut tab = TabState::new(file_reader, log_manager, "stdin".to_string());
                 tab.keybindings = self.keybindings.clone();
-                tab.show_mode_bar = self.show_mode_bar_default;
+                tab.show_mode_bar = self.show_mode_bar;
                 tab.show_borders = self.show_borders_default;
                 tab.scroll_offset = tab.visible_indices.len().saturating_sub(1);
                 self.tabs.push(tab);

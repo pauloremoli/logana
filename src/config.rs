@@ -1385,6 +1385,14 @@ impl Keybindings {
             ("visual.start_selection", &self.visual.start_selection),
             ("visual.yank", &self.visual.yank),
             ("visual.exit", &self.visual.exit),
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
+            ("navigation.half_page_down", &nav.half_page_down),
+            ("navigation.half_page_up", &nav.half_page_up),
+            ("navigation.page_down", &nav.page_down),
+            ("navigation.page_up", &nav.page_up),
+            ("normal.go_to_bottom", &self.normal.go_to_bottom),
+            ("normal.go_to_top_chord", &self.normal.go_to_top_chord),
         ];
 
         let docker_select_actions: &[(&str, &KeyBindings)] = &[

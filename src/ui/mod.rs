@@ -46,6 +46,7 @@ pub enum KeyResult {
     ApplyLevelColors(std::collections::HashSet<String>),
     CopyToClipboard(String),
     OpenFiles(Vec<String>),
+    ToggleModeBar,
 }
 
 // ---------------------------------------------------------------------------
