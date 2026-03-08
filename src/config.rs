@@ -337,6 +337,9 @@ fn default_toggle_wrap() -> KeyBindings {
 fn default_visual_mode() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('V'), KeyModifiers::NONE)])
 }
+fn default_visual_char() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('v'), KeyModifiers::NONE)])
+}
 fn default_toggle_marks_only() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('M'), KeyModifiers::NONE)])
 }
@@ -439,6 +442,8 @@ pub struct NormalKeybindings {
     pub prev_match: KeyBindings,
     #[serde(default = "default_visual_mode")]
     pub visual_mode: KeyBindings,
+    #[serde(default = "default_visual_char")]
+    pub visual_char: KeyBindings,
     #[serde(default = "default_toggle_marks_only")]
     pub toggle_marks_only: KeyBindings,
     #[serde(default = "default_yank_line")]
@@ -479,6 +484,7 @@ impl Default for NormalKeybindings {
             next_match: default_next_match(),
             prev_match: default_prev_match(),
             visual_mode: default_visual_mode(),
+            visual_char: default_visual_char(),
             toggle_marks_only: default_toggle_marks_only(),
             yank_line: default_yank_line(),
             yank_marked: default_yank_marked(),
@@ -696,6 +702,15 @@ fn default_visual_mark() -> KeyBindings {
 fn default_visual_exit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
+fn default_visual_line_filter_include() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('i'), KeyModifiers::NONE)])
+}
+fn default_visual_line_filter_exclude() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('o'), KeyModifiers::NONE)])
+}
+fn default_visual_line_search() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('/'), KeyModifiers::NONE)])
+}
 
 // ---------------------------------------------------------------------------
 // VisualLineKeybindings
@@ -709,6 +724,12 @@ pub struct VisualLineKeybindings {
     pub yank: KeyBindings,
     #[serde(default = "default_visual_mark")]
     pub mark: KeyBindings,
+    #[serde(default = "default_visual_line_filter_include")]
+    pub filter_include: KeyBindings,
+    #[serde(default = "default_visual_line_filter_exclude")]
+    pub filter_exclude: KeyBindings,
+    #[serde(default = "default_visual_line_search")]
+    pub search: KeyBindings,
     #[serde(default = "default_visual_exit")]
     pub exit: KeyBindings,
 }
@@ -719,7 +740,174 @@ impl Default for VisualLineKeybindings {
             comment: default_visual_comment(),
             yank: default_visual_yank(),
             mark: default_visual_mark(),
+            filter_include: default_visual_line_filter_include(),
+            filter_exclude: default_visual_line_filter_exclude(),
+            search: default_visual_line_search(),
             exit: default_visual_exit(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VisualKeybindings (character-level visual mode) — defaults
+// ---------------------------------------------------------------------------
+
+fn default_vc_move_left() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('h'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Left, KeyModifiers::NONE),
+    ])
+}
+fn default_vc_move_right() -> KeyBindings {
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('l'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Right, KeyModifiers::NONE),
+    ])
+}
+fn default_vc_word_forward() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('w'), KeyModifiers::NONE)])
+}
+fn default_vc_word_backward() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('b'), KeyModifiers::NONE)])
+}
+fn default_vc_word_end() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('e'), KeyModifiers::NONE)])
+}
+fn default_vc_word_forward_big() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('W'), KeyModifiers::NONE)])
+}
+fn default_vc_word_backward_big() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('B'), KeyModifiers::NONE)])
+}
+fn default_vc_word_end_big() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('E'), KeyModifiers::NONE)])
+}
+fn default_vc_start_of_line() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('0'), KeyModifiers::NONE)])
+}
+fn default_vc_first_nonblank() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('^'), KeyModifiers::NONE)])
+}
+fn default_vc_end_of_line() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('$'), KeyModifiers::NONE)])
+}
+fn default_vc_find_forward() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('f'), KeyModifiers::NONE)])
+}
+fn default_vc_find_backward() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('F'), KeyModifiers::NONE)])
+}
+fn default_vc_till_forward() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('t'), KeyModifiers::NONE)])
+}
+fn default_vc_till_backward() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('T'), KeyModifiers::NONE)])
+}
+fn default_vc_repeat_motion() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char(';'), KeyModifiers::NONE)])
+}
+fn default_vc_repeat_motion_rev() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char(','), KeyModifiers::NONE)])
+}
+fn default_vc_filter_include() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('i'), KeyModifiers::NONE)])
+}
+fn default_vc_filter_exclude() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('o'), KeyModifiers::NONE)])
+}
+fn default_vc_search() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('/'), KeyModifiers::NONE)])
+}
+fn default_vc_yank() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('y'), KeyModifiers::NONE)])
+}
+fn default_vc_start_selection() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('v'), KeyModifiers::NONE)])
+}
+fn default_vc_exit() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
+
+// ---------------------------------------------------------------------------
+// VisualKeybindings
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisualKeybindings {
+    #[serde(default = "default_vc_move_left")]
+    pub move_left: KeyBindings,
+    #[serde(default = "default_vc_move_right")]
+    pub move_right: KeyBindings,
+    #[serde(default = "default_vc_word_forward")]
+    pub word_forward: KeyBindings,
+    #[serde(default = "default_vc_word_backward")]
+    pub word_backward: KeyBindings,
+    #[serde(default = "default_vc_word_end")]
+    pub word_end: KeyBindings,
+    #[serde(default = "default_vc_word_forward_big")]
+    pub word_forward_big: KeyBindings,
+    #[serde(default = "default_vc_word_backward_big")]
+    pub word_backward_big: KeyBindings,
+    #[serde(default = "default_vc_word_end_big")]
+    pub word_end_big: KeyBindings,
+    #[serde(default = "default_vc_start_of_line")]
+    pub start_of_line: KeyBindings,
+    #[serde(default = "default_vc_first_nonblank")]
+    pub first_nonblank: KeyBindings,
+    #[serde(default = "default_vc_end_of_line")]
+    pub end_of_line: KeyBindings,
+    #[serde(default = "default_vc_find_forward")]
+    pub find_forward: KeyBindings,
+    #[serde(default = "default_vc_find_backward")]
+    pub find_backward: KeyBindings,
+    #[serde(default = "default_vc_till_forward")]
+    pub till_forward: KeyBindings,
+    #[serde(default = "default_vc_till_backward")]
+    pub till_backward: KeyBindings,
+    #[serde(default = "default_vc_repeat_motion")]
+    pub repeat_motion: KeyBindings,
+    #[serde(default = "default_vc_repeat_motion_rev")]
+    pub repeat_motion_rev: KeyBindings,
+    #[serde(default = "default_vc_filter_include")]
+    pub filter_include: KeyBindings,
+    #[serde(default = "default_vc_filter_exclude")]
+    pub filter_exclude: KeyBindings,
+    #[serde(default = "default_vc_search")]
+    pub search: KeyBindings,
+    #[serde(default = "default_vc_start_selection")]
+    pub start_selection: KeyBindings,
+    #[serde(default = "default_vc_yank")]
+    pub yank: KeyBindings,
+    #[serde(default = "default_vc_exit")]
+    pub exit: KeyBindings,
+}
+
+impl Default for VisualKeybindings {
+    fn default() -> Self {
+        Self {
+            move_left: default_vc_move_left(),
+            move_right: default_vc_move_right(),
+            word_forward: default_vc_word_forward(),
+            word_backward: default_vc_word_backward(),
+            word_end: default_vc_word_end(),
+            word_forward_big: default_vc_word_forward_big(),
+            word_backward_big: default_vc_word_backward_big(),
+            word_end_big: default_vc_word_end_big(),
+            start_of_line: default_vc_start_of_line(),
+            first_nonblank: default_vc_first_nonblank(),
+            end_of_line: default_vc_end_of_line(),
+            find_forward: default_vc_find_forward(),
+            find_backward: default_vc_find_backward(),
+            till_forward: default_vc_till_forward(),
+            till_backward: default_vc_till_backward(),
+            repeat_motion: default_vc_repeat_motion(),
+            repeat_motion_rev: default_vc_repeat_motion_rev(),
+            filter_include: default_vc_filter_include(),
+            filter_exclude: default_vc_filter_exclude(),
+            search: default_vc_search(),
+            start_selection: default_vc_start_selection(),
+            yank: default_vc_yank(),
+            exit: default_vc_exit(),
         }
     }
 }
@@ -1048,6 +1236,8 @@ pub struct Keybindings {
     #[serde(default)]
     pub visual_line: VisualLineKeybindings,
     #[serde(default)]
+    pub visual: VisualKeybindings,
+    #[serde(default)]
     pub search: SearchKeybindings,
     #[serde(default)]
     pub filter_edit: FilterEditKeybindings,
@@ -1117,6 +1307,7 @@ impl Keybindings {
             ("normal.yank_line", &self.normal.yank_line),
             ("normal.yank_marked", &self.normal.yank_marked),
             ("normal.visual_mode", &self.normal.visual_mode),
+            ("normal.visual_char", &self.normal.visual_char),
             ("normal.search_forward", &self.normal.search_forward),
             ("normal.search_backward", &self.normal.search_backward),
             ("normal.next_match", &self.normal.next_match),
@@ -1158,7 +1349,42 @@ impl Keybindings {
             ("visual_line.comment", &self.visual_line.comment),
             ("visual_line.yank", &self.visual_line.yank),
             ("visual_line.mark", &self.visual_line.mark),
+            (
+                "visual_line.filter_include",
+                &self.visual_line.filter_include,
+            ),
+            (
+                "visual_line.filter_exclude",
+                &self.visual_line.filter_exclude,
+            ),
+            ("visual_line.search", &self.visual_line.search),
             ("visual_line.exit", &self.visual_line.exit),
+        ];
+
+        let visual_char_actions: &[(&str, &KeyBindings)] = &[
+            ("visual.move_left", &self.visual.move_left),
+            ("visual.move_right", &self.visual.move_right),
+            ("visual.word_forward", &self.visual.word_forward),
+            ("visual.word_backward", &self.visual.word_backward),
+            ("visual.word_end", &self.visual.word_end),
+            ("visual.word_forward_big", &self.visual.word_forward_big),
+            ("visual.word_backward_big", &self.visual.word_backward_big),
+            ("visual.word_end_big", &self.visual.word_end_big),
+            ("visual.start_of_line", &self.visual.start_of_line),
+            ("visual.first_nonblank", &self.visual.first_nonblank),
+            ("visual.end_of_line", &self.visual.end_of_line),
+            ("visual.find_forward", &self.visual.find_forward),
+            ("visual.find_backward", &self.visual.find_backward),
+            ("visual.till_forward", &self.visual.till_forward),
+            ("visual.till_backward", &self.visual.till_backward),
+            ("visual.repeat_motion", &self.visual.repeat_motion),
+            ("visual.repeat_motion_rev", &self.visual.repeat_motion_rev),
+            ("visual.filter_include", &self.visual.filter_include),
+            ("visual.filter_exclude", &self.visual.filter_exclude),
+            ("visual.search", &self.visual.search),
+            ("visual.start_selection", &self.visual.start_selection),
+            ("visual.yank", &self.visual.yank),
+            ("visual.exit", &self.visual.exit),
         ];
 
         let docker_select_actions: &[(&str, &KeyBindings)] = &[
@@ -1214,6 +1440,7 @@ impl Keybindings {
         check_conflicts(normal_actions, &mut conflicts);
         check_conflicts(filter_actions, &mut conflicts);
         check_conflicts(visual_line_actions, &mut conflicts);
+        check_conflicts(visual_char_actions, &mut conflicts);
         check_conflicts(docker_select_actions, &mut conflicts);
         check_conflicts(value_colors_actions, &mut conflicts);
         check_conflicts(select_fields_actions, &mut conflicts);

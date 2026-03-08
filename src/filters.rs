@@ -601,7 +601,10 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "hello");
         assert!(hello_span.is_some());
-        assert_eq!(hello_span.unwrap().style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(
+            hello_span.unwrap().style.fg,
+            Some(ratatui::style::Color::Red)
+        );
     }
 
     #[test]

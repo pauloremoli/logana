@@ -92,6 +92,19 @@ impl App {
             ModeRenderState::VisualLine { anchor } => Some(*anchor),
             _ => None,
         };
+        let visual_char_selection: Option<(usize, usize)> = match &render_state {
+            ModeRenderState::Visual {
+                anchor_col,
+                cursor_col,
+                ..
+            } => {
+                let anchor = anchor_col.unwrap_or(*cursor_col);
+                let lo = anchor.min(*cursor_col);
+                let hi = anchor.max(*cursor_col);
+                Some((lo, hi))
+            }
+            _ => None,
+        };
         let comment_popup: Option<(Vec<String>, usize, usize, usize)> = match &render_state {
             ModeRenderState::Comment {
                 lines,
@@ -215,7 +228,7 @@ impl App {
             (main_chunk, None)
         };
 
-        self.render_logs_panel(frame, logs_area, visual_anchor);
+        self.render_logs_panel(frame, logs_area, visual_anchor, visual_char_selection);
 
         self.render_side_bar(frame, selected_filter_idx, sidebar_area);
 
@@ -283,7 +296,6 @@ impl App {
         if let Some((scroll, search)) = help_state {
             self.render_keybindings_help_popup(frame, &keybindings, scroll, &search);
         }
-
     }
 
     fn render_logs_panel(
@@ -291,6 +303,7 @@ impl App {
         frame: &mut Frame<'_>,
         logs_area: Rect,
         visual_anchor: Option<usize>,
+        visual_char_selection: Option<(usize, usize)>,
     ) {
         let num_visible = self.tabs[self.active_tab].visible_indices.len();
         let show_borders = self.tabs[self.active_tab].show_borders;
@@ -783,7 +796,9 @@ impl App {
                 base_style = visual_style;
             }
 
-            let render_style = if is_current {
+            // In visual-char mode, skip cursor highlight on the current line so
+            // the char-level REVERSED selection is the only visual indicator.
+            let render_style = if is_current && visual_char_selection.is_none() {
                 Style::default().fg(theme.cursor_fg).bg(theme.cursor_bg)
             } else {
                 base_style
@@ -916,6 +931,10 @@ impl App {
             // Use line-level base style so per-span highlights (search, filters) are
             // preserved on the cursor line. Spans with explicit fg/bg override the base.
             let mut line = content_line.style(render_style);
+
+            if is_current && let Some((lo, hi)) = visual_char_selection {
+                line = crate::mode::visual_char_mode::apply_char_selection(line, lo, hi);
+            }
 
             if show_line_numbers {
                 let line_num = line_idx + 1;
@@ -1085,10 +1104,8 @@ impl App {
                 .style(Style::default().fg(self.theme.text).bg(self.theme.root_bg));
             frame.render_widget(hint, hint_area);
 
-            let progress_text: Option<String> = self.tabs[self.active_tab]
-                .search_handle
-                .as_ref()
-                .map(|h| {
+            let progress_text: Option<String> =
+                self.tabs[self.active_tab].search_handle.as_ref().map(|h| {
                     let (bar, pct) = progress_bar_str(*h.progress_rx.borrow());
                     format!(" {} {}% ", bar, pct)
                 });
@@ -1487,8 +1504,8 @@ impl App {
             })
             .collect();
 
-        let tab_bar = Paragraph::new(Line::from(tab_spans))
-            .style(Style::default().bg(self.theme.root_bg));
+        let tab_bar =
+            Paragraph::new(Line::from(tab_spans)).style(Style::default().bg(self.theme.root_bg));
         frame.render_widget(tab_bar, tab_bar_area);
     }
 }

@@ -411,8 +411,7 @@ mod tests {
                     if tab.visible_indices.is_empty() {
                         tab.scroll_offset = 0;
                     } else {
-                        tab.scroll_offset =
-                            tab.scroll_offset.min(tab.visible_indices.len() - 1);
+                        tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
                     }
                 }
             }

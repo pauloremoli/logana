@@ -147,7 +147,6 @@ async fn main() -> Result<()> {
     let (source_path, background_file_load) = resolve_source(&file_path);
 
     let log_manager = LogManager::new(db.clone(), source_path.clone()).await;
-
     let config = Config::load();
     let theme = config
         .theme

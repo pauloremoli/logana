@@ -60,6 +60,15 @@ Mark important lines to jump back to them or include them in an export.
 
 Marked lines show a highlighted indicator in the gutter. Marks are per-session and not persisted across runs.
 
+## Visual Selection
+
+| Key | Action |
+|---|---|
+| `V` | Enter visual **line** mode — select whole lines for bulk mark / comment / yank / filter |
+| `v` | Enter visual **char** mode — move a cursor within the current line and select a text range |
+
+See [Annotations & Export](annotations.md) for the full key reference for both modes.
+
 ## Line Wrap
 
 Toggle line wrapping with `:wrap` or via the UI menu (`u` → `w`). When wrap is enabled, long lines flow onto multiple terminal rows and all viewport math accounts for the extra rows automatically.

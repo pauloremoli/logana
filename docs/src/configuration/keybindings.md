@@ -47,6 +47,7 @@ Multiple alternatives:
   "mark_line": "m",
   "toggle_marks_view": "M",
   "enter_visual_mode": "V",
+  "visual_char": "v",
   "yank_marked": "Y",
   "open_ui_options": "u",
   "show_keybindings": "F1",
@@ -97,7 +98,40 @@ Multiple alternatives:
 "visual_line": {
   "comment": "c",
   "mark": "m",
-  "yank": "y"
+  "yank": "y",
+  "filter_include": "i",
+  "filter_exclude": "o",
+  "search": "/"
+}
+```
+
+## Visual Char Mode
+
+```json
+"visual": {
+  "move_left": ["h", "Left"],
+  "move_right": ["l", "Right"],
+  "word_forward": "w",
+  "word_backward": "b",
+  "word_end": "e",
+  "word_forward_big": "W",
+  "word_backward_big": "B",
+  "word_end_big": "E",
+  "start_of_line": "0",
+  "first_nonblank": "^",
+  "end_of_line": "$",
+  "find_forward": "f",
+  "find_backward": "F",
+  "till_forward": "t",
+  "till_backward": "T",
+  "repeat_motion": ";",
+  "repeat_motion_rev": ",",
+  "start_selection": "v",
+  "filter_include": "i",
+  "filter_exclude": "o",
+  "search": "/",
+  "yank": "y",
+  "exit": "Esc"
 }
 ```
 

@@ -132,7 +132,10 @@ impl App {
                     // Queue exhausted — remove the placeholder if it was never replaced.
                     if self.tabs.len() > 1
                         && initial_tab_idx < self.tabs.len()
-                        && self.tabs[initial_tab_idx].log_manager.source_file().is_none()
+                        && self.tabs[initial_tab_idx]
+                            .log_manager
+                            .source_file()
+                            .is_none()
                         && self.tabs[initial_tab_idx].file_reader.line_count() == 0
                     {
                         self.tabs.remove(initial_tab_idx);
@@ -175,7 +178,10 @@ impl App {
             // If the initial placeholder is still empty and active, remove it now and
             // switch immediately to the new file tab so the user sees content right away.
             let placeholder_is_empty = initial_tab_idx < tab_idx
-                && self.tabs[initial_tab_idx].log_manager.source_file().is_none()
+                && self.tabs[initial_tab_idx]
+                    .log_manager
+                    .source_file()
+                    .is_none()
                 && self.tabs[initial_tab_idx].file_reader.line_count() == 0;
             if placeholder_is_empty {
                 self.tabs.remove(initial_tab_idx);
@@ -1103,8 +1109,14 @@ mod tests {
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active_tab, 1);
         // Preview is shown immediately; watcher is set up after background load completes.
-        assert!(app.tabs[1].file_reader.line_count() > 0, "preview should be populated");
-        assert!(app.file_load_state.is_some(), "background load should be in progress");
+        assert!(
+            app.tabs[1].file_reader.line_count() > 0,
+            "preview should be populated"
+        );
+        assert!(
+            app.file_load_state.is_some(),
+            "background load should be in progress"
+        );
     }
 
     #[tokio::test]
@@ -1299,7 +1311,11 @@ mod tests {
         app.continue_session_restore(queue, 1, 0).await;
 
         // Placeholder should be gone; only the preview tab remains.
-        assert_eq!(app.tabs.len(), 1, "placeholder tab should be removed immediately");
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "placeholder tab should be removed immediately"
+        );
         assert_eq!(app.active_tab, 0);
         assert!(
             app.tabs[0].file_reader.line_count() > 0,
@@ -1375,8 +1391,15 @@ mod tests {
         app.continue_session_restore(queue, 1, 0).await;
 
         // Preview tab should have context applied before the full load completes.
-        assert_eq!(app.tabs.len(), 1, "placeholder should be replaced by preview tab");
-        assert!(!app.tabs[0].wrap, "wrap=false from context should be applied");
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "placeholder should be replaced by preview tab"
+        );
+        assert!(
+            !app.tabs[0].wrap,
+            "wrap=false from context should be applied"
+        );
         assert_eq!(
             app.tabs[0].log_manager.get_marked_indices(),
             vec![1],

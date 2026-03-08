@@ -494,8 +494,8 @@ mod tests {
     use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
     use crate::types::FilterType;
-    use crate::ui::app::App;
     use crate::ui::VisibleLines;
+    use crate::ui::app::App;
     use std::sync::Arc;
 
     async fn await_filter_computations(app: &mut App) {
@@ -506,8 +506,7 @@ mod tests {
                     if tab.visible_indices.is_empty() {
                         tab.scroll_offset = 0;
                     } else {
-                        tab.scroll_offset =
-                            tab.scroll_offset.min(tab.visible_indices.len() - 1);
+                        tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
                     }
                 }
             }

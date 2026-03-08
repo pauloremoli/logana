@@ -41,6 +41,11 @@ pub enum ModeRenderState {
     VisualLine {
         anchor: usize,
     },
+    Visual {
+        anchor_col: Option<usize>,
+        cursor_col: usize,
+        pending_motion: bool,
+    },
     Comment {
         lines: Vec<String>,
         cursor_row: usize,

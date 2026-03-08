@@ -882,7 +882,9 @@ mod tests {
     async fn test_load_no_predicate_no_precomputed_visible() {
         let f = make_tmp(&["line1", "line2"]);
         let path = f.path().to_str().unwrap().to_string();
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false))).await.unwrap();
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert!(result.precomputed_visible.is_none());
         assert_eq!(result.reader.line_count(), 2);
@@ -894,7 +896,9 @@ mod tests {
         let path = f.path().to_str().unwrap().to_string();
         let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
             Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
-        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false))).await.unwrap();
+        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![0, 2]));
     }
@@ -905,7 +909,9 @@ mod tests {
         let path = f.path().to_str().unwrap().to_string();
         let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
             Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
-        let handle = FileReader::load(path, Some(pred), true, Arc::new(AtomicBool::new(false))).await.unwrap();
+        let handle = FileReader::load(path, Some(pred), true, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         let visible = result.precomputed_visible.unwrap();
         // Backward evaluation, but result must be sorted ascending.
@@ -925,7 +931,9 @@ mod tests {
 
         let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
             Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
-        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false))).await.unwrap();
+        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
 
         // Predicate operates on stripped bytes ("ERROR: red", etc.)
@@ -940,7 +948,9 @@ mod tests {
         let f = make_tmp(&["a", "b", "c"]);
         let path = f.path().to_str().unwrap().to_string();
         let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> = Box::new(|_| true);
-        let handle = FileReader::load(path, Some(pred), true, Arc::new(AtomicBool::new(false))).await.unwrap();
+        let handle = FileReader::load(path, Some(pred), true, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![0, 1, 2]));
     }
@@ -951,7 +961,9 @@ mod tests {
         let path = f.path().to_str().unwrap().to_string();
         let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
             Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
-        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false))).await.unwrap();
+        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![]));
     }
@@ -1353,7 +1365,9 @@ mod tests {
         writeln!(f, "line 3").unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false))).await.unwrap();
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
         assert!(handle.total_bytes > 0);
 
         let result = handle.result_rx.await.unwrap().unwrap();
@@ -1369,7 +1383,9 @@ mod tests {
         }
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false))).await.unwrap();
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.reader.line_count(), 100);
 
@@ -1384,7 +1400,9 @@ mod tests {
         f.write_all(b"\x1b[31mred\x1b[0m\nplain\n").unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false))).await.unwrap();
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.reader.line_count(), 2);
         assert_eq!(result.reader.get_line(0), b"red");
@@ -1408,7 +1426,9 @@ mod tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false))).await.unwrap();
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.reader.line_count(), 0);
     }
@@ -1422,7 +1442,10 @@ mod tests {
         let result = handle.result_rx.await.unwrap();
         // The load should have returned an Interrupted error because cancel was pre-set.
         assert!(result.is_err());
-        assert_eq!(result.err().unwrap().kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(
+            result.err().unwrap().kind(),
+            std::io::ErrorKind::Interrupted
+        );
     }
 
     // -----------------------------------------------------------------------

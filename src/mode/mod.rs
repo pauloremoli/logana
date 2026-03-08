@@ -16,4 +16,5 @@ pub mod search_mode;
 pub mod select_fields_mode;
 pub mod ui_mode;
 pub mod value_colors_mode;
+pub mod visual_char_mode;
 pub mod visual_mode;

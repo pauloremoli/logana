@@ -110,7 +110,12 @@ pub fn list_dir_files(path: &str) -> Vec<String> {
 
 /// Snapshot of the filter-driven view: visible indices + filter manager + styles.
 /// Saved on marks-only entry and restored on exit to avoid re-running compute_visible.
-type FilterViewSnapshot = (VisibleLines, Arc<FilterManager>, Vec<Style>, Vec<DateFilterStyle>);
+type FilterViewSnapshot = (
+    VisibleLines,
+    Arc<FilterManager>,
+    Vec<Style>,
+    Vec<DateFilterStyle>,
+);
 
 // ---------------------------------------------------------------------------
 // VisibleLines
@@ -400,8 +405,8 @@ impl TabState {
         // Short-circuit: with no active filters and not in marks-only mode the
         // visible set is always All(n), regardless of `filtering_enabled`.
         // Skipping cache invalidation avoids reprocessing every line needlessly.
-        let has_active_filters = self.show_marks_only
-            || self.log_manager.get_filters().iter().any(|f| f.enabled);
+        let has_active_filters =
+            self.show_marks_only || self.log_manager.get_filters().iter().any(|f| f.enabled);
         if !has_active_filters {
             self.saved_filter_view = None;
             self.visible_indices = VisibleLines::All(self.file_reader.line_count());
@@ -697,8 +702,8 @@ impl TabState {
         self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
         self.render_line_cache.clear();
 
-        let has_active_filters = self.show_marks_only
-            || self.log_manager.get_filters().iter().any(|f| f.enabled);
+        let has_active_filters =
+            self.show_marks_only || self.log_manager.get_filters().iter().any(|f| f.enabled);
 
         if !has_active_filters {
             // Fast path: no filters — O(1), no allocation.
@@ -786,8 +791,7 @@ impl TabState {
 
         let file_reader = self.file_reader.clone();
         let fm_arc = self.filter_manager_arc.clone();
-        let date_filters =
-            crate::date_filter::extract_date_filters(self.log_manager.get_filters());
+        let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
         let parser = self.detected_format.clone();
         let line_count = self.file_reader.line_count();
 
@@ -817,7 +821,9 @@ impl TabState {
             }
 
             // Phase 2: date filters (50 – 100% progress).
-            let visible = if !date_filters.is_empty() && let Some(ref p) = parser {
+            let visible = if !date_filters.is_empty()
+                && let Some(ref p) = parser
+            {
                 let parser: &dyn LogFormatParser = p.as_ref();
                 counter.store(0, Ordering::Relaxed);
                 let phase2_total = text_visible.len();
@@ -830,8 +836,7 @@ impl TabState {
                         }
                         let n = counter.fetch_add(1, Ordering::Relaxed);
                         if n.is_multiple_of(10_000) && phase2_total > 0 {
-                            let _ =
-                                progress_tx.send(0.5 + n as f64 / phase2_total as f64 * 0.5);
+                            let _ = progress_tx.send(0.5 + n as f64 / phase2_total as f64 * 0.5);
                         }
                         let line = file_reader.get_line(idx);
                         match parser.parse_line(line) {
@@ -1953,12 +1958,7 @@ mod tests {
             .add_filter_with_color("x".to_string(), FilterType::Include, None, None, true)
             .await;
         tab.begin_filter_refresh();
-        let cancel_1 = tab
-            .filter_handle
-            .as_ref()
-            .unwrap()
-            .cancel
-            .clone();
+        let cancel_1 = tab.filter_handle.as_ref().unwrap().cancel.clone();
         // Trigger a second refresh — the first handle's cancel flag must be set.
         tab.begin_filter_refresh();
         assert!(

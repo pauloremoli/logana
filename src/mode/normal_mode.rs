@@ -13,6 +13,7 @@ use crate::{
         keybindings_help_mode::KeybindingsHelpMode,
         search_mode::SearchMode,
         ui_mode::UiMode,
+        visual_char_mode::{VisualMode, display_line_text},
         visual_mode::VisualLineMode,
     },
     theme::Theme,
@@ -317,6 +318,16 @@ impl Mode for NormalMode {
             );
         }
 
+        if kb.normal.visual_char.matches(key, modifiers) {
+            let line_text = display_line_text(tab);
+            let cursor_col = search_match_char_offset(tab, &line_text);
+            tab.g_key_pressed = false;
+            self.count = None;
+            let mut mode = VisualMode::new(line_text);
+            mode.cursor_col = cursor_col;
+            return (Box::new(mode), KeyResult::Handled);
+        }
+
         if kb.normal.search_forward.matches(key, modifiers) {
             tab.g_key_pressed = false;
             self.count = None;
@@ -508,6 +519,28 @@ impl Mode for NormalMode {
         spans.push(Span::styled("> tabs", Style::default().fg(theme.text)));
         Line::from(spans)
     }
+}
+
+/// Returns the char-index of the start of the current search occurrence on the
+/// current line, or 0 if there is no active search match on this line.
+///
+/// Search results store byte offsets into the raw file bytes, which differ from
+/// the displayed text produced by `display_line_text`. We therefore re-apply the
+/// compiled pattern against `line_text` to locate the correct position.
+fn search_match_char_offset(tab: &TabState, line_text: &str) -> usize {
+    let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) else {
+        return 0;
+    };
+    let Some(occ_idx) = tab.search.get_current_occurrence_for_line(line_idx) else {
+        return 0;
+    };
+    let Some(re) = tab.search.get_compiled_pattern() else {
+        return 0;
+    };
+    let Some(m) = re.find_iter(line_text).nth(occ_idx) else {
+        return 0;
+    };
+    line_text[..m.start()].chars().count()
 }
 
 #[cfg(test)]
