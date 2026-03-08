@@ -37,8 +37,8 @@ impl App {
             .unwrap_or(path)
             .to_string();
 
-        // Show a preview immediately (~1 000 lines), then load the full index in the background.
-        const PREVIEW_BYTES: u64 = 256 * 1024;
+        // Show a preview immediately (up to 16 MiB), then load the full index in the background.
+        const PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
         let preview = FileReader::from_file_head(path, PREVIEW_BYTES)
             .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
         let log_manager = LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
@@ -148,9 +148,9 @@ impl App {
                 self.restore_docker_tab(&next).await;
                 continue;
             }
-            // Regular file — create a preview tab immediately (~1 000 lines), then load the full
+            // Regular file — create a preview tab immediately (up to 16 MiB), then load the full
             // index in the background.
-            const PREVIEW_BYTES: u64 = 256 * 1024;
+            const PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
             let preview = FileReader::from_file_head(&next, PREVIEW_BYTES)
                 .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
             let title = std::path::Path::new(&next)
@@ -220,10 +220,11 @@ impl App {
         tail: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>> {
         Box::pin(async move {
-            // Initial-tab preview: show the first/last 256 KiB (~1 000 lines) immediately
-            // while the full index builds in the background. Not applied when a filter
-            // predicate is in play (the predicate requires the full index).
-            const PREVIEW_BYTES: u64 = 256 * 1024;
+            // Initial-tab preview: show the first/last 16 MiB immediately
+            // while the full index builds in the background. When a filter predicate
+            // is active it is applied to the preview lines so the filtered view is
+            // visible straight away.
+            const PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
             if let LoadContext::ReplaceInitialTab = context
                 && !self.tabs.is_empty()
             {
