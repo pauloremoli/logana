@@ -609,14 +609,35 @@ impl App {
                             };
                             // Cache byte offsets of target/pid/timestamp within `rendered`
                             // so the render loop avoids repeated O(len) `str::find` calls.
+                            // Use whole-token search for target and pid to avoid false matches
+                            // when the value is a short string (e.g. pid "1" for systemd)
+                            // that also appears inside the timestamp or other fields.
                             let target_offset = target
                                 .as_deref()
                                 .filter(|t| !t.is_empty())
-                                .and_then(|t| rendered.find(t));
+                                .and_then(|t| {
+                                    if show_keys {
+                                        // Column rendered as "target=<value>"; find the token
+                                        // then offset past "target=" to the value.
+                                        find_token_offset(&rendered, &format!("target={t}"))
+                                            .map(|pos| pos + "target=".len())
+                                    } else {
+                                        find_token_offset(&rendered, t)
+                                    }
+                                });
                             let pid_offset = pid
                                 .as_deref()
                                 .filter(|p| !p.is_empty())
-                                .and_then(|p| rendered.find(p));
+                                .and_then(|p| {
+                                    if show_keys {
+                                        // Column rendered as "pid=<value>"; find the token
+                                        // then offset past "pid=" to the value.
+                                        find_token_offset(&rendered, &format!("pid={p}"))
+                                            .map(|pos| pos + "pid=".len())
+                                    } else {
+                                        find_token_offset(&rendered, p)
+                                    }
+                                });
                             let timestamp_offset = timestamp
                                 .as_deref()
                                 .filter(|ts| !ts.is_empty())
@@ -1530,6 +1551,39 @@ fn stable_hash(s: &str) -> usize {
     })
 }
 
+/// Find the byte offset of `needle` as a complete whitespace-delimited token
+/// in `haystack`. Returns `None` if the needle is empty or not found as a
+/// whole token.
+///
+/// This prevents short values such as `"1"` (a common PID for systemd) from
+/// matching as a substring inside a longer token like a timestamp
+/// (`"2024-01-15T…"`). Only positions where the character immediately before
+/// is a space (or the string start) **and** the character immediately after
+/// is a space (or the string end) are considered.
+fn find_token_offset(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    let hb = haystack.as_bytes();
+    let nb = needle.len();
+    let mut start = 0;
+    while start + nb <= hb.len() {
+        match haystack[start..].find(needle) {
+            None => break,
+            Some(rel) => {
+                let abs = start + rel;
+                let before_ok = abs == 0 || hb[abs - 1] == b' ';
+                let after_ok = abs + nb == hb.len() || hb[abs + nb] == b' ';
+                if before_ok && after_ok {
+                    return Some(abs);
+                }
+                start = abs + 1;
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1955,6 +2009,84 @@ mod tests {
     }
 
     #[test]
+    // -----------------------------------------------------------------------
+    // find_token_offset
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_token_offset_simple() {
+        // Standalone token at the start
+        assert_eq!(find_token_offset("abc def ghi", "abc"), Some(0));
+        // Standalone token in the middle
+        assert_eq!(find_token_offset("abc def ghi", "def"), Some(4));
+        // Standalone token at the end
+        assert_eq!(find_token_offset("abc def ghi", "ghi"), Some(8));
+    }
+
+    #[test]
+    fn test_find_token_offset_short_value_not_matched_inside_longer_token() {
+        // "1" appears inside "2024-01-..." but must not be matched there.
+        let rendered = "2024-01-15T10:00:00Z INFO  systemd myhost 1 daemon Started.";
+        // Should skip the "1" inside the timestamp and find the standalone "1".
+        let pos = find_token_offset(rendered, "1").unwrap();
+        let token = &rendered[pos..pos + 1];
+        assert_eq!(token, "1");
+        // The character before must be a space.
+        assert_eq!(rendered.as_bytes()[pos - 1], b' ');
+        // The character after must be a space.
+        assert_eq!(rendered.as_bytes()[pos + 1], b' ');
+    }
+
+    #[test]
+    fn test_find_token_offset_systemd_pid1_in_syslog_rfc5424() {
+        // Reproduces the reported bug: syslog RFC 5424 line with PID=1 (systemd).
+        // Before the fix, rendered.find("1") matched the "1" in "2024-01-…".
+        let rendered = "2024-01-15T10:30:00.000000+01:00 INFO  systemd myhost 1 local3 Started network.";
+        let pid_pos = find_token_offset(rendered, "1").unwrap();
+        // Must point to the standalone "1" (PID), not into the timestamp.
+        assert_eq!(&rendered[pid_pos..pid_pos + 1], "1");
+        // The characters around must be spaces.
+        assert!(pid_pos > 0 && rendered.as_bytes()[pid_pos - 1] == b' ');
+        assert!(pid_pos + 1 < rendered.len() && rendered.as_bytes()[pid_pos + 1] == b' ');
+        // The standalone "1" must appear AFTER the timestamp ends.
+        let ts_end = "2024-01-15T10:30:00.000000+01:00".len();
+        assert!(pid_pos > ts_end, "pid_pos {pid_pos} should be past timestamp end {ts_end}");
+    }
+
+    #[test]
+    fn test_find_token_offset_empty_needle() {
+        assert_eq!(find_token_offset("hello world", ""), None);
+    }
+
+    #[test]
+    fn test_find_token_offset_needle_not_present() {
+        assert_eq!(find_token_offset("hello world", "xyz"), None);
+    }
+
+    #[test]
+    fn test_find_token_offset_only_substring_not_token() {
+        // "lo" is only a substring of "hello", not a standalone token.
+        assert_eq!(find_token_offset("hello world", "lo"), None);
+    }
+
+    #[test]
+    fn test_find_token_offset_single_token_haystack() {
+        // Entire haystack is the needle.
+        assert_eq!(find_token_offset("only", "only"), Some(0));
+    }
+
+    #[test]
+    fn test_find_token_offset_bsd_timestamp_with_spaces() {
+        // BSD timestamp "Mar  8 10:30:00" contains internal spaces but is itself
+        // a complete token (bounded by start-of-string and a space).
+        let rendered = "Mar  8 10:30:00 INFO  systemd";
+        assert_eq!(find_token_offset(rendered, "Mar  8 10:30:00"), Some(0));
+    }
+
+    // -----------------------------------------------------------------------
+    // stable_hash
+    // -----------------------------------------------------------------------
+
     fn test_stable_hash_consistent() {
         assert_eq!(stable_hash("my_service"), stable_hash("my_service"));
         assert_ne!(stable_hash("service_a"), stable_hash("service_b"));
