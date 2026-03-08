@@ -1,7 +1,7 @@
 //! Date/time filter for log lines.
 //!
-//! Parses user expressions like `01:00:00 .. 02:00:00` or `> Feb 21 01:00:00`
-//! and matches them against timestamps extracted by log format parsers.
+//! Parses user expressions like `01:00:00 .. 02:00:00`, `> Feb 21 01:00:00`,
+//! or a bare value like `Feb/21` (equals the whole day).
 //!
 //! Date filters are stored as regular [`crate::types::FilterDef`] entries with
 //! the pattern prefixed by `@date:` and `FilterType::Include`. The `@date:`
@@ -43,6 +43,16 @@ pub enum ComparisonMode {
     FullDatetime,
 }
 
+/// Granularity of a parsed date/time bound; used to expand an equality filter
+/// to the appropriate inclusive range (e.g. a day-level bound covers the whole
+/// day rather than a single instant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Granularity {
+    Day,    // date with no time component
+    Minute, // HH:MM with no seconds
+    Second, // HH:MM:SS or full datetime
+}
+
 #[derive(Debug, Clone)]
 pub struct DateBound {
     /// Seconds since midnight (only meaningful when mode == TimeOnly).
@@ -75,34 +85,42 @@ struct NormalizedTimestamp {
 // User-input parsing helpers
 // ---------------------------------------------------------------------------
 
-/// Parse a user-provided date/time token into a `(DateBound, ComparisonMode)`.
+/// Parse a user-provided date/time token into a `(DateBound, ComparisonMode, Granularity)`.
 ///
 /// Accepted forms:
-///   HH:MM:SS          → TimeOnly
-///   HH:MM             → TimeOnly  (seconds = 00)
-///   Mmm DD HH:MM:SS   → FullDatetime, year = 0000
-///   Mmm DD             → FullDatetime, year = 0000, time = 00:00:00
-///   YYYY-MM-DD         → FullDatetime, time = 00:00:00
-///   YYYY-MM-DD HH:MM:SS → FullDatetime
-///   YYYY-MM-DDTHH:MM:SS → FullDatetime
-fn parse_bound(input: &str) -> Result<(DateBound, ComparisonMode), String> {
+///   HH:MM:SS             → TimeOnly,     Second
+///   HH:MM                → TimeOnly,     Minute
+///   Mmm DD HH:MM:SS      → FullDatetime, Second  (year = 0000)
+///   Mmm/DD HH:MM:SS      → FullDatetime, Second  (slash separator accepted)
+///   Mmm DD               → FullDatetime, Day     (year = 0000, time = 00:00:00)
+///   Mmm/DD               → FullDatetime, Day
+///   MM/DD                → FullDatetime, Day     (numeric month, year = 0000)
+///   MM/DD/YYYY           → FullDatetime, Day
+///   MM/DD HH:MM[:SS]     → FullDatetime, Minute/Second
+///   MM/DD/YYYY HH:MM[:SS]→ FullDatetime, Minute/Second
+///   YYYY-MM-DD           → FullDatetime, Day
+///   YYYY-MM-DD HH:MM     → FullDatetime, Minute
+///   YYYY-MM-DD HH:MM:SS  → FullDatetime, Second
+///   YYYY-MM-DDTHH:MM:SS  → FullDatetime, Second
+fn parse_bound(input: &str) -> Result<(DateBound, ComparisonMode, Granularity), String> {
     let s = input.trim();
     if s.is_empty() {
         return Err("Empty date/time value".to_string());
     }
 
     // Try HH:MM:SS or HH:MM
-    if let Some(secs) = try_parse_time_only(s) {
+    if let Some((secs, gran)) = try_parse_time_only(s) {
         return Ok((
             DateBound {
                 time_val: Some(secs),
                 datetime_val: None,
             },
             ComparisonMode::TimeOnly,
+            gran,
         ));
     }
 
-    // Try BSD month prefix: "Feb 21 HH:MM:SS" or "Feb 21"
+    // Try BSD month prefix: "Feb 21 HH:MM:SS", "Feb/21", "Feb 21", etc.
     if s.len() >= 3 {
         let month_abbr = &s[..3];
         if let Some(month_num) = bsd_month_number(month_abbr) {
@@ -110,11 +128,25 @@ fn parse_bound(input: &str) -> Result<(DateBound, ComparisonMode), String> {
         }
     }
 
+    // Try numeric MM/DD[/YYYY] [HH:MM[:SS]] or MM-DD[-YYYY] [HH:MM[:SS]].
+    // b[2] being '/' or '-' disambiguates from YYYY-MM-DD where b[2] is a
+    // year digit.
+    let b = s.as_bytes();
+    if s.len() >= 5
+        && b[0].is_ascii_digit()
+        && b[1].is_ascii_digit()
+        && (b[2] == b'/' || b[2] == b'-')
+        && b[3].is_ascii_digit()
+        && b[4].is_ascii_digit()
+    {
+        return parse_slash_month_day_bound(s, b[2]);
+    }
+
     // Try YYYY-MM-DD[T| ]HH:MM:SS or YYYY-MM-DD
     if s.len() >= 10
-        && s.as_bytes()[4] == b'-'
-        && s.as_bytes()[7] == b'-'
-        && s.as_bytes()[0].is_ascii_digit()
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[0].is_ascii_digit()
     {
         return parse_iso_bound(s);
     }
@@ -122,9 +154,9 @@ fn parse_bound(input: &str) -> Result<(DateBound, ComparisonMode), String> {
     Err(format!("Unrecognized date/time format: '{}'", s))
 }
 
-fn try_parse_time_only(s: &str) -> Option<u32> {
+/// Returns `(seconds_since_midnight, granularity)` for `HH:MM[:SS]`.
+fn try_parse_time_only(s: &str) -> Option<(u32, Granularity)> {
     let b = s.as_bytes();
-    // HH:MM:SS (8 chars) or HH:MM (5 chars)
     if !(b.len() == 5 || b.len() == 8) {
         return None;
     }
@@ -139,7 +171,7 @@ fn try_parse_time_only(s: &str) -> Option<u32> {
     if h > 23 || m > 59 {
         return None;
     }
-    let sec = if b.len() == 8 {
+    if b.len() == 8 {
         if b[5] != b':' || !b[6].is_ascii_digit() || !b[7].is_ascii_digit() {
             return None;
         }
@@ -147,11 +179,10 @@ fn try_parse_time_only(s: &str) -> Option<u32> {
         if sec_val > 59 {
             return None;
         }
-        sec_val
+        Some((h * 3600 + m * 60 + sec_val, Granularity::Second))
     } else {
-        0
-    };
-    Some(h * 3600 + m * 60 + sec)
+        Some((h * 3600 + m * 60, Granularity::Minute))
+    }
 }
 
 fn bsd_month_number(abbr: &str) -> Option<u32> {
@@ -161,9 +192,13 @@ fn bsd_month_number(abbr: &str) -> Option<u32> {
         .map(|i| i as u32 + 1)
 }
 
-fn parse_bsd_bound(s: &str, month_num: u32) -> Result<(DateBound, ComparisonMode), String> {
-    // Skip month abbreviation + space
-    let rest = s[3..].trim_start();
+/// Parse a BSD-style bound: `Mmm DD [HH:MM[:SS]]` or `Mmm/DD [HH:MM[:SS]]`.
+fn parse_bsd_bound(
+    s: &str,
+    month_num: u32,
+) -> Result<(DateBound, ComparisonMode, Granularity), String> {
+    // Accept space or slash between month abbreviation and day number.
+    let rest = s[3..].trim_start_matches([' ', '/']);
     // Parse day
     let day_end = rest
         .find(|c: char| !c.is_ascii_digit())
@@ -179,10 +214,10 @@ fn parse_bsd_bound(s: &str, month_num: u32) -> Result<(DateBound, ComparisonMode
     }
 
     let after_day = rest[day_end..].trim_start();
-    let (h, m, sec) = if after_day.is_empty() {
-        (0, 0, 0)
-    } else if let Some(secs) = try_parse_time_only(after_day) {
-        (secs / 3600, (secs % 3600) / 60, secs % 60)
+    let (h, m, sec, gran) = if after_day.is_empty() {
+        (0, 0, 0, Granularity::Day)
+    } else if let Some((secs, g)) = try_parse_time_only(after_day) {
+        (secs / 3600, (secs % 3600) / 60, secs % 60, g)
     } else {
         return Err(format!("Invalid time in '{}'", s));
     };
@@ -197,10 +232,74 @@ fn parse_bsd_bound(s: &str, month_num: u32) -> Result<(DateBound, ComparisonMode
             datetime_val: Some(canonical),
         },
         ComparisonMode::FullDatetime,
+        gran,
     ))
 }
 
-fn parse_iso_bound(s: &str) -> Result<(DateBound, ComparisonMode), String> {
+/// Parse a numeric `MM/DD[/YYYY]` or `MM-DD[-YYYY]` bound, optionally followed
+/// by `HH:MM[:SS]`. The `sep` byte is either `b'/'` or `b'-'`.
+fn parse_slash_month_day_bound(
+    s: &str,
+    sep: u8,
+) -> Result<(DateBound, ComparisonMode, Granularity), String> {
+    let month: u32 = s[..2]
+        .parse()
+        .map_err(|_| format!("Invalid month in '{}'", s))?;
+    let day: u32 = s[3..5]
+        .parse()
+        .map_err(|_| format!("Invalid day in '{}'", s))?;
+    if !(1..=12).contains(&month) {
+        return Err(format!("Month out of range in '{}'", s));
+    }
+    if !(1..=31).contains(&day) {
+        return Err(format!("Day out of range in '{}'", s));
+    }
+
+    let after_day = &s[5..];
+    // Optional /YYYY or -YYYY (same separator as MM/DD or MM-DD)
+    let (year, after_year) = if after_day
+        .as_bytes()
+        .first()
+        .copied()
+        == Some(sep)
+    {
+        let rest = &after_day[1..];
+        if rest.len() >= 4 && rest[..4].bytes().all(|c| c.is_ascii_digit()) {
+            let y: u32 = rest[..4]
+                .parse()
+                .map_err(|_| format!("Invalid year in '{}'", s))?;
+            (y, &rest[4..])
+        } else {
+            return Err(format!("Invalid year after separator in '{}'", s));
+        }
+    } else {
+        (0u32, after_day)
+    };
+
+    let after = after_year.trim_start();
+    let (h, m, sec, gran) = if after.is_empty() {
+        (0u32, 0u32, 0u32, Granularity::Day)
+    } else if let Some((secs, g)) = try_parse_time_only(after) {
+        (secs / 3600, (secs % 3600) / 60, secs % 60, g)
+    } else {
+        return Err(format!("Invalid time in '{}'", s));
+    };
+
+    let canonical = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.000000",
+        year, month, day, h, m, sec
+    );
+    Ok((
+        DateBound {
+            time_val: None,
+            datetime_val: Some(canonical),
+        },
+        ComparisonMode::FullDatetime,
+        gran,
+    ))
+}
+
+fn parse_iso_bound(s: &str) -> Result<(DateBound, ComparisonMode, Granularity), String> {
     let date_part = &s[..10]; // YYYY-MM-DD
     let year: u32 = date_part[..4]
         .parse()
@@ -219,14 +318,14 @@ fn parse_iso_bound(s: &str) -> Result<(DateBound, ComparisonMode), String> {
     }
 
     let after_date = &s[10..];
-    let (h, m, sec) = if after_date.is_empty() {
-        (0u32, 0u32, 0u32)
+    let (h, m, sec, gran) = if after_date.is_empty() {
+        (0u32, 0u32, 0u32, Granularity::Day)
     } else {
         let sep = after_date.as_bytes()[0];
         if sep == b'T' || sep == b' ' {
             let time_str = &after_date[1..];
-            if let Some(secs) = try_parse_time_only(time_str) {
-                (secs / 3600, (secs % 3600) / 60, secs % 60)
+            if let Some((secs, g)) = try_parse_time_only(time_str) {
+                (secs / 3600, (secs % 3600) / 60, secs % 60, g)
             } else {
                 return Err(format!("Invalid time in '{}'", s));
             }
@@ -245,7 +344,74 @@ fn parse_iso_bound(s: &str) -> Result<(DateBound, ComparisonMode), String> {
             datetime_val: Some(canonical),
         },
         ComparisonMode::FullDatetime,
+        gran,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Range-separator detection
+// ---------------------------------------------------------------------------
+
+/// Find the byte position of `..` in `s`, skipping any surrounding whitespace
+/// so that both `"09:00..10:00"` and `"09:00 .. 10:00"` are detected.
+fn find_range_separator(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'.' && bytes[i + 1] == b'.' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Equals expansion helpers
+// ---------------------------------------------------------------------------
+
+/// Expand a bound to the **end** of the period implied by its granularity:
+/// - `Day`    → 23:59:59.999999 of that day
+/// - `Minute` → :59.999999 of that minute
+/// - `Second` → unchanged
+fn expand_upper_bound(
+    bound: DateBound,
+    mode: ComparisonMode,
+    granularity: Granularity,
+) -> DateBound {
+    match mode {
+        ComparisonMode::TimeOnly => {
+            let t = bound.time_val.unwrap();
+            let upper_t = match granularity {
+                Granularity::Minute => t + 59,
+                Granularity::Second | Granularity::Day => t,
+            };
+            DateBound { time_val: Some(upper_t), datetime_val: None }
+        }
+        ComparisonMode::FullDatetime => {
+            // Canonical form: "YYYY-MM-DD HH:MM:SS.ffffff" (26 chars)
+            let s = bound.datetime_val.as_ref().unwrap();
+            let upper_str = match granularity {
+                Granularity::Day    => format!("{} 23:59:59.999999", &s[..10]),
+                Granularity::Minute => format!("{}:59.999999", &s[..16]),
+                Granularity::Second => s.clone(),
+            };
+            DateBound { time_val: None, datetime_val: Some(upper_str) }
+        }
+    }
+}
+
+/// Expand a single bound into an inclusive `(lower, upper)` pair based on
+/// granularity so that "equals" semantics match the full period implied by
+/// the input (e.g. a day-only bound covers 00:00:00 – 23:59:59.999999).
+fn make_equals_range(
+    bound: &DateBound,
+    mode: ComparisonMode,
+    granularity: Granularity,
+) -> (DateBound, DateBound) {
+    let lower = bound.clone();
+    let upper = expand_upper_bound(bound.clone(), mode, granularity);
+    (lower, upper)
 }
 
 // ---------------------------------------------------------------------------
@@ -255,28 +421,29 @@ fn parse_iso_bound(s: &str) -> Result<(DateBound, ComparisonMode), String> {
 /// Parse the expression that follows `@date:`.
 ///
 /// Syntax:
-///   `<bound> .. <bound>`               — inclusive range
+///   `<bound> .. <bound>`               — inclusive range (spaces around `..` are optional)
 ///   `> <bound>` / `>= <bound>`         — after
 ///   `< <bound>` / `<= <bound>`         — before
+///   `<bound>`                          — equals (expands to an inclusive range)
 pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
     let s = input.trim();
     if s.is_empty() {
         return Err("Empty date filter expression".to_string());
     }
 
-    // Range: contains " .. "
-    if let Some(dot_pos) = s.find(" .. ") {
-        let left = &s[..dot_pos];
-        let right = &s[dot_pos + 4..];
-        let (lower, l_mode) = parse_bound(left)?;
-        let (upper, u_mode) = parse_bound(right)?;
+    // Range: contains ".." (spaces around ".." are optional).
+    if let Some(dot_pos) = find_range_separator(s) {
+        let left = s[..dot_pos].trim();
+        let right = s[dot_pos + 2..].trim();
+        let (lower, l_mode, _) = parse_bound(left)?;
+        let (upper, u_mode, u_gran) = parse_bound(right)?;
         if l_mode != u_mode {
             return Err(
                 "Both sides of a range must use the same format (both time-only or both date)"
                     .to_string(),
             );
         }
-        // Validate lower <= upper
+        // Validate lower <= upper before expanding the upper bound.
         match l_mode {
             ComparisonMode::TimeOnly => {
                 if lower.time_val.unwrap() > upper.time_val.unwrap() {
@@ -292,6 +459,9 @@ pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
                 }
             }
         }
+        // Expand the upper bound to end-of-period so that e.g. `03-21..03-25`
+        // includes all of Mar 25, not just 00:00:00.
+        let upper = expand_upper_bound(upper, u_mode, u_gran);
         return Ok(DateFilter::Range {
             mode: l_mode,
             lower,
@@ -301,7 +471,7 @@ pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
 
     // Comparison: starts with >=, >, <=, <
     if let Some(rest) = s.strip_prefix(">=") {
-        let (bound, mode) = parse_bound(rest)?;
+        let (bound, mode, _) = parse_bound(rest)?;
         return Ok(DateFilter::Comparison {
             mode,
             op: ComparisonOp::Ge,
@@ -309,7 +479,7 @@ pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
         });
     }
     if let Some(rest) = s.strip_prefix('>') {
-        let (bound, mode) = parse_bound(rest)?;
+        let (bound, mode, _) = parse_bound(rest)?;
         return Ok(DateFilter::Comparison {
             mode,
             op: ComparisonOp::Gt,
@@ -317,7 +487,7 @@ pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
         });
     }
     if let Some(rest) = s.strip_prefix("<=") {
-        let (bound, mode) = parse_bound(rest)?;
+        let (bound, mode, _) = parse_bound(rest)?;
         return Ok(DateFilter::Comparison {
             mode,
             op: ComparisonOp::Le,
@@ -325,7 +495,7 @@ pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
         });
     }
     if let Some(rest) = s.strip_prefix('<') {
-        let (bound, mode) = parse_bound(rest)?;
+        let (bound, mode, _) = parse_bound(rest)?;
         return Ok(DateFilter::Comparison {
             mode,
             op: ComparisonOp::Lt,
@@ -333,10 +503,10 @@ pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
         });
     }
 
-    Err(format!(
-        "Expected a range (.. ) or comparison (>, >=, <, <=) in '{}'",
-        s
-    ))
+    // No operator: treat as equals (expand to an inclusive range).
+    let (bound, mode, gran) = parse_bound(s)?;
+    let (lower, upper) = make_equals_range(&bound, mode, gran);
+    Ok(DateFilter::Range { mode, lower, upper })
 }
 
 // ---------------------------------------------------------------------------
@@ -714,22 +884,25 @@ mod tests {
 
     #[test]
     fn test_parse_bound_time_only_hms() {
-        let (b, mode) = parse_bound("01:30:45").unwrap();
+        let (b, mode, gran) = parse_bound("01:30:45").unwrap();
         assert_eq!(mode, ComparisonMode::TimeOnly);
+        assert_eq!(gran, Granularity::Second);
         assert_eq!(b.time_val, Some(1 * 3600 + 30 * 60 + 45));
     }
 
     #[test]
     fn test_parse_bound_time_only_hm() {
-        let (b, mode) = parse_bound("13:00").unwrap();
+        let (b, mode, gran) = parse_bound("13:00").unwrap();
         assert_eq!(mode, ComparisonMode::TimeOnly);
+        assert_eq!(gran, Granularity::Minute);
         assert_eq!(b.time_val, Some(13 * 3600));
     }
 
     #[test]
     fn test_parse_bound_bsd_date_time() {
-        let (b, mode) = parse_bound("Feb 21 01:00:00").unwrap();
+        let (b, mode, gran) = parse_bound("Feb 21 01:00:00").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Second);
         assert_eq!(
             b.datetime_val.as_deref(),
             Some("0000-02-21 01:00:00.000000")
@@ -738,8 +911,9 @@ mod tests {
 
     #[test]
     fn test_parse_bound_bsd_date_only() {
-        let (b, mode) = parse_bound("Feb 21").unwrap();
+        let (b, mode, gran) = parse_bound("Feb 21").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Day);
         assert_eq!(
             b.datetime_val.as_deref(),
             Some("0000-02-21 00:00:00.000000")
@@ -747,9 +921,136 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bound_iso_date_only() {
-        let (b, mode) = parse_bound("2024-02-22").unwrap();
+    fn test_parse_bound_bsd_slash_separator() {
+        let (b, mode, gran) = parse_bound("Feb/21").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Day);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("0000-02-21 00:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_bsd_slash_with_time() {
+        let (b, mode, gran) = parse_bound("Feb/21 09:00:00").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Second);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("0000-02-21 09:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_bsd_slash_with_hm_time() {
+        let (b, mode, gran) = parse_bound("Feb/21 09:00").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Minute);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("0000-02-21 09:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_numeric_slash_date_only() {
+        let (b, mode, gran) = parse_bound("02/21").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Day);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("0000-02-21 00:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_numeric_slash_date_with_year() {
+        let (b, mode, gran) = parse_bound("02/21/2024").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Day);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("2024-02-21 00:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_numeric_slash_with_time() {
+        let (b, mode, gran) = parse_bound("02/21 09:00:30").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Second);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("0000-02-21 09:00:30.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_numeric_slash_with_hm_time() {
+        let (b, mode, gran) = parse_bound("02/21 09:00").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Minute);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("0000-02-21 09:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_numeric_slash_year_with_time() {
+        let (b, mode, gran) = parse_bound("02/21/2024 09:00").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Minute);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("2024-02-21 09:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_numeric_dash_date_only() {
+        let (b, mode, gran) = parse_bound("02-21").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Day);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("0000-02-21 00:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_numeric_dash_date_with_year() {
+        let (b, mode, gran) = parse_bound("02-21-2024").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Day);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("2024-02-21 00:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_numeric_dash_with_time() {
+        let (b, mode, gran) = parse_bound("02-21 09:00").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Minute);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("0000-02-21 09:00:00.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_numeric_slash_invalid_month() {
+        assert!(parse_bound("13/01").is_err());
+    }
+
+    #[test]
+    fn test_parse_bound_iso_date_only() {
+        let (b, mode, gran) = parse_bound("2024-02-22").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Day);
         assert_eq!(
             b.datetime_val.as_deref(),
             Some("2024-02-22 00:00:00.000000")
@@ -758,8 +1059,9 @@ mod tests {
 
     #[test]
     fn test_parse_bound_iso_datetime() {
-        let (b, mode) = parse_bound("2024-02-22T10:15:30").unwrap();
+        let (b, mode, gran) = parse_bound("2024-02-22T10:15:30").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Second);
         assert_eq!(
             b.datetime_val.as_deref(),
             Some("2024-02-22 10:15:30.000000")
@@ -768,11 +1070,23 @@ mod tests {
 
     #[test]
     fn test_parse_bound_iso_datetime_space() {
-        let (b, mode) = parse_bound("2024-02-22 10:15:30").unwrap();
+        let (b, mode, gran) = parse_bound("2024-02-22 10:15:30").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Second);
         assert_eq!(
             b.datetime_val.as_deref(),
             Some("2024-02-22 10:15:30.000000")
+        );
+    }
+
+    #[test]
+    fn test_parse_bound_iso_datetime_hm() {
+        let (b, mode, gran) = parse_bound("2024-02-22 10:15").unwrap();
+        assert_eq!(mode, ComparisonMode::FullDatetime);
+        assert_eq!(gran, Granularity::Minute);
+        assert_eq!(
+            b.datetime_val.as_deref(),
+            Some("2024-02-22 10:15:00.000000")
         );
     }
 
@@ -803,6 +1117,38 @@ mod tests {
     fn test_parse_hm_range() {
         let df = parse_date_filter("01:00 .. 02:00").unwrap();
         assert!(matches!(df, DateFilter::Range { .. }));
+    }
+
+    #[test]
+    fn test_parse_range_no_spaces_around_dots() {
+        let df = parse_date_filter("09:00..10:00").unwrap();
+        assert!(matches!(df, DateFilter::Range { .. }));
+    }
+
+    #[test]
+    fn test_parse_range_no_spaces_iso() {
+        let df = parse_date_filter("2024-02-21..2024-02-22").unwrap();
+        assert!(matches!(df, DateFilter::Range { .. }));
+    }
+
+    #[test]
+    fn test_parse_range_numeric_dash_no_spaces() {
+        let df = parse_date_filter("03-21..03-25").unwrap();
+        assert!(df.matches("Mar 21 12:00:00"));
+        assert!(df.matches("Mar 25 00:00:00"));
+        assert!(df.matches("Mar 25 23:59:59")); // whole upper day included
+        assert!(!df.matches("Mar 20 23:59:59"));
+        assert!(!df.matches("Mar 26 00:00:00"));
+    }
+
+    #[test]
+    fn test_parse_range_numeric_slash_no_spaces() {
+        let df = parse_date_filter("03/21..03/25").unwrap();
+        assert!(df.matches("Mar 21 12:00:00"));
+        assert!(df.matches("Mar 25 00:00:00"));
+        assert!(df.matches("Mar 25 23:59:59")); // whole upper day included
+        assert!(!df.matches("Mar 20 23:59:59"));
+        assert!(!df.matches("Mar 26 00:00:00"));
     }
 
     #[test]
@@ -870,9 +1216,10 @@ mod tests {
         assert!(parse_date_filter("").is_err());
     }
 
+    // No operator → equals (range), no longer an error.
     #[test]
-    fn test_parse_no_operator_error() {
-        assert!(parse_date_filter("01:00:00").is_err());
+    fn test_parse_no_operator_becomes_equals() {
+        assert!(parse_date_filter("01:00:00").is_ok());
     }
 
     #[test]
@@ -884,6 +1231,97 @@ mod tests {
     #[test]
     fn test_parse_inverted_range_error() {
         assert!(parse_date_filter("02:00:00 .. 01:00:00").is_err());
+    }
+
+    // ── equals expansion ──────────────────────────────────────────────
+
+    #[test]
+    fn test_equals_time_hms_matches_exact_second() {
+        let df = parse_date_filter("09:00:30").unwrap();
+        assert!(df.matches("2024-01-01T09:00:30Z"));
+        assert!(!df.matches("2024-01-01T09:00:31Z"));
+        assert!(!df.matches("2024-01-01T09:00:29Z"));
+    }
+
+    #[test]
+    fn test_equals_time_hm_matches_whole_minute() {
+        let df = parse_date_filter("09:00").unwrap();
+        assert!(df.matches("2024-01-01T09:00:00Z"));
+        assert!(df.matches("2024-01-01T09:00:59Z"));
+        assert!(!df.matches("2024-01-01T09:01:00Z"));
+        assert!(!df.matches("2024-01-01T08:59:59Z"));
+    }
+
+    #[test]
+    fn test_equals_bsd_date_only_matches_whole_day() {
+        let df = parse_date_filter("Feb/21").unwrap();
+        assert!(df.matches("Feb 21 00:00:00"));
+        assert!(df.matches("Feb 21 12:30:00"));
+        assert!(df.matches("Feb 21 23:59:59"));
+        assert!(!df.matches("Feb 20 23:59:59"));
+        assert!(!df.matches("Feb 22 00:00:00"));
+    }
+
+    #[test]
+    fn test_equals_bsd_slash_date_same_as_space() {
+        let df_slash = parse_date_filter("Feb/21").unwrap();
+        let df_space = parse_date_filter("Feb 21").unwrap();
+        // Both should match the same timestamps
+        let ts = "Feb 21 12:00:00";
+        assert_eq!(df_slash.matches(ts), df_space.matches(ts));
+    }
+
+    #[test]
+    fn test_equals_numeric_slash_date_matches_whole_day() {
+        let df = parse_date_filter("02/21").unwrap();
+        assert!(df.matches("Feb 21 00:00:00"));
+        assert!(df.matches("Feb 21 23:59:59"));
+        assert!(!df.matches("Feb 20 23:59:59"));
+        assert!(!df.matches("Feb 22 00:00:00"));
+    }
+
+    #[test]
+    fn test_equals_numeric_dash_date_matches_whole_day() {
+        let df = parse_date_filter("02-21").unwrap();
+        assert!(df.matches("Feb 21 00:00:00"));
+        assert!(df.matches("Feb 21 23:59:59"));
+        assert!(!df.matches("Feb 20 23:59:59"));
+        assert!(!df.matches("Feb 22 00:00:00"));
+    }
+
+    #[test]
+    fn test_equals_numeric_slash_with_year_matches_whole_day() {
+        let df = parse_date_filter("02/21/2024").unwrap();
+        assert!(df.matches("2024-02-21T00:00:00Z"));
+        assert!(df.matches("2024-02-21T23:59:59Z"));
+        assert!(!df.matches("2024-02-20T23:59:59Z"));
+        assert!(!df.matches("2024-02-22T00:00:00Z"));
+    }
+
+    #[test]
+    fn test_equals_iso_date_only_matches_whole_day() {
+        let df = parse_date_filter("2024-02-22").unwrap();
+        assert!(df.matches("2024-02-22T00:00:00Z"));
+        assert!(df.matches("2024-02-22T23:59:59Z"));
+        assert!(!df.matches("2024-02-21T23:59:59Z"));
+        assert!(!df.matches("2024-02-23T00:00:00Z"));
+    }
+
+    #[test]
+    fn test_equals_iso_datetime_hm_matches_whole_minute() {
+        let df = parse_date_filter("2024-02-22 10:15").unwrap();
+        assert!(df.matches("2024-02-22T10:15:00Z"));
+        assert!(df.matches("2024-02-22T10:15:59Z"));
+        assert!(!df.matches("2024-02-22T10:16:00Z"));
+        assert!(!df.matches("2024-02-22T10:14:59Z"));
+    }
+
+    #[test]
+    fn test_equals_iso_datetime_hms_matches_exact_second() {
+        let df = parse_date_filter("2024-02-22 10:15:30").unwrap();
+        assert!(df.matches("2024-02-22T10:15:30Z"));
+        assert!(!df.matches("2024-02-22T10:15:31Z"));
+        assert!(!df.matches("2024-02-22T10:15:29Z"));
     }
 
     // ── normalize_log_timestamp ───────────────────────────────────────
@@ -999,6 +1437,13 @@ mod tests {
     }
 
     #[test]
+    fn test_matches_time_range_no_spaces() {
+        let df = parse_date_filter("09:00..10:00").unwrap();
+        assert!(df.matches("2024-01-01T09:30:59Z"));
+        assert!(!df.matches("2024-01-01T10:01:00Z"));
+    }
+
+    #[test]
     fn test_matches_gt_comparison() {
         let df = parse_date_filter("> 2024-02-22").unwrap();
         assert!(df.matches("2024-02-23T00:00:00Z"));
@@ -1022,7 +1467,8 @@ mod tests {
         assert!(!df.matches("2024-01-19T23:59:59Z")); // before range
         assert!(df.matches("2024-01-20T00:00:00Z")); // lower bound
         assert!(df.matches("2024-01-21T12:00:00Z")); // inside
-        assert!(df.matches("2024-01-23T00:00:00Z")); // upper bound
+        assert!(df.matches("2024-01-23T00:00:00Z")); // upper bound (start of day)
+        assert!(df.matches("2024-01-23T23:59:59Z")); // upper bound (end of day)
         assert!(!df.matches("2024-01-24T00:00:00Z")); // after range
     }
 
@@ -1053,6 +1499,7 @@ mod tests {
         let df = parse_date_filter("Feb 21 .. Feb 22").unwrap();
         assert!(df.matches("Feb 21 12:00:00"));
         assert!(df.matches("Feb 22 00:00:00"));
+        assert!(df.matches("Feb 22 23:59:59")); // whole upper day included
         assert!(!df.matches("Feb 23 00:00:00"));
     }
 
