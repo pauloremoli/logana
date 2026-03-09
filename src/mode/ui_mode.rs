@@ -175,11 +175,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_w_toggles_wrap() {
+    async fn test_w_no_longer_toggles_wrap() {
         let mut tab = make_tab().await;
         let initial = tab.wrap;
         press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
-        assert_eq!(tab.wrap, !initial);
+        assert_eq!(tab.wrap, initial);
     }
 
     #[tokio::test]

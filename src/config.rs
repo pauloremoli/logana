@@ -363,7 +363,7 @@ fn default_prev_match() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('N'), KeyModifiers::NONE)])
 }
 fn default_toggle_wrap() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('w'), KeyModifiers::NONE)])
+    KeyBindings(vec![])
 }
 fn default_visual_mode() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('V'), KeyModifiers::NONE)])
@@ -387,10 +387,25 @@ fn default_clear_all() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('C'), KeyModifiers::NONE)])
 }
 fn default_edit_comment() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('e'), KeyModifiers::NONE)])
+    KeyBindings(vec![KeyBinding(KeyCode::Char('r'), KeyModifiers::NONE)])
 }
 fn default_delete_comment() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('d'), KeyModifiers::NONE)])
+}
+fn default_comment_line() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('c'), KeyModifiers::NONE)])
+}
+fn default_next_error() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('e'), KeyModifiers::NONE)])
+}
+fn default_prev_error() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('E'), KeyModifiers::NONE)])
+}
+fn default_next_warning() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('w'), KeyModifiers::NONE)])
+}
+fn default_prev_warning() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('W'), KeyModifiers::NONE)])
 }
 fn default_normal_filter_include() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('i'), KeyModifiers::NONE)])
@@ -489,6 +504,16 @@ pub struct NormalKeybindings {
     pub edit_comment: KeyBindings,
     #[serde(default = "default_delete_comment")]
     pub delete_comment: KeyBindings,
+    #[serde(default = "default_comment_line")]
+    pub comment_line: KeyBindings,
+    #[serde(default = "default_next_error")]
+    pub next_error: KeyBindings,
+    #[serde(default = "default_prev_error")]
+    pub prev_error: KeyBindings,
+    #[serde(default = "default_next_warning")]
+    pub next_warning: KeyBindings,
+    #[serde(default = "default_prev_warning")]
+    pub prev_warning: KeyBindings,
     #[serde(default = "default_normal_filter_include")]
     pub filter_include: KeyBindings,
     #[serde(default = "default_normal_filter_exclude")]
@@ -523,6 +548,11 @@ impl Default for NormalKeybindings {
             clear_all: default_clear_all(),
             edit_comment: default_edit_comment(),
             delete_comment: default_delete_comment(),
+            comment_line: default_comment_line(),
+            next_error: default_next_error(),
+            prev_error: default_prev_error(),
+            next_warning: default_next_warning(),
+            prev_warning: default_prev_warning(),
             filter_include: default_normal_filter_include(),
             filter_exclude: default_normal_filter_exclude(),
             enter_ui_mode: default_enter_ui_mode(),
@@ -1347,6 +1377,11 @@ impl Keybindings {
             ("normal.clear_all", &self.normal.clear_all),
             ("normal.edit_comment", &self.normal.edit_comment),
             ("normal.delete_comment", &self.normal.delete_comment),
+            ("normal.comment_line", &self.normal.comment_line),
+            ("normal.next_error", &self.normal.next_error),
+            ("normal.prev_error", &self.normal.prev_error),
+            ("normal.next_warning", &self.normal.next_warning),
+            ("normal.prev_warning", &self.normal.prev_warning),
             ("global.quit", &self.global.quit),
             ("global.next_tab", &self.global.next_tab),
             ("global.prev_tab", &self.global.prev_tab),
@@ -2402,7 +2437,7 @@ mod tests {
         assert!(kb.clear_all.matches(KeyCode::Char('C'), KeyModifiers::NONE));
         assert!(
             kb.edit_comment
-                .matches(KeyCode::Char('e'), KeyModifiers::NONE)
+                .matches(KeyCode::Char('r'), KeyModifiers::NONE)
         );
         assert!(
             kb.delete_comment
@@ -2774,7 +2809,7 @@ mod tests {
                 .matches(KeyCode::Char('s'), KeyModifiers::NONE)
         );
         assert!(
-            kb.toggle_wrap
+            !kb.toggle_wrap
                 .matches(KeyCode::Char('w'), KeyModifiers::NONE)
         );
         assert!(kb.exit.matches(KeyCode::Esc, KeyModifiers::NONE));

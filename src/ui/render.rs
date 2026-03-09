@@ -799,11 +799,12 @@ impl App {
             }
         }
 
-        // Comment banner styles.
-        let banner_prefix_style = Style::default()
+        // Comment banner styles — sticky-note appearance with mark background.
+        let banner_line_style = Style::default().fg(theme.mark_fg).bg(theme.mark_bg);
+        let banner_indicator_style = Style::default()
             .fg(theme.text_highlight_fg)
+            .bg(theme.mark_bg)
             .add_modifier(Modifier::BOLD);
-        let banner_text_style = Style::default().fg(theme.text);
 
         // Read render cache generation keys once before the loop.
         let render_gen = self.tabs[self.active_tab].render_cache_gen;
@@ -1041,57 +1042,36 @@ impl App {
 
             if show_line_numbers {
                 let line_num = line_idx + 1;
-                // Tree character: │ for mid-group lines, └ for the last line of a group,
-                // space for non-commented lines.
-                let (tree_char, ln_fg) = if let Some(&cmt_idx) = vis_comment_map.get(&abs_vis_idx) {
-                    let next_same = vis_comment_map.get(&(abs_vis_idx + 1)) == Some(&cmt_idx);
-                    let ch = if next_same { "│" } else { "└" };
-                    (ch, theme.text_highlight_fg)
+                // ▸ marker for lines that have an annotation, space otherwise.
+                let (marker, ln_fg) = if vis_comment_map.contains_key(&abs_vis_idx) {
+                    ("▸", theme.text_highlight_fg)
                 } else {
-                    (" ", theme.border)
+                    (" ", theme.line_number_fg)
                 };
-                // Format: {tree_char}{line_num right-aligned}{space}
+                // Format: {marker}{line_num right-aligned}{space}
                 // Total width = 1 + line_number_width + 1 = ln_prefix_width ✓
-                let line_num_str = format!(
-                    "{}{:>width$} ",
-                    tree_char,
-                    line_num,
-                    width = line_number_width
-                );
-                let line_num_style = Style::default().fg(ln_fg).add_modifier(Modifier::DIM);
+                let line_num_str =
+                    format!("{}{:>width$} ", marker, line_num, width = line_number_width);
+                let line_num_style = Style::default().fg(ln_fg);
                 let mut all_spans = vec![Span::styled(line_num_str, line_num_style)];
-                // Extra indent padding for lines nested under a comment banner.
-                if vis_comment_map.contains_key(&abs_vis_idx) {
-                    all_spans.push(Span::raw("  "));
-                }
                 all_spans.extend(line.spans);
                 line = Line::from(all_spans).style(render_style);
             }
 
-            // Optionally prepend a comment banner before the first commented line in view.
-            // Tree-prefix strings are ln_prefix_width wide so comment text aligns with
-            // log content:  "├" + "─"*(w-2) + " "  and  "│" + " "*(w-2) + " "
+            // Prepend a sticky-note banner before the first visible line of each comment group.
             if let Some(&cmt_idx) = banner_at.get(&abs_vis_idx) {
                 let (_, text) = &comments_for_render[cmt_idx];
-                let (first_prefix, cont_prefix) = if show_line_numbers && ln_prefix_width >= 2 {
-                    (
-                        format!("├{} ", "─".repeat(ln_prefix_width - 2)),
-                        format!("│{} ", " ".repeat(ln_prefix_width - 2)),
-                    )
-                } else {
-                    ("├── ".to_string(), "│   ".to_string())
-                };
                 for (i, text_line) in text.lines().enumerate() {
                     let (prefix, p_style) = if i == 0 {
-                        (first_prefix.clone(), banner_prefix_style)
+                        ("  ◆ ", banner_indicator_style)
                     } else {
-                        (cont_prefix.clone(), banner_text_style)
+                        ("    ", banner_line_style)
                     };
                     let spans = vec![
                         Span::styled(prefix, p_style),
-                        Span::styled(text_line.to_string(), banner_text_style),
+                        Span::styled(text_line.to_string(), banner_line_style),
                     ];
-                    log_lines.push(Line::from(spans).style(banner_text_style));
+                    log_lines.push(Line::from(spans).style(banner_line_style));
                 }
             }
             log_lines.push(line);
@@ -1725,7 +1705,7 @@ impl App {
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
-                    .fg(self.theme.border)
+                    .fg(self.theme.inactive_tab_fg)
                     .bg(self.theme.root_bg)
             };
             let suffix = match (loading_info, filtering_tabs.contains(&i)) {
@@ -2065,6 +2045,29 @@ mod tests {
             .add_comment("test comment".to_string(), vec![0, 1]);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let content: String = (0..buf.area.height)
+            .map(|y| row_content(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            content.contains("◆"),
+            "comment banner should use ◆ indicator, got:\n{content}"
+        );
+        assert!(
+            content.contains("▸"),
+            "annotated line numbers should use ▸ marker, got:\n{content}"
+        );
+        assert!(
+            !content.contains("├"),
+            "banner should not use tree connector ├, got:\n{content}"
+        );
+        assert!(
+            content.contains("test comment"),
+            "comment text should appear in output, got:\n{content}"
+        );
     }
 
     #[tokio::test]
@@ -2677,9 +2680,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_inactive_tab_uses_border_color() {
+    async fn test_inactive_tab_uses_inactive_tab_fg_color() {
         let mut app = make_two_tab_app().await;
-        let expected_fg = app.theme.border;
+        let expected_fg = app.theme.inactive_tab_fg;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2691,7 +2694,7 @@ mod tests {
         let cell = buf.cell((other_col, 0)).expect("cell out of bounds");
         assert_eq!(
             cell.fg, expected_fg,
-            "inactive tab should use border color as fg, got {:?}",
+            "inactive tab should use inactive_tab_fg color, got {:?}",
             cell.fg
         );
     }

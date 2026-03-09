@@ -3,6 +3,7 @@
   "border": "#3c3836",
   "cursor_bg": "#3c3836",
   "border_title": "#ebdbb2",
+  "inactive_tab_fg": "#928374",
   "text": "#ebdbb2",
   "text_highlight_fg": "#fabd2f",
   "text_highlight_bg": "#614d10",

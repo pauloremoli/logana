@@ -460,6 +460,10 @@ pub struct TabState {
     /// before applying cursor/mark/visual style and line numbers).
     /// Key: line_idx → (render_cache_gen, search_result_gen, current_occ, Line<'static>).
     pub render_line_cache: HashMap<usize, (u64, u64, Option<usize>, Line<'static>)>,
+    /// Sorted visible positions (indices into `visible_indices`) of ERROR and FATAL lines.
+    pub error_positions: Vec<usize>,
+    /// Sorted visible positions (indices into `visible_indices`) of WARN lines.
+    pub warning_positions: Vec<usize>,
 }
 
 impl TabState {
@@ -519,13 +523,69 @@ impl TabState {
             render_cache_gen: 0,
             search_result_gen: 0,
             render_line_cache: HashMap::new(),
+            error_positions: Vec::new(),
+            warning_positions: Vec::new(),
         };
         tab.refresh_visible();
         tab
     }
 
+    /// Rebuilds the sorted level-position index from the current `visible_indices`.
+    ///
+    /// Scans every visible line, classifies its log level (parse cache → parser →
+    /// byte scan), and records the visible position in `error_positions` (for
+    /// ERROR / FATAL) or `warning_positions` (for WARN).
+    pub fn rebuild_level_index(&mut self) {
+        use crate::types::LogLevel;
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        let len = self.visible_indices.len();
+        for pos in 0..len {
+            let file_idx = self.visible_indices.get(pos);
+            let cached_level = self.parse_cache.get(&file_idx).and_then(|(cache_gen, c)| {
+                (*cache_gen == self.parse_cache_gen)
+                    .then(|| c.level.as_deref().map(LogLevel::parse_level))
+                    .flatten()
+            });
+            let level = if let Some(l) = cached_level {
+                l
+            } else {
+                let bytes = self.file_reader.get_line(file_idx);
+                if !self.raw_mode {
+                    if let Some(parser) = self.detected_format.as_ref() {
+                        if let Some(parts) = parser.parse_line(bytes) {
+                            if let Some(level_str) = parts.level {
+                                LogLevel::parse_level(level_str)
+                            } else {
+                                LogLevel::detect_from_bytes(bytes)
+                            }
+                        } else {
+                            LogLevel::detect_from_bytes(bytes)
+                        }
+                    } else {
+                        LogLevel::detect_from_bytes(bytes)
+                    }
+                } else {
+                    LogLevel::detect_from_bytes(bytes)
+                }
+            };
+            match level {
+                LogLevel::Error | LogLevel::Fatal => errors.push(pos),
+                LogLevel::Warning => warnings.push(pos),
+                _ => {}
+            }
+        }
+        self.error_positions = errors;
+        self.warning_positions = warnings;
+    }
+
     /// Recompute which file lines are visible under the current filters.
     pub fn refresh_visible(&mut self) {
+        self.refresh_visible_inner();
+        self.rebuild_level_index();
+    }
+
+    fn refresh_visible_inner(&mut self) {
         // Short-circuit: with no active filters and not in marks-only mode the
         // visible set is always All(n), regardless of `filtering_enabled`.
         // Skipping cache invalidation avoids reprocessing every line needlessly.
@@ -1049,6 +1109,7 @@ impl TabState {
         } else {
             self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
         }
+        self.rebuild_level_index();
     }
 
     /// Apply a new exclude filter incrementally against the currently visible lines,
@@ -1089,6 +1150,7 @@ impl TabState {
         } else {
             self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
         }
+        self.rebuild_level_index();
     }
 
     /// Bump the parse cache generation so that all cached render outputs are re-computed
@@ -2217,5 +2279,28 @@ mod tests {
         let visible = h.result_rx.await.unwrap();
         tab.visible_indices = VisibleLines::Filtered(visible);
         assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
+    }
+
+    // ── Level index ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_rebuild_level_index_populates_error_positions() {
+        let tab = make_tab(&["INFO line", "ERROR oops", "WARN careful", "FATAL crash"]).await;
+        assert_eq!(tab.error_positions, vec![1, 3]);
+        assert_eq!(tab.warning_positions, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_level_index_empty_on_no_matches() {
+        let tab = make_tab(&["INFO line", "DEBUG detail"]).await;
+        assert!(tab.error_positions.is_empty());
+        assert!(tab.warning_positions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_level_index_empty_file() {
+        let tab = make_tab(&[]).await;
+        assert!(tab.error_positions.is_empty());
+        assert!(tab.warning_positions.is_empty());
     }
 }

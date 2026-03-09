@@ -46,7 +46,6 @@ impl App {
         tab.keybindings = self.keybindings.clone();
         tab.show_mode_bar = self.show_mode_bar;
         tab.show_borders = self.show_borders_default;
-        tab.refresh_visible();
 
         if let Ok(Some(ctx)) = self.db.load_file_context(&abs_path).await {
             tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
@@ -162,14 +161,12 @@ impl App {
             tab.keybindings = self.keybindings.clone();
             tab.show_mode_bar = self.show_mode_bar;
             tab.show_borders = self.show_borders_default;
-            tab.refresh_visible();
             let abs_path = std::fs::canonicalize(&next)
                 .ok()
                 .and_then(|c| c.to_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| next.clone());
             if let Ok(Some(ctx)) = self.db.load_file_context(&abs_path).await {
                 tab.apply_file_context(&ctx);
-                tab.refresh_visible();
             }
             self.tabs.push(tab);
             let mut tab_idx = self.tabs.len() - 1;
@@ -248,6 +245,7 @@ impl App {
                             .filter(|&i| pred(self.tabs[0].file_reader.get_line(i)))
                             .collect();
                         self.tabs[0].visible_indices = super::VisibleLines::Filtered(visible);
+                        self.tabs[0].rebuild_level_index();
                     } else {
                         self.tabs[0].refresh_visible();
                     }
@@ -338,7 +336,7 @@ impl App {
             }
             let tail_mode = self.tabs[idx].tail_mode;
             self.tabs[idx].file_reader = FileReader::from_bytes(data);
-            self.tabs[idx].refresh_visible();
+            self.tabs[idx].begin_filter_refresh();
 
             if tail_mode {
                 let new_count = self.tabs[idx].visible_indices.len();
@@ -407,8 +405,9 @@ impl App {
                 // otherwise fall back to a full compute_visible scan.
                 if let Some(visible) = result.precomputed_visible {
                     self.tabs[0].visible_indices = super::VisibleLines::Filtered(visible);
+                    self.tabs[0].rebuild_level_index();
                 } else {
-                    self.tabs[0].refresh_visible();
+                    self.tabs[0].begin_filter_refresh();
                 }
                 // Apply startup tail: jump to the last visible line and enable tail mode.
                 if self.startup_tail {
@@ -439,7 +438,7 @@ impl App {
                     self.tabs[tab_idx].detected_format =
                         crate::parser::detect_format(&sample).map(Arc::from);
                 }
-                self.tabs[tab_idx].refresh_visible();
+                self.tabs[tab_idx].begin_filter_refresh();
                 let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
                 self.tabs[tab_idx].watch_state = Some(FileWatchState {
                     new_data_rx: watch_rx,
@@ -529,10 +528,14 @@ impl App {
                         self.tabs[i].detected_format =
                             crate::parser::detect_format(&sample).map(Arc::from);
                     }
-                    self.tabs[i].refresh_visible();
+                    self.tabs[i].begin_filter_refresh();
                     if tail_mode {
-                        let new_count = self.tabs[i].visible_indices.len();
-                        self.tabs[i].scroll_offset = new_count.saturating_sub(1);
+                        // Fast path (no active filters): visible_indices updated immediately.
+                        // Slow path (active filters): advance_filter_computation handles tail jump.
+                        if self.tabs[i].filter_handle.is_none() {
+                            let new_count = self.tabs[i].visible_indices.len();
+                            self.tabs[i].scroll_offset = new_count.saturating_sub(1);
+                        }
                     }
                 }
                 Some(Err(_)) => {
@@ -593,6 +596,7 @@ impl App {
             };
             tab.filter_handle = None;
             tab.visible_indices = super::VisibleLines::Filtered(visible);
+            tab.rebuild_level_index();
             if tab.visible_indices.is_empty() {
                 tab.scroll_offset = 0;
             } else {

@@ -434,6 +434,62 @@ impl Mode for NormalMode {
             return (self, KeyResult::Handled);
         }
 
+        if kb.normal.comment_line.matches(key, modifiers) {
+            tab.g_key_pressed = false;
+            self.count = None;
+            if let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) {
+                return (
+                    Box::new(CommentMode::new(vec![line_idx])),
+                    KeyResult::Handled,
+                );
+            }
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.next_error.matches(key, modifiers) {
+            if let Some(pos) = find_next_in_sorted(&tab.error_positions, tab.scroll_offset) {
+                tab.scroll_offset = pos;
+            } else {
+                tab.command_error = Some("No more errors".to_string());
+            }
+            tab.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.prev_error.matches(key, modifiers) {
+            if let Some(pos) = find_prev_in_sorted(&tab.error_positions, tab.scroll_offset) {
+                tab.scroll_offset = pos;
+            } else {
+                tab.command_error = Some("No previous error".to_string());
+            }
+            tab.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.next_warning.matches(key, modifiers) {
+            if let Some(pos) = find_next_in_sorted(&tab.warning_positions, tab.scroll_offset) {
+                tab.scroll_offset = pos;
+            } else {
+                tab.command_error = Some("No more warnings".to_string());
+            }
+            tab.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.prev_warning.matches(key, modifiers) {
+            if let Some(pos) = find_prev_in_sorted(&tab.warning_positions, tab.scroll_offset) {
+                tab.scroll_offset = pos;
+            } else {
+                tab.command_error = Some("No previous warning".to_string());
+            }
+            tab.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
         if kb.normal.show_keybindings.matches(key, modifiers) {
             tab.g_key_pressed = false;
             self.count = None;
@@ -497,6 +553,45 @@ impl Mode for NormalMode {
         status_entry(&mut spans, kb.normal.visual_mode.display(), "visual", theme);
         status_entry(
             &mut spans,
+            kb.normal.comment_line.display(),
+            "comment",
+            theme,
+        );
+        spans.push(Span::styled("<", Style::default().fg(theme.text)));
+        spans.push(Span::styled(
+            kb.normal.next_error.display(),
+            Style::default()
+                .fg(theme.error_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.text)));
+        spans.push(Span::styled(
+            kb.normal.prev_error.display(),
+            Style::default()
+                .fg(theme.error_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("> err  ", Style::default().fg(theme.error_fg)));
+        spans.push(Span::styled("<", Style::default().fg(theme.text)));
+        spans.push(Span::styled(
+            kb.normal.next_warning.display(),
+            Style::default()
+                .fg(theme.warning_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.text)));
+        spans.push(Span::styled(
+            kb.normal.prev_warning.display(),
+            Style::default()
+                .fg(theme.warning_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            "> warn  ",
+            Style::default().fg(theme.warning_fg),
+        ));
+        status_entry(
+            &mut spans,
             kb.normal.show_keybindings.display(),
             "help",
             theme,
@@ -521,12 +616,20 @@ impl Mode for NormalMode {
     }
 }
 
-/// Returns the char-index of the start of the current search occurrence on the
-/// current line, or 0 if there is no active search match on this line.
-///
-/// Search results store byte offsets into the raw file bytes, which differ from
-/// the displayed text produced by `display_line_text`. We therefore re-apply the
-/// compiled pattern against `line_text` to locate the correct position.
+/// Returns the first position in the sorted `positions` slice that is strictly
+/// greater than `current`, or `None` if no such position exists.
+fn find_next_in_sorted(positions: &[usize], current: usize) -> Option<usize> {
+    let idx = positions.partition_point(|&p| p <= current);
+    positions.get(idx).copied()
+}
+
+/// Returns the last position in the sorted `positions` slice that is strictly
+/// less than `current`, or `None` if no such position exists.
+fn find_prev_in_sorted(positions: &[usize], current: usize) -> Option<usize> {
+    let idx = positions.partition_point(|&p| p < current);
+    idx.checked_sub(1).and_then(|i| positions.get(i).copied())
+}
+
 fn search_match_char_offset(tab: &TabState, line_text: &str) -> usize {
     let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) else {
         return 0;
@@ -1177,12 +1280,12 @@ mod tests {
     // ── Edit comment ────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_e_on_commented_line_opens_edit_mode() {
+    async fn test_r_on_commented_line_opens_edit_mode() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
         tab.log_manager.add_comment("my comment".into(), vec![0]);
         tab.scroll_offset = 0;
 
-        let (mode, result) = press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
+        let (mode, result) = press(&mut tab, KeyCode::Char('r'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
         match mode.render_state() {
             ModeRenderState::Comment { lines, .. } => {
@@ -1193,11 +1296,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_e_on_non_commented_line_shows_error() {
+    async fn test_r_on_non_commented_line_shows_error() {
         let mut tab = make_tab(&["line0", "line1"]).await;
         tab.scroll_offset = 0;
 
-        let (mode, result) = press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
+        let (mode, result) = press(&mut tab, KeyCode::Char('r'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(matches!(mode.render_state(), ModeRenderState::Normal));
         assert_eq!(
@@ -1248,5 +1351,143 @@ mod tests {
         // (saturating_mul won't overflow, but min(999_999) caps it)
         // The result of 999_999 * 10 = 9_999_990 + 9 = 9_999_999, capped to 999_999
         assert!(matches!(mode.render_state(), ModeRenderState::Normal));
+    }
+
+    // ── Comment line ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_c_opens_comment_mode_for_current_line() {
+        let mut tab = make_tab(&["line0", "line1", "line2"]).await;
+        tab.scroll_offset = 1;
+        let (mode, result) = press(&mut tab, KeyCode::Char('c'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::Handled));
+        match mode.render_state() {
+            ModeRenderState::Comment { line_count, .. } => {
+                assert_eq!(line_count, 1);
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
+    }
+
+    // ── Error / warning navigation ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_e_navigates_to_next_error() {
+        let mut tab =
+            make_tab(&["INFO normal line", "ERROR something failed", "INFO another"]).await;
+        tab.scroll_offset = 0;
+        press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll_offset, 1);
+    }
+
+    #[tokio::test]
+    async fn test_capital_e_navigates_to_prev_error() {
+        let mut tab = make_tab(&["ERROR first error", "INFO normal line", "INFO another"]).await;
+        tab.scroll_offset = 2;
+        press(&mut tab, KeyCode::Char('E'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_e_at_last_error_sets_command_error() {
+        let mut tab = make_tab(&["ERROR only error", "INFO line"]).await;
+        tab.scroll_offset = 0;
+        press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
+        assert_eq!(tab.command_error.as_deref(), Some("No more errors"));
+    }
+
+    #[tokio::test]
+    async fn test_capital_e_at_first_error_sets_command_error() {
+        let mut tab = make_tab(&["INFO line", "ERROR only error"]).await;
+        tab.scroll_offset = 1;
+        press(&mut tab, KeyCode::Char('E'), KeyModifiers::NONE).await;
+        assert_eq!(tab.command_error.as_deref(), Some("No previous error"));
+    }
+
+    #[tokio::test]
+    async fn test_w_navigates_to_next_warning() {
+        let mut tab =
+            make_tab(&["INFO normal line", "WARN disk nearly full", "INFO another"]).await;
+        tab.scroll_offset = 0;
+        press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll_offset, 1);
+    }
+
+    #[tokio::test]
+    async fn test_capital_w_navigates_to_prev_warning() {
+        let mut tab = make_tab(&["WARN first warning", "INFO normal line", "INFO another"]).await;
+        tab.scroll_offset = 2;
+        press(&mut tab, KeyCode::Char('W'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_w_no_warnings_sets_command_error() {
+        let mut tab = make_tab(&["INFO only", "DEBUG line"]).await;
+        tab.scroll_offset = 0;
+        press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
+        assert_eq!(tab.command_error.as_deref(), Some("No more warnings"));
+    }
+
+    #[tokio::test]
+    async fn test_capital_w_no_prev_warning_sets_command_error() {
+        let mut tab = make_tab(&["INFO line", "WARN only warning"]).await;
+        tab.scroll_offset = 1;
+        press(&mut tab, KeyCode::Char('W'), KeyModifiers::NONE).await;
+        assert_eq!(tab.command_error.as_deref(), Some("No previous warning"));
+    }
+
+    #[tokio::test]
+    async fn test_e_skips_non_error_levels() {
+        let mut tab = make_tab(&[
+            "INFO line",
+            "WARN warning",
+            "DEBUG debug",
+            "ERROR error here",
+        ])
+        .await;
+        tab.scroll_offset = 0;
+        press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll_offset, 3);
+    }
+
+    #[tokio::test]
+    async fn test_e_navigates_to_fatal_level() {
+        let mut tab = make_tab(&["INFO line", "FATAL crash"]).await;
+        tab.scroll_offset = 0;
+        press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll_offset, 1);
+    }
+
+    // ── find_next_in_sorted / find_prev_in_sorted ─────────────────────
+
+    #[test]
+    fn test_find_next_in_sorted_basic() {
+        let positions = vec![1usize, 3, 7];
+        assert_eq!(find_next_in_sorted(&positions, 0), Some(1));
+        assert_eq!(find_next_in_sorted(&positions, 1), Some(3));
+        assert_eq!(find_next_in_sorted(&positions, 3), Some(7));
+        assert_eq!(find_next_in_sorted(&positions, 7), None);
+        assert_eq!(find_next_in_sorted(&positions, 10), None);
+    }
+
+    #[test]
+    fn test_find_prev_in_sorted_basic() {
+        let positions = vec![1usize, 3, 7];
+        assert_eq!(find_prev_in_sorted(&positions, 10), Some(7));
+        assert_eq!(find_prev_in_sorted(&positions, 7), Some(3));
+        assert_eq!(find_prev_in_sorted(&positions, 3), Some(1));
+        assert_eq!(find_prev_in_sorted(&positions, 1), None);
+        assert_eq!(find_prev_in_sorted(&positions, 0), None);
+    }
+
+    #[test]
+    fn test_find_next_in_sorted_empty() {
+        assert_eq!(find_next_in_sorted(&[], 5), None);
+    }
+
+    #[test]
+    fn test_find_prev_in_sorted_empty() {
+        assert_eq!(find_prev_in_sorted(&[], 5), None);
     }
 }

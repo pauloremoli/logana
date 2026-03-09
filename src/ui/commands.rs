@@ -573,6 +573,7 @@ mod tests {
             if let Some(h) = tab.filter_handle.take() {
                 if let Ok(visible) = h.result_rx.await {
                     tab.visible_indices = VisibleLines::Filtered(visible);
+                    tab.rebuild_level_index();
                     if tab.visible_indices.is_empty() {
                         tab.scroll_offset = 0;
                     } else {

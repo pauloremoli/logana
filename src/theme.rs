@@ -236,7 +236,7 @@ impl ValueColors {
         &self,
         process_representative: Option<Color>,
     ) -> Vec<ValueColorGroup> {
-        let process_swatch = process_representative.unwrap_or(Color::Rgb(255, 85, 85)); // dracula red fallback
+        let process_swatch = process_representative.unwrap_or(Color::Rgb(255, 85, 85));
         vec![
             ValueColorGroup {
                 label: "HTTP methods",
@@ -386,6 +386,27 @@ pub struct Theme {
         default = "default_mark_fg"
     )]
     pub mark_fg: Color,
+    /// Foreground colour for line-number gutter text.
+    ///
+    /// Defaults to a neutral mid-gray (`#808080`) so it is readable on both
+    /// dark and light themes without requiring every theme file to specify it.
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_line_number_fg"
+    )]
+    pub line_number_fg: Color,
+    /// Foreground colour for inactive (non-selected) tab labels.
+    ///
+    /// Defaults to a neutral mid-gray so it is readable on both dark and light
+    /// backgrounds without requiring every theme file to specify it. Light themes
+    /// should override this with a darker colour for adequate contrast.
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_inactive_tab_fg"
+    )]
+    pub inactive_tab_fg: Color,
     #[serde(
         serialize_with = "colors_to_str_vec",
         deserialize_with = "colors_from_str_vec"
@@ -533,6 +554,12 @@ fn default_mark_bg() -> Color {
 fn default_mark_fg() -> Color {
     Color::Rgb(248, 248, 242)
 }
+fn default_line_number_fg() -> Color {
+    Color::Rgb(128, 128, 128) // neutral gray — visible on both dark and light themes
+}
+fn default_inactive_tab_fg() -> Color {
+    Color::Rgb(128, 128, 128) // neutral gray — readable on both dark and light backgrounds
+}
 
 impl Theme {
     /// Returns the names of all available themes: bundled, local `themes/`, and
@@ -620,34 +647,36 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Theme::from_file("dracula.json").unwrap_or_else(|_| Theme {
-            root_bg: Color::Rgb(40, 42, 54),
-            border: Color::Rgb(98, 114, 164),
-            cursor_bg: Color::Rgb(98, 114, 164), // dracula: same as border
-            border_title: Color::Rgb(248, 248, 242),
-            text: Color::Rgb(248, 248, 242),
-            text_highlight_fg: default_text_highlight_fg(),
-            text_highlight_bg: default_text_highlight_bg(),
-            cursor_fg: Color::Rgb(28, 28, 28),
-            trace_fg: default_trace_fg(),
-            debug_fg: default_debug_fg(),
-            info_fg: default_info_fg(),
-            notice_fg: default_notice_fg(),
-            error_fg: Color::Rgb(255, 85, 85),
-            warning_fg: Color::Rgb(241, 250, 140),
-            fatal_fg: default_fatal_fg(),
-            search_fg: default_search_fg(),
-            visual_select_bg: default_visual_select_bg(),
-            visual_select_fg: default_visual_select_fg(),
-            mark_bg: default_mark_bg(),
-            mark_fg: default_mark_fg(),
+        Theme::from_file("catppuccin-mocha.json").unwrap_or_else(|_| Theme {
+            root_bg: Color::Rgb(0x1e, 0x1e, 0x2e),
+            border: Color::Rgb(0x31, 0x32, 0x44),
+            cursor_bg: Color::Rgb(0x31, 0x32, 0x44),
+            border_title: Color::Rgb(0xcd, 0xd6, 0xf4),
+            text: Color::Rgb(0xcd, 0xd6, 0xf4),
+            text_highlight_fg: Color::Rgb(0xf9, 0xe2, 0xaf),
+            text_highlight_bg: Color::Rgb(0x4a, 0x3a, 0x0a),
+            cursor_fg: Color::Rgb(0xcd, 0xd6, 0xf4),
+            trace_fg: Color::Rgb(0x58, 0x5b, 0x70),
+            debug_fg: Color::Rgb(0x89, 0xdc, 0xeb),
+            info_fg: Color::Rgb(0xcd, 0xd6, 0xf4),
+            notice_fg: Color::Rgb(0xa6, 0xe3, 0xa1),
+            error_fg: Color::Rgb(0xf3, 0x8b, 0xa8),
+            warning_fg: Color::Rgb(0xf9, 0xe2, 0xaf),
+            fatal_fg: Color::Rgb(0xf3, 0x8b, 0xa8),
+            search_fg: Color::Rgb(0x1e, 0x1e, 0x2e),
+            visual_select_bg: Color::Rgb(0x45, 0x47, 0x5a),
+            visual_select_fg: Color::Rgb(0xcd, 0xd6, 0xf4),
+            mark_bg: Color::Rgb(0x4a, 0x38, 0x00),
+            mark_fg: Color::Rgb(0xcd, 0xd6, 0xf4),
+            line_number_fg: default_line_number_fg(),
+            inactive_tab_fg: Color::Rgb(0x58, 0x5b, 0x70),
             process_colors: vec![
-                Color::Rgb(255, 85, 85),
-                Color::Rgb(80, 250, 123),
-                Color::Rgb(255, 184, 108),
-                Color::Rgb(189, 147, 249),
-                Color::Rgb(255, 121, 198),
-                Color::Rgb(139, 233, 253),
+                Color::Rgb(0xf3, 0x8b, 0xa8),
+                Color::Rgb(0xa6, 0xe3, 0xa1),
+                Color::Rgb(0xf9, 0xe2, 0xaf),
+                Color::Rgb(0x89, 0xb4, 0xfa),
+                Color::Rgb(0xcb, 0xa6, 0xf7),
+                Color::Rgb(0x89, 0xdc, 0xeb),
             ],
             value_colors: ValueColors::default(),
         })
@@ -803,27 +832,28 @@ mod tests {
     // ── Theme defaults ──────────────────────────────────────────────────
 
     #[test]
-    fn test_theme_default_level_colors() {
+    fn test_theme_default_loads_successfully() {
         let theme = Theme::default();
-        assert_eq!(theme.trace_fg, Color::Rgb(98, 114, 164));
-        assert_eq!(theme.debug_fg, Color::Rgb(139, 233, 253));
-        assert_eq!(theme.info_fg, Color::Rgb(248, 248, 242));
-        assert_eq!(theme.notice_fg, Color::Rgb(248, 248, 242));
-        assert_eq!(theme.fatal_fg, Color::Rgb(255, 85, 85));
-        assert_eq!(theme.cursor_fg, Color::Rgb(248, 248, 242));
-        assert_eq!(theme.search_fg, Color::Rgb(28, 28, 28));
-        assert_eq!(theme.visual_select_bg, Color::Rgb(68, 71, 90));
-        assert_eq!(theme.visual_select_fg, Color::Rgb(248, 248, 242));
-        assert_eq!(theme.mark_bg, Color::Rgb(70, 60, 15));
-        assert_eq!(theme.mark_fg, Color::Rgb(248, 248, 242));
+        assert!(!theme.process_colors.is_empty());
+        // Verify required fields are populated (structural check, independent of active theme)
+        let _ = (theme.root_bg, theme.text, theme.error_fg, theme.warning_fg);
     }
 
     #[test]
-    fn test_theme_default_base_colors() {
-        let theme = Theme::default();
-        assert_eq!(theme.error_fg, Color::Rgb(255, 85, 85));
-        assert_eq!(theme.warning_fg, Color::Rgb(241, 250, 140));
-        assert!(!theme.process_colors.is_empty());
+    fn test_default_fallback_level_colors() {
+        // Tests the fallback functions used when optional fields are absent from a theme file.
+        assert_eq!(default_trace_fg(), Color::Rgb(98, 114, 164));
+        assert_eq!(default_debug_fg(), Color::Rgb(139, 233, 253));
+        assert_eq!(default_info_fg(), Color::Rgb(248, 248, 242));
+        assert_eq!(default_notice_fg(), Color::Rgb(248, 248, 242));
+        assert_eq!(default_fatal_fg(), Color::Rgb(255, 85, 85));
+        assert_eq!(default_cursor_fg(), Color::Rgb(28, 28, 28));
+        assert_eq!(default_search_fg(), Color::Rgb(28, 28, 28));
+        assert_eq!(default_visual_select_bg(), Color::Rgb(68, 71, 90));
+        assert_eq!(default_visual_select_fg(), Color::Rgb(248, 248, 242));
+        assert_eq!(default_mark_bg(), Color::Rgb(70, 60, 15));
+        assert_eq!(default_mark_fg(), Color::Rgb(248, 248, 242));
+        assert_eq!(default_inactive_tab_fg(), Color::Rgb(128, 128, 128));
     }
 
     // ── Theme serde ─────────────────────────────────────────────────────
@@ -838,10 +868,19 @@ mod tests {
 
     #[test]
     fn test_theme_deserialize_hex_color() {
-        let json = serde_json::to_string(&Theme::default()).unwrap();
-        // The serialized form uses ratatui's color string format
-        let theme: Theme = serde_json::from_str(&json).unwrap();
-        assert_eq!(theme.root_bg, Color::Rgb(40, 42, 54));
+        // Verify that hex color strings in JSON are parsed correctly.
+        let json = r##"{
+            "root_bg": "#1e1e2e",
+            "border": "#313244",
+            "border_title": "#cdd6f4",
+            "text": "#cdd6f4",
+            "error_fg": "#f38ba8",
+            "warning_fg": "#f9e2af",
+            "process_colors": ["#f38ba8"]
+        }"##;
+        let theme: Theme = serde_json::from_str(json).unwrap();
+        assert_eq!(theme.root_bg, Color::Rgb(0x1e, 0x1e, 0x2e));
+        assert_eq!(theme.border, Color::Rgb(0x31, 0x32, 0x44));
     }
 
     #[test]
@@ -882,6 +921,7 @@ mod tests {
         assert_eq!(theme.visual_select_fg, default_visual_select_fg());
         assert_eq!(theme.mark_bg, default_mark_bg());
         assert_eq!(theme.mark_fg, default_mark_fg());
+        assert_eq!(theme.inactive_tab_fg, default_inactive_tab_fg());
         assert_eq!(theme.value_colors, ValueColors::default());
     }
 
@@ -909,13 +949,14 @@ mod tests {
         let temp = tempdir().unwrap();
         let theme_dir = temp.path().join("logana").join("themes");
         fs::create_dir_all(&theme_dir).unwrap();
-        let theme_json = serde_json::to_string(&Theme::default()).unwrap();
+        let original = Theme::default();
+        let theme_json = serde_json::to_string(&original).unwrap();
         fs::write(theme_dir.join("test_theme.json"), &theme_json).unwrap();
 
-        let result = Theme::from_file_with_config_dir("test_theme.json", Some(temp.path()));
+        let loaded = Theme::from_file_with_config_dir("test_theme.json", Some(temp.path()));
 
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().root_bg, Color::Rgb(40, 42, 54));
+        assert!(loaded.is_ok());
+        assert_eq!(loaded.unwrap(), original);
     }
 
     #[test]

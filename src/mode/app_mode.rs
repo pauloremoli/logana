@@ -195,7 +195,6 @@ impl Mode for ConfirmRestoreMode {
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else if kb.no.matches(key, modifiers) {
             tab.log_manager.clear_filters().await;
-            tab.log_manager.set_marks(vec![]);
             tab.log_manager.set_comments(vec![]);
             tab.begin_filter_refresh();
             (Box::new(NormalMode::default()), KeyResult::Handled)
@@ -445,6 +444,26 @@ mod tests {
             ModeRenderState::ConfirmRestore
         ));
         assert_eq!(tab.log_manager.get_filters().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_confirm_restore_n_preserves_preview_marks() {
+        let mut tab = make_tab(&["line0", "line1", "line2"]).await;
+        // Simulate user adding a mark during the preview phase.
+        tab.log_manager.toggle_mark(1);
+        assert_eq!(tab.log_manager.get_marked_indices(), vec![1]);
+
+        let mode = ConfirmRestoreMode {
+            context: default_context(),
+        };
+        press_restore(mode, &mut tab, KeyCode::Char('n')).await;
+
+        // Mark added during preview must survive declining the restore.
+        assert_eq!(
+            tab.log_manager.get_marked_indices(),
+            vec![1],
+            "preview marks must not be erased on decline"
+        );
     }
 
     #[tokio::test]
