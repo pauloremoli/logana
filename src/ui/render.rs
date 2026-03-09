@@ -19,7 +19,8 @@ use ratatui::{
 
 use crate::auto_complete::{
     FieldCompletion, complete_color, complete_field_name, complete_field_value, complete_file_path,
-    extract_color_partial, extract_field_partial, find_command_completions,
+    complete_flags, extract_color_partial, extract_field_partial, extract_flag_partial,
+    find_command_completions, shell_split,
 };
 use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
 use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
@@ -1273,7 +1274,13 @@ impl App {
                         }
                     };
                     completions.join("  ")
-                } else if let Some(partial) = extract_color_partial(input_text) {
+                } else if let Some((_, partial)) = extract_flag_partial(input_text) {
+                    let cmd = shell_split(input_text)
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default();
+                    complete_flags(&cmd, &partial).join("  ")
+                } else if let Some(partial) = extract_color_partial(input_text.trim_start()) {
                     let completions = complete_color(partial);
                     completions
                         .iter()
@@ -1391,7 +1398,31 @@ impl App {
                         .wrap(Wrap { trim: false });
                     frame.render_widget(hint, hint_area);
                 }
-            } else if let Some(partial) = extract_color_partial(&input_text) {
+            } else if let Some((_, partial)) = extract_flag_partial(&input_text) {
+                let cmd = shell_split(&input_text)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default();
+                let completions = complete_flags(&cmd, &partial);
+                if !completions.is_empty() {
+                    let hint_spans: Vec<Span> = completions
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, name)| {
+                            let style = if completion_index == Some(i) {
+                                highlight_style
+                            } else {
+                                normal_style
+                            };
+                            vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
+                        })
+                        .collect();
+                    let hint = Paragraph::new(Line::from(hint_spans))
+                        .style(Style::default().bg(self.theme.root_bg))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(hint, hint_area);
+                }
+            } else if let Some(partial) = extract_color_partial(input_text.trim_start()) {
                 let completions = complete_color(partial);
                 if !completions.is_empty() {
                     let hint_spans: Vec<Span> = completions

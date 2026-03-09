@@ -6,8 +6,8 @@ use ratatui::text::{Line, Span};
 use crate::{
     auto_complete::{
         FieldCompletion, complete_color, complete_field_name, complete_field_value,
-        complete_file_path, extract_color_partial, extract_field_partial, find_command_completions,
-        fuzzy_match,
+        complete_file_path, complete_flags, extract_color_partial, extract_field_partial,
+        extract_flag_partial, find_command_completions, fuzzy_match, shell_split,
     },
     commands::FILE_PATH_COMMANDS,
     config::Keybindings,
@@ -65,14 +65,14 @@ pub enum Commands {
         #[arg(short = 'l')]
         line_mode: bool,
         /// Treat pattern as key=value and match against the named parsed field
-        #[arg(long = "field")]
+        #[arg(long = "field", short = 'f')]
         field: bool,
     },
     /// Add an exclude filter
     Exclude {
         pattern: String,
         /// Treat pattern as key=value and match against the named parsed field
-        #[arg(long = "field")]
+        #[arg(long = "field", short = 'f')]
         field: bool,
     },
     /// Set color for the selected filter
@@ -212,14 +212,29 @@ impl CommandMode {
             }
         }
 
+        // Flag/parameter completion (fires when last token starts with `-`)
+        if let Some((prefix, partial)) = extract_flag_partial(&self.input) {
+            let cmd = shell_split(&self.input)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            let completions = complete_flags(&cmd, &partial);
+            if !completions.is_empty() {
+                return completions
+                    .into_iter()
+                    .map(|f| format!("{}{}", prefix, f))
+                    .collect();
+            }
+        }
+
         // Color completion for --fg/--bg arguments
-        if let Some(partial) = extract_color_partial(&trimmed) {
+        if let Some(partial) = extract_color_partial(input_ls) {
             let completions = complete_color(partial);
             if !completions.is_empty() {
                 let prefix = if partial.is_empty() {
-                    trimmed.clone()
+                    input_ls.to_string()
                 } else {
-                    trimmed[..trimmed.len() - partial.len()].to_string()
+                    input_ls[..input_ls.len() - partial.len()].to_string()
                 };
                 return completions
                     .into_iter()
@@ -927,6 +942,66 @@ mod tests {
         assert!(
             accepted.contains('='),
             "Accepted field name completion should include '=' ready for value entry, got: {accepted}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_completions_filter_dash_suggests_flags() {
+        let mut tab = make_tab().await;
+        let mode = CommandMode::with_history("filter -".to_string(), 8, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"filter --fg".to_string()),
+            "Expected 'filter --fg' in completions, got: {completions:?}"
+        );
+        assert!(completions.contains(&"filter --bg".to_string()));
+        assert!(completions.contains(&"filter --field".to_string()));
+        assert!(completions.contains(&"filter -l".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_completions_filter_double_dash_f_suggests_field_and_fg() {
+        let mut tab = make_tab().await;
+        let mode = CommandMode::with_history("filter --f".to_string(), 10, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(completions.contains(&"filter --field".to_string()));
+        assert!(completions.contains(&"filter --fg".to_string()));
+        assert!(!completions.contains(&"filter --bg".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_completions_set_color_suggests_color_flags() {
+        let mut tab = make_tab().await;
+        let mode = CommandMode::with_history("set-color -".to_string(), 11, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(completions.contains(&"set-color --fg".to_string()));
+        assert!(completions.contains(&"set-color --bg".to_string()));
+        assert!(completions.contains(&"set-color -l".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_completions_date_filter_color_after_fg() {
+        let mut tab = make_tab().await;
+        let mode = CommandMode::with_history("date-filter --fg ".to_string(), 17, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions
+                .iter()
+                .any(|c| c.contains("Red") || c.contains("Blue")),
+            "Expected color completions after --fg, got: {completions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_completions_color_still_fires_after_flag() {
+        let mut tab = make_tab().await;
+        let mode = CommandMode::with_history("filter --fg ".to_string(), 12, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions
+                .iter()
+                .any(|c| c.contains("Red") || c.contains("Blue")),
+            "Expected color completions after 'filter --fg ', got: {completions:?}"
         );
     }
 

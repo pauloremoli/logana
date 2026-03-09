@@ -10,6 +10,53 @@ use std::collections::HashMap;
 use crate::commands::{COMMANDS, command_names};
 
 // ---------------------------------------------------------------------------
+// Flag completion
+// ---------------------------------------------------------------------------
+
+pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
+    ("filter", &["--field", "-f", "--fg", "--bg", "-l"]),
+    ("exclude", &["--field", "-f"]),
+    ("set-color", &["--fg", "--bg", "-l"]),
+    ("date-filter", &["--fg", "--bg", "-l"]),
+    ("export", &["-t", "--template"]),
+];
+
+/// If the current token being typed starts with `-` and there is at least one
+/// preceding token (the command), returns `(prefix, partial)` where `prefix`
+/// is everything up to and including the last space, and `partial` is the
+/// flag token in progress.
+pub fn extract_flag_partial(input: &str) -> Option<(String, String)> {
+    if input.ends_with(' ') {
+        return None;
+    }
+    let last_space = input.rfind(' ').map(|i| i + 1).unwrap_or(0);
+    let partial = &input[last_space..];
+    let prefix = &input[..last_space];
+    if prefix.trim().is_empty() {
+        return None;
+    }
+    if partial.starts_with('-') {
+        Some((prefix.to_string(), partial.to_string()))
+    } else {
+        None
+    }
+}
+
+/// Return flag completions for `cmd` filtered by `partial` using fuzzy matching.
+pub fn complete_flags(cmd: &str, partial: &str) -> Vec<&'static str> {
+    let flags = COMMAND_FLAGS
+        .iter()
+        .find(|(name, _)| *name == cmd)
+        .map(|(_, f)| *f)
+        .unwrap_or(&[]);
+    flags
+        .iter()
+        .filter(|f| fuzzy_match(partial, f))
+        .copied()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Field completion
 // ---------------------------------------------------------------------------
 
@@ -48,9 +95,9 @@ pub fn extract_field_partial(input: &str) -> Option<FieldCompletion> {
         return None;
     }
 
-    // Look for `--field` token in the input
+    // Look for `--field` / `-f` token in the input
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-    let field_pos = tokens.iter().position(|&t| t == "--field")?;
+    let field_pos = tokens.iter().position(|&t| t == "--field" || t == "-f")?;
 
     // The token immediately after `--field` is the pattern being typed
     let after_field = tokens.get(field_pos + 1);
@@ -187,7 +234,7 @@ pub const COLOR_NAMES: &[&str] = &[
 
 /// If the input ends with `--fg <partial>` or `--bg <partial>`, returns the partial color prefix.
 pub fn extract_color_partial(input: &str) -> Option<&str> {
-    let color_commands = ["filter", "set-color"];
+    let color_commands = ["filter", "set-color", "date-filter"];
     let trimmed = input.trim();
     let cmd = trimmed.split_whitespace().next().unwrap_or("");
     if !color_commands.contains(&cmd) {
@@ -864,6 +911,97 @@ mod tests {
             }
         }
         drop(dir);
+    }
+
+    // ── extract_flag_partial ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_flag_partial_none_when_trailing_space() {
+        assert_eq!(extract_flag_partial("filter "), None);
+    }
+
+    #[test]
+    fn test_extract_flag_partial_none_when_no_command() {
+        assert_eq!(extract_flag_partial("-"), None);
+    }
+
+    #[test]
+    fn test_extract_flag_partial_none_when_not_flag() {
+        assert_eq!(extract_flag_partial("filter error"), None);
+    }
+
+    #[test]
+    fn test_extract_flag_partial_single_dash() {
+        assert_eq!(
+            extract_flag_partial("filter -"),
+            Some(("filter ".to_string(), "-".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_flag_partial_double_dash() {
+        assert_eq!(
+            extract_flag_partial("filter --"),
+            Some(("filter ".to_string(), "--".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_flag_partial_partial_flag() {
+        assert_eq!(
+            extract_flag_partial("filter --f"),
+            Some(("filter ".to_string(), "--f".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_flag_partial_mid_input() {
+        assert_eq!(
+            extract_flag_partial("filter --fg Blue -"),
+            Some(("filter --fg Blue ".to_string(), "-".to_string()))
+        );
+    }
+
+    // ── complete_flags ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_complete_flags_filter_all() {
+        let flags = complete_flags("filter", "-");
+        assert_eq!(flags.len(), 5);
+        assert!(flags.contains(&"--field"));
+        assert!(flags.contains(&"-f"));
+        assert!(flags.contains(&"--fg"));
+        assert!(flags.contains(&"--bg"));
+        assert!(flags.contains(&"-l"));
+    }
+
+    #[test]
+    fn test_complete_flags_filter_partial() {
+        let flags = complete_flags("filter", "--f");
+        assert!(flags.contains(&"--field"));
+        assert!(flags.contains(&"--fg"));
+        assert!(!flags.contains(&"--bg"));
+        assert!(!flags.contains(&"-l"));
+    }
+
+    #[test]
+    fn test_complete_flags_set_color() {
+        let flags = complete_flags("set-color", "-");
+        assert!(flags.contains(&"--fg"));
+        assert!(flags.contains(&"--bg"));
+        assert!(flags.contains(&"-l"));
+    }
+
+    #[test]
+    fn test_complete_flags_no_flags_command() {
+        let flags = complete_flags("wrap", "-");
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn test_complete_flags_empty_for_unknown_cmd() {
+        let flags = complete_flags("unknown", "-");
+        assert!(flags.is_empty());
     }
 
     #[test]
