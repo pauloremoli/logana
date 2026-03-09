@@ -58,8 +58,13 @@ Multiple alternatives:
   "goto_last_line": "G",
   "toggle_status_bar": "b",
   "toggle_borders": "B",
-  "edit_comment": "e",
+  "edit_comment": "r",
   "delete_comment": "d",
+  "comment_line": "c",
+  "next_error": "e",
+  "prev_error": "E",
+  "next_warning": "w",
+  "prev_warning": "W",
   "clear_all": "C"
 }
 ```
@@ -161,8 +166,7 @@ Multiple alternatives:
 "ui": {
   "toggle_sidebar": "s",
   "toggle_status_bar": "b",
-  "toggle_borders": "B",
-  "toggle_wrap": "w"
+  "toggle_borders": "B"
 }
 ```
 

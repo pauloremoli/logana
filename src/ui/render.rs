@@ -799,12 +799,14 @@ impl App {
             }
         }
 
-        // Comment banner styles — sticky-note appearance with mark background.
-        let banner_line_style = Style::default().fg(theme.mark_fg).bg(theme.mark_bg);
-        let banner_indicator_style = Style::default()
-            .fg(theme.text_highlight_fg)
-            .bg(theme.mark_bg)
+        // Comment banner styles — full-width separator bar.
+        let banner_dash_style = Style::default()
+            .fg(theme.comment_fg)
+            .add_modifier(Modifier::DIM);
+        let banner_text_style = Style::default()
+            .fg(theme.comment_fg)
             .add_modifier(Modifier::BOLD);
+        let banner_cont_style = Style::default().fg(theme.comment_fg);
 
         // Read render cache generation keys once before the loop.
         let render_gen = self.tabs[self.active_tab].render_cache_gen;
@@ -1042,36 +1044,46 @@ impl App {
 
             if show_line_numbers {
                 let line_num = line_idx + 1;
-                // ▸ marker for lines that have an annotation, space otherwise.
-                let (marker, ln_fg) = if vis_comment_map.contains_key(&abs_vis_idx) {
-                    ("▸", theme.text_highlight_fg)
-                } else {
-                    (" ", theme.line_number_fg)
-                };
-                // Format: {marker}{line_num right-aligned}{space}
+                let is_annotated = vis_comment_map.contains_key(&abs_vis_idx);
+                // Format: {bar_or_space}{line_num right-aligned}{space}
                 // Total width = 1 + line_number_width + 1 = ln_prefix_width ✓
-                let line_num_str =
-                    format!("{}{:>width$} ", marker, line_num, width = line_number_width);
-                let line_num_style = Style::default().fg(ln_fg);
-                let mut all_spans = vec![Span::styled(line_num_str, line_num_style)];
+                let line_num_str = format!("{:>width$} ", line_num, width = line_number_width);
+                let bar_span = if is_annotated {
+                    Span::styled("│", Style::default().fg(theme.comment_fg))
+                } else {
+                    Span::styled(" ", Style::default().fg(theme.line_number_fg))
+                };
+                let num_span =
+                    Span::styled(line_num_str, Style::default().fg(theme.line_number_fg));
+                let mut all_spans = vec![bar_span, num_span];
                 all_spans.extend(line.spans);
                 line = Line::from(all_spans).style(render_style);
             }
 
-            // Prepend a sticky-note banner before the first visible line of each comment group.
+            // Prepend a full-width separator banner before the first visible line of each
+            // comment group: " ── {text} ──────────────────────────────────"
             if let Some(&cmt_idx) = banner_at.get(&abs_vis_idx) {
                 let (_, text) = &comments_for_render[cmt_idx];
+                let total_width = inner_width + ln_prefix_width;
                 for (i, text_line) in text.lines().enumerate() {
-                    let (prefix, p_style) = if i == 0 {
-                        ("  ◆ ", banner_indicator_style)
+                    if i == 0 {
+                        let left = " ── ";
+                        let text_len = text_line.chars().count();
+                        let used = left.len() + text_len + 1; // +1 for space before right dashes
+                        let right_dashes = "─".repeat(total_width.saturating_sub(used).max(1));
+                        let spans = vec![
+                            Span::styled(left, banner_dash_style),
+                            Span::styled(text_line.to_string(), banner_text_style),
+                            Span::styled(format!(" {right_dashes}"), banner_dash_style),
+                        ];
+                        log_lines.push(Line::from(spans));
                     } else {
-                        ("    ", banner_line_style)
-                    };
-                    let spans = vec![
-                        Span::styled(prefix, p_style),
-                        Span::styled(text_line.to_string(), banner_line_style),
-                    ];
-                    log_lines.push(Line::from(spans).style(banner_line_style));
+                        let spans = vec![
+                            Span::styled("    ", banner_cont_style),
+                            Span::styled(text_line.to_string(), banner_cont_style),
+                        ];
+                        log_lines.push(Line::from(spans));
+                    }
                 }
             }
             log_lines.push(line);
@@ -2053,12 +2065,8 @@ mod tests {
             .join("\n");
 
         assert!(
-            content.contains("◆"),
-            "comment banner should use ◆ indicator, got:\n{content}"
-        );
-        assert!(
-            content.contains("▸"),
-            "annotated line numbers should use ▸ marker, got:\n{content}"
+            content.contains("──"),
+            "comment banner should use ── separator, got:\n{content}"
         );
         assert!(
             !content.contains("├"),

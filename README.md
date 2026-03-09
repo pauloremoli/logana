@@ -17,7 +17,7 @@ Open a file, pipe stdin, or stream Docker containers — logana auto-detects the
 - **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; per-file restore on reopen
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; show/hide/reorder per session
 - **Multi-tab** — open multiple files or Docker streams side-by-side
-- **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search
+- **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
 - **Visual line selection** — select a range, yank to clipboard, or attach a comment
 - **Annotations** — attach multiline comments to log lines; export to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically; filter colors always take priority
@@ -173,7 +173,7 @@ When a structured format is detected (JSON, logfmt, syslog, etc.), logana parses
 
 <!-- GIF: visual select lines, type comment, export to markdown -->
 
-Select lines with `V` (visual mode), then press `c` to attach a multiline comment. Annotated lines show a `◆` marker in the gutter. Export everything to a report:
+Select lines with `V` (visual mode), then press `c` to attach a multiline comment. You can also press `c` in normal mode to comment the current line directly. Annotated lines show a `◆` marker in the gutter. Press `r` on an annotated line to edit its comment. Export everything to a report:
 
 ```sh
 :export report.md                   # Markdown (default)
@@ -207,6 +207,8 @@ A picker lists running containers (`j`/`k` to navigate, `Enter` to attach). The 
 | `PageDown` / `PageUp` | Full page down / up |
 | `h` / `l` | Scroll left / right |
 | `5j`, `10G` | Count prefix — repeat motion N times |
+| `e` / `E` | Next / previous ERROR or FATAL line |
+| `w` / `W` | Next / previous WARN line |
 
 ### Normal Mode
 
@@ -218,8 +220,13 @@ A picker lists running containers (`j`/`k` to navigate, `Enter` to attach). The 
 | `F` | Toggle filtering on/off |
 | `/` / `?` | Search forward / backward |
 | `n` / `N` | Next / previous match |
+| `e` / `E` | Next / previous ERROR or FATAL line |
+| `w` / `W` | Next / previous WARN line |
 | `m` | Mark / unmark current line |
 | `M` | Toggle marks-only view |
+| `c` | Comment current line |
+| `r` | Edit existing comment on current line |
+| `d` | Delete comment on current line |
 | `V` | Enter visual line mode |
 | `u` | UI options |
 | `F1` | Keybindings help |
@@ -264,7 +271,6 @@ A picker lists running containers (`j`/`k` to navigate, `Enter` to attach). The 
 | `s` | Sidebar |
 | `b` | Mode bar |
 | `B` | Borders |
-| `w` | Line wrap |
 
 ---
 

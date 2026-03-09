@@ -69,6 +69,19 @@ Marked lines show a highlighted indicator in the gutter. Marks are per-session a
 
 See [Visual Line Mode](visual-line-mode.md) and [Visual Character Mode](visual-char-mode.md) for the full key reference.
 
+## Log Level Navigation
+
+Jump directly between error and warning lines without scrolling:
+
+| Key | Action |
+|---|---|
+| `e` | Jump to next ERROR / FATAL line |
+| `E` | Jump to previous ERROR / FATAL line |
+| `w` | Jump to next WARN line |
+| `W` | Jump to previous WARN line |
+
+Navigation wraps to the nearest visible line that matches the level. Positions are pre-indexed whenever the visible set changes, so each jump is O(log n) regardless of file size.
+
 ## Line Wrap
 
 Toggle line wrapping with `:wrap` or via the UI menu (`u` → `w`). When wrap is enabled, long lines flow onto multiple terminal rows and all viewport math accounts for the extra rows automatically.

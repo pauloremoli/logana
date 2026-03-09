@@ -26,10 +26,12 @@ In normal mode, move to an annotated line and:
 
 | Key | Action |
 |---|---|
-| `e` | Open the comment editor pre-filled with the existing text |
+| `r` | Open the comment editor pre-filled with the existing text |
 | `d` | Delete the comment on the current line |
 
 Inside the editor, `Ctrl+D` also deletes the comment.
+
+In normal mode, `c` opens the comment editor for the current line directly (without entering visual mode first).
 
 Press `C` in normal mode to clear **all** marks and comments for the current tab.
 

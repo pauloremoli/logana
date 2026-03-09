@@ -363,7 +363,7 @@ fn default_prev_match() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('N'), KeyModifiers::NONE)])
 }
 fn default_toggle_wrap() -> KeyBindings {
-    KeyBindings(vec![])
+    KeyBindings(vec![KeyBinding(KeyCode::Char('w'), KeyModifiers::NONE)])
 }
 fn default_visual_mode() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('V'), KeyModifiers::NONE)])
@@ -2809,7 +2809,7 @@ mod tests {
                 .matches(KeyCode::Char('s'), KeyModifiers::NONE)
         );
         assert!(
-            !kb.toggle_wrap
+            kb.toggle_wrap
                 .matches(KeyCode::Char('w'), KeyModifiers::NONE)
         );
         assert!(kb.exit.matches(KeyCode::Esc, KeyModifiers::NONE));

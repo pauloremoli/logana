@@ -78,6 +78,7 @@ impl App {
                                     && !f.pattern.starts_with(crate::field_filter::FIELD_PREFIX)
                             })
                     };
+
                 if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
                     self.tabs[self.active_tab]
                         .log_manager

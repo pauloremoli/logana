@@ -407,6 +407,14 @@ pub struct Theme {
         default = "default_inactive_tab_fg"
     )]
     pub inactive_tab_fg: Color,
+    /// Foreground colour for comment annotations: the `│` gutter bar on annotated
+    /// lines and the `──` separator banner text.
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_comment_fg"
+    )]
+    pub comment_fg: Color,
     #[serde(
         serialize_with = "colors_to_str_vec",
         deserialize_with = "colors_from_str_vec"
@@ -560,6 +568,9 @@ fn default_line_number_fg() -> Color {
 fn default_inactive_tab_fg() -> Color {
     Color::Rgb(128, 128, 128) // neutral gray — readable on both dark and light backgrounds
 }
+fn default_comment_fg() -> Color {
+    Color::Rgb(139, 233, 253) // soft cyan — visible on both dark and light backgrounds
+}
 
 impl Theme {
     /// Returns the names of all available themes: bundled, local `themes/`, and
@@ -670,6 +681,7 @@ impl Default for Theme {
             mark_fg: Color::Rgb(0xcd, 0xd6, 0xf4),
             line_number_fg: default_line_number_fg(),
             inactive_tab_fg: Color::Rgb(0x58, 0x5b, 0x70),
+            comment_fg: Color::Rgb(0x89, 0xdc, 0xeb),
             process_colors: vec![
                 Color::Rgb(0xf3, 0x8b, 0xa8),
                 Color::Rgb(0xa6, 0xe3, 0xa1),
@@ -922,6 +934,7 @@ mod tests {
         assert_eq!(theme.mark_bg, default_mark_bg());
         assert_eq!(theme.mark_fg, default_mark_fg());
         assert_eq!(theme.inactive_tab_fg, default_inactive_tab_fg());
+        assert_eq!(theme.comment_fg, default_comment_fg());
         assert_eq!(theme.value_colors, ValueColors::default());
     }
 

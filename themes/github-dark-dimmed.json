@@ -4,6 +4,7 @@
   "cursor_bg": "#2d333b",
   "border_title": "#539bf5",
   "inactive_tab_fg": "#768390",
+  "comment_fg": "#539bf5",
   "text": "#adbac7",
   "text_highlight_fg": "#daaa3f",
   "text_highlight_bg": "#3d2b00",
