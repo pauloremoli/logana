@@ -14,10 +14,12 @@
 //!   scan over stripped data.
 //! - `get_line(idx)`: O(1) slice into the backing storage — no heap allocation.
 //! - `from_bytes(Vec<u8>)`: used for stdin input and in-memory test data.
-//! - `from_file_tail(path, preview_bytes)`: reads only the last N bytes of a
-//!   file synchronously (without mmap), drops the first partial line, and
-//!   returns a `FileReader::from_bytes`. Provides an immediate tail preview
-//!   before the background indexing job completes.
+//! - `from_file_head(path, preview_bytes)`: reads the first N bytes of a file
+//!   asynchronously (without mmap), drops the last partial line, and returns a
+//!   `FileReader::from_bytes`. Used to show an immediate preview before the
+//!   background indexing job completes.
+//! - `from_file_tail(path, preview_bytes)`: same but reads the last N bytes;
+//!   drops the first partial line.
 //! - `load(path, predicate, tail) -> FileLoadHandle`: starts background
 //!   indexing via `spawn_blocking`. When `predicate` is `Some`, each line is
 //!   tested during indexing and matching indices are stored in
@@ -47,6 +49,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fs::File, io};
 use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt},
     spawn,
     sync::{oneshot, watch},
     task::spawn_blocking,
@@ -218,15 +221,14 @@ impl FileReader {
     ///
     /// The first (potentially partial) line of the read chunk is dropped so
     /// that every line in the returned reader is complete.
-    pub fn from_file_tail(path: &str, preview_bytes: u64) -> io::Result<Self> {
-        use std::io::{Read, Seek};
-        let mut file = File::open(path)?;
-        let total_len = file.metadata()?.len();
+    pub async fn from_file_tail(path: &str, preview_bytes: u64) -> io::Result<Self> {
+        let mut file = tokio::fs::File::open(path).await?;
+        let total_len = file.metadata().await?.len();
         let offset = total_len.saturating_sub(preview_bytes);
-        file.seek(io::SeekFrom::Start(offset))?;
+        file.seek(io::SeekFrom::Start(offset)).await?;
         let read_len = (total_len - offset) as usize;
         let mut buf = vec![0u8; read_len];
-        file.read_exact(&mut buf)?;
+        file.read_exact(&mut buf).await?;
         // Drop the first (likely partial) line so every line is complete.
         let start = if offset > 0 {
             buf.iter()
@@ -246,13 +248,12 @@ impl FileReader {
     /// immediately while the full background index is still being built.
     /// The last (potentially partial) line of the read chunk is dropped so that
     /// every line in the returned reader is complete.
-    pub fn from_file_head(path: &str, preview_bytes: u64) -> io::Result<Self> {
-        use std::io::Read;
-        let mut file = File::open(path)?;
-        let total_len = file.metadata()?.len();
+    pub async fn from_file_head(path: &str, preview_bytes: u64) -> io::Result<Self> {
+        let mut file = tokio::fs::File::open(path).await?;
+        let total_len = file.metadata().await?.len();
         let read_len = total_len.min(preview_bytes) as usize;
         let mut buf = vec![0u8; read_len];
-        file.read_exact(&mut buf)?;
+        file.read_exact(&mut buf).await?;
         // Truncate to the last complete line so no partial line leaks out.
         if let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') {
             buf.truncate(last_nl + 1);
@@ -1706,8 +1707,8 @@ mod tests {
     // from_file_tail
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_from_file_tail_returns_last_lines() {
+    #[tokio::test]
+    async fn test_from_file_tail_returns_last_lines() {
         let mut f = NamedTempFile::new().unwrap();
         for i in 0..1000usize {
             writeln!(f, "line {i}").unwrap();
@@ -1715,7 +1716,7 @@ mod tests {
         f.flush().unwrap();
         let path = f.path().to_str().unwrap();
 
-        let reader = FileReader::from_file_tail(path, 512).unwrap();
+        let reader = FileReader::from_file_tail(path, 512).await.unwrap();
         let n = reader.line_count();
         assert!(n > 0, "should have at least one line");
         // The last line of the preview must match the last line of the full file.
@@ -1723,8 +1724,8 @@ mod tests {
         assert_eq!(last_preview, b"line 999");
     }
 
-    #[test]
-    fn test_from_file_tail_all_lines_complete() {
+    #[tokio::test]
+    async fn test_from_file_tail_all_lines_complete() {
         let mut f = NamedTempFile::new().unwrap();
         for i in 0..500usize {
             writeln!(f, "entry {i} data").unwrap();
@@ -1733,7 +1734,7 @@ mod tests {
         let path = f.path().to_str().unwrap();
 
         // Every line returned must be a complete "entry N data" line.
-        let reader = FileReader::from_file_tail(path, 1024).unwrap();
+        let reader = FileReader::from_file_tail(path, 1024).await.unwrap();
         for i in 0..reader.line_count() {
             let line = reader.get_line(i);
             assert!(
@@ -1744,22 +1745,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_from_file_tail_small_file_fits_in_preview() {
+    #[tokio::test]
+    async fn test_from_file_tail_small_file_fits_in_preview() {
         // When the file is smaller than preview_bytes the whole file is returned.
         let mut f = NamedTempFile::new().unwrap();
         writeln!(f, "only line").unwrap();
         f.flush().unwrap();
         let path = f.path().to_str().unwrap();
 
-        let reader = FileReader::from_file_tail(path, 64 * 1024).unwrap();
+        let reader = FileReader::from_file_tail(path, 64 * 1024).await.unwrap();
         assert_eq!(reader.line_count(), 1);
         assert_eq!(reader.get_line(0), b"only line");
     }
 
-    #[test]
-    fn test_from_file_tail_nonexistent_returns_error() {
-        let result = FileReader::from_file_tail("/tmp/logana_no_such_file_tail.log", 1024);
+    #[tokio::test]
+    async fn test_from_file_tail_nonexistent_returns_error() {
+        let result = FileReader::from_file_tail("/tmp/logana_no_such_file_tail.log", 1024).await;
         assert!(result.is_err());
     }
 
@@ -1767,8 +1768,8 @@ mod tests {
     // from_file_head
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_from_file_head_returns_first_lines() {
+    #[tokio::test]
+    async fn test_from_file_head_returns_first_lines() {
         let mut f = NamedTempFile::new().unwrap();
         for i in 0..1000usize {
             writeln!(f, "line {i}").unwrap();
@@ -1776,15 +1777,15 @@ mod tests {
         f.flush().unwrap();
         let path = f.path().to_str().unwrap();
 
-        let reader = FileReader::from_file_head(path, 512).unwrap();
+        let reader = FileReader::from_file_head(path, 512).await.unwrap();
         let n = reader.line_count();
         assert!(n > 0, "should have at least one line");
         // The first line of the preview must match the first line of the full file.
         assert_eq!(reader.get_line(0), b"line 0");
     }
 
-    #[test]
-    fn test_from_file_head_all_lines_complete() {
+    #[tokio::test]
+    async fn test_from_file_head_all_lines_complete() {
         let mut f = NamedTempFile::new().unwrap();
         for i in 0..500usize {
             writeln!(f, "entry {i} data").unwrap();
@@ -1793,7 +1794,7 @@ mod tests {
         let path = f.path().to_str().unwrap();
 
         // Every line returned must be a complete "entry N data" line.
-        let reader = FileReader::from_file_head(path, 1024).unwrap();
+        let reader = FileReader::from_file_head(path, 1024).await.unwrap();
         for i in 0..reader.line_count() {
             let line = reader.get_line(i);
             assert!(
@@ -1804,22 +1805,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_from_file_head_small_file_fits_in_preview() {
+    #[tokio::test]
+    async fn test_from_file_head_small_file_fits_in_preview() {
         // When the file is smaller than preview_bytes the whole file is returned.
         let mut f = NamedTempFile::new().unwrap();
         writeln!(f, "only line").unwrap();
         f.flush().unwrap();
         let path = f.path().to_str().unwrap();
 
-        let reader = FileReader::from_file_head(path, 64 * 1024).unwrap();
+        let reader = FileReader::from_file_head(path, 64 * 1024).await.unwrap();
         assert_eq!(reader.line_count(), 1);
         assert_eq!(reader.get_line(0), b"only line");
     }
 
-    #[test]
-    fn test_from_file_head_nonexistent_returns_error() {
-        let result = FileReader::from_file_head("/tmp/logana_no_such_file_head.log", 1024);
+    #[tokio::test]
+    async fn test_from_file_head_nonexistent_returns_error() {
+        let result = FileReader::from_file_head("/tmp/logana_no_such_file_head.log", 1024).await;
         assert!(result.is_err());
     }
 

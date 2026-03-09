@@ -198,7 +198,19 @@ impl App {
 
         let mut chunk_idx = 0;
 
-        self.render_tab_bar(frame, show_tab_bar, &chunks, &mut chunk_idx);
+        let mode_name_for_title = if !show_mode_bar {
+            Some(render_state.mode_name())
+        } else {
+            None
+        };
+
+        self.render_tab_bar(
+            frame,
+            show_tab_bar,
+            &chunks,
+            &mut chunk_idx,
+            mode_name_for_title,
+        );
 
         let main_chunk = chunks[chunk_idx];
         chunk_idx += 1;
@@ -228,11 +240,6 @@ impl App {
             (main_chunk, None)
         };
 
-        let mode_name_for_title = if !show_mode_bar {
-            Some(render_state.mode_name())
-        } else {
-            None
-        };
         self.render_logs_panel(
             frame,
             logs_area,
@@ -1489,6 +1496,7 @@ impl App {
         show_tab_bar: bool,
         chunks: &std::rc::Rc<[Rect]>,
         chunk_idx: &mut usize,
+        mode_name: Option<&str>,
     ) {
         if !show_tab_bar {
             return;
@@ -1517,16 +1525,24 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
+        let active_tab = self.active_tab;
         let tab_spans: Vec<Span> = self
             .tabs
             .iter()
             .enumerate()
             .flat_map(|(i, t)| {
-                let is_active = i == self.active_tab;
+                let is_active = i == active_tab;
+                let mode_prefix = if is_active {
+                    mode_name.map(|m| format!("[{}] ", m)).unwrap_or_default()
+                } else {
+                    String::new()
+                };
                 let label = match (loading_info, filtering_tabs.contains(&i)) {
-                    (Some((idx, pct)), _) if idx == i => format!(" {} {}% ", t.title, pct),
-                    (_, true) => format!(" {} Filtering… ", t.title),
-                    _ => format!(" {} ", t.title),
+                    (Some((idx, pct)), _) if idx == i => {
+                        format!(" {}{} {}% ", mode_prefix, t.title, pct)
+                    }
+                    (_, true) => format!(" {}{} Filtering… ", mode_prefix, t.title),
+                    _ => format!(" {}{} ", mode_prefix, t.title),
                 };
                 let style = if is_active {
                     Style::default()
@@ -2209,6 +2225,103 @@ mod tests {
         assert!(
             vp + visible_height >= visible,
             "viewport_offset {vp} leaves blank rows: {visible} visible lines, height {visible_height}"
+        );
+    }
+
+    // ── Tab bar mode label ─────────────────────────────────────────────────
+
+    /// Build an app with a second tab so the tab bar is rendered.
+    async fn make_two_tab_app() -> App {
+        let mut app = make_app(&["line 0", "line 1"]).await;
+        // Clone the first tab as a second tab so `has_multiple_tabs` is true.
+        let db = app.db.clone();
+        let log_manager = LogManager::new(db, None).await;
+        let tab2 = crate::ui::TabState::new(
+            FileReader::from_bytes(b"other\n".to_vec()),
+            log_manager,
+            "other".to_string(),
+        );
+        app.tabs.push(tab2);
+        app
+    }
+
+    #[tokio::test]
+    async fn test_tab_bar_shows_mode_when_mode_bar_hidden() {
+        let mut app = make_two_tab_app().await;
+        app.show_mode_bar = false;
+        app.tabs[0].show_mode_bar = false;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Row 0 is the tab bar. The active tab (tab 0) should show [NORMAL].
+        let tab_row = row_content(&buf, 0);
+        assert!(
+            tab_row.contains("[NORMAL]"),
+            "expected [NORMAL] in tab bar when mode bar is hidden, got: {:?}",
+            tab_row
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tab_bar_no_mode_when_mode_bar_visible() {
+        let mut app = make_two_tab_app().await;
+        app.show_mode_bar = true;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let tab_row = row_content(&buf, 0);
+        assert!(
+            !tab_row.contains("[NORMAL]"),
+            "should not show [NORMAL] in tab bar when mode bar is visible, got: {:?}",
+            tab_row
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tab_bar_mode_updates_on_mode_change() {
+        use crate::mode::filter_mode::FilterManagementMode;
+
+        let mut app = make_two_tab_app().await;
+        app.show_mode_bar = false;
+        app.tabs[0].show_mode_bar = false;
+        app.tabs[0].mode = Box::new(FilterManagementMode {
+            selected_filter_index: 0,
+        });
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let tab_row = row_content(&buf, 0);
+        assert!(
+            tab_row.contains("[FILTER]"),
+            "expected [FILTER] in tab bar after mode change, got: {:?}",
+            tab_row
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inactive_tab_has_no_mode_prefix() {
+        let mut app = make_two_tab_app().await;
+        app.show_mode_bar = false;
+        app.tabs[0].show_mode_bar = false;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let tab_row = row_content(&buf, 0);
+        // "other" is the second (inactive) tab title — it must not carry [NORMAL].
+        let other_pos = tab_row.find("other").expect("second tab title not found");
+        let prefix = &tab_row[..other_pos];
+        assert!(
+            !prefix.ends_with("[NORMAL] "),
+            "inactive tab should not have mode prefix, tab row: {:?}",
+            tab_row
         );
     }
 }

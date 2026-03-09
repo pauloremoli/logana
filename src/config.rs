@@ -7,6 +7,8 @@
 //! - `theme: Option<String>`: theme name without `.json` extension (e.g. `"dracula"`)
 //! - `show_mode_bar: bool` (default `true`): show/hide bottom status bar at startup
 //! - `show_borders: bool` (default `true`): show/hide all panel borders at startup
+//! - `preview_bytes: u64` (default `16777216` = 16 MiB): bytes read for the instant
+//!   preview shown while the full file index is built in the background
 //! - `keybindings: Keybindings`: keybinding groups (see below)
 //!
 //! ## Keybindings groups
@@ -1520,6 +1522,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_preview_bytes() -> u64 {
+    16 * 1024 * 1024
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     /// Theme name (without `.json` extension) to load on startup.
@@ -1532,6 +1538,10 @@ pub struct Config {
     /// Whether to show panel borders (default: true).
     #[serde(default = "default_true")]
     pub show_borders: bool,
+    /// Number of bytes to read for the instant preview shown while the full
+    /// file index is being built in the background (default: 16 MiB).
+    #[serde(default = "default_preview_bytes")]
+    pub preview_bytes: u64,
 }
 
 impl Default for Config {
@@ -1541,6 +1551,7 @@ impl Default for Config {
             keybindings: Keybindings::default(),
             show_mode_bar: true,
             show_borders: true,
+            preview_bytes: default_preview_bytes(),
         }
     }
 }
@@ -2688,6 +2699,26 @@ mod tests {
     fn test_config_default_show_borders_true() {
         let cfg = Config::default();
         assert!(cfg.show_borders);
+    }
+
+    #[test]
+    fn test_config_default_preview_bytes() {
+        let cfg = Config::default();
+        assert_eq!(cfg.preview_bytes, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_config_preview_bytes_from_json() {
+        let json = r#"{"preview_bytes": 4194304}"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.preview_bytes, 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_config_preview_bytes_absent_uses_default() {
+        let json = r#"{}"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.preview_bytes, 16 * 1024 * 1024);
     }
 
     #[test]

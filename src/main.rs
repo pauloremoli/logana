@@ -155,6 +155,7 @@ async fn main() -> Result<()> {
         .unwrap_or_default();
     let show_mode_bar = config.show_mode_bar;
     let show_borders = config.show_borders;
+    let preview_bytes = config.preview_bytes;
 
     for conflict in config.keybindings.validate() {
         tracing::warn!("{}", conflict);
@@ -186,6 +187,7 @@ async fn main() -> Result<()> {
         // Apply display defaults from config.
         app.show_mode_bar = show_mode_bar;
         app.show_borders_default = show_borders;
+        app.preview_bytes = preview_bytes;
         app.tabs[0].show_mode_bar = show_mode_bar;
         app.tabs[0].show_borders = show_borders;
 

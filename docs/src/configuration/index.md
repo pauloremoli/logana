@@ -15,6 +15,7 @@ logana is configured via `~/.config/logana/config.json`. The file is entirely op
   "theme": "dracula",
   "show_mode_bar": true,
   "show_borders": true,
+  "preview_bytes": 16777216,
   "keybindings": {
     "navigation": {
       "scroll_down": ["j", "Down"],
@@ -51,6 +52,7 @@ logana is configured via `~/.config/logana/config.json`. The file is entirely op
 | `theme` | string | `"dracula"` | Active color theme name (without `.json` extension) |
 | `show_mode_bar` | bool | `true` | Show the bottom status/mode bar on startup |
 | `show_borders` | bool | `true` | Show panel borders on startup |
+| `preview_bytes` | number | `16777216` | Bytes read for the instant preview shown while the full file index is built in the background (default: 16 MiB) |
 
 Both `show_mode_bar` and `show_borders` can be toggled at runtime via the UI options menu (`u` → `b` / `B`). The runtime state is not written back to the config file.
 

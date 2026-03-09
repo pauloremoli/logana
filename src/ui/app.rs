@@ -49,6 +49,8 @@ pub struct App {
     /// When true, filters were supplied via `--filters` and the previous-session
     /// restore prompt must be suppressed so it cannot overwrite them.
     pub startup_filters: bool,
+    /// Number of bytes to read for the instant preview (from config `preview_bytes`).
+    pub preview_bytes: u64,
 }
 
 impl std::fmt::Debug for App {
@@ -118,6 +120,7 @@ impl App {
             show_borders_default: true,
             startup_tail: false,
             startup_filters: false,
+            preview_bytes: 16 * 1024 * 1024,
         }
     }
 

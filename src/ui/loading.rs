@@ -37,9 +37,9 @@ impl App {
             .unwrap_or(path)
             .to_string();
 
-        // Show a preview immediately (up to 16 MiB), then load the full index in the background.
-        const PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
-        let preview = FileReader::from_file_head(path, PREVIEW_BYTES)
+        // Show a preview immediately, then load the full index in the background.
+        let preview = FileReader::from_file_head(path, self.preview_bytes)
+            .await
             .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
         let log_manager = LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
         let mut tab = TabState::new(preview, log_manager, title);
@@ -148,10 +148,9 @@ impl App {
                 self.restore_docker_tab(&next).await;
                 continue;
             }
-            // Regular file — create a preview tab immediately (up to 16 MiB), then load the full
-            // index in the background.
-            const PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
-            let preview = FileReader::from_file_head(&next, PREVIEW_BYTES)
+            // Regular file — create a preview tab immediately, then load the full index in the background.
+            let preview = FileReader::from_file_head(&next, self.preview_bytes)
+                .await
                 .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
             let title = std::path::Path::new(&next)
                 .file_name()
@@ -220,18 +219,18 @@ impl App {
         tail: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>> {
         Box::pin(async move {
-            // Initial-tab preview: show the first/last 16 MiB immediately
+            // Initial-tab preview: show the first/last chunk immediately
             // while the full index builds in the background. When a filter predicate
             // is active it is applied to the preview lines so the filtered view is
             // visible straight away.
-            const PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
+            let preview_bytes = self.preview_bytes;
             if let LoadContext::ReplaceInitialTab = context
                 && !self.tabs.is_empty()
             {
                 let preview_result = if tail {
-                    FileReader::from_file_tail(&path, PREVIEW_BYTES)
+                    FileReader::from_file_tail(&path, preview_bytes).await
                 } else {
-                    FileReader::from_file_head(&path, PREVIEW_BYTES)
+                    FileReader::from_file_head(&path, preview_bytes).await
                 };
                 if let Ok(preview) = preview_result
                     && preview.line_count() > 0
