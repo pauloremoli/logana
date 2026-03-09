@@ -183,6 +183,7 @@ impl App {
             }
             Some(Commands::ExportMarked { path }) => {
                 if !path.is_empty() {
+                    let expanded = expand_tilde(&path);
                     let tab = &self.tabs[self.active_tab];
                     let marked_lines = tab.log_manager.get_marked_lines(&tab.file_reader);
                     let mut content: Vec<u8> = Vec::new();
@@ -190,7 +191,8 @@ impl App {
                         content.extend_from_slice(line);
                         content.push(b'\n');
                     }
-                    let _ = std::fs::write(path, content);
+                    std::fs::write(&expanded, content)
+                        .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
                 }
             }
             Some(Commands::Export { path, template }) => {
@@ -713,6 +715,36 @@ mod tests {
         // Empty quoted path produces no token, so clap rejects the missing argument.
         let result = app.run_command("export-marked \"\"").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_export_marked_bad_path_returns_error() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].log_manager.toggle_mark(0);
+        let result = app
+            .run_command("export-marked /nonexistent_dir/out.log")
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("Failed to write"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_export_marked_tilde_path_is_expanded() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].log_manager.toggle_mark(0);
+        // ~/nonexistent_dir/out.log should expand and fail with a write error,
+        // not a parse/path error — confirming tilde was expanded.
+        let result = app
+            .run_command("export-marked ~/nonexistent_dir_logana_test/out.log")
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("Failed to write"), "got: {msg}");
+        assert!(
+            !msg.contains('~'),
+            "tilde should have been expanded, got: {msg}"
+        );
     }
 
     #[tokio::test]
