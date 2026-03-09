@@ -5,6 +5,18 @@
 //! (handled by [`super::json::JsonParser`]).
 //!
 //! Example: `time=2024-01-01T00:00:00Z level=info msg="request handled" status=200`
+//!
+//! ## Key mapping
+//!
+//! | Input key(s) | Canonical slot |
+//! |---|---|
+//! | `time`, `timestamp`, `ts`, `datetime` | timestamp |
+//! | `level`, `lvl`, `severity` | level (normalized) |
+//! | `msg`, `message` | message |
+//! | `source`, `caller`, `logger`, `component`, `module` | target |
+//! | all other keys | extra_fields |
+//!
+//! Lines with only unknown keys score at 0.5× weight during detection.
 
 use std::collections::HashSet;
 

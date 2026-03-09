@@ -3,6 +3,58 @@
 //! [`App`] owns the tab list, global theme, and shared [`Keybindings`].
 //! [`TabState`] owns the per-tab file reader, log manager, format parser,
 //! visible indices, scroll state, and active mode.
+//!
+//! ## Key `TabState` fields
+//!
+//! - `file_reader`: the backing log data
+//! - `log_manager`: filter defs and marks
+//! - `detected_format: Option<Arc<dyn LogFormatParser>>`: auto-detected parser,
+//!   stored behind `Arc` so background filter tasks can clone it in O(1)
+//! - `visible_indices: VisibleLines`: `All(n)` when no filters (zero allocation,
+//!   O(1) access), `Filtered(Vec<usize>)` when filters or marks are active
+//! - `scroll_offset`: selected line (index into `visible_indices`)
+//! - `viewport_offset`: first rendered line
+//! - `filter_manager_arc: Arc<FilterManager>`: cached filter manager, cloned
+//!   O(1) per render frame (atomic ref-count increment)
+//! - `parse_cache_gen: u64`: monotonically increasing generation counter;
+//!   incremented whenever filters, field layout, display mode, or raw mode changes
+//! - `parse_cache: HashMap<usize, (u64, CachedParsedLine)>`: per-line parse
+//!   cache; entry valid only when stored generation equals `parse_cache_gen`
+//!
+//! ## Background filter computation
+//!
+//! `FilterHandle` (stored on `TabState` while a filter is in flight):
+//! - `result_rx: oneshot::Receiver<Vec<usize>>` — resolves with new visible indices
+//! - `cancel: Arc<AtomicBool>` — set to abort; checked every 10 000 lines
+//! - `progress_rx: watch::Receiver<f64>` — [0.0, 1.0] shown as "Filtering…" in tab bar
+//!
+//! Fast paths (synchronous, O(1)): no active filters → `VisibleLines::All(n)`;
+//! `show_marks_only = true` → apply marks directly; `filtering_enabled = false`
+//! → `VisibleLines::All(n)`.
+//!
+//! `apply_incremental_exclude(pattern)`: additive fast-path for new exclude
+//! filters — compiles the pattern and calls `VisibleLines::retain()` to remove
+//! matching lines from the current visible set. Avoids scanning the full file
+//! when only lines need to be removed.
+//!
+//! ## Background search
+//!
+//! `SearchHandle` (stored on `TabState` while a search is in flight):
+//! - `result_rx: oneshot::Receiver<(Vec<SearchResult>, Regex)>`
+//! - `cancel: Arc<AtomicBool>` — checked every 10 000 lines
+//! - `progress_rx: watch::Receiver<f64>` — progress for the status bar
+//! - `pattern: String`, `forward: bool`, `navigate: bool`
+//!
+//! ## Rendering pipeline (per frame)
+//!
+//! 1. Compute `visible_height` and `inner_width`.
+//! 2. Wrap-aware viewport adjustment (fast-path for large jumps like `G`).
+//! 3. Clone `tab.filter_manager_arc` (O(1)) and filter style palettes.
+//! 4. Parse cache pre-population for lines in `[start..end)`.
+//! 5. For each line: use cached `rendered` string, evaluate filters, overlay
+//!    search spans, apply level/mark styles, compose final `Line` via
+//!    `render_line`.
+//! 6. Apply `colorize_known_values` to spans with no `fg` set.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -298,6 +350,10 @@ pub struct TabState {
     pub detected_format: Option<Arc<dyn LogFormatParser>>,
     /// When true, always scroll to the last visible line when new content arrives.
     pub tail_mode: bool,
+    /// When true, incoming data from file watchers and streams is not applied to
+    /// the view.  The background watcher/stream continues running so no data is
+    /// lost; resuming with `continue` replays the latest snapshot.
+    pub paused: bool,
     /// When true, the format parser is bypassed and lines are shown as raw bytes.
     pub raw_mode: bool,
     /// When true, structured fields (spans, extra fields) are shown as `key=value`;
@@ -380,6 +436,7 @@ impl TabState {
             keybindings: Arc::new(Keybindings::default()),
             detected_format,
             tail_mode: false,
+            paused: false,
             raw_mode: false,
             show_keys: false,
             show_mode_bar: true,

@@ -4,6 +4,25 @@
 //! matched timestamp slice borrowed from the input and `usize` is the number
 //! of bytes consumed. All functions are `pub(crate)` — internal to the parser
 //! module.
+//!
+//! ## Timestamp parsers
+//!
+//! - `parse_iso_timestamp`: `YYYY-MM-DDTHH:MM:SS...` (ISO 8601, with optional
+//!   fractional seconds and timezone)
+//! - `parse_bsd_precise_timestamp`: `Mmm DD HH:MM:SS.FFFFFF` (BSD with microseconds)
+//! - `parse_full_timestamp`: `Www YYYY-MM-DD HH:MM:SS TZ` (weekday-prefixed)
+//! - `parse_datetime_timestamp`: `YYYY-MM-DD HH:MM:SS[.mmm][,mmm]` (logback,
+//!   Python, Spring Boot; supports `.` and `,` as fractional separator, optional
+//!   timezone)
+//! - `parse_slash_datetime`: `YYYY/MM/DD HH:MM:SS[.frac]` (nginx error, Go
+//!   standard log)
+//!
+//! ## Level normalization
+//!
+//! `normalize_level(token) -> Option<&'static str>`: maps level keywords
+//! (case-insensitive) to canonical strings: TRACE, DEBUG, INFO, NOTICE, WARN,
+//! ERROR, FATAL. Recognizes abbreviations: TRC, DBG, INF, WRN, ERR, FTL,
+//! CRIT, EMERG, ALERT.
 
 /// Weekday abbreviations used by `journalctl -o short-full`.
 pub(crate) const WEEKDAYS: &[&str] = &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

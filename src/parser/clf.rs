@@ -5,6 +5,11 @@
 //!
 //! Fields with value `"-"` (ident, authuser, bytes, referer, user_agent) are
 //! omitted from `extra_fields`. Status must be a 3-digit number or `"-"`.
+//!
+//! Date validation uses strict `dd/Mmm/yyyy:HH:MM:SS ±ZZZZ` format (month
+//! abbreviation + digit positions). Field mapping: `timestamp` = date field,
+//! `target` = host, `message` = request line. Extras: `ident`, `authuser`,
+//! `status`, `bytes`, `referer`, `user_agent`.
 
 use std::collections::HashSet;
 

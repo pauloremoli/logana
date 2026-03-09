@@ -4,6 +4,23 @@
 //! [`SessionStore`]. Schema versioning uses `PRAGMA user_version`;
 //! `run_migrations` applies each migration exactly once.
 //! [`Database::in_memory`] creates an in-memory DB for tests.
+//!
+//! ## Tables
+//!
+//! - `filters`: per `source_file` filter definitions
+//! - `file_context`: per-file session state (PK: `source_file`)
+//! - `session_tabs`: ordered list of last-open source files
+//!
+//! ## Schema versioning
+//!
+//! `PRAGMA user_version` tracks the applied schema version. `run_migrations()`
+//! reads the current version and calls `migrate_to_vN()` only for versions not
+//! yet applied — each migration runs exactly once. To add a new migration: add
+//! `migrate_to_vN` with the required SQL and an `if version < N` block in
+//! `run_migrations`. Current versions:
+//! - v1: initial schema (`filters`, `file_context`, `session_tabs` tables)
+//! - v2: `ALTER TABLE file_context ADD COLUMN show_keys` — persists show/hide-keys
+//!   display preference per file
 
 use anyhow::Result;
 use async_trait::async_trait;

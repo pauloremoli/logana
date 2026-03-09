@@ -1,9 +1,27 @@
 //! JSON-based theme loading and color management.
 //!
 //! Lookup order: `~/.config/logana/themes/` → `themes/` (dev CWD) → bundled
-//! themes embedded at compile time via `include_str!`. Bundled themes:
-//! atomic, dracula, gruvbox-dark, jandedobbeleer, monokai, nord, paradox,
-//! solarized, tokyonight. Colors accept `"#RRGGBB"` or `[r, g, b]`.
+//! themes embedded at compile time via `include_str!`. Colors accept
+//! `"#RRGGBB"` or `[r, g, b]`.
+//!
+//! ## Bundled themes (19 total)
+//!
+//! Dark: catppuccin-mocha, catppuccin-macchiato, dracula, everforest-dark,
+//! gruvbox-dark, jandedobbeleer, kanagawa, monokai, nord, onedark, paradox,
+//! rose-pine, solarized, tokyonight, atomic.
+//! Light: catppuccin-latte, everforest-light, onelight, rose-pine-dawn.
+//!
+//! ## ValueColors fields
+//!
+//! Per-token color mappings for HTTP methods (`http_get`, `http_post`,
+//! `http_put`, `http_delete`, `http_patch`, `http_other`), status codes
+//! (`status_2xx`–`status_5xx`), IP addresses (`ip_address`), and UUIDs
+//! (`uuid`). All fields have `#[serde(default)]` so existing theme files need
+//! no changes. Overridable in theme JSON under `"value_colors": { ... }`.
+//!
+//! `Theme::list_available_themes()`: seeds from bundled names, then overlays
+//! names from `themes/` and `~/.config/logana/themes/`. Returns sorted
+//! deduplicated list.
 
 use anyhow::Context;
 use ratatui::style::Color;

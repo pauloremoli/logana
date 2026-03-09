@@ -152,6 +152,21 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "raw",
         description: "Toggle raw mode — disables the format parser and shows unformatted log lines",
     },
+    CommandInfo {
+        name: "stop",
+        usage: "stop",
+        description: "Stop all incoming data for the current tab (file watcher and/or stream)",
+    },
+    CommandInfo {
+        name: "pause",
+        usage: "pause",
+        description: "Pause applying incoming data to the view (watcher/stream keeps running in the background)",
+    },
+    CommandInfo {
+        name: "resume",
+        usage: "resume",
+        description: "Resume applying incoming data after a pause",
+    },
 ];
 
 /// Commands whose last argument is a file path and should receive path auto-completion.

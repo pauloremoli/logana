@@ -1,12 +1,41 @@
 //! Configuration loaded from `~/.config/logana/config.json`.
 //!
-//! Keybinding string format:
-//!   `"j"`, `"Ctrl+d"`, `"Shift+Tab"`, `"Tab"`, `"PageDown"`, `"Space"`, `"Esc"`, …
+//! Falls back to defaults on parse/IO error — never prevents startup.
+//!
+//! ## Config fields
+//!
+//! - `theme: Option<String>`: theme name without `.json` extension (e.g. `"dracula"`)
+//! - `show_mode_bar: bool` (default `true`): show/hide bottom status bar at startup
+//! - `show_borders: bool` (default `true`): show/hide all panel borders at startup
+//! - `keybindings: Keybindings`: keybinding groups (see below)
+//!
+//! ## Keybindings groups
+//!
+//! `NavigationKeybindings` (shared scroll/page keys), `NormalKeybindings`,
+//! `FilterKeybindings`, `GlobalKeybindings`, `CommentKeybindings`,
+//! `VisualLineKeybindings`, `VisualKeybindings`, `DockerSelectKeybindings`,
+//! `ValueColorsKeybindings`, `SelectFieldsKeybindings`, `HelpKeybindings`,
+//! `ConfirmKeybindings`, `UiKeybindings`. Each group uses `#[serde(default)]`
+//! so any absent field uses its built-in default.
+//!
+//! Each action holds a `Vec<KeyBinding>` — multiple alternative keys are
+//! supported (e.g. `["j", "Down"]` for scroll down).
+//!
+//! ## KeyBinding parse format
+//!
+//! `"j"`, `"Ctrl+d"`, `"Shift+Tab"`, `"Tab"`, `"PageDown"`, `"Space"`, `"Esc"`, `"F1"`, …
+//! `"Shift+Tab"` maps to `KeyCode::BackTab`. For `Char` keys, `NONE` or
+//! `SHIFT` modifiers are accepted (terminals vary). For non-`Char` keys,
+//! `SHIFT` must match exactly.
+//!
+//! `Keybindings::validate()`: checks all (action, keybinding) pairs within
+//! each mode scope for overlaps; conflicts are printed to stderr at startup.
 //!
 //! Example config file:
 //! ```json
 //! {
 //!   "theme": "dracula",
+//!   "show_mode_bar": false,
 //!   "keybindings": {
 //!     "normal": { "scroll_down": ["j", "Down"], "half_page_down": "Ctrl+d" },
 //!     "global": { "quit": "q" }

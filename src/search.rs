@@ -3,6 +3,18 @@
 //! [`Search`] operates on `visible_indices` only (respects active filters).
 //! Builds a [`Vec<SearchResult>`] with byte-position match spans, then
 //! provides wrapping [`Search::next_match`] / [`Search::previous_match`].
+//!
+//! - `search(pattern, impl Iterator<Item=usize>, &FileReader)`: accepts an
+//!   iterator so both `VisibleLines::All` and `VisibleLines::Filtered` can be
+//!   passed without materialising a `Vec`.
+//! - `set_pattern(regex, forward)`: pre-sets the active regex without replacing
+//!   results; used during background search so highlights appear immediately.
+//! - `set_results(results, regex)`: called when the background task delivers
+//!   results; replaces the result set and updates the pattern atomically.
+//! - `set_case_sensitive`: toggles case sensitivity.
+//! - `results` is always sorted by `line_idx`; render uses
+//!   `binary_search_by_key` for O(log N) per-line lookup with zero allocation
+//!   per frame.
 
 use crate::types::SearchResult;
 use regex::Regex;
@@ -205,7 +217,7 @@ impl Search {
         self.current_occurrence_index
     }
 
-    /// Position the cursor so that the next call to [`next_match`] / [`previous_match`]
+    /// Position the cursor so that the next call to [`Self::next_match`] / [`Self::previous_match`]
     /// lands on the first occurrence strictly after (`forward=true`) or strictly before
     /// (`forward=false`) `line_idx`, wrapping around when necessary.
     pub fn set_position_for_search(&mut self, line_idx: usize, forward: bool) {

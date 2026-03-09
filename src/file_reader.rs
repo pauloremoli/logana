@@ -4,6 +4,40 @@
 //! Line offsets are indexed at startup via `memchr` for O(1) random access.
 //! [`FileReader::spawn_process_stream`] spawns a child process and streams
 //! its output as complete lines, used by the `docker` command.
+//!
+//! ## Key types and functions
+//!
+//! - `strip_ansi_and_index(input) -> (Vec<u8>, Vec<usize>)`: single-pass ANSI
+//!   stripping and line indexing. Handles CSI sequences (`ESC [` … final byte),
+//!   OSC sequences, two-byte ESC sequences, and `\r` stripping. Emits
+//!   `line_starts` inline when each `\n` is written, eliminating a second O(N)
+//!   scan over stripped data.
+//! - `get_line(idx)`: O(1) slice into the backing storage — no heap allocation.
+//! - `from_bytes(Vec<u8>)`: used for stdin input and in-memory test data.
+//! - `from_file_tail(path, preview_bytes)`: reads only the last N bytes of a
+//!   file synchronously (without mmap), drops the first partial line, and
+//!   returns a `FileReader::from_bytes`. Provides an immediate tail preview
+//!   before the background indexing job completes.
+//! - `load(path, predicate, tail) -> FileLoadHandle`: starts background
+//!   indexing via `spawn_blocking`. When `predicate` is `Some`, each line is
+//!   tested during indexing and matching indices are stored in
+//!   `FileLoadResult::precomputed_visible`, avoiding a second pass after load.
+//! - `VisibilityPredicate`: `Box<dyn Fn(&[u8]) -> bool + Send + Sync>` — passed
+//!   from `main.rs` as a closure over a `FilterManager`, keeping `file_reader`
+//!   free of filter dependencies.
+//! - `spawn_process_stream(program, args)`: spawns a child process, merges
+//!   stdout+stderr via mpsc, strips ANSI, and delivers complete lines every
+//!   500 ms through a `watch::Receiver<Vec<u8>>`.
+//!
+//! ## Scan mmap / access mmap split
+//!
+//! Both `new()` and `index_chunked()` create two separate mmaps. The *scan
+//! mmap* is used for indexing (`MADV_SEQUENTIAL` for prefetch throughput),
+//! then explicitly `drop`ped — `munmap()` removes all its pages from RSS
+//! immediately. A fresh *access mmap* is then created with zero RSS; `get_line`
+//! faults in only the specific 4 KiB page(s) it needs. This is more reliable
+//! than `MADV_DONTNEED`, which is advisory and ignored by the Linux kernel for
+//! file-backed shared mappings.
 
 use memchr::{memchr_iter, memchr3_iter};
 use memmap2::Mmap;

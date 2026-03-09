@@ -4,6 +4,10 @@
 //! via [`classify_json_fields`] / [`classify_json_fields_all`]. Format
 //! detection samples the first 200 lines and scores by the proportion that
 //! start with `{` and parse successfully.
+//!
+//! `collect_field_names` returns raw JSON key names ordered by canonical slot:
+//! timestamp-group → level-group → target-group → sorted extras → message-group
+//! last. Dotted sub-fields like `span.name` and `fields.count` are included.
 
 use std::collections::HashSet;
 

@@ -8,6 +8,17 @@
 //! The default `journalctl -o short` output (BSD timestamp without priority)
 //! is already handled by `SyslogParser`, so [`JournalctlParser`] yields a lower
 //! `detect_score` when the input looks like plain BSD syslog.
+//!
+//! ## Hostname validation
+//!
+//! `is_likely_hostname()` rejects tokens that are recognized level keywords
+//! (via `normalize_level`), contain `::` (Rust module paths), or are short
+//! all-uppercase tokens. This prevents false positives where lines like
+//! `2024-07-24T10:00:00Z INFO myapp::server: msg` would incorrectly match as
+//! journalctl format.
+//!
+//! Journalctl text output carries no priority/level field — `level` is always
+//! `None` in the returned `DisplayParts`.
 
 use std::collections::HashSet;
 

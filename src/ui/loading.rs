@@ -334,6 +334,9 @@ impl App {
             .iter()
             .position(|t| t.log_manager.source_file().is_none())
         {
+            if self.tabs[idx].paused {
+                return;
+            }
             let tail_mode = self.tabs[idx].tail_mode;
             self.tabs[idx].file_reader = FileReader::from_bytes(data);
             self.tabs[idx].refresh_visible();
@@ -491,6 +494,18 @@ impl App {
 
             match status {
                 Some(Ok(true)) => {
+                    if self.tabs[i].paused {
+                        // Mark the channel as seen so we don't spin, but
+                        // discard the payload — it will be re-delivered on
+                        // the next change after the user resumes.
+                        let _ = self.tabs[i]
+                            .watch_state
+                            .as_mut()
+                            .unwrap()
+                            .new_data_rx
+                            .borrow_and_update();
+                        continue;
+                    }
                     let new_data = self.tabs[i]
                         .watch_state
                         .as_mut()
@@ -940,6 +955,62 @@ mod tests {
             app.tabs[0].scroll_offset, last,
             "tail on: should scroll to last after enable"
         );
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_watches_paused_skips_update() {
+        let mut app = make_app(&["old line"]).await;
+        app.tabs[0].paused = true;
+        let initial_count = app.tabs[0].visible_indices.len();
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        tx.send(b"new line\n".to_vec()).unwrap();
+        app.advance_file_watches();
+
+        // Paused: no new lines should have been appended.
+        assert_eq!(app.tabs[0].visible_indices.len(), initial_count);
+        drop(tx);
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_watches_unpaused_applies_update() {
+        let file_reader = FileReader::from_bytes(b"old line\n".to_vec());
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
+        let initial_count = app.tabs[0].file_reader.line_count();
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        tx.send(b"new line\n".to_vec()).unwrap();
+        app.advance_file_watches();
+
+        // Not paused: new line should have been appended.
+        assert!(app.tabs[0].file_reader.line_count() > initial_count);
+        drop(tx);
+    }
+
+    #[tokio::test]
+    async fn test_update_stdin_tab_paused_skips_update() {
+        let mut app = make_app(&["old"]).await;
+        // Make tab[0] behave as the stdin placeholder (no source_file).
+        assert!(app.tabs[0].log_manager.source_file().is_none());
+        let initial_count = app.tabs[0].visible_indices.len();
+
+        app.tabs[0].paused = true;
+        app.update_stdin_tab(b"new line\nmore data\n".to_vec())
+            .await;
+
+        assert_eq!(app.tabs[0].visible_indices.len(), initial_count);
     }
 
     #[tokio::test]

@@ -74,7 +74,11 @@ impl VisualMode {
     fn on_line_change(&mut self, tab: &TabState) {
         self.line_text = display_line_text(tab);
         let n = self.line_text.chars().count();
-        self.cursor_col = if n == 0 { 0 } else { self.cursor_col.min(n - 1) };
+        self.cursor_col = if n == 0 {
+            0
+        } else {
+            self.cursor_col.min(n - 1)
+        };
         self.anchor_col = None;
         self.pending_motion = None;
     }
@@ -168,7 +172,7 @@ impl Mode for VisualMode {
         } else if kb.visual.start_selection.matches(key, modifiers) {
             self.anchor_col = Some(self.cursor_col);
         } else if kb.visual.filter_include.matches(key, modifiers) {
-            let selected = regex::escape(&self.selected_text());
+            let selected = quote_for_command(&regex::escape(&self.selected_text()));
             let input = format!("filter {}", selected);
             let cursor = input.len();
             let history = tab.command_history.clone();
@@ -177,7 +181,7 @@ impl Mode for VisualMode {
                 KeyResult::Handled,
             );
         } else if kb.visual.filter_exclude.matches(key, modifiers) {
-            let selected = regex::escape(&self.selected_text());
+            let selected = quote_for_command(&regex::escape(&self.selected_text()));
             let input = format!("exclude {}", selected);
             let cursor = input.len();
             let history = tab.command_history.clone();
@@ -341,6 +345,18 @@ impl Mode for VisualMode {
 // ---------------------------------------------------------------------------
 // Shared helper — also used by normal_mode to capture the line text on entry
 // ---------------------------------------------------------------------------
+
+/// Wraps `pattern` in double quotes when it contains whitespace, escaping
+/// any embedded `"` as `\"` so that `shell_split` reconstructs the original
+/// pattern correctly.
+pub(crate) fn quote_for_command(pattern: &str) -> String {
+    if pattern.chars().any(char::is_whitespace) {
+        let escaped = pattern.replace('"', "\\\"");
+        format!("\"{}\"", escaped)
+    } else {
+        pattern.to_string()
+    }
+}
 
 /// Returns the displayed text for the current scroll line using parsed
 /// field-layout (if available) or raw bytes as fallback.
@@ -986,6 +1002,89 @@ mod tests {
             }
             other => panic!("expected Command, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_spaces_wraps_in_quotes() {
+        let mut tab = make_tab(&["hello world foo"]).await;
+        let mut mode = make_mode("hello world foo");
+        mode.anchor_col = Some(0);
+        mode.cursor_col = 10; // selected = "hello world"
+        let (m, _) = press(mode, &mut tab, KeyCode::Char('i')).await;
+        match m.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, r#"filter "hello world""#, "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exclude_with_spaces_wraps_in_quotes() {
+        let mut tab = make_tab(&["error hello world"]).await;
+        let mut mode = make_mode("error hello world");
+        mode.anchor_col = Some(6);
+        mode.cursor_col = 16; // selected = "hello world"
+        let (m, _) = press(mode, &mut tab, KeyCode::Char('o')).await;
+        match m.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, r#"exclude "hello world""#, "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_embedded_quote_escaped() {
+        let mut tab = make_tab(&[r#"say "hi" now"#]).await;
+        let mut mode = make_mode(r#"say "hi" now"#);
+        mode.anchor_col = Some(0);
+        mode.cursor_col = 11; // selected = r#"say "hi" now"#
+        let (m, _) = press(mode, &mut tab, KeyCode::Char('i')).await;
+        match m.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, r#"filter "say \"hi\" now""#, "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_no_spaces_no_quotes() {
+        let mut tab = make_tab(&["error"]).await;
+        let mut mode = make_mode("error");
+        mode.anchor_col = Some(0);
+        mode.cursor_col = 4;
+        let (m, _) = press(mode, &mut tab, KeyCode::Char('i')).await;
+        match m.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, "filter error", "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    // ── quote_for_command unit tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_quote_for_command_no_spaces() {
+        assert_eq!(quote_for_command("hello"), "hello");
+        assert_eq!(quote_for_command(r"192\.168\.1\.1"), r"192\.168\.1\.1");
+    }
+
+    #[test]
+    fn test_quote_for_command_with_spaces() {
+        assert_eq!(quote_for_command("hello world"), r#""hello world""#);
+    }
+
+    #[test]
+    fn test_quote_for_command_embedded_quote() {
+        assert_eq!(quote_for_command(r#"say "hi" now"#), r#""say \"hi\" now""#);
+    }
+
+    #[test]
+    fn test_quote_for_command_empty() {
+        assert_eq!(quote_for_command(""), "");
     }
 
     #[tokio::test]

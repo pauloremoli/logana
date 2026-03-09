@@ -233,7 +233,13 @@ impl App {
         } else {
             None
         };
-        self.render_logs_panel(frame, logs_area, visual_anchor, visual_char_selection, mode_name_for_title);
+        self.render_logs_panel(
+            frame,
+            logs_area,
+            visual_anchor,
+            visual_char_selection,
+            mode_name_for_title,
+        );
 
         self.render_side_bar(frame, selected_filter_idx, sidebar_area);
 
@@ -618,10 +624,8 @@ impl App {
                             // Use whole-token search for target and pid to avoid false matches
                             // when the value is a short string (e.g. pid "1" for systemd)
                             // that also appears inside the timestamp or other fields.
-                            let target_offset = target
-                                .as_deref()
-                                .filter(|t| !t.is_empty())
-                                .and_then(|t| {
+                            let target_offset =
+                                target.as_deref().filter(|t| !t.is_empty()).and_then(|t| {
                                     if show_keys {
                                         // Column rendered as "target=<value>"; find the token
                                         // then offset past "target=" to the value.
@@ -631,10 +635,8 @@ impl App {
                                         find_token_offset(&rendered, t)
                                     }
                                 });
-                            let pid_offset = pid
-                                .as_deref()
-                                .filter(|p| !p.is_empty())
-                                .and_then(|p| {
+                            let pid_offset =
+                                pid.as_deref().filter(|p| !p.is_empty()).and_then(|p| {
                                     if show_keys {
                                         // Column rendered as "pid=<value>"; find the token
                                         // then offset past "pid=" to the value.
@@ -1030,11 +1032,10 @@ impl App {
         }
 
         let tail_mode = self.tabs[self.active_tab].tail_mode;
+        let paused = self.tabs[self.active_tab].paused;
         let logs_title = format!(
-            "{}{} ({}){}{}",
-            mode_name
-                .map(|m| format!("[{}] ", m))
-                .unwrap_or_default(),
+            "{}{} ({}){}{}{}",
+            mode_name.map(|m| format!("[{}] ", m)).unwrap_or_default(),
             self.tabs[self.active_tab]
                 .log_manager
                 .source_file()
@@ -1049,6 +1050,7 @@ impl App {
             num_visible,
             if tail_mode { " [TAIL]" } else { "" },
             if raw_mode { " [RAW]" } else { "" },
+            if paused { " [PAUSED]" } else { "" },
         );
 
         let logs_block = if show_borders {
@@ -2028,7 +2030,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // find_token_offset
     // -----------------------------------------------------------------------
-
     #[test]
     fn test_find_token_offset_simple() {
         // Standalone token at the start
@@ -2057,7 +2058,8 @@ mod tests {
     fn test_find_token_offset_systemd_pid1_in_syslog_rfc5424() {
         // Reproduces the reported bug: syslog RFC 5424 line with PID=1 (systemd).
         // Before the fix, rendered.find("1") matched the "1" in "2024-01-…".
-        let rendered = "2024-01-15T10:30:00.000000+01:00 INFO  systemd myhost 1 local3 Started network.";
+        let rendered =
+            "2024-01-15T10:30:00.000000+01:00 INFO  systemd myhost 1 local3 Started network.";
         let pid_pos = find_token_offset(rendered, "1").unwrap();
         // Must point to the standalone "1" (PID), not into the timestamp.
         assert_eq!(&rendered[pid_pos..pid_pos + 1], "1");
@@ -2066,7 +2068,10 @@ mod tests {
         assert!(pid_pos + 1 < rendered.len() && rendered.as_bytes()[pid_pos + 1] == b' ');
         // The standalone "1" must appear AFTER the timestamp ends.
         let ts_end = "2024-01-15T10:30:00.000000+01:00".len();
-        assert!(pid_pos > ts_end, "pid_pos {pid_pos} should be past timestamp end {ts_end}");
+        assert!(
+            pid_pos > ts_end,
+            "pid_pos {pid_pos} should be past timestamp end {ts_end}"
+        );
     }
 
     #[test]

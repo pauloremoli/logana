@@ -1,9 +1,13 @@
 //! Template-based export of analysis (annotations + marked lines).
 //!
-//! Template syntax: `{{#section}}...{{/section}}` with placeholders
-//! `{{filename}}`, `{{date}}`, `{{commentary}}`, `{{lines}}`, `{{line_numbers}}`.
+//! Template syntax: `{{#section}}...{{/section}}` with recognized sections:
+//! `header` (once), `comment_group` (per comment/mark entry), `footer` (once,
+//! optional). Placeholders: `{{filename}}`, `{{date}}`, `{{commentary}}`,
+//! `{{lines}}`, `{{line_numbers}}`.
+//!
 //! Templates are resolved from `~/.config/logana/templates/` → `templates/`
-//! (dev CWD) → bundled templates embedded via `include_str!`.
+//! (dev CWD) → bundled templates embedded via `include_str!`. Bundled
+//! templates: `markdown` and `jira`.
 
 use std::collections::HashSet;
 use std::fs;

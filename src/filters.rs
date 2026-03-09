@@ -4,6 +4,32 @@
 //! parallel via rayon. Literal patterns use Aho-Corasick; patterns with regex
 //! metacharacters fall back to the `regex` crate. [`render_line`] flattens
 //! overlapping styled spans into a ratatui [`Line`].
+//!
+//! ## Key types
+//!
+//! - `Filter` trait: `fn evaluate(&self, line: &[u8], collector: &mut MatchCollector) -> FilterDecision`
+//! - `FilterDecision`: `Include | Exclude | Neutral`
+//! - `SubstringFilter`: Aho-Corasick for literal patterns (no regex metacharacters).
+//! - `RegexFilter`: `regex` crate fallback for patterns with metacharacters.
+//! - `build_filter(pattern, decision, match_only, style_id)`: dispatches to the
+//!   correct implementation.
+//! - `FilterManager::compute_visible(&FileReader) -> Vec<usize>`: parallel
+//!   evaluation via `rayon::into_par_iter()`, returns ascending sorted indices.
+//! - `FilterManager::is_visible(&[u8]) -> bool`: if any enabled Include filter
+//!   exists, the line must match one; any Exclude match hides the line regardless.
+//! - `MatchCollector`: accumulates `MatchSpan { start, end, style: StyleId,
+//!   priority }` for a single line.
+//! - `StyleId` (`u8`): index into the 256-slot styles array. `SEARCH_STYLE_ID
+//!   = u8::MAX = 255` reserved for search highlights; `CURRENT_SEARCH_STYLE_ID
+//!   = u8::MAX - 1 = 254` reserved for the active search occurrence.
+//!
+//! ## render_line sweep algorithm
+//!
+//! Spans are sorted by priority (desc). All start/end byte positions are
+//! collected as boundary points, sorted and deduplicated. For each interval
+//! `[seg_s, seg_e)`, the first (highest-priority) covering span determines the
+//! style. Adjacent intervals with the same style are merged. O(S log S) in the
+//! number of spans, with no per-span Vec allocation.
 
 use aho_corasick::AhoCorasick;
 use ratatui::text::{Line, Span};

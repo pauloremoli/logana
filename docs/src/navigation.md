@@ -67,7 +67,7 @@ Marked lines show a highlighted indicator in the gutter. Marks are per-session a
 | `V` | Enter visual **line** mode — select whole lines for bulk mark / comment / yank / filter |
 | `v` | Enter visual **char** mode — move a cursor within the current line and select a text range |
 
-See [Annotations & Export](annotations.md) for the full key reference for both modes.
+See [Visual Line Mode](visual-line-mode.md) and [Visual Character Mode](visual-char-mode.md) for the full key reference.
 
 ## Line Wrap
 

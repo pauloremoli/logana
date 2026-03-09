@@ -479,6 +479,16 @@ impl App {
                 tab.raw_mode = !tab.raw_mode;
                 tab.invalidate_parse_cache();
             }
+            Some(Commands::Stop) => {
+                self.stdin_load_state = None;
+                self.tabs[self.active_tab].watch_state = None;
+            }
+            Some(Commands::Pause) => {
+                self.tabs[self.active_tab].paused = true;
+            }
+            Some(Commands::Resume) => {
+                self.tabs[self.active_tab].paused = false;
+            }
             None => {}
         }
         Ok(false)
@@ -1079,5 +1089,63 @@ mod tests {
         let result = app.run_command("  4  ").await;
         assert!(result.is_ok());
         assert_eq!(app.tab().scroll_offset, 3);
+    }
+
+    // ── stop ──────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_stop_clears_watch_state() {
+        let mut app = make_app(&["line1"]).await;
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(super::super::FileWatchState { new_data_rx: rx });
+        assert!(app.tab().watch_state.is_some());
+        app.run_command("stop").await.unwrap();
+        assert!(app.tab().watch_state.is_none());
+        drop(tx);
+    }
+
+    #[tokio::test]
+    async fn test_stop_clears_stdin_load_state() {
+        let mut app = make_app(&["line1"]).await;
+        let (_tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.stdin_load_state = Some(super::super::StdinLoadState { snapshot_rx: rx });
+        assert!(app.stdin_load_state.is_some());
+        app.run_command("stop").await.unwrap();
+        assert!(app.stdin_load_state.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stop_on_tab_with_no_watcher_is_noop() {
+        let mut app = make_app(&["line1"]).await;
+        assert!(app.tab().watch_state.is_none());
+        app.run_command("stop").await.unwrap();
+        assert!(app.tab().watch_state.is_none());
+    }
+
+    // ── pause / resume ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_pause_sets_paused_flag() {
+        let mut app = make_app(&["line1"]).await;
+        assert!(!app.tab().paused);
+        app.run_command("pause").await.unwrap();
+        assert!(app.tab().paused);
+    }
+
+    #[tokio::test]
+    async fn test_resume_clears_paused_flag() {
+        let mut app = make_app(&["line1"]).await;
+        app.run_command("pause").await.unwrap();
+        assert!(app.tab().paused);
+        app.run_command("resume").await.unwrap();
+        assert!(!app.tab().paused);
+    }
+
+    #[tokio::test]
+    async fn test_resume_on_unpaused_tab_is_noop() {
+        let mut app = make_app(&["line1"]).await;
+        assert!(!app.tab().paused);
+        app.run_command("resume").await.unwrap();
+        assert!(!app.tab().paused);
     }
 }

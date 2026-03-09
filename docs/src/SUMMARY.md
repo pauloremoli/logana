@@ -12,6 +12,8 @@
 # Features
 
 - [Navigation](navigation.md)
+  - [Visual Line Mode](visual-line-mode.md)
+  - [Visual Character Mode](visual-char-mode.md)
 - [Filtering](filtering/index.md)
   - [Text Filters](filtering/text-filters.md)
   - [Date & Time Filters](filtering/date-filters.md)

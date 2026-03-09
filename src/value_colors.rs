@@ -4,6 +4,11 @@
 //! scanning unstyled spans (no `fg` set) for HTTP methods, HTTP status codes,
 //! IPv4/IPv6 addresses, and UUIDs. Spans already colored by filters or search
 //! are left untouched. Regex patterns are compiled once via [`std::sync::LazyLock`].
+//!
+//! ## Priority layering (highest wins)
+//!
+//! cursor/mark/visual selection → search highlights → filter highlights →
+//! value colors → level colors (line-level fallback)
 
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};

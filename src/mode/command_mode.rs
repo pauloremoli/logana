@@ -140,6 +140,12 @@ pub enum Commands {
     HideKeys,
     /// Toggle raw mode — disable the format parser and show unformatted log lines
     Raw,
+    /// Stop all incoming data for the current tab (file watcher and/or stream)
+    Stop,
+    /// Pause applying incoming data to the view (watcher/stream keeps running)
+    Pause,
+    /// Resume applying incoming data after a pause
+    Resume,
 }
 
 #[derive(Debug)]

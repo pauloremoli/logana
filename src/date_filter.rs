@@ -8,6 +8,33 @@
 //! prefix is intentionally an invalid regex/substring so it never conflicts
 //! with text filters. Applied as a post-processing `retain()` step after the
 //! text-based [`crate::filters::FilterManager`] runs.
+//!
+//! ## User syntax (after `date-filter` command or `@date:` prefix)
+//!
+//! - Range: `01:00:00 .. 02:00:00`, `Feb 21 .. Feb 22`, `2024-02-21 .. 2024-02-22`
+//! - Comparison: `> Feb 21 01:00:00`, `>= 2024-02-22`, `< 2024-02-22T10:15:30`
+//! - Time-only (`HH:MM:SS` or `HH:MM`): compares seconds since midnight
+//! - Full datetime: canonical `YYYY-MM-DD HH:MM:SS.ffffff` string comparison
+//!
+//! ## Key types
+//!
+//! - `ComparisonOp`: `Gt | Ge | Lt | Le`
+//! - `ComparisonMode`: `TimeOnly | FullDatetime`
+//! - `DateBound`: holds either `time_val: u32` (seconds since midnight) or
+//!   `datetime_val: String` (canonical form)
+//! - `DateFilter`: `Range { mode, lower, upper }` or `Comparison { mode, op, bound }`
+//! - `parse_date_filter(input) -> Result<DateFilter, String>`: parses expression
+//!   after the `@date:` prefix
+//! - `normalize_log_timestamp(ts) -> Option<NormalizedTimestamp>`: normalizes any
+//!   parser-produced timestamp to canonical `YYYY-MM-DD HH:MM:SS.ffffff` form
+//!
+//! ## Integration in `refresh_visible()`
+//!
+//! After text filters compute `visible_indices`, date filters are extracted via
+//! `extract_date_filters()`. If any exist and a format parser is detected, each
+//! visible line is parsed to extract its timestamp and tested against all date
+//! filters (AND logic). Lines without a parseable timestamp pass through
+//! (continuation/stack-trace lines).
 
 use crate::filters::StyleId;
 use crate::parser::timestamp::BSD_MONTHS;
@@ -143,11 +170,7 @@ fn parse_bound(input: &str) -> Result<(DateBound, ComparisonMode, Granularity), 
     }
 
     // Try YYYY-MM-DD[T| ]HH:MM:SS or YYYY-MM-DD
-    if s.len() >= 10
-        && b[4] == b'-'
-        && b[7] == b'-'
-        && b[0].is_ascii_digit()
-    {
+    if s.len() >= 10 && b[4] == b'-' && b[7] == b'-' && b[0].is_ascii_digit() {
         return parse_iso_bound(s);
     }
 
@@ -257,12 +280,7 @@ fn parse_slash_month_day_bound(
 
     let after_day = &s[5..];
     // Optional /YYYY or -YYYY (same separator as MM/DD or MM-DD)
-    let (year, after_year) = if after_day
-        .as_bytes()
-        .first()
-        .copied()
-        == Some(sep)
-    {
+    let (year, after_year) = if after_day.as_bytes().first().copied() == Some(sep) {
         let rest = &after_day[1..];
         if rest.len() >= 4 && rest[..4].bytes().all(|c| c.is_ascii_digit()) {
             let y: u32 = rest[..4]
@@ -386,17 +404,23 @@ fn expand_upper_bound(
                 Granularity::Minute => t + 59,
                 Granularity::Second | Granularity::Day => t,
             };
-            DateBound { time_val: Some(upper_t), datetime_val: None }
+            DateBound {
+                time_val: Some(upper_t),
+                datetime_val: None,
+            }
         }
         ComparisonMode::FullDatetime => {
             // Canonical form: "YYYY-MM-DD HH:MM:SS.ffffff" (26 chars)
             let s = bound.datetime_val.as_ref().unwrap();
             let upper_str = match granularity {
-                Granularity::Day    => format!("{} 23:59:59.999999", &s[..10]),
+                Granularity::Day => format!("{} 23:59:59.999999", &s[..10]),
                 Granularity::Minute => format!("{}:59.999999", &s[..16]),
                 Granularity::Second => s.clone(),
             };
-            DateBound { time_val: None, datetime_val: Some(upper_str) }
+            DateBound {
+                time_val: None,
+                datetime_val: Some(upper_str),
+            }
         }
     }
 }

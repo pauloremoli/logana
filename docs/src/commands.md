@@ -51,6 +51,18 @@ See [Filtering](filtering/index.md) and [Date & Time Filters](filtering/date-fil
 | `:value-colors` | Open the value colors dialog — toggle coloring for HTTP methods, status codes, IPs, UUIDs, and process/logger names |
 | `:set-theme <name>` | Switch the color theme |
 
+## Live Data
+
+These commands control how the current tab handles incoming data from a file watcher or stream (stdin, Docker).
+
+| Command | Description |
+|---|---|
+| `:stop` | Permanently stop all incoming data for the current tab — drops the file watcher and/or stream |
+| `:pause` | Freeze the view; the background watcher/stream keeps running. Title shows `[PAUSED]` |
+| `:resume` | Resume applying incoming data; the latest snapshot is applied immediately |
+
+> **Note:** `:pause` / `:resume` are non-destructive — no data is lost while paused. `:stop` is permanent; to resume watching a file after stopping, reopen it with `:open`.
+
 ## Structured Fields
 
 | Command | Description |

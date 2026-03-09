@@ -3,11 +3,19 @@
 //! Covers env_logger, tracing fmt, log4rs, logback, log4j2, Spring Boot,
 //! Python logging, loguru, structlog, and more. Tries sub-strategies in order:
 //! env_logger → logback/log4j2 → Spring Boot → Python basic/prod → loguru →
-//! structlog → generic fallback.
+//! structlog → tracing-subscriber (with spans) → generic fallback.
 //!
 //! A recognizable level keyword is required in all sub-strategies to prevent
 //! false positives against syslog/journalctl lines. Applies a 0.95× score
 //! penalty to yield to more specific parsers on ties.
+//!
+//! ## Span prefix detection
+//!
+//! `try_parse_span_prefix(s)` detects `identifier{k=v ...}: ` prefix and
+//! returns `(Some(SpanInfo), remaining)`. `parse_tracing_span_fields(s)` parses
+//! space-separated `key=value` pairs inside braces, handling both quoted
+//! (`"value"`) and unquoted values. `collect_field_names` emits `"span"` plus
+//! dotted names like `"span.method"` for each discovered span sub-field.
 
 use std::collections::HashSet;
 

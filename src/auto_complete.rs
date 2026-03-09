@@ -11,8 +11,15 @@ pub fn shell_split(input: &str) -> Vec<String> {
     let mut current = String::new();
     let mut in_quotes = false;
     let mut in_brackets = false;
+    let mut escape_next = false;
     for ch in input.chars() {
+        if escape_next {
+            current.push(ch);
+            escape_next = false;
+            continue;
+        }
         match ch {
+            '\\' if in_quotes => escape_next = true,
             '"' => in_quotes = !in_quotes,
             '[' if !in_quotes => {
                 in_brackets = true;
@@ -332,6 +339,31 @@ mod tests {
         assert_eq!(
             shell_split("filter --fg [255, 0"),
             vec!["filter", "--fg", "[255, 0"]
+        );
+    }
+
+    #[test]
+    fn test_shell_split_escaped_quote_inside_quotes() {
+        assert_eq!(
+            shell_split(r#"filter "hello \"world\"""#),
+            vec!["filter", r#"hello "world""#]
+        );
+    }
+
+    #[test]
+    fn test_shell_split_escaped_quote_preserves_spaces() {
+        assert_eq!(
+            shell_split(r#"filter "say \"hi\" now""#),
+            vec!["filter", r#"say "hi" now"#]
+        );
+    }
+
+    #[test]
+    fn test_shell_split_backslash_outside_quotes_passes_through() {
+        // Outside quotes, backslash is not special — it is pushed as-is.
+        assert_eq!(
+            shell_split(r"filter hello\.world"),
+            vec!["filter", r"hello\.world"]
         );
     }
 

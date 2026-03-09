@@ -7,6 +7,7 @@ use crate::config::Keybindings;
 use crate::mode::app_mode::{Mode, ModeRenderState, status_entry};
 use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
+use crate::mode::visual_char_mode::quote_for_command;
 use crate::theme::Theme;
 use crate::types::FilterType;
 
@@ -201,7 +202,7 @@ impl Mode for FilterManagementMode {
                         }
                     }
                     c.push(' ');
-                    c.push_str(&pattern);
+                    c.push_str(&quote_for_command(&pattern));
                     c
                 };
                 let len = cmd.len();
@@ -778,6 +779,58 @@ mod tests {
         tab.command_error = Some("previous error".to_string());
         press(filter_mode(0), &mut tab, KeyCode::Char('t')).await;
         assert!(tab.command_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_edit_filter_with_spaces_wraps_in_quotes() {
+        let mut tab = make_tab(&["hello world"]).await;
+        add_filter(&mut tab, "hello world", FilterType::Include).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, r#"filter "hello world""#, "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_edit_exclude_with_spaces_wraps_in_quotes() {
+        let mut tab = make_tab(&["foo bar"]).await;
+        add_filter(&mut tab, "foo bar", FilterType::Exclude).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, r#"exclude "foo bar""#, "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_edit_filter_no_spaces_no_quotes() {
+        let mut tab = make_tab(&["error"]).await;
+        add_filter(&mut tab, "error", FilterType::Include).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, "filter error", "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_edit_filter_embedded_quote_escaped() {
+        let mut tab = make_tab(&["line"]).await;
+        add_filter(&mut tab, r#"say "hi" now"#, FilterType::Include).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, r#"filter "say \"hi\" now""#, "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
     }
 
     #[tokio::test]
