@@ -5,7 +5,8 @@ use ratatui::text::{Line, Span};
 
 use crate::{
     auto_complete::{
-        complete_color, complete_file_path, extract_color_partial, find_command_completions,
+        FieldCompletion, complete_color, complete_field_name, complete_field_value,
+        complete_file_path, extract_color_partial, extract_field_partial, find_command_completions,
         fuzzy_match,
     },
     commands::FILE_PATH_COMMANDS,
@@ -63,9 +64,17 @@ pub enum Commands {
         /// Apply color to the whole line instead of only the matched text
         #[arg(short = 'l')]
         line_mode: bool,
+        /// Treat pattern as key=value and match against the named parsed field
+        #[arg(long = "field")]
+        field: bool,
     },
     /// Add an exclude filter
-    Exclude { pattern: String },
+    Exclude {
+        pattern: String,
+        /// Treat pattern as key=value and match against the named parsed field
+        #[arg(long = "field")]
+        field: bool,
+    },
     /// Set color for the selected filter
     SetColor {
         #[arg(long)]
@@ -170,9 +179,38 @@ impl CommandMode {
 
     /// Compute the list of full replacement strings for the current input.
     /// Returns completions for whichever tier matches first:
-    /// color → file path → theme → command name.
+    /// field → color → file path → theme → command name.
     fn compute_completions(&self, tab: &TabState) -> Vec<String> {
         let trimmed = self.input.trim().to_string();
+
+        // Field name/value completion for `filter --field` and `exclude --field`.
+        // Use trim_start() (left-trim only) to preserve any trailing space, which
+        // signals that the preceding token is complete and the next one starts.
+        let input_ls = self.input.trim_start();
+        if let Some(fc) = extract_field_partial(input_ls) {
+            let field_index = tab.build_field_index();
+            let completions: Vec<String> = match &fc {
+                FieldCompletion::Name(partial) => {
+                    let prefix_end = input_ls.len() - partial.len();
+                    let prefix = &input_ls[..prefix_end];
+                    complete_field_name(partial, &field_index)
+                        .into_iter()
+                        .map(|n| format!("{prefix}{n}="))
+                        .collect()
+                }
+                FieldCompletion::Value { field, partial } => {
+                    let prefix_end = input_ls.len() - partial.len();
+                    let prefix = &input_ls[..prefix_end];
+                    complete_field_value(field, partial, &field_index)
+                        .into_iter()
+                        .map(|v| format!("{prefix}{v}"))
+                        .collect()
+                }
+            };
+            if !completions.is_empty() {
+                return completions;
+            }
+        }
 
         // Color completion for --fg/--bg arguments
         if let Some(partial) = extract_color_partial(&trimmed) {
@@ -852,5 +890,68 @@ mod tests {
         let (input, cursor) = command_state(mode2.as_ref()).unwrap();
         assert_eq!(input, "filter ");
         assert_eq!(cursor, 7);
+    }
+
+    async fn make_json_tab() -> TabState {
+        let json_lines = b"{\"level\":\"info\",\"target\":\"app\",\"message\":\"hello\"}\n\
+              {\"level\":\"error\",\"target\":\"db\",\"message\":\"fail\"}\n"
+            .to_vec();
+        let file_reader = crate::file_reader::FileReader::from_bytes(json_lines);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        TabState::new(file_reader, log_manager, "test.json".to_string())
+    }
+
+    #[tokio::test]
+    async fn test_field_completion_name_after_space() {
+        let mut tab = make_json_tab().await;
+        // "filter --field " (trailing space) → field name completions
+        let mode = CommandMode::with_history("filter --field ".to_string(), 14, vec![]);
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        // completion_index must be set (completions were found)
+        assert!(
+            completion_index(mode2.as_ref()).is_some(),
+            "Tab after '--field ' should produce field name completions"
+        );
+        // Space accepts the highlighted completion; input must include field name + '='
+        let (mode3, _) = mode2
+            .handle_key(&mut tab, KeyCode::Char(' '), KeyModifiers::NONE)
+            .await;
+        let (accepted, _) = command_state(mode3.as_ref()).unwrap();
+        assert!(
+            accepted.starts_with("filter --field "),
+            "Accepted completion should preserve prefix, got: {accepted}"
+        );
+        assert!(
+            accepted.contains('='),
+            "Accepted field name completion should include '=' ready for value entry, got: {accepted}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_field_completion_value_after_eq() {
+        let mut tab = make_json_tab().await;
+        // "filter --field level=" → value completions
+        let input = "filter --field level=".to_string();
+        let cursor = input.len();
+        let mode = CommandMode::with_history(input, cursor, vec![]);
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        assert!(
+            completion_index(mode2.as_ref()).is_some(),
+            "Tab after 'level=' should produce value completions"
+        );
+        // Accepted completion should contain a known level value
+        let (mode3, _) = mode2
+            .handle_key(&mut tab, KeyCode::Char(' '), KeyModifiers::NONE)
+            .await;
+        let (accepted, _) = command_state(mode3.as_ref()).unwrap();
+        assert!(
+            accepted.contains("level=info") || accepted.contains("level=error"),
+            "Accepted value completion should be a known level, got: {accepted}"
+        );
     }
 }

@@ -10,7 +10,7 @@ logana is structured around a strict separation between domain logic and the UI 
 
 **Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, etc.). Parsers extract a normalised set of fields (timestamp, level, message, structured fields) that the rest of the system consumes uniformly regardless of the original format.
 
-**Filter Pipeline** — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap. The pipeline runs in a `spawn_blocking` thread so the UI stays responsive during large scans. Filter definitions are persisted to SQLite by `LogManager` / `db` and reloaded on startup.
+**Filter Pipeline** — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap. The pipeline runs in a `spawn_blocking` thread so the UI stays responsive during large scans. Filter definitions are persisted to SQLite by `LogManager` / `db` and reloaded on startup. Date filters (`@date:` prefix) and field filters (`@field:` prefix) are stored as regular `FilterDef` entries but skipped by `build_filter_manager` and applied as separate post-processing steps after text filters run.
 
 **Mode System** — Input handling is a state machine (`mode/`) where each mode owns its key handler and returns a `KeyResult` for side-effects it cannot perform itself. Modes hold only tab-scoped state; application-level effects (closing tabs, clipboard, global toggles) are dispatched back to the event loop. This keeps modes independently testable.
 
@@ -54,6 +54,7 @@ src/
     common_log.rs     - env_logger, tracing fmt, logback, Spring Boot, Python, loguru
     otlp.rs           - OpenTelemetry log format
   date_filter.rs      - Date/time range and comparison filter
+  field_filter.rs     - Field-scoped filter (match by parsed field name/value)
   file_reader.rs      - Memory-mapped file I/O with SIMD line indexing
   filters.rs          - Filter pipeline: matching, visibility, span rendering
   log_manager.rs      - Filter/mark/comment state with SQLite persistence bridge
@@ -131,6 +132,18 @@ Computing which lines are visible requires scanning every byte of the file. On a
 Without this optimisation, startup with filters would require two full passes over the file: one to build the line-offset index, and a second to evaluate which lines are visible.
 
 When filters are supplied via `--filters` at launch, the visibility predicate is evaluated on each line during the indexing pass itself, so the file is read exactly once. The speedup comes from two sources. First, total work is halved — each byte is touched once instead of twice. Second, cache locality: during indexing each page is already resident in the CPU's L2/L3 cache. Evaluating the filter immediately while the data is hot avoids re-faulting those pages in a later pass.
+
+### Style layering
+
+Rendering applies styles in priority order (highest to lowest):
+
+1. **Cursor / mark / visual selection** — applied as a line-level style.
+2. **Search highlights** — priority 1000, always on top of filter colors.
+3. **Filter highlights** — one `StyleId` per enabled filter; `render_line` composes `fg` and `bg` independently per boundary segment so that two filters covering the same text each contribute their attribute without overwriting the other (e.g. a level filter setting `fg` and a text filter setting `bg` both apply).
+4. **Value colors** — HTTP methods, status codes, IPs, and UUIDs colored by `colorize_known_values`. This pass always runs after `render_line` and skips any span that already has `fg` or `bg` set by a filter or process color, so filter highlights always win. Value colors apply even on lines where some parts are filter-colored, as long as those specific spans are unstyled.
+5. **Level colors** — applied as a line-level fallback style (`Line::style`). Spans with an explicit color (from filters or value colors) override it; unstyled spans inherit it.
+
+This layering is enforced entirely in `render.rs` (level and value) and `filters.rs` (`render_line` composition).
 
 ## Mode System
 

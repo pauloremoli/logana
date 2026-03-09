@@ -182,6 +182,35 @@ impl Mode for FilterManagementMode {
                     c.push(' ');
                     c.push_str(expr);
                     c
+                } else if let Some(expr) = pattern.strip_prefix(crate::field_filter::FIELD_PREFIX) {
+                    // Convert internal "@field:key:value" → "filter --field [--fg …] [--bg …] [-l] key=value"
+                    let mut c = if ft == FilterType::Include {
+                        String::from("filter")
+                    } else {
+                        String::from("exclude")
+                    };
+                    if ft == FilterType::Include
+                        && let Some(cfg) = &cc
+                    {
+                        if let Some(fg) = cfg.fg {
+                            c.push_str(&format!(" --fg {fg}"));
+                        }
+                        if let Some(bg) = cfg.bg {
+                            c.push_str(&format!(" --bg {bg}"));
+                        }
+                        if !cfg.match_only {
+                            c.push_str(" -l");
+                        }
+                    }
+                    c.push_str(" --field ");
+                    if let Some(colon) = expr.find(':') {
+                        c.push_str(&expr[..colon]);
+                        c.push('=');
+                        c.push_str(&expr[colon + 1..]);
+                    } else {
+                        c.push_str(expr);
+                    }
+                    c
                 } else {
                     let mut c = if ft == FilterType::Include {
                         String::from("filter")
@@ -834,6 +863,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_edit_field_filter_include_formats_as_field_flag() {
+        let mut tab = make_tab(&["line"]).await;
+        add_filter(&mut tab, "@field:lvl:INFO", FilterType::Include).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, "filter --field lvl=INFO", "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_edit_field_filter_exclude_formats_as_field_flag() {
+        let mut tab = make_tab(&["line"]).await;
+        add_filter(&mut tab, "@field:level:debug", FilterType::Exclude).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, "exclude --field level=debug", "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn test_command_error_cleared_on_edit_filter() {
         let mut tab = make_tab(&["line"]).await;
         add_filter(&mut tab, "error", FilterType::Include).await;
@@ -930,5 +985,61 @@ mod tests {
             ModeRenderState::FilterManagement { .. }
         ));
         assert_eq!(tab.log_manager.get_filters()[0].pattern, "error");
+    }
+
+    #[tokio::test]
+    async fn test_edit_field_filter_with_fg_color_includes_color_flags() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "@field:level:error".to_string(),
+                FilterType::Include,
+                Some("[255,0,0]"),
+                None,
+                false,
+            )
+            .await;
+        tab.refresh_visible();
+
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(
+                    input.contains("--fg"),
+                    "edit command should include --fg flag, got: {input}"
+                );
+                assert!(
+                    input.contains("--field"),
+                    "edit command should include --field flag, got: {input}"
+                );
+                assert!(
+                    input.contains("level=error"),
+                    "edit command should include field expression, got: {input}"
+                );
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_edit_field_filter_without_color_omits_color_flags() {
+        let mut tab = make_tab(&["line"]).await;
+        add_filter(&mut tab, "@field:level:warn", FilterType::Include).await;
+
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(
+                    !input.contains("--fg"),
+                    "edit command must not include --fg when no color set, got: {input}"
+                );
+                assert!(
+                    !input.contains("--bg"),
+                    "edit command must not include --bg when no color set, got: {input}"
+                );
+                assert_eq!(input, "filter --field level=warn", "got: {input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
     }
 }

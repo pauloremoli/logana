@@ -1,10 +1,117 @@
 //! Tab completion for the command bar.
 //!
 //! Provides fuzzy completion for command names (via [`crate::commands`]),
-//! color names, file paths, and export template names.
+//! color names, file paths, export template names, and field names/values
+//! for `filter --field` and `exclude --field` commands.
 //! [`shell_split`] and [`expand_tilde`] are shared parsing helpers.
 
+use std::collections::HashMap;
+
 use crate::commands::{COMMANDS, command_names};
+
+// ---------------------------------------------------------------------------
+// Field completion
+// ---------------------------------------------------------------------------
+
+/// Index of unique field names and values collected from visible log lines.
+#[derive(Debug, Default, Clone)]
+pub struct FieldIndex {
+    /// Sorted, deduplicated list of all known field names.
+    pub names: Vec<String>,
+    /// For each field name: sorted, deduplicated list of observed values.
+    pub values: HashMap<String, Vec<String>>,
+}
+
+/// Describes what a partial `--field` expression is currently completing.
+#[derive(Debug, PartialEq)]
+pub enum FieldCompletion {
+    /// Completing the field name part (before `=`). Holds the partial name typed so far.
+    Name(String),
+    /// Completing the value part (after `=`). Holds the field name and partial value.
+    Value { field: String, partial: String },
+}
+
+/// Detect whether the current command input is in the middle of a `--field key=value`
+/// argument and return what needs completing.
+///
+/// Recognised commands: `filter`, `exclude`.
+///
+/// Returns:
+/// - `Some(FieldCompletion::Name(partial))` when cursor is on the field name (before `=`)
+/// - `Some(FieldCompletion::Value { field, partial })` when cursor is on the value (after `=`)
+/// - `None` when the input is not a `--field` context or the pattern is complete
+pub fn extract_field_partial(input: &str) -> Option<FieldCompletion> {
+    let field_commands = ["filter", "exclude"];
+    let trimmed = input.trim();
+    let cmd = trimmed.split_whitespace().next().unwrap_or("");
+    if !field_commands.contains(&cmd) {
+        return None;
+    }
+
+    // Look for `--field` token in the input
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let field_pos = tokens.iter().position(|&t| t == "--field")?;
+
+    // The token immediately after `--field` is the pattern being typed
+    let after_field = tokens.get(field_pos + 1);
+
+    match after_field {
+        None => {
+            // `--field` is the last token and input ends with a space
+            if input.ends_with(' ') {
+                Some(FieldCompletion::Name(String::new()))
+            } else {
+                None
+            }
+        }
+        Some(&pattern) => {
+            // If there are more tokens after the pattern, the pattern is complete
+            if tokens.len() > field_pos + 2 {
+                return None;
+            }
+            if let Some(eq_pos) = pattern.find('=') {
+                let field = &pattern[..eq_pos];
+                let partial = &pattern[eq_pos + 1..];
+                // If input ends with ' ' after the complete pattern, it is done
+                if input.ends_with(' ') {
+                    return None;
+                }
+                Some(FieldCompletion::Value {
+                    field: field.to_string(),
+                    partial: partial.to_string(),
+                })
+            } else {
+                // Still typing the field name (no `=` yet)
+                if input.ends_with(' ') {
+                    return None; // pattern with no '=' and trailing space → done
+                }
+                Some(FieldCompletion::Name(pattern.to_string()))
+            }
+        }
+    }
+}
+
+/// Return completions for a partial field name.
+pub fn complete_field_name(partial: &str, index: &FieldIndex) -> Vec<String> {
+    index
+        .names
+        .iter()
+        .filter(|n| fuzzy_match(partial, n))
+        .cloned()
+        .collect()
+}
+
+/// Return completions for a partial field value given the field name.
+pub fn complete_field_value(field: &str, partial: &str, index: &FieldIndex) -> Vec<String> {
+    let Some(values) = index.values.get(field) else {
+        return vec![];
+    };
+    values
+        .iter()
+        .filter(|v| fuzzy_match(partial, v))
+        .cloned()
+        .collect()
+}
 
 pub fn shell_split(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
@@ -766,5 +873,138 @@ mod tests {
         assert!(fuzzy_match("DRA", "dracula"));
         assert!(fuzzy_match("", "anything"));
         assert!(!fuzzy_match("xyz", "dracula"));
+    }
+
+    // ── extract_field_partial ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_field_partial_name_empty_after_space() {
+        assert_eq!(
+            extract_field_partial("filter --field "),
+            Some(FieldCompletion::Name(String::new()))
+        );
+    }
+
+    #[test]
+    fn test_field_partial_name_partial_typed() {
+        assert_eq!(
+            extract_field_partial("filter --field lev"),
+            Some(FieldCompletion::Name("lev".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_field_partial_value_empty_after_eq() {
+        assert_eq!(
+            extract_field_partial("filter --field level="),
+            Some(FieldCompletion::Value {
+                field: "level".to_string(),
+                partial: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn test_field_partial_value_partial_typed() {
+        assert_eq!(
+            extract_field_partial("filter --field level=err"),
+            Some(FieldCompletion::Value {
+                field: "level".to_string(),
+                partial: "err".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn test_field_partial_complete_pattern_with_space_returns_none() {
+        assert_eq!(extract_field_partial("filter --field level=error "), None);
+    }
+
+    #[test]
+    fn test_field_partial_no_field_flag_returns_none() {
+        assert_eq!(extract_field_partial("filter level=error"), None);
+    }
+
+    #[test]
+    fn test_field_partial_non_field_command_returns_none() {
+        assert_eq!(extract_field_partial("open --field level=err"), None);
+    }
+
+    #[test]
+    fn test_field_partial_exclude_command_works() {
+        assert_eq!(
+            extract_field_partial("exclude --field target=au"),
+            Some(FieldCompletion::Value {
+                field: "target".to_string(),
+                partial: "au".to_string()
+            })
+        );
+    }
+
+    // ── complete_field_name ───────────────────────────────────────────────────
+
+    fn make_index(names: &[&str], values: &[(&str, &[&str])]) -> FieldIndex {
+        let mut idx = FieldIndex {
+            names: names.iter().map(|s| s.to_string()).collect(),
+            values: HashMap::new(),
+        };
+        for (field, vals) in values {
+            idx.values.insert(
+                field.to_string(),
+                vals.iter().map(|v| v.to_string()).collect(),
+            );
+        }
+        idx
+    }
+
+    #[test]
+    fn test_complete_field_name_empty_partial_returns_all() {
+        let idx = make_index(&["level", "target"], &[]);
+        let result = complete_field_name("", &idx);
+        assert!(result.contains(&"level".to_string()));
+        assert!(result.contains(&"target".to_string()));
+    }
+
+    #[test]
+    fn test_complete_field_name_partial_fuzzy_matches() {
+        let idx = make_index(&["level", "target", "component"], &[]);
+        let result = complete_field_name("lev", &idx);
+        assert!(result.contains(&"level".to_string()));
+        assert!(!result.contains(&"target".to_string()));
+    }
+
+    #[test]
+    fn test_complete_field_name_no_match() {
+        let idx = make_index(&["level", "target"], &[]);
+        let result = complete_field_name("zzz", &idx);
+        assert!(result.is_empty());
+    }
+
+    // ── complete_field_value ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_complete_field_value_empty_partial_returns_all() {
+        let idx = make_index(
+            &["level"],
+            &[("level", &["info", "error", "warn", "debug"])],
+        );
+        let result = complete_field_value("level", "", &idx);
+        assert_eq!(result.len(), 4);
+        assert!(result.contains(&"info".to_string()));
+        assert!(result.contains(&"error".to_string()));
+    }
+
+    #[test]
+    fn test_complete_field_value_partial_fuzzy() {
+        let idx = make_index(&["level"], &[("level", &["info", "error", "warn"])]);
+        let result = complete_field_value("level", "err", &idx);
+        assert_eq!(result, vec!["error"]);
+    }
+
+    #[test]
+    fn test_complete_field_value_unknown_field_returns_empty() {
+        let idx = make_index(&[], &[]);
+        let result = complete_field_value("nonexistent", "", &idx);
+        assert!(result.is_empty());
     }
 }

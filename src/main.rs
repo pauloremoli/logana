@@ -209,7 +209,7 @@ async fn main() -> Result<()> {
         // a filter file and a background file load are in play.
         let startup_predicate: Option<VisibilityPredicate> =
             if background_file_load && args.filters.is_some() {
-                let (fm, _, _) = app.tabs[0].log_manager.build_filter_manager();
+                let (fm, _, _, _) = app.tabs[0].log_manager.build_filter_manager();
                 Some(Box::new(move |line: &[u8]| fm.is_visible(line)))
             } else {
                 None

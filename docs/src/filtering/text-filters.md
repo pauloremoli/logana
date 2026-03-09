@@ -58,3 +58,9 @@ To set a color for the currently selected filter in the filter manager, press `c
 ```
 
 By default, only the matched portion of the line is colored (`match_only = true`). To highlight the entire line instead, use the `-l` flag when adding the filter (not yet exposed via UI — set via `:set-color` after adding).
+
+When multiple filters overlap on the same span, their `fg` and `bg` are composed: one filter can contribute the foreground color while another contributes the background. Automatic value colors (HTTP methods, status codes, IPs, UUIDs) apply only to spans not already colored by a filter, and log-level colors are the lowest-priority fallback.
+
+## Editing Filters
+
+Editing a filter's pattern or color from the filter manager (`e` to edit pattern, `c` to change color) updates it in-place. The filter keeps its current position in the list — order is never changed by an edit.

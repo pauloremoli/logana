@@ -45,6 +45,13 @@ pub trait FilterStore: Send + Sync {
     async fn get_filters_for_source(&self, source_file: &str) -> Result<Vec<FilterDef>>;
     async fn update_filter_pattern(&self, id: i64, new_pattern: &str) -> Result<()>;
     async fn update_filter_color(&self, id: i64, color_config: Option<&ColorConfig>) -> Result<()>;
+    async fn update_filter(
+        &self,
+        id: i64,
+        pattern: &str,
+        filter_type: &FilterType,
+        color_config: Option<&ColorConfig>,
+    ) -> Result<()>;
     async fn delete_filter(&self, id: i64) -> Result<()>;
     async fn toggle_filter(&self, id: i64) -> Result<()>;
     async fn swap_filter_order(&self, id1: i64, id2: i64) -> Result<()>;
@@ -394,6 +401,35 @@ impl FilterStore for Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    async fn update_filter(
+        &self,
+        id: i64,
+        pattern: &str,
+        filter_type: &FilterType,
+        color_config: Option<&ColorConfig>,
+    ) -> Result<()> {
+        let (fg, bg, match_only) = match color_config {
+            Some(cc) => (
+                cc.fg.map(|c| c.to_string()),
+                cc.bg.map(|c| c.to_string()),
+                cc.match_only,
+            ),
+            None => (None, None, true),
+        };
+        sqlx::query(
+            "UPDATE filters SET pattern = ?, filter_type = ?, fg_color = ?, bg_color = ?, match_only = ? WHERE id = ?",
+        )
+        .bind(pattern)
+        .bind(filter_type_to_str(filter_type))
+        .bind(&fg)
+        .bind(&bg)
+        .bind(match_only as i32)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

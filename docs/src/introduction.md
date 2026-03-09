@@ -1,6 +1,6 @@
 # logana
 
-A terminal log viewer built for speed — handles files with millions of lines with instant filtering and navigation, with a keyboard-driven intuitive UI. 
+A terminal log viewer built for speed — it can handle files with millions of lines with instant filtering and navigation, with a keyboard-driven intuitive UI. 
 
 
 ## What is it for
@@ -59,5 +59,5 @@ Feels like vim. Full motion support: `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, `/`/`?` se
 | **Vim navigation** | Full motions: `j`/`k`, `gg`/`G`, `w`/`b`/`e`, `f`/`t`, count prefixes, `/`/`?` search |
 | **Multi-tab** | Open multiple files or Docker streams side-by-side |
 | **Docker** | Attach to any running container with `:docker` |
-| **Value coloring** | HTTP methods, status codes, IP addresses, and UUIDs colored automatically |
+| **Value coloring** | HTTP methods, status codes, IP addresses, and UUIDs colored automatically; filter colors always take priority and multiple filter styles (fg + bg) compose |
 | **Configurable** | All keys remappable; 19 bundled themes; custom themes and export templates |

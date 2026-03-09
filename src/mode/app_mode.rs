@@ -83,6 +83,7 @@ pub enum ModeRenderState {
         dir: String,
         files: Vec<String>,
     },
+    Ui,
 }
 
 impl ModeRenderState {
@@ -91,6 +92,7 @@ impl ModeRenderState {
     pub fn mode_name(&self) -> &'static str {
         match self {
             ModeRenderState::Normal => "NORMAL",
+            ModeRenderState::Ui => "UI",
             ModeRenderState::Command { .. } => "COMMAND",
             ModeRenderState::Search { forward: true, .. } => "SEARCH",
             ModeRenderState::Search { forward: false, .. } => "SEARCH↑",
@@ -856,5 +858,6 @@ mod tests {
             .mode_name(),
             "CONFIRM"
         );
+        assert_eq!(ModeRenderState::Ui.mode_name(), "UI");
     }
 }

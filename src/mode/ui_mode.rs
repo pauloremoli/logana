@@ -73,7 +73,7 @@ impl Mode for UiMode {
     }
 
     fn render_state(&self) -> ModeRenderState {
-        ModeRenderState::Normal
+        ModeRenderState::Ui
     }
 
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -205,5 +205,12 @@ mod tests {
         tab.show_sidebar = true;
         let mode = UiMode::from_tab(&tab);
         assert!(mode.sidebar);
+    }
+
+    #[tokio::test]
+    async fn test_render_state_is_ui() {
+        let tab = make_tab().await;
+        let mode = UiMode::from_tab(&tab);
+        assert!(matches!(mode.render_state(), ModeRenderState::Ui));
     }
 }

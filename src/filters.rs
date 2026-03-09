@@ -25,11 +25,13 @@
 //!
 //! ## render_line sweep algorithm
 //!
-//! Spans are sorted by priority (desc). All start/end byte positions are
+//! Spans are sorted by start position. All start/end byte positions are
 //! collected as boundary points, sorted and deduplicated. For each interval
-//! `[seg_s, seg_e)`, the first (highest-priority) covering span determines the
-//! style. Adjacent intervals with the same style are merged. O(S log S) in the
-//! number of spans, with no per-span Vec allocation.
+//! `[seg_s, seg_e)`, active spans are composed: `fg` comes from the active span
+//! with the highest priority that has `fg` set; `bg` comes from the active span
+//! with the highest priority that has `bg` set. This allows two filters that set
+//! different attributes on the same segment (e.g. one sets `fg`, another sets
+//! `bg`) to both apply. Adjacent intervals with the same composed style are merged.
 
 use aho_corasick::AhoCorasick;
 use ratatui::text::{Line, Span};
@@ -60,9 +62,9 @@ pub trait Filter: Send + Sync {
 
 /// Render a line using the collected match spans and a styles array.
 ///
-/// Overlapping spans are resolved by priority: higher-priority spans overwrite lower ones.
-/// Uses a sweep-line with a max-heap keyed by `(priority, Reverse(start))` so each boundary
-/// interval is resolved in O(log N) instead of the previous O(N) linear scan — O(N log N) total.
+/// For each boundary interval, `fg` and `bg` are composed independently: each attribute
+/// is taken from the highest-priority active span that has that attribute set.  This lets
+/// a level filter (fg only) and a text filter (bg only) both apply to the same segment.
 pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -> Line<'a> {
     if col.spans.is_empty() {
         let text = std::str::from_utf8(col.line).unwrap_or("").to_string();
@@ -97,18 +99,14 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
     boundaries.sort_unstable();
     boundaries.dedup();
 
-    // Sweep-line: heap of (priority, Reverse(start), end, style_id).
-    // Max-heap on priority; Reverse(start) breaks ties in favour of the span that begins
-    // earliest, matching the previous sorted.find() semantics.
-    // For each interval [seg_s, seg_e): activate spans with start ≤ seg_s, lazily expire
-    // those with end ≤ seg_s, then take the heap top as the winner.
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
-    let mut heap: BinaryHeap<(u32, Reverse<usize>, usize, StyleId)> = BinaryHeap::new();
+    // Sweep-line: for each boundary interval [seg_s, seg_e) maintain the list of
+    // active spans and compose fg/bg independently (highest priority wins for each).
+    let mut active: Vec<(u32, usize, StyleId)> = Vec::new(); // (priority, end, style_id)
     let mut span_idx = 0usize;
 
-    // Merge adjacent intervals that share the same style to minimise Span count.
-    let mut events: Vec<(usize, usize, StyleId)> = Vec::with_capacity(boundaries.len());
+    // Merge adjacent intervals with the same composed style to minimise Span count.
+    let mut events: Vec<(usize, usize, ratatui::style::Style)> =
+        Vec::with_capacity(boundaries.len());
     for w in boundaries.windows(2) {
         let (seg_s, seg_e) = (w[0], w[1]);
         if seg_s >= seg_e {
@@ -116,24 +114,26 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
         }
         // Activate all spans whose start ≤ seg_s.
         while span_idx < valid.len() && valid[span_idx].0 <= seg_s {
-            let (start, end, priority, style) = valid[span_idx];
-            heap.push((priority, Reverse(start), end, style));
+            let (_, end, priority, style) = valid[span_idx];
+            active.push((priority, end, style));
             span_idx += 1;
         }
-        // Lazily expire spans that no longer cover this interval.
-        while heap.peek().is_some_and(|&(_, _, end, _)| end <= seg_s) {
-            heap.pop();
+        // Remove spans that no longer cover this interval.
+        active.retain(|&(_, end, _)| end > seg_s);
+        if active.is_empty() {
+            continue;
         }
-        // The heap top is the highest-priority span covering [seg_s, seg_e).
-        if let Some(&(_, _, _, style)) = heap.peek() {
-            if let Some(last) = events.last_mut()
-                && last.1 == seg_s
-                && last.2 == style
-            {
-                last.1 = seg_e;
-                continue;
-            }
-            events.push((seg_s, seg_e, style));
+        let composed = compose_segment_style(&active, styles);
+        if composed.fg.is_none() && composed.bg.is_none() {
+            continue;
+        }
+        if let Some(last) = events.last_mut()
+            && last.1 == seg_s
+            && last.2 == composed
+        {
+            last.1 = seg_e;
+        } else {
+            events.push((seg_s, seg_e, composed));
         }
     }
 
@@ -141,7 +141,7 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
     let mut spans: Vec<Span<'a>> = Vec::new();
     let mut pos = 0usize;
 
-    for (start, end, style_id) in events {
+    for (start, end, style) in events {
         if start > pos {
             let text = std::str::from_utf8(&col.line[pos..start])
                 .unwrap_or("")
@@ -154,7 +154,6 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
             let text = std::str::from_utf8(&col.line[start..end])
                 .unwrap_or("")
                 .to_string();
-            let style = styles.get(style_id as usize).copied().unwrap_or_default();
             if !text.is_empty() {
                 spans.push(Span::styled(text, style));
             }
@@ -172,6 +171,42 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
     }
 
     Line::from(spans)
+}
+
+/// Compose a single [`ratatui::style::Style`] from a set of active spans.
+///
+/// `fg` is taken from the span with the highest priority that has `fg` set;
+/// `bg` from the span with the highest priority that has `bg` set.  Spans that
+/// set neither attribute are ignored for that attribute's composition.
+fn compose_segment_style(
+    active: &[(u32, usize, StyleId)],
+    styles: &[ratatui::style::Style],
+) -> ratatui::style::Style {
+    let mut best_fg: Option<(u32, ratatui::style::Color)> = None;
+    let mut best_bg: Option<(u32, ratatui::style::Color)> = None;
+
+    for &(priority, _, style_id) in active {
+        let style = styles.get(style_id as usize).copied().unwrap_or_default();
+        if let Some(fg) = style.fg
+            && best_fg.is_none_or(|(p, _)| priority > p)
+        {
+            best_fg = Some((priority, fg));
+        }
+        if let Some(bg) = style.bg
+            && best_bg.is_none_or(|(p, _)| priority > p)
+        {
+            best_bg = Some((priority, bg));
+        }
+    }
+
+    let mut composed = ratatui::style::Style::default();
+    if let Some((_, fg)) = best_fg {
+        composed = composed.fg(fg);
+    }
+    if let Some((_, bg)) = best_bg {
+        composed = composed.bg(bg);
+    }
+    composed
 }
 
 #[derive(Debug, Clone)]
@@ -360,6 +395,27 @@ impl FilterManager {
             filters: Vec::new(),
             has_include_filters: false,
         }
+    }
+
+    /// Returns true if any enabled Include filter exists.
+    pub fn has_include(&self) -> bool {
+        self.has_include_filters
+    }
+
+    /// Evaluate text filters and return the first-match decision.
+    ///
+    /// Returns `Include` or `Exclude` on the first match; `Neutral` if no filter matched.
+    /// This is the same as `is_visible` but returns the decision rather than a bool,
+    /// allowing callers to combine it with field and date filter results.
+    pub fn evaluate_text(&self, line: &[u8]) -> FilterDecision {
+        let mut dummy = MatchCollector::new(line);
+        for filter in &self.filters {
+            match filter.evaluate(line, &mut dummy) {
+                d @ (FilterDecision::Include | FilterDecision::Exclude) => return d,
+                FilterDecision::Neutral => {}
+            }
+        }
+        FilterDecision::Neutral
     }
 
     /// Returns true if `line` should be visible under the current filter set.
@@ -652,5 +708,77 @@ mod tests {
             .collect();
         assert_eq!(styled.len(), 1);
         assert_eq!(styled[0].content.as_ref(), "abcdef");
+    }
+
+    #[test]
+    fn test_render_line_composes_fg_and_bg_from_different_spans() {
+        // One span sets fg, another sets bg on the same segment — both must apply.
+        let line = b"hello world";
+        let style_fg = ratatui::style::Style::default().fg(ratatui::style::Color::Yellow);
+        let style_bg = ratatui::style::Style::default().bg(ratatui::style::Color::DarkGray);
+        let styles = vec![style_fg, style_bg];
+
+        let mut col = MatchCollector::new(line);
+        col.with_priority(0);
+        col.push(0, 5, 0); // "hello" — fg=Yellow
+        col.with_priority(0);
+        col.push(0, 5, 1); // "hello" — bg=DarkGray
+
+        let rendered = render_line(&col, &styles);
+        let hello_span = rendered
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "hello");
+        assert!(hello_span.is_some());
+        let span = hello_span.unwrap();
+        assert_eq!(span.style.fg, Some(ratatui::style::Color::Yellow));
+        assert_eq!(span.style.bg, Some(ratatui::style::Color::DarkGray));
+    }
+
+    #[test]
+    fn test_render_line_higher_priority_fg_wins_over_lower() {
+        // Two spans both set fg; the higher-priority one must win for fg.
+        let line = b"hello";
+        let style_lo = ratatui::style::Style::default().fg(ratatui::style::Color::Blue);
+        let style_hi = ratatui::style::Style::default().fg(ratatui::style::Color::Red);
+        let styles = vec![style_lo, style_hi];
+
+        let mut col = MatchCollector::new(line);
+        col.with_priority(0);
+        col.push(0, 5, 0); // low priority, fg=Blue
+        col.with_priority(10);
+        col.push(0, 5, 1); // high priority, fg=Red
+
+        let rendered = render_line(&col, &styles);
+        let span = rendered
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "hello");
+        assert!(span.is_some());
+        assert_eq!(span.unwrap().style.fg, Some(ratatui::style::Color::Red));
+    }
+
+    #[test]
+    fn test_render_line_higher_priority_bg_wins_independent_of_fg() {
+        // High-priority span sets bg; low-priority span sets fg — both apply independently.
+        let line = b"hello";
+        let style_lo = ratatui::style::Style::default().fg(ratatui::style::Color::Cyan);
+        let style_hi = ratatui::style::Style::default().bg(ratatui::style::Color::Red);
+        let styles = vec![style_lo, style_hi];
+
+        let mut col = MatchCollector::new(line);
+        col.with_priority(0);
+        col.push(0, 5, 0); // low priority, fg=Cyan
+        col.with_priority(10);
+        col.push(0, 5, 1); // high priority, bg=Red
+
+        let rendered = render_line(&col, &styles);
+        let span = rendered
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "hello");
+        assert!(span.is_some());
+        assert_eq!(span.unwrap().style.fg, Some(ratatui::style::Color::Cyan));
+        assert_eq!(span.unwrap().style.bg, Some(ratatui::style::Color::Red));
     }
 }

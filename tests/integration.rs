@@ -84,7 +84,7 @@ async fn test_filter_include_reduces_visible() {
     let reader = FileReader::new(path).unwrap();
 
     // No filters → all lines visible
-    let (fm, _, _) = manager.build_filter_manager();
+    let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
     assert_eq!(visible.len(), 7);
 
@@ -92,7 +92,7 @@ async fn test_filter_include_reduces_visible() {
     manager
         .add_filter_with_color("Connection".into(), FilterType::Include, None, None, true)
         .await;
-    let (fm, _, _) = manager.build_filter_manager();
+    let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
     assert_eq!(visible.len(), 2);
     // Lines 1 and 4 contain "Connection"
@@ -111,7 +111,7 @@ async fn test_filter_exclude_removes_lines() {
     manager
         .add_filter_with_color("INFO".into(), FilterType::Exclude, None, None, true)
         .await;
-    let (fm, _, _) = manager.build_filter_manager();
+    let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
 
     // Lines 0 and 4 contain "INFO"; 7 total - 2 = 5
@@ -136,7 +136,7 @@ async fn test_filter_include_and_exclude() {
     manager
         .add_filter_with_color("failed".into(), FilterType::Exclude, None, None, true)
         .await;
-    let (fm, _, _) = manager.build_filter_manager();
+    let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
 
     // Line 1: "Connection failed" — "Connection" Include matches first → visible
@@ -160,7 +160,7 @@ async fn test_disabled_filter_is_ignored() {
     manager.toggle_filter(id).await; // disable it
 
     // Disabled → no active include filters → all lines visible
-    let (fm, _, _) = manager.build_filter_manager();
+    let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
     assert_eq!(visible.len(), 7);
 }
@@ -269,7 +269,7 @@ async fn test_filter_regex_pattern() {
     manager
         .add_filter_with_color("INFO|ERROR".into(), FilterType::Include, None, None, true)
         .await;
-    let (fm, _, _) = manager.build_filter_manager();
+    let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
 
     // Lines 0 (INFO), 1 (ERROR), 4 (INFO) → 3 lines
@@ -316,7 +316,7 @@ async fn test_single_pass_predicate_matches_compute_visible() {
     manager
         .add_filter_with_color("INFO".into(), FilterType::Include, None, None, true)
         .await;
-    let (fm, _, _) = manager.build_filter_manager();
+    let (fm, _, _, _) = manager.build_filter_manager();
 
     // Post-load path: compute_visible on the already-indexed reader.
     let reader = FileReader::new(&path).unwrap();
@@ -352,7 +352,7 @@ async fn test_search_on_visible_lines() {
     manager
         .add_filter_with_color("INFO".into(), FilterType::Include, None, None, true)
         .await;
-    let (fm, _, _) = manager.build_filter_manager();
+    let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
     assert_eq!(visible.len(), 2);
 
@@ -366,4 +366,136 @@ async fn test_search_on_visible_lines() {
     let results = search.get_results();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].line_idx, 0);
+}
+
+#[tokio::test]
+async fn test_field_filter_level_include() {
+    use logana::field_filter::{
+        FieldVote, any_field_exclude_matches, extract_field_filters, field_include_vote,
+    };
+    use logana::filters::FilterDecision;
+    use logana::parser::detect_format;
+
+    let (_db, mut manager) = setup().await;
+
+    // Create a JSON log file with three different log levels.
+    let mut file = NamedTempFile::new().unwrap();
+    writeln!(file, r#"{{"level":"info","msg":"starting up"}}"#).unwrap();
+    writeln!(file, r#"{{"level":"error","msg":"something failed"}}"#).unwrap();
+    writeln!(file, r#"{{"level":"debug","msg":"verbose output"}}"#).unwrap();
+    let path = file.path().to_str().unwrap();
+    let reader = FileReader::new(path).unwrap();
+
+    // Add a field filter: include only level=error.
+    manager
+        .add_filter_with_color(
+            "@field:level:error".into(),
+            FilterType::Include,
+            None,
+            None,
+            true,
+        )
+        .await;
+
+    // Detect format.
+    let lines: Vec<&[u8]> = (0..reader.line_count())
+        .map(|i| reader.get_line(i))
+        .collect();
+    let parser = detect_format(&lines).expect("should detect json format");
+
+    let (fm, _, _, _) = manager.build_filter_manager();
+    let (inc_ff, exc_ff) = extract_field_filters(manager.get_filters());
+
+    // Use the unified visibility logic: text OR field include.
+    let visible: Vec<usize> = (0..reader.line_count())
+        .filter(|&idx| {
+            let line = reader.get_line(idx);
+            let text_dec = fm.evaluate_text(line);
+            if text_dec == FilterDecision::Exclude {
+                return false;
+            }
+            let parts = parser.parse_line(line);
+            if any_field_exclude_matches(&exc_ff, parts.as_ref()) {
+                return false;
+            }
+            if text_dec == FilterDecision::Include {
+                return true;
+            }
+            match field_include_vote(&inc_ff, parts.as_ref()) {
+                FieldVote::Match => true,
+                FieldVote::Miss => false,
+                FieldVote::PassThrough => !fm.has_include(),
+            }
+        })
+        .collect();
+
+    assert_eq!(visible.len(), 1, "only the error line should be visible");
+    assert!(
+        visible.contains(&1),
+        "line index 1 (error) should be visible"
+    );
+}
+
+#[tokio::test]
+async fn test_field_filter_level_exclude() {
+    use logana::field_filter::{
+        FieldVote, any_field_exclude_matches, extract_field_filters, field_include_vote,
+    };
+    use logana::filters::FilterDecision;
+    use logana::parser::detect_format;
+
+    let (_db, mut manager) = setup().await;
+
+    let mut file = NamedTempFile::new().unwrap();
+    writeln!(file, r#"{{"level":"info","msg":"starting up"}}"#).unwrap();
+    writeln!(file, r#"{{"level":"error","msg":"something failed"}}"#).unwrap();
+    writeln!(file, r#"{{"level":"debug","msg":"verbose output"}}"#).unwrap();
+    let path = file.path().to_str().unwrap();
+    let reader = FileReader::new(path).unwrap();
+
+    // Add a field filter: exclude level=debug.
+    manager
+        .add_filter_with_color(
+            "@field:level:debug".into(),
+            FilterType::Exclude,
+            None,
+            None,
+            true,
+        )
+        .await;
+
+    let lines: Vec<&[u8]> = (0..reader.line_count())
+        .map(|i| reader.get_line(i))
+        .collect();
+    let parser = detect_format(&lines).expect("should detect json format");
+
+    let (fm, _, _, _) = manager.build_filter_manager();
+    let (inc_ff, exc_ff) = extract_field_filters(manager.get_filters());
+
+    let visible: Vec<usize> = (0..reader.line_count())
+        .filter(|&idx| {
+            let line = reader.get_line(idx);
+            let text_dec = fm.evaluate_text(line);
+            if text_dec == FilterDecision::Exclude {
+                return false;
+            }
+            let parts = parser.parse_line(line);
+            if any_field_exclude_matches(&exc_ff, parts.as_ref()) {
+                return false;
+            }
+            if text_dec == FilterDecision::Include {
+                return true;
+            }
+            match field_include_vote(&inc_ff, parts.as_ref()) {
+                FieldVote::Match => true,
+                FieldVote::Miss => false,
+                FieldVote::PassThrough => !fm.has_include(),
+            }
+        })
+        .collect();
+
+    assert_eq!(visible.len(), 2, "debug line should be excluded");
+    assert!(visible.contains(&0), "info line should still be visible");
+    assert!(visible.contains(&1), "error line should still be visible");
+    assert!(!visible.contains(&2), "debug line should be hidden");
 }

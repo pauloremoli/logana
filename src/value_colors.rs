@@ -1,9 +1,10 @@
 //! Per-token color coding for well-known values in log lines.
 //!
 //! [`colorize_known_values`] post-processes a rendered ratatui [`Line`],
-//! scanning unstyled spans (no `fg` set) for HTTP methods, HTTP status codes,
-//! IPv4/IPv6 addresses, and UUIDs. Spans already colored by filters or search
-//! are left untouched. Regex patterns are compiled once via [`std::sync::LazyLock`].
+//! scanning unstyled spans (no `fg` **or** `bg` set) for HTTP methods, HTTP status codes,
+//! IPv4/IPv6 addresses, and UUIDs. Spans already colored by filters (fg or bg) or search
+//! are left untouched so filter highlights always win. Regex patterns are compiled once
+//! via [`std::sync::LazyLock`].
 //!
 //! ## Priority layering (highest wins)
 //!
@@ -220,16 +221,17 @@ fn colorize_span(span: Span<'static>, colors: &ValueColors) -> Vec<Span<'static>
     result
 }
 
-/// Post-processes a rendered `Line`, applying value-based colors to spans that have no
-/// foreground color set. Spans already colored by filters or search are left untouched.
+/// Post-processes a rendered `Line`, applying value-based colors to spans that carry no
+/// explicit styling. Spans already colored by filters (fg **or** bg) or search are left
+/// untouched so that filter highlighting always takes precedence.
 pub fn colorize_known_values(line: Line<'static>, colors: &ValueColors) -> Line<'static> {
     let alignment = line.alignment;
     let style = line.style;
     let mut new_spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
 
     for span in line.spans {
-        if span.style.fg.is_some() {
-            // Already colored by filter or search — keep as-is.
+        if span.style.fg.is_some() || span.style.bg.is_some() {
+            // Already styled by a filter, date filter, process color, or search — keep as-is.
             new_spans.push(span);
         } else {
             new_spans.extend(colorize_span(span, colors));
@@ -369,15 +371,32 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_colored_spans_untouched() {
+    fn test_filter_colored_spans_untouched_fg() {
         let colors = default_colors();
         let styled = Span::styled("GET /api", Style::default().fg(Color::Yellow));
         let line = Line::from(vec![styled]);
         let result = colorize_known_values(line, &colors);
 
-        // Should remain exactly as-is because fg was already set
+        // Should remain exactly as-is because fg was already set.
         assert_eq!(result.spans.len(), 1);
         assert_eq!(result.spans[0].style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn test_filter_bg_only_spans_untouched() {
+        // A filter that sets only a background color (no fg) should still
+        // prevent value colors from overriding the span.
+        let colors = default_colors();
+        let bg_color = Color::DarkGray;
+        let styled = Span::styled("GET /api 200 OK", Style::default().bg(bg_color));
+        let line = Line::from(vec![styled]);
+        let result = colorize_known_values(line, &colors);
+
+        // Even though fg is None, the bg means a filter colored this span —
+        // value colors must not be applied.
+        assert_eq!(result.spans.len(), 1);
+        assert_eq!(result.spans[0].style.bg, Some(bg_color));
+        assert_eq!(result.spans[0].style.fg, None);
     }
 
     #[test]

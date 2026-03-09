@@ -9,6 +9,7 @@ pub mod config;
 pub mod date_filter;
 pub mod db;
 pub mod export;
+pub mod field_filter;
 pub mod file_reader;
 pub mod filters;
 pub mod log_manager;

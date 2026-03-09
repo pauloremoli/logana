@@ -17,6 +17,7 @@
 - [Filtering](filtering/index.md)
   - [Text Filters](filtering/text-filters.md)
   - [Date & Time Filters](filtering/date-filters.md)
+  - [Field Filters](filtering/field-filters.md)
 - [Search](search.md)
 - [Structured Fields](structured-fields.md)
 - [Annotations & Export](annotations.md)

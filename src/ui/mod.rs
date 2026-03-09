@@ -67,8 +67,9 @@ use tokio::sync::{oneshot, watch};
 use crate::config::Keybindings;
 use crate::date_filter::DateFilterStyle;
 use crate::db::FileContext;
+use crate::field_filter::{FieldVote, any_field_exclude_matches, field_include_vote};
 use crate::file_reader::FileReader;
-use crate::filters::FilterManager;
+use crate::filters::{FilterDecision, FilterManager};
 use crate::log_manager::LogManager;
 use crate::mode::app_mode::Mode;
 use crate::mode::normal_mode::NormalMode;
@@ -161,6 +162,67 @@ pub fn list_dir_files(path: &str) -> Vec<String> {
     files
 }
 
+/// Decide whether a single log line should be visible given the full set of active filters.
+///
+/// Text filters (compiled into `fm`) and field filters are combined with **OR** semantics
+/// for includes: a line is visible if any include filter — text or field — matches it.
+/// Exclude filters from either source hide the line unconditionally.
+/// Date filters act as strict AND constraints on the timestamp field.
+///
+/// Pass-through rules (field filters only):
+/// - If the line cannot be parsed (e.g. a stack-trace continuation) → field filters do not apply.
+/// - If the line was parsed but the named field is absent → treated as Miss (hidden).
+fn line_is_visible(
+    fm: &FilterManager,
+    line: &[u8],
+    date_filters: &[crate::date_filter::DateFilter],
+    inc_ff: &[crate::field_filter::FieldFilter],
+    exc_ff: &[crate::field_filter::FieldFilter],
+    parser: Option<&dyn LogFormatParser>,
+) -> bool {
+    // Step 1: text filter — fast path, no parsing needed.
+    let text_dec = fm.evaluate_text(line);
+    if text_dec == FilterDecision::Exclude {
+        return false;
+    }
+
+    // Step 2: parse the line once for date/field evaluation.
+    let parts = parser.and_then(|p| p.parse_line(line));
+
+    // Step 3: date filter — AND constraint (timestamp must fall in range).
+    if !date_filters.is_empty()
+        && let Some(ref p) = parts
+        && let Some(ts) = p.timestamp
+        && !crate::date_filter::matches_any(date_filters, ts)
+    {
+        return false;
+    }
+
+    // Step 4: field exclude — hides the line if any matching exclude is found.
+    if any_field_exclude_matches(exc_ff, parts.as_ref()) {
+        return false;
+    }
+
+    // Step 5: include resolution — text include OR field include.
+    if text_dec == FilterDecision::Include {
+        return true;
+    }
+
+    // text_dec is Neutral; check field includes.
+    if !inc_ff.is_empty() {
+        return match field_include_vote(inc_ff, parts.as_ref()) {
+            FieldVote::Match => true,
+            FieldVote::Miss => false,
+            // Pass-through: field filters don't apply to this line; fall back to
+            // text-filter-only logic (visible iff there are no text include filters).
+            FieldVote::PassThrough => !fm.has_include(),
+        };
+    }
+
+    // No field includes; visible iff no text include filters exist.
+    !fm.has_include()
+}
+
 /// Snapshot of the filter-driven view: visible indices + filter manager + styles.
 /// Saved on marks-only entry and restored on exit to avoid re-running compute_visible.
 type FilterViewSnapshot = (
@@ -168,6 +230,7 @@ type FilterViewSnapshot = (
     Arc<FilterManager>,
     Vec<Style>,
     Vec<DateFilterStyle>,
+    Vec<crate::field_filter::FieldFilterStyle>,
 );
 
 // ---------------------------------------------------------------------------
@@ -370,6 +433,8 @@ pub struct TabState {
     pub filter_styles: Vec<Style>,
     /// Date-filter highlight styles parallel to `filter_manager_arc`.
     pub filter_date_styles: Vec<DateFilterStyle>,
+    /// Field-filter highlight styles parallel to `filter_manager_arc`.
+    pub filter_field_styles: Vec<crate::field_filter::FieldFilterStyle>,
     /// Filter view saved when entering marks-only mode. Restored on exit so
     /// the O(file_size) `compute_visible` scan is not repeated.
     saved_filter_view: Option<FilterViewSnapshot>,
@@ -444,6 +509,7 @@ impl TabState {
             filter_manager_arc: Arc::new(FilterManager::empty()),
             filter_styles: Vec::new(),
             filter_date_styles: Vec::new(),
+            filter_field_styles: Vec::new(),
             saved_filter_view: None,
             parse_cache_gen: 0,
             parse_cache: HashMap::new(),
@@ -471,6 +537,7 @@ impl TabState {
             self.filter_manager_arc = Arc::new(FilterManager::empty());
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
+            self.filter_field_styles = Vec::new();
             // Still clamp scroll so it stays valid if the file shrank.
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
@@ -497,6 +564,7 @@ impl TabState {
                     self.filter_manager_arc.clone(),
                     self.filter_styles.clone(),
                     self.filter_date_styles.clone(),
+                    self.filter_field_styles.clone(),
                 ));
             } else {
                 self.saved_filter_view = None;
@@ -505,18 +573,26 @@ impl TabState {
             indices.retain(|&i| i < self.file_reader.line_count());
             self.visible_indices = VisibleLines::Filtered(indices);
             // Rebuild filter cache so the render path always has a valid manager.
-            let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+            let (fm, styles, date_filter_styles, field_filter_styles) =
+                self.log_manager.build_filter_manager();
             self.filter_manager_arc = Arc::new(fm);
             self.filter_styles = styles;
             self.filter_date_styles = date_filter_styles;
-        } else if let Some((saved_visible, saved_fm, saved_styles, saved_date_styles)) =
-            self.saved_filter_view.take()
+            self.filter_field_styles = field_filter_styles;
+        } else if let Some((
+            saved_visible,
+            saved_fm,
+            saved_styles,
+            saved_date_styles,
+            saved_field_styles,
+        )) = self.saved_filter_view.take()
         {
             // Leaving marks-only: restore the saved filter view — O(1), no file scan.
             self.visible_indices = saved_visible;
             self.filter_manager_arc = saved_fm;
             self.filter_styles = saved_styles;
             self.filter_date_styles = saved_date_styles;
+            self.filter_field_styles = saved_field_styles;
         } else if !self.filtering_enabled {
             // No allocation: All(n) represents identity mapping i→i.
             self.visible_indices = VisibleLines::All(self.file_reader.line_count());
@@ -524,56 +600,37 @@ impl TabState {
             self.filter_manager_arc = Arc::new(FilterManager::empty());
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
+            self.filter_field_styles = Vec::new();
         } else {
-            // Build once: compute_visible uses the same manager the render path will clone.
-            let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
-            let visible = fm.compute_visible(&self.file_reader);
+            // Unified single-pass: text + date + field filters evaluated together
+            // so that include filters (text and field) combine with OR semantics.
+            let (fm, styles, date_filter_styles, field_filter_styles) =
+                self.log_manager.build_filter_manager();
+            let date_filters =
+                crate::date_filter::extract_date_filters(self.log_manager.get_filters());
+            let (inc_ff, exc_ff) =
+                crate::field_filter::extract_field_filters(self.log_manager.get_filters());
+            let parser = self.detected_format.as_deref();
+            use rayon::prelude::*;
+            let file_reader = &self.file_reader;
+            let visible: Vec<usize> = (0..self.file_reader.line_count())
+                .into_par_iter()
+                .filter(|&idx| {
+                    line_is_visible(
+                        &fm,
+                        file_reader.get_line(idx),
+                        &date_filters,
+                        &inc_ff,
+                        &exc_ff,
+                        parser,
+                    )
+                })
+                .collect();
             self.filter_manager_arc = Arc::new(fm);
             self.filter_styles = styles;
             self.filter_date_styles = date_filter_styles;
+            self.filter_field_styles = field_filter_styles;
             self.visible_indices = VisibleLines::Filtered(visible);
-        }
-
-        // Apply date filters as a post-processing step in parallel.
-        let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
-        if self.filtering_enabled
-            && !self.show_marks_only
-            && !date_filters.is_empty()
-            && let Some(parser) = &self.detected_format
-        {
-            use rayon::prelude::*;
-            let file_reader = &self.file_reader;
-            let parser: &dyn LogFormatParser = parser.as_ref();
-            let indices: Vec<usize> = match &self.visible_indices {
-                VisibleLines::All(n) => (0..*n)
-                    .into_par_iter()
-                    .filter(|&idx| {
-                        let line = file_reader.get_line(idx);
-                        match parser.parse_line(line) {
-                            Some(parts) => match parts.timestamp {
-                                Some(ts) => crate::date_filter::matches_any(&date_filters, ts),
-                                None => true,
-                            },
-                            None => true,
-                        }
-                    })
-                    .collect(),
-                VisibleLines::Filtered(v) => v
-                    .par_iter()
-                    .copied()
-                    .filter(|&idx| {
-                        let line = file_reader.get_line(idx);
-                        match parser.parse_line(line) {
-                            Some(parts) => match parts.timestamp {
-                                Some(ts) => crate::date_filter::matches_any(&date_filters, ts),
-                                None => true,
-                            },
-                            None => true,
-                        }
-                    })
-                    .collect(),
-            };
-            self.visible_indices = VisibleLines::Filtered(indices);
         }
 
         // Clamp scroll_offset so it never points past the end of the new visible set.
@@ -770,6 +827,7 @@ impl TabState {
             self.filter_manager_arc = Arc::new(FilterManager::empty());
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
+            self.filter_field_styles = Vec::new();
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -786,6 +844,7 @@ impl TabState {
                     self.filter_manager_arc.clone(),
                     self.filter_styles.clone(),
                     self.filter_date_styles.clone(),
+                    self.filter_field_styles.clone(),
                 ));
             } else {
                 self.saved_filter_view = None;
@@ -793,10 +852,12 @@ impl TabState {
             let mut indices = self.log_manager.get_marked_indices();
             indices.retain(|&i| i < self.file_reader.line_count());
             self.visible_indices = VisibleLines::Filtered(indices);
-            let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+            let (fm, styles, date_filter_styles, field_filter_styles) =
+                self.log_manager.build_filter_manager();
             self.filter_manager_arc = Arc::new(fm);
             self.filter_styles = styles;
             self.filter_date_styles = date_filter_styles;
+            self.filter_field_styles = field_filter_styles;
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -805,14 +866,20 @@ impl TabState {
             return;
         }
 
-        if let Some((saved_visible, saved_fm, saved_styles, saved_date_styles)) =
-            self.saved_filter_view.take()
+        if let Some((
+            saved_visible,
+            saved_fm,
+            saved_styles,
+            saved_date_styles,
+            saved_field_styles,
+        )) = self.saved_filter_view.take()
         {
             // Leaving marks-only: restore saved filter view — O(1).
             self.visible_indices = saved_visible;
             self.filter_manager_arc = saved_fm;
             self.filter_styles = saved_styles;
             self.filter_date_styles = saved_date_styles;
+            self.filter_field_styles = saved_field_styles;
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -827,6 +894,7 @@ impl TabState {
             self.filter_manager_arc = Arc::new(FilterManager::empty());
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
+            self.filter_field_styles = Vec::new();
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -836,11 +904,13 @@ impl TabState {
         }
 
         // Slow path: active text/date filters require a full file scan.
-        let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+        let (fm, styles, date_filter_styles, field_filter_styles) =
+            self.log_manager.build_filter_manager();
         // Update immediately so render highlights reflect new filters before results arrive.
         self.filter_manager_arc = Arc::new(fm);
         self.filter_styles = styles;
         self.filter_date_styles = date_filter_styles;
+        self.filter_field_styles = field_filter_styles;
 
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_clone = cancel.clone();
@@ -850,6 +920,8 @@ impl TabState {
         let file_reader = self.file_reader.clone();
         let fm_arc = self.filter_manager_arc.clone();
         let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
+        let (inc_ff, exc_ff) =
+            crate::field_filter::extract_field_filters(self.log_manager.get_filters());
         let parser = self.detected_format.clone();
         let line_count = self.file_reader.line_count();
 
@@ -858,9 +930,10 @@ impl TabState {
             use std::sync::atomic::AtomicUsize;
 
             let counter = AtomicUsize::new(0);
+            let parser_ref: Option<&dyn LogFormatParser> = parser.as_deref();
 
-            // Phase 1: text filters (0 – 50% progress).
-            let text_visible: Vec<usize> = (0..line_count)
+            // Unified single pass: text + date + field filters evaluated together.
+            let visible: Vec<usize> = (0..line_count)
                 .into_par_iter()
                 .filter(|&i| {
                     if cancel_clone.load(Ordering::Relaxed) {
@@ -868,47 +941,18 @@ impl TabState {
                     }
                     let n = counter.fetch_add(1, Ordering::Relaxed);
                     if n.is_multiple_of(10_000) && line_count > 0 {
-                        let _ = progress_tx.send(n as f64 / line_count as f64 * 0.5);
+                        let _ = progress_tx.send(n as f64 / line_count as f64);
                     }
-                    fm_arc.is_visible(file_reader.get_line(i))
+                    line_is_visible(
+                        &fm_arc,
+                        file_reader.get_line(i),
+                        &date_filters,
+                        &inc_ff,
+                        &exc_ff,
+                        parser_ref,
+                    )
                 })
                 .collect();
-
-            if cancel_clone.load(Ordering::Relaxed) {
-                return;
-            }
-
-            // Phase 2: date filters (50 – 100% progress).
-            let visible = if !date_filters.is_empty()
-                && let Some(ref p) = parser
-            {
-                let parser: &dyn LogFormatParser = p.as_ref();
-                counter.store(0, Ordering::Relaxed);
-                let phase2_total = text_visible.len();
-                text_visible
-                    .par_iter()
-                    .copied()
-                    .filter(|&idx| {
-                        if cancel_clone.load(Ordering::Relaxed) {
-                            return false;
-                        }
-                        let n = counter.fetch_add(1, Ordering::Relaxed);
-                        if n.is_multiple_of(10_000) && phase2_total > 0 {
-                            let _ = progress_tx.send(0.5 + n as f64 / phase2_total as f64 * 0.5);
-                        }
-                        let line = file_reader.get_line(idx);
-                        match parser.parse_line(line) {
-                            Some(parts) => match parts.timestamp {
-                                Some(ts) => crate::date_filter::matches_any(&date_filters, ts),
-                                None => true,
-                            },
-                            None => true,
-                        }
-                    })
-                    .collect()
-            } else {
-                text_visible
-            };
 
             if !cancel_clone.load(Ordering::Relaxed) {
                 let _ = result_tx.send(visible);
@@ -990,10 +1034,12 @@ impl TabState {
             self.visible_indices = VisibleLines::Filtered(new_visible);
         }
         // Rebuild filter manager cache so the render path sees the updated filters.
-        let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+        let (fm, styles, date_filter_styles, field_filter_styles) =
+            self.log_manager.build_filter_manager();
         self.filter_manager_arc = Arc::new(fm);
         self.filter_styles = styles;
         self.filter_date_styles = date_filter_styles;
+        self.filter_field_styles = field_filter_styles;
         // Invalidate parse cache (filter change affects highlight output).
         self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
         self.parse_cache.clear();
@@ -1028,10 +1074,12 @@ impl TabState {
             self.visible_indices = VisibleLines::Filtered(new_visible);
         }
         // Rebuild filter manager cache so the render path sees the updated filters.
-        let (fm, styles, date_filter_styles) = self.log_manager.build_filter_manager();
+        let (fm, styles, date_filter_styles, field_filter_styles) =
+            self.log_manager.build_filter_manager();
         self.filter_manager_arc = Arc::new(fm);
         self.filter_styles = styles;
         self.filter_date_styles = date_filter_styles;
+        self.filter_field_styles = field_filter_styles;
         // Invalidate parse cache (filter change affects highlight output).
         self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
         self.parse_cache.clear();
@@ -1132,6 +1180,74 @@ impl TabState {
             .map(|i| self.file_reader.get_line(self.visible_indices.get(i)))
             .collect();
         parser.collect_field_names(&lines)
+    }
+
+    /// Collect unique field names and their observed values from raw file lines for autocomplete.
+    ///
+    /// - Names use canonical dotted notation (`span.method`, `fields.order_id`, …) matching the
+    ///   Select Fields modal, discovered via `collect_field_names`.
+    /// - Values and frequency counts are collected from **all raw file lines** (not the filtered
+    ///   visible set) so that available values are not limited by the current filter state.
+    /// - Names are returned sorted by frequency (fields present in the most lines first), with
+    ///   ties broken alphabetically, so the most universal fields appear first in autocomplete.
+    pub fn build_field_index(&self) -> crate::auto_complete::FieldIndex {
+        use std::collections::HashSet;
+
+        let Some(parser) = &self.detected_format else {
+            return crate::auto_complete::FieldIndex::default();
+        };
+
+        const SAMPLE_LIMIT: usize = 5_000;
+        let total = self.file_reader.line_count();
+        let limit = total.min(SAMPLE_LIMIT);
+
+        // Step 1: Discover canonical names from raw file lines.
+        const NAME_SAMPLE: usize = 200;
+        let name_sample = total.min(NAME_SAMPLE);
+        let name_lines: Vec<&[u8]> = (0..name_sample)
+            .map(|i| self.file_reader.get_line(i))
+            .collect();
+        let names = parser.collect_field_names(&name_lines);
+
+        // Step 2: Scan raw lines to collect values and per-name frequency counts.
+        let mut name_freq: HashMap<String, usize> = HashMap::new();
+        let mut value_map: HashMap<String, HashSet<String>> = HashMap::new();
+
+        for i in 0..limit {
+            let line = self.file_reader.get_line(i);
+            let Some(parts) = parser.parse_line(line) else {
+                continue;
+            };
+            for name in &names {
+                if let Some(v) = crate::field_filter::resolve_field(name, &parts) {
+                    *name_freq.entry(name.clone()).or_insert(0) += 1;
+                    value_map
+                        .entry(name.clone())
+                        .or_default()
+                        .insert(v.to_string());
+                }
+            }
+        }
+
+        // Step 3: Sort names by frequency descending (universal fields first), then alphabetically.
+        let mut sorted_names = names;
+        sorted_names.sort_by(|a, b| {
+            let fa = name_freq.get(a).copied().unwrap_or(0);
+            let fb = name_freq.get(b).copied().unwrap_or(0);
+            fb.cmp(&fa).then(a.cmp(b))
+        });
+
+        let mut values: HashMap<String, Vec<String>> = HashMap::new();
+        for (k, set) in value_map {
+            let mut v: Vec<String> = set.into_iter().collect();
+            v.sort();
+            values.insert(k, v);
+        }
+
+        crate::auto_complete::FieldIndex {
+            names: sorted_names,
+            values,
+        }
     }
 }
 
@@ -1956,6 +2072,69 @@ mod tests {
         tab.refresh_visible();
         // Both marked lines must remain visible regardless of the date filter.
         assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 1]));
+    }
+
+    // ── field filter OR semantics with text filters ───────────────────────────
+
+    #[tokio::test]
+    async fn test_field_include_or_with_text_include() {
+        // Field include and text include should be OR: a line visible if EITHER matches.
+        let lines = [
+            r#"{"level":"info","msg":"regular info"}"#, // no match
+            r#"{"level":"error","msg":"structured error"}"#, // field include matches
+            r#"{"level":"info","msg":"contains ERROR text"}"#, // text include matches
+        ];
+        let mut tab = make_tab(&lines).await;
+
+        // Add text include for "ERROR" and field include for level=error.
+        tab.log_manager
+            .add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.log_manager
+            .add_filter_with_color(
+                "@field:level:error".to_string(),
+                FilterType::Include,
+                None,
+                None,
+                true,
+            )
+            .await;
+        tab.filtering_enabled = true;
+        tab.refresh_visible();
+
+        // Line 0: text Neutral + field Miss → hidden.
+        // Line 1: text Neutral + field Match → visible.
+        // Line 2: text Include + no excludes → visible.
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![1, 2]));
+    }
+
+    #[tokio::test]
+    async fn test_field_exclude_hides_despite_text_include() {
+        // A field exclude should hide a line even if a text include matches it.
+        let lines = [
+            r#"{"level":"debug","msg":"ERROR in debug path"}"#, // text include + field exclude
+            r#"{"level":"info","msg":"ERROR in info path"}"#,   // text include only → visible
+        ];
+        let mut tab = make_tab(&lines).await;
+
+        tab.log_manager
+            .add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.log_manager
+            .add_filter_with_color(
+                "@field:level:debug".to_string(),
+                FilterType::Exclude,
+                None,
+                None,
+                true,
+            )
+            .await;
+        tab.filtering_enabled = true;
+        tab.refresh_visible();
+
+        // Line 0: text Include but field exclude → hidden.
+        // Line 1: text Include, no field exclude match → visible.
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![1]));
     }
 
     // ── begin_filter_refresh ─────────────────────────────────────────────────

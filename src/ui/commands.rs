@@ -15,6 +15,23 @@ use crate::types::FilterType;
 
 use super::App;
 
+/// Parse a `key=value` pattern for `--field` filters.
+/// Returns `Err` if `=` is absent or if key/value are empty.
+fn parse_key_value(pattern: &str) -> Result<(&str, &str), String> {
+    let eq = pattern
+        .find('=')
+        .ok_or_else(|| format!("--field pattern must be 'key=value', got: {pattern}"))?;
+    let key = &pattern[..eq];
+    let value = &pattern[eq + 1..];
+    if key.is_empty() {
+        return Err("field name must not be empty".to_string());
+    }
+    if value.is_empty() {
+        return Err("field value must not be empty".to_string());
+    }
+    Ok((key, value))
+}
+
 impl App {
     /// Returns `Ok(true)` when the command sets the mode itself (e.g. select-fields
     /// opens a popup), so `execute_command_str` should not override it.
@@ -35,63 +52,80 @@ impl App {
                 fg,
                 bg,
                 line_mode,
+                field,
             }) => {
+                // When --field is set, rewrite the pattern as the internal @field: form.
+                let stored_pattern = if field {
+                    let (key, value) = parse_key_value(&pattern)?;
+                    format!("{}{}:{}", crate::field_filter::FIELD_PREFIX, key, value)
+                } else {
+                    pattern.clone()
+                };
+
                 // Check eligibility for incremental include BEFORE mutating state.
                 // Safe when: not editing, filtering enabled, not marks-only, and no
                 // pre-existing enabled include filters (current visible == all minus excludes).
-                let can_incremental = self.tabs[self.active_tab].editing_filter_id.is_none() && {
-                    let tab = &self.tabs[self.active_tab];
-                    tab.filtering_enabled
-                        && !tab.show_marks_only
-                        && !tab.log_manager.get_filters().iter().any(|f| {
-                            f.enabled
-                                && f.filter_type == FilterType::Include
-                                && !f.pattern.starts_with(crate::date_filter::DATE_PREFIX)
-                        })
-                };
+                // Field filters always require a full refresh.
+                let can_incremental =
+                    !field && self.tabs[self.active_tab].editing_filter_id.is_none() && {
+                        let tab = &self.tabs[self.active_tab];
+                        tab.filtering_enabled
+                            && !tab.show_marks_only
+                            && !tab.log_manager.get_filters().iter().any(|f| {
+                                f.enabled
+                                    && f.filter_type == FilterType::Include
+                                    && !f.pattern.starts_with(crate::date_filter::DATE_PREFIX)
+                                    && !f.pattern.starts_with(crate::field_filter::FIELD_PREFIX)
+                            })
+                    };
                 if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
                     self.tabs[self.active_tab]
                         .log_manager
-                        .remove_filter(old_id)
+                        .update_filter(
+                            old_id,
+                            stored_pattern.clone(),
+                            FilterType::Include,
+                            fg.as_deref(),
+                            bg.as_deref(),
+                            !line_mode,
+                        )
                         .await;
-                }
-                self.tabs[self.active_tab]
-                    .log_manager
-                    .add_filter_with_color(
-                        pattern.clone(),
-                        FilterType::Include,
-                        fg.as_deref(),
-                        bg.as_deref(),
-                        !line_mode,
-                    )
-                    .await;
-                self.tabs[self.active_tab].scroll_offset = 0;
-                // Incremental include — only re-check visible lines instead of
-                // scanning the entire file again via refresh_visible/compute_visible.
-                if can_incremental {
-                    self.tabs[self.active_tab].apply_incremental_include(&pattern);
-                } else {
-                    self.tabs[self.active_tab].begin_filter_refresh();
-                }
-            }
-            Some(Commands::Exclude { pattern }) => {
-                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
-                    self.tabs[self.active_tab]
-                        .log_manager
-                        .remove_filter(old_id)
-                        .await;
-                    // Editing a filter means removing then re-adding; do a full refresh.
-                    self.tabs[self.active_tab]
-                        .log_manager
-                        .add_filter_with_color(pattern, FilterType::Exclude, None, None, true)
-                        .await;
-                    self.tabs[self.active_tab].scroll_offset = 0;
-                    self.tabs[self.active_tab].begin_filter_refresh();
                 } else {
                     self.tabs[self.active_tab]
                         .log_manager
                         .add_filter_with_color(
-                            pattern.clone(),
+                            stored_pattern.clone(),
+                            FilterType::Include,
+                            fg.as_deref(),
+                            bg.as_deref(),
+                            !line_mode,
+                        )
+                        .await;
+                }
+                self.tabs[self.active_tab].scroll_offset = 0;
+                // Incremental include — only re-check visible lines instead of
+                // scanning the entire file again via refresh_visible/compute_visible.
+                if can_incremental {
+                    self.tabs[self.active_tab].apply_incremental_include(&stored_pattern);
+                } else {
+                    self.tabs[self.active_tab].begin_filter_refresh();
+                }
+            }
+            Some(Commands::Exclude { pattern, field }) => {
+                // When --field is set, rewrite the pattern as the internal @field: form.
+                let stored_pattern = if field {
+                    let (key, value) = parse_key_value(&pattern)?;
+                    format!("{}{}:{}", crate::field_filter::FIELD_PREFIX, key, value)
+                } else {
+                    pattern.clone()
+                };
+
+                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .update_filter(
+                            old_id,
+                            stored_pattern,
                             FilterType::Exclude,
                             None,
                             None,
@@ -99,9 +133,27 @@ impl App {
                         )
                         .await;
                     self.tabs[self.active_tab].scroll_offset = 0;
-                    // Incremental exclude — only re-check visible lines instead of
-                    // scanning the entire file again via refresh_visible/compute_visible.
-                    self.tabs[self.active_tab].apply_incremental_exclude(&pattern);
+                    self.tabs[self.active_tab].begin_filter_refresh();
+                } else {
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .add_filter_with_color(
+                            stored_pattern.clone(),
+                            FilterType::Exclude,
+                            None,
+                            None,
+                            true,
+                        )
+                        .await;
+                    self.tabs[self.active_tab].scroll_offset = 0;
+                    if field {
+                        // Field filters require a full refresh.
+                        self.tabs[self.active_tab].begin_filter_refresh();
+                    } else {
+                        // Incremental exclude — only re-check visible lines instead of
+                        // scanning the entire file again via refresh_visible/compute_visible.
+                        self.tabs[self.active_tab].apply_incremental_exclude(&stored_pattern);
+                    }
                 }
             }
             Some(Commands::SetColor { fg, bg, line_mode }) => {
@@ -441,19 +493,27 @@ impl App {
                 if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
                     self.tabs[self.active_tab]
                         .log_manager
-                        .remove_filter(old_id)
+                        .update_filter(
+                            old_id,
+                            pattern,
+                            FilterType::Include,
+                            fg.as_deref(),
+                            bg.as_deref(),
+                            !line_mode,
+                        )
+                        .await;
+                } else {
+                    self.tabs[self.active_tab]
+                        .log_manager
+                        .add_filter_with_color(
+                            pattern,
+                            FilterType::Include,
+                            fg.as_deref(),
+                            bg.as_deref(),
+                            !line_mode,
+                        )
                         .await;
                 }
-                self.tabs[self.active_tab]
-                    .log_manager
-                    .add_filter_with_color(
-                        pattern,
-                        FilterType::Include,
-                        fg.as_deref(),
-                        bg.as_deref(),
-                        !line_mode,
-                    )
-                    .await;
                 self.tabs[self.active_tab].begin_filter_refresh();
             }
             Some(Commands::Tail) => {
@@ -770,7 +830,6 @@ mod tests {
         let old_id = app.tabs[0].log_manager.get_filters()[0].id;
         app.tabs[0].editing_filter_id = Some(old_id);
 
-        // Adding a new filter while editing should remove the old one
         app.run_command("filter WARN").await.unwrap();
         let filters = app.tabs[0].log_manager.get_filters();
         assert_eq!(filters.len(), 1);
@@ -788,6 +847,31 @@ mod tests {
         let filters = app.tabs[0].log_manager.get_filters();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].filter_type, FilterType::Exclude);
+    }
+
+    #[tokio::test]
+    async fn test_edit_filter_preserves_order() {
+        let mut app = make_app(&["INFO a", "WARN b", "ERROR c"]).await;
+        app.execute_command_str("filter INFO".to_string()).await;
+        app.execute_command_str("filter WARN".to_string()).await;
+        app.execute_command_str("filter ERROR".to_string()).await;
+
+        // Edit the middle filter (WARN) — it should stay at index 1.
+        let filters = app.tabs[0].log_manager.get_filters();
+        let middle_id = filters[1].id;
+        assert_eq!(filters[1].pattern, "WARN");
+        app.tabs[0].editing_filter_id = Some(middle_id);
+
+        app.run_command("filter DEBUG").await.unwrap();
+
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 3);
+        assert_eq!(filters[0].pattern, "INFO", "first filter must stay first");
+        assert_eq!(
+            filters[1].pattern, "DEBUG",
+            "edited filter must stay at its original position"
+        );
+        assert_eq!(filters[2].pattern, "ERROR", "last filter must stay last");
     }
 
     #[tokio::test]

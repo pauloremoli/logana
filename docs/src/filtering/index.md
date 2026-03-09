@@ -57,6 +57,14 @@ Color values accept:
 - Named colors: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `darkgray`, `lightred`, `lightgreen`, `lightyellow`, `lightblue`, `lightmagenta`, `lightcyan`
 - Hex: `"#RRGGBB"`
 
+### Style composition
+
+When multiple filters overlap on the same text segment, their `fg` and `bg` attributes are composed independently — the highest-priority filter that has `fg` set contributes the foreground color, and the highest-priority filter that has `bg` set contributes the background color. So a level filter that sets `--fg yellow` and a text filter that sets `--bg darkgray` on the same word will both apply without one canceling the other.
+
+### Color priority
+
+Filter colors take priority over automatic value colors (HTTP methods, status codes, IPs, UUIDs) and log-level colors. Value colors are applied only to spans that are not already covered by a filter — they can still appear alongside filter colors on the same line, just not on the same character span. Log-level colors are the lowest-priority fallback and apply only to text that carries no explicit color from any other source.
+
 ## Save and Load Filters
 
 Export the current filter set to a JSON file, and reload it later:
@@ -90,3 +98,4 @@ logana app.log --filters errors.json --tail
 
 - [Text Filters](text-filters.md) — include/exclude patterns, regex syntax
 - [Date & Time Filters](date-filters.md) — timestamp-based range and comparison filters
+- [Field Filters](field-filters.md) — match against specific parsed fields (level, message, component, …)

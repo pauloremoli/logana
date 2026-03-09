@@ -6,6 +6,7 @@
 //! pipeline, and post-processed by value-based coloring.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use ratatui::{
     Frame,
@@ -17,7 +18,8 @@ use ratatui::{
 };
 
 use crate::auto_complete::{
-    complete_color, complete_file_path, extract_color_partial, find_command_completions,
+    FieldCompletion, complete_color, complete_field_name, complete_field_value, complete_file_path,
+    extract_color_partial, extract_field_partial, find_command_completions,
 };
 use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
 use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
@@ -207,6 +209,7 @@ impl App {
         self.render_tab_bar(
             frame,
             show_tab_bar,
+            show_borders,
             &chunks,
             &mut chunk_idx,
             mode_name_for_title,
@@ -223,7 +226,22 @@ impl App {
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Min(1), Constraint::Length(30)])
                     .split(main_chunk);
-                (horizontal[0], Some(horizontal[1]))
+                let raw_sidebar = horizontal[1];
+                // When the tab bar is visible it forms the top border of the
+                // main panel. Extend the sidebar upward by one row so its own
+                // top border (which carries the "Filters" title) lands on the
+                // same row as the tab bar, overwriting the fill characters
+                // in the sidebar's column range.
+                let sidebar = if show_tab_bar {
+                    Rect {
+                        y: raw_sidebar.y.saturating_sub(1),
+                        height: raw_sidebar.height + 1,
+                        ..raw_sidebar
+                    }
+                } else {
+                    raw_sidebar
+                };
+                (horizontal[0], Some(sidebar))
             } else {
                 // Add a 1-column gap between logs and sidebar when borders are off.
                 let horizontal = Layout::default()
@@ -246,6 +264,7 @@ impl App {
             visual_anchor,
             visual_char_selection,
             mode_name_for_title,
+            show_tab_bar,
         );
 
         self.render_side_bar(frame, selected_filter_idx, sidebar_area);
@@ -323,15 +342,23 @@ impl App {
         visual_anchor: Option<usize>,
         visual_char_selection: Option<(usize, usize)>,
         mode_name: Option<&str>,
+        show_tab_bar: bool,
     ) {
         let num_visible = self.tabs[self.active_tab].visible_indices.len();
         let show_borders = self.tabs[self.active_tab].show_borders;
 
         // When borders are on they consume 1 row/col on each side (2 total).
-        // When borders are off we still reserve 1 col on the left for visual padding.
-        // The block title always occupies 1 row (ratatui Block::inner subtracts 1 for
-        // has_title_at_position(Top) even when Borders::NONE), so vertical cost is 1.
-        let vertical_border = if show_borders { 2 } else { 1 };
+        // When the tab bar is visible the top border is omitted from the block
+        // (the tab bar row serves as the top of the box), so only the bottom
+        // border (1 row) is consumed. When borders are off we still reserve 1
+        // col on the left for visual padding, and the block title occupies 1
+        // row (ratatui Block::inner subtracts 1 for has_title_at_position(Top)
+        // even when Borders::NONE).
+        let vertical_border = if show_borders {
+            if show_tab_bar { 1 } else { 2 }
+        } else {
+            1
+        };
         let horizontal_shrink = if show_borders { 2 } else { 1 };
         let visible_height = (logs_area.height as usize).saturating_sub(vertical_border);
         self.tabs[self.active_tab].visible_height = visible_height;
@@ -546,13 +573,22 @@ impl App {
         // Aho-Corasick every frame. The cache was set in the most recent refresh_visible().
         let filter_manager_arc = self.tabs[self.active_tab].filter_manager_arc.clone();
         let filter_manager = &*filter_manager_arc;
-        let (mut styles, date_filter_styles) = if self.tabs[self.active_tab].filtering_enabled {
-            (
-                self.tabs[self.active_tab].filter_styles.clone(),
-                self.tabs[self.active_tab].filter_date_styles.clone(),
-            )
+        let (mut styles, date_filter_styles, field_filter_styles) =
+            if self.tabs[self.active_tab].filtering_enabled {
+                (
+                    self.tabs[self.active_tab].filter_styles.clone(),
+                    self.tabs[self.active_tab].filter_date_styles.clone(),
+                    self.tabs[self.active_tab].filter_field_styles.clone(),
+                )
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
+        // Clone the detected format Arc so it's available in the render closure without
+        // re-borrowing self.tabs inside the loop (which conflicts with parse_cache borrows).
+        let detected_format_arc: Option<Arc<dyn crate::parser::LogFormatParser>> = if raw_mode {
+            None
         } else {
-            (Vec::new(), Vec::new())
+            self.tabs[self.active_tab].detected_format.clone()
         };
         let search_style = Style::default()
             .fg(self.theme.search_fg)
@@ -927,6 +963,36 @@ impl App {
                                     }
                                 }
                             }
+                            // Apply field filter styles: matched-value-only or full line.
+                            if !field_filter_styles.is_empty()
+                                && let Some(ref parser_arc) = detected_format_arc
+                            {
+                                let ffs_parser: &dyn crate::parser::LogFormatParser =
+                                    parser_arc.as_ref();
+                                if let Some(parts) = ffs_parser.parse_line(line_bytes) {
+                                    collector.with_priority(500);
+                                    for ffs in &field_filter_styles {
+                                        if let Some(val) = crate::field_filter::resolve_field(
+                                            &ffs.field_filter.field,
+                                            &parts,
+                                        )
+                                        .filter(|v| v.contains(ffs.field_filter.pattern.as_str()))
+                                        {
+                                            if ffs.match_only {
+                                                if let Some(pos) = rendered.find(val) {
+                                                    collector.push(
+                                                        pos,
+                                                        pos + val.len(),
+                                                        ffs.style_id,
+                                                    );
+                                                }
+                                            } else {
+                                                collector.push(0, rendered.len(), ffs.style_id);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(ref regex) = search_regex {
                                 collector.with_priority(1000);
                                 for (i, m) in regex.find_iter(rendered).enumerate() {
@@ -1040,38 +1106,58 @@ impl App {
 
         let tail_mode = self.tabs[self.active_tab].tail_mode;
         let paused = self.tabs[self.active_tab].paused;
-        let logs_title = format!(
-            "{}{} ({}){}{}{}",
-            mode_name.map(|m| format!("[{}] ", m)).unwrap_or_default(),
-            self.tabs[self.active_tab]
-                .log_manager
-                .source_file()
-                .map(|s| {
-                    std::path::Path::new(s)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(s)
-                        .to_string()
-                })
-                .unwrap_or(String::from("Logs")),
-            num_visible,
-            if tail_mode { " [TAIL]" } else { "" },
-            if raw_mode { " [RAW]" } else { "" },
-            if paused { " [PAUSED]" } else { "" },
-        );
-
-        let logs_block = if show_borders {
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(self.theme.border))
-                .title(logs_title)
-                .title_style(Style::default().fg(self.theme.border_title))
+        let logs_title = if show_tab_bar {
+            String::new()
         } else {
-            Block::default()
+            format!(
+                "{}{} ({}){}{}{}",
+                mode_name.map(|m| format!("[{}] ", m)).unwrap_or_default(),
+                self.tabs[self.active_tab]
+                    .log_manager
+                    .source_file()
+                    .map(|s| {
+                        std::path::Path::new(s)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(s)
+                            .to_string()
+                    })
+                    .unwrap_or(String::from("Logs")),
+                num_visible,
+                if tail_mode { " [TAIL]" } else { "" },
+                if raw_mode { " [RAW]" } else { "" },
+                if paused { " [PAUSED]" } else { "" },
+            )
+        };
+
+        let logs_borders = if show_borders {
+            if show_tab_bar {
+                Borders::LEFT | Borders::RIGHT | Borders::BOTTOM
+            } else {
+                Borders::ALL
+            }
+        } else {
+            Borders::NONE
+        };
+        let title_style = Style::default().fg(self.theme.border_title);
+        let logs_block = if show_borders {
+            let block = Block::default()
+                .borders(logs_borders)
+                .border_style(Style::default().fg(self.theme.border));
+            if logs_title.is_empty() {
+                block
+            } else {
+                block.title(logs_title).title_style(title_style)
+            }
+        } else {
+            let block = Block::default()
                 .borders(Borders::NONE)
-                .padding(Padding::new(1, 0, 0, 0))
-                .title(logs_title)
-                .title_style(Style::default().fg(self.theme.border_title))
+                .padding(Padding::new(1, 0, 0, 0));
+            if logs_title.is_empty() {
+                block
+            } else {
+                block.title(logs_title).title_style(title_style)
+            }
         };
         let mut paragraph = Paragraph::new(log_lines)
             .block(logs_block)
@@ -1176,6 +1262,17 @@ impl App {
             Some((input_text, _)) => {
                 if let Some(err) = &self.tabs[self.active_tab].command_error {
                     err.clone()
+                } else if let Some(fc) = extract_field_partial(input_text.trim_start()) {
+                    let field_index = self.tabs[self.active_tab].build_field_index();
+                    let completions: Vec<String> = match &fc {
+                        FieldCompletion::Name(partial) => {
+                            complete_field_name(partial, &field_index)
+                        }
+                        FieldCompletion::Value { field, partial } => {
+                            complete_field_value(field, partial, &field_index)
+                        }
+                    };
+                    completions.join("  ")
                 } else if let Some(partial) = extract_color_partial(input_text) {
                     let completions = complete_color(partial);
                     completions
@@ -1268,6 +1365,32 @@ impl App {
                     .style(Style::default().fg(Color::Red).bg(self.theme.root_bg))
                     .wrap(Wrap { trim: false });
                 frame.render_widget(error_paragraph, hint_area);
+            } else if let Some(fc) = extract_field_partial(input_text.trim_start()) {
+                let field_index = self.tabs[self.active_tab].build_field_index();
+                let completions: Vec<String> = match &fc {
+                    FieldCompletion::Name(partial) => complete_field_name(partial, &field_index),
+                    FieldCompletion::Value { field, partial } => {
+                        complete_field_value(field, partial, &field_index)
+                    }
+                };
+                if !completions.is_empty() {
+                    let hint_spans: Vec<Span> = completions
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, name)| {
+                            let style = if completion_index == Some(i) {
+                                highlight_style
+                            } else {
+                                normal_style
+                            };
+                            vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
+                        })
+                        .collect();
+                    let hint = Paragraph::new(Line::from(hint_spans))
+                        .style(Style::default().bg(self.theme.root_bg))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(hint, hint_area);
+                }
             } else if let Some(partial) = extract_color_partial(&input_text) {
                 let completions = complete_color(partial);
                 if !completions.is_empty() {
@@ -1428,6 +1551,9 @@ impl App {
                     let status = if filter.enabled { "[x]" } else { "[ ]" };
                     let selected_prefix = if i == selected_filter_idx { ">" } else { " " };
                     let is_date = filter.pattern.starts_with(crate::date_filter::DATE_PREFIX);
+                    let is_field = filter
+                        .pattern
+                        .starts_with(crate::field_filter::FIELD_PREFIX);
                     let filter_type_str = if is_date {
                         "Date"
                     } else {
@@ -1436,10 +1562,20 @@ impl App {
                             FilterType::Exclude => "Out",
                         }
                     };
-                    let display_pattern = if is_date {
-                        &filter.pattern[crate::date_filter::DATE_PREFIX.len()..]
+                    let field_display_buf: String;
+                    let (display_pattern, field_tag) = if is_date {
+                        (&filter.pattern[crate::date_filter::DATE_PREFIX.len()..], "")
+                    } else if is_field {
+                        let expr = &filter.pattern[crate::field_filter::FIELD_PREFIX.len()..];
+                        // Convert internal "key:value" back to "key=value" for display.
+                        field_display_buf = if let Some(colon) = expr.find(':') {
+                            format!("{}={}", &expr[..colon], &expr[colon + 1..])
+                        } else {
+                            expr.to_string()
+                        };
+                        (field_display_buf.as_str(), " [field]")
                     } else {
-                        &filter.pattern
+                        (&filter.pattern[..], "")
                     };
                     let mut style = Style::default().fg(self.theme.text);
                     if let Some(cfg) = &filter.color_config {
@@ -1451,8 +1587,8 @@ impl App {
                         }
                     }
                     Line::from(format!(
-                        "{}{} {}: {}",
-                        selected_prefix, status, filter_type_str, display_pattern
+                        "{}{} {}: {}{}",
+                        selected_prefix, status, filter_type_str, display_pattern, field_tag
                     ))
                     .style(style)
                 })
@@ -1494,6 +1630,7 @@ impl App {
         &mut self,
         frame: &mut Frame<'_>,
         show_tab_bar: bool,
+        show_borders: bool,
         chunks: &std::rc::Rc<[Rect]>,
         chunk_idx: &mut usize,
         mode_name: Option<&str>,
@@ -1526,42 +1663,83 @@ impl App {
             .collect();
 
         let active_tab = self.active_tab;
-        let tab_spans: Vec<Span> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .flat_map(|(i, t)| {
-                let is_active = i == active_tab;
-                let mode_prefix = if is_active {
-                    mode_name.map(|m| format!("[{}] ", m)).unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                let label = match (loading_info, filtering_tabs.contains(&i)) {
-                    (Some((idx, pct)), _) if idx == i => {
-                        format!(" {}{} {}% ", mode_prefix, t.title, pct)
-                    }
-                    (_, true) => format!(" {}{} Filtering… ", mode_prefix, t.title),
-                    _ => format!(" {}{} ", mode_prefix, t.title),
-                };
-                let style = if is_active {
-                    Style::default()
-                        .fg(self.theme.text)
-                        .bg(self.theme.text_highlight_bg)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(self.theme.text).bg(self.theme.root_bg)
-                };
-                vec![
-                    Span::styled(label, style),
-                    Span::styled(" ", Style::default().bg(self.theme.root_bg)),
-                ]
-            })
-            .collect();
+        let border_style = Style::default().fg(self.theme.border);
+        // Mode badge style mirrors the mode bar: text_highlight_fg + BOLD on the
+        // root_bg background (no explicit bg → paragraph root_bg fills in).
+        let mode_style = Style::default()
+            .fg(self.theme.text_highlight_fg)
+            .add_modifier(Modifier::BOLD);
 
-        let tab_bar =
-            Paragraph::new(Line::from(tab_spans)).style(Style::default().bg(self.theme.root_bg));
-        frame.render_widget(tab_bar, tab_bar_area);
+        let mut spans: Vec<Span> = Vec::new();
+        let mut used_width: usize = 0;
+
+        // In bordered mode the tab bar forms the top border of the logs panel.
+        if show_borders {
+            spans.push(Span::styled("┌", border_style));
+            used_width += 1;
+        }
+
+        // Mode badge always appears at the far left, before all tabs.
+        if let Some(m) = mode_name {
+            let text = format!(" [{}] ", m);
+            used_width += unicode_width::UnicodeWidthStr::width(text.as_str());
+            spans.push(Span::styled(text, mode_style));
+        }
+
+        for (i, t) in self.tabs.iter().enumerate() {
+            let is_active = i == active_tab;
+            let tab_style = if is_active {
+                Style::default()
+                    .fg(self.theme.border_title)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(self.theme.border)
+                    .bg(self.theme.root_bg)
+            };
+            let suffix = match (loading_info, filtering_tabs.contains(&i)) {
+                (Some((idx, pct)), _) if idx == i => format!(" {}% ", pct),
+                (_, true) => " Filtering… ".to_string(),
+                _ if is_active => {
+                    let num_visible = self.tabs[i].visible_indices.len();
+                    let tail = self.tabs[i].tail_mode;
+                    let raw = self.tabs[i].raw_mode;
+                    let paused = self.tabs[i].paused;
+                    format!(
+                        " ({}){}{}{}  ",
+                        num_visible,
+                        if tail { " [TAIL]" } else { "" },
+                        if raw { " [RAW]" } else { "" },
+                        if paused { " [PAUSED]" } else { "" },
+                    )
+                }
+                _ => " ".to_string(),
+            };
+            let tab_text = format!(" {}{}", t.title, suffix);
+            used_width += unicode_width::UnicodeWidthStr::width(tab_text.as_str());
+            spans.push(Span::styled(tab_text, tab_style));
+
+            if !show_borders {
+                // Visual gap between tabs when not in bordered mode.
+                spans.push(Span::styled(" ", Style::default().bg(self.theme.root_bg)));
+                used_width += 1;
+            }
+        }
+
+        if show_borders {
+            // Fill remaining space with ─ to complete the top border line.
+            let total = tab_bar_area.width as usize;
+            let fill = total.saturating_sub(used_width + 1); // +1 for ┐
+            if fill > 0 {
+                spans.push(Span::styled("─".repeat(fill), border_style));
+            }
+            spans.push(Span::styled("┐", border_style));
+        }
+
+        // Render as a Line widget directly — bypasses Paragraph's base-style
+        // application, which can interfere with individual span fg colours.
+        // The root Block rendered in ui() already filled the row with root_bg.
+        frame.render_widget(Line::from(spans), tab_bar_area);
     }
 }
 
@@ -2042,7 +2220,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    #[test]
     // -----------------------------------------------------------------------
     // find_token_offset
     // -----------------------------------------------------------------------
@@ -2322,6 +2499,265 @@ mod tests {
             !prefix.ends_with("[NORMAL] "),
             "inactive tab should not have mode prefix, tab row: {:?}",
             tab_row
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tab_bar_mode_label_uses_highlight_color() {
+        let mut app = make_two_tab_app().await;
+        let expected_fg = app.theme.text_highlight_fg;
+        let expected_bg = app.theme.root_bg;
+        app.show_mode_bar = false;
+        app.tabs[0].show_mode_bar = false;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Find the '[' of "[NORMAL]" on row 0 and verify fg matches the mode bar
+        // style (text_highlight_fg on root_bg — no tab-highlight background).
+        let tab_row = row_content(&buf, 0);
+        let bracket_col = tab_row
+            .find('[')
+            .expect("'[' of mode label not found in tab bar") as u16;
+        let cell = buf.cell((bracket_col, 0)).expect("cell out of bounds");
+        assert_eq!(
+            cell.fg, expected_fg,
+            "mode label '[' should use text_highlight_fg, got {:?}",
+            cell.fg
+        );
+        assert_eq!(
+            cell.bg, expected_bg,
+            "mode label '[' should sit on root_bg (same as mode bar), got {:?}",
+            cell.bg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_logs_title_omits_filename_when_tab_bar_visible() {
+        let mut app = make_two_tab_app().await;
+        app.tabs[0].title = "myfile.log".to_string();
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Row 0 is the tab bar embedded in the top border (┌ … ┐).
+        let tab_bar_row = row_content(&buf, 0);
+        assert!(
+            tab_bar_row.contains('┌') && tab_bar_row.contains('┐'),
+            "tab bar row should contain border corners, got: {:?}",
+            tab_bar_row,
+        );
+
+        // Row 1 is the first content row (│ … │); the panel has no separate
+        // title line — status info lives exclusively in the tab bar.
+        let content_row = row_content(&buf, 1);
+        assert!(
+            !content_row.contains("myfile.log"),
+            "content row should not repeat filename from tab bar, got: {:?}",
+            content_row,
+        );
+        assert!(
+            !content_row.contains("other"),
+            "content row should not repeat tab titles, got: {:?}",
+            content_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_active_tab_shows_count_in_tab_bar() {
+        let mut app = make_two_tab_app().await;
+        app.tabs[0].title = "myfile.log".to_string();
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Row 0 is the tab bar merged with the top border (┌ … ┐).
+        // The active tab should show a line count "(N)" inside the border.
+        let tab_row = row_content(&buf, 0);
+        assert!(
+            tab_row.contains('┌') && tab_row.contains('┐'),
+            "tab bar should form the top border of the logs panel, got: {:?}",
+            tab_row,
+        );
+        assert!(
+            tab_row.contains('('),
+            "active tab in tab bar should contain line count, got: {:?}",
+            tab_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_logs_title_shows_filename_when_no_tab_bar() {
+        let data: Vec<u8> = "line A\nline B\n".as_bytes().to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, Some("/tmp/uniquename.log".to_string())).await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
+        app.tabs[0].title = "uniquename.log".to_string();
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Single tab → no tab bar, row 0 is the top border of the logs panel.
+        let border_row = row_content(&buf, 0);
+        assert!(
+            border_row.contains("uniquename.log"),
+            "logs panel title should contain filename when no tab bar, got: {:?}",
+            border_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_title_on_same_row_as_tab_bar() {
+        let mut app = make_two_tab_app().await;
+        app.tabs[0].show_sidebar = true;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Row 0 is the tab bar merged with the top border.
+        // When the sidebar is visible its "Filters" title must appear on that
+        // same row — not one row below.
+        let row0 = row_content(&buf, 0);
+        assert!(
+            row0.contains("Filters"),
+            "sidebar title should appear on row 0 (same as tab bar), got: {:?}",
+            row0,
+        );
+        // Row 1 must NOT start with the sidebar title (it would if the sidebar
+        // top border were misaligned one row down).
+        let row1 = row_content(&buf, 1);
+        assert!(
+            !row1.contains("Filters"),
+            "sidebar title must not appear on row 1 (would mean misaligned), got: {:?}",
+            row1,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inactive_tab_uses_border_color() {
+        let mut app = make_two_tab_app().await;
+        let expected_fg = app.theme.border;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Row 0 is the tab bar. Find the column of the inactive tab title ("other").
+        let tab_row = row_content(&buf, 0);
+        let other_col = tab_row.find("other").expect("inactive tab title not found") as u16;
+        let cell = buf.cell((other_col, 0)).expect("cell out of bounds");
+        assert_eq!(
+            cell.fg, expected_fg,
+            "inactive tab should use border color as fg, got {:?}",
+            cell.fg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_whole_line_filter_fg_suppresses_value_colors_on_covered_spans() {
+        // A whole-line filter (match_only=false) colors every span with its fg.
+        // colorize_known_values skips spans that already have fg set, so value
+        // colors must not be applied to any part of the line.
+        use crate::types::FilterType;
+
+        let mut app = make_app(&["log GET /api"]).await;
+        let get_color = app.theme.value_colors.http_get;
+
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "log".to_string(),
+                FilterType::Include,
+                Some("[255,0,0]"),
+                None,
+                false,
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let content_row = row_content(&buf, 1);
+        let get_col = content_row
+            .find("GET")
+            .expect("GET should appear in content row") as u16;
+
+        let cell = buf.cell((get_col, 1)).expect("cell should exist");
+        assert_ne!(
+            cell.fg, get_color,
+            "GET value color must not be applied when a whole-line filter with fg already covers the span"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_value_colors_applied_without_filter() {
+        let mut app = make_app(&["log GET /api"]).await;
+        let get_color = app.theme.value_colors.http_get;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let content_row = row_content(&buf, 1);
+        let get_col = content_row
+            .find("GET")
+            .expect("GET should appear in content row") as u16;
+
+        let cell = buf.cell((get_col, 1)).expect("cell should exist");
+        assert_eq!(
+            cell.fg, get_color,
+            "GET value color should be applied when no filter overrides the line"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_value_colors_apply_to_unfiltered_parts_of_filter_colored_line() {
+        // A match-only filter colors "log" but leaves "GET" unstyled.
+        // Value colors must still apply to the unstyled "GET" span.
+        use crate::types::FilterType;
+
+        let mut app = make_app(&["log GET /api"]).await;
+        let get_color = app.theme.value_colors.http_get;
+
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "log".to_string(),
+                FilterType::Include,
+                Some("[255,0,0]"),
+                None,
+                true, // match_only=true: only "log" is colored, "GET" stays unstyled
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let content_row = row_content(&buf, 1);
+        let get_col = content_row
+            .find("GET")
+            .expect("GET should appear in content row") as u16;
+
+        let cell = buf.cell((get_col, 1)).expect("cell should exist");
+        assert_eq!(
+            cell.fg, get_color,
+            "GET value color must apply to the unstyled part even when another part of the line is filter-colored"
         );
     }
 }

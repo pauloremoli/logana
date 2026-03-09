@@ -13,14 +13,14 @@ Open a file, pipe stdin, or stream Docker containers — logana auto-detects the
 ## Features
 
 - **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, and more
-- **Real-time filtering** — include/exclude patterns (literal or regex), date-range filters, instant preview
+- **Real-time filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters, instant preview
 - **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; per-file restore on reopen
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; show/hide/reorder per session
 - **Multi-tab** — open multiple files or Docker streams side-by-side
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search
 - **Visual line selection** — select a range, yank to clipboard, or attach a comment
 - **Annotations** — attach multiline comments to log lines; export to Markdown or Jira
-- **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
+- **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically; filter colors always take priority
 - **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 9 bundled themes
 
 ---
@@ -116,6 +116,8 @@ Filters are layered — include patterns narrow the view, exclude patterns hide 
 | Open filter manager | `f` |
 | Toggle filtering on/off | `F` |
 | Add date range filter | `t` in filter manager, or `:date-filter <expr>` |
+| Add field-scoped filter | `:filter --field <key>=<value>` |
+| Add field-scoped exclude | `:exclude --field <key>=<value>` |
 
 **Date filter syntax:**
 ```
@@ -123,6 +125,15 @@ Filters are layered — include patterns narrow the view, exclude patterns hide 
 :date-filter > 2024-02-21T10:00:00
 :date-filter Feb 21 .. Feb 22
 ```
+
+**Field filter syntax:**
+```
+:filter --field level=error
+:filter --field component=auth
+:exclude --field level=debug
+```
+
+Field filters match against parsed structured fields rather than raw line text. Aliases: `level`/`lvl`, `timestamp`/`ts`/`time`, `target`, `message`/`msg`. Any other key is looked up in the line's extra fields. Lines that are unparseable or missing the named field pass through unchanged.
 
 Filters are persisted to SQLite and restored the next time you open the same file.
 
@@ -264,7 +275,9 @@ Type `:` to enter command mode. Tab completes commands, flags, colors, themes, a
 | Command | Description |
 |---|---|
 | `:filter <pattern>` | Add include filter |
+| `:filter --field <key>=<value>` | Add field-scoped include filter |
 | `:exclude <pattern>` | Add exclude filter |
+| `:exclude --field <key>=<value>` | Add field-scoped exclude filter |
 | `:date-filter <expr>` | Add date/time range filter |
 | `:set-color [--fg COLOR] [--bg COLOR]` | Set highlight color for selected filter |
 | `:open <path>` | Open file or directory |

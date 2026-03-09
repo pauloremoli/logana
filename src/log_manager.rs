@@ -196,6 +196,43 @@ impl LogManager {
         let _ = self.db.update_filter_pattern(id as i64, &new_pattern).await;
     }
 
+    /// Update an existing filter's pattern, type, and color in-place, preserving its
+    /// position in the filter list.
+    pub async fn update_filter(
+        &mut self,
+        id: usize,
+        pattern: String,
+        filter_type: FilterType,
+        fg: Option<&str>,
+        bg: Option<&str>,
+        match_only: bool,
+    ) {
+        let color_config = if filter_type == FilterType::Include {
+            let fg_color = fg.and_then(parse_color);
+            let bg_color = bg.and_then(parse_color);
+            if fg_color.is_some() || bg_color.is_some() || !match_only {
+                Some(ColorConfig {
+                    fg: fg_color,
+                    bg: bg_color,
+                    match_only,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(f) = self.filter_defs.iter_mut().find(|f| f.id == id) {
+            f.pattern = pattern.clone();
+            f.filter_type = filter_type.clone();
+            f.color_config = color_config.clone();
+        }
+        let _ = self
+            .db
+            .update_filter(id as i64, &pattern, &filter_type, color_config.as_ref())
+            .await;
+    }
+
     pub async fn move_filter_up(&mut self, id: usize) {
         if let Some(idx) = self.filter_defs.iter().position(|f| f.id == id)
             && idx > 0
@@ -331,16 +368,58 @@ impl LogManager {
     /// `StyleId` is the index into the returned `Vec<Style>`. Date filters with a
     /// `color_config` are returned separately in `Vec<DateFilterStyle>` so the render
     /// path can highlight the timestamp column of matching lines.
-    pub fn build_filter_manager(&self) -> (FilterManager, Vec<Style>, Vec<DateFilterStyle>) {
+    pub fn build_filter_manager(
+        &self,
+    ) -> (
+        FilterManager,
+        Vec<Style>,
+        Vec<DateFilterStyle>,
+        Vec<crate::field_filter::FieldFilterStyle>,
+    ) {
         let mut filters: Vec<Box<dyn crate::filters::Filter>> = Vec::new();
         let mut styles: Vec<Style> = Vec::new();
         let mut date_filter_styles: Vec<DateFilterStyle> = Vec::new();
+        let mut field_filter_styles: Vec<crate::field_filter::FieldFilterStyle> = Vec::new();
         let mut has_include = false;
 
         let mut style_idx: usize = 0;
         for def in self.filter_defs.iter().filter(|f| f.enabled) {
-            // Date filters are applied separately in refresh_visible() for visibility,
-            // but we collect their styles here for timestamp highlighting.
+            // Field filters: applied separately for visibility; collect styles for highlighting.
+            if def.pattern.starts_with(crate::field_filter::FIELD_PREFIX) {
+                if let Some(cc) = &def.color_config
+                    && (cc.fg.is_some() || cc.bg.is_some())
+                    && let Ok((field, pattern)) = crate::field_filter::parse_field_filter(
+                        &def.pattern[crate::field_filter::FIELD_PREFIX.len()..],
+                    )
+                {
+                    let style_id = style_idx as crate::filters::StyleId;
+                    style_idx += 1;
+                    let mut s = Style::default();
+                    if let Some(fg) = cc.fg {
+                        s = s.fg(fg);
+                    }
+                    if let Some(bg) = cc.bg {
+                        s = s.bg(bg);
+                    }
+                    styles.push(s);
+                    let decision = if def.filter_type == FilterType::Include {
+                        FilterDecision::Include
+                    } else {
+                        FilterDecision::Exclude
+                    };
+                    field_filter_styles.push(crate::field_filter::FieldFilterStyle {
+                        field_filter: crate::field_filter::FieldFilter {
+                            field,
+                            pattern,
+                            decision,
+                        },
+                        style_id,
+                        match_only: cc.match_only,
+                    });
+                }
+                continue;
+            }
+
             if def.pattern.starts_with(DATE_PREFIX) {
                 if let Some(cc) = &def.color_config
                     && (cc.fg.is_some() || cc.bg.is_some())
@@ -410,6 +489,7 @@ impl LogManager {
             FilterManager::new(filters, has_include),
             styles,
             date_filter_styles,
+            field_filter_styles,
         )
     }
 
@@ -574,7 +654,7 @@ mod tests {
         mgr.add_filter_with_color("ERROR".into(), FilterType::Include, None, None, true)
             .await;
 
-        let (fm, styles, _) = mgr.build_filter_manager();
+        let (fm, styles, _, _) = mgr.build_filter_manager();
         assert_eq!(styles.len(), 1);
         assert!(fm.is_visible(b"ERROR: something bad"));
         assert!(!fm.is_visible(b"INFO: all good"));
@@ -586,7 +666,7 @@ mod tests {
         mgr.add_filter_with_color("DEBUG".into(), FilterType::Exclude, None, None, true)
             .await;
 
-        let (fm, _styles, _) = mgr.build_filter_manager();
+        let (fm, _styles, _, _) = mgr.build_filter_manager();
         assert!(fm.is_visible(b"INFO: something"));
         assert!(!fm.is_visible(b"DEBUG: verbose"));
     }
@@ -599,7 +679,7 @@ mod tests {
         let id = mgr.get_filters()[0].id;
         mgr.toggle_filter(id).await; // disable it
 
-        let (fm, _, _) = mgr.build_filter_manager();
+        let (fm, _, _, _) = mgr.build_filter_manager();
         // No enabled include filters → everything visible
         assert!(fm.is_visible(b"INFO: all good"));
         assert!(fm.is_visible(b"ERROR: bad"));
@@ -755,5 +835,29 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], b"line zero");
         assert_eq!(lines[1], b"line two");
+    }
+
+    #[tokio::test]
+    async fn test_build_filter_manager_skips_field_prefix() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "@field:level:error".into(),
+            FilterType::Include,
+            None,
+            None,
+            true,
+        )
+        .await;
+
+        let (fm, styles, date_styles, field_styles) = mgr.build_filter_manager();
+        // The field filter must not produce a text-filter entry or a style.
+        // (Field filter styles are only collected when color_config is set with fg/bg.)
+        assert!(styles.is_empty(), "expected no styles for field filter");
+        assert!(date_styles.is_empty());
+        assert!(field_styles.is_empty());
+        // With no text include filters active, the FilterManager should
+        // have no has_include flag — every line is visible.
+        assert!(fm.is_visible(b"INFO: something unrelated"));
+        assert!(fm.is_visible(b"ERROR: bad thing"));
     }
 }
