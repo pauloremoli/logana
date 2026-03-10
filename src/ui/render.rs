@@ -40,7 +40,8 @@ impl App {
 
         let has_multiple_tabs = self.tabs.len() > 1;
         let is_loading = self.file_load_state.is_some();
-        let show_tab_bar = has_multiple_tabs || is_loading;
+        let is_filtering = self.tabs.iter().any(|t| t.filter_handle.is_some());
+        let show_tab_bar = has_multiple_tabs || is_loading || is_filtering;
 
         // Extract mode-derived state up front via a single render_state() call,
         // avoiding holding a borrow over the rest of rendering.
@@ -1676,13 +1677,18 @@ impl App {
             (tab_idx, pct)
         });
 
-        // Collect which tabs are currently computing a filter in the background.
-        let filtering_tabs: Vec<usize> = self
+        // Collect which tabs are currently computing a filter in the background,
+        // along with the current progress percentage (0–100).
+        let filtering_tabs: Vec<(usize, usize)> = self
             .tabs
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.filter_handle.is_some())
-            .map(|(i, _)| i)
+            .filter_map(|(i, t)| {
+                t.filter_handle.as_ref().map(|h| {
+                    let pct = (*h.progress_rx.borrow() * 100.0) as usize;
+                    (i, pct)
+                })
+            })
             .collect();
 
         let active_tab = self.active_tab;
@@ -1720,9 +1726,14 @@ impl App {
                     .fg(self.theme.inactive_tab_fg)
                     .bg(self.theme.root_bg)
             };
-            let suffix = match (loading_info, filtering_tabs.contains(&i)) {
+            let filter_pct = filtering_tabs
+                .iter()
+                .find(|(idx, _)| *idx == i)
+                .map(|(_, p)| *p);
+            let suffix = match (loading_info, filter_pct) {
                 (Some((idx, pct)), _) if idx == i => format!(" {}% ", pct),
-                (_, true) => " Filtering… ".to_string(),
+                (_, Some(pct)) if pct < 100 => format!(" Filtering… {}% ", pct),
+                (_, Some(_)) => " Indexing… ".to_string(),
                 _ if is_active => {
                     let num_visible = self.tabs[i].visible_indices.len();
                     let tail = self.tabs[i].tail_mode;
@@ -2239,6 +2250,48 @@ mod tests {
         assert!(
             tab_row.contains("50%"),
             "tab bar row should contain progress percentage; got: {:?}",
+            tab_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ui_filtering_progress_in_tab_name() {
+        let mut app = make_app(&["line 0", "line 1"]).await;
+        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(0.42f64);
+        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        app.tabs[0].filter_handle = Some(super::super::FilterHandle {
+            result_rx,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            progress_rx,
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        let tab_row = row_content(terminal.backend().buffer(), 0);
+        assert!(
+            tab_row.contains("Filtering") && tab_row.contains("42%"),
+            "tab bar should contain 'Filtering' and '42%'; got: {:?}",
+            tab_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ui_indexing_shown_when_progress_complete() {
+        let mut app = make_app(&["line 0", "line 1"]).await;
+        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(1.0f64);
+        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        app.tabs[0].filter_handle = Some(super::super::FilterHandle {
+            result_rx,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            progress_rx,
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        let tab_row = row_content(terminal.backend().buffer(), 0);
+        assert!(
+            tab_row.contains("Indexing"),
+            "tab bar should contain 'Indexing' when progress is 100%; got: {:?}",
             tab_row,
         );
     }

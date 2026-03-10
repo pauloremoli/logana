@@ -1026,7 +1026,11 @@ impl TabState {
         let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
         let (inc_ff, exc_ff) =
             crate::field_filter::extract_field_filters(self.log_manager.get_filters());
-        let parser = self.detected_format.clone();
+        let parser = if self.raw_mode {
+            None
+        } else {
+            self.detected_format.clone()
+        };
         let line_count = self.file_reader.line_count();
 
         tokio::task::spawn_blocking(move || {
@@ -1096,7 +1100,11 @@ impl TabState {
 
         let visible: Vec<usize> = self.visible_indices.iter().collect();
         let file_reader = self.file_reader.clone();
-        let parser = self.detected_format.clone();
+        let parser = if self.raw_mode {
+            None
+        } else {
+            self.detected_format.clone()
+        };
 
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_clone = cancel.clone();
@@ -1209,7 +1217,7 @@ impl TabState {
         } else {
             self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
         }
-        self.rebuild_level_index();
+        self.begin_level_index_rebuild();
     }
 
     /// Apply a new exclude filter incrementally against the currently visible lines,
@@ -1250,7 +1258,7 @@ impl TabState {
         } else {
             self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
         }
-        self.rebuild_level_index();
+        self.begin_level_index_rebuild();
     }
 
     /// Bump the parse cache generation so that all cached render outputs are re-computed

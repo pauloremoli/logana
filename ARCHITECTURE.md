@@ -99,7 +99,15 @@ tests/
 
 Opening a file involves two concerns that pull in opposite directions: users want to see content immediately, but indexing a large file takes time. The solution is a two-phase load. The first phase reads the first (or last, in tail mode) `preview_bytes` of the file asynchronously and shows it right away. The second phase indexes the whole file in a background thread and swaps the reader in when done; progress is shown in the tab title. The preview size defaults to 16 MiB and is configurable via `preview_bytes` in `config.json`.
 
-Memory-mapped files make it tempting to keep the entire file resident, but that wastes RSS on large files when only a few hundred lines are visible at a time. The indexing thread uses a separate "scan" mapping with sequential-access hints, then drops it after building the line-offset index. The "access" mapping used at runtime starts with zero RSS and faults in only the 4 KiB pages that contain lines currently being rendered. These two mappings are separate objects: on Linux, `MADV_DONTNEED` is advisory and may be ignored for file-backed shared mappings, so the only reliable way to free pages after indexing is to unmap and remap.
+Memory-mapped files make it tempting to keep the entire file resident, but that wastes RSS on large files when only a few hundred lines are visible at a time. The indexing thread uses a separate "scan" mapping, then drops it after building the line-offset index. The "access" mapping used at runtime starts with zero RSS and faults in only the 4 KiB pages that contain lines currently being rendered. These two mappings are separate objects: on Linux, `MADV_DONTNEED` is advisory and may be ignored for file-backed shared mappings, so the only reliable way to free pages after indexing is to unmap and remap.
+
+### Parallel line indexing
+
+Phase 1 of `index_chunked` — building the `line_starts` offset table — is parallelised with Rayon. The scan mmap is divided into `ceil(len / rayon_threads)` chunks (minimum 4 MiB each so small files use a single chunk with no Rayon overhead). Each thread independently scans its chunk with `memchr3_iter`, collecting absolute newline positions into a local `Vec<usize>`. After all threads complete, the per-chunk vectors are concatenated in order to form the final `line_starts` — no sort is needed because chunks are non-overlapping and ordered. Progress is tracked with a shared `AtomicUsize`; `watch::Sender<f64>` is `Sync` so it can be referenced (not cloned) inside the Rayon closure.
+
+If any chunk detects an ESC or CR byte the ANSI fallback (`strip_ansi_and_index`) runs serially over the full mmap — the state machine nature of escape sequences makes chunk-level parallelism unsound for that path.
+
+On a warm page cache (file already resident) this reduces Phase 1 from O(file\_size / 1 core) to O(file\_size / N cores). Cold-cache (first open, disk-bound) benefits less since disk bandwidth is the bottleneck regardless of thread count.
 
 ### Stdin ingestion
 
@@ -186,7 +194,7 @@ Filters are scoped per source file because a filter that is meaningful for one l
 | **memchr** | SIMD byte scanning | Accelerates the line-indexing pass; scanning for `\n`, `\r`, and ESC in a single pass is faster than calling `memchr` three times separately |
 | **aho-corasick** | Literal substring matching | Optimal for the common case of plain-text filter patterns; builds a finite automaton once and matches in O(input) regardless of pattern count |
 | **regex** | Regex matching | Used only when a pattern contains metacharacters; compiled once and cached |
-| **rayon** | Parallel iteration | Parallelises the visibility scan across file lines on machines with multiple cores; transparent fallback to sequential on single-core |
+| **rayon** | Parallel iteration | Parallelises both Phase 1 line indexing (chunk scan) and the visibility scan across file lines on machines with multiple cores; transparent fallback to sequential on single-core |
 | **sqlx** | SQLite async driver | Persists filter definitions and session state (scroll position, marks, comments) between runs; async so DB writes don't stall the event loop |
 | **clap** | CLI argument parsing | Declarative argument definitions with auto-generated help text |
 | **serde / serde_json** | Config and theme serialisation | JSON config file, theme files, and filter import/export |

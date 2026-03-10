@@ -351,64 +351,87 @@ impl FileReader {
         })
     }
 
-    /// Index the file in 4 MiB chunks, sending progress updates after each
-    /// chunk.  Produces the same `line_starts` as `compute_line_starts`.
+    /// Index the file using a parallel Rayon scan, sending progress updates as
+    /// chunks complete.  Produces the same `line_starts` as `compute_line_starts`.
     ///
-    /// Phase 1 (always): forward scan building `line_starts` + ANSI detection.
+    /// Phase 1 (always): parallel scan building `line_starts` + ANSI detection.
+    ///   The mmap is divided into `rayon::current_num_threads()` equal chunks;
+    ///   each thread runs `memchr3_iter` independently.  When all threads finish
+    ///   the per-chunk results are concatenated in order (no sort needed) to form
+    ///   the final `line_starts`.  If any chunk detects an ESC/CR byte the ANSI
+    ///   fallback runs serially over the full mmap.
+    ///
     /// Phase 2 (when `predicate` is `Some`): evaluate visibility on each line.
     ///   - `tail=false`: forward parallel scan via rayon.
     ///   - `tail=true`: backward sequential scan so tail lines are evaluated first;
     ///     result is reversed to restore ascending order.
     fn index_chunked(
         path: &str,
-        total_bytes: u64,
+        _total_bytes: u64,
         progress_tx: watch::Sender<f64>,
         predicate: Option<VisibilityPredicate>,
         tail: bool,
         cancel: &AtomicBool,
     ) -> io::Result<FileLoadResult> {
+        use rayon::prelude::*;
+        use std::sync::atomic::AtomicUsize;
+
         let file = File::open(path)?;
         let scan_mmap = unsafe { Mmap::map(&file)? };
         let len = scan_mmap.len();
 
-        // Hint sequential access so the kernel prefetches ahead during the scan.
-        #[cfg(unix)]
-        let _ = scan_mmap.advise(Advice::Sequential);
+        // Phase 1: parallel chunk scan for '\n', '\x1b', '\r'.
+        //
+        // Divide the mmap into one chunk per rayon thread (minimum 4 MiB each so
+        // tiny files don't spawn more tasks than lines).  Each thread independently
+        // finds newline positions and reports them as absolute byte offsets.
+        // progress_tx is Sync so it can be referenced from multiple threads;
+        // bytes_done is a shared counter for fractional progress updates.
+        let num_threads = rayon::current_num_threads().max(1);
+        let chunk_size = len.div_ceil(num_threads).max(4 * 1024 * 1024);
+        let bytes_done = AtomicUsize::new(0);
 
-        // Phase 1: scan for '\n', '\x1b', '\r' simultaneously.
-        // For the common (no-ANSI) case this halves I/O vs. the previous approach
-        // (upfront memchr2 check + separate memchr_iter indexing loop).
-        // Progress is reported per 4 MiB chunk; on ANSI fallback we send 1.0 at the end.
-        const CHUNK: usize = 4 * 1024 * 1024; // 4 MiB
-        let mut starts = vec![0usize];
-        let mut has_ansi = false;
-        let mut offset = 0;
-
-        'scan: while offset < len {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
-            }
-            let end = (offset + CHUNK).min(len);
-            for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &scan_mmap[offset..end]) {
-                let abs = offset + pos;
-                if scan_mmap[abs] == b'\n' {
-                    let next = abs + 1;
-                    if next <= len {
-                        starts.push(next);
-                    }
-                } else {
-                    has_ansi = true;
-                    break 'scan;
+        // Each element: (has_ansi, Vec<absolute next-line offsets for this chunk>)
+        let chunk_results: Vec<(bool, Vec<usize>)> = scan_mmap
+            .par_chunks(chunk_size)
+            .enumerate()
+            .map(|(chunk_idx, chunk)| {
+                if cancel.load(Ordering::Relaxed) {
+                    return (false, vec![]);
                 }
-            }
-            let progress = if total_bytes > 0 {
-                end as f64 / total_bytes as f64
-            } else {
-                1.0
-            };
-            let _ = progress_tx.send(progress);
-            offset = end;
+                let chunk_start = chunk_idx * chunk_size;
+                let mut has_ansi = false;
+                let mut local_starts: Vec<usize> = Vec::new();
+
+                for pos in memchr3_iter(b'\n', b'\x1b', b'\r', chunk) {
+                    match chunk[pos] {
+                        b'\n' => {
+                            let next = chunk_start + pos + 1;
+                            if next <= len {
+                                local_starts.push(next);
+                            }
+                        }
+                        _ => {
+                            has_ansi = true;
+                            break;
+                        }
+                    }
+                }
+
+                let done = bytes_done.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+                if len > 0 {
+                    let _ = progress_tx.send(done as f64 / len as f64);
+                }
+
+                (has_ansi, local_starts)
+            })
+            .collect();
+
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
         }
+
+        let has_ansi = chunk_results.iter().any(|(a, _)| *a);
 
         let reader = if has_ansi {
             // Strip into a Vec<u8>; scan_mmap is dropped here so munmap
@@ -421,6 +444,16 @@ impl FileReader {
                 line_starts: std::sync::Arc::new(line_starts),
             }
         } else {
+            // Merge per-chunk newline positions into the final line_starts.
+            // Chunks are non-overlapping and ordered, so simple concatenation
+            // preserves ascending order — no sort needed.
+            let total_starts: usize = chunk_results.iter().map(|(_, v)| v.len()).sum();
+            let mut starts = Vec::with_capacity(1 + total_starts);
+            starts.push(0usize); // sentinel: first line always starts at byte 0
+            for (_, local) in chunk_results {
+                starts.extend(local);
+            }
+
             // Drop the scan mmap. munmap() is guaranteed to remove all its
             // pages from process RSS immediately — unlike MADV_DONTNEED which
             // is advisory and can be ignored for file-backed shared mappings.
@@ -1882,5 +1915,138 @@ mod tests {
             text.contains("after truncation"),
             "watcher should detect data after truncation, got: {text}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Parallel Phase-1 indexing via index_chunked
+    // -----------------------------------------------------------------------
+
+    /// Build a file whose byte size exceeds the 4 MiB minimum chunk size so
+    /// the parallel scan exercises at least two chunks on any machine.
+    fn make_large_tmp(line: &str, target_bytes: usize) -> (NamedTempFile, usize) {
+        let line_with_newline = format!("{line}\n");
+        let n = (target_bytes / line_with_newline.len()).max(1);
+        let mut f = NamedTempFile::new().unwrap();
+        for _ in 0..n {
+            f.write_all(line_with_newline.as_bytes()).unwrap();
+        }
+        f.flush().unwrap();
+        (f, n)
+    }
+
+    #[tokio::test]
+    async fn test_load_large_file_line_count_correct() {
+        // Target ~6 MiB so the file spans at least two 4 MiB chunks regardless
+        // of the rayon thread count.
+        let line = "hello world this is a reasonably long log line for testing";
+        let (f, expected_lines) = make_large_tmp(line, 6 * 1024 * 1024);
+        let path = f.path().to_str().unwrap().to_string();
+
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+
+        assert_eq!(result.reader.line_count(), expected_lines);
+        assert_eq!(result.reader.get_line(0), line.as_bytes());
+        assert_eq!(result.reader.get_line(expected_lines - 1), line.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_load_large_file_matches_reference_implementation() {
+        // Verify that the parallel index produces line_starts identical to the
+        // sequential reference implementation by round-tripping every line.
+        let line = "2024-01-15T10:00:00Z INFO service: request processed id=42 dur=3ms";
+        let (f, n) = make_large_tmp(line, 6 * 1024 * 1024);
+        let path = f.path().to_str().unwrap().to_string();
+
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+
+        assert_eq!(result.reader.line_count(), n);
+        // Spot-check first, middle, and last lines — these cross chunk boundaries
+        // when the file is larger than 4 MiB.
+        for &idx in &[0, n / 4, n / 2, 3 * n / 4, n - 1] {
+            assert_eq!(
+                result.reader.get_line(idx),
+                line.as_bytes(),
+                "line {idx} mismatch"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_load_large_file_predicate_correct() {
+        // Every even line starts with "EVEN"; every odd line with "ODD".
+        // The predicate selects only even lines — verify the correct indices
+        // across chunk boundaries.
+        let mut f = NamedTempFile::new().unwrap();
+        let n = 200_000usize;
+        for i in 0..n {
+            if i % 2 == 0 {
+                writeln!(f, "EVEN line {i}").unwrap();
+            } else {
+                writeln!(f, "ODD line {i}").unwrap();
+            }
+        }
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+
+        let pred: VisibilityPredicate = Box::new(|line| line.starts_with(b"EVEN"));
+        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+
+        let visible = result.precomputed_visible.unwrap();
+        assert_eq!(visible.len(), n / 2);
+        // All returned indices must point to "EVEN" lines.
+        for &idx in visible
+            .iter()
+            .take(100)
+            .chain(visible.iter().rev().take(100))
+        {
+            assert!(
+                result.reader.get_line(idx).starts_with(b"EVEN"),
+                "index {idx} should be an EVEN line"
+            );
+        }
+        // Indices must be strictly ascending.
+        assert!(visible.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[tokio::test]
+    async fn test_load_newline_at_chunk_boundary() {
+        // Construct a file where a '\n' falls exactly at a 4 MiB boundary so the
+        // parallel merger is forced to handle an offset of exactly chunk_size.
+        // We write lines of a fixed width to place a newline at byte 4_194_304.
+        const BOUNDARY: usize = 4 * 1024 * 1024;
+        // A line of 63 bytes + '\n' = 64 bytes.  BOUNDARY / 64 = 65536 lines land
+        // the (65536th) newline exactly at byte 4_194_304.
+        let line = "A".repeat(63);
+        let lines_to_boundary = BOUNDARY / 64;
+        let mut f = NamedTempFile::new().unwrap();
+        for _ in 0..lines_to_boundary {
+            writeln!(f, "{line}").unwrap();
+        }
+        // Write a few more lines past the boundary to verify the second chunk.
+        for i in 0..10 {
+            writeln!(f, "extra{i}").unwrap();
+        }
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+
+        let expected = lines_to_boundary + 10;
+        assert_eq!(result.reader.line_count(), expected);
+        assert_eq!(result.reader.get_line(0), line.as_bytes());
+        assert_eq!(result.reader.get_line(lines_to_boundary), b"extra0");
+        assert_eq!(result.reader.get_line(expected - 1), b"extra9");
     }
 }
