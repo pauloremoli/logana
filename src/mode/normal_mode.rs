@@ -557,61 +557,12 @@ impl Mode for NormalMode {
             "comment",
             theme,
         );
-        spans.push(Span::styled("<", Style::default().fg(theme.text)));
-        spans.push(Span::styled(
-            kb.normal.next_error.display(),
-            Style::default()
-                .fg(theme.error_fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled("/", Style::default().fg(theme.text)));
-        spans.push(Span::styled(
-            kb.normal.prev_error.display(),
-            Style::default()
-                .fg(theme.error_fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled("> err  ", Style::default().fg(theme.error_fg)));
-        spans.push(Span::styled("<", Style::default().fg(theme.text)));
-        spans.push(Span::styled(
-            kb.normal.next_warning.display(),
-            Style::default()
-                .fg(theme.warning_fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled("/", Style::default().fg(theme.text)));
-        spans.push(Span::styled(
-            kb.normal.prev_warning.display(),
-            Style::default()
-                .fg(theme.warning_fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            "> warn  ",
-            Style::default().fg(theme.warning_fg),
-        ));
         status_entry(
             &mut spans,
             kb.normal.show_keybindings.display(),
             "help",
             theme,
         );
-        // Tab switching: <next/prev> tabs
-        spans.push(Span::styled("<", Style::default().fg(theme.text)));
-        spans.push(Span::styled(
-            kb.global.next_tab.display(),
-            Style::default()
-                .fg(theme.text_highlight_fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled("/", Style::default().fg(theme.text)));
-        spans.push(Span::styled(
-            kb.global.prev_tab.display(),
-            Style::default()
-                .fg(theme.text_highlight_fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled("> tabs", Style::default().fg(theme.text)));
         Line::from(spans)
     }
 }

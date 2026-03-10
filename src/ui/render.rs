@@ -1595,7 +1595,6 @@ impl App {
             let show_borders = self.tabs[self.active_tab].show_borders;
             let filters = self.tabs[self.active_tab].log_manager.get_filters();
             let match_counts = self.tabs[self.active_tab].filter_match_counts.clone();
-            let mut fm_text_idx = 0usize;
             let filters_text: Vec<Line> = filters
                 .iter()
                 .enumerate()
@@ -1629,9 +1628,8 @@ impl App {
                     } else {
                         (&filter.pattern[..], "")
                     };
-                    let count_str = if filter.enabled && !is_date && !is_field {
-                        let count = match_counts.get(fm_text_idx).copied().unwrap_or(0);
-                        fm_text_idx += 1;
+                    let count_str = if filter.enabled {
+                        let count = match_counts.get(i).copied().unwrap_or(0);
                         format!(" ({})", count)
                     } else {
                         String::new()
@@ -1665,12 +1663,21 @@ impl App {
             } else {
                 String::new()
             };
+            let filter_progress: Option<usize> = self.tabs[self.active_tab]
+                .filter_handle
+                .as_ref()
+                .map(|h| (*h.progress_rx.borrow() * 100.0) as usize);
             let sidebar_title = if self.tabs[self.active_tab].show_marks_only {
                 format!("Filters [MARKS ONLY]{}", filter_count_suffix)
             } else if self.tabs[self.active_tab].filtering_enabled {
                 format!("Filters{}", filter_count_suffix)
             } else {
                 format!("Filters [OFF]{}", filter_count_suffix)
+            };
+            let sidebar_title = match filter_progress {
+                Some(pct) if pct < 100 => format!("{} {}%", sidebar_title, pct),
+                Some(_) => format!("{} Indexing…", sidebar_title),
+                None => sidebar_title,
             };
             let sidebar_block = if show_borders {
                 Block::default()
@@ -2294,6 +2301,56 @@ mod tests {
             tab_row.contains("50%"),
             "tab bar row should contain progress percentage; got: {:?}",
             tab_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ui_filtering_progress_in_sidebar_title() {
+        let mut app = make_app(&["line 0", "line 1"]).await;
+        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(0.42f64);
+        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        app.tabs[0].filter_handle = Some(super::super::FilterHandle {
+            result_rx,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            progress_rx,
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let filters_row = (0..buf.area.height)
+            .map(|y| row_content(&buf, y))
+            .find(|row| row.contains("Filters"))
+            .expect("a row containing 'Filters' should be rendered");
+        assert!(
+            filters_row.contains("42%"),
+            "sidebar title should contain '42%' while filtering; got: {:?}",
+            filters_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ui_indexing_shown_in_sidebar_title() {
+        let mut app = make_app(&["line 0", "line 1"]).await;
+        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(1.0f64);
+        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        app.tabs[0].filter_handle = Some(super::super::FilterHandle {
+            result_rx,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            progress_rx,
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let filters_row = (0..buf.area.height)
+            .map(|y| row_content(&buf, y))
+            .find(|row| row.contains("Filters"))
+            .expect("a row containing 'Filters' should be rendered");
+        assert!(
+            filters_row.contains("Indexing"),
+            "sidebar title should show 'Indexing' when progress is 100%; got: {:?}",
+            filters_row,
         );
     }
 

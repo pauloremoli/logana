@@ -288,9 +288,16 @@ impl LogManager {
     pub async fn load_filters(&mut self, path: &str) -> anyhow::Result<()> {
         let json = std::fs::read_to_string(path)?;
         let filters: Vec<FilterDef> = serde_json::from_str(&json)?;
-        let source = self.source_file.as_deref();
-        self.db.replace_all_filters(&filters, source).await?;
-        self.reload_filters_from_db().await;
+        let source = self.source_file.clone();
+        self.db
+            .replace_all_filters(&filters, source.as_deref())
+            .await?;
+        self.filter_defs = if let Some(src) = source.as_deref() {
+            self.db.get_filters_for_source(src).await
+        } else {
+            self.db.get_filters().await
+        }
+        .unwrap_or_default();
         Ok(())
     }
 

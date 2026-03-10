@@ -27,6 +27,8 @@
 //! - `message` / `msg`          → `parts.message`
 //! - anything else              → linear search of `parts.extra_fields`
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::filters::{FilterDecision, StyleId};
 use crate::parser::DisplayParts;
 use crate::types::{FilterDef, FilterType};
@@ -72,6 +74,38 @@ pub fn parse_field_filter(expr: &str) -> Result<(String, String), String> {
         return Err("field value must not be empty".to_string());
     }
     Ok((key.to_string(), value.to_string()))
+}
+
+/// Extract enabled `@field:` entries from `filter_defs` as `(field, pattern)` pairs,
+/// preserving the original filter order. Used for per-filter match counting.
+pub fn extract_field_filters_ordered(filter_defs: &[FilterDef]) -> Vec<(String, String)> {
+    filter_defs
+        .iter()
+        .filter(|d| d.enabled)
+        .filter_map(|d| {
+            let expr = d.pattern.strip_prefix(FIELD_PREFIX)?;
+            parse_field_filter(expr).ok()
+        })
+        .collect()
+}
+
+/// Increment per-filter counters for each enabled field filter that matches `parts`.
+/// Entries in `counts` are parallel to `filters` from [`extract_field_filters_ordered`].
+pub fn count_field_filter_matches(
+    filters: &[(String, String)],
+    parts: Option<&DisplayParts<'_>>,
+    counts: &[AtomicUsize],
+) {
+    let Some(parts) = parts else { return };
+    for (i, (field, pattern)) in filters.iter().enumerate() {
+        if resolve_field(field, parts)
+            .map(|v| v.contains(pattern.as_str()))
+            .unwrap_or(false)
+            && let Some(c) = counts.get(i)
+        {
+            c.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Extract all enabled `@field:` entries from `filter_defs` and split them into
@@ -536,5 +570,83 @@ mod tests {
         assert_eq!(inc[0].field, "level");
         assert_eq!(inc[0].pattern, "error");
         assert_eq!(exc[0].pattern, "debug");
+    }
+
+    // ── extract_field_filters_ordered ─────────────────────────────────────────
+
+    #[test]
+    fn test_extract_field_filters_ordered_preserves_order() {
+        let defs = vec![
+            make_def(1, "@field:level:error", FilterType::Include, true),
+            make_def(2, "@field:level:debug", FilterType::Exclude, true),
+            make_def(3, "@field:target:api", FilterType::Include, true),
+        ];
+        let ordered = extract_field_filters_ordered(&defs);
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0], ("level".to_string(), "error".to_string()));
+        assert_eq!(ordered[1], ("level".to_string(), "debug".to_string()));
+        assert_eq!(ordered[2], ("target".to_string(), "api".to_string()));
+    }
+
+    #[test]
+    fn test_extract_field_filters_ordered_skips_disabled() {
+        let defs = vec![
+            make_def(1, "@field:level:error", FilterType::Include, true),
+            make_def(2, "@field:level:debug", FilterType::Exclude, false),
+        ];
+        let ordered = extract_field_filters_ordered(&defs);
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(ordered[0].0, "level");
+    }
+
+    // ── count_field_filter_matches ────────────────────────────────────────────
+
+    #[test]
+    fn test_count_field_filter_matches_increments_on_match() {
+        use std::sync::atomic::AtomicUsize;
+        let parts = make_parts(Some("error"), None, None, None, vec![]);
+        let filters = vec![("level".to_string(), "error".to_string())];
+        let counts = vec![AtomicUsize::new(0)];
+        count_field_filter_matches(&filters, Some(&parts), &counts);
+        assert_eq!(counts[0].load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_count_field_filter_matches_no_increment_on_miss() {
+        use std::sync::atomic::AtomicUsize;
+        let parts = make_parts(Some("info"), None, None, None, vec![]);
+        let filters = vec![("level".to_string(), "error".to_string())];
+        let counts = vec![AtomicUsize::new(0)];
+        count_field_filter_matches(&filters, Some(&parts), &counts);
+        assert_eq!(counts[0].load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_count_field_filter_matches_no_parts_skips() {
+        use std::sync::atomic::AtomicUsize;
+        let filters = vec![("level".to_string(), "error".to_string())];
+        let counts = vec![AtomicUsize::new(0)];
+        count_field_filter_matches(&filters, None, &counts);
+        assert_eq!(counts[0].load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_count_field_filter_matches_multiple_filters() {
+        use std::sync::atomic::AtomicUsize;
+        let parts = make_parts(Some("error"), None, Some("crash"), None, vec![]);
+        let filters = vec![
+            ("level".to_string(), "error".to_string()),
+            ("message".to_string(), "crash".to_string()),
+            ("level".to_string(), "debug".to_string()),
+        ];
+        let counts = vec![
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+        ];
+        count_field_filter_matches(&filters, Some(&parts), &counts);
+        assert_eq!(counts[0].load(Ordering::Relaxed), 1);
+        assert_eq!(counts[1].load(Ordering::Relaxed), 1);
+        assert_eq!(counts[2].load(Ordering::Relaxed), 0);
     }
 }

@@ -130,9 +130,10 @@ pub struct FilterComputeResult {
     pub visible: Vec<usize>,
     pub error_positions: Vec<usize>,
     pub warning_positions: Vec<usize>,
-    /// Per-text-filter match counts (indexed parallel to the `FilterManager`'s compiled
-    /// filters). `None` when the result comes from a level-index rebuild that did not
-    /// recompute filter state (counts should be left unchanged on the tab).
+    /// Per-filter match counts unified across all filter types, indexed parallel to
+    /// `filter_defs` (disabled filters get count 0). `None` when the result comes from a
+    /// level-index rebuild that did not recompute filter state (counts should be left
+    /// unchanged on the tab).
     pub filter_match_counts: Option<Vec<usize>>,
 }
 
@@ -173,6 +174,34 @@ pub fn list_dir_files(path: &str) -> Vec<String> {
     files
 }
 
+/// Merge three compacted per-type count vectors into a single `Vec<usize>` of length
+/// `filters.len()`, indexed by position in `filter_defs`. Disabled filters get count 0.
+fn merge_filter_counts(
+    filters: &[crate::types::FilterDef],
+    text: &[usize],
+    field: &[usize],
+    date: &[usize],
+) -> Vec<usize> {
+    let mut out = vec![0; filters.len()];
+    let (mut ti, mut fi, mut di) = (0, 0, 0);
+    for (i, f) in filters.iter().enumerate() {
+        if !f.enabled {
+            continue;
+        }
+        if f.pattern.starts_with(crate::date_filter::DATE_PREFIX) {
+            out[i] = date.get(di).copied().unwrap_or(0);
+            di += 1;
+        } else if f.pattern.starts_with(crate::field_filter::FIELD_PREFIX) {
+            out[i] = field.get(fi).copied().unwrap_or(0);
+            fi += 1;
+        } else {
+            out[i] = text.get(ti).copied().unwrap_or(0);
+            ti += 1;
+        }
+    }
+    out
+}
+
 /// Decide whether a single log line should be visible given the full set of active filters.
 ///
 /// Text filters (compiled into `fm`) and field filters are combined with **OR** semantics
@@ -187,6 +216,7 @@ fn line_is_visible(
     fm: &FilterManager,
     line: &[u8],
     date_filters: &[crate::date_filter::DateFilter],
+    date_counts: &[std::sync::atomic::AtomicUsize],
     inc_ff: &[crate::field_filter::FieldFilter],
     exc_ff: &[crate::field_filter::FieldFilter],
     parser: Option<&dyn LogFormatParser>,
@@ -204,9 +234,15 @@ fn line_is_visible(
     if !date_filters.is_empty()
         && let Some(ref p) = parts
         && let Some(ts) = p.timestamp
-        && !crate::date_filter::matches_any(date_filters, ts)
     {
-        return false;
+        for (df, count) in date_filters.iter().zip(date_counts.iter()) {
+            if df.matches(ts) {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        if !crate::date_filter::matches_any(date_filters, ts) {
+            return false;
+        }
     }
 
     // Step 4: field exclude — hides the line if any matching exclude is found.
@@ -514,8 +550,8 @@ pub struct TabState {
     pub error_positions: Vec<usize>,
     /// Sorted visible positions (indices into `visible_indices`) of WARN lines.
     pub warning_positions: Vec<usize>,
-    /// Per-text-filter match counts, indexed parallel to the enabled text filters in
-    /// `FilterManager`. Updated after each filter computation (background or sync).
+    /// Per-filter match counts unified across all filter types, indexed parallel to
+    /// `filter_defs` (disabled filters get count 0). Updated after each filter computation.
     pub filter_match_counts: Vec<usize>,
 }
 
@@ -728,6 +764,9 @@ impl TabState {
                 crate::date_filter::extract_date_filters(self.log_manager.get_filters());
             let (inc_ff, exc_ff) =
                 crate::field_filter::extract_field_filters(self.log_manager.get_filters());
+            let field_defs =
+                crate::field_filter::extract_field_filters_ordered(self.log_manager.get_filters());
+            let all_filter_defs = self.log_manager.get_filters().to_vec();
             let parser = self.detected_format.as_deref();
             use rayon::prelude::*;
             use std::sync::atomic::AtomicUsize;
@@ -735,15 +774,41 @@ impl TabState {
             let n_text_filters = fm.filter_count();
             let filter_counts: Vec<AtomicUsize> =
                 (0..n_text_filters).map(|_| AtomicUsize::new(0)).collect();
+            let ff_counts: Vec<AtomicUsize> =
+                (0..field_defs.len()).map(|_| AtomicUsize::new(0)).collect();
+            let df_counts: Vec<AtomicUsize> = (0..date_filters.len())
+                .map(|_| AtomicUsize::new(0))
+                .collect();
             let visible: Vec<usize> = (0..self.file_reader.line_count())
                 .into_par_iter()
                 .filter(|&idx| {
                     let line = file_reader.get_line(idx);
                     fm.count_line_matches(line, &filter_counts);
-                    line_is_visible(&fm, line, &date_filters, &inc_ff, &exc_ff, parser)
+                    if !field_defs.is_empty() {
+                        let parts = parser.and_then(|p| p.parse_line(line));
+                        crate::field_filter::count_field_filter_matches(
+                            &field_defs,
+                            parts.as_ref(),
+                            &ff_counts,
+                        );
+                    }
+                    line_is_visible(
+                        &fm,
+                        line,
+                        &date_filters,
+                        &df_counts,
+                        &inc_ff,
+                        &exc_ff,
+                        parser,
+                    )
                 })
                 .collect();
-            self.filter_match_counts = filter_counts.into_iter().map(|c| c.into_inner()).collect();
+            let text_counts: Vec<usize> =
+                filter_counts.into_iter().map(|c| c.into_inner()).collect();
+            let field_counts: Vec<usize> = ff_counts.into_iter().map(|c| c.into_inner()).collect();
+            let date_counts: Vec<usize> = df_counts.into_iter().map(|c| c.into_inner()).collect();
+            self.filter_match_counts =
+                merge_filter_counts(&all_filter_defs, &text_counts, &field_counts, &date_counts);
             self.filter_manager_arc = Arc::new(fm);
             self.filter_styles = styles;
             self.filter_date_styles = date_filter_styles;
@@ -1032,6 +1097,9 @@ impl TabState {
         self.filter_styles = styles;
         self.filter_date_styles = date_filter_styles;
         self.filter_field_styles = field_filter_styles;
+        // Clear stale counts — the filter order may have changed (e.g. reorder) so old
+        // index-based counts would map to the wrong filters until the scan completes.
+        self.filter_match_counts = Vec::new();
 
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_clone = cancel.clone();
@@ -1043,6 +1111,9 @@ impl TabState {
         let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
         let (inc_ff, exc_ff) =
             crate::field_filter::extract_field_filters(self.log_manager.get_filters());
+        let field_defs =
+            crate::field_filter::extract_field_filters_ordered(self.log_manager.get_filters());
+        let all_filter_defs = self.log_manager.get_filters().to_vec();
         let parser = if self.raw_mode {
             None
         } else {
@@ -1059,6 +1130,11 @@ impl TabState {
             let parser_ref: Option<&dyn LogFormatParser> = parser.as_deref();
             let filter_counts: Vec<AtomicUsize> =
                 (0..n_text_filters).map(|_| AtomicUsize::new(0)).collect();
+            let ff_counts: Vec<AtomicUsize> =
+                (0..field_defs.len()).map(|_| AtomicUsize::new(0)).collect();
+            let df_counts: Vec<AtomicUsize> = (0..date_filters.len())
+                .map(|_| AtomicUsize::new(0))
+                .collect();
 
             // Unified single pass: text + date + field filters evaluated together.
             // Per-filter match counts are piggybacked on this pass at negligible cost.
@@ -1074,7 +1150,23 @@ impl TabState {
                     }
                     let line = file_reader.get_line(i);
                     fm_arc.count_line_matches(line, &filter_counts);
-                    line_is_visible(&fm_arc, line, &date_filters, &inc_ff, &exc_ff, parser_ref)
+                    if !field_defs.is_empty() {
+                        let parts = parser_ref.and_then(|p| p.parse_line(line));
+                        crate::field_filter::count_field_filter_matches(
+                            &field_defs,
+                            parts.as_ref(),
+                            &ff_counts,
+                        );
+                    }
+                    line_is_visible(
+                        &fm_arc,
+                        line,
+                        &date_filters,
+                        &df_counts,
+                        &inc_ff,
+                        &exc_ff,
+                        parser_ref,
+                    )
                 })
                 .collect();
 
@@ -1082,8 +1174,16 @@ impl TabState {
                 return;
             }
 
-            let match_counts: Vec<usize> =
+            // Signal 100% so the UI transitions from "X%" to "Indexing…" while
+            // compute_level_positions runs — prevents appearing stuck near 99%.
+            let _ = progress_tx.send(1.0);
+
+            let text_counts: Vec<usize> =
                 filter_counts.into_iter().map(|c| c.into_inner()).collect();
+            let field_counts: Vec<usize> = ff_counts.into_iter().map(|c| c.into_inner()).collect();
+            let date_counts: Vec<usize> = df_counts.into_iter().map(|c| c.into_inner()).collect();
+            let unified =
+                merge_filter_counts(&all_filter_defs, &text_counts, &field_counts, &date_counts);
 
             // Compute level positions from the visible set in the same background thread
             // so the event loop never does O(visible) work synchronously.
@@ -1095,7 +1195,7 @@ impl TabState {
                     visible,
                     error_positions,
                     warning_positions,
-                    filter_match_counts: Some(match_counts),
+                    filter_match_counts: Some(unified),
                 });
             }
         });
@@ -1238,7 +1338,10 @@ impl TabState {
         } else {
             self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
         }
-        self.begin_level_index_rebuild();
+        // Kick off a background refresh to compute per-filter match counts and level
+        // positions. The visible set computed above stays until the background result
+        // arrives, at which point it is confirmed (same filters) and counts are applied.
+        self.begin_filter_refresh();
     }
 
     /// Apply a new exclude filter incrementally against the currently visible lines,
@@ -1279,7 +1382,10 @@ impl TabState {
         } else {
             self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
         }
-        self.begin_level_index_rebuild();
+        // Kick off a background refresh to compute per-filter match counts and level
+        // positions. The visible set computed above stays until the background result
+        // arrives, at which point it is confirmed (same filters) and counts are applied.
+        self.begin_filter_refresh();
     }
 
     /// Bump the parse cache generation so that all cached render outputs are re-computed
@@ -1401,6 +1507,11 @@ impl TabState {
             .map(|i| self.file_reader.get_line(i))
             .collect();
         let names = parser.collect_field_names(&name_lines);
+        let no_sample: HashSet<&str> = crate::parser::json::TIMESTAMP_KEYS
+            .iter()
+            .chain(crate::parser::json::MESSAGE_KEYS.iter())
+            .copied()
+            .collect();
 
         // Step 2: Scan raw lines to collect values and per-name frequency counts.
         let mut name_freq: HashMap<String, usize> = HashMap::new();
@@ -1414,10 +1525,12 @@ impl TabState {
             for name in &names {
                 if let Some(v) = crate::field_filter::resolve_field(name, &parts) {
                     *name_freq.entry(name.clone()).or_insert(0) += 1;
-                    value_map
-                        .entry(name.clone())
-                        .or_default()
-                        .insert(v.to_string());
+                    if !no_sample.contains(name.as_str()) {
+                        value_map
+                            .entry(name.clone())
+                            .or_default()
+                            .insert(v.to_string());
+                    }
                 }
             }
         }
@@ -2077,6 +2190,9 @@ mod tests {
     async fn test_apply_incremental_include_narrows_visible() {
         let mut tab = make_tab(&["error line", "info line", "error again", "debug line"]).await;
         assert_eq!(tab.visible_indices.len(), 4);
+        tab.log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .await;
         // Only lines containing "error" should remain.
         tab.apply_incremental_include("error");
         assert_eq!(tab.visible_indices.len(), 2);
@@ -2087,6 +2203,9 @@ mod tests {
     #[tokio::test]
     async fn test_apply_incremental_include_updates_filter_cache() {
         let mut tab = make_tab(&["line a", "line b"]).await;
+        tab.log_manager
+            .add_filter_with_color("line a".to_string(), FilterType::Include, None, None, true)
+            .await;
         let old_gen = tab.parse_cache_gen;
         tab.apply_incremental_include("line a");
         // Parse cache generation must be bumped.
@@ -2098,6 +2217,9 @@ mod tests {
     #[tokio::test]
     async fn test_apply_incremental_include_no_match_empty() {
         let mut tab = make_tab(&["error line", "info line"]).await;
+        tab.log_manager
+            .add_filter_with_color("NOMATCH".to_string(), FilterType::Include, None, None, true)
+            .await;
         tab.apply_incremental_include("NOMATCH");
         assert!(tab.visible_indices.is_empty());
         assert_eq!(tab.scroll_offset, 0);
@@ -2108,6 +2230,9 @@ mod tests {
         let mut tab = make_tab(&["error line", "info line", "error again", "debug line"]).await;
         // Start with all lines visible.
         assert_eq!(tab.visible_indices.len(), 4);
+        tab.log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Exclude, None, None, true)
+            .await;
         // Apply incremental exclude for "error" — removes lines 0 and 2.
         tab.apply_incremental_exclude("error");
         assert_eq!(tab.visible_indices.len(), 2);
@@ -2506,14 +2631,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_filter_match_counts_cleared_on_no_active_filters() {
-        let mut tab = make_tab(&["ERROR: a", "INFO: b"]).await;
-        tab.filter_match_counts = vec![99, 42]; // pre-seeded stale counts
-        tab.begin_filter_refresh(); // no filters → fast path
-        assert!(tab.filter_match_counts.is_empty());
-    }
-
-    #[tokio::test]
     async fn test_filter_match_counts_updated_via_advance() {
         let mut tab = make_tab(&["ERROR line", "INFO line", "ERROR again"]).await;
         tab.log_manager
@@ -2527,5 +2644,108 @@ mod tests {
             tab.filter_match_counts = counts;
         }
         assert_eq!(tab.filter_match_counts, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn test_filter_match_counts_includes_field_filters() {
+        let mut tab = make_tab(&["line one", "line two", "line three"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "@field:level:error".to_string(),
+                FilterType::Include,
+                None,
+                None,
+                true,
+            )
+            .await;
+        tab.begin_filter_refresh();
+        let h = tab.filter_handle.take().unwrap();
+        let result = h.result_rx.await.unwrap();
+        // Unified vec has length equal to filter_defs (one entry), at position 0.
+        // Raw text lines have no parser so count is 0.
+        let counts = result
+            .filter_match_counts
+            .expect("filter_match_counts must be Some");
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0], 0);
+    }
+
+    #[tokio::test]
+    async fn test_filter_match_counts_cleared_on_no_active_filters() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.filter_match_counts = vec![5, 7];
+        tab.begin_filter_refresh();
+        assert!(tab.filter_match_counts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_filter_match_counts_includes_date_filters() {
+        let lines = [
+            r#"{"ts":"2024-01-01T01:00:00","level":"info","msg":"in range"}"#,
+            r#"{"ts":"2024-01-01T03:00:00","level":"info","msg":"out of range"}"#,
+            r#"{"ts":"2024-01-01T01:30:00","level":"info","msg":"in range 2"}"#,
+        ];
+        let mut tab = make_tab(&lines).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "@date:01:00:00 .. 02:00:00".to_string(),
+                FilterType::Include,
+                None,
+                None,
+                true,
+            )
+            .await;
+        tab.begin_filter_refresh();
+        let h = tab.filter_handle.take().unwrap();
+        let result = h.result_rx.await.unwrap();
+        // Unified vec has length equal to filter_defs (one date filter at position 0).
+        let counts = result
+            .filter_match_counts
+            .expect("filter_match_counts must be Some");
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0], 2, "two lines fall within the date range");
+    }
+
+    #[tokio::test]
+    async fn test_build_field_index_no_values_for_timestamp_fields() {
+        let lines = [
+            r#"{"ts":"2024-01-01T00:00:00Z","level":"info","msg":"hello"}"#,
+            r#"{"ts":"2024-01-01T00:00:01Z","level":"warn","msg":"world"}"#,
+        ];
+        let tab = make_tab(&lines).await;
+        let index = tab.build_field_index();
+        assert!(
+            index.names.contains(&"ts".to_string()),
+            "ts should still appear in names"
+        );
+        for ts_key in crate::parser::json::TIMESTAMP_KEYS {
+            assert!(
+                index.values.get(*ts_key).map_or(true, |v| v.is_empty()),
+                "timestamp key '{ts_key}' should have no sampled values"
+            );
+        }
+        assert!(!index.values.get("level").unwrap_or(&vec![]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_build_field_index_no_values_for_message_fields() {
+        let lines = [
+            r#"{"time":"2024-01-01T00:00:00Z","level":"info","msg":"hello"}"#,
+            r#"{"time":"2024-01-01T00:00:01Z","level":"warn","message":"world"}"#,
+        ];
+        let tab = make_tab(&lines).await;
+        let index = tab.build_field_index();
+        assert!(
+            index.names.contains(&"msg".to_string())
+                || index.names.contains(&"message".to_string()),
+            "message key should still appear in names"
+        );
+        for msg_key in crate::parser::json::MESSAGE_KEYS {
+            assert!(
+                index.values.get(*msg_key).map_or(true, |v| v.is_empty()),
+                "message key '{msg_key}' should have no sampled values"
+            );
+        }
+        assert!(!index.values.get("level").unwrap_or(&vec![]).is_empty());
     }
 }
