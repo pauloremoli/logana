@@ -200,6 +200,17 @@ impl Mode for ConfirmRestoreMode {
             tab.log_manager.set_comments(vec![]);
             tab.begin_filter_refresh();
             (Box::new(NormalMode::default()), KeyResult::Handled)
+        } else if kb.always.matches(key, modifiers) {
+            tab.apply_file_context(&self.context);
+            (
+                Box::new(NormalMode::default()),
+                KeyResult::AlwaysRestoreFile(self.context),
+            )
+        } else if kb.never.matches(key, modifiers) {
+            tab.log_manager.clear_filters().await;
+            tab.log_manager.set_comments(vec![]);
+            tab.begin_filter_refresh();
+            (Box::new(NormalMode::default()), KeyResult::NeverRestoreFile)
         } else {
             (self, KeyResult::Handled)
         }
@@ -218,6 +229,8 @@ impl Mode for ConfirmRestoreMode {
         ));
         status_entry(&mut spans, kb.confirm.yes.display(), "yes", theme);
         status_entry(&mut spans, kb.confirm.no.display(), "no", theme);
+        status_entry(&mut spans, kb.confirm.always.display(), "always", theme);
+        status_entry(&mut spans, kb.confirm.never.display(), "never", theme);
         Line::from(spans)
     }
 
@@ -251,6 +264,16 @@ impl Mode for ConfirmRestoreSessionMode {
             )
         } else if kb.no.matches(key, modifiers) {
             (Box::new(NormalMode::default()), KeyResult::Handled)
+        } else if kb.always.matches(key, modifiers) {
+            (
+                Box::new(NormalMode::default()),
+                KeyResult::AlwaysRestoreSession(self.files),
+            )
+        } else if kb.never.matches(key, modifiers) {
+            (
+                Box::new(NormalMode::default()),
+                KeyResult::NeverRestoreSession,
+            )
         } else {
             (self, KeyResult::Handled)
         }
@@ -269,6 +292,8 @@ impl Mode for ConfirmRestoreSessionMode {
         ));
         status_entry(&mut spans, kb.confirm.yes.display(), "yes", theme);
         status_entry(&mut spans, kb.confirm.no.display(), "no", theme);
+        status_entry(&mut spans, kb.confirm.always.display(), "always", theme);
+        status_entry(&mut spans, kb.confirm.never.display(), "never", theme);
         Line::from(spans)
     }
 

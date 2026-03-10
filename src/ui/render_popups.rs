@@ -1142,7 +1142,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Keybindings;
+    use crate::config::{Keybindings, RestoreSessionPolicy};
     use crate::db::{Database, FileContext};
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
@@ -1168,6 +1168,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await
     }

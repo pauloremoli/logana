@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use crate::config::RestoreSessionPolicy;
 use crate::db::FileContextStore;
 use crate::file_reader::{FileReader, VisibilityPredicate};
 use crate::log_manager::LogManager;
@@ -409,12 +410,12 @@ impl App {
                 }
                 // Use precomputed visible indices when available (single-pass optimisation);
                 // otherwise fall back to a full compute_visible scan.
+                // Either way, run a full filter refresh so that occurrence counts are
+                // computed (the single-pass predicate only tracks visibility, not counts).
                 if let Some(visible) = result.precomputed_visible {
                     self.tabs[0].visible_indices = super::VisibleLines::Filtered(visible);
-                    self.tabs[0].begin_level_index_rebuild();
-                } else {
-                    self.tabs[0].begin_filter_refresh();
                 }
+                self.tabs[0].begin_filter_refresh();
                 // Apply startup tail: jump to the last visible line and enable tail mode.
                 if self.startup_tail {
                     self.tabs[0].tail_mode = true;
@@ -424,7 +425,15 @@ impl App {
                 if !self.startup_filters
                     && let Ok(Some(ctx)) = self.db.load_file_context(&path).await
                 {
-                    self.tabs[0].mode = Box::new(ConfirmRestoreMode { context: ctx });
+                    match self.restore_policy {
+                        RestoreSessionPolicy::Always => {
+                            self.tabs[0].apply_file_context(&ctx);
+                        }
+                        RestoreSessionPolicy::Never => {}
+                        RestoreSessionPolicy::Ask => {
+                            self.tabs[0].mode = Box::new(ConfirmRestoreMode { context: ctx });
+                        }
+                    }
                 }
                 let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
                 self.tabs[0].watch_state = Some(FileWatchState {
@@ -666,7 +675,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Keybindings;
+    use crate::config::{Keybindings, RestoreSessionPolicy};
     use crate::db::Database;
     use crate::file_reader::{FileLoadResult, FileReader};
     use crate::log_manager::LogManager;
@@ -687,6 +696,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await
     }
@@ -750,6 +760,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
 
@@ -780,6 +791,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
 
@@ -812,6 +824,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
 
@@ -845,6 +858,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
 
@@ -876,6 +890,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
 
@@ -946,6 +961,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
 
@@ -1000,6 +1016,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
         let initial_count = app.tabs[0].file_reader.line_count();
@@ -1540,6 +1557,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
 

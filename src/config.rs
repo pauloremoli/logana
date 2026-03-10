@@ -1242,6 +1242,12 @@ fn default_confirm_no() -> KeyBindings {
         KeyBinding(KeyCode::Esc, KeyModifiers::NONE),
     ])
 }
+fn default_confirm_always() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('Y'), KeyModifiers::SHIFT)])
+}
+fn default_confirm_never() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('N'), KeyModifiers::SHIFT)])
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfirmKeybindings {
@@ -1249,6 +1255,10 @@ pub struct ConfirmKeybindings {
     pub yes: KeyBindings,
     #[serde(default = "default_confirm_no")]
     pub no: KeyBindings,
+    #[serde(default = "default_confirm_always")]
+    pub always: KeyBindings,
+    #[serde(default = "default_confirm_never")]
+    pub never: KeyBindings,
 }
 
 impl Default for ConfirmKeybindings {
@@ -1256,6 +1266,8 @@ impl Default for ConfirmKeybindings {
         Self {
             yes: default_confirm_yes(),
             no: default_confirm_no(),
+            always: default_confirm_always(),
+            never: default_confirm_never(),
         }
     }
 }
@@ -1573,6 +1585,19 @@ fn default_preview_bytes() -> u64 {
     16 * 1024 * 1024
 }
 
+/// Controls whether logana asks before restoring a previous session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RestoreSessionPolicy {
+    /// Always ask (default).
+    #[default]
+    Ask,
+    /// Restore without asking.
+    Always,
+    /// Never restore (skip without asking).
+    Never,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     /// Theme name (without `.json` extension) to load on startup.
@@ -1589,6 +1614,9 @@ pub struct Config {
     /// file index is being built in the background (default: 16 MiB).
     #[serde(default = "default_preview_bytes")]
     pub preview_bytes: u64,
+    /// Whether to restore previous sessions automatically, never, or always ask.
+    #[serde(default)]
+    pub restore_session: RestoreSessionPolicy,
 }
 
 impl Default for Config {
@@ -1599,6 +1627,7 @@ impl Default for Config {
             show_mode_bar: true,
             show_borders: true,
             preview_bytes: default_preview_bytes(),
+            restore_session: RestoreSessionPolicy::Ask,
         }
     }
 }
@@ -1622,6 +1651,31 @@ impl Config {
             tracing::warn!("Failed to parse config file {:?}: {}", config_path, e);
             Config::default()
         })
+    }
+
+    /// Persist only the `restore_session` policy to `~/.config/logana/config.json`.
+    ///
+    /// Reads the existing file first so other settings are preserved.  Fails
+    /// silently — a write error is logged but never surfaces to the user.
+    pub fn save_restore_policy(policy: RestoreSessionPolicy) {
+        let Some(config_path) = dirs::config_dir().map(|d| d.join("logana").join("config.json"))
+        else {
+            return;
+        };
+
+        let mut cfg = Self::load();
+        cfg.restore_session = policy;
+
+        let Ok(json) = serde_json::to_string_pretty(&cfg) else {
+            return;
+        };
+
+        if let Some(parent) = config_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&config_path, json) {
+            tracing::warn!("Failed to save config to {:?}: {}", config_path, e);
+        }
     }
 }
 
@@ -2581,6 +2635,48 @@ mod tests {
         assert!(kb.yes.matches(KeyCode::Enter, KeyModifiers::NONE));
         assert!(kb.no.matches(KeyCode::Char('n'), KeyModifiers::NONE));
         assert!(kb.no.matches(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(kb.always.matches(KeyCode::Char('Y'), KeyModifiers::SHIFT));
+        assert!(kb.never.matches(KeyCode::Char('N'), KeyModifiers::SHIFT));
+    }
+
+    // ── RestoreSessionPolicy ─────────────────────────────────────────────
+
+    #[test]
+    fn test_restore_session_policy_default_is_ask() {
+        assert_eq!(RestoreSessionPolicy::default(), RestoreSessionPolicy::Ask);
+    }
+
+    #[test]
+    fn test_restore_session_policy_serializes() {
+        let ask = serde_json::to_string(&RestoreSessionPolicy::Ask).unwrap();
+        let always = serde_json::to_string(&RestoreSessionPolicy::Always).unwrap();
+        let never = serde_json::to_string(&RestoreSessionPolicy::Never).unwrap();
+        assert_eq!(ask, "\"ask\"");
+        assert_eq!(always, "\"always\"");
+        assert_eq!(never, "\"never\"");
+    }
+
+    #[test]
+    fn test_restore_session_policy_deserializes() {
+        let ask: RestoreSessionPolicy = serde_json::from_str("\"ask\"").unwrap();
+        let always: RestoreSessionPolicy = serde_json::from_str("\"always\"").unwrap();
+        let never: RestoreSessionPolicy = serde_json::from_str("\"never\"").unwrap();
+        assert_eq!(ask, RestoreSessionPolicy::Ask);
+        assert_eq!(always, RestoreSessionPolicy::Always);
+        assert_eq!(never, RestoreSessionPolicy::Never);
+    }
+
+    #[test]
+    fn test_config_restore_session_defaults_to_ask() {
+        let config = Config::default();
+        assert_eq!(config.restore_session, RestoreSessionPolicy::Ask);
+    }
+
+    #[test]
+    fn test_config_restore_session_deserializes_from_json() {
+        let json = r#"{"restore_session": "always"}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.restore_session, RestoreSessionPolicy::Always);
     }
 
     // ── Config ──────────────────────────────────────────────────────────

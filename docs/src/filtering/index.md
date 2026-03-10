@@ -76,6 +76,37 @@ Export the current filter set to a JSON file, and reload it later:
 
 This is useful for sharing filter sets across machines or between log files with similar structure.
 
+## Inline Filters at Startup
+
+Add filters directly on the command line without creating a JSON file first:
+
+| Flag | Short | Purpose |
+|---|---|---|
+| `--include <args>` | `-i` | Add include filter |
+| `--exclude <args>` | `-o` | Add exclude filter |
+| `--timestamp <args>` | `-t` | Add date/time range filter |
+
+The argument string passed to each flag accepts exactly the same options as the corresponding TUI command (`:filter`, `:exclude`, `:date-filter`):
+
+```sh
+# Simple pattern
+logana app.log -i error -o debug
+
+# Field-scoped filter
+logana app.log -i "--field level=ERROR"
+
+# Include filter with highlight color
+logana app.log -i "--bg Red error"
+
+# Date range filter
+logana app.log -t "> 2024-02-21"
+
+# Combined
+logana app.log -i error -o debug -t "01:00 .. 02:00"
+```
+
+All flags can be repeated. Inline filters are applied after any `--filters` file. Invalid argument strings are rejected before the TUI opens.
+
 ## Preloading Filters at Startup
 
 Pass `--filters` (or `-f`) on the command line to apply a saved filter set before the TUI opens:

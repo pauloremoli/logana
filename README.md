@@ -6,20 +6,26 @@ Open a file, pipe stdin, or stream Docker containers — logana auto-detects the
 
 ---
 
-<!-- GIF: opening a log file and navigating (j/k, gg/G, Ctrl+d/u) -->
-
----
-
 ## Features
 
 - **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, and more
-- **Real-time filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters
-- **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; per-file restore on reopen
+- **Real-time filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters; add filters from the command line with `-i`/`-o`/`-t`
+- **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; configurable restore policy (ask / always / never)
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; show/hide/reorder per session
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
 - **Annotations** — attach multiline comments to log lines; export to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically; filter colors always take priority
 - **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 19 bundled themes
+
+---
+
+## Performance
+
+- **Zero-copy reads** — memory-mapped files let the OS page in only what's accessed, keeping RAM usage flat regardless of file size.
+- **SIMD-accelerated scanning** — line indexing uses CPU vector instructions to find newlines as fast as the memory bus allows.
+- **Background filtering** — filter scans run across all CPU cores without blocking the UI; switching filters cancels the previous scan immediately.
+
+For a deeper look at design decisions, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -35,6 +41,7 @@ Detected automatically on open — no flags or config required:
 | Common / Combined Log | Apache access, nginx access |
 | Logfmt | Go `slog`, Heroku, Grafana Loki |
 | Common log family | env_logger, tracing-subscriber fmt (with/without spans), logback, log4j2, Spring Boot, Python logging, loguru, structlog |
+
 ---
 
 ## Installation
@@ -97,13 +104,15 @@ tail -f app.log | logana
 
 # Stream a Docker container
 logana            # then type :docker
+
+# Add inline filters on the command line
+logana app.log -i error -o debug
+logana app.log -i "--field level=ERROR" -t "> 2024-02-21"
 ```
 
 ---
 
 ## Filtering
-
-<!-- GIF: adding an include filter, then an exclude filter, toggling filters on/off -->
 
 Filters are layered — include patterns narrow the view, exclude patterns hide matching lines. Both support literal strings (fast Aho-Corasick) and regular expressions.
 
@@ -135,11 +144,17 @@ Field filters match against parsed structured fields rather than raw line text. 
 
 Filters are persisted to SQLite and restored the next time you open the same file.
 
+**CLI flags:** Add filters before the TUI opens using `-i` (include), `-o` (exclude), and `-t` (timestamp). Each flag accepts the same argument string as the corresponding TUI command and can be repeated:
+
+```sh
+logana app.log -i error -o debug
+logana app.log -i "--field level=ERROR"
+logana app.log -i "--bg Red error" -t "> 2024-02-21"
+```
+
 ---
 
 ## Search
-
-<!-- GIF: searching forward and backward, n/N navigation -->
 
 | Action | Key |
 |---|---|
@@ -154,8 +169,6 @@ Search operates on visible lines only (respects active filters). Matches are hig
 
 ## Structured Field View
 
-<!-- GIF: structured JSON log, showing/hiding fields with :select-fields -->
-
 When a structured format is detected (JSON, logfmt, syslog, etc.), logana parses each line into columns: timestamp, level, target, and extra fields. Use `:select-fields` to show, hide, and reorder columns interactively.
 
 ```sh
@@ -168,8 +181,6 @@ When a structured format is detected (JSON, logfmt, syslog, etc.), logana parses
 ---
 
 ## Annotations
-
-<!-- GIF: visual select lines, type comment, export to markdown -->
 
 Select lines with `V` (visual mode), then press `c` to attach a multiline comment. You can also press `c` in normal mode to comment the current line directly. Annotated lines show a `◆` marker in the gutter. Press `r` on an annotated line to edit its comment. Export everything to a report:
 
@@ -319,6 +330,7 @@ Config file: `~/.config/logana/config.json`
   "theme": "dracula",
   "show_mode_bar": true,
   "show_borders": true,
+  "restore_session": "ask",
   "keybindings": {
     "navigation": {
       "scroll_down": ["j", "Down"],
@@ -332,6 +344,13 @@ Config file: `~/.config/logana/config.json`
   }
 }
 ```
+
+**`restore_session`** controls the behaviour when reopening a file that has a saved session:
+- `"ask"` — prompt on every open (default)
+- `"always"` — restore silently without asking
+- `"never"` — always start fresh without asking
+
+You can also set this preference interactively: when the restore prompt appears, press `Y` (always) or `N` (never) instead of `y`/`n` to save the choice permanently.
 
 All keybindings have sensible defaults — the config file is entirely optional. Each action supports a single key or an array of alternatives.
 
@@ -358,9 +377,8 @@ Place custom themes (JSON) in `~/.config/logana/themes/`. Colors accept hex (`"#
 | Path | Contents |
 |---|---|
 | `~/.local/share/logana/logana.db` | Filters, session state, file contexts |
-| `~/.config/logana/config.json` | Keybindings, theme, UI defaults |
+| `~/.config/logana/config.json` | Keybindings, theme, UI defaults, restore policy |
 | `~/.config/logana/themes/` | Custom themes |
 | `~/.config/logana/templates/` | Custom export templates |
 
 ---
-

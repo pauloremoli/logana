@@ -10,7 +10,7 @@ use ratatui::{Terminal, prelude::*};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::config::Keybindings;
+use crate::config::{Keybindings, RestoreSessionPolicy};
 use crate::db::{FileContext, FileContextStore, SessionStore};
 use crate::file_reader::FileReader;
 use crate::log_manager::LogManager;
@@ -51,6 +51,10 @@ pub struct App {
     pub startup_filters: bool,
     /// Number of bytes to read for the instant preview (from config `preview_bytes`).
     pub preview_bytes: u64,
+    /// Restore session policy from config — controls whether to skip the prompt.
+    pub restore_policy: RestoreSessionPolicy,
+    /// Session files to restore automatically (set when policy is Always and session exists).
+    pub pending_session_restore: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for App {
@@ -68,6 +72,7 @@ impl App {
         file_reader: FileReader,
         theme: Theme,
         keybindings: Arc<Keybindings>,
+        restore_policy: RestoreSessionPolicy,
     ) -> App {
         let db = log_manager.db.clone();
 
@@ -87,6 +92,7 @@ impl App {
 
         let mut tab = TabState::new(file_reader, log_manager, title);
         tab.keybindings = keybindings.clone();
+        let mut pending_session_restore: Option<Vec<String>> = None;
 
         // Check for saved context only when we have real data (not a placeholder
         // that will be replaced by a background load started after App::new).
@@ -94,7 +100,15 @@ impl App {
             if tab.file_reader.line_count() > 0 {
                 let source = source.to_string();
                 if let Ok(Some(ctx)) = db.load_file_context(&source).await {
-                    tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
+                    match restore_policy {
+                        RestoreSessionPolicy::Always => {
+                            tab.apply_file_context(&ctx);
+                        }
+                        RestoreSessionPolicy::Never => {}
+                        RestoreSessionPolicy::Ask => {
+                            tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
+                        }
+                    }
                 }
             }
         } else if no_source && no_data {
@@ -102,7 +116,15 @@ impl App {
             if let Ok(files) = db.load_session().await
                 && !files.is_empty()
             {
-                tab.mode = Box::new(ConfirmRestoreSessionMode { files });
+                match restore_policy {
+                    RestoreSessionPolicy::Never => {}
+                    RestoreSessionPolicy::Ask => {
+                        tab.mode = Box::new(ConfirmRestoreSessionMode { files });
+                    }
+                    RestoreSessionPolicy::Always => {
+                        pending_session_restore = Some(files);
+                    }
+                }
             }
         }
 
@@ -121,6 +143,8 @@ impl App {
             startup_tail: false,
             startup_filters: false,
             preview_bytes: 16 * 1024 * 1024,
+            restore_policy,
+            pending_session_restore,
         }
     }
 
@@ -262,6 +286,10 @@ impl App {
     where
         <B as Backend>::Error: Send + Sync + 'static,
     {
+        if let Some(files) = self.pending_session_restore.take() {
+            self.restore_session(files).await;
+        }
+
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(250);
 
@@ -318,6 +346,23 @@ impl App {
                             }
                         }
                     }
+                    KeyResult::AlwaysRestoreFile(_) => {
+                        self.restore_policy = RestoreSessionPolicy::Always;
+                        crate::config::Config::save_restore_policy(RestoreSessionPolicy::Always);
+                    }
+                    KeyResult::NeverRestoreFile => {
+                        self.restore_policy = RestoreSessionPolicy::Never;
+                        crate::config::Config::save_restore_policy(RestoreSessionPolicy::Never);
+                    }
+                    KeyResult::AlwaysRestoreSession(files) => {
+                        self.restore_policy = RestoreSessionPolicy::Always;
+                        crate::config::Config::save_restore_policy(RestoreSessionPolicy::Always);
+                        self.restore_session(files).await;
+                    }
+                    KeyResult::NeverRestoreSession => {
+                        self.restore_policy = RestoreSessionPolicy::Never;
+                        crate::config::Config::save_restore_policy(RestoreSessionPolicy::Never);
+                    }
                 }
             }
 
@@ -372,6 +417,23 @@ impl App {
                     }
                 }
             }
+            KeyResult::AlwaysRestoreFile(_) => {
+                self.restore_policy = RestoreSessionPolicy::Always;
+                crate::config::Config::save_restore_policy(RestoreSessionPolicy::Always);
+            }
+            KeyResult::NeverRestoreFile => {
+                self.restore_policy = RestoreSessionPolicy::Never;
+                crate::config::Config::save_restore_policy(RestoreSessionPolicy::Never);
+            }
+            KeyResult::AlwaysRestoreSession(files) => {
+                self.restore_policy = RestoreSessionPolicy::Always;
+                crate::config::Config::save_restore_policy(RestoreSessionPolicy::Always);
+                self.restore_session(files).await;
+            }
+            KeyResult::NeverRestoreSession => {
+                self.restore_policy = RestoreSessionPolicy::Never;
+                crate::config::Config::save_restore_policy(RestoreSessionPolicy::Never);
+            }
         }
     }
 
@@ -410,7 +472,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::auto_complete::shell_split;
-    use crate::config::Keybindings;
+    use crate::config::{Keybindings, RestoreSessionPolicy};
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
@@ -451,6 +513,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await
     }
@@ -523,6 +586,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
 
@@ -542,6 +606,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
 
@@ -564,6 +629,7 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
         )
         .await;
 
@@ -941,7 +1007,14 @@ mod tests {
         let data: Vec<u8> = b"hello\nworld\n".to_vec();
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(db.clone(), Some("test.log".to_string())).await;
-        let app = App::new(lm, fr, Theme::default(), Arc::new(Keybindings::default())).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
+        )
+        .await;
         let tab = &app.tabs[0];
         app.save_tab_context(tab).await;
         // Verify it was saved
@@ -955,7 +1028,14 @@ mod tests {
         let data: Vec<u8> = b"hello\n".to_vec();
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(db.clone(), Some("test.log".to_string())).await;
-        let app = App::new(lm, fr, Theme::default(), Arc::new(Keybindings::default())).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
+        )
+        .await;
         app.save_all_contexts().await;
         // Session should be saved
         let files = db.load_session().await.unwrap();
@@ -1024,7 +1104,14 @@ mod tests {
         let data: Vec<u8> = b"hello\nworld\n".to_vec();
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(db, Some("/tmp/test.log".to_string())).await;
-        let app = App::new(lm, fr, Theme::default(), Arc::new(Keybindings::default())).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            RestoreSessionPolicy::default(),
+        )
+        .await;
         assert_eq!(app.tab().title, "test.log");
     }
 }

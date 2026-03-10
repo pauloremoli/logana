@@ -100,6 +100,10 @@ pub enum KeyResult {
     CopyToClipboard(String),
     OpenFiles(Vec<String>),
     ToggleModeBar,
+    AlwaysRestoreFile(crate::db::FileContext),
+    NeverRestoreFile,
+    AlwaysRestoreSession(Vec<String>),
+    NeverRestoreSession,
 }
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,10 @@ logana            # then type :docker
 # Preload a saved filter set — filters are applied in a single pass during indexing
 logana app.log --filters my-filters.json
 
+# Add inline filters directly on the command line
+logana app.log -i error -o debug
+logana app.log -i "--field level=ERROR" -t "> 2024-02-21"
+
 # Start at the end of the file with tail mode enabled
 logana app.log --tail
 

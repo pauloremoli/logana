@@ -40,8 +40,38 @@ struct Args {
     /// Start at the end of the file and enable tail mode.
     /// When combined with --filters, the predicate is evaluated from the last
     /// line backward so the tail is available immediately after loading.
-    #[arg(short = 't', long)]
+    #[arg(long)]
     tail: bool,
+
+    /// Add an include filter. Accepts the same arguments as the :filter command.
+    /// May be repeated. Examples: -i "error"  or  -i "--bg Red --field level=ERROR"
+    #[arg(
+        short = 'i',
+        long = "include",
+        value_name = "ARGS",
+        allow_hyphen_values = true
+    )]
+    include_filters: Vec<String>,
+
+    /// Add an exclude filter. Accepts the same arguments as the :exclude command.
+    /// May be repeated. Examples: -o "debug"  or  -o "--field level=debug"
+    #[arg(
+        short = 'o',
+        long = "exclude",
+        value_name = "ARGS",
+        allow_hyphen_values = true
+    )]
+    exclude_filters: Vec<String>,
+
+    /// Add a date/time range filter. Accepts the same arguments as :date-filter.
+    /// May be repeated. Examples: -t "> 2024-02-21"  or  -t "01:00 .. 02:00"
+    #[arg(
+        short = 't',
+        long = "timestamp",
+        value_name = "ARGS",
+        allow_hyphen_values = true
+    )]
+    timestamp_filters: Vec<String>,
 }
 
 fn get_db_path() -> String {
@@ -61,6 +91,20 @@ fn validate_file_arg(path: &str) -> std::result::Result<(), String> {
         return Err(format!("'{}' not found.", path));
     }
     Ok(())
+}
+
+/// Validate an inline filter argument string by pre-parsing it with the same
+/// clap parser used by the TUI command mode. Returns `Err` with a message if
+/// the string is not a valid command argument list.
+fn validate_inline_filter(prefix: &str, args_str: &str) -> std::result::Result<(), String> {
+    use clap::Parser as _;
+    use logana::auto_complete::shell_split;
+    use logana::mode::command_mode::CommandLine;
+
+    let cmd = format!("{} {}", prefix, args_str);
+    CommandLine::try_parse_from(shell_split(&cmd))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Determine whether to start a background file load and what source path
@@ -131,6 +175,26 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    // Validate inline filter argument strings before entering the TUI.
+    for args_str in &args.include_filters {
+        if let Err(msg) = validate_inline_filter("filter", args_str) {
+            eprintln!("Error (-i/--include): {}", msg);
+            std::process::exit(1);
+        }
+    }
+    for args_str in &args.exclude_filters {
+        if let Err(msg) = validate_inline_filter("exclude", args_str) {
+            eprintln!("Error (-o/--exclude): {}", msg);
+            std::process::exit(1);
+        }
+    }
+    for args_str in &args.timestamp_filters {
+        if let Err(msg) = validate_inline_filter("date-filter", args_str) {
+            eprintln!("Error (-t/--timestamp): {}", msg);
+            std::process::exit(1);
+        }
+    }
+
     // For a directory argument, pre-check that it contains files so we can
     // give a clean error before entering the TUI.
     if let Some(ref path) = file_path
@@ -156,6 +220,7 @@ async fn main() -> Result<()> {
     let show_mode_bar = config.show_mode_bar;
     let show_borders = config.show_borders;
     let preview_bytes = config.preview_bytes;
+    let restore_policy = config.restore_session;
 
     for conflict in config.keybindings.validate() {
         tracing::warn!("{}", conflict);
@@ -181,6 +246,7 @@ async fn main() -> Result<()> {
             FileReader::from_bytes(vec![]),
             theme,
             keybindings,
+            restore_policy,
         )
         .await;
 
@@ -202,13 +268,31 @@ async fn main() -> Result<()> {
 
         // Mark the initial tab for tail mode so on_load_success can apply it.
         app.startup_tail = args.tail;
-        // Suppress the previous-session restore prompt when --filters was provided.
-        app.startup_filters = args.filters.is_some();
+
+        // Apply inline CLI filters (already validated before entering the TUI).
+        let has_inline_filters = !args.include_filters.is_empty()
+            || !args.exclude_filters.is_empty()
+            || !args.timestamp_filters.is_empty();
+        for args_str in &args.include_filters {
+            app.execute_command_str(format!("filter {}", args_str))
+                .await;
+        }
+        for args_str in &args.exclude_filters {
+            app.execute_command_str(format!("exclude {}", args_str))
+                .await;
+        }
+        for args_str in &args.timestamp_filters {
+            app.execute_command_str(format!("date-filter {}", args_str))
+                .await;
+        }
+
+        // Suppress the previous-session restore prompt when any filters were provided.
+        app.startup_filters = args.filters.is_some() || has_inline_filters;
 
         // Build a visibility predicate for the single-pass optimisation when both
-        // a filter file and a background file load are in play.
+        // filters and a background file load are in play.
         let startup_predicate: Option<VisibilityPredicate> =
-            if background_file_load && args.filters.is_some() {
+            if background_file_load && (args.filters.is_some() || has_inline_filters) {
                 let (fm, _, _, _) = app.tabs[0].log_manager.build_filter_manager();
                 Some(Box::new(move |line: &[u8]| fm.is_visible(line)))
             } else {
@@ -292,12 +376,6 @@ mod tests {
     }
 
     #[test]
-    fn test_args_tail_short() {
-        let args = Args::try_parse_from(["logana", "file.log", "-t"]).unwrap();
-        assert!(args.tail);
-    }
-
-    #[test]
     fn test_args_tail_long() {
         let args = Args::try_parse_from(["logana", "file.log", "--tail"]).unwrap();
         assert!(args.tail);
@@ -312,9 +390,122 @@ mod tests {
     #[test]
     fn test_args_filters_and_tail_combined() {
         let args =
-            Args::try_parse_from(["logana", "file.log", "-f", "filters.json", "-t"]).unwrap();
+            Args::try_parse_from(["logana", "file.log", "-f", "filters.json", "--tail"]).unwrap();
         assert_eq!(args.filters, Some("filters.json".to_string()));
         assert!(args.tail);
+    }
+
+    #[test]
+    fn test_args_include_short() {
+        let args = Args::try_parse_from(["logana", "file.log", "-i", "error"]).unwrap();
+        assert_eq!(args.include_filters, vec!["error"]);
+    }
+
+    #[test]
+    fn test_args_include_long() {
+        let args = Args::try_parse_from(["logana", "--include", "error"]).unwrap();
+        assert_eq!(args.include_filters, vec!["error"]);
+    }
+
+    #[test]
+    fn test_args_include_repeated() {
+        let args =
+            Args::try_parse_from(["logana", "-i", "error", "-i", "--field level=ERROR"]).unwrap();
+        assert_eq!(args.include_filters, vec!["error", "--field level=ERROR"]);
+    }
+
+    #[test]
+    fn test_args_exclude_short() {
+        let args = Args::try_parse_from(["logana", "file.log", "-o", "debug"]).unwrap();
+        assert_eq!(args.exclude_filters, vec!["debug"]);
+    }
+
+    #[test]
+    fn test_args_exclude_long() {
+        let args = Args::try_parse_from(["logana", "--exclude", "debug"]).unwrap();
+        assert_eq!(args.exclude_filters, vec!["debug"]);
+    }
+
+    #[test]
+    fn test_args_timestamp_short() {
+        let args = Args::try_parse_from(["logana", "-t", "> 2024-02-21"]).unwrap();
+        assert_eq!(args.timestamp_filters, vec!["> 2024-02-21"]);
+    }
+
+    #[test]
+    fn test_args_timestamp_long() {
+        let args = Args::try_parse_from(["logana", "--timestamp", "01:00 .. 02:00"]).unwrap();
+        assert_eq!(args.timestamp_filters, vec!["01:00 .. 02:00"]);
+    }
+
+    #[test]
+    fn test_args_timestamp_repeated() {
+        let args = Args::try_parse_from(["logana", "-t", "> 10:00", "-t", "< 11:00"]).unwrap();
+        assert_eq!(args.timestamp_filters, vec!["> 10:00", "< 11:00"]);
+    }
+
+    #[test]
+    fn test_args_inline_filters_default_empty() {
+        let args = Args::try_parse_from(["logana", "file.log"]).unwrap();
+        assert!(args.include_filters.is_empty());
+        assert!(args.exclude_filters.is_empty());
+        assert!(args.timestamp_filters.is_empty());
+    }
+
+    #[test]
+    fn test_args_inline_filters_combined() {
+        let args = Args::try_parse_from([
+            "logana",
+            "file.log",
+            "-i",
+            "--bg Red error",
+            "-o",
+            "debug",
+            "-t",
+            "> 10:00",
+        ])
+        .unwrap();
+        assert_eq!(args.include_filters, vec!["--bg Red error"]);
+        assert_eq!(args.exclude_filters, vec!["debug"]);
+        assert_eq!(args.timestamp_filters, vec!["> 10:00"]);
+    }
+
+    #[test]
+    fn test_args_include_with_flags() {
+        let args = Args::try_parse_from(["logana", "-i", "--field level=ERROR"]).unwrap();
+        assert_eq!(args.include_filters, vec!["--field level=ERROR"]);
+    }
+
+    // ── validate_inline_filter ────────────────────────────────────────
+
+    #[test]
+    fn test_validate_inline_filter_valid_pattern() {
+        assert!(validate_inline_filter("filter", "error").is_ok());
+    }
+
+    #[test]
+    fn test_validate_inline_filter_with_field_flag() {
+        assert!(validate_inline_filter("filter", "--field level=ERROR").is_ok());
+    }
+
+    #[test]
+    fn test_validate_inline_filter_with_color_flags() {
+        assert!(validate_inline_filter("filter", "--bg Red --fg White error").is_ok());
+    }
+
+    #[test]
+    fn test_validate_inline_filter_exclude_valid() {
+        assert!(validate_inline_filter("exclude", "debug").is_ok());
+    }
+
+    #[test]
+    fn test_validate_inline_filter_date_filter_valid() {
+        assert!(validate_inline_filter("date-filter", "> 2024-02-21").is_ok());
+    }
+
+    #[test]
+    fn test_validate_inline_filter_unknown_flag_rejected() {
+        assert!(validate_inline_filter("filter", "--unknown-flag value").is_err());
     }
 
     #[test]
