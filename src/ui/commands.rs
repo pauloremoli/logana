@@ -576,8 +576,6 @@ mod tests {
             if let Some(h) = tab.filter_handle.take() {
                 if let Ok(result) = h.result_rx.await {
                     tab.visible_indices = VisibleLines::Filtered(result.visible);
-                    tab.error_positions = result.error_positions;
-                    tab.warning_positions = result.warning_positions;
                     if tab.visible_indices.is_empty() {
                         tab.scroll_offset = 0;
                     } else {

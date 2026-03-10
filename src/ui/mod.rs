@@ -129,22 +129,18 @@ pub struct SearchHandle {
 // FilterHandle
 // ---------------------------------------------------------------------------
 
-/// Result delivered by the background filter/level-index task.
+/// Result delivered by the background filter task.
 pub struct FilterComputeResult {
     pub visible: Vec<usize>,
-    pub error_positions: Vec<usize>,
-    pub warning_positions: Vec<usize>,
     /// Per-filter match counts unified across all filter types, indexed parallel to
-    /// `filter_defs` (disabled filters get count 0). `None` when the result comes from a
-    /// level-index rebuild that did not recompute filter state (counts should be left
-    /// unchanged on the tab).
+    /// `filter_defs` (disabled filters get count 0).
     pub filter_match_counts: Option<Vec<usize>>,
 }
 
 /// Handle for a background filter computation task spawned by
-/// [`TabState::begin_filter_refresh`] or [`TabState::begin_level_index_rebuild`].
+/// [`TabState::begin_filter_refresh`].
 pub struct FilterHandle {
-    /// Receives visible indices and level positions. Never sent when cancelled.
+    /// Receives visible indices. Never sent when cancelled.
     pub result_rx: oneshot::Receiver<FilterComputeResult>,
     /// Set to `true` to abort the in-flight computation early.
     pub cancel: Arc<AtomicBool>,
@@ -272,43 +268,6 @@ fn line_is_visible(
 
     // No field includes; visible iff no text include filters exist.
     !fm.has_include()
-}
-
-/// Compute `error_positions` and `warning_positions` from a set of visible file-line indices.
-///
-/// Designed to run inside a `spawn_blocking` thread. Uses the format parser when available,
-/// falling back to byte-pattern detection. Returns `(errors, warnings)` — each a vec of
-/// *visible positions* (indices into `visible`, not file line indices).
-fn compute_level_positions(
-    visible: &[usize],
-    reader: &crate::file_reader::FileReader,
-    parser: Option<&dyn LogFormatParser>,
-) -> (Vec<usize>, Vec<usize>) {
-    use crate::types::LogLevel;
-    let mut errors = Vec::new();
-    let mut warnings = Vec::new();
-    for (pos, &file_idx) in visible.iter().enumerate() {
-        let bytes = reader.get_line(file_idx);
-        let level = if let Some(p) = parser {
-            if let Some(parts) = p.parse_line(bytes) {
-                if let Some(level_str) = parts.level {
-                    LogLevel::parse_level(level_str)
-                } else {
-                    LogLevel::detect_from_bytes(bytes)
-                }
-            } else {
-                LogLevel::detect_from_bytes(bytes)
-            }
-        } else {
-            LogLevel::detect_from_bytes(bytes)
-        };
-        match level {
-            LogLevel::Error | LogLevel::Fatal => errors.push(pos),
-            LogLevel::Warning => warnings.push(pos),
-            _ => {}
-        }
-    }
-    (errors, warnings)
 }
 
 /// Snapshot of the filter-driven view: visible indices + filter manager + styles.
@@ -550,10 +509,6 @@ pub struct TabState {
     /// before applying cursor/mark/visual style and line numbers).
     /// Key: line_idx → (render_cache_gen, search_result_gen, current_occ, Line<'static>).
     pub render_line_cache: HashMap<usize, (u64, u64, Option<usize>, Line<'static>)>,
-    /// Sorted visible positions (indices into `visible_indices`) of ERROR and FATAL lines.
-    pub error_positions: Vec<usize>,
-    /// Sorted visible positions (indices into `visible_indices`) of WARN lines.
-    pub warning_positions: Vec<usize>,
     /// Per-filter match counts unified across all filter types, indexed parallel to
     /// `filter_defs` (disabled filters get count 0). Updated after each filter computation.
     pub filter_match_counts: Vec<usize>,
@@ -617,67 +572,77 @@ impl TabState {
             render_cache_gen: 0,
             search_result_gen: 0,
             render_line_cache: HashMap::new(),
-            error_positions: Vec::new(),
-            warning_positions: Vec::new(),
             filter_match_counts: Vec::new(),
         };
         tab.refresh_visible();
         tab
     }
 
-    /// Rebuilds the sorted level-position index from the current `visible_indices`.
-    ///
-    /// Scans every visible line, classifies its log level (parse cache → parser →
-    /// byte scan), and records the visible position in `error_positions` (for
-    /// ERROR / FATAL) or `warning_positions` (for WARN).
-    pub fn rebuild_level_index(&mut self) {
-        use crate::types::LogLevel;
-        let mut errors = Vec::new();
-        let mut warnings = Vec::new();
-        let len = self.visible_indices.len();
-        for pos in 0..len {
-            let file_idx = self.visible_indices.get(pos);
-            let cached_level = self.parse_cache.get(&file_idx).and_then(|(cache_gen, c)| {
-                (*cache_gen == self.parse_cache_gen)
-                    .then(|| c.level.as_deref().map(LogLevel::parse_level))
-                    .flatten()
-            });
-            let level = if let Some(l) = cached_level {
-                l
-            } else {
-                let bytes = self.file_reader.get_line(file_idx);
-                if !self.raw_mode {
-                    if let Some(parser) = self.detected_format.as_ref() {
-                        if let Some(parts) = parser.parse_line(bytes) {
-                            if let Some(level_str) = parts.level {
-                                LogLevel::parse_level(level_str)
-                            } else {
-                                LogLevel::detect_from_bytes(bytes)
-                            }
-                        } else {
-                            LogLevel::detect_from_bytes(bytes)
-                        }
-                    } else {
-                        LogLevel::detect_from_bytes(bytes)
-                    }
-                } else {
-                    LogLevel::detect_from_bytes(bytes)
-                }
-            };
-            match level {
-                LogLevel::Error | LogLevel::Fatal => errors.push(pos),
-                LogLevel::Warning => warnings.push(pos),
-                _ => {}
-            }
-        }
-        self.error_positions = errors;
-        self.warning_positions = warnings;
-    }
-
     /// Recompute which file lines are visible under the current filters.
     pub fn refresh_visible(&mut self) {
         self.refresh_visible_inner();
-        self.rebuild_level_index();
+    }
+
+    /// Scan forward from `from` (exclusive) for the next visible ERROR/FATAL line.
+    pub fn next_error_position(&self, from: usize) -> Option<usize> {
+        self.scan_level_forward(from, true)
+    }
+
+    /// Scan backward from `from` (exclusive) for the previous visible ERROR/FATAL line.
+    pub fn prev_error_position(&self, from: usize) -> Option<usize> {
+        self.scan_level_backward(from, true)
+    }
+
+    /// Scan forward from `from` (exclusive) for the next visible WARNING line.
+    pub fn next_warning_position(&self, from: usize) -> Option<usize> {
+        self.scan_level_forward(from, false)
+    }
+
+    /// Scan backward from `from` (exclusive) for the previous visible WARNING line.
+    pub fn prev_warning_position(&self, from: usize) -> Option<usize> {
+        self.scan_level_backward(from, false)
+    }
+
+    fn scan_level_forward(&self, from: usize, errors: bool) -> Option<usize> {
+        let parser: Option<&dyn LogFormatParser> = if self.raw_mode {
+            None
+        } else {
+            self.detected_format.as_deref()
+        };
+        let len = self.visible_indices.len();
+        (from.saturating_add(1)..len).find(|&pos| self.pos_matches_level(pos, parser, errors))
+    }
+
+    fn scan_level_backward(&self, from: usize, errors: bool) -> Option<usize> {
+        let parser: Option<&dyn LogFormatParser> = if self.raw_mode {
+            None
+        } else {
+            self.detected_format.as_deref()
+        };
+        (0..from)
+            .rev()
+            .find(|&pos| self.pos_matches_level(pos, parser, errors))
+    }
+
+    fn pos_matches_level(
+        &self,
+        pos: usize,
+        parser: Option<&dyn LogFormatParser>,
+        errors: bool,
+    ) -> bool {
+        use crate::types::LogLevel;
+        let file_idx = self.visible_indices.get(pos);
+        let bytes = self.file_reader.get_line(file_idx);
+        let level = parser
+            .and_then(|p| p.parse_line(bytes))
+            .and_then(|parts| parts.level)
+            .map(LogLevel::parse_level)
+            .unwrap_or_else(|| LogLevel::detect_from_bytes(bytes));
+        if errors {
+            matches!(level, LogLevel::Error | LogLevel::Fatal)
+        } else {
+            matches!(level, LogLevel::Warning)
+        }
     }
 
     fn refresh_visible_inner(&mut self) {
@@ -1178,8 +1143,6 @@ impl TabState {
                 return;
             }
 
-            // Signal 100% so the UI transitions from "X%" to "Indexing…" while
-            // compute_level_positions runs — prevents appearing stuck near 99%.
             let _ = progress_tx.send(1.0);
 
             let text_counts: Vec<usize> =
@@ -1189,65 +1152,10 @@ impl TabState {
             let unified =
                 merge_filter_counts(&all_filter_defs, &text_counts, &field_counts, &date_counts);
 
-            // Compute level positions from the visible set in the same background thread
-            // so the event loop never does O(visible) work synchronously.
-            let (error_positions, warning_positions) =
-                compute_level_positions(&visible, &file_reader, parser_ref);
-
             if !cancel_clone.load(Ordering::Relaxed) {
                 let _ = result_tx.send(FilterComputeResult {
                     visible,
-                    error_positions,
-                    warning_positions,
                     filter_match_counts: Some(unified),
-                });
-            }
-        });
-
-        self.filter_handle = Some(FilterHandle {
-            result_rx,
-            cancel,
-            progress_rx,
-        });
-    }
-
-    /// Offload the level-position computation for the current `visible_indices` to a
-    /// background thread, reusing the [`FilterHandle`] mechanism.
-    ///
-    /// Used after the startup single-pass sets `visible_indices` synchronously so that
-    /// `rebuild_level_index` never runs on the event loop for large files.
-    pub fn begin_level_index_rebuild(&mut self) {
-        if let Some(ref h) = self.filter_handle {
-            h.cancel.store(true, Ordering::Relaxed);
-        }
-        self.filter_handle = None;
-
-        let visible: Vec<usize> = self.visible_indices.iter().collect();
-        let file_reader = self.file_reader.clone();
-        let parser = if self.raw_mode {
-            None
-        } else {
-            self.detected_format.clone()
-        };
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_clone = cancel.clone();
-        let (result_tx, result_rx) = oneshot::channel();
-        let (_, progress_rx) = watch::channel(1.0_f64);
-
-        tokio::task::spawn_blocking(move || {
-            if cancel_clone.load(Ordering::Relaxed) {
-                return;
-            }
-            let parser_ref: Option<&dyn LogFormatParser> = parser.as_deref();
-            let (error_positions, warning_positions) =
-                compute_level_positions(&visible, &file_reader, parser_ref);
-            if !cancel_clone.load(Ordering::Relaxed) {
-                let _ = result_tx.send(FilterComputeResult {
-                    visible,
-                    error_positions,
-                    warning_positions,
-                    filter_match_counts: None,
                 });
             }
         });
@@ -2545,69 +2453,49 @@ mod tests {
         assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
     }
 
-    // ── Level index ─────────────────────────────────────────────────────
+    // ── Lazy level scan ──────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_rebuild_level_index_populates_error_positions() {
+    async fn test_next_error_position_finds_forward() {
         let tab = make_tab(&["INFO line", "ERROR oops", "WARN careful", "FATAL crash"]).await;
-        assert_eq!(tab.error_positions, vec![1, 3]);
-        assert_eq!(tab.warning_positions, vec![2]);
+        assert_eq!(tab.next_error_position(0), Some(1));
+        assert_eq!(tab.next_error_position(1), Some(3));
+        assert_eq!(tab.next_error_position(3), None);
     }
 
     #[tokio::test]
-    async fn test_rebuild_level_index_empty_on_no_matches() {
-        let tab = make_tab(&["INFO line", "DEBUG detail"]).await;
-        assert!(tab.error_positions.is_empty());
-        assert!(tab.warning_positions.is_empty());
+    async fn test_prev_error_position_finds_backward() {
+        let tab = make_tab(&["INFO line", "ERROR oops", "WARN careful", "FATAL crash"]).await;
+        assert_eq!(tab.prev_error_position(3), Some(1));
+        assert_eq!(tab.prev_error_position(1), None);
     }
 
     #[tokio::test]
-    async fn test_rebuild_level_index_empty_file() {
+    async fn test_next_warning_position_finds_forward() {
+        let tab = make_tab(&["INFO line", "ERROR oops", "WARN careful", "FATAL crash"]).await;
+        assert_eq!(tab.next_warning_position(0), Some(2));
+        assert_eq!(tab.next_warning_position(2), None);
+    }
+
+    #[tokio::test]
+    async fn test_prev_warning_position_finds_backward() {
+        let tab = make_tab(&["INFO line", "ERROR oops", "WARN careful", "FATAL crash"]).await;
+        assert_eq!(tab.prev_warning_position(3), Some(2));
+        assert_eq!(tab.prev_warning_position(2), None);
+    }
+
+    #[tokio::test]
+    async fn test_scan_level_empty_file() {
         let tab = make_tab(&[]).await;
-        assert!(tab.error_positions.is_empty());
-        assert!(tab.warning_positions.is_empty());
+        assert_eq!(tab.next_error_position(0), None);
+        assert_eq!(tab.prev_error_position(0), None);
     }
 
     #[tokio::test]
-    async fn test_begin_filter_refresh_fast_path_does_not_update_level_index() {
-        let mut tab = make_tab(&["INFO ok"]).await;
-        tab.error_positions = vec![99];
-        tab.file_reader = FileReader::from_bytes(b"ERROR bad\n".to_vec());
-        tab.begin_filter_refresh();
-        // Fast path must not touch level index — that is the streaming path's responsibility.
-        assert!(tab.filter_handle.is_none());
-        assert_eq!(tab.error_positions, vec![99]);
-    }
-
-    #[tokio::test]
-    async fn test_begin_filter_refresh_slow_path_computes_level_positions() {
-        let mut tab = make_tab(&["INFO ok", "ERROR bad", "WARN careful", "FATAL crash"]).await;
-        tab.log_manager
-            .add_filter_with_color("ok".to_string(), FilterType::Exclude, None, None, true)
-            .await;
-        tab.begin_filter_refresh();
-        assert!(tab.filter_handle.is_some());
-        let h = tab.filter_handle.take().unwrap();
-        let result = h.result_rx.await.unwrap();
-        // "INFO ok" excluded; remaining visible positions: ERROR=0, WARN=1, FATAL=2.
-        assert_eq!(result.error_positions, vec![0, 2]);
-        assert_eq!(result.warning_positions, vec![1]);
-    }
-
-    #[tokio::test]
-    async fn test_begin_level_index_rebuild_offloads_computation() {
-        let mut tab = make_tab(&["INFO ok", "ERROR bad", "WARN careful"]).await;
-        tab.error_positions = vec![];
-        tab.warning_positions = vec![];
-        tab.begin_level_index_rebuild();
-        assert!(tab.filter_handle.is_some());
-        let h = tab.filter_handle.take().unwrap();
-        let result = h.result_rx.await.unwrap();
-        assert_eq!(result.visible, vec![0, 1, 2]);
-        assert_eq!(result.error_positions, vec![1]);
-        assert_eq!(result.warning_positions, vec![2]);
-        // Level-index rebuild must not update filter counts.
-        assert!(result.filter_match_counts.is_none());
+    async fn test_scan_level_no_matches() {
+        let tab = make_tab(&["INFO line", "DEBUG detail"]).await;
+        assert_eq!(tab.next_error_position(0), None);
+        assert_eq!(tab.next_warning_position(0), None);
     }
 
     #[tokio::test]

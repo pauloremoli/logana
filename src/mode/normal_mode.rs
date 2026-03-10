@@ -447,7 +447,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.next_error.matches(key, modifiers) {
-            if let Some(pos) = find_next_in_sorted(&tab.error_positions, tab.scroll_offset) {
+            if let Some(pos) = tab.next_error_position(tab.scroll_offset) {
                 tab.scroll_offset = pos;
             } else {
                 tab.command_error = Some("No more errors".to_string());
@@ -458,7 +458,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.prev_error.matches(key, modifiers) {
-            if let Some(pos) = find_prev_in_sorted(&tab.error_positions, tab.scroll_offset) {
+            if let Some(pos) = tab.prev_error_position(tab.scroll_offset) {
                 tab.scroll_offset = pos;
             } else {
                 tab.command_error = Some("No previous error".to_string());
@@ -469,7 +469,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.next_warning.matches(key, modifiers) {
-            if let Some(pos) = find_next_in_sorted(&tab.warning_positions, tab.scroll_offset) {
+            if let Some(pos) = tab.next_warning_position(tab.scroll_offset) {
                 tab.scroll_offset = pos;
             } else {
                 tab.command_error = Some("No more warnings".to_string());
@@ -480,7 +480,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.prev_warning.matches(key, modifiers) {
-            if let Some(pos) = find_prev_in_sorted(&tab.warning_positions, tab.scroll_offset) {
+            if let Some(pos) = tab.prev_warning_position(tab.scroll_offset) {
                 tab.scroll_offset = pos;
             } else {
                 tab.command_error = Some("No previous warning".to_string());
@@ -565,20 +565,6 @@ impl Mode for NormalMode {
         );
         Line::from(spans)
     }
-}
-
-/// Returns the first position in the sorted `positions` slice that is strictly
-/// greater than `current`, or `None` if no such position exists.
-fn find_next_in_sorted(positions: &[usize], current: usize) -> Option<usize> {
-    let idx = positions.partition_point(|&p| p <= current);
-    positions.get(idx).copied()
-}
-
-/// Returns the last position in the sorted `positions` slice that is strictly
-/// less than `current`, or `None` if no such position exists.
-fn find_prev_in_sorted(positions: &[usize], current: usize) -> Option<usize> {
-    let idx = positions.partition_point(|&p| p < current);
-    idx.checked_sub(1).and_then(|i| positions.get(i).copied())
 }
 
 fn search_match_char_offset(tab: &TabState, line_text: &str) -> usize {
@@ -1408,37 +1394,5 @@ mod tests {
         tab.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
         assert_eq!(tab.scroll_offset, 1);
-    }
-
-    // ── find_next_in_sorted / find_prev_in_sorted ─────────────────────
-
-    #[test]
-    fn test_find_next_in_sorted_basic() {
-        let positions = vec![1usize, 3, 7];
-        assert_eq!(find_next_in_sorted(&positions, 0), Some(1));
-        assert_eq!(find_next_in_sorted(&positions, 1), Some(3));
-        assert_eq!(find_next_in_sorted(&positions, 3), Some(7));
-        assert_eq!(find_next_in_sorted(&positions, 7), None);
-        assert_eq!(find_next_in_sorted(&positions, 10), None);
-    }
-
-    #[test]
-    fn test_find_prev_in_sorted_basic() {
-        let positions = vec![1usize, 3, 7];
-        assert_eq!(find_prev_in_sorted(&positions, 10), Some(7));
-        assert_eq!(find_prev_in_sorted(&positions, 7), Some(3));
-        assert_eq!(find_prev_in_sorted(&positions, 3), Some(1));
-        assert_eq!(find_prev_in_sorted(&positions, 1), None);
-        assert_eq!(find_prev_in_sorted(&positions, 0), None);
-    }
-
-    #[test]
-    fn test_find_next_in_sorted_empty() {
-        assert_eq!(find_next_in_sorted(&[], 5), None);
-    }
-
-    #[test]
-    fn test_find_prev_in_sorted_empty() {
-        assert_eq!(find_prev_in_sorted(&[], 5), None);
     }
 }

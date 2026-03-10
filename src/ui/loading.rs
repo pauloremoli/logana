@@ -246,7 +246,6 @@ impl App {
                             .filter(|&i| pred(self.tabs[0].file_reader.get_line(i)))
                             .collect();
                         self.tabs[0].visible_indices = super::VisibleLines::Filtered(visible);
-                        self.tabs[0].rebuild_level_index();
                     } else {
                         self.tabs[0].begin_filter_refresh();
                     }
@@ -340,10 +339,6 @@ impl App {
             let tail_mode = self.tabs[idx].tail_mode;
             self.tabs[idx].file_reader = FileReader::from_bytes(data);
             self.tabs[idx].begin_filter_refresh();
-            // Fast path: rebuild level index now. Slow path: advance_filter_computation handles it.
-            if self.tabs[idx].filter_handle.is_none() {
-                self.tabs[idx].rebuild_level_index();
-            }
 
             if tail_mode {
                 let new_count = self.tabs[idx].visible_indices.len();
@@ -544,16 +539,9 @@ impl App {
                             crate::parser::detect_format(&sample).map(Arc::from);
                     }
                     self.tabs[i].begin_filter_refresh();
-                    // Fast path (no active filters): visible_indices updated immediately;
-                    // rebuild the level index now. Slow path: advance_filter_computation handles both.
-                    if self.tabs[i].filter_handle.is_none() {
-                        self.tabs[i].rebuild_level_index();
-                        if tail_mode {
-                            let new_count = self.tabs[i].visible_indices.len();
-                            self.tabs[i].scroll_offset = new_count.saturating_sub(1);
-                        }
-                    } else if tail_mode {
-                        // Slow path tail jump handled by advance_filter_computation.
+                    if self.tabs[i].filter_handle.is_none() && tail_mode {
+                        let new_count = self.tabs[i].visible_indices.len();
+                        self.tabs[i].scroll_offset = new_count.saturating_sub(1);
                     }
                 }
                 Some(Err(_)) => {
@@ -614,8 +602,6 @@ impl App {
             };
             tab.filter_handle = None;
             tab.visible_indices = super::VisibleLines::Filtered(result.visible);
-            tab.error_positions = result.error_positions;
-            tab.warning_positions = result.warning_positions;
             if let Some(counts) = result.filter_match_counts {
                 tab.filter_match_counts = counts;
             }
@@ -1538,16 +1524,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_stdin_tab_updates_level_index() {
+    async fn test_update_stdin_tab_updates_visible_indices() {
         let mut app = make_app(&[]).await;
         app.update_stdin_tab(b"ERROR bad\nINFO ok\nWARN maybe\n".to_vec())
             .await;
-        assert_eq!(app.tabs[0].error_positions, vec![0]);
-        assert_eq!(app.tabs[0].warning_positions, vec![2]);
+        assert_eq!(app.tabs[0].visible_indices.len(), 3);
+        assert_eq!(app.tabs[0].next_error_position(0), None);
+        assert_eq!(app.tabs[0].prev_error_position(1), Some(0));
+        assert_eq!(app.tabs[0].next_warning_position(0), Some(2));
     }
 
     #[tokio::test]
-    async fn test_advance_file_watches_updates_level_index() {
+    async fn test_advance_file_watches_updates_visible_indices() {
         let data: Vec<u8> = b"INFO start\n".to_vec();
         let file_reader = FileReader::from_bytes(data);
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -1568,7 +1556,7 @@ mod tests {
         tx.send(b"ERROR bad\nWARN careful\n".to_vec()).unwrap();
         app.advance_file_watches();
 
-        assert_eq!(app.tabs[0].error_positions, vec![1]);
-        assert_eq!(app.tabs[0].warning_positions, vec![2]);
+        assert_eq!(app.tabs[0].next_error_position(0), Some(1));
+        assert_eq!(app.tabs[0].next_warning_position(0), Some(2));
     }
 }
