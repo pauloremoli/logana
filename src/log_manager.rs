@@ -509,13 +509,15 @@ impl LogManager {
     }
 
     async fn reload_filters_from_db(&mut self) {
-        let source = self.source_file.clone();
-        self.filter_defs = if let Some(src) = source {
-            self.db.get_filters_for_source(&src).await
-        } else {
-            self.db.get_filters().await
-        }
-        .unwrap_or_default();
+        let source = match self.source_file.as_deref() {
+            Some(src) => src.to_string(),
+            None => return,
+        };
+        self.filter_defs = self
+            .db
+            .get_filters_for_source(&source)
+            .await
+            .unwrap_or_default();
     }
 }
 
@@ -526,6 +528,20 @@ mod tests {
     async fn make_manager() -> LogManager {
         let db = Arc::new(Database::in_memory().await.unwrap());
         LogManager::new(db, None).await
+    }
+
+    #[tokio::test]
+    async fn test_new_without_source_has_no_filters() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        // Insert a filter without a source (global) directly via a manager that has a source.
+        let mut seeder = LogManager::new(db.clone(), Some("file.log".into())).await;
+        seeder
+            .add_filter_with_color("error".into(), FilterType::Include, None, None, true)
+            .await;
+
+        // A placeholder tab (no source) must not expose those filters.
+        let mgr = LogManager::new(db, None).await;
+        assert!(mgr.get_filters().is_empty());
     }
 
     #[tokio::test]
