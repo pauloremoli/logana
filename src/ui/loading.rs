@@ -607,6 +607,9 @@ impl App {
             tab.visible_indices = super::VisibleLines::Filtered(result.visible);
             tab.error_positions = result.error_positions;
             tab.warning_positions = result.warning_positions;
+            if let Some(counts) = result.filter_match_counts {
+                tab.filter_match_counts = counts;
+            }
             if tab.visible_indices.is_empty() {
                 tab.scroll_offset = 0;
             } else {
@@ -1232,6 +1235,7 @@ mod tests {
             show_borders: true,
             show_keys: true,
             raw_mode: false,
+            sidebar_width: 30,
         };
         app.db.save_file_context(&ctx).await.unwrap();
 
@@ -1469,6 +1473,7 @@ mod tests {
             show_borders: true,
             show_keys: true,
             raw_mode: false,
+            sidebar_width: 30,
         };
         app.db.save_file_context(&ctx).await.unwrap();
 

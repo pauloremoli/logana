@@ -84,6 +84,8 @@ pub struct FileContext {
     pub show_keys: bool,
     /// When true, the format parser is bypassed and lines are shown as raw bytes.
     pub raw_mode: bool,
+    /// Width in terminal columns of the filter sidebar (default 30, min 10).
+    pub sidebar_width: u16,
 }
 
 #[async_trait]
@@ -186,6 +188,13 @@ impl Database {
                 .await?;
         }
 
+        if version < 5 {
+            self.migrate_to_v5().await?;
+            sqlx::query("PRAGMA user_version = 5")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -271,6 +280,16 @@ impl Database {
             .execute(&self.pool)
             .await
             .ok(); // column may already exist on fresh DBs
+        Ok(())
+    }
+
+    async fn migrate_to_v5(&self) -> Result<()> {
+        sqlx::query(
+            "ALTER TABLE file_context ADD COLUMN sidebar_width INTEGER NOT NULL DEFAULT 30",
+        )
+        .execute(&self.pool)
+        .await
+        .ok(); // column may already exist on fresh DBs
         Ok(())
     }
 }
@@ -557,8 +576,8 @@ impl FileContextStore for Database {
         // Also keep the legacy `level_colors` column up-to-date for any old readers.
         let level_colors_legacy = ctx.level_colors_disabled.is_empty() as i32;
         sqlx::query(
-            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled, raw_mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled, raw_mode, sidebar_width)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_file) DO UPDATE SET
                 scroll_offset = excluded.scroll_offset,
                 search_query = excluded.search_query,
@@ -574,7 +593,8 @@ impl FileContextStore for Database {
                 show_borders = excluded.show_borders,
                 show_keys = excluded.show_keys,
                 level_colors_disabled = excluded.level_colors_disabled,
-                raw_mode = excluded.raw_mode",
+                raw_mode = excluded.raw_mode,
+                sidebar_width = excluded.sidebar_width",
         )
         .bind(&ctx.source_file)
         .bind(ctx.scroll_offset as i64)
@@ -592,6 +612,7 @@ impl FileContextStore for Database {
         .bind(ctx.show_keys as i32)
         .bind(&level_colors_disabled_json)
         .bind(ctx.raw_mode as i32)
+        .bind(ctx.sidebar_width as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -599,7 +620,7 @@ impl FileContextStore for Database {
 
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
         let row = sqlx::query(
-            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled, raw_mode
+            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled, raw_mode, sidebar_width
              FROM file_context WHERE source_file = ?",
         )
         .bind(source_file)
@@ -643,6 +664,10 @@ impl FileContextStore for Database {
                 show_borders: r.try_get::<i32, _>("show_borders").unwrap_or(1) != 0,
                 show_keys: r.try_get::<i32, _>("show_keys").unwrap_or(0) != 0,
                 raw_mode: r.try_get::<i32, _>("raw_mode").unwrap_or(0) != 0,
+                sidebar_width: r
+                    .try_get::<i64, _>("sidebar_width")
+                    .unwrap_or(30)
+                    .clamp(10, 200) as u16,
             }
         }))
     }
@@ -907,6 +932,7 @@ mod tests {
             show_borders: true,
             show_keys: false,
             raw_mode: false,
+            sidebar_width: 30,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -946,6 +972,7 @@ mod tests {
             show_borders: true,
             show_keys: false,
             raw_mode: false,
+            sidebar_width: 30,
         };
         db.save_file_context(&ctx1).await.unwrap();
 
@@ -970,6 +997,7 @@ mod tests {
             show_borders: false,
             show_keys: false,
             raw_mode: false,
+            sidebar_width: 30,
         };
         db.save_file_context(&ctx2).await.unwrap();
 
@@ -1021,6 +1049,7 @@ mod tests {
             show_borders: true,
             show_keys: false,
             raw_mode: false,
+            sidebar_width: 30,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1057,6 +1086,7 @@ mod tests {
             show_borders: false,
             show_keys: false,
             raw_mode: false,
+            sidebar_width: 30,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1090,6 +1120,7 @@ mod tests {
             show_borders: true,
             show_keys: true,
             raw_mode: false,
+            sidebar_width: 30,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1100,5 +1131,37 @@ mod tests {
             .expect("context should exist");
 
         assert!(loaded.show_keys);
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_width_round_trips() {
+        let db = setup_db().await;
+        let ctx = FileContext {
+            source_file: "/tmp/sidebar.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            wrap: true,
+            level_colors_disabled: HashSet::new(),
+            show_sidebar: true,
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            show_line_numbers: true,
+            comments: vec![],
+            show_mode_bar: true,
+            show_borders: true,
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 45,
+        };
+        db.save_file_context(&ctx).await.unwrap();
+
+        let loaded = db
+            .load_file_context("/tmp/sidebar.log")
+            .await
+            .unwrap()
+            .expect("context should exist");
+
+        assert_eq!(loaded.sidebar_width, 45);
     }
 }

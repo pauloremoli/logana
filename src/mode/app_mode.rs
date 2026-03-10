@@ -379,6 +379,7 @@ mod tests {
             show_borders: true,
             show_keys: false,
             raw_mode: false,
+            sidebar_width: 30,
         }
     }
 

@@ -130,6 +130,10 @@ pub struct FilterComputeResult {
     pub visible: Vec<usize>,
     pub error_positions: Vec<usize>,
     pub warning_positions: Vec<usize>,
+    /// Per-text-filter match counts (indexed parallel to the `FilterManager`'s compiled
+    /// filters). `None` when the result comes from a level-index rebuild that did not
+    /// recompute filter state (counts should be left unchanged on the tab).
+    pub filter_match_counts: Option<Vec<usize>>,
 }
 
 /// Handle for a background filter computation task spawned by
@@ -427,6 +431,8 @@ pub struct TabState {
     pub scroll_offset: usize,
     pub viewport_offset: usize,
     pub show_sidebar: bool,
+    /// Width in terminal columns of the filter sidebar. Resizable in filter management mode.
+    pub sidebar_width: u16,
     pub g_key_pressed: bool,
     pub wrap: bool,
     pub show_line_numbers: bool,
@@ -508,6 +514,9 @@ pub struct TabState {
     pub error_positions: Vec<usize>,
     /// Sorted visible positions (indices into `visible_indices`) of WARN lines.
     pub warning_positions: Vec<usize>,
+    /// Per-text-filter match counts, indexed parallel to the enabled text filters in
+    /// `FilterManager`. Updated after each filter computation (background or sync).
+    pub filter_match_counts: Vec<usize>,
 }
 
 impl TabState {
@@ -525,6 +534,7 @@ impl TabState {
             scroll_offset: 0,
             viewport_offset: 0,
             show_sidebar: true,
+            sidebar_width: 30,
             g_key_pressed: false,
             wrap: true,
             show_line_numbers: true,
@@ -569,6 +579,7 @@ impl TabState {
             render_line_cache: HashMap::new(),
             error_positions: Vec::new(),
             warning_positions: Vec::new(),
+            filter_match_counts: Vec::new(),
         };
         tab.refresh_visible();
         tab
@@ -642,6 +653,7 @@ impl TabState {
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
             self.filter_field_styles = Vec::new();
+            self.filter_match_counts = Vec::new();
             // Still clamp scroll so it stays valid if the file shrank.
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
@@ -683,6 +695,7 @@ impl TabState {
             self.filter_styles = styles;
             self.filter_date_styles = date_filter_styles;
             self.filter_field_styles = field_filter_styles;
+            self.filter_match_counts = Vec::new();
         } else if let Some((
             saved_visible,
             saved_fm,
@@ -705,6 +718,7 @@ impl TabState {
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
             self.filter_field_styles = Vec::new();
+            self.filter_match_counts = Vec::new();
         } else {
             // Unified single-pass: text + date + field filters evaluated together
             // so that include filters (text and field) combine with OR semantics.
@@ -716,20 +730,20 @@ impl TabState {
                 crate::field_filter::extract_field_filters(self.log_manager.get_filters());
             let parser = self.detected_format.as_deref();
             use rayon::prelude::*;
+            use std::sync::atomic::AtomicUsize;
             let file_reader = &self.file_reader;
+            let n_text_filters = fm.filter_count();
+            let filter_counts: Vec<AtomicUsize> =
+                (0..n_text_filters).map(|_| AtomicUsize::new(0)).collect();
             let visible: Vec<usize> = (0..self.file_reader.line_count())
                 .into_par_iter()
                 .filter(|&idx| {
-                    line_is_visible(
-                        &fm,
-                        file_reader.get_line(idx),
-                        &date_filters,
-                        &inc_ff,
-                        &exc_ff,
-                        parser,
-                    )
+                    let line = file_reader.get_line(idx);
+                    fm.count_line_matches(line, &filter_counts);
+                    line_is_visible(&fm, line, &date_filters, &inc_ff, &exc_ff, parser)
                 })
                 .collect();
+            self.filter_match_counts = filter_counts.into_iter().map(|c| c.into_inner()).collect();
             self.filter_manager_arc = Arc::new(fm);
             self.filter_styles = styles;
             self.filter_date_styles = date_filter_styles;
@@ -932,6 +946,7 @@ impl TabState {
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
             self.filter_field_styles = Vec::new();
+            self.filter_match_counts = Vec::new();
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -962,6 +977,7 @@ impl TabState {
             self.filter_styles = styles;
             self.filter_date_styles = date_filter_styles;
             self.filter_field_styles = field_filter_styles;
+            self.filter_match_counts = Vec::new();
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -999,6 +1015,7 @@ impl TabState {
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
             self.filter_field_styles = Vec::new();
+            self.filter_match_counts = Vec::new();
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -1032,6 +1049,7 @@ impl TabState {
             self.detected_format.clone()
         };
         let line_count = self.file_reader.line_count();
+        let n_text_filters = self.filter_manager_arc.filter_count();
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
@@ -1039,8 +1057,11 @@ impl TabState {
 
             let counter = AtomicUsize::new(0);
             let parser_ref: Option<&dyn LogFormatParser> = parser.as_deref();
+            let filter_counts: Vec<AtomicUsize> =
+                (0..n_text_filters).map(|_| AtomicUsize::new(0)).collect();
 
             // Unified single pass: text + date + field filters evaluated together.
+            // Per-filter match counts are piggybacked on this pass at negligible cost.
             let visible: Vec<usize> = (0..line_count)
                 .into_par_iter()
                 .filter(|&i| {
@@ -1051,20 +1072,18 @@ impl TabState {
                     if n.is_multiple_of(10_000) && line_count > 0 {
                         let _ = progress_tx.send(n as f64 / line_count as f64);
                     }
-                    line_is_visible(
-                        &fm_arc,
-                        file_reader.get_line(i),
-                        &date_filters,
-                        &inc_ff,
-                        &exc_ff,
-                        parser_ref,
-                    )
+                    let line = file_reader.get_line(i);
+                    fm_arc.count_line_matches(line, &filter_counts);
+                    line_is_visible(&fm_arc, line, &date_filters, &inc_ff, &exc_ff, parser_ref)
                 })
                 .collect();
 
             if cancel_clone.load(Ordering::Relaxed) {
                 return;
             }
+
+            let match_counts: Vec<usize> =
+                filter_counts.into_iter().map(|c| c.into_inner()).collect();
 
             // Compute level positions from the visible set in the same background thread
             // so the event loop never does O(visible) work synchronously.
@@ -1076,6 +1095,7 @@ impl TabState {
                     visible,
                     error_positions,
                     warning_positions,
+                    filter_match_counts: Some(match_counts),
                 });
             }
         });
@@ -1123,6 +1143,7 @@ impl TabState {
                     visible,
                     error_positions,
                     warning_positions,
+                    filter_match_counts: None,
                 });
             }
         });
@@ -1291,6 +1312,7 @@ impl TabState {
             show_borders: self.show_borders,
             show_keys: self.show_keys,
             raw_mode: self.raw_mode,
+            sidebar_width: self.sidebar_width,
         })
     }
 
@@ -1305,6 +1327,7 @@ impl TabState {
         self.show_borders = ctx.show_borders;
         self.show_keys = ctx.show_keys;
         self.raw_mode = ctx.raw_mode;
+        self.sidebar_width = ctx.sidebar_width;
         if !ctx.marked_lines.is_empty() {
             self.log_manager.set_marks(ctx.marked_lines.clone());
         }
@@ -1705,6 +1728,7 @@ mod tests {
             show_borders: false,
             show_keys: false,
             raw_mode: false,
+            sidebar_width: 30,
         };
         tab.apply_file_context(&ctx);
         assert_eq!(tab.scroll_offset, 3);
@@ -1737,6 +1761,7 @@ mod tests {
             show_borders: true,
             show_keys: false,
             raw_mode: false,
+            sidebar_width: 30,
         };
         tab.apply_file_context(&ctx);
         assert!(tab.wrap);
@@ -1901,6 +1926,7 @@ mod tests {
             show_borders: true,
             show_keys: false,
             raw_mode: false,
+            sidebar_width: 30,
         };
         tab.apply_file_context(&ctx);
         assert!(!tab.show_mode_bar);
@@ -1925,6 +1951,7 @@ mod tests {
             show_borders: false,
             show_keys: false,
             raw_mode: false,
+            sidebar_width: 30,
         };
         tab.apply_file_context(&ctx);
         assert!(!tab.show_borders);
@@ -2450,5 +2477,55 @@ mod tests {
         assert_eq!(result.visible, vec![0, 1, 2]);
         assert_eq!(result.error_positions, vec![1]);
         assert_eq!(result.warning_positions, vec![2]);
+        // Level-index rebuild must not update filter counts.
+        assert!(result.filter_match_counts.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_delivers_match_counts() {
+        let mut tab = make_tab(&[
+            "ERROR: first",
+            "INFO: skip",
+            "ERROR: second",
+            "DEBUG: verbose",
+        ])
+        .await;
+        tab.log_manager
+            .add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.log_manager
+            .add_filter_with_color("DEBUG".to_string(), FilterType::Exclude, None, None, true)
+            .await;
+        tab.begin_filter_refresh();
+        assert!(tab.filter_handle.is_some());
+        let h = tab.filter_handle.take().unwrap();
+        let result = h.result_rx.await.unwrap();
+        let counts = result.filter_match_counts.expect("counts must be Some");
+        // "ERROR" matches 2 lines; "DEBUG" matches 1 line (counted independently).
+        assert_eq!(counts, vec![2, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_filter_match_counts_cleared_on_no_active_filters() {
+        let mut tab = make_tab(&["ERROR: a", "INFO: b"]).await;
+        tab.filter_match_counts = vec![99, 42]; // pre-seeded stale counts
+        tab.begin_filter_refresh(); // no filters → fast path
+        assert!(tab.filter_match_counts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_filter_match_counts_updated_via_advance() {
+        let mut tab = make_tab(&["ERROR line", "INFO line", "ERROR again"]).await;
+        tab.log_manager
+            .add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.begin_filter_refresh();
+        let h = tab.filter_handle.take().unwrap();
+        let result = h.result_rx.await.unwrap();
+        // Simulate advance_filter_computation applying the result.
+        if let Some(counts) = result.filter_match_counts {
+            tab.filter_match_counts = counts;
+        }
+        assert_eq!(tab.filter_match_counts, vec![2]);
     }
 }

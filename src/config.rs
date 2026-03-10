@@ -601,6 +601,12 @@ fn default_filter_add_date() -> KeyBindings {
 fn default_filter_exit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
+fn default_filter_sidebar_grow() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('>'), KeyModifiers::NONE)])
+}
+fn default_filter_sidebar_shrink() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('<'), KeyModifiers::NONE)])
+}
 
 // ---------------------------------------------------------------------------
 // FilterKeybindings
@@ -632,6 +638,10 @@ pub struct FilterKeybindings {
     pub add_date_filter: KeyBindings,
     #[serde(default = "default_filter_exit")]
     pub exit_mode: KeyBindings,
+    #[serde(default = "default_filter_sidebar_grow")]
+    pub sidebar_grow: KeyBindings,
+    #[serde(default = "default_filter_sidebar_shrink")]
+    pub sidebar_shrink: KeyBindings,
 }
 
 impl Default for FilterKeybindings {
@@ -649,6 +659,8 @@ impl Default for FilterKeybindings {
             add_exclude_filter: default_filter_add_exclude(),
             add_date_filter: default_filter_add_date(),
             exit_mode: default_filter_exit(),
+            sidebar_grow: default_filter_sidebar_grow(),
+            sidebar_shrink: default_filter_sidebar_shrink(),
         }
     }
 }

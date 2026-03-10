@@ -454,6 +454,27 @@ impl FilterManager {
         }
     }
 
+    /// Returns the number of compiled text filters in this manager.
+    pub fn filter_count(&self) -> usize {
+        self.filters.len()
+    }
+
+    /// Evaluate each filter independently on `line` and increment the corresponding
+    /// counter in `counts` (indexed parallel to the internal filter list).
+    ///
+    /// Unlike `is_visible`, this does not short-circuit: every filter is evaluated
+    /// so that per-filter match counts accumulate correctly across lines.
+    pub fn count_line_matches(&self, line: &[u8], counts: &[std::sync::atomic::AtomicUsize]) {
+        for (i, filter) in self.filters.iter().enumerate() {
+            let mut dummy = MatchCollector::new(line);
+            if filter.evaluate(line, &mut dummy) != FilterDecision::Neutral
+                && let Some(c) = counts.get(i)
+            {
+                c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
     /// Compute visible line indices from a `FileReader` using Rayon parallel processing.
     /// The returned indices are in ascending order.
     pub fn compute_visible(&self, reader: &crate::file_reader::FileReader) -> Vec<usize> {
@@ -780,5 +801,68 @@ mod tests {
         assert!(span.is_some());
         assert_eq!(span.unwrap().style.fg, Some(ratatui::style::Color::Cyan));
         assert_eq!(span.unwrap().style.bg, Some(ratatui::style::Color::Red));
+    }
+
+    #[test]
+    fn test_filter_count_returns_number_of_compiled_filters() {
+        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f2 = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 1).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f1), Box::new(f2)], true);
+        assert_eq!(fm.filter_count(), 2);
+    }
+
+    #[test]
+    fn test_filter_count_empty() {
+        let fm = FilterManager::empty();
+        assert_eq!(fm.filter_count(), 0);
+    }
+
+    #[test]
+    fn test_count_line_matches_independent_no_short_circuit() {
+        // Both filters match — counts must increment independently even though
+        // pipeline evaluation would short-circuit after the first match.
+        let line = b"ERROR DEBUG both";
+        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f2 = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 1).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f1), Box::new(f2)], true);
+
+        let counts: Vec<std::sync::atomic::AtomicUsize> = (0..2)
+            .map(|_| std::sync::atomic::AtomicUsize::new(0))
+            .collect();
+        fm.count_line_matches(line, &counts);
+
+        assert_eq!(counts[0].load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(counts[1].load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_count_line_matches_only_matching_filters_increment() {
+        let line = b"INFO: all good";
+        let f_error = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f_info = SubstringFilter::new("INFO", FilterDecision::Include, false, 1).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f_error), Box::new(f_info)], true);
+
+        let counts: Vec<std::sync::atomic::AtomicUsize> = (0..2)
+            .map(|_| std::sync::atomic::AtomicUsize::new(0))
+            .collect();
+        fm.count_line_matches(line, &counts);
+
+        assert_eq!(counts[0].load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(counts[1].load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_count_line_matches_accumulates_across_lines() {
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f)], true);
+
+        let counts: Vec<std::sync::atomic::AtomicUsize> = (0..1)
+            .map(|_| std::sync::atomic::AtomicUsize::new(0))
+            .collect();
+        fm.count_line_matches(b"ERROR: first", &counts);
+        fm.count_line_matches(b"INFO: skip", &counts);
+        fm.count_line_matches(b"ERROR: second", &counts);
+
+        assert_eq!(counts[0].load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 }

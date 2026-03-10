@@ -340,6 +340,26 @@ impl Mode for FilterManagementMode {
             );
         }
 
+        if kb.filter.sidebar_grow.matches(key, modifiers) {
+            tab.sidebar_width = tab.sidebar_width.saturating_add(2);
+            return (
+                Box::new(FilterManagementMode {
+                    selected_filter_index: selected,
+                }),
+                KeyResult::Handled,
+            );
+        }
+
+        if kb.filter.sidebar_shrink.matches(key, modifiers) {
+            tab.sidebar_width = tab.sidebar_width.saturating_sub(2).max(10);
+            return (
+                Box::new(FilterManagementMode {
+                    selected_filter_index: selected,
+                }),
+                KeyResult::Handled,
+            );
+        }
+
         // Unrecognised key — stay in filter mode.
         (
             Box::new(FilterManagementMode {
@@ -416,6 +436,21 @@ impl Mode for FilterManagementMode {
             "clear",
             theme,
         );
+        spans.push(Span::styled("<", Style::default().fg(theme.text)));
+        spans.push(Span::styled(
+            kb.filter.sidebar_shrink.display(),
+            Style::default()
+                .fg(theme.text_highlight_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.text)));
+        spans.push(Span::styled(
+            kb.filter.sidebar_grow.display(),
+            Style::default()
+                .fg(theme.text_highlight_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("> resize  ", Style::default().fg(theme.text)));
         status_entry(&mut spans, kb.filter.exit_mode.display(), "exit", theme);
         Line::from(spans)
     }
@@ -1041,5 +1076,40 @@ mod tests {
             }
             other => panic!("expected Command, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_greater_than_grows_sidebar() {
+        let mut tab = make_tab(&["line"]).await;
+        let initial = tab.sidebar_width;
+        press(filter_mode(0), &mut tab, KeyCode::Char('>')).await;
+        assert_eq!(tab.sidebar_width, initial + 2);
+    }
+
+    #[tokio::test]
+    async fn test_less_than_shrinks_sidebar() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.sidebar_width = 20;
+        press(filter_mode(0), &mut tab, KeyCode::Char('<')).await;
+        assert_eq!(tab.sidebar_width, 18);
+    }
+
+    #[tokio::test]
+    async fn test_shrink_does_not_go_below_minimum() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.sidebar_width = 10;
+        press(filter_mode(0), &mut tab, KeyCode::Char('<')).await;
+        assert_eq!(tab.sidebar_width, 10);
+    }
+
+    #[tokio::test]
+    async fn test_resize_stays_in_filter_mode() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('>')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
     }
 }

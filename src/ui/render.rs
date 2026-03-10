@@ -222,11 +222,12 @@ impl App {
 
         let tab = &self.tabs[self.active_tab];
 
+        let sidebar_width = tab.sidebar_width;
         let (logs_area, sidebar_area) = if tab.show_sidebar {
             if show_borders {
                 let horizontal = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Min(1), Constraint::Length(30)])
+                    .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
                     .split(main_chunk);
                 let raw_sidebar = horizontal[1];
                 // When the tab bar is visible it forms the top border of the
@@ -251,7 +252,7 @@ impl App {
                     .constraints([
                         Constraint::Min(1),
                         Constraint::Length(1),
-                        Constraint::Length(30),
+                        Constraint::Length(sidebar_width),
                     ])
                     .split(main_chunk);
                 (horizontal[0], Some(horizontal[2]))
@@ -1568,6 +1569,8 @@ impl App {
         if let Some(sidebar_area) = sidebar_area {
             let show_borders = self.tabs[self.active_tab].show_borders;
             let filters = self.tabs[self.active_tab].log_manager.get_filters();
+            let match_counts = self.tabs[self.active_tab].filter_match_counts.clone();
+            let mut fm_text_idx = 0usize;
             let filters_text: Vec<Line> = filters
                 .iter()
                 .enumerate()
@@ -1601,6 +1604,13 @@ impl App {
                     } else {
                         (&filter.pattern[..], "")
                     };
+                    let count_str = if filter.enabled && !is_date && !is_field {
+                        let count = match_counts.get(fm_text_idx).copied().unwrap_or(0);
+                        fm_text_idx += 1;
+                        format!(" ({})", count)
+                    } else {
+                        String::new()
+                    };
                     let mut style = Style::default().fg(self.theme.text);
                     if let Some(cfg) = &filter.color_config {
                         if let Some(fg) = cfg.fg {
@@ -1611,8 +1621,13 @@ impl App {
                         }
                     }
                     Line::from(format!(
-                        "{}{} {}: {}{}",
-                        selected_prefix, status, filter_type_str, display_pattern, field_tag
+                        "{}{} {}: {}{}{}",
+                        selected_prefix,
+                        status,
+                        filter_type_str,
+                        display_pattern,
+                        field_tag,
+                        count_str
                     ))
                     .style(style)
                 })
@@ -1645,7 +1660,9 @@ impl App {
                     .title(sidebar_title)
                     .title_style(Style::default().fg(self.theme.border_title))
             };
-            let sidebar = Paragraph::new(filters_text).block(sidebar_block);
+            let sidebar = Paragraph::new(filters_text)
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .block(sidebar_block);
             frame.render_widget(sidebar, sidebar_area);
         }
     }
