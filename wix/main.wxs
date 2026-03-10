@@ -69,7 +69,7 @@
 
         <Package Id='*'
             Keywords='Installer'
-            Description='A fast, keyboard-driven terminal log viewer and analyzer with filtering, search, and annotations.'
+            Description='A TUI log analyzer/viewer built for speed - handles files with millions of lines with instant filtering and VIM like navigation.'
             Manufacturer='Paulo Remoli'
             InstallerVersion='450'
             Languages='1033'

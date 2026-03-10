@@ -1,6 +1,6 @@
 # logana
 
-A terminal log viewer built for speed — it can handle files with millions of lines with instant filtering and navigation, with a keyboard-driven intuitive UI. 
+A TUI log analyzer/viewer built for speed - handles files with millions of lines with instant filtering and VIM like navigation.
 
 
 ## What is it for

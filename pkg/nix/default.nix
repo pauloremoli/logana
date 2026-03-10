@@ -50,7 +50,7 @@ rustPlatform.buildRustPackage rec {
   doCheck = false;
 
   meta = with lib; {
-    description = "A fast, keyboard-driven terminal log viewer and analyzer with filtering, search, and annotations.";
+    description = "A TUI log analyzer/viewer built for speed - handles files with millions of lines with instant filtering and VIM like navigation.";
     longDescription = ''
       logana is a terminal UI application for exploring, filtering, and
       annotating log files. It supports real-time search, persistent

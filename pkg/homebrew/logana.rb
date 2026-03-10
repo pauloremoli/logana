@@ -12,7 +12,7 @@
 #   brew install pauloremoli/logana/logana
 
 class Logana < Formula
-  desc "A fast, keyboard-driven terminal log viewer and analyzer with filtering, search, and annotations."
+  desc "A TUI log analyzer/viewer built for speed - handles files with millions of lines with instant filtering and VIM like navigation."
   homepage "https://github.com/pauloremoli/logana"
   version "VERSION_PLACEHOLDER"
   license "GPL-3.0-only"

@@ -1,6 +1,6 @@
 # logana
 
-A fast, keyboard-driven terminal log viewer and analyzer built in Rust.
+A TUI log analyzer/viewer built for speed - handles files with millions of lines with instant filtering and VIM like navigation.
 
 Open a file, pipe stdin, or stream Docker containers — logana auto-detects the format and lets you filter, search, annotate, and export without ever leaving the terminal.
 
@@ -13,15 +13,13 @@ Open a file, pipe stdin, or stream Docker containers — logana auto-detects the
 ## Features
 
 - **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, and more
-- **Real-time filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters, instant preview
+- **Real-time filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters
 - **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; per-file restore on reopen
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; show/hide/reorder per session
-- **Multi-tab** — open multiple files or Docker streams side-by-side
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
-- **Visual line selection** — select a range, yank to clipboard, or attach a comment
 - **Annotations** — attach multiline comments to log lines; export to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically; filter colors always take priority
-- **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 9 bundled themes
+- **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 19 bundled themes
 
 ---
 
@@ -227,6 +225,7 @@ A picker lists running containers (`j`/`k` to navigate, `Enter` to attach). The 
 | `c` | Comment current line |
 | `r` | Edit existing comment on current line |
 | `d` | Delete comment on current line |
+| `v` | Enter visual character mode |
 | `V` | Enter visual line mode |
 | `u` | UI options |
 | `F1` | Keybindings help |
@@ -240,6 +239,14 @@ A picker lists running containers (`j`/`k` to navigate, `Enter` to attach). The 
 | `j` / `k` | Extend selection down / up |
 | `c` | Attach comment to selection |
 | `y` | Yank (copy) lines to clipboard |
+| `Esc` | Cancel |
+
+### Visual Character Mode
+
+| Key | Action |
+|---|---|
+| `h` / `l` | Extend selection left / right |
+| `y` | Yank (copy) selection to clipboard |
 | `Esc` | Cancel |
 
 ### Filter Manager (`f`)
@@ -354,20 +361,6 @@ Place custom themes (JSON) in `~/.config/logana/themes/`. Colors accept hex (`"#
 | `~/.config/logana/config.json` | Keybindings, theme, UI defaults |
 | `~/.config/logana/themes/` | Custom themes |
 | `~/.config/logana/templates/` | Custom export templates |
-
----
-
-## Documentation
-
-Full documentation is in the `docs/` directory, built with [mdbook](https://rust-lang.github.io/mdBook/).
-
-```sh
-cargo install mdbook       # install once
-
-cd docs
-mdbook build               # build to docs/book/
-mdbook serve               # build + serve at http://localhost:3000 with live reload
-```
 
 ---
 
