@@ -133,6 +133,26 @@ Without this optimisation, startup with filters would require two full passes ov
 
 When filters are supplied via `--filters` at launch, the visibility predicate is evaluated on each line during the indexing pass itself, so the file is read exactly once. The speedup comes from two sources. First, total work is halved — each byte is touched once instead of twice. Second, cache locality: during indexing each page is already resident in the CPU's L2/L3 cache. Evaluating the filter immediately while the data is hot avoids re-faulting those pages in a later pass.
 
+### Level index
+
+`TabState` maintains two sorted `Vec<usize>` fields — `error_positions` and `warning_positions` — that record the *visible* positions (indices into `visible_indices`) of ERROR/FATAL and WARN lines respectively. Normal-mode navigation (`]e`/`[e`, `]w`/`[w`) binary-searches these vectors to jump to the next/previous error or warning in O(log n).
+
+`rebuild_level_index` in `ui/mod.rs` populates these vectors by iterating every visible position, resolving each line's level from the parse cache when available, falling back to the detected-format parser, and finally to a byte-pattern scan. It runs in O(visible lines) on the event loop and must therefore only be called when the visible set is known to be small or when blocking is otherwise acceptable.
+
+**When it is called:**
+
+| Trigger | Path | Notes |
+|---|---|---|
+| Initial tab creation | `TabState::new` → `refresh_visible` | Synchronous; file is small (preview only). |
+| Filter applied / changed | `begin_filter_refresh` slow path → `advance_filter_computation` | Called off the event loop after the background scan completes. |
+| Streaming update (docker / file watcher / stdin) | `advance_watch_state` / `update_stdin_tab` after `begin_filter_refresh` | Called synchronously only when the fast path was taken (no active filters, `filter_handle.is_none()`). When the slow path runs, `advance_filter_computation` handles it. |
+| Startup single-pass (filters at launch) | `on_load_success` after the pre-filtered `visible_indices` is set | Called once immediately after indexing. |
+| Level-colors toggle | `app.rs` after toggling the level-color setting | Recomputes positions since level detection may change. |
+
+**What is not called:**
+
+`begin_filter_refresh` itself does **not** call `rebuild_level_index` in its fast paths (no active filters, marks-only, or filtering disabled). Those paths update `visible_indices` in O(1) and return immediately to keep the event loop unblocked. File-load paths (`on_load_success`, `begin_file_load`) similarly do not call it — large files would block for seconds. Only the streaming update sites add the targeted call, matching the previous behaviour when those paths used `refresh_visible`.
+
 ### Style layering
 
 Rendering applies styles in priority order (highest to lowest):

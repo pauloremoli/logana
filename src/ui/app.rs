@@ -421,9 +421,10 @@ mod tests {
     async fn await_filter_computations(app: &mut App) {
         for tab in &mut app.tabs {
             if let Some(h) = tab.filter_handle.take() {
-                if let Ok(visible) = h.result_rx.await {
-                    tab.visible_indices = crate::ui::VisibleLines::Filtered(visible);
-                    tab.rebuild_level_index();
+                if let Ok(result) = h.result_rx.await {
+                    tab.visible_indices = crate::ui::VisibleLines::Filtered(result.visible);
+                    tab.error_positions = result.error_positions;
+                    tab.warning_positions = result.warning_positions;
                     if tab.visible_indices.is_empty() {
                         tab.scroll_offset = 0;
                     } else {

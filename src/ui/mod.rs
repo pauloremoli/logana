@@ -125,11 +125,18 @@ pub struct SearchHandle {
 // FilterHandle
 // ---------------------------------------------------------------------------
 
+/// Result delivered by the background filter/level-index task.
+pub struct FilterComputeResult {
+    pub visible: Vec<usize>,
+    pub error_positions: Vec<usize>,
+    pub warning_positions: Vec<usize>,
+}
+
 /// Handle for a background filter computation task spawned by
-/// [`TabState::begin_filter_refresh`].
+/// [`TabState::begin_filter_refresh`] or [`TabState::begin_level_index_rebuild`].
 pub struct FilterHandle {
-    /// Receives the computed visible-line indices. Never sent when cancelled.
-    pub result_rx: oneshot::Receiver<Vec<usize>>,
+    /// Receives visible indices and level positions. Never sent when cancelled.
+    pub result_rx: oneshot::Receiver<FilterComputeResult>,
     /// Set to `true` to abort the in-flight computation early.
     pub cancel: Arc<AtomicBool>,
     /// Live fraction-complete (0.0–1.0) polled each frame for the progress bar.
@@ -221,6 +228,43 @@ fn line_is_visible(
 
     // No field includes; visible iff no text include filters exist.
     !fm.has_include()
+}
+
+/// Compute `error_positions` and `warning_positions` from a set of visible file-line indices.
+///
+/// Designed to run inside a `spawn_blocking` thread. Uses the format parser when available,
+/// falling back to byte-pattern detection. Returns `(errors, warnings)` — each a vec of
+/// *visible positions* (indices into `visible`, not file line indices).
+fn compute_level_positions(
+    visible: &[usize],
+    reader: &crate::file_reader::FileReader,
+    parser: Option<&dyn LogFormatParser>,
+) -> (Vec<usize>, Vec<usize>) {
+    use crate::types::LogLevel;
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    for (pos, &file_idx) in visible.iter().enumerate() {
+        let bytes = reader.get_line(file_idx);
+        let level = if let Some(p) = parser {
+            if let Some(parts) = p.parse_line(bytes) {
+                if let Some(level_str) = parts.level {
+                    LogLevel::parse_level(level_str)
+                } else {
+                    LogLevel::detect_from_bytes(bytes)
+                }
+            } else {
+                LogLevel::detect_from_bytes(bytes)
+            }
+        } else {
+            LogLevel::detect_from_bytes(bytes)
+        };
+        match level {
+            LogLevel::Error | LogLevel::Fatal => errors.push(pos),
+            LogLevel::Warning => warnings.push(pos),
+            _ => {}
+        }
+    }
+    (errors, warnings)
 }
 
 /// Snapshot of the filter-driven view: visible indices + filter manager + styles.
@@ -1014,8 +1058,64 @@ impl TabState {
                 })
                 .collect();
 
+            if cancel_clone.load(Ordering::Relaxed) {
+                return;
+            }
+
+            // Compute level positions from the visible set in the same background thread
+            // so the event loop never does O(visible) work synchronously.
+            let (error_positions, warning_positions) =
+                compute_level_positions(&visible, &file_reader, parser_ref);
+
             if !cancel_clone.load(Ordering::Relaxed) {
-                let _ = result_tx.send(visible);
+                let _ = result_tx.send(FilterComputeResult {
+                    visible,
+                    error_positions,
+                    warning_positions,
+                });
+            }
+        });
+
+        self.filter_handle = Some(FilterHandle {
+            result_rx,
+            cancel,
+            progress_rx,
+        });
+    }
+
+    /// Offload the level-position computation for the current `visible_indices` to a
+    /// background thread, reusing the [`FilterHandle`] mechanism.
+    ///
+    /// Used after the startup single-pass sets `visible_indices` synchronously so that
+    /// `rebuild_level_index` never runs on the event loop for large files.
+    pub fn begin_level_index_rebuild(&mut self) {
+        if let Some(ref h) = self.filter_handle {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
+        self.filter_handle = None;
+
+        let visible: Vec<usize> = self.visible_indices.iter().collect();
+        let file_reader = self.file_reader.clone();
+        let parser = self.detected_format.clone();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let (result_tx, result_rx) = oneshot::channel();
+        let (_, progress_rx) = watch::channel(1.0_f64);
+
+        tokio::task::spawn_blocking(move || {
+            if cancel_clone.load(Ordering::Relaxed) {
+                return;
+            }
+            let parser_ref: Option<&dyn LogFormatParser> = parser.as_deref();
+            let (error_positions, warning_positions) =
+                compute_level_positions(&visible, &file_reader, parser_ref);
+            if !cancel_clone.load(Ordering::Relaxed) {
+                let _ = result_tx.send(FilterComputeResult {
+                    visible,
+                    error_positions,
+                    warning_positions,
+                });
             }
         });
 
@@ -2246,8 +2346,8 @@ mod tests {
         assert!(tab.filter_handle.is_some());
         // Await the result and verify correctness.
         let h = tab.filter_handle.take().unwrap();
-        let visible = h.result_rx.await.unwrap();
-        assert_eq!(visible, vec![0, 2]);
+        let result = h.result_rx.await.unwrap();
+        assert_eq!(result.visible, vec![0, 2]);
     }
 
     #[tokio::test]
@@ -2276,8 +2376,8 @@ mod tests {
         assert!(tab.filter_handle.is_some());
         // Await the background task's result and simulate advance_filter_computation.
         let h = tab.filter_handle.take().unwrap();
-        let visible = h.result_rx.await.unwrap();
-        tab.visible_indices = VisibleLines::Filtered(visible);
+        let result = h.result_rx.await.unwrap();
+        tab.visible_indices = VisibleLines::Filtered(result.visible);
         assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
     }
 
@@ -2302,5 +2402,45 @@ mod tests {
         let tab = make_tab(&[]).await;
         assert!(tab.error_positions.is_empty());
         assert!(tab.warning_positions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_fast_path_does_not_update_level_index() {
+        let mut tab = make_tab(&["INFO ok"]).await;
+        tab.error_positions = vec![99];
+        tab.file_reader = FileReader::from_bytes(b"ERROR bad\n".to_vec());
+        tab.begin_filter_refresh();
+        // Fast path must not touch level index — that is the streaming path's responsibility.
+        assert!(tab.filter_handle.is_none());
+        assert_eq!(tab.error_positions, vec![99]);
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_slow_path_computes_level_positions() {
+        let mut tab = make_tab(&["INFO ok", "ERROR bad", "WARN careful", "FATAL crash"]).await;
+        tab.log_manager
+            .add_filter_with_color("ok".to_string(), FilterType::Exclude, None, None, true)
+            .await;
+        tab.begin_filter_refresh();
+        assert!(tab.filter_handle.is_some());
+        let h = tab.filter_handle.take().unwrap();
+        let result = h.result_rx.await.unwrap();
+        // "INFO ok" excluded; remaining visible positions: ERROR=0, WARN=1, FATAL=2.
+        assert_eq!(result.error_positions, vec![0, 2]);
+        assert_eq!(result.warning_positions, vec![1]);
+    }
+
+    #[tokio::test]
+    async fn test_begin_level_index_rebuild_offloads_computation() {
+        let mut tab = make_tab(&["INFO ok", "ERROR bad", "WARN careful"]).await;
+        tab.error_positions = vec![];
+        tab.warning_positions = vec![];
+        tab.begin_level_index_rebuild();
+        assert!(tab.filter_handle.is_some());
+        let h = tab.filter_handle.take().unwrap();
+        let result = h.result_rx.await.unwrap();
+        assert_eq!(result.visible, vec![0, 1, 2]);
+        assert_eq!(result.error_positions, vec![1]);
+        assert_eq!(result.warning_positions, vec![2]);
     }
 }

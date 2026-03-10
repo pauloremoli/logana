@@ -247,10 +247,12 @@ impl App {
                         self.tabs[0].visible_indices = super::VisibleLines::Filtered(visible);
                         self.tabs[0].rebuild_level_index();
                     } else {
-                        self.tabs[0].refresh_visible();
+                        self.tabs[0].begin_filter_refresh();
                     }
-                    if tail {
-                        // Jump to the last visible line in tail mode.
+                    if tail && self.tabs[0].filter_handle.is_none() {
+                        // Fast path completed synchronously: jump to the last visible line.
+                        // Slow path: advance_filter_computation clamps scroll_offset to
+                        // visible_len-1 when the background scan finishes, landing at the tail.
                         self.tabs[0].scroll_offset =
                             self.tabs[0].visible_indices.len().saturating_sub(1);
                     }
@@ -337,6 +339,10 @@ impl App {
             let tail_mode = self.tabs[idx].tail_mode;
             self.tabs[idx].file_reader = FileReader::from_bytes(data);
             self.tabs[idx].begin_filter_refresh();
+            // Fast path: rebuild level index now. Slow path: advance_filter_computation handles it.
+            if self.tabs[idx].filter_handle.is_none() {
+                self.tabs[idx].rebuild_level_index();
+            }
 
             if tail_mode {
                 let new_count = self.tabs[idx].visible_indices.len();
@@ -405,7 +411,7 @@ impl App {
                 // otherwise fall back to a full compute_visible scan.
                 if let Some(visible) = result.precomputed_visible {
                     self.tabs[0].visible_indices = super::VisibleLines::Filtered(visible);
-                    self.tabs[0].rebuild_level_index();
+                    self.tabs[0].begin_level_index_rebuild();
                 } else {
                     self.tabs[0].begin_filter_refresh();
                 }
@@ -467,7 +473,7 @@ impl App {
                 if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     self.tabs[tab_idx].apply_file_context(&ctx);
                 }
-                self.tabs[tab_idx].refresh_visible();
+                self.tabs[tab_idx].begin_filter_refresh();
                 let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
                 self.tabs[tab_idx].watch_state = Some(FileWatchState {
                     new_data_rx: watch_rx,
@@ -529,13 +535,16 @@ impl App {
                             crate::parser::detect_format(&sample).map(Arc::from);
                     }
                     self.tabs[i].begin_filter_refresh();
-                    if tail_mode {
-                        // Fast path (no active filters): visible_indices updated immediately.
-                        // Slow path (active filters): advance_filter_computation handles tail jump.
-                        if self.tabs[i].filter_handle.is_none() {
+                    // Fast path (no active filters): visible_indices updated immediately;
+                    // rebuild the level index now. Slow path: advance_filter_computation handles both.
+                    if self.tabs[i].filter_handle.is_none() {
+                        self.tabs[i].rebuild_level_index();
+                        if tail_mode {
                             let new_count = self.tabs[i].visible_indices.len();
                             self.tabs[i].scroll_offset = new_count.saturating_sub(1);
                         }
+                    } else if tail_mode {
+                        // Slow path tail jump handled by advance_filter_computation.
                     }
                 }
                 Some(Err(_)) => {
@@ -591,12 +600,13 @@ impl App {
             let Some(ref mut h) = tab.filter_handle else {
                 continue;
             };
-            let Ok(visible) = h.result_rx.try_recv() else {
+            let Ok(result) = h.result_rx.try_recv() else {
                 continue;
             };
             tab.filter_handle = None;
-            tab.visible_indices = super::VisibleLines::Filtered(visible);
-            tab.rebuild_level_index();
+            tab.visible_indices = super::VisibleLines::Filtered(result.visible);
+            tab.error_positions = result.error_positions;
+            tab.warning_positions = result.warning_positions;
             if tab.visible_indices.is_empty() {
                 tab.scroll_offset = 0;
             } else {
@@ -1503,5 +1513,39 @@ mod tests {
             matches!(&app.tabs[0].visible_indices, VisibleLines::Filtered(v) if v.len() == 2),
             "filtered preview should contain only matching lines"
         );
+    }
+
+    #[tokio::test]
+    async fn test_update_stdin_tab_updates_level_index() {
+        let mut app = make_app(&[]).await;
+        app.update_stdin_tab(b"ERROR bad\nINFO ok\nWARN maybe\n".to_vec())
+            .await;
+        assert_eq!(app.tabs[0].error_positions, vec![0]);
+        assert_eq!(app.tabs[0].warning_positions, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_watches_updates_level_index() {
+        let data: Vec<u8> = b"INFO start\n".to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .await;
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+
+        // Append ERROR (pos 1) and WARN (pos 2) after the existing INFO (pos 0).
+        tx.send(b"ERROR bad\nWARN careful\n".to_vec()).unwrap();
+        app.advance_file_watches();
+
+        assert_eq!(app.tabs[0].error_positions, vec![1]);
+        assert_eq!(app.tabs[0].warning_positions, vec![2]);
     }
 }
