@@ -33,6 +33,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Export marked logs to a file. e.g. export-marked /tmp/marked.log",
     },
     CommandInfo {
+        name: "save",
+        usage: "save <path>",
+        description: "Save visible (filtered) lines to a file in raw format. e.g. save /tmp/visible.log",
+    },
+    CommandInfo {
         name: "save-filters",
         usage: "save-filters <path>",
         description: "Save current filters to JSON. e.g. save-filters filters.json",
@@ -176,6 +181,7 @@ pub const FILE_PATH_COMMANDS: &[&str] = &[
     "save-filters",
     "export-marked",
     "export",
+    "save",
 ];
 
 pub fn command_names() -> Vec<&'static str> {

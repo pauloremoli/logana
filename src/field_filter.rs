@@ -155,9 +155,11 @@ pub fn extract_field_filters(filter_defs: &[FilterDef]) -> (Vec<FieldFilter>, Ve
 /// - anything else               → linear search of `parts.extra_fields` by key
 pub(crate) fn resolve_field<'a>(field: &str, parts: &'a DisplayParts<'a>) -> Option<&'a str> {
     if let Some(span_key) = field.strip_prefix("span.") {
-        return parts
-            .span
-            .as_ref()?
+        let span = parts.span.as_ref()?;
+        if span_key == "name" {
+            return Some(span.name);
+        }
+        return span
             .fields
             .iter()
             .find(|(k, _)| *k == span_key)
@@ -478,6 +480,12 @@ mod tests {
             field_include_vote(&[inc("span.method", "GET")], Some(&parts)),
             FieldVote::Match
         );
+    }
+
+    #[test]
+    fn test_span_name_field_resolves() {
+        let parts = make_parts_with_span(vec![], vec![("method", "GET")]);
+        assert_eq!(resolve_field("span.name", &parts), Some("req"));
     }
 
     #[test]

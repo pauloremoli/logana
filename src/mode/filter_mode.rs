@@ -278,6 +278,17 @@ impl Mode for FilterManagementMode {
             );
         }
 
+        if kb.normal.toggle_filtering.matches(key, modifiers) {
+            tab.filtering_enabled = !tab.filtering_enabled;
+            tab.begin_filter_refresh();
+            return (
+                Box::new(FilterManagementMode {
+                    selected_filter_index: selected,
+                }),
+                KeyResult::Handled,
+            );
+        }
+
         if kb.filter.toggle_all_filters.matches(key, modifiers) {
             let any_enabled = tab.log_manager.get_filters().iter().any(|f| f.enabled);
             if any_enabled {
@@ -424,6 +435,12 @@ impl Mode for FilterManagementMode {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("> move  ", Style::default().fg(theme.text)));
+        status_entry(
+            &mut spans,
+            kb.normal.toggle_filtering.display(),
+            "tog.filtering",
+            theme,
+        );
         status_entry(
             &mut spans,
             kb.filter.toggle_all_filters.display(),
@@ -752,6 +769,27 @@ mod tests {
             ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 1),
             other => panic!("expected FilterManagement, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_capital_f_toggles_filtering_enabled() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        assert!(tab.filtering_enabled);
+        press(filter_mode(0), &mut tab, KeyCode::Char('F')).await;
+        assert!(!tab.filtering_enabled);
+        press(filter_mode(0), &mut tab, KeyCode::Char('F')).await;
+        assert!(tab.filtering_enabled);
+    }
+
+    #[tokio::test]
+    async fn test_capital_f_stays_in_filter_mode() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('F')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
     }
 
     #[tokio::test]

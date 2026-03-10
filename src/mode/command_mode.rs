@@ -87,6 +87,8 @@ pub enum Commands {
     },
     /// Export marked logs
     ExportMarked { path: String },
+    /// Save visible (filtered) lines to file in raw format
+    Save { path: String },
     /// Save filters to file
     SaveFilters { path: String },
     /// Load filters from file

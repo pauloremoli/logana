@@ -196,6 +196,20 @@ impl App {
                         .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
                 }
             }
+            Some(Commands::Save { path }) => {
+                if path.is_empty() {
+                    return Err("Path is required".to_string());
+                }
+                let expanded = expand_tilde(&path);
+                let tab = &self.tabs[self.active_tab];
+                let mut content: Vec<u8> = Vec::new();
+                for file_idx in tab.visible_indices.iter() {
+                    content.extend_from_slice(tab.file_reader.get_line(file_idx));
+                    content.push(b'\n');
+                }
+                std::fs::write(&expanded, &content)
+                    .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
+            }
             Some(Commands::Export { path, template }) => {
                 if path.is_empty() {
                     return Err("Path is required".to_string());
@@ -1265,5 +1279,45 @@ mod tests {
         assert!(!app.tab().paused);
         app.run_command("resume").await.unwrap();
         assert!(!app.tab().paused);
+    }
+
+    // ── save ──────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_save_writes_all_visible_lines() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("save {}", path)).await.unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, "line one\nline two\n");
+    }
+
+    #[tokio::test]
+    async fn test_save_writes_only_filtered_lines() {
+        let mut app = make_app(&["keep this", "skip this", "keep too"]).await;
+        app.execute_command_str("filter keep".to_string()).await;
+        await_filter_computations(&mut app).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("save {}", path)).await.unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, "keep this\nkeep too\n");
+    }
+
+    #[tokio::test]
+    async fn test_save_empty_path_error() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("save \"\"").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_bad_path_returns_error() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("save /nonexistent_dir/out.log").await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("Failed to write"), "got: {msg}");
     }
 }
