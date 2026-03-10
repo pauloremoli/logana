@@ -164,6 +164,8 @@ pub struct CommandMode {
     pub history: Vec<String>,
     pub history_index: Option<usize>,
     pub completion_index: Option<usize>,
+    /// The original input before Tab cycling began, used to compute consistent completions.
+    pub completion_query: Option<String>,
 }
 
 impl CommandMode {
@@ -174,19 +176,27 @@ impl CommandMode {
             history,
             history_index: None,
             completion_index: None,
+            completion_query: None,
         }
     }
 
-    /// Compute the list of full replacement strings for the current input.
+    /// Compute completions using the active query (original input before Tab cycling) or
+    /// the current input when no completion session is in progress.
+    fn compute_completions(&self, tab: &TabState) -> Vec<String> {
+        let query = self.completion_query.as_deref().unwrap_or(&self.input);
+        Self::completions_for(query, tab)
+    }
+
+    /// Compute the list of full replacement strings for a given input.
     /// Returns completions for whichever tier matches first:
     /// field → color → file path → theme → command name.
-    fn compute_completions(&self, tab: &TabState) -> Vec<String> {
-        let trimmed = self.input.trim().to_string();
+    fn completions_for(input: &str, tab: &TabState) -> Vec<String> {
+        let trimmed = input.trim().to_string();
 
         // Field name/value completion for `filter --field` and `exclude --field`.
         // Use trim_start() (left-trim only) to preserve any trailing space, which
         // signals that the preceding token is complete and the next one starts.
-        let input_ls = self.input.trim_start();
+        let input_ls = input.trim_start();
         if let Some(fc) = extract_field_partial(input_ls) {
             let field_index = tab.build_field_index();
             let completions: Vec<String> = match &fc {
@@ -213,11 +223,8 @@ impl CommandMode {
         }
 
         // Flag/parameter completion (fires when last token starts with `-`)
-        if let Some((prefix, partial)) = extract_flag_partial(&self.input) {
-            let cmd = shell_split(&self.input)
-                .into_iter()
-                .next()
-                .unwrap_or_default();
+        if let Some((prefix, partial)) = extract_flag_partial(input) {
+            let cmd = shell_split(input).into_iter().next().unwrap_or_default();
             let completions = complete_flags(&cmd, &partial);
             if !completions.is_empty() {
                 return completions
@@ -260,7 +267,7 @@ impl CommandMode {
         }
 
         // File path completion
-        let input_ltrimmed = self.input.trim_start();
+        let input_ltrimmed = input.trim_start();
         let file_cmd = FILE_PATH_COMMANDS
             .iter()
             .find(|cmd| input_ltrimmed.starts_with(&format!("{} ", cmd)));
@@ -343,6 +350,11 @@ impl Mode for CommandMode {
         }
         match key {
             KeyCode::Backspace => {
+                if let Some(query) = self.completion_query.take() {
+                    self.input = query;
+                    self.cursor = self.input.len();
+                    self.completion_index = None;
+                }
                 if self.cursor > 0 && !self.input.is_empty() {
                     self.input.remove(self.cursor - 1);
                     self.cursor -= 1;
@@ -350,19 +362,19 @@ impl Mode for CommandMode {
                 }
             }
             KeyCode::Char(' ') if self.completion_index.is_some() => {
-                let idx = self.completion_index.unwrap();
-                let completions = self.compute_completions(tab);
-                if let Some(text) = completions.into_iter().nth(idx) {
-                    self.input = text;
-                    self.cursor = self.input.len();
-                }
+                // Input already holds the selected completion from Tab; just confirm.
                 self.completion_index = None;
+                self.completion_query = None;
             }
             KeyCode::Char(c) => {
+                if let Some(query) = self.completion_query.take() {
+                    self.input = query;
+                    self.cursor = self.input.len();
+                    self.completion_index = None;
+                }
                 self.input.insert(self.cursor, c);
                 self.cursor += 1;
                 tab.command_error = None;
-                self.completion_index = None;
                 self.history_index = None;
             }
             KeyCode::Left => {
@@ -411,6 +423,10 @@ impl Mode for CommandMode {
                 }
             }
             KeyCode::Tab => {
+                // Save original query on first Tab press.
+                if self.completion_query.is_none() {
+                    self.completion_query = Some(self.input.clone());
+                }
                 let completions = self.compute_completions(tab);
                 if !completions.is_empty() {
                     let idx = match self.completion_index {
@@ -418,9 +434,14 @@ impl Mode for CommandMode {
                         Some(i) => (i + 1) % completions.len(),
                     };
                     self.completion_index = Some(idx);
+                    self.input = completions[idx].clone();
+                    self.cursor = self.input.len();
                 }
             }
             KeyCode::BackTab => {
+                if self.completion_query.is_none() {
+                    self.completion_query = Some(self.input.clone());
+                }
                 let completions = self.compute_completions(tab);
                 if !completions.is_empty() {
                     let idx = match self.completion_index {
@@ -428,6 +449,8 @@ impl Mode for CommandMode {
                         Some(i) => i - 1,
                     };
                     self.completion_index = Some(idx);
+                    self.input = completions[idx].clone();
+                    self.cursor = self.input.len();
                 }
             }
             _ => {}
@@ -453,6 +476,7 @@ impl Mode for CommandMode {
             input: self.input.clone(),
             cursor: self.cursor,
             completion_index: self.completion_index,
+            completion_query: self.completion_query.clone(),
         }
     }
 }
@@ -655,6 +679,7 @@ mod tests {
             history: vec!["cmd1".to_string()],
             history_index: Some(0),
             completion_index: None,
+            completion_query: None,
         };
         let (mode4, _) = press(mode3, &mut tab, KeyCode::Down).await;
         let (input2, _) = command_state(mode4.as_ref()).unwrap();
@@ -662,16 +687,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tab_highlights_without_changing_input() {
+    async fn test_tab_updates_input_to_first_completion() {
         let mut tab = make_tab().await;
         let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
-        // Input stays unchanged
+        // Input is updated to the first completion
         let (input, _) = command_state(mode2.as_ref()).unwrap();
-        assert_eq!(input, "fi");
-        // But completion_index is set
+        assert!(
+            !input.is_empty(),
+            "Tab should set input to first completion"
+        );
+        assert_ne!(
+            input, "fi",
+            "Tab should replace the query with the completion"
+        );
+        // completion_index is set
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
     }
 
@@ -681,15 +713,18 @@ mod tests {
         let (mode2, _) = Box::new(empty_mode())
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
-        // Input stays empty
+        // Input is updated to the first completion
         let (input, _) = command_state(mode2.as_ref()).unwrap();
-        assert_eq!(input, "");
-        // But completion_index is set
+        assert!(
+            !input.is_empty(),
+            "Tab on empty input should set input to first command"
+        );
+        // completion_index is set
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
     }
 
     #[tokio::test]
-    async fn test_tab_cycles_completion_index() {
+    async fn test_tab_cycles_completion_index_and_input() {
         let mut tab = make_tab().await;
         // "fi" matches "filter", "filtering", etc.
         let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
@@ -697,11 +732,18 @@ mod tests {
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
+        let (first_input, _) = command_state(mode2.as_ref()).unwrap();
 
         let (mode3, _) = mode2
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         assert_eq!(completion_index(mode3.as_ref()), Some(1));
+        let (second_input, _) = command_state(mode3.as_ref()).unwrap();
+        // Each Tab selects a different completion
+        assert_ne!(
+            first_input, second_input,
+            "Second Tab should select a different completion"
+        );
     }
 
     #[tokio::test]
@@ -722,18 +764,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_typing_resets_completion_index() {
+    async fn test_typing_restores_query_and_resets_completion() {
         let mut tab = make_tab().await;
         let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         assert!(completion_index(mode2.as_ref()).is_some());
-        // Typing a char resets completion
+        // Typing a char restores the original query and appends the char
         let (mode3, _) = mode2
             .handle_key(&mut tab, KeyCode::Char('l'), KeyModifiers::NONE)
             .await;
         assert!(completion_index(mode3.as_ref()).is_none());
+        let (input, _) = command_state(mode3.as_ref()).unwrap();
+        assert_eq!(
+            input, "fil",
+            "Typing after Tab should restore query and append char"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_backspace_restores_query_and_resets_completion() {
+        let mut tab = make_tab().await;
+        let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        assert!(completion_index(mode2.as_ref()).is_some());
+        // Backspace restores the original query then removes the last char
+        let (mode3, _) = mode2
+            .handle_key(&mut tab, KeyCode::Backspace, KeyModifiers::NONE)
+            .await;
+        assert!(completion_index(mode3.as_ref()).is_none());
+        let (input, _) = command_state(mode3.as_ref()).unwrap();
+        assert_eq!(
+            input, "f",
+            "Backspace after Tab should restore query then delete one char"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tab_then_enter_executes_completion() {
+        let mut tab = make_tab().await;
+        // Type "set-theme " and Tab to cycle theme completions; Enter executes selected
+        let mode = CommandMode::with_history("set-theme ".to_string(), 10, vec![]);
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        let (input_after_tab, _) = command_state(mode2.as_ref()).unwrap();
+        assert!(
+            input_after_tab.starts_with("set-theme "),
+            "Tab should expand to a full theme name, got: {input_after_tab}"
+        );
+        // Enter executes the selected completion directly (no Space needed)
+        let (_, result) = mode2
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        assert!(
+            matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd.starts_with("set-theme ")),
+            "Enter should execute the selected theme completion"
+        );
     }
 
     #[test]
@@ -778,12 +868,19 @@ mod tests {
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         let (input, _) = command_state(mode2.as_ref()).unwrap();
-        // Input stays unchanged
-        assert_eq!(input, "open ");
+        // Input is updated to the first completion
+        assert!(
+            input.starts_with("open "),
+            "Tab should set input to a file completion starting with 'open ', got: {input}"
+        );
+        assert!(
+            input.contains(path.to_str().unwrap()),
+            "Tab should complete into the source file's directory, got: {input}"
+        );
         // Completion is highlighted
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
-        // Space accepts the highlighted completion into input
+        // Space confirms the completion (clears state, input already correct)
         let (mode3, result) = mode2
             .handle_key(&mut tab, KeyCode::Char(' '), KeyModifiers::NONE)
             .await;
@@ -816,12 +913,15 @@ mod tests {
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
-        // Input stays unchanged after Tab
+        // Input is updated to the completion after Tab
         let (input, _) = command_state(mode2.as_ref()).unwrap();
-        assert_eq!(input, input_str);
+        assert!(
+            input.ends_with("application.log"),
+            "Tab should set input to first completion, got: {input}"
+        );
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
-        // Space accepts the highlighted completion into input
+        // Space confirms the completion (clears state, input already correct)
         let (mode3, result) = mode2
             .handle_key(&mut tab, KeyCode::Char(' '), KeyModifiers::NONE)
             .await;
@@ -835,31 +935,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_space_accepts_completion_into_input() {
+    async fn test_space_confirms_tab_completion() {
         let mut tab = make_tab().await;
-        // Type "fi" then Tab to highlight first completion
+        // Type "fi" then Tab — input is updated to first completion
         let mode = CommandMode::with_history("fi".to_string(), 2, vec![]);
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
-        // Input stays "fi", completion_index is set
-        assert_eq!(command_state(mode2.as_ref()).unwrap().0, "fi");
+        let (input_after_tab, _) = command_state(mode2.as_ref()).unwrap();
+        assert_ne!(
+            input_after_tab, "fi",
+            "Tab should update input to completion"
+        );
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
-        // Press Space — should accept highlighted completion into input
+        // Press Space — confirms (clears completion state, keeps input)
         let (mode3, result) = mode2
             .handle_key(&mut tab, KeyCode::Char(' '), KeyModifiers::NONE)
             .await;
         assert!(matches!(result, KeyResult::Handled));
-        // Still in command mode with accepted text
-        let input_after_accept = command_state(mode3.as_ref()).unwrap().0.clone();
-        assert!(
-            !input_after_accept.is_empty(),
-            "Input should be filled with accepted completion"
+        let (input_after_space, _) = command_state(mode3.as_ref()).unwrap();
+        assert_eq!(
+            input_after_space, input_after_tab,
+            "Space should keep the input from Tab"
         );
         assert!(completion_index(mode3.as_ref()).is_none());
 
-        // Enter — should execute the command
+        // Enter — executes the command (which is now the completed value)
         let (mode4, result2) = mode3
             .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
             .await;
@@ -871,22 +973,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_enter_during_completion_executes_raw_input() {
+    async fn test_enter_during_completion_executes_selected_completion() {
         let mut tab = make_tab().await;
-        // Type "wrap" then Tab to highlight completion
+        // Type "wrap" then Tab — input is updated to "wrap" (exact match)
         let mode = CommandMode::with_history("wrap".to_string(), 4, vec![]);
         let (mode2, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
             .await;
         assert_eq!(completion_index(mode2.as_ref()), Some(0));
 
-        // Enter always executes the current input text, ignoring completion highlight
+        // Enter executes the current input (which is the selected completion)
         let (mode3, result) = mode2
             .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
             .await;
         assert!(
             matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd == "wrap"),
-            "Enter should execute the input text directly"
+            "Enter should execute the selected completion"
         );
         assert!(!matches!(
             mode3.render_state(),

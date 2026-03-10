@@ -252,6 +252,7 @@ impl App {
                     history,
                     history_index: None,
                     completion_index: None,
+                    completion_query: None,
                 });
             }
         }

@@ -29,6 +29,8 @@ pub enum ModeRenderState {
         input: String,
         cursor: usize,
         completion_index: Option<usize>,
+        /// Original typed text before Tab cycling; `None` when no completion session is active.
+        completion_query: Option<String>,
     },
     Search {
         query: String,
@@ -773,7 +775,8 @@ mod tests {
             ModeRenderState::Command {
                 input: String::new(),
                 cursor: 0,
-                completion_index: None
+                completion_index: None,
+                completion_query: None,
             }
             .mode_name(),
             "COMMAND"

@@ -70,6 +70,14 @@ impl App {
             } => *completion_index,
             _ => None,
         };
+        // When a completion session is active, suggestions are computed from the original query
+        // (what the user typed before Tab cycling), not from the currently displayed completion.
+        let completion_query: Option<String> = match &render_state {
+            ModeRenderState::Command {
+                completion_query, ..
+            } => completion_query.clone(),
+            _ => None,
+        };
         // (query, forward, is_active): is_active=true while typing (shows cursor + count),
         // false when persistent after execution (shows "match X / N").
         let search_input: Option<(String, bool, bool)> = match &render_state {
@@ -185,8 +193,12 @@ impl App {
         constraints.push(Constraint::Min(1)); // Main content
         if has_input_bar {
             constraints.push(Constraint::Length(1)); // input line
-            let hint_height =
-                self.compute_hint_height(&command_input, inner_width, completion_index);
+            let hint_height = self.compute_hint_height(
+                &command_input,
+                completion_query.as_deref(),
+                inner_width,
+                completion_index,
+            );
             constraints.push(Constraint::Length(hint_height)); // hint line(s)
         }
         if show_mode_bar {
@@ -272,7 +284,14 @@ impl App {
 
         self.render_side_bar(frame, selected_filter_idx, sidebar_area);
 
-        self.render_command_bar(frame, command_input, completion_index, &chunks, chunk_idx);
+        self.render_command_bar(
+            frame,
+            command_input,
+            completion_query.as_deref(),
+            completion_index,
+            &chunks,
+            chunk_idx,
+        );
 
         self.render_input_bar(frame, search_input, &chunks, chunk_idx);
 
@@ -1250,14 +1269,17 @@ impl App {
     fn compute_hint_height(
         &self,
         command_input: &Option<(String, usize)>,
+        completion_query: Option<&str>,
         width: usize,
         completion_index: Option<usize>,
     ) -> u16 {
         let text = match command_input {
             Some((input_text, _)) => {
+                // Use the original query for computing suggestions when Tab cycling is active.
+                let query_text = completion_query.unwrap_or(input_text.as_str());
                 if let Some(err) = &self.tabs[self.active_tab].command_error {
                     err.clone()
-                } else if let Some(fc) = extract_field_partial(input_text.trim_start()) {
+                } else if let Some(fc) = extract_field_partial(query_text.trim_start()) {
                     let field_index = self.tabs[self.active_tab].build_field_index();
                     let completions: Vec<String> = match &fc {
                         FieldCompletion::Name(partial) => {
@@ -1268,13 +1290,13 @@ impl App {
                         }
                     };
                     completions.join("  ")
-                } else if let Some((_, partial)) = extract_flag_partial(input_text) {
-                    let cmd = shell_split(input_text)
+                } else if let Some((_, partial)) = extract_flag_partial(query_text) {
+                    let cmd = shell_split(query_text)
                         .into_iter()
                         .next()
                         .unwrap_or_default();
                     complete_flags(&cmd, &partial).join("  ")
-                } else if let Some(partial) = extract_color_partial(input_text.trim_start()) {
+                } else if let Some(partial) = extract_color_partial(query_text.trim_start()) {
                     let completions = complete_color(partial);
                     completions
                         .iter()
@@ -1282,7 +1304,7 @@ impl App {
                         .collect::<Vec<_>>()
                         .join(" ")
                 } else {
-                    let trimmed = input_text.trim();
+                    let trimmed = query_text.trim();
                     let file_cmd = FILE_PATH_COMMANDS
                         .iter()
                         .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
@@ -1308,12 +1330,12 @@ impl App {
                             .collect::<Vec<_>>()
                             .join("  ")
                     } else if let Some(partial_raw) =
-                        input_text.trim_start().strip_prefix("set-theme ")
+                        query_text.trim_start().strip_prefix("set-theme ")
                     {
                         let partial = partial_raw.trim_start();
                         complete_theme(partial).join("  ")
                     } else if completion_index.is_none() {
-                        if let Some(cmd) = find_matching_command(input_text) {
+                        if let Some(cmd) = find_matching_command(query_text) {
                             format!("  {} - {}", cmd.usage, cmd.description)
                         } else {
                             find_command_completions(trimmed).join("  ")
@@ -1335,11 +1357,14 @@ impl App {
         &mut self,
         frame: &mut Frame<'_>,
         command_input: Option<(String, usize)>,
+        completion_query: Option<&str>,
         completion_index: Option<usize>,
         chunks: &std::rc::Rc<[Rect]>,
         chunk_idx: usize,
     ) {
         if let Some((input_text, cursor_pos)) = command_input {
+            // Use the original query for suggestion lists when Tab cycling is active.
+            let query_text = completion_query.unwrap_or(input_text.as_str());
             let input_prefix = ":";
             let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
                 .style(
@@ -1366,7 +1391,7 @@ impl App {
                     .style(Style::default().fg(Color::Red).bg(self.theme.root_bg))
                     .wrap(Wrap { trim: false });
                 frame.render_widget(error_paragraph, hint_area);
-            } else if let Some(fc) = extract_field_partial(input_text.trim_start()) {
+            } else if let Some(fc) = extract_field_partial(query_text.trim_start()) {
                 let field_index = self.tabs[self.active_tab].build_field_index();
                 let completions: Vec<String> = match &fc {
                     FieldCompletion::Name(partial) => complete_field_name(partial, &field_index),
@@ -1392,8 +1417,8 @@ impl App {
                         .wrap(Wrap { trim: false });
                     frame.render_widget(hint, hint_area);
                 }
-            } else if let Some((_, partial)) = extract_flag_partial(&input_text) {
-                let cmd = shell_split(&input_text)
+            } else if let Some((_, partial)) = extract_flag_partial(query_text) {
+                let cmd = shell_split(query_text)
                     .into_iter()
                     .next()
                     .unwrap_or_default();
@@ -1416,7 +1441,7 @@ impl App {
                         .wrap(Wrap { trim: false });
                     frame.render_widget(hint, hint_area);
                 }
-            } else if let Some(partial) = extract_color_partial(input_text.trim_start()) {
+            } else if let Some(partial) = extract_color_partial(query_text.trim_start()) {
                 let completions = complete_color(partial);
                 if !completions.is_empty() {
                     let hint_spans: Vec<Span> = completions
@@ -1438,13 +1463,13 @@ impl App {
                     frame.render_widget(hint, hint_area);
                 }
             } else {
-                let trimmed_input = input_text.trim();
+                let trimmed_query = query_text.trim();
                 let file_cmd = FILE_PATH_COMMANDS
                     .iter()
-                    .find(|cmd| trimmed_input.starts_with(&format!("{} ", cmd)));
+                    .find(|cmd| trimmed_query.starts_with(&format!("{} ", cmd)));
 
                 if let Some(&cmd) = file_cmd {
-                    let partial = trimmed_input[cmd.len()..].trim_start();
+                    let partial = trimmed_query[cmd.len()..].trim_start();
                     let completions = complete_file_path(partial);
                     if !completions.is_empty() {
                         let hint_spans: Vec<Span> = completions
@@ -1478,7 +1503,7 @@ impl App {
                             .wrap(Wrap { trim: false });
                         frame.render_widget(hint, hint_area);
                     }
-                } else if let Some(partial_raw) = input_text.trim_start().strip_prefix("set-theme ")
+                } else if let Some(partial_raw) = query_text.trim_start().strip_prefix("set-theme ")
                 {
                     let partial = partial_raw.trim_start();
                     let completions = complete_theme(partial);
@@ -1501,7 +1526,7 @@ impl App {
                         frame.render_widget(hint, hint_area);
                     }
                 } else if completion_index.is_none() {
-                    if let Some(cmd) = find_matching_command(&input_text) {
+                    if let Some(cmd) = find_matching_command(query_text) {
                         let hint = Paragraph::new(format!("  {} - {}", cmd.usage, cmd.description))
                             .style(normal_style)
                             .wrap(Wrap { trim: false });
@@ -1509,7 +1534,7 @@ impl App {
                     } else {
                         self.render_command_completions(
                             frame,
-                            &input_text,
+                            query_text,
                             completion_index,
                             hint_area,
                             normal_style,
@@ -1519,7 +1544,7 @@ impl App {
                 } else {
                     self.render_command_completions(
                         frame,
-                        &input_text,
+                        query_text,
                         completion_index,
                         hint_area,
                         normal_style,
@@ -1936,6 +1961,7 @@ mod tests {
             history: vec![],
             history_index: None,
             completion_index: Some(0),
+            completion_query: None,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2209,7 +2235,7 @@ mod tests {
     #[tokio::test]
     async fn test_compute_hint_height_empty() {
         let app = make_app(&["line"]).await;
-        let result = app.compute_hint_height(&None, 80, None);
+        let result = app.compute_hint_height(&None, None, 80, None);
         assert_eq!(result, 1);
     }
 
@@ -2217,7 +2243,7 @@ mod tests {
     async fn test_compute_hint_height_matching_command() {
         let app = make_app(&["line"]).await;
         let input = Some(("filter".to_string(), 6));
-        let result = app.compute_hint_height(&input, 80, None);
+        let result = app.compute_hint_height(&input, None, 80, None);
         assert!(result >= 1);
     }
 
@@ -2226,7 +2252,7 @@ mod tests {
         let mut app = make_app(&["line"]).await;
         app.tabs[0].command_error = Some("something went wrong".to_string());
         let input = Some(("bad".to_string(), 3));
-        let result = app.compute_hint_height(&input, 80, None);
+        let result = app.compute_hint_height(&input, None, 80, None);
         assert!(result >= 1);
     }
 
