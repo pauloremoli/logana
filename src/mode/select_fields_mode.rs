@@ -88,7 +88,7 @@ impl Mode for SelectFieldsMode {
                 f.1 = false;
             }
         }
-        (self, KeyResult::Handled)
+        (self, KeyResult::Ignored)
     }
 
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -429,5 +429,13 @@ mod tests {
             tab.field_layout.columns,
             Some(vec!["level".to_string(), "timestamp".to_string()])
         );
+    }
+
+    #[tokio::test]
+    async fn test_unrecognized_key_returns_ignored() {
+        let mut tab = make_tab().await;
+        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let (_, result) = press(mode, &mut tab, KeyCode::F(2)).await;
+        assert!(matches!(result, KeyResult::Ignored));
     }
 }

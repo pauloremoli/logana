@@ -65,7 +65,7 @@ impl Mode for DockerSelectMode {
         } else if kb.docker_select.cancel.matches(key, modifiers) {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
-        (self, KeyResult::Handled)
+        (self, KeyResult::Ignored)
     }
 
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -335,5 +335,13 @@ mod tests {
             }
             other => panic!("expected DockerSelect, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_unrecognized_key_returns_ignored() {
+        let mut tab = make_tab().await;
+        let mode = DockerSelectMode::new(sample_containers());
+        let (_, result) = press(mode, &mut tab, KeyCode::F(2)).await;
+        assert!(matches!(result, KeyResult::Ignored));
     }
 }

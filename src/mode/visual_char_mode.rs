@@ -244,7 +244,7 @@ impl Mode for VisualMode {
             }
         }
 
-        (self, KeyResult::Handled)
+        (self, KeyResult::Ignored)
     }
 
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -1515,5 +1515,15 @@ mod tests {
         let text: String = content.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("line↓"), "missing line↓ in: {text}");
         assert!(text.contains("line↑"), "missing line↑ in: {text}");
+    }
+
+    #[tokio::test]
+    async fn test_unrecognized_key_returns_ignored() {
+        let mut tab = make_multi_tab(&["hello"]).await;
+        let mode = VisualMode::new("hello".to_string());
+        let (_, result) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::F(2), KeyModifiers::NONE)
+            .await;
+        assert!(matches!(result, KeyResult::Ignored));
     }
 }

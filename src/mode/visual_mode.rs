@@ -213,7 +213,7 @@ impl Mode for VisualLineMode {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
-        (self, KeyResult::Handled)
+        (self, KeyResult::Ignored)
     }
 
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -888,5 +888,16 @@ mod tests {
         };
         let _ = press(mode, &mut tab, KeyCode::Char('j')).await;
         assert!(!tab.g_key_pressed);
+    }
+
+    #[tokio::test]
+    async fn test_unrecognized_key_returns_ignored() {
+        let mut tab = make_tab(&["a"]).await;
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
+        let (_, result) = press(mode, &mut tab, KeyCode::F(2)).await;
+        assert!(matches!(result, KeyResult::Ignored));
     }
 }

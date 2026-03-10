@@ -230,7 +230,7 @@ impl Mode for ValueColorsMode {
                 _ => {}
             }
         }
-        (self, KeyResult::Handled)
+        (self, KeyResult::Ignored)
     }
 
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -588,5 +588,13 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(matches!(rows[0], ValueColorRow::Group(2)));
         assert!(matches!(rows[1], ValueColorRow::Entry(2, 0)));
+    }
+
+    #[tokio::test]
+    async fn test_unrecognized_key_returns_ignored() {
+        let mut tab = make_tab().await;
+        let mode = ValueColorsMode::new(sample_groups(), HashSet::new());
+        let (_, result) = press(mode, &mut tab, KeyCode::F(2)).await;
+        assert!(matches!(result, KeyResult::Ignored));
     }
 }

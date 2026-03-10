@@ -360,12 +360,12 @@ impl Mode for FilterManagementMode {
             );
         }
 
-        // Unrecognised key — stay in filter mode.
+        // Unrecognised key — pass through to global handler.
         (
             Box::new(FilterManagementMode {
                 selected_filter_index: selected,
             }),
-            KeyResult::Handled,
+            KeyResult::Ignored,
         )
     }
 
@@ -1111,5 +1111,12 @@ mod tests {
             mode.render_state(),
             ModeRenderState::FilterManagement { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_unrecognized_key_returns_ignored() {
+        let mut tab = make_tab(&["line"]).await;
+        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::F(2)).await;
+        assert!(matches!(result, KeyResult::Ignored));
     }
 }

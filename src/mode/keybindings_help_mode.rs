@@ -97,8 +97,12 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.yank_marked.display(),
     });
     rows.push(HelpRow::Entry {
-        action: "Visual select".into(),
+        action: "Visual line select".into(),
         keys: n.visual_mode.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Visual char select".into(),
+        keys: n.visual_char.display(),
     });
     rows.push(HelpRow::Entry {
         action: "Search forward".into(),
@@ -141,8 +145,36 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.command_mode.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Comment line".into(),
+        keys: n.comment_line.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Edit comment".into(),
         keys: n.edit_comment.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Delete comment".into(),
+        keys: n.delete_comment.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Next error".into(),
+        keys: n.next_error.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Prev error".into(),
+        keys: n.prev_error.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Next warning".into(),
+        keys: n.next_warning.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Prev warning".into(),
+        keys: n.prev_warning.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Clear search".into(),
+        keys: n.clear_search.display(),
     });
     rows.push(HelpRow::Entry {
         action: "Clear marks/comments".into(),
@@ -165,8 +197,120 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: vl.yank.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Mark lines".into(),
+        keys: vl.mark.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Filter include".into(),
+        keys: vl.filter_include.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Filter exclude".into(),
+        keys: vl.filter_exclude.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Search".into(),
+        keys: vl.search.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Exit visual mode".into(),
         keys: vl.exit.display(),
+    });
+
+    // ── Visual Char Mode ─────────────────────────────────────────────────────
+    let vc = &kb.visual;
+    rows.push(HelpRow::Header("Visual Char Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Move left".into(),
+        keys: vc.move_left.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Move right".into(),
+        keys: vc.move_right.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Word forward".into(),
+        keys: vc.word_forward.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Word backward".into(),
+        keys: vc.word_backward.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Word end".into(),
+        keys: vc.word_end.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Word forward (WORD)".into(),
+        keys: vc.word_forward_big.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Word backward (WORD)".into(),
+        keys: vc.word_backward_big.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Word end (WORD)".into(),
+        keys: vc.word_end_big.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Start of line".into(),
+        keys: vc.start_of_line.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "First non-blank".into(),
+        keys: vc.first_nonblank.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "End of line".into(),
+        keys: vc.end_of_line.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Find forward".into(),
+        keys: vc.find_forward.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Find backward".into(),
+        keys: vc.find_backward.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Till forward".into(),
+        keys: vc.till_forward.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Till backward".into(),
+        keys: vc.till_backward.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Repeat motion".into(),
+        keys: vc.repeat_motion.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Repeat motion reverse".into(),
+        keys: vc.repeat_motion_rev.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Filter include".into(),
+        keys: vc.filter_include.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Filter exclude".into(),
+        keys: vc.filter_exclude.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Search".into(),
+        keys: vc.search.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Start selection".into(),
+        keys: vc.start_selection.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Yank to clipboard".into(),
+        keys: vc.yank.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Exit visual mode".into(),
+        keys: vc.exit.display(),
     });
 
     // ── Global ───────────────────────────────────────────────────────────────
@@ -263,6 +407,14 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: f.clear_all_filters.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Grow sidebar".into(),
+        keys: f.sidebar_grow.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Shrink sidebar".into(),
+        keys: f.sidebar_shrink.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Exit filter mode".into(),
         keys: f.exit_mode.display(),
     });
@@ -272,6 +424,10 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     rows.push(HelpRow::Entry {
         action: "Save comment".into(),
         keys: kb.comment.save.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "New line".into(),
+        keys: kb.comment.newline.display(),
     });
     rows.push(HelpRow::Entry {
         action: "Delete comment".into(),
