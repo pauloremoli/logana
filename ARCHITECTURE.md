@@ -169,6 +169,22 @@ Session state (scroll offset, marks, comments, filter definitions, display setti
 
 Filters are scoped per source file because a filter that is meaningful for one log file is usually noise for another. The exception is the `--filters` flag, which loads a filter set from a JSON file and applies it regardless of the source, intended for reusable filter profiles.
 
+### DB schema
+
+- `filters` — per-file filter definitions
+- `file_context` — per-file session state (PK: `source_file`)
+- `session_tabs` — ordered list of last-open source files
+- `app_settings` — global key/value store for runtime preferences set interactively (e.g. `restore_session`, `restore_file_context` policies). The `config.json` file is read-only user configuration; any setting the app changes at runtime is stored here instead.
+
+### Restore policy separation
+
+Two independent policies control restore behaviour:
+
+- `restore_file_context` — whether to restore per-file scroll/filter/mark context when opening a file (`ConfirmRestoreMode`)
+- `restore_session` — whether to restore the last set of open tabs when launching without arguments (`ConfirmRestoreSessionMode`)
+
+Each policy defaults to `ask` (from `config.json` or hardcoded). When the user presses Shift+Y ("always") or Shift+N ("never") at either prompt, only the corresponding key is written to `app_settings`. The two policies are stored and loaded independently so a choice made at one prompt never affects the other.
+
 ## Dependencies
 
 | Crate | Role | Why |

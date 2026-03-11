@@ -47,9 +47,20 @@ impl App {
         tab.keybindings = self.keybindings.clone();
         tab.show_mode_bar = self.show_mode_bar;
         tab.show_borders = self.show_borders_default;
+        tab.show_line_numbers = self.show_line_numbers;
+        tab.show_sidebar = self.show_sidebar;
+        tab.wrap = self.wrap;
 
         if let Ok(Some(ctx)) = self.db.load_file_context(&abs_path).await {
-            tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
+            match self.restore_file_policy {
+                RestoreSessionPolicy::Always => {
+                    tab.apply_file_context(&ctx);
+                }
+                RestoreSessionPolicy::Never => {}
+                RestoreSessionPolicy::Ask => {
+                    tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
+                }
+            }
         }
 
         self.tabs.push(tab);
@@ -72,6 +83,9 @@ impl App {
         tab.keybindings = self.keybindings.clone();
         tab.show_mode_bar = self.show_mode_bar;
         tab.show_borders = self.show_borders_default;
+        tab.show_line_numbers = self.show_line_numbers;
+        tab.show_sidebar = self.show_sidebar;
+        tab.wrap = self.wrap;
 
         match FileReader::spawn_process_stream("docker", &["logs", "-f", &container_id]).await {
             Ok(rx) => {
@@ -99,6 +113,9 @@ impl App {
         tab.keybindings = self.keybindings.clone();
         tab.show_mode_bar = self.show_mode_bar;
         tab.show_borders = self.show_borders_default;
+        tab.show_line_numbers = self.show_line_numbers;
+        tab.show_sidebar = self.show_sidebar;
+        tab.wrap = self.wrap;
 
         match FileReader::spawn_process_stream("docker", &["logs", "-f", name]).await {
             Ok(rx) => {
@@ -162,6 +179,9 @@ impl App {
             tab.keybindings = self.keybindings.clone();
             tab.show_mode_bar = self.show_mode_bar;
             tab.show_borders = self.show_borders_default;
+            tab.show_line_numbers = self.show_line_numbers;
+            tab.show_sidebar = self.show_sidebar;
+            tab.wrap = self.wrap;
             let abs_path = std::fs::canonicalize(&next)
                 .ok()
                 .and_then(|c| c.to_str().map(|s| s.to_string()))
@@ -353,6 +373,9 @@ impl App {
                 tab.keybindings = self.keybindings.clone();
                 tab.show_mode_bar = self.show_mode_bar;
                 tab.show_borders = self.show_borders_default;
+                tab.show_line_numbers = self.show_line_numbers;
+                tab.show_sidebar = self.show_sidebar;
+                tab.wrap = self.wrap;
                 tab.scroll_offset = tab.visible_indices.len().saturating_sub(1);
                 self.tabs.push(tab);
             }
@@ -420,7 +443,7 @@ impl App {
                 if !self.startup_filters
                     && let Ok(Some(ctx)) = self.db.load_file_context(&path).await
                 {
-                    match self.restore_policy {
+                    match self.restore_file_policy {
                         RestoreSessionPolicy::Always => {
                             self.tabs[0].apply_file_context(&ctx);
                         }
@@ -661,7 +684,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Keybindings, RestoreSessionPolicy};
+    use crate::config::Keybindings;
     use crate::db::Database;
     use crate::file_reader::{FileLoadResult, FileReader};
     use crate::log_manager::LogManager;
@@ -682,7 +705,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -746,7 +775,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -777,7 +812,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -810,7 +851,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -844,7 +891,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -876,7 +929,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -947,7 +1006,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -1002,7 +1067,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
         let initial_count = app.tabs[0].file_reader.line_count();
@@ -1226,16 +1297,11 @@ mod tests {
             source_file: path.clone(),
             scroll_offset: 5,
             search_query: String::new(),
-            wrap: true,
             level_colors_disabled: HashSet::new(),
-            show_sidebar: false,
             horizontal_scroll: 0,
             marked_lines: vec![],
             file_hash: None,
-            show_line_numbers: true,
             comments: vec![],
-            show_mode_bar: true,
-            show_borders: true,
             show_keys: true,
             raw_mode: false,
             sidebar_width: 30,
@@ -1464,16 +1530,11 @@ mod tests {
             source_file: abs_path.clone(),
             scroll_offset: 2,
             search_query: String::new(),
-            wrap: false,
             level_colors_disabled: HashSet::new(),
-            show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![1],
             file_hash: None,
-            show_line_numbers: true,
             comments: vec![],
-            show_mode_bar: true,
-            show_borders: true,
             show_keys: true,
             raw_mode: false,
             sidebar_width: 30,
@@ -1490,8 +1551,8 @@ mod tests {
             "placeholder should be replaced by preview tab"
         );
         assert!(
-            !app.tabs[0].wrap,
-            "wrap=false from context should be applied"
+            app.tabs[0].show_keys,
+            "show_keys=true from context should be applied"
         );
         assert_eq!(
             app.tabs[0].log_manager.get_marked_indices(),
@@ -1545,7 +1606,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 

@@ -8,13 +8,13 @@ Open a file, pipe stdin, or stream Docker containers — logana auto-detects the
 
 ## Features
 
-- **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, and more
+- **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OTel, and more
 - **Real-time filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters; add filters from the command line with `-i`/`-o`/`-t`
 - **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; configurable restore policy (ask / always / never)
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; show/hide/reorder per session
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
-- **Annotations** — attach multiline comments to log lines; export to Markdown or Jira
-- **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically; filter colors always take priority
+- **Annotations** — attach multiline comments to log lines; export analaysis to a Markdown or Jira
+- **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
 - **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 19 bundled themes
 
 ---
@@ -22,8 +22,8 @@ Open a file, pipe stdin, or stream Docker containers — logana auto-detects the
 ## Performance
 
 - **Zero-copy reads** — memory-mapped files let the OS page in only what's accessed, keeping RAM usage flat regardless of file size.
-- **SIMD-accelerated scanning** — line indexing uses CPU vector instructions to find newlines as fast as the memory bus allows.
-- **Background filtering** — filter scans run across all CPU cores without blocking the UI; switching filters cancels the previous scan immediately.
+- **SIMD-accelerated scanning** — line indexing uses CPU vector instructions to find new lines.
+- **Background filtering** — filter scans run across all CPU cores without blocking the UI.
 
 For a deeper look at design decisions, see [ARCHITECTURE.md](ARCHITECTURE.md).
 

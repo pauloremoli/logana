@@ -154,9 +154,19 @@ async fn main() -> Result<()> {
     let _log_guard = init_logging();
 
     let db_path = get_db_path();
-    let db = Database::new(&db_path).await.inspect_err(|err| {
-        error!("Failed to init database: {}", err);
-    })?;
+    let db = match Database::new(&db_path).await {
+        Ok(db) => db,
+        Err(err) => {
+            error!("Failed to open database at {}: {}", db_path, err);
+            eprintln!(
+                "Warning: could not open database at '{}': {}. Running without persistence.",
+                db_path, err
+            );
+            Database::in_memory().await.inspect_err(|e| {
+                error!("Failed to create in-memory database: {}", e);
+            })?
+        }
+    };
     let db = Arc::new(db);
 
     // Validate the file path before entering the TUI (gives a clean error message).
@@ -219,8 +229,12 @@ async fn main() -> Result<()> {
         .unwrap_or_default();
     let show_mode_bar = config.show_mode_bar;
     let show_borders = config.show_borders;
+    let show_line_numbers = config.show_line_numbers;
+    let show_sidebar = config.show_sidebar;
+    let wrap = config.wrap;
     let preview_bytes = config.preview_bytes;
     let restore_policy = config.restore_session;
+    let restore_file_policy = config.restore_file_context;
 
     for conflict in config.keybindings.validate() {
         tracing::warn!("{}", conflict);
@@ -247,15 +261,16 @@ async fn main() -> Result<()> {
             theme,
             keybindings,
             restore_policy,
+            restore_file_policy,
+            show_mode_bar,
+            show_borders,
+            show_line_numbers,
+            show_sidebar,
+            wrap,
         )
         .await;
 
-        // Apply display defaults from config.
-        app.show_mode_bar = show_mode_bar;
-        app.show_borders_default = show_borders;
         app.preview_bytes = preview_bytes;
-        app.tabs[0].show_mode_bar = show_mode_bar;
-        app.tabs[0].show_borders = show_borders;
 
         // If a filter file was provided, load it into the initial tab's log manager
         // so filters are active both for the single-pass optimisation and for

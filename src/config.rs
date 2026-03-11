@@ -5,11 +5,20 @@
 //! ## Config fields
 //!
 //! - `theme: Option<String>`: theme name without `.json` extension (e.g. `"dracula"`)
-//! - `show_mode_bar: bool` (default `true`): show/hide bottom status bar at startup
-//! - `show_borders: bool` (default `true`): show/hide all panel borders at startup
+//! - `show_mode_bar: Option<bool>`: when `Some`, overrides the DB-stored runtime value
+//! - `show_borders: Option<bool>`: when `Some`, overrides the DB-stored runtime value
+//! - `show_sidebar: Option<bool>`: when `Some`, overrides the DB-stored runtime value
+//! - `show_line_numbers: Option<bool>`: when `Some`, overrides the DB-stored runtime value
+//! - `wrap: Option<bool>`: when `Some`, overrides the DB-stored runtime value
+//! - `restore_session: Option<RestoreSessionPolicy>`: when `Some`, overrides DB value
+//! - `restore_file_context: Option<RestoreSessionPolicy>`: when `Some`, overrides DB value
 //! - `preview_bytes: u64` (default `16777216` = 16 MiB): bytes read for the instant
 //!   preview shown while the full file index is built in the background
 //! - `keybindings: Keybindings`: keybinding groups (see below)
+//!
+//! Config-file values take the highest priority. When absent, the last value
+//! saved to `app_settings` (by an interactive toggle) is used. When neither is
+//! set, the built-in default applies.
 //!
 //! ## Keybindings groups
 //!
@@ -1577,10 +1586,6 @@ fn check_conflicts(actions: &[(&str, &KeyBindings)], out: &mut Vec<String>) {
 // Config
 // ---------------------------------------------------------------------------
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_preview_bytes() -> u64 {
     16 * 1024 * 1024
 }
@@ -1604,19 +1609,31 @@ pub struct Config {
     pub theme: Option<String>,
     #[serde(default)]
     pub keybindings: Keybindings,
-    /// Whether to show the mode bar at the bottom (default: true).
-    #[serde(default = "default_true")]
-    pub show_mode_bar: bool,
-    /// Whether to show panel borders (default: true).
-    #[serde(default = "default_true")]
-    pub show_borders: bool,
+    /// When `Some`, overrides the DB-stored show_mode_bar runtime setting.
+    #[serde(default)]
+    pub show_mode_bar: Option<bool>,
+    /// When `Some`, overrides the DB-stored show_borders runtime setting.
+    #[serde(default)]
+    pub show_borders: Option<bool>,
     /// Number of bytes to read for the instant preview shown while the full
     /// file index is being built in the background (default: 16 MiB).
     #[serde(default = "default_preview_bytes")]
     pub preview_bytes: u64,
-    /// Whether to restore previous sessions automatically, never, or always ask.
+    /// When `Some`, overrides the DB-stored restore_session runtime setting.
     #[serde(default)]
-    pub restore_session: RestoreSessionPolicy,
+    pub restore_session: Option<RestoreSessionPolicy>,
+    /// When `Some`, overrides the DB-stored restore_file_context runtime setting.
+    #[serde(default)]
+    pub restore_file_context: Option<RestoreSessionPolicy>,
+    /// When `Some`, overrides the DB-stored show_sidebar runtime setting.
+    #[serde(default)]
+    pub show_sidebar: Option<bool>,
+    /// When `Some`, overrides the DB-stored show_line_numbers runtime setting.
+    #[serde(default)]
+    pub show_line_numbers: Option<bool>,
+    /// When `Some`, overrides the DB-stored wrap runtime setting.
+    #[serde(default)]
+    pub wrap: Option<bool>,
 }
 
 impl Default for Config {
@@ -1624,10 +1641,14 @@ impl Default for Config {
         Self {
             theme: None,
             keybindings: Keybindings::default(),
-            show_mode_bar: true,
-            show_borders: true,
+            show_mode_bar: None,
+            show_borders: None,
             preview_bytes: default_preview_bytes(),
-            restore_session: RestoreSessionPolicy::Ask,
+            restore_session: None,
+            restore_file_context: None,
+            show_sidebar: None,
+            show_line_numbers: None,
+            wrap: None,
         }
     }
 }
@@ -1651,31 +1672,6 @@ impl Config {
             tracing::warn!("Failed to parse config file {:?}: {}", config_path, e);
             Config::default()
         })
-    }
-
-    /// Persist only the `restore_session` policy to `~/.config/logana/config.json`.
-    ///
-    /// Reads the existing file first so other settings are preserved.  Fails
-    /// silently — a write error is logged but never surfaces to the user.
-    pub fn save_restore_policy(policy: RestoreSessionPolicy) {
-        let Some(config_path) = dirs::config_dir().map(|d| d.join("logana").join("config.json"))
-        else {
-            return;
-        };
-
-        let mut cfg = Self::load();
-        cfg.restore_session = policy;
-
-        let Ok(json) = serde_json::to_string_pretty(&cfg) else {
-            return;
-        };
-
-        if let Some(parent) = config_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::write(&config_path, json) {
-            tracing::warn!("Failed to save config to {:?}: {}", config_path, e);
-        }
     }
 }
 
@@ -2669,14 +2665,14 @@ mod tests {
     #[test]
     fn test_config_restore_session_defaults_to_ask() {
         let config = Config::default();
-        assert_eq!(config.restore_session, RestoreSessionPolicy::Ask);
+        assert!(config.restore_session.is_none());
     }
 
     #[test]
     fn test_config_restore_session_deserializes_from_json() {
         let json = r#"{"restore_session": "always"}"#;
         let config: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(config.restore_session, RestoreSessionPolicy::Always);
+        assert_eq!(config.restore_session, Some(RestoreSessionPolicy::Always));
     }
 
     // ── Config ──────────────────────────────────────────────────────────
@@ -2811,37 +2807,43 @@ mod tests {
     #[test]
     fn test_config_show_mode_bar_defaults_true() {
         let cfg: Config = serde_json::from_str("{}").unwrap();
-        assert!(cfg.show_mode_bar);
+        assert!(cfg.show_mode_bar.is_none());
     }
 
     #[test]
     fn test_config_show_borders_defaults_true() {
         let cfg: Config = serde_json::from_str("{}").unwrap();
-        assert!(cfg.show_borders);
+        assert!(cfg.show_borders.is_none());
     }
 
     #[test]
     fn test_config_show_mode_bar_false() {
         let cfg: Config = serde_json::from_str(r#"{"show_mode_bar": false}"#).unwrap();
-        assert!(!cfg.show_mode_bar);
+        assert_eq!(cfg.show_mode_bar, Some(false));
+    }
+
+    #[test]
+    fn test_config_show_mode_bar_true() {
+        let cfg: Config = serde_json::from_str(r#"{"show_mode_bar": true}"#).unwrap();
+        assert_eq!(cfg.show_mode_bar, Some(true));
     }
 
     #[test]
     fn test_config_show_borders_false() {
         let cfg: Config = serde_json::from_str(r#"{"show_borders": false}"#).unwrap();
-        assert!(!cfg.show_borders);
+        assert_eq!(cfg.show_borders, Some(false));
     }
 
     #[test]
     fn test_config_default_show_mode_bar_true() {
         let cfg = Config::default();
-        assert!(cfg.show_mode_bar);
+        assert!(cfg.show_mode_bar.is_none());
     }
 
     #[test]
     fn test_config_default_show_borders_true() {
         let cfg = Config::default();
-        assert!(cfg.show_borders);
+        assert!(cfg.show_borders.is_none());
     }
 
     #[test]
@@ -2921,5 +2923,40 @@ mod tests {
                 .matches(KeyCode::Char('w'), KeyModifiers::NONE)
         );
         assert!(kb.exit.matches(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    // ── restore_file_context field ───────────────────────────────────────
+
+    #[test]
+    fn test_config_restore_file_context_defaults_to_none() {
+        let config = Config::default();
+        assert!(config.restore_file_context.is_none());
+    }
+
+    #[test]
+    fn test_config_restore_session_defaults_to_none() {
+        let config = Config::default();
+        assert!(config.restore_session.is_none());
+    }
+
+    #[test]
+    fn test_config_restore_file_context_deserializes_from_json() {
+        let json = r#"{"restore_file_context": "never"}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.restore_file_context,
+            Some(RestoreSessionPolicy::Never)
+        );
+    }
+
+    #[test]
+    fn test_config_restore_file_context_independent_of_session() {
+        let json = r#"{"restore_session": "always", "restore_file_context": "never"}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.restore_session, Some(RestoreSessionPolicy::Always));
+        assert_eq!(
+            config.restore_file_context,
+            Some(RestoreSessionPolicy::Never)
+        );
     }
 }

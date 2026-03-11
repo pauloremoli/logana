@@ -1882,7 +1882,7 @@ fn find_token_offset(haystack: &str, needle: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Keybindings, RestoreSessionPolicy};
+    use crate::config::Keybindings;
     use crate::db::Database;
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
@@ -1905,7 +1905,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -2796,7 +2802,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
         app.tabs[0].title = "uniquename.log".to_string();

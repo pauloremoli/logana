@@ -10,6 +10,7 @@
 //! - `filters`: per `source_file` filter definitions
 //! - `file_context`: per-file session state (PK: `source_file`)
 //! - `session_tabs`: ordered list of last-open source files
+//! - `app_settings`: global key/value store for runtime preferences
 //!
 //! ## Schema versioning
 //!
@@ -21,6 +22,12 @@
 //! - v1: initial schema (`filters`, `file_context`, `session_tabs` tables)
 //! - v2: `ALTER TABLE file_context ADD COLUMN show_keys` — persists show/hide-keys
 //!   display preference per file
+//! - v3: `level_colors_disabled` JSON column; migrates legacy `level_colors = 0` rows
+//! - v4: `raw_mode` column on `file_context`
+//! - v5: `sidebar_width` column on `file_context`
+//! - v6: `app_settings` table for global runtime key/value preferences
+//! - v7: drop per-file `show_status_bar`, `show_borders`, `show_sidebar`,
+//!   `show_line_numbers`, `wrap` columns — these are now global app settings
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -69,18 +76,13 @@ pub struct FileContext {
     pub source_file: String,
     pub scroll_offset: usize,
     pub search_query: String,
-    pub wrap: bool,
     /// Set of log-level keys whose colour is disabled (e.g. `"trace"`, `"error"`).
     /// Stored as a JSON array in `level_colors_disabled` column.
     pub level_colors_disabled: HashSet<String>,
-    pub show_sidebar: bool,
     pub horizontal_scroll: usize,
     pub marked_lines: Vec<usize>,
     pub file_hash: Option<String>,
-    pub show_line_numbers: bool,
     pub comments: Vec<Comment>,
-    pub show_mode_bar: bool,
-    pub show_borders: bool,
     pub show_keys: bool,
     /// When true, the format parser is bypassed and lines are shown as raw bytes.
     pub raw_mode: bool,
@@ -102,6 +104,14 @@ pub trait SessionStore: Send + Sync {
     async fn load_session(&self) -> Result<Vec<String>>;
 }
 
+#[async_trait]
+pub trait AppSettingsStore: Send + Sync {
+    /// Persist a named application setting value.
+    async fn save_app_setting(&self, key: &str, value: &str) -> Result<()>;
+    /// Load a named application setting, returning `None` if not set.
+    async fn load_app_setting(&self, key: &str) -> Result<Option<String>>;
+}
+
 pub struct Database {
     pool: SqlitePool,
 }
@@ -118,6 +128,20 @@ impl Database {
             std::fs::create_dir_all(parent)?;
         }
 
+        if let Ok(db) = Self::open(path).await {
+            return Ok(db);
+        }
+
+        // Opening failed (corrupted file, stale WAL, etc.) — remove all
+        // SQLite-related files for this path and try once more from scratch.
+        for suffix in &["", "-wal", "-shm"] {
+            let candidate = format!("{}{}", path, suffix);
+            let _ = std::fs::remove_file(&candidate);
+        }
+        Self::open(path).await
+    }
+
+    async fn open(path: &str) -> Result<Self> {
         let url = format!("sqlite:{}?mode=rwc", path);
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
@@ -191,6 +215,20 @@ impl Database {
         if version < 5 {
             self.migrate_to_v5().await?;
             sqlx::query("PRAGMA user_version = 5")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if version < 6 {
+            self.migrate_to_v6().await?;
+            sqlx::query("PRAGMA user_version = 6")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if version < 7 {
+            self.migrate_to_v7().await?;
+            sqlx::query("PRAGMA user_version = 7")
                 .execute(&self.pool)
                 .await?;
         }
@@ -290,6 +328,34 @@ impl Database {
         .execute(&self.pool)
         .await
         .ok(); // column may already exist on fresh DBs
+        Ok(())
+    }
+
+    async fn migrate_to_v6(&self) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn migrate_to_v7(&self) -> Result<()> {
+        for col in &[
+            "show_status_bar",
+            "show_borders",
+            "show_sidebar",
+            "show_line_numbers",
+            "wrap",
+        ] {
+            sqlx::query(&format!("ALTER TABLE file_context DROP COLUMN {}", col))
+                .execute(&self.pool)
+                .await
+                .ok();
+        }
         Ok(())
     }
 }
@@ -576,21 +642,16 @@ impl FileContextStore for Database {
         // Also keep the legacy `level_colors` column up-to-date for any old readers.
         let level_colors_legacy = ctx.level_colors_disabled.is_empty() as i32;
         sqlx::query(
-            "INSERT INTO file_context (source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled, raw_mode, sidebar_width)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_file) DO UPDATE SET
                 scroll_offset = excluded.scroll_offset,
                 search_query = excluded.search_query,
-                wrap = excluded.wrap,
                 level_colors = excluded.level_colors,
-                show_sidebar = excluded.show_sidebar,
                 horizontal_scroll = excluded.horizontal_scroll,
                 marked_lines = excluded.marked_lines,
                 file_hash = excluded.file_hash,
-                show_line_numbers = excluded.show_line_numbers,
                 annotations_json = excluded.annotations_json,
-                show_status_bar = excluded.show_status_bar,
-                show_borders = excluded.show_borders,
                 show_keys = excluded.show_keys,
                 level_colors_disabled = excluded.level_colors_disabled,
                 raw_mode = excluded.raw_mode,
@@ -599,16 +660,11 @@ impl FileContextStore for Database {
         .bind(&ctx.source_file)
         .bind(ctx.scroll_offset as i64)
         .bind(&ctx.search_query)
-        .bind(ctx.wrap as i32)
         .bind(level_colors_legacy)
-        .bind(ctx.show_sidebar as i32)
         .bind(ctx.horizontal_scroll as i64)
         .bind(&marked_json)
         .bind(&ctx.file_hash)
-        .bind(ctx.show_line_numbers as i32)
         .bind(&comments_json)
-        .bind(ctx.show_mode_bar as i32)
-        .bind(ctx.show_borders as i32)
         .bind(ctx.show_keys as i32)
         .bind(&level_colors_disabled_json)
         .bind(ctx.raw_mode as i32)
@@ -620,7 +676,7 @@ impl FileContextStore for Database {
 
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
         let row = sqlx::query(
-            "SELECT source_file, scroll_offset, search_query, wrap, level_colors, show_sidebar, horizontal_scroll, marked_lines, file_hash, show_line_numbers, annotations_json, show_status_bar, show_borders, show_keys, level_colors_disabled, raw_mode, sidebar_width
+            "SELECT source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width
              FROM file_context WHERE source_file = ?",
         )
         .bind(source_file)
@@ -652,16 +708,11 @@ impl FileContextStore for Database {
                 source_file: r.get::<String, _>("source_file"),
                 scroll_offset: r.get::<i64, _>("scroll_offset") as usize,
                 search_query: r.get::<String, _>("search_query"),
-                wrap: r.get::<i32, _>("wrap") != 0,
                 level_colors_disabled,
-                show_sidebar: r.get::<i32, _>("show_sidebar") != 0,
                 horizontal_scroll: r.get::<i64, _>("horizontal_scroll") as usize,
                 marked_lines,
                 file_hash: r.get::<Option<String>, _>("file_hash"),
-                show_line_numbers: r.get::<i32, _>("show_line_numbers") != 0,
                 comments,
-                show_mode_bar: r.try_get::<i32, _>("show_status_bar").unwrap_or(1) != 0,
-                show_borders: r.try_get::<i32, _>("show_borders").unwrap_or(1) != 0,
                 show_keys: r.try_get::<i32, _>("show_keys").unwrap_or(0) != 0,
                 raw_mode: r.try_get::<i32, _>("raw_mode").unwrap_or(0) != 0,
                 sidebar_width: r
@@ -699,6 +750,29 @@ impl SessionStore for Database {
             .iter()
             .map(|r| r.get::<String, _>("source_file"))
             .collect())
+    }
+}
+
+#[async_trait]
+impl AppSettingsStore for Database {
+    async fn save_app_setting(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_app_setting(&self, key: &str) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT value FROM app_settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get::<String, _>("value")))
     }
 }
 
@@ -920,16 +994,11 @@ mod tests {
             source_file: "/tmp/test.log".to_string(),
             scroll_offset: 42,
             search_query: "ERROR".to_string(),
-            wrap: false,
             level_colors_disabled: HashSet::new(),
-            show_sidebar: false,
             horizontal_scroll: 10,
             marked_lines: vec![1, 5, 10],
             file_hash: Some("abc123".to_string()),
-            show_line_numbers: true,
             comments: vec![],
-            show_mode_bar: true,
-            show_borders: true,
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
@@ -943,13 +1012,10 @@ mod tests {
             .expect("should find context");
         assert_eq!(loaded.scroll_offset, 42);
         assert_eq!(loaded.search_query, "ERROR");
-        assert!(!loaded.wrap);
         assert!(loaded.level_colors_disabled.is_empty());
-        assert!(!loaded.show_sidebar);
         assert_eq!(loaded.horizontal_scroll, 10);
         assert_eq!(loaded.marked_lines, vec![1, 5, 10]);
         assert_eq!(loaded.file_hash, Some("abc123".to_string()));
-        assert!(loaded.show_line_numbers);
     }
 
     #[tokio::test]
@@ -960,16 +1026,11 @@ mod tests {
             source_file: "/tmp/test.log".to_string(),
             scroll_offset: 10,
             search_query: "".to_string(),
-            wrap: true,
             level_colors_disabled: HashSet::new(),
-            show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![0, 3],
             file_hash: Some("hash1".to_string()),
-            show_line_numbers: true,
             comments: vec![],
-            show_mode_bar: true,
-            show_borders: true,
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
@@ -980,21 +1041,16 @@ mod tests {
             source_file: "/tmp/test.log".to_string(),
             scroll_offset: 99,
             search_query: "WARN".to_string(),
-            wrap: false,
             level_colors_disabled: [
                 "trace", "debug", "info", "notice", "warning", "error", "fatal",
             ]
             .iter()
             .map(|s| s.to_string())
             .collect(),
-            show_sidebar: false,
             horizontal_scroll: 5,
             marked_lines: vec![2, 7],
             file_hash: Some("hash2".to_string()),
-            show_line_numbers: false,
             comments: vec![],
-            show_mode_bar: false,
-            show_borders: false,
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
@@ -1008,7 +1064,6 @@ mod tests {
             .expect("should find context");
         assert_eq!(loaded.scroll_offset, 99);
         assert_eq!(loaded.search_query, "WARN");
-        assert!(!loaded.wrap);
         assert_eq!(loaded.marked_lines, vec![2, 7]);
     }
 
@@ -1028,13 +1083,10 @@ mod tests {
             source_file: "/tmp/commented.log".to_string(),
             scroll_offset: 0,
             search_query: String::new(),
-            wrap: true,
             level_colors_disabled: HashSet::new(),
-            show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
             file_hash: None,
-            show_line_numbers: true,
             comments: vec![
                 Comment {
                     text: "First comment\nspanning two lines".to_string(),
@@ -1045,8 +1097,6 @@ mod tests {
                     line_indices: vec![10],
                 },
             ],
-            show_mode_bar: true,
-            show_borders: true,
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
@@ -1067,24 +1117,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_context_round_trip_with_display_fields() {
+    async fn test_file_context_round_trip_with_show_keys() {
         let db = setup_db().await;
 
         let ctx = FileContext {
             source_file: "/tmp/display.log".to_string(),
             scroll_offset: 0,
             search_query: String::new(),
-            wrap: true,
             level_colors_disabled: HashSet::new(),
-            show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
             file_hash: None,
-            show_line_numbers: true,
             comments: vec![],
-            show_mode_bar: false,
-            show_borders: false,
-            show_keys: false,
+            show_keys: true,
             raw_mode: false,
             sidebar_width: 30,
         };
@@ -1096,8 +1141,7 @@ mod tests {
             .unwrap()
             .expect("context should exist");
 
-        assert!(!loaded.show_mode_bar);
-        assert!(!loaded.show_borders);
+        assert!(loaded.show_keys);
     }
 
     #[tokio::test]
@@ -1108,16 +1152,11 @@ mod tests {
             source_file: "/tmp/show_keys.log".to_string(),
             scroll_offset: 0,
             search_query: String::new(),
-            wrap: true,
             level_colors_disabled: HashSet::new(),
-            show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
             file_hash: None,
-            show_line_numbers: true,
             comments: vec![],
-            show_mode_bar: true,
-            show_borders: true,
             show_keys: true,
             raw_mode: false,
             sidebar_width: 30,
@@ -1140,16 +1179,11 @@ mod tests {
             source_file: "/tmp/sidebar.log".to_string(),
             scroll_offset: 0,
             search_query: String::new(),
-            wrap: true,
             level_colors_disabled: HashSet::new(),
-            show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
             file_hash: None,
-            show_line_numbers: true,
             comments: vec![],
-            show_mode_bar: true,
-            show_borders: true,
             show_keys: false,
             raw_mode: false,
             sidebar_width: 45,
@@ -1163,5 +1197,61 @@ mod tests {
             .expect("context should exist");
 
         assert_eq!(loaded.sidebar_width, 45);
+    }
+
+    // ── AppSettingsStore ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_app_setting_load_returns_none_when_not_set() {
+        let db = setup_db().await;
+        let result = db.load_app_setting("restore_session").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_app_setting_save_and_load() {
+        let db = setup_db().await;
+        db.save_app_setting("restore_session", "always")
+            .await
+            .unwrap();
+        let value = db.load_app_setting("restore_session").await.unwrap();
+        assert_eq!(value.as_deref(), Some("always"));
+    }
+
+    #[tokio::test]
+    async fn test_app_setting_save_overwrites() {
+        let db = setup_db().await;
+        db.save_app_setting("restore_session", "always")
+            .await
+            .unwrap();
+        db.save_app_setting("restore_session", "never")
+            .await
+            .unwrap();
+        let value = db.load_app_setting("restore_session").await.unwrap();
+        assert_eq!(value.as_deref(), Some("never"));
+    }
+
+    #[tokio::test]
+    async fn test_app_setting_file_policy_independent_of_session_policy() {
+        let db = setup_db().await;
+        db.save_app_setting("restore_file_context", "never")
+            .await
+            .unwrap();
+        let session = db.load_app_setting("restore_session").await.unwrap();
+        let file = db.load_app_setting("restore_file_context").await.unwrap();
+        assert!(session.is_none());
+        assert_eq!(file.as_deref(), Some("never"));
+    }
+
+    #[tokio::test]
+    async fn test_app_setting_session_policy_independent_of_file_policy() {
+        let db = setup_db().await;
+        db.save_app_setting("restore_session", "always")
+            .await
+            .unwrap();
+        let session = db.load_app_setting("restore_session").await.unwrap();
+        let file = db.load_app_setting("restore_file_context").await.unwrap();
+        assert_eq!(session.as_deref(), Some("always"));
+        assert!(file.is_none());
     }
 }

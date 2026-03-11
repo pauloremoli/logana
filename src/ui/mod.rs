@@ -1318,16 +1318,11 @@ impl TabState {
             source_file: source.to_string(),
             scroll_offset: self.scroll_offset,
             search_query: self.search.get_pattern().unwrap_or_default().to_string(),
-            wrap: self.wrap,
             level_colors_disabled: self.level_colors_disabled.clone(),
-            show_sidebar: self.show_sidebar,
             horizontal_scroll: self.horizontal_scroll,
             marked_lines,
             file_hash,
-            show_line_numbers: self.show_line_numbers,
             comments,
-            show_mode_bar: self.show_mode_bar,
-            show_borders: self.show_borders,
             show_keys: self.show_keys,
             raw_mode: self.raw_mode,
             sidebar_width: self.sidebar_width,
@@ -1336,13 +1331,8 @@ impl TabState {
 
     pub fn apply_file_context(&mut self, ctx: &FileContext) {
         self.scroll_offset = ctx.scroll_offset;
-        self.wrap = ctx.wrap;
         self.level_colors_disabled = ctx.level_colors_disabled.clone();
-        self.show_sidebar = ctx.show_sidebar;
-        self.show_line_numbers = ctx.show_line_numbers;
         self.horizontal_scroll = ctx.horizontal_scroll;
-        self.show_mode_bar = ctx.show_mode_bar;
-        self.show_borders = ctx.show_borders;
         self.show_keys = ctx.show_keys;
         self.raw_mode = ctx.raw_mode;
         self.sidebar_width = ctx.sidebar_width;
@@ -1531,7 +1521,7 @@ pub use app::App;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{Database, FileContext};
+    use crate::db::{AppSettingsStore, Database, FileContext};
 
     #[test]
     fn test_list_dir_files_basic() {
@@ -1706,15 +1696,12 @@ mod tests {
         let ctx = ctx.unwrap();
         assert_eq!(ctx.source_file, "test.log");
         assert_eq!(ctx.scroll_offset, 0);
-        assert!(ctx.wrap);
         let expected_disabled: std::collections::HashSet<String> =
             ["trace", "debug", "info", "notice"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
         assert_eq!(ctx.level_colors_disabled, expected_disabled);
-        assert!(ctx.show_sidebar);
-        assert!(ctx.show_line_numbers);
     }
 
     #[tokio::test]
@@ -1738,29 +1725,21 @@ mod tests {
             source_file: "test.log".to_string(),
             scroll_offset: 3,
             search_query: "line".to_string(),
-            wrap: false,
             level_colors_disabled: all_disabled.clone(),
-            show_sidebar: false,
             horizontal_scroll: 5,
             marked_lines: vec![0, 2],
             file_hash: None,
-            show_line_numbers: false,
             comments: vec![Comment {
                 text: "test".to_string(),
                 line_indices: vec![0],
             }],
-            show_mode_bar: false,
-            show_borders: false,
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
         };
         tab.apply_file_context(&ctx);
         assert_eq!(tab.scroll_offset, 3);
-        assert!(!tab.wrap);
         assert_eq!(tab.level_colors_disabled, all_disabled);
-        assert!(!tab.show_sidebar);
-        assert!(!tab.show_line_numbers);
         assert_eq!(tab.horizontal_scroll, 5);
         assert!(tab.log_manager.is_marked(0));
         assert!(tab.log_manager.is_marked(2));
@@ -1774,25 +1753,17 @@ mod tests {
             source_file: "test.log".to_string(),
             scroll_offset: 0,
             search_query: String::new(),
-            wrap: true,
             level_colors_disabled: HashSet::new(),
-            show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
             file_hash: None,
-            show_line_numbers: true,
             comments: vec![],
-            show_mode_bar: true,
-            show_borders: true,
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
         };
         tab.apply_file_context(&ctx);
-        assert!(tab.wrap);
         assert!(tab.level_colors_disabled.is_empty());
-        assert!(tab.show_sidebar);
-        assert!(tab.show_line_numbers);
         assert_eq!(tab.scroll_offset, 0);
         assert_eq!(tab.horizontal_scroll, 0);
         assert!(!tab.log_manager.is_marked(0));
@@ -1933,53 +1904,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_file_context_restores_show_mode_bar() {
-        let mut tab = make_tab_with_source(&["line"], "test.log").await;
-        let ctx = FileContext {
-            source_file: "test.log".to_string(),
-            scroll_offset: 0,
-            search_query: String::new(),
-            wrap: true,
-            level_colors_disabled: HashSet::new(),
-            show_sidebar: true,
-            horizontal_scroll: 0,
-            marked_lines: vec![],
-            file_hash: None,
-            show_line_numbers: true,
-            comments: vec![],
-            show_mode_bar: false,
-            show_borders: true,
-            show_keys: false,
-            raw_mode: false,
-            sidebar_width: 30,
-        };
-        tab.apply_file_context(&ctx);
-        assert!(!tab.show_mode_bar);
+    async fn test_config_priority_show_mode_bar_overrides_db() {
+        use std::sync::Arc;
+        let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
+        db.save_app_setting("show_mode_bar", "false").await.unwrap();
+        let fr = crate::file_reader::FileReader::from_bytes(b"line\n".to_vec());
+        let lm = crate::log_manager::LogManager::new(db, None).await;
+        let app = super::app::App::new(
+            lm,
+            fr,
+            crate::theme::Theme::default(),
+            Arc::new(crate::config::Keybindings::default()),
+            None,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            app.show_mode_bar,
+            "config Some(true) should override DB false"
+        );
     }
 
     #[tokio::test]
-    async fn test_apply_file_context_restores_show_borders() {
-        let mut tab = make_tab_with_source(&["line"], "test.log").await;
-        let ctx = FileContext {
-            source_file: "test.log".to_string(),
-            scroll_offset: 0,
-            search_query: String::new(),
-            wrap: true,
-            level_colors_disabled: HashSet::new(),
-            show_sidebar: true,
-            horizontal_scroll: 0,
-            marked_lines: vec![],
-            file_hash: None,
-            show_line_numbers: true,
-            comments: vec![],
-            show_mode_bar: true,
-            show_borders: false,
-            show_keys: false,
-            raw_mode: false,
-            sidebar_width: 30,
-        };
-        tab.apply_file_context(&ctx);
-        assert!(!tab.show_borders);
+    async fn test_config_priority_wrap_overrides_db() {
+        use std::sync::Arc;
+        let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
+        db.save_app_setting("wrap", "false").await.unwrap();
+        let fr = crate::file_reader::FileReader::from_bytes(b"line\n".to_vec());
+        let lm = crate::log_manager::LogManager::new(db, None).await;
+        let app = super::app::App::new(
+            lm,
+            fr,
+            crate::theme::Theme::default(),
+            Arc::new(crate::config::Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+        )
+        .await;
+        assert!(app.wrap, "config Some(true) should override DB false");
     }
 
     // ── date filter integration with refresh_visible ──────────────────

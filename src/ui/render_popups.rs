@@ -1142,7 +1142,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Keybindings, RestoreSessionPolicy};
+    use crate::config::Keybindings;
     use crate::db::{Database, FileContext};
     use crate::file_reader::FileReader;
     use crate::log_manager::LogManager;
@@ -1168,7 +1168,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -1184,16 +1190,11 @@ mod tests {
             source_file: "/tmp/test.log".to_string(),
             scroll_offset: 0,
             search_query: String::new(),
-            wrap: true,
             level_colors_disabled: std::collections::HashSet::new(),
-            show_sidebar: true,
             horizontal_scroll: 0,
             marked_lines: vec![],
             file_hash: None,
-            show_line_numbers: true,
             comments: vec![],
-            show_mode_bar: true,
-            show_borders: true,
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,

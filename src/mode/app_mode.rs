@@ -389,21 +389,16 @@ mod tests {
             source_file: "/tmp/test.log".to_string(),
             scroll_offset: 5,
             search_query: String::new(),
-            wrap: false,
             level_colors_disabled: [
                 "trace", "debug", "info", "notice", "warning", "error", "fatal",
             ]
             .iter()
             .map(|s| s.to_string())
             .collect(),
-            show_sidebar: false,
             horizontal_scroll: 3,
             marked_lines: vec![],
             file_hash: None,
-            show_line_numbers: false,
             comments: vec![],
-            show_mode_bar: true,
-            show_borders: true,
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
@@ -446,10 +441,7 @@ mod tests {
         ));
         // Context should have been applied
         assert_eq!(tab.scroll_offset, 5);
-        assert!(!tab.wrap);
-        assert!(!tab.show_sidebar);
         assert!(!tab.level_colors_disabled.is_empty());
-        assert!(!tab.show_line_numbers);
         assert_eq!(tab.horizontal_scroll, 3);
     }
 

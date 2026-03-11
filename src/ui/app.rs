@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::{Keybindings, RestoreSessionPolicy};
-use crate::db::{FileContext, FileContextStore, SessionStore};
+use crate::db::{AppSettingsStore, FileContext, FileContextStore, SessionStore};
 use crate::file_reader::FileReader;
 use crate::log_manager::LogManager;
 use crate::mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode};
@@ -21,6 +21,43 @@ use crate::mode::normal_mode::NormalMode;
 use crate::theme::Theme;
 
 use super::{FileLoadState, KeyResult, StdinLoadState, TabState};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async fn resolve_bool_setting(
+    db: &crate::db::Database,
+    key: &str,
+    config_override: Option<bool>,
+    default: bool,
+) -> bool {
+    if let Some(v) = config_override {
+        return v;
+    }
+    if let Ok(Some(val)) = db.load_app_setting(key).await {
+        return val == "true";
+    }
+    default
+}
+
+async fn resolve_policy_setting(
+    db: &crate::db::Database,
+    key: &str,
+    config_override: Option<RestoreSessionPolicy>,
+) -> RestoreSessionPolicy {
+    if let Some(v) = config_override {
+        return v;
+    }
+    if let Ok(Some(val)) = db.load_app_setting(key).await {
+        return match val.as_str() {
+            "always" => RestoreSessionPolicy::Always,
+            "never" => RestoreSessionPolicy::Never,
+            _ => RestoreSessionPolicy::Ask,
+        };
+    }
+    RestoreSessionPolicy::Ask
+}
 
 // ---------------------------------------------------------------------------
 // App
@@ -44,6 +81,12 @@ pub struct App {
     pub show_mode_bar: bool,
     /// Default show_borders value applied to new tabs.
     pub show_borders_default: bool,
+    /// Default show_line_numbers value applied to new tabs.
+    pub show_line_numbers: bool,
+    /// Default show_sidebar value applied to new tabs.
+    pub show_sidebar: bool,
+    /// Default wrap value applied to new tabs.
+    pub wrap: bool,
     /// When true, the initial file tab starts in tail mode (set by `--tail`).
     pub startup_tail: bool,
     /// When true, filters were supplied via `--filters` and the previous-session
@@ -51,8 +94,10 @@ pub struct App {
     pub startup_filters: bool,
     /// Number of bytes to read for the instant preview (from config `preview_bytes`).
     pub preview_bytes: u64,
-    /// Restore session policy from config — controls whether to skip the prompt.
+    /// Restore session policy from config — controls whether to skip the whole-session prompt.
     pub restore_policy: RestoreSessionPolicy,
+    /// Restore file-context policy from config — controls whether to skip the per-file prompt.
+    pub restore_file_policy: RestoreSessionPolicy,
     /// Session files to restore automatically (set when policy is Always and session exists).
     pub pending_session_restore: Option<Vec<String>>,
 }
@@ -67,14 +112,32 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         log_manager: LogManager,
         file_reader: FileReader,
         theme: Theme,
         keybindings: Arc<Keybindings>,
-        restore_policy: RestoreSessionPolicy,
+        restore_policy: Option<RestoreSessionPolicy>,
+        restore_file_policy: Option<RestoreSessionPolicy>,
+        show_mode_bar: Option<bool>,
+        show_borders: Option<bool>,
+        show_line_numbers: Option<bool>,
+        show_sidebar: Option<bool>,
+        wrap: Option<bool>,
     ) -> App {
         let db = log_manager.db.clone();
+
+        let restore_policy = resolve_policy_setting(&db, "restore_session", restore_policy).await;
+        let restore_file_policy =
+            resolve_policy_setting(&db, "restore_file_context", restore_file_policy).await;
+        let show_mode_bar = resolve_bool_setting(&db, "show_mode_bar", show_mode_bar, true).await;
+        let show_borders_default =
+            resolve_bool_setting(&db, "show_borders", show_borders, true).await;
+        let show_line_numbers =
+            resolve_bool_setting(&db, "show_line_numbers", show_line_numbers, true).await;
+        let show_sidebar = resolve_bool_setting(&db, "show_sidebar", show_sidebar, true).await;
+        let wrap = resolve_bool_setting(&db, "wrap", wrap, true).await;
 
         let title = log_manager
             .source_file()
@@ -100,7 +163,7 @@ impl App {
             if tab.file_reader.line_count() > 0 {
                 let source = source.to_string();
                 if let Ok(Some(ctx)) = db.load_file_context(&source).await {
-                    match restore_policy {
+                    match restore_file_policy {
                         RestoreSessionPolicy::Always => {
                             tab.apply_file_context(&ctx);
                         }
@@ -128,6 +191,12 @@ impl App {
             }
         }
 
+        tab.show_mode_bar = show_mode_bar;
+        tab.show_borders = show_borders_default;
+        tab.show_line_numbers = show_line_numbers;
+        tab.show_sidebar = show_sidebar;
+        tab.wrap = wrap;
+
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -138,12 +207,16 @@ impl App {
             stdin_load_state: None,
             keybindings,
             clipboard: None,
-            show_mode_bar: true,
-            show_borders_default: true,
+            show_mode_bar,
+            show_borders_default,
+            show_line_numbers,
+            show_sidebar,
+            wrap,
             startup_tail: false,
             startup_filters: false,
             preview_bytes: 16 * 1024 * 1024,
             restore_policy,
+            restore_file_policy,
             pending_session_restore,
         }
     }
@@ -337,6 +410,13 @@ impl App {
                         for tab in &mut self.tabs {
                             tab.show_mode_bar = self.show_mode_bar;
                         }
+                        let _ = self
+                            .db
+                            .save_app_setting(
+                                "show_mode_bar",
+                                if self.show_mode_bar { "true" } else { "false" },
+                            )
+                            .await;
                     }
                     KeyResult::OpenFiles(paths) => {
                         for path in paths {
@@ -347,21 +427,27 @@ impl App {
                         }
                     }
                     KeyResult::AlwaysRestoreFile(_) => {
-                        self.restore_policy = RestoreSessionPolicy::Always;
-                        crate::config::Config::save_restore_policy(RestoreSessionPolicy::Always);
+                        self.restore_file_policy = RestoreSessionPolicy::Always;
+                        let _ = self
+                            .db
+                            .save_app_setting("restore_file_context", "always")
+                            .await;
                     }
                     KeyResult::NeverRestoreFile => {
-                        self.restore_policy = RestoreSessionPolicy::Never;
-                        crate::config::Config::save_restore_policy(RestoreSessionPolicy::Never);
+                        self.restore_file_policy = RestoreSessionPolicy::Never;
+                        let _ = self
+                            .db
+                            .save_app_setting("restore_file_context", "never")
+                            .await;
                     }
                     KeyResult::AlwaysRestoreSession(files) => {
                         self.restore_policy = RestoreSessionPolicy::Always;
-                        crate::config::Config::save_restore_policy(RestoreSessionPolicy::Always);
+                        let _ = self.db.save_app_setting("restore_session", "always").await;
                         self.restore_session(files).await;
                     }
                     KeyResult::NeverRestoreSession => {
                         self.restore_policy = RestoreSessionPolicy::Never;
-                        crate::config::Config::save_restore_policy(RestoreSessionPolicy::Never);
+                        let _ = self.db.save_app_setting("restore_session", "never").await;
                     }
                 }
             }
@@ -408,6 +494,13 @@ impl App {
                 for tab in &mut self.tabs {
                     tab.show_mode_bar = self.show_mode_bar;
                 }
+                let _ = self
+                    .db
+                    .save_app_setting(
+                        "show_mode_bar",
+                        if self.show_mode_bar { "true" } else { "false" },
+                    )
+                    .await;
             }
             KeyResult::OpenFiles(paths) => {
                 for path in paths {
@@ -418,21 +511,27 @@ impl App {
                 }
             }
             KeyResult::AlwaysRestoreFile(_) => {
-                self.restore_policy = RestoreSessionPolicy::Always;
-                crate::config::Config::save_restore_policy(RestoreSessionPolicy::Always);
+                self.restore_file_policy = RestoreSessionPolicy::Always;
+                let _ = self
+                    .db
+                    .save_app_setting("restore_file_context", "always")
+                    .await;
             }
             KeyResult::NeverRestoreFile => {
-                self.restore_policy = RestoreSessionPolicy::Never;
-                crate::config::Config::save_restore_policy(RestoreSessionPolicy::Never);
+                self.restore_file_policy = RestoreSessionPolicy::Never;
+                let _ = self
+                    .db
+                    .save_app_setting("restore_file_context", "never")
+                    .await;
             }
             KeyResult::AlwaysRestoreSession(files) => {
                 self.restore_policy = RestoreSessionPolicy::Always;
-                crate::config::Config::save_restore_policy(RestoreSessionPolicy::Always);
+                let _ = self.db.save_app_setting("restore_session", "always").await;
                 self.restore_session(files).await;
             }
             KeyResult::NeverRestoreSession => {
                 self.restore_policy = RestoreSessionPolicy::Never;
-                crate::config::Config::save_restore_policy(RestoreSessionPolicy::Never);
+                let _ = self.db.save_app_setting("restore_session", "never").await;
             }
         }
     }
@@ -511,7 +610,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -584,7 +689,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -604,7 +715,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -627,7 +744,13 @@ mod tests {
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -1010,7 +1133,13 @@ mod tests {
             fr,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
         let tab = &app.tabs[0];
@@ -1031,7 +1160,13 @@ mod tests {
             fr,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
         app.save_all_contexts().await;
@@ -1107,9 +1242,79 @@ mod tests {
             fr,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            RestoreSessionPolicy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await;
         assert_eq!(app.tab().title, "test.log");
+    }
+
+    fn make_file_context() -> crate::db::FileContext {
+        crate::db::FileContext {
+            source_file: "/tmp/test.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            level_colors_disabled: std::collections::HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 30,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_always_restore_file_key_sets_file_policy_not_session() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].mode = Box::new(crate::mode::app_mode::ConfirmRestoreMode {
+            context: make_file_context(),
+        });
+
+        app.handle_key_event_with_modifiers(KeyCode::Char('Y'), KeyModifiers::NONE)
+            .await;
+
+        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Always);
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Ask);
+
+        let file_setting = app
+            .db
+            .load_app_setting("restore_file_context")
+            .await
+            .unwrap();
+        let session_setting = app.db.load_app_setting("restore_session").await.unwrap();
+        assert_eq!(file_setting.as_deref(), Some("always"));
+        // session policy not touched by the file-context key press
+        assert!(session_setting.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_never_restore_file_key_sets_file_policy_not_session() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].mode = Box::new(crate::mode::app_mode::ConfirmRestoreMode {
+            context: make_file_context(),
+        });
+
+        app.handle_key_event_with_modifiers(KeyCode::Char('N'), KeyModifiers::NONE)
+            .await;
+
+        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Never);
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Ask);
+
+        let file_setting = app
+            .db
+            .load_app_setting("restore_file_context")
+            .await
+            .unwrap();
+        let session_setting = app.db.load_app_setting("restore_session").await.unwrap();
+        assert_eq!(file_setting.as_deref(), Some("never"));
+        // session policy not touched by the file-context key press
+        assert!(session_setting.is_none());
     }
 }
