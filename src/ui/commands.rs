@@ -92,7 +92,7 @@ impl App {
                         )
                         .await;
                 } else {
-                    self.tabs[self.active_tab]
+                    let was_new = self.tabs[self.active_tab]
                         .log_manager
                         .add_filter_with_color(
                             stored_pattern.clone(),
@@ -102,15 +102,18 @@ impl App {
                             !line_mode,
                         )
                         .await;
+                    self.tabs[self.active_tab].scroll_offset = 0;
+                    // Incremental include — only re-check visible lines instead of
+                    // scanning the entire file again via refresh_visible/compute_visible.
+                    if was_new && can_incremental {
+                        self.tabs[self.active_tab].apply_incremental_include(&stored_pattern);
+                    } else {
+                        self.tabs[self.active_tab].begin_filter_refresh();
+                    }
+                    return Ok(false);
                 }
                 self.tabs[self.active_tab].scroll_offset = 0;
-                // Incremental include — only re-check visible lines instead of
-                // scanning the entire file again via refresh_visible/compute_visible.
-                if can_incremental {
-                    self.tabs[self.active_tab].apply_incremental_include(&stored_pattern);
-                } else {
-                    self.tabs[self.active_tab].begin_filter_refresh();
-                }
+                self.tabs[self.active_tab].begin_filter_refresh();
             }
             Some(Commands::Exclude { pattern, field }) => {
                 // When --field is set, rewrite the pattern as the internal @field: form.
@@ -136,7 +139,7 @@ impl App {
                     self.tabs[self.active_tab].scroll_offset = 0;
                     self.tabs[self.active_tab].begin_filter_refresh();
                 } else {
-                    self.tabs[self.active_tab]
+                    let was_new = self.tabs[self.active_tab]
                         .log_manager
                         .add_filter_with_color(
                             stored_pattern.clone(),
@@ -147,13 +150,15 @@ impl App {
                         )
                         .await;
                     self.tabs[self.active_tab].scroll_offset = 0;
-                    if field {
-                        // Field filters require a full refresh.
-                        self.tabs[self.active_tab].begin_filter_refresh();
-                    } else {
-                        // Incremental exclude — only re-check visible lines instead of
-                        // scanning the entire file again via refresh_visible/compute_visible.
-                        self.tabs[self.active_tab].apply_incremental_exclude(&stored_pattern);
+                    if was_new {
+                        if field {
+                            // Field filters require a full refresh.
+                            self.tabs[self.active_tab].begin_filter_refresh();
+                        } else {
+                            // Incremental exclude — only re-check visible lines instead of
+                            // scanning the entire file again via refresh_visible/compute_visible.
+                            self.tabs[self.active_tab].apply_incremental_exclude(&stored_pattern);
+                        }
                     }
                 }
             }
@@ -1319,5 +1324,46 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err();
         assert!(msg.contains("Failed to write"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_filter_duplicate_does_not_add() {
+        let mut app = make_app(&["error line", "info line"]).await;
+        app.run_command("filter error").await.unwrap();
+        app.run_command("filter error").await.unwrap();
+        assert_eq!(app.tabs[0].log_manager.get_filters().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_filter_duplicate_updates_color() {
+        let mut app = make_app(&["error line", "info line"]).await;
+        app.run_command("filter error").await.unwrap();
+        assert!(
+            app.tabs[0].log_manager.get_filters()[0]
+                .color_config
+                .is_none()
+        );
+
+        app.run_command("filter --fg red error").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        let cc = filters[0].color_config.as_ref().unwrap();
+        assert!(cc.fg.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_exclude_duplicate_does_not_add() {
+        let mut app = make_app(&["error line", "debug line"]).await;
+        app.run_command("exclude debug").await.unwrap();
+        app.run_command("exclude debug").await.unwrap();
+        assert_eq!(app.tabs[0].log_manager.get_filters().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_field_filter_duplicate_does_not_add() {
+        let mut app = make_app(&[r#"{"level":"error","msg":"oops"}"#]).await;
+        app.run_command("filter --field level=error").await.unwrap();
+        app.run_command("filter --field level=error").await.unwrap();
+        assert_eq!(app.tabs[0].log_manager.get_filters().len(), 1);
     }
 }

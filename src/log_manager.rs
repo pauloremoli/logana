@@ -87,7 +87,7 @@ impl LogManager {
         fg: Option<&str>,
         bg: Option<&str>,
         match_only: bool,
-    ) {
+    ) -> bool {
         let color_config = if filter_type == FilterType::Include {
             let fg_color = fg.and_then(parse_color);
             let bg_color = bg.and_then(parse_color);
@@ -103,6 +103,20 @@ impl LogManager {
         } else {
             None
         };
+
+        if let Some(pos) = self
+            .filter_defs
+            .iter()
+            .position(|f| f.pattern == pattern && f.filter_type == filter_type)
+        {
+            self.filter_defs[pos].color_config = color_config.clone();
+            let id = self.filter_defs[pos].id;
+            let _ = self
+                .db
+                .update_filter_color(id as i64, color_config.as_ref())
+                .await;
+            return false;
+        }
 
         let pattern_clone = pattern.clone();
         let filter_type_clone = filter_type.clone();
@@ -134,6 +148,7 @@ impl LogManager {
             enabled: true,
             color_config,
         });
+        true
     }
 
     pub async fn toggle_filter(&mut self, id: usize) {
@@ -858,6 +873,77 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], b"line zero");
         assert_eq!(lines[1], b"line two");
+    }
+
+    #[tokio::test]
+    async fn test_add_duplicate_pattern_does_not_insert() {
+        let mut mgr = make_manager().await;
+        let was_new = mgr
+            .add_filter_with_color("error".into(), FilterType::Include, None, None, true)
+            .await;
+        assert!(was_new);
+        let was_new2 = mgr
+            .add_filter_with_color("error".into(), FilterType::Include, None, None, true)
+            .await;
+        assert!(!was_new2);
+        assert_eq!(mgr.get_filters().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_add_duplicate_updates_color_config() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
+            .await;
+        assert!(mgr.get_filters()[0].color_config.is_none());
+
+        mgr.add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            Some("red"),
+            None,
+            false,
+        )
+        .await;
+        assert_eq!(mgr.get_filters().len(), 1);
+        let cc = mgr.get_filters()[0].color_config.as_ref().unwrap();
+        assert!(cc.fg.is_some());
+        assert!(!cc.match_only);
+    }
+
+    #[tokio::test]
+    async fn test_add_same_pattern_different_type_inserts() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
+            .await;
+        mgr.add_filter_with_color("error".into(), FilterType::Exclude, None, None, true)
+            .await;
+        assert_eq!(mgr.get_filters().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_add_field_filter_duplicate_no_insert() {
+        let mut mgr = make_manager().await;
+        let was_new = mgr
+            .add_filter_with_color(
+                "@field:level:error".into(),
+                FilterType::Include,
+                None,
+                None,
+                true,
+            )
+            .await;
+        assert!(was_new);
+        let was_new2 = mgr
+            .add_filter_with_color(
+                "@field:level:error".into(),
+                FilterType::Include,
+                None,
+                None,
+                true,
+            )
+            .await;
+        assert!(!was_new2);
+        assert_eq!(mgr.get_filters().len(), 1);
     }
 
     #[tokio::test]
