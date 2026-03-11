@@ -418,6 +418,31 @@ pub struct CachedParsedLine {
 }
 
 // ---------------------------------------------------------------------------
+// Display text helper (used by both TabState::get_display_text and the
+// background search task, which cannot hold a &TabState across await points).
+// ---------------------------------------------------------------------------
+
+pub(crate) fn display_text_for_line(
+    line_idx: usize,
+    file_reader: &FileReader,
+    detected_format: &Option<Arc<dyn LogFormatParser>>,
+    field_layout: &FieldLayout,
+    hidden_fields: &HashSet<String>,
+    show_keys: bool,
+) -> String {
+    let bytes = file_reader.get_line(line_idx);
+    if let Some(parser) = detected_format
+        && let Some(parts) = parser.parse_line(bytes)
+    {
+        let cols = field_layout::apply_field_layout(&parts, field_layout, hidden_fields, show_keys);
+        if !cols.is_empty() {
+            return cols.join(" ");
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+// ---------------------------------------------------------------------------
 // TabState
 // ---------------------------------------------------------------------------
 
@@ -799,21 +824,14 @@ impl TabState {
     /// This is the text the search should match against so that hidden-field
     /// content is never counted as a hit.
     pub fn get_display_text(&self, line_idx: usize) -> String {
-        let bytes = self.file_reader.get_line(line_idx);
-        if let Some(parser) = &self.detected_format
-            && let Some(parts) = parser.parse_line(bytes)
-        {
-            let cols = field_layout::apply_field_layout(
-                &parts,
-                &self.field_layout,
-                &self.hidden_fields,
-                self.show_keys,
-            );
-            if !cols.is_empty() {
-                return cols.join(" ");
-            }
-        }
-        String::from_utf8_lossy(bytes).into_owned()
+        display_text_for_line(
+            line_idx,
+            &self.file_reader,
+            &self.detected_format,
+            &self.field_layout,
+            &self.hidden_fields,
+            self.show_keys,
+        )
     }
 
     /// Build a lookup map of display text for each index yielded by `indices`.
@@ -865,23 +883,32 @@ impl TabState {
         }
     }
 
+    /// Cancel any in-flight search, clear results, and invalidate the render cache.
+    pub fn cancel_search(&mut self) {
+        if let Some(ref h) = self.search_handle {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
+        self.search_handle = None;
+        self.search.clear();
+        self.search_result_gen = self.search_result_gen.wrapping_add(1);
+    }
+
     /// Start a background search for `pattern` over the current visible lines.
     ///
     /// Any in-flight search is cancelled immediately.  Results are delivered
     /// via [`SearchHandle`] and polled each frame by `App::advance_search`.
     /// When `navigate` is true the view scrolls to the first match on completion.
     pub fn begin_search(&mut self, pattern: &str, forward: bool, navigate: bool) {
+        if pattern.is_empty() {
+            self.cancel_search();
+            return;
+        }
+
         // Cancel any in-flight search.
         if let Some(ref h) = self.search_handle {
             h.cancel.store(true, Ordering::Relaxed);
         }
         self.search_handle = None;
-
-        if pattern.is_empty() {
-            self.search.clear();
-            self.search_result_gen = self.search_result_gen.wrapping_add(1);
-            return;
-        }
 
         let case_sensitive = self.search.is_case_sensitive();
         let regex_str = if case_sensitive {
@@ -905,6 +932,11 @@ impl TabState {
         let file_reader = self.file_reader.clone();
         let visible: Vec<usize> = self.visible_indices.iter().collect();
         let total = visible.len();
+        // Clone display context so the background task searches displayed text only.
+        let detected_format = self.detected_format.clone();
+        let field_layout = self.field_layout.clone();
+        let hidden_fields = self.hidden_fields.clone();
+        let show_keys = self.show_keys;
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
@@ -922,10 +954,16 @@ impl TabState {
                     if i.is_multiple_of(10_000) && total > 0 {
                         let _ = progress_tx.send(i as f64 / total as f64);
                     }
-                    let line = file_reader.get_line(line_idx);
-                    let text = String::from_utf8_lossy(line);
+                    let text = display_text_for_line(
+                        line_idx,
+                        &file_reader,
+                        &detected_format,
+                        &field_layout,
+                        &hidden_fields,
+                        show_keys,
+                    );
                     let matches: Vec<(usize, usize)> = re_for_search
-                        .find_iter(text.as_ref())
+                        .find_iter(&text)
                         .map(|m| (m.start(), m.end()))
                         .collect();
                     if matches.is_empty() {
@@ -2225,6 +2263,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cancel_search_bumps_search_result_gen() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.begin_search("line", true, false);
+        assert!(tab.search.get_pattern().is_some());
+        let old = tab.search_result_gen;
+        tab.cancel_search();
+        assert!(tab.search.get_pattern().is_none());
+        assert!(tab.search_handle.is_none());
+        assert!(tab.search_result_gen > old);
+    }
+
+    #[tokio::test]
     async fn test_begin_search_clear_bumps_search_result_gen() {
         let mut tab = make_tab(&["line"]).await;
         let old = tab.search_result_gen;
@@ -2241,6 +2291,63 @@ mod tests {
         tab.begin_search("line", true, false);
         // begin_search with a pattern spawns a background task; gen not bumped yet
         assert_eq!(tab.search_result_gen, old);
+    }
+
+    async fn drain_search(tab: &mut TabState) {
+        if let Some(h) = tab.search_handle.take() {
+            let forward = h.forward;
+            let navigate = h.navigate;
+            if let Ok((results, regex)) = h.result_rx.await {
+                tab.search.set_results(results, regex);
+                tab.search.set_forward(forward);
+                tab.search_result_gen = tab.search_result_gen.wrapping_add(1);
+                if navigate && !tab.search.get_results().is_empty() {
+                    let current = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
+                    tab.search.set_position_for_search(current, forward);
+                    if forward {
+                        tab.search.next_match();
+                    } else {
+                        tab.search.previous_match();
+                    }
+                    tab.scroll_to_current_search_match();
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_begin_search_uses_display_text_not_raw() {
+        // JSON line where the key "secret_key" should be hidden.
+        let line =
+            r#"{"ts":"2024-01-01T00:00:00Z","level":"info","msg":"hello","secret_key":"needle"}"#;
+        let line_bytes = line.as_bytes();
+        let mut tab = make_tab(&[line]).await;
+        tab.visible_indices = VisibleLines::Filtered(vec![0]);
+        // Detect format so the parser kicks in.
+        tab.detected_format = crate::parser::detect_format(&[line_bytes]).map(Arc::from);
+        // Hide the "secret_key" field so "needle" is not displayed.
+        tab.hidden_fields.insert("secret_key".to_string());
+
+        tab.begin_search("needle", true, false);
+        drain_search(&mut tab).await;
+        // The search must find no results because "needle" is in a hidden field.
+        assert!(
+            tab.search.get_results().is_empty(),
+            "hidden field content must not be matched"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_begin_search_visible_field_is_matched() {
+        let line = r#"{"ts":"2024-01-01T00:00:00Z","level":"info","msg":"needle here"}"#;
+        let line_bytes = line.as_bytes();
+        let mut tab = make_tab(&[line]).await;
+        tab.visible_indices = VisibleLines::Filtered(vec![0]);
+        tab.detected_format = crate::parser::detect_format(&[line_bytes]).map(Arc::from);
+
+        tab.begin_search("needle", true, false);
+        drain_search(&mut tab).await;
+        assert_eq!(tab.search.get_results().len(), 1);
     }
 
     #[tokio::test]

@@ -323,7 +323,7 @@ impl Mode for NormalMode {
             let cursor_col = search_match_char_offset(tab, &line_text);
             tab.g_key_pressed = false;
             self.count = None;
-            tab.search.clear();
+            tab.cancel_search();
             let mut mode = VisualMode::new(line_text);
             mode.cursor_col = cursor_col;
             return (Box::new(mode), KeyResult::Handled);
@@ -374,7 +374,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.clear_search.matches(key, modifiers) && tab.search.get_pattern().is_some() {
-            tab.search.clear();
+            tab.cancel_search();
             tab.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
@@ -829,6 +829,18 @@ mod tests {
 
         assert!(tab.search.get_pattern().is_none());
         assert!(tab.search.get_results().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_esc_clears_inflight_search_handle() {
+        let mut tab = make_tab(&["error line", "info line"]).await;
+        tab.visible_indices = VisibleLines::Filtered(vec![0, 1]);
+        tab.begin_search("error", true, true);
+        assert!(tab.search_handle.is_some());
+        assert!(tab.search.get_pattern().is_some());
+        press(&mut tab, KeyCode::Esc, KeyModifiers::NONE).await;
+        assert!(tab.search_handle.is_none());
+        assert!(tab.search.get_pattern().is_none());
     }
 
     #[tokio::test]

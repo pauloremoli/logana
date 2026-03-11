@@ -61,22 +61,14 @@ impl Mode for SearchMode {
             tab.begin_search(&self.input, self.forward, true);
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else if kb.cancel.matches(key, modifiers) {
-            if let Some(ref h) = tab.search_handle {
-                h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-            tab.search_handle = None;
-            tab.search.clear();
+            tab.cancel_search();
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else {
             match key {
                 KeyCode::Backspace => {
                     self.input.pop();
                     if self.input.is_empty() {
-                        if let Some(ref h) = tab.search_handle {
-                            h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        tab.search_handle = None;
-                        tab.search.clear();
+                        tab.cancel_search();
                     } else {
                         tab.begin_search(&self.input, self.forward, false);
                     }
