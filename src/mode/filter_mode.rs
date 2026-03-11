@@ -9,7 +9,7 @@ use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
 use crate::mode::visual_char_mode::quote_for_command;
 use crate::theme::Theme;
-use crate::types::FilterType;
+use crate::types::{FilterType, color_to_string};
 
 use crate::ui::KeyResult;
 use crate::ui::TabState;
@@ -170,10 +170,10 @@ impl Mode for FilterManagementMode {
                     let mut c = String::from("date-filter");
                     if let Some(cfg) = &cc {
                         if let Some(fg) = cfg.fg {
-                            c.push_str(&format!(" --fg {}", fg));
+                            c.push_str(&format!(" --fg {}", color_to_string(fg)));
                         }
                         if let Some(bg) = cfg.bg {
-                            c.push_str(&format!(" --bg {}", bg));
+                            c.push_str(&format!(" --bg {}", color_to_string(bg)));
                         }
                         if !cfg.match_only {
                             c.push_str(" -l");
@@ -193,10 +193,10 @@ impl Mode for FilterManagementMode {
                         && let Some(cfg) = &cc
                     {
                         if let Some(fg) = cfg.fg {
-                            c.push_str(&format!(" --fg {fg}"));
+                            c.push_str(&format!(" --fg {}", color_to_string(fg)));
                         }
                         if let Some(bg) = cfg.bg {
-                            c.push_str(&format!(" --bg {bg}"));
+                            c.push_str(&format!(" --bg {}", color_to_string(bg)));
                         }
                         if !cfg.match_only {
                             c.push_str(" -l");
@@ -221,10 +221,10 @@ impl Mode for FilterManagementMode {
                         && let Some(cfg) = &cc
                     {
                         if let Some(fg) = cfg.fg {
-                            c.push_str(&format!(" --fg {}", fg));
+                            c.push_str(&format!(" --fg {}", color_to_string(fg)));
                         }
                         if let Some(bg) = cfg.bg {
-                            c.push_str(&format!(" --bg {}", bg));
+                            c.push_str(&format!(" --bg {}", color_to_string(bg)));
                         }
                         if !cfg.match_only {
                             c.push_str(" -l");
@@ -260,10 +260,10 @@ impl Mode for FilterManagementMode {
             let mut cmd = String::from("set-color");
             if let Some(cfg) = color_config {
                 if let Some(fg) = cfg.fg {
-                    cmd.push_str(&format!(" --fg {}", fg));
+                    cmd.push_str(&format!(" --fg {}", color_to_string(fg)));
                 }
                 if let Some(bg) = cfg.bg {
-                    cmd.push_str(&format!(" --bg {}", bg));
+                    cmd.push_str(&format!(" --bg {}", color_to_string(bg)));
                 }
                 if !cfg.match_only {
                     cmd.push_str(" -l");

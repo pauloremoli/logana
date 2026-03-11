@@ -133,11 +133,11 @@ impl App {
             resolve_policy_setting(&db, "restore_file_context", restore_file_policy).await;
         let show_mode_bar = resolve_bool_setting(&db, "show_mode_bar", show_mode_bar, true).await;
         let show_borders_default =
-            resolve_bool_setting(&db, "show_borders", show_borders, true).await;
+            resolve_bool_setting(&db, "show_borders", show_borders, false).await;
         let show_line_numbers =
             resolve_bool_setting(&db, "show_line_numbers", show_line_numbers, true).await;
         let show_sidebar = resolve_bool_setting(&db, "show_sidebar", show_sidebar, true).await;
-        let wrap = resolve_bool_setting(&db, "wrap", wrap, true).await;
+        let wrap = resolve_bool_setting(&db, "wrap", wrap, false).await;
 
         let title = log_manager
             .source_file()
@@ -583,8 +583,15 @@ mod tests {
     async fn await_filter_computations(app: &mut App) {
         for tab in &mut app.tabs {
             if let Some(h) = tab.filter_handle.take() {
+                let scroll_anchor = h.scroll_anchor;
                 if let Ok(result) = h.result_rx.await {
                     tab.visible_indices = crate::ui::VisibleLines::Filtered(result.visible);
+                    if let Some(line_idx) = scroll_anchor {
+                        if let Some(pos) = tab.visible_indices.position_of(line_idx) {
+                            tab.scroll_offset = pos;
+                            continue;
+                        }
+                    }
                     if tab.visible_indices.is_empty() {
                         tab.scroll_offset = 0;
                     } else {
@@ -625,9 +632,9 @@ mod tests {
     async fn test_toggle_wrap_command() {
         let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
         app.execute_command_str("wrap".to_string()).await;
-        assert!(!app.tab().wrap);
-        app.execute_command_str("wrap".to_string()).await;
         assert!(app.tab().wrap);
+        app.execute_command_str("wrap".to_string()).await;
+        assert!(!app.tab().wrap);
     }
 
     #[tokio::test]

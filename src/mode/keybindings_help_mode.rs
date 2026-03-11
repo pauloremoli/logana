@@ -201,14 +201,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: vl.mark.display(),
     });
     rows.push(HelpRow::Entry {
-        action: "Filter include".into(),
-        keys: vl.filter_include.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Filter exclude".into(),
-        keys: vl.filter_exclude.display(),
-    });
-    rows.push(HelpRow::Entry {
         action: "Search".into(),
         keys: vl.search.display(),
     });

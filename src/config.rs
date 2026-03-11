@@ -784,12 +784,6 @@ fn default_visual_mark() -> KeyBindings {
 fn default_visual_exit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
-fn default_visual_line_filter_include() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('i'), KeyModifiers::NONE)])
-}
-fn default_visual_line_filter_exclude() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('o'), KeyModifiers::NONE)])
-}
 fn default_visual_line_search() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('/'), KeyModifiers::NONE)])
 }
@@ -806,10 +800,6 @@ pub struct VisualLineKeybindings {
     pub yank: KeyBindings,
     #[serde(default = "default_visual_mark")]
     pub mark: KeyBindings,
-    #[serde(default = "default_visual_line_filter_include")]
-    pub filter_include: KeyBindings,
-    #[serde(default = "default_visual_line_filter_exclude")]
-    pub filter_exclude: KeyBindings,
     #[serde(default = "default_visual_line_search")]
     pub search: KeyBindings,
     #[serde(default = "default_visual_exit")]
@@ -822,8 +812,6 @@ impl Default for VisualLineKeybindings {
             comment: default_visual_comment(),
             yank: default_visual_yank(),
             mark: default_visual_mark(),
-            filter_include: default_visual_line_filter_include(),
-            filter_exclude: default_visual_line_filter_exclude(),
             search: default_visual_line_search(),
             exit: default_visual_exit(),
         }
@@ -1448,14 +1436,6 @@ impl Keybindings {
             ("visual_line.comment", &self.visual_line.comment),
             ("visual_line.yank", &self.visual_line.yank),
             ("visual_line.mark", &self.visual_line.mark),
-            (
-                "visual_line.filter_include",
-                &self.visual_line.filter_include,
-            ),
-            (
-                "visual_line.filter_exclude",
-                &self.visual_line.filter_exclude,
-            ),
             ("visual_line.search", &self.visual_line.search),
             ("visual_line.exit", &self.visual_line.exit),
         ];

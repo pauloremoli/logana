@@ -230,6 +230,21 @@ pub const COLOR_NAMES: &[&str] = &[
     "LightMagenta",
     "LightCyan",
     "White",
+    "Orange",
+    "Pink",
+    "Purple",
+    "Violet",
+    "Indigo",
+    "Teal",
+    "Turquoise",
+    "Coral",
+    "Salmon",
+    "Gold",
+    "Lime",
+    "Maroon",
+    "Navy",
+    "Olive",
+    "Brown",
 ];
 
 /// If the input ends with `--fg <partial>` or `--bg <partial>`, returns the partial color prefix.
@@ -718,6 +733,45 @@ mod tests {
     fn test_complete_color_exact_match() {
         let results = complete_color("Black");
         assert_eq!(results, vec!["Black"]);
+    }
+
+    #[test]
+    fn test_complete_color_extended_names_present() {
+        let all = complete_color("");
+        for name in &[
+            "Orange",
+            "Pink",
+            "Purple",
+            "Violet",
+            "Indigo",
+            "Teal",
+            "Turquoise",
+            "Coral",
+            "Salmon",
+            "Gold",
+            "Lime",
+            "Maroon",
+            "Navy",
+            "Olive",
+            "Brown",
+        ] {
+            assert!(all.contains(name), "{name} should be in COLOR_NAMES");
+        }
+    }
+
+    #[test]
+    fn test_complete_color_extended_fuzzy_match() {
+        let results = complete_color("Ora");
+        assert!(
+            results.contains(&"Orange"),
+            "Orange should fuzzy-match 'Ora'"
+        );
+
+        let results = complete_color("Teal");
+        assert_eq!(results, vec!["Teal"]);
+
+        let results = complete_color("nav");
+        assert!(results.contains(&"Navy"), "Navy should fuzzy-match 'nav'");
     }
 
     #[test]

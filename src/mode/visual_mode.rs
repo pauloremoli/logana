@@ -6,7 +6,6 @@ use ratatui::text::{Line, Span};
 use crate::{
     config::Keybindings,
     mode::app_mode::{Mode, ModeRenderState, status_entry},
-    mode::command_mode::CommandMode,
     mode::comment_mode::CommentMode,
     mode::normal_mode::NormalMode,
     mode::search_mode::SearchMode,
@@ -182,24 +181,6 @@ impl Mode for VisualLineMode {
                 Box::new(NormalMode::default()),
                 KeyResult::CopyToClipboard(text),
             );
-        } else if kb.visual_line.filter_include.matches(key, modifiers) {
-            let text = regex::escape(&lo_line_text(tab, self.anchor, tab.scroll_offset));
-            let input = format!("filter {}", text);
-            let cursor = input.len();
-            let history = tab.command_history.clone();
-            return (
-                Box::new(CommandMode::with_history(input, cursor, history)),
-                KeyResult::Handled,
-            );
-        } else if kb.visual_line.filter_exclude.matches(key, modifiers) {
-            let text = regex::escape(&lo_line_text(tab, self.anchor, tab.scroll_offset));
-            let input = format!("exclude {}", text);
-            let cursor = input.len();
-            let history = tab.command_history.clone();
-            return (
-                Box::new(CommandMode::with_history(input, cursor, history)),
-                KeyResult::Handled,
-            );
         } else if kb.visual_line.search.matches(key, modifiers) {
             let text = regex::escape(&lo_line_text(tab, self.anchor, tab.scroll_offset));
             return (
@@ -251,18 +232,6 @@ impl Mode for VisualLineMode {
         );
         status_entry(&mut spans, kb.visual_line.yank.display(), "yank", theme);
         status_entry(&mut spans, kb.visual_line.mark.display(), "mark", theme);
-        status_entry(
-            &mut spans,
-            kb.visual_line.filter_include.display(),
-            "filter",
-            theme,
-        );
-        status_entry(
-            &mut spans,
-            kb.visual_line.filter_exclude.display(),
-            "exclude",
-            theme,
-        );
         status_entry(&mut spans, kb.visual_line.search.display(), "search", theme);
         status_entry(&mut spans, kb.visual_line.exit.display(), "cancel", theme);
         Line::from(spans)
@@ -639,96 +608,6 @@ mod tests {
             .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
             .await;
         assert_eq!(tab.scroll_offset, 15);
-    }
-
-    #[tokio::test]
-    async fn test_i_prefills_filter_with_lo_line_text() {
-        let mut tab = make_tab(&["foo", "bar", "baz"]).await;
-        tab.scroll_offset = 2;
-        let mode = VisualLineMode {
-            anchor: 0,
-            count: None,
-        };
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('i')).await;
-        match mode2.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert!(input.starts_with("filter "), "got: {input}");
-                assert!(
-                    input.contains("foo"),
-                    "expected lo-line text 'foo', got: {input}"
-                );
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_i_escapes_regex_metacharacters_in_filter() {
-        let mut tab = make_tab(&["192.168.1.1 GET /path"]).await;
-        tab.scroll_offset = 0;
-        let mode = VisualLineMode {
-            anchor: 0,
-            count: None,
-        };
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('i')).await;
-        match mode2.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert!(
-                    input.starts_with("filter "),
-                    "expected filter prefix, got: {input}"
-                );
-                assert!(
-                    input.contains(r"192\.168\.1\.1"),
-                    "dots must be escaped, got: {input}"
-                );
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_o_prefills_exclude_with_lo_line_text() {
-        let mut tab = make_tab(&["foo", "bar"]).await;
-        tab.scroll_offset = 1;
-        let mode = VisualLineMode {
-            anchor: 0,
-            count: None,
-        };
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('o')).await;
-        match mode2.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert!(input.starts_with("exclude "), "got: {input}");
-                assert!(
-                    input.contains("foo"),
-                    "expected lo-line text 'foo', got: {input}"
-                );
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_o_escapes_regex_metacharacters_in_exclude() {
-        let mut tab = make_tab(&["panic: goroutine (exit)"]).await;
-        tab.scroll_offset = 0;
-        let mode = VisualLineMode {
-            anchor: 0,
-            count: None,
-        };
-        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('o')).await;
-        match mode2.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert!(
-                    input.starts_with("exclude "),
-                    "expected exclude prefix, got: {input}"
-                );
-                assert!(
-                    input.contains(r"panic: goroutine \(exit\)"),
-                    "parens must be escaped, got: {input}"
-                );
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
     }
 
     #[tokio::test]

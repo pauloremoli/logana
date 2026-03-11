@@ -979,9 +979,9 @@ mod tests {
     #[tokio::test]
     async fn test_wrap_toggle() {
         let mut app = make_app(&["line"]).await;
-        assert!(app.tab().wrap);
-        app.run_command("wrap").await.unwrap();
         assert!(!app.tab().wrap);
+        app.run_command("wrap").await.unwrap();
+        assert!(app.tab().wrap);
     }
 
     #[tokio::test]

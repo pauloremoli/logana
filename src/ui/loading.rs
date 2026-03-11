@@ -623,10 +623,17 @@ impl App {
             let Ok(result) = h.result_rx.try_recv() else {
                 continue;
             };
+            let scroll_anchor = h.scroll_anchor;
             tab.filter_handle = None;
             tab.visible_indices = super::VisibleLines::Filtered(result.visible);
             if let Some(counts) = result.filter_match_counts {
                 tab.filter_match_counts = counts;
+            }
+            if let Some(line_idx) = scroll_anchor
+                && let Some(pos) = tab.visible_indices.position_of(line_idx)
+            {
+                tab.scroll_offset = pos;
+                continue;
             }
             if tab.visible_indices.is_empty() {
                 tab.scroll_offset = 0;

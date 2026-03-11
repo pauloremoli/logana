@@ -118,6 +118,7 @@ impl Mode for VisualMode {
             if let KeyCode::Char(c) = key {
                 self.cursor_col = apply_char_motion(&self.line_text, self.cursor_col, &pending, c);
                 self.last_char_motion = Some((pending, c));
+                tab.scroll_char_cursor_into_view(self.cursor_col, &self.line_text);
             }
             // Non-char key cancels the pending motion; cursor stays put.
             return (self, KeyResult::Handled);
@@ -244,6 +245,7 @@ impl Mode for VisualMode {
             }
         }
 
+        tab.scroll_char_cursor_into_view(self.cursor_col, &self.line_text);
         (self, KeyResult::Ignored)
     }
 
@@ -1525,5 +1527,123 @@ mod tests {
             .handle_key(&mut tab, KeyCode::F(2), KeyModifiers::NONE)
             .await;
         assert!(matches!(result, KeyResult::Ignored));
+    }
+
+    #[tokio::test]
+    async fn test_cursor_right_past_viewport_scrolls_right() {
+        let line = "abcdefghij"; // 10 chars
+        let mut tab = make_tab(&[line]).await;
+        tab.wrap = false;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 0;
+        let mut mode = make_mode(line);
+        mode.cursor_col = 4; // rightmost visible col (0..4)
+        let (m, _) = press(mode, &mut tab, KeyCode::Char('l')).await;
+        assert_eq!(cursor_col(m.as_ref()), 5);
+        assert_eq!(
+            tab.horizontal_scroll, 1,
+            "scroll should follow cursor right"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cursor_left_past_viewport_scrolls_left() {
+        let line = "abcdefghij";
+        let mut tab = make_tab(&[line]).await;
+        tab.wrap = false;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 3;
+        let mut mode = make_mode(line);
+        mode.cursor_col = 3; // at left edge of viewport
+        let (m, _) = press(mode, &mut tab, KeyCode::Char('h')).await;
+        assert_eq!(cursor_col(m.as_ref()), 2);
+        assert_eq!(tab.horizontal_scroll, 2, "scroll should follow cursor left");
+    }
+
+    #[tokio::test]
+    async fn test_cursor_within_viewport_does_not_scroll() {
+        let line = "abcdefghij";
+        let mut tab = make_tab(&[line]).await;
+        tab.wrap = false;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 2;
+        let mut mode = make_mode(line);
+        mode.cursor_col = 3;
+        let (m, _) = press(mode, &mut tab, KeyCode::Char('l')).await;
+        assert_eq!(cursor_col(m.as_ref()), 4);
+        assert_eq!(tab.horizontal_scroll, 2, "scroll should not change");
+    }
+
+    #[tokio::test]
+    async fn test_end_of_line_scrolls_viewport_to_show_cursor() {
+        let line = "abcdefghij";
+        let mut tab = make_tab(&[line]).await;
+        tab.wrap = false;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 0;
+        let mode = make_mode(line);
+        let (m, _) = press(mode, &mut tab, KeyCode::Char('$')).await;
+        assert_eq!(cursor_col(m.as_ref()), 9);
+        assert!(
+            tab.horizontal_scroll + tab.visible_width > 9,
+            "cursor must be within viewport after $"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_of_line_resets_scroll() {
+        let line = "abcdefghij";
+        let mut tab = make_tab(&[line]).await;
+        tab.wrap = false;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 7;
+        let mut mode = make_mode(line);
+        mode.cursor_col = 9;
+        let (_, _) = press(mode, &mut tab, KeyCode::Char('0')).await;
+        assert_eq!(
+            tab.horizontal_scroll, 0,
+            "scroll should reset to 0 at line start"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wrap_mode_does_not_adjust_scroll() {
+        let line = "abcdefghij";
+        let mut tab = make_tab(&[line]).await;
+        tab.wrap = true;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 0;
+        let mut mode = make_mode(line);
+        mode.cursor_col = 4;
+        let (m, _) = press(mode, &mut tab, KeyCode::Char('l')).await;
+        assert_eq!(cursor_col(m.as_ref()), 5);
+        assert_eq!(
+            tab.horizontal_scroll, 0,
+            "wrap mode should not adjust scroll"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_line_change_scrolls_cursor_into_view() {
+        let line0 = "abcdefghijklmno"; // 15 chars
+        let line1 = "xyz"; // 3 chars
+        let mut tab = make_multi_tab(&[line0, line1]).await;
+        tab.scroll_offset = 0;
+        tab.wrap = false;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 10;
+        let mut mode = VisualMode::new(line0.to_string());
+        mode.cursor_col = 12;
+        // move down — cursor clamps to col 2 on "xyz", which is left of h_scroll=10
+        let (m, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll_offset, 1);
+        assert_eq!(cursor_col(m.as_ref()), 2);
+        assert!(
+            tab.horizontal_scroll <= 2,
+            "scroll should have moved left to show cursor, got {}",
+            tab.horizontal_scroll
+        );
     }
 }

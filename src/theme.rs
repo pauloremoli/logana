@@ -359,6 +359,24 @@ pub struct Theme {
     #[serde(
         serialize_with = "color_to_str",
         deserialize_with = "color_from_str",
+        default = "default_warning_bg"
+    )]
+    pub warning_bg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_error_bg"
+    )]
+    pub error_bg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
+        default = "default_fatal_bg"
+    )]
+    pub fatal_bg: Color,
+    #[serde(
+        serialize_with = "color_to_str",
+        deserialize_with = "color_from_str",
         default = "default_search_fg"
     )]
     pub search_fg: Color,
@@ -571,6 +589,15 @@ fn default_inactive_tab_fg() -> Color {
 fn default_comment_fg() -> Color {
     Color::Rgb(139, 233, 253) // soft cyan — visible on both dark and light backgrounds
 }
+fn default_warning_bg() -> Color {
+    Color::Rgb(0x3d, 0x2b, 0x00) // dark amber — muted warning background
+}
+fn default_error_bg() -> Color {
+    Color::Rgb(0x3d, 0x0d, 0x0c) // dark red — muted error background
+}
+fn default_fatal_bg() -> Color {
+    Color::Rgb(0x3d, 0x0d, 0x0c) // dark red — muted fatal background
+}
 
 impl Theme {
     /// Returns the names of all available themes: bundled, local `themes/`, and
@@ -658,37 +685,40 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Theme::from_file("catppuccin-mocha.json").unwrap_or_else(|_| Theme {
-            root_bg: Color::Rgb(0x1e, 0x1e, 0x2e),
-            border: Color::Rgb(0x31, 0x32, 0x44),
-            cursor_bg: Color::Rgb(0x31, 0x32, 0x44),
-            border_title: Color::Rgb(0xcd, 0xd6, 0xf4),
-            text: Color::Rgb(0xcd, 0xd6, 0xf4),
-            text_highlight_fg: Color::Rgb(0xf9, 0xe2, 0xaf),
-            text_highlight_bg: Color::Rgb(0x4a, 0x3a, 0x0a),
-            cursor_fg: Color::Rgb(0xcd, 0xd6, 0xf4),
-            trace_fg: Color::Rgb(0x58, 0x5b, 0x70),
-            debug_fg: Color::Rgb(0x89, 0xdc, 0xeb),
-            info_fg: Color::Rgb(0xcd, 0xd6, 0xf4),
-            notice_fg: Color::Rgb(0xa6, 0xe3, 0xa1),
-            error_fg: Color::Rgb(0xf3, 0x8b, 0xa8),
-            warning_fg: Color::Rgb(0xf9, 0xe2, 0xaf),
-            fatal_fg: Color::Rgb(0xf3, 0x8b, 0xa8),
-            search_fg: Color::Rgb(0x1e, 0x1e, 0x2e),
-            visual_select_bg: Color::Rgb(0x45, 0x47, 0x5a),
-            visual_select_fg: Color::Rgb(0xcd, 0xd6, 0xf4),
-            mark_bg: Color::Rgb(0x4a, 0x38, 0x00),
-            mark_fg: Color::Rgb(0xcd, 0xd6, 0xf4),
+        Theme::from_file("github-dark.json").unwrap_or_else(|_| Theme {
+            root_bg: Color::Rgb(0x0d, 0x11, 0x17),
+            border: Color::Rgb(0x30, 0x36, 0x3d),
+            cursor_bg: Color::Rgb(0x21, 0x26, 0x2d),
+            border_title: Color::Rgb(0x58, 0xa6, 0xff),
+            text: Color::Rgb(0xe6, 0xed, 0xf3),
+            text_highlight_fg: Color::Rgb(0xe3, 0xb3, 0x41),
+            text_highlight_bg: Color::Rgb(0x3d, 0x2b, 0x00),
+            cursor_fg: Color::Rgb(0xe6, 0xed, 0xf3),
+            trace_fg: Color::Rgb(0x48, 0x4f, 0x58),
+            debug_fg: Color::Rgb(0x58, 0xa6, 0xff),
+            info_fg: Color::Rgb(0xe6, 0xed, 0xf3),
+            notice_fg: Color::Rgb(0x3f, 0xb9, 0x50),
+            error_fg: Color::Rgb(0xf8, 0x51, 0x49),
+            warning_fg: Color::Rgb(0xd2, 0x99, 0x22),
+            fatal_fg: Color::Rgb(0xf8, 0x51, 0x49),
+            warning_bg: default_warning_bg(),
+            error_bg: default_error_bg(),
+            fatal_bg: default_fatal_bg(),
+            search_fg: Color::Rgb(0x0d, 0x11, 0x17),
+            visual_select_bg: Color::Rgb(0x26, 0x4f, 0x78),
+            visual_select_fg: Color::Rgb(0xe6, 0xed, 0xf3),
+            mark_bg: Color::Rgb(0x3d, 0x2b, 0x00),
+            mark_fg: Color::Rgb(0xe6, 0xed, 0xf3),
             line_number_fg: default_line_number_fg(),
-            inactive_tab_fg: Color::Rgb(0x58, 0x5b, 0x70),
-            comment_fg: Color::Rgb(0x89, 0xdc, 0xeb),
+            inactive_tab_fg: Color::Rgb(0x8b, 0x94, 0x9e),
+            comment_fg: Color::Rgb(0x58, 0xa6, 0xff),
             process_colors: vec![
-                Color::Rgb(0xf3, 0x8b, 0xa8),
-                Color::Rgb(0xa6, 0xe3, 0xa1),
-                Color::Rgb(0xf9, 0xe2, 0xaf),
-                Color::Rgb(0x89, 0xb4, 0xfa),
-                Color::Rgb(0xcb, 0xa6, 0xf7),
-                Color::Rgb(0x89, 0xdc, 0xeb),
+                Color::Rgb(0xf8, 0x51, 0x49),
+                Color::Rgb(0x3f, 0xb9, 0x50),
+                Color::Rgb(0xe3, 0xb3, 0x41),
+                Color::Rgb(0x58, 0xa6, 0xff),
+                Color::Rgb(0xd2, 0xa8, 0xff),
+                Color::Rgb(0x39, 0xc5, 0xcf),
             ],
             value_colors: ValueColors::default(),
         })
@@ -866,6 +896,9 @@ mod tests {
         assert_eq!(default_mark_bg(), Color::Rgb(70, 60, 15));
         assert_eq!(default_mark_fg(), Color::Rgb(248, 248, 242));
         assert_eq!(default_inactive_tab_fg(), Color::Rgb(128, 128, 128));
+        assert_eq!(default_warning_bg(), Color::Rgb(0x3d, 0x2b, 0x00));
+        assert_eq!(default_error_bg(), Color::Rgb(0x3d, 0x0d, 0x0c));
+        assert_eq!(default_fatal_bg(), Color::Rgb(0x3d, 0x0d, 0x0c));
     }
 
     // ── Theme serde ─────────────────────────────────────────────────────
@@ -935,6 +968,9 @@ mod tests {
         assert_eq!(theme.mark_fg, default_mark_fg());
         assert_eq!(theme.inactive_tab_fg, default_inactive_tab_fg());
         assert_eq!(theme.comment_fg, default_comment_fg());
+        assert_eq!(theme.warning_bg, default_warning_bg());
+        assert_eq!(theme.error_bg, default_error_bg());
+        assert_eq!(theme.fatal_bg, default_fatal_bg());
         assert_eq!(theme.value_colors, ValueColors::default());
     }
 

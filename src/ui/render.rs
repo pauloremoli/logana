@@ -25,7 +25,7 @@ use crate::auto_complete::{
 use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
 use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
 use crate::theme::complete_theme;
-use crate::types::{FilterType, LogLevel};
+use crate::types::{FilterType, LogLevel, parse_color};
 use crate::value_colors::colorize_known_values;
 
 use crate::mode::app_mode::ModeRenderState;
@@ -875,13 +875,13 @@ impl App {
                         base_style = base_style.fg(theme.notice_fg)
                     }
                     LogLevel::Warning if !level_colors_disabled.contains("warning") => {
-                        base_style = base_style.fg(theme.warning_fg)
+                        base_style = base_style.bg(theme.warning_bg)
                     }
                     LogLevel::Error if !level_colors_disabled.contains("error") => {
-                        base_style = base_style.fg(theme.error_fg)
+                        base_style = base_style.bg(theme.error_bg)
                     }
                     LogLevel::Fatal if !level_colors_disabled.contains("fatal") => {
-                        base_style = base_style.fg(theme.fatal_fg)
+                        base_style = base_style.bg(theme.fatal_bg)
                     }
                     _ => {}
                 }
@@ -1448,7 +1448,7 @@ impl App {
                         .iter()
                         .enumerate()
                         .flat_map(|(i, name)| {
-                            let color = name.parse::<Color>().unwrap_or(Color::White);
+                            let color = parse_color(name).unwrap_or(Color::White);
                             let style = if completion_index == Some(i) {
                                 Style::default().fg(color).bg(self.theme.cursor_bg)
                             } else {
@@ -2150,6 +2150,7 @@ mod tests {
     async fn test_ui_wrap_enabled() {
         let long_line = "A".repeat(200);
         let mut app = make_app(&[&long_line, "short"]).await;
+        app.tabs[0].wrap = true;
         assert!(app.tabs[0].wrap);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2320,6 +2321,7 @@ mod tests {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             progress_rx,
+            scroll_anchor: None,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2345,6 +2347,7 @@ mod tests {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             progress_rx,
+            scroll_anchor: None,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2370,6 +2373,7 @@ mod tests {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             progress_rx,
+            scroll_anchor: None,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2391,6 +2395,7 @@ mod tests {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             progress_rx,
+            scroll_anchor: None,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2739,6 +2744,8 @@ mod tests {
     async fn test_logs_title_omits_filename_when_tab_bar_visible() {
         let mut app = make_two_tab_app().await;
         app.tabs[0].title = "myfile.log".to_string();
+        app.tabs[0].show_borders = true;
+        app.tabs[1].show_borders = true;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2771,6 +2778,8 @@ mod tests {
     async fn test_active_tab_shows_count_in_tab_bar() {
         let mut app = make_two_tab_app().await;
         app.tabs[0].title = "myfile.log".to_string();
+        app.tabs[0].show_borders = true;
+        app.tabs[1].show_borders = true;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2830,6 +2839,8 @@ mod tests {
     async fn test_sidebar_title_on_same_row_as_tab_bar() {
         let mut app = make_two_tab_app().await;
         app.tabs[0].show_sidebar = true;
+        app.tabs[0].show_borders = true;
+        app.tabs[1].show_borders = true;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

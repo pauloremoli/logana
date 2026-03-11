@@ -146,6 +146,8 @@ pub struct FilterHandle {
     pub cancel: Arc<AtomicBool>,
     /// Live fraction-complete (0.0–1.0) polled each frame for the progress bar.
     pub progress_rx: watch::Receiver<f64>,
+    /// File-line index to restore scroll position to when the result arrives.
+    pub scroll_anchor: Option<usize>,
 }
 
 /// List the flat (non-recursive), non-hidden regular files in `path`.
@@ -677,6 +679,11 @@ impl TabState {
         let has_active_filters =
             self.show_marks_only || self.log_manager.get_filters().iter().any(|f| f.enabled);
         if !has_active_filters {
+            let current_line = if self.saved_filter_view.is_some() {
+                self.visible_indices.get_opt(self.scroll_offset)
+            } else {
+                None
+            };
             self.saved_filter_view = None;
             self.visible_indices = VisibleLines::All(self.file_reader.line_count());
             self.filter_manager_arc = Arc::new(FilterManager::empty());
@@ -684,6 +691,12 @@ impl TabState {
             self.filter_date_styles = Vec::new();
             self.filter_field_styles = Vec::new();
             self.filter_match_counts = Vec::new();
+            if let Some(line_idx) = current_line
+                && let Some(pos) = self.visible_indices.position_of(line_idx)
+            {
+                self.scroll_offset = pos;
+                return;
+            }
             // Still clamp scroll so it stays valid if the file shrank.
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
@@ -698,6 +711,10 @@ impl TabState {
         self.parse_cache.clear();
         self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
         self.render_line_cache.clear();
+
+        // Capture the currently selected file-line so we can restore the selection after
+        // visible_indices changes (e.g. toggling filters or marks-only mode).
+        let current_line = self.visible_indices.get_opt(self.scroll_offset);
 
         if self.show_marks_only {
             // Save the pre-marks-only filter view so we can restore it in O(1) on toggle-off,
@@ -810,7 +827,13 @@ impl TabState {
             self.visible_indices = VisibleLines::Filtered(visible);
         }
 
-        // Clamp scroll_offset so it never points past the end of the new visible set.
+        // Restore the selection to the same file-line if it is still visible; otherwise clamp.
+        if let Some(line_idx) = current_line
+            && let Some(pos) = self.visible_indices.position_of(line_idx)
+        {
+            self.scroll_offset = pos;
+            return;
+        }
         if self.visible_indices.is_empty() {
             self.scroll_offset = 0;
         } else {
@@ -847,6 +870,22 @@ impl TabState {
     pub fn scroll_to_line_idx(&mut self, line_idx: usize) {
         if let Some(index) = self.visible_indices.position_of(line_idx) {
             self.scroll_offset = index;
+        }
+    }
+
+    /// Adjusts `horizontal_scroll` so that `cursor_col` (a char index into
+    /// `line_text`) stays within the visible horizontal viewport.
+    /// No-op when wrap is enabled or `visible_width` is not yet known.
+    pub fn scroll_char_cursor_into_view(&mut self, cursor_col: usize, line_text: &str) {
+        if self.wrap || self.visible_width == 0 {
+            return;
+        }
+        let prefix: String = line_text.chars().take(cursor_col).collect();
+        let cursor_display_col = unicode_width::UnicodeWidthStr::width(prefix.as_str());
+        if cursor_display_col < self.horizontal_scroll {
+            self.horizontal_scroll = cursor_display_col;
+        } else if cursor_display_col + 1 > self.horizontal_scroll + self.visible_width {
+            self.horizontal_scroll = cursor_display_col + 1 - self.visible_width;
         }
     }
 
@@ -1012,6 +1051,11 @@ impl TabState {
 
         if !has_active_filters {
             // Fast path: no filters — O(1), no allocation.
+            let current_line = if self.saved_filter_view.is_some() {
+                self.visible_indices.get_opt(self.scroll_offset)
+            } else {
+                None
+            };
             self.saved_filter_view = None;
             self.visible_indices = VisibleLines::All(self.file_reader.line_count());
             self.filter_manager_arc = Arc::new(FilterManager::empty());
@@ -1019,6 +1063,12 @@ impl TabState {
             self.filter_date_styles = Vec::new();
             self.filter_field_styles = Vec::new();
             self.filter_match_counts = Vec::new();
+            if let Some(line_idx) = current_line
+                && let Some(pos) = self.visible_indices.position_of(line_idx)
+            {
+                self.scroll_offset = pos;
+                return;
+            }
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -1029,6 +1079,7 @@ impl TabState {
 
         if self.show_marks_only {
             // Marks-only: O(marks count) — sync.
+            let current_line = self.visible_indices.get_opt(self.scroll_offset);
             if self.saved_filter_view.is_none() {
                 self.saved_filter_view = Some((
                     self.visible_indices.clone(),
@@ -1050,6 +1101,12 @@ impl TabState {
             self.filter_date_styles = date_filter_styles;
             self.filter_field_styles = field_filter_styles;
             self.filter_match_counts = Vec::new();
+            if let Some(line_idx) = current_line
+                && let Some(pos) = self.visible_indices.position_of(line_idx)
+            {
+                self.scroll_offset = pos;
+                return;
+            }
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -1067,11 +1124,18 @@ impl TabState {
         )) = self.saved_filter_view.take()
         {
             // Leaving marks-only: restore saved filter view — O(1).
+            let current_line = self.visible_indices.get_opt(self.scroll_offset);
             self.visible_indices = saved_visible;
             self.filter_manager_arc = saved_fm;
             self.filter_styles = saved_styles;
             self.filter_date_styles = saved_date_styles;
             self.filter_field_styles = saved_field_styles;
+            if let Some(line_idx) = current_line
+                && let Some(pos) = self.visible_indices.position_of(line_idx)
+            {
+                self.scroll_offset = pos;
+                return;
+            }
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -1082,12 +1146,19 @@ impl TabState {
 
         if !self.filtering_enabled {
             // Filtering disabled: show all lines — O(1).
+            let current_line = self.visible_indices.get_opt(self.scroll_offset);
             self.visible_indices = VisibleLines::All(self.file_reader.line_count());
             self.filter_manager_arc = Arc::new(FilterManager::empty());
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
             self.filter_field_styles = Vec::new();
             self.filter_match_counts = Vec::new();
+            if let Some(line_idx) = current_line
+                && let Some(pos) = self.visible_indices.position_of(line_idx)
+            {
+                self.scroll_offset = pos;
+                return;
+            }
             if self.visible_indices.is_empty() {
                 self.scroll_offset = 0;
             } else {
@@ -1097,6 +1168,7 @@ impl TabState {
         }
 
         // Slow path: active text/date filters require a full file scan.
+        let scroll_anchor = self.visible_indices.get_opt(self.scroll_offset);
         let (fm, styles, date_filter_styles, field_filter_styles) =
             self.log_manager.build_filter_manager();
         // Update immediately so render highlights reflect new filters before results arrive.
@@ -1202,6 +1274,7 @@ impl TabState {
             result_rx,
             cancel,
             progress_rx,
+            scroll_anchor,
         });
     }
 
@@ -1646,6 +1719,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_marks_only_toggle_keeps_selected_marked_line() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
+        tab.log_manager.toggle_mark(1);
+        tab.log_manager.toggle_mark(3);
+        tab.scroll_offset = 3;
+        tab.show_marks_only = true;
+        tab.refresh_visible();
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![1, 3]));
+        assert_eq!(tab.scroll_offset, 1);
+    }
+
+    #[tokio::test]
+    async fn test_marks_only_toggle_off_keeps_selected_line() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
+        tab.log_manager.toggle_mark(1);
+        tab.log_manager.toggle_mark(3);
+        tab.show_marks_only = true;
+        tab.refresh_visible();
+        tab.scroll_offset = 1;
+        tab.show_marks_only = false;
+        tab.refresh_visible();
+        assert_eq!(tab.visible_indices.len(), 5);
+        assert_eq!(tab.scroll_offset, 3);
+    }
+
+    #[tokio::test]
+    async fn test_marks_only_toggle_unselected_line_clamps_offset() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
+        tab.log_manager.toggle_mark(4);
+        tab.scroll_offset = 2;
+        tab.show_marks_only = true;
+        tab.refresh_visible();
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![4]));
+        assert_eq!(tab.scroll_offset, 0);
+    }
+
+    #[tokio::test]
     async fn test_refresh_visible_filtering_disabled() {
         let mut tab = make_tab(&["line1", "line2", "line3", "line4", "line5"]).await;
         tab.log_manager
@@ -1654,6 +1764,50 @@ mod tests {
         tab.filtering_enabled = false;
         tab.refresh_visible();
         assert_eq!(tab.visible_indices.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_filtering_disabled_keeps_selected_line() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
+        tab.log_manager
+            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, false)
+            .await;
+        tab.refresh_visible();
+        tab.scroll_offset = 3;
+        tab.filtering_enabled = false;
+        tab.refresh_visible();
+        assert_eq!(tab.visible_indices.len(), 5);
+        assert_eq!(tab.scroll_offset, 3);
+    }
+
+    #[tokio::test]
+    async fn test_filtering_reenabled_keeps_selected_line_if_visible() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
+        tab.log_manager
+            .add_filter_with_color("line2".to_string(), FilterType::Include, None, None, false)
+            .await;
+        tab.filtering_enabled = false;
+        tab.refresh_visible();
+        tab.scroll_offset = 2;
+        tab.filtering_enabled = true;
+        tab.refresh_visible();
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![2]));
+        assert_eq!(tab.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_filtering_reenabled_clamps_when_selected_line_hidden() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
+        tab.log_manager
+            .add_filter_with_color("line4".to_string(), FilterType::Include, None, None, false)
+            .await;
+        tab.filtering_enabled = false;
+        tab.refresh_visible();
+        tab.scroll_offset = 2;
+        tab.filtering_enabled = true;
+        tab.refresh_visible();
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![4]));
+        assert_eq!(tab.scroll_offset, 0);
     }
 
     #[tokio::test]
@@ -1939,6 +2093,56 @@ mod tests {
     async fn test_tabstate_show_borders_default_true() {
         let tab = make_tab(&["line"]).await;
         assert!(tab.show_borders);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_char_cursor_into_view_scrolls_right() {
+        let mut tab = make_tab(&["hello"]).await;
+        tab.wrap = false;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 0;
+        tab.scroll_char_cursor_into_view(5, "abcdefgh");
+        assert_eq!(tab.horizontal_scroll, 1);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_char_cursor_into_view_scrolls_left() {
+        let mut tab = make_tab(&["hello"]).await;
+        tab.wrap = false;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 6;
+        tab.scroll_char_cursor_into_view(3, "abcdefgh");
+        assert_eq!(tab.horizontal_scroll, 3);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_char_cursor_into_view_no_change_when_visible() {
+        let mut tab = make_tab(&["hello"]).await;
+        tab.wrap = false;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 2;
+        tab.scroll_char_cursor_into_view(3, "abcdefgh");
+        assert_eq!(tab.horizontal_scroll, 2);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_char_cursor_into_view_noop_when_wrap() {
+        let mut tab = make_tab(&["hello"]).await;
+        tab.wrap = true;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 0;
+        tab.scroll_char_cursor_into_view(7, "abcdefgh");
+        assert_eq!(tab.horizontal_scroll, 0);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_char_cursor_into_view_noop_when_width_zero() {
+        let mut tab = make_tab(&["hello"]).await;
+        tab.wrap = false;
+        tab.visible_width = 0;
+        tab.horizontal_scroll = 0;
+        tab.scroll_char_cursor_into_view(7, "abcdefgh");
+        assert_eq!(tab.horizontal_scroll, 0);
     }
 
     #[tokio::test]
