@@ -287,9 +287,6 @@ impl SubstringFilter {
         let ac = AhoCorasick::builder()
             .ascii_case_insensitive(false)
             .build([pattern])
-            .inspect_err(|e| {
-                tracing::error!("Failed to build Aho-Corasick automaton: {}", e);
-            })
             .ok()?;
         Some(SubstringFilter {
             ac,

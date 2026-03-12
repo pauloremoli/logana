@@ -1,5 +1,13 @@
 {
-  "theme": null,
+  "theme": "github-dark",
+  "show_mode_bar": true,
+  "show_borders": true,
+  "show_sidebar": true,
+  "show_line_numbers": true,
+  "wrap": false,
+  "preview_bytes": 16777216,
+  "restore_session": "ask",
+  "restore_file_context": "ask",
   "keybindings": {
     "navigation": {
       "scroll_down": ["j", "Down"],
@@ -15,7 +23,6 @@
       "command_mode": ":",
       "filter_mode": "f",
       "toggle_filtering": "F",
-      "toggle_sidebar": "s",
       "go_to_top_chord": "g",
       "go_to_bottom": "G",
       "mark_line": "m",
@@ -23,13 +30,24 @@
       "search_backward": "?",
       "next_match": "n",
       "prev_match": "N",
-      "toggle_wrap": "w",
       "visual_mode": "V",
+      "visual_char": "v",
       "toggle_marks_only": "M",
-      "yank_marked": "y",
+      "yank_line": "y",
+      "yank_marked": "Y",
       "show_keybindings": "F1",
       "clear_all": "C",
-      "edit_comment": "c"
+      "edit_comment": "r",
+      "delete_comment": "d",
+      "comment_line": "c",
+      "next_error": "e",
+      "prev_error": "E",
+      "next_warning": "w",
+      "prev_warning": "W",
+      "filter_include": "i",
+      "filter_exclude": "o",
+      "enter_ui_mode": "u",
+      "clear_search": "Esc"
     },
     "filter": {
       "toggle_filter": "Space",
@@ -40,10 +58,12 @@
       "set_color": "c",
       "toggle_all_filters": "A",
       "clear_all_filters": "C",
-      "add_include": "i",
-      "add_exclude": "x",
+      "add_include_filter": "i",
+      "add_exclude_filter": "o",
       "add_date_filter": "t",
-      "exit_mode": "Esc"
+      "exit_mode": "Esc",
+      "sidebar_grow": ">",
+      "sidebar_shrink": "<"
     },
     "global": {
       "quit": "q",
@@ -53,12 +73,40 @@
       "new_tab": "Ctrl+t"
     },
     "comment": {
-      "save": "Ctrl+s",
+      "save": "Ctrl+Enter",
+      "newline": "Enter",
       "cancel": "Esc",
       "delete": "Ctrl+d"
     },
     "visual_line": {
       "comment": "c",
+      "yank": "y",
+      "mark": "m",
+      "search": "/",
+      "exit": "Esc"
+    },
+    "visual": {
+      "move_left": ["h", "Left"],
+      "move_right": ["l", "Right"],
+      "word_forward": "w",
+      "word_backward": "b",
+      "word_end": "e",
+      "word_forward_big": "W",
+      "word_backward_big": "B",
+      "word_end_big": "E",
+      "start_of_line": "0",
+      "first_nonblank": "^",
+      "end_of_line": "$",
+      "find_forward": "f",
+      "find_backward": "F",
+      "till_forward": "t",
+      "till_backward": "T",
+      "repeat_motion": ";",
+      "repeat_motion_rev": ",",
+      "filter_include": "i",
+      "filter_exclude": "o",
+      "search": "/",
+      "start_selection": "v",
       "yank": "y",
       "exit": "Esc"
     },
@@ -99,7 +147,16 @@
     },
     "confirm": {
       "yes": ["y", "Enter"],
-      "no": ["n", "Esc"]
+      "no": ["n", "Esc"],
+      "always": "Shift+Y",
+      "never": "Shift+N"
+    },
+    "ui": {
+      "toggle_sidebar": "s",
+      "toggle_mode_bar": "b",
+      "toggle_borders": "B",
+      "toggle_wrap": "w",
+      "exit": "Esc"
     }
   }
 }

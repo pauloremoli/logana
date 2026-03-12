@@ -4,9 +4,7 @@
 
 # logana
 
-A TUI log analyzer/viewer built for speed - handles files with millions of lines with instant filtering and VIM like navigation.
-
-Open a file, pipe stdin, or stream Docker containers — logana auto-detects the format and lets you filter, search, annotate, and export without ever leaving the terminal.
+A fast terminal log viewer for files of any size — including multi-GB logs. Built on memory-mapped I/O and SIMD line indexing. Auto-detects log formats, filters by pattern, regex, field value, or date range — bookmark lines, add annotations, and export your analysis.
 
 ---
 
@@ -17,9 +15,11 @@ Open a file, pipe stdin, or stream Docker containers — logana auto-detects the
 - **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; configurable restore policy (ask / always / never)
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; show/hide/reorder per session
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
-- **Annotations** — attach multiline comments to log lines; export analaysis to a Markdown or Jira
+- **Annotations** — attach multiline comments to log lines; export analysis to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
-- **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 19 bundled themes
+- **Multi-tab** — open multiple files or Docker streams side by side; each tab has independent filters and session state
+- **Headless mode** — run the full filter pipeline without a TUI and write matching lines to stdout or a file
+- **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 22 bundled themes
 
 ---
 
@@ -106,12 +106,22 @@ logana /var/log/
 journalctl -f | logana
 tail -f app.log | logana
 
+# Start at the end of a file and follow new lines
+logana app.log --tail
+
 # Stream a Docker container
 logana            # then type :docker
 
 # Add inline filters on the command line
 logana app.log -i error -o debug
 logana app.log -i "--field level=ERROR" -t "> 2024-02-21"
+
+# Load saved filters from a file
+logana app.log -f my-filters.json
+
+# Headless — filter without the TUI, output to stdout or a file
+logana app.log --headless -i error -o debug
+logana app.log --headless -i error --output filtered.log
 ```
 
 ---
@@ -148,12 +158,13 @@ Field filters match against parsed structured fields rather than raw line text. 
 
 Filters are persisted to SQLite and restored the next time you open the same file.
 
-**CLI flags:** Add filters before the TUI opens using `-i` (include), `-o` (exclude), and `-t` (timestamp). Each flag accepts the same argument string as the corresponding TUI command and can be repeated:
+**CLI flags:** Add filters before the TUI opens using `-i` (include), `-o` (exclude), and `-t` (timestamp). Each flag accepts the same argument string as the corresponding TUI command and can be repeated. Use `-f` to load a saved filter file:
 
 ```sh
 logana app.log -i error -o debug
 logana app.log -i "--field level=ERROR"
 logana app.log -i "--bg Red error" -t "> 2024-02-21"
+logana app.log -f my-filters.json
 ```
 
 ---
@@ -193,6 +204,25 @@ Select lines with `V` (visual mode), then press `c` to attach a multiline commen
 :export report.md -t jira           # Jira wiki markup
 :export report.md -t <template>     # custom template
 ```
+
+---
+
+## Headless Mode
+
+Run the full filter pipeline without launching the TUI. Useful for scripting, CI, or extracting filtered output:
+
+```sh
+# Print matching lines to stdout
+logana app.log --headless -i error -o debug
+
+# Write to a file
+logana app.log --headless -i error --output filtered.log
+
+# Combine with other flags
+logana app.log --headless -i "--field level=ERROR" -t "> 2024-02-21" --output out.log
+```
+
+All filter flags (`-i`, `-o`, `-t`, `-f`) work the same as in interactive mode.
 
 ---
 
@@ -293,6 +323,7 @@ A picker lists running containers (`j`/`k` to navigate, `Enter` to attach). The 
 | `s` | Sidebar |
 | `b` | Mode bar |
 | `B` | Borders |
+| `w` | Line wrap |
 
 ---
 
@@ -321,6 +352,7 @@ Type `:` to enter command mode. Tab completes commands, flags, colors, themes, a
 | `:save-filters <file>` | Save current filters to JSON |
 | `:load-filters <file>` | Load filters from JSON |
 | `:export <file> [-t template]` | Export annotations to file |
+| `:raw` | Toggle raw mode (disable format parser, show unformatted bytes) |
 | `:<N>` | Jump to line N |
 
 ---
@@ -334,7 +366,12 @@ Config file: `~/.config/logana/config.json`
   "theme": "dracula",
   "show_mode_bar": true,
   "show_borders": true,
+  "show_sidebar": true,
+  "show_line_numbers": true,
+  "wrap": false,
+  "preview_bytes": 16777216,
   "restore_session": "ask",
+  "restore_file_context": "ask",
   "keybindings": {
     "navigation": {
       "scroll_down": ["j", "Down"],
@@ -349,12 +386,24 @@ Config file: `~/.config/logana/config.json`
 }
 ```
 
-**`restore_session`** controls the behaviour when reopening a file that has a saved session:
+| Option | Default | Description |
+|---|---|---|
+| `theme` | `"github-dark"` | Color theme name |
+| `show_mode_bar` | `true` | Show the mode/status bar at the bottom |
+| `show_borders` | `true` | Show panel borders |
+| `show_sidebar` | `true` | Show the filter sidebar |
+| `show_line_numbers` | `true` | Show line number gutter |
+| `wrap` | `false` | Wrap long lines |
+| `preview_bytes` | `16777216` | Bytes read for instant preview while the full index builds in the background (16 MiB) |
+| `restore_session` | `"ask"` | Whether to reopen the tabs that were open when you last quit (`"ask"`, `"always"`, `"never"`) |
+| `restore_file_context` | `"ask"` | Whether to restore per-file state (scroll position, marks, search query) when reopening a previously visited file (`"ask"`, `"always"`, `"never"`) |
+
+Both options accept:
 - `"ask"` — prompt on every open (default)
 - `"always"` — restore silently without asking
 - `"never"` — always start fresh without asking
 
-You can also set this preference interactively: when the restore prompt appears, press `Y` (always) or `N` (never) instead of `y`/`n` to save the choice permanently.
+You can also set these preferences interactively: when the restore prompt appears, press `Y` (always) or `N` (never) instead of `y`/`n` to save the choice permanently.
 
 All keybindings have sensible defaults — the config file is entirely optional. Each action supports a single key or an array of alternatives.
 
@@ -362,11 +411,11 @@ All keybindings have sensible defaults — the config file is entirely optional.
 
 ## Themes
 
-19 themes are bundled:
+22 themes are bundled:
 
-**Dark:** `catppuccin-mocha`, `catppuccin-macchiato`, `dracula`, `everforest-dark`, `gruvbox-dark`, `jandedobbeleer`, `kanagawa`, `monokai`, `nord`, `onedark`, `paradox`, `rose-pine`, `solarized`, `tokyonight`, `atomic`
+**Dark:** `atomic`, `catppuccin-mocha`, `catppuccin-macchiato`, `dracula`, `everforest-dark`, `github-dark`, `github-dark-dimmed`, `gruvbox-dark`, `jandedobbeleer`, `kanagawa`, `monokai`, `nord`, `onedark`, `paradox`, `rose-pine`, `solarized`, `tokyonight`
 
-**Light:** `catppuccin-latte`, `everforest-light`, `onelight`, `rose-pine-dawn`
+**Light:** `catppuccin-latte`, `everforest-light`, `github-light`, `onelight`, `rose-pine-dawn`
 
 ```sh
 :set-theme nord

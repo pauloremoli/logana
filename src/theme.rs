@@ -575,7 +575,7 @@ fn default_visual_select_fg() -> Color {
     Color::Rgb(248, 248, 242)
 }
 fn default_mark_bg() -> Color {
-    Color::Rgb(70, 60, 15)
+    Color::Rgb(0x0d, 0x2a, 0x45)
 }
 fn default_mark_fg() -> Color {
     Color::Rgb(248, 248, 242)
@@ -707,7 +707,7 @@ impl Default for Theme {
             search_fg: Color::Rgb(0x0d, 0x11, 0x17),
             visual_select_bg: Color::Rgb(0x26, 0x4f, 0x78),
             visual_select_fg: Color::Rgb(0xe6, 0xed, 0xf3),
-            mark_bg: Color::Rgb(0x3d, 0x2b, 0x00),
+            mark_bg: Color::Rgb(0x0d, 0x2a, 0x45),
             mark_fg: Color::Rgb(0xe6, 0xed, 0xf3),
             line_number_fg: default_line_number_fg(),
             inactive_tab_fg: Color::Rgb(0x8b, 0x94, 0x9e),
@@ -893,7 +893,7 @@ mod tests {
         assert_eq!(default_search_fg(), Color::Rgb(28, 28, 28));
         assert_eq!(default_visual_select_bg(), Color::Rgb(68, 71, 90));
         assert_eq!(default_visual_select_fg(), Color::Rgb(248, 248, 242));
-        assert_eq!(default_mark_bg(), Color::Rgb(70, 60, 15));
+        assert_eq!(default_mark_bg(), Color::Rgb(0x0d, 0x2a, 0x45));
         assert_eq!(default_mark_fg(), Color::Rgb(248, 248, 242));
         assert_eq!(default_inactive_tab_fg(), Color::Rgb(128, 128, 128));
         assert_eq!(default_warning_bg(), Color::Rgb(0x3d, 0x2b, 0x00));

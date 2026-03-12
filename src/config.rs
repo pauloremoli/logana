@@ -1648,10 +1648,7 @@ impl Config {
             return Config::default();
         };
 
-        serde_json::from_str(&contents).unwrap_or_else(|e| {
-            tracing::warn!("Failed to parse config file {:?}: {}", config_path, e);
-            Config::default()
-        })
+        serde_json::from_str(&contents).unwrap_or_default()
     }
 }
 

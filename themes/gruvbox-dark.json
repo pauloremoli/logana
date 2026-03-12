@@ -18,8 +18,8 @@
   "search_fg": "#282828",
   "visual_select_bg": "#504945",
   "visual_select_fg": "#ebdbb2",
-  "mark_bg": "#504945",
-  "mark_fg": "#fabd2f",
+  "mark_bg": "#1d3048",
+  "mark_fg": "#ebdbb2",
   "process_colors": [
     "#fb4934",
     "#b8bb26",

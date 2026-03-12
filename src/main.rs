@@ -24,7 +24,6 @@ use logana::ui::{App, LoadContext, list_dir_files};
 use ratatui::prelude::*;
 use std::io::{IsTerminal, stdin, stdout};
 use std::sync::Arc;
-use tracing::error;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -136,43 +135,20 @@ fn resolve_source(file_path: &Option<String>) -> (Option<String>, bool) {
     }
 }
 
-/// In debug builds, write logs to a fixed file in the system temp directory
-/// (`$TMPDIR/logana.log`).  The returned guard must be kept alive for the
-/// duration of the process.
-#[cfg(debug_assertions)]
-fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
-    let file_appender = tracing_appender::rolling::never(std::env::temp_dir(), "logana.log");
-    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-    tracing_subscriber::fmt()
-        .with_writer(non_blocking)
-        .json()
-        .init();
-    guard
-}
-
-/// In release builds logging is disabled entirely.
-#[cfg(not(debug_assertions))]
-fn init_logging() {}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let file_path = args.file;
 
-    let _log_guard = init_logging();
-
     let db_path = get_db_path();
     let db = match Database::new(&db_path).await {
         Ok(db) => db,
         Err(err) => {
-            error!("Failed to open database at {}: {}", db_path, err);
             eprintln!(
                 "Warning: could not open database at '{}': {}. Running without persistence.",
                 db_path, err
             );
-            Database::in_memory().await.inspect_err(|e| {
-                error!("Failed to create in-memory database: {}", e);
-            })?
+            Database::in_memory().await?
         }
     };
     let db = Arc::new(db);
@@ -245,7 +221,6 @@ async fn main() -> Result<()> {
     let restore_file_policy = config.restore_file_context;
 
     for conflict in config.keybindings.validate() {
-        tracing::warn!("{}", conflict);
         eprintln!("Warning: {}", conflict);
     }
 

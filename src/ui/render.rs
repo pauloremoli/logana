@@ -280,6 +280,7 @@ impl App {
             visual_char_selection,
             mode_name_for_title,
             show_tab_bar,
+            has_input_bar,
         );
 
         self.render_side_bar(frame, selected_filter_idx, sidebar_area);
@@ -365,6 +366,7 @@ impl App {
         visual_char_selection: Option<(usize, usize)>,
         mode_name: Option<&str>,
         show_tab_bar: bool,
+        has_input_bar: bool,
     ) {
         let num_visible = self.tabs[self.active_tab].visible_indices.len();
         let show_borders = self.tabs[self.active_tab].show_borders;
@@ -382,7 +384,9 @@ impl App {
             1
         };
         let horizontal_shrink = if show_borders { 2 } else { 1 };
-        let visible_height = (logs_area.height as usize).saturating_sub(vertical_border);
+        let visible_height = (logs_area.height as usize)
+            .saturating_sub(vertical_border)
+            .saturating_sub(usize::from(has_input_bar));
         self.tabs[self.active_tab].visible_height = visible_height;
 
         let show_line_numbers = self.tabs[self.active_tab].show_line_numbers;
@@ -2609,6 +2613,40 @@ mod tests {
         assert!(
             vp + visible_height >= visible,
             "viewport_offset {vp} leaves blank rows: {visible} visible lines, height {visible_height}"
+        );
+    }
+
+    // When the search or command input bar is visible the viewport must reserve
+    // an extra row so the cursor cannot hide behind the bar.
+    #[tokio::test]
+    async fn test_visible_height_reduced_when_input_bar_visible() {
+        let lines: Vec<String> = (0..10).map(|i| format!("line {i}")).collect();
+        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+
+        // Without input bar.
+        let mut app_no_bar = make_app(&line_refs).await;
+        app_no_bar.show_mode_bar = false;
+        app_no_bar.tabs[0].show_mode_bar = false;
+        let mut terminal = make_terminal(); // 80×24
+        terminal.draw(|f| app_no_bar.ui(f)).unwrap();
+        let height_without_bar = app_no_bar.tabs[0].visible_height;
+
+        // With search input bar active.
+        let mut app_with_bar = make_app(&line_refs).await;
+        app_with_bar.show_mode_bar = false;
+        app_with_bar.tabs[0].show_mode_bar = false;
+        app_with_bar.tabs[0].mode = Box::new(SearchMode {
+            input: String::new(),
+            forward: true,
+        });
+        let mut terminal2 = make_terminal();
+        terminal2.draw(|f| app_with_bar.ui(f)).unwrap();
+        let height_with_bar = app_with_bar.tabs[0].visible_height;
+
+        assert!(
+            height_with_bar < height_without_bar,
+            "visible_height should be smaller when input bar is visible: \
+             without={height_without_bar}, with={height_with_bar}"
         );
     }
 

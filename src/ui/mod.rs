@@ -847,10 +847,15 @@ impl TabState {
     /// This is the text the search should match against so that hidden-field
     /// content is never counted as a hit.
     pub fn get_display_text(&self, line_idx: usize) -> String {
+        let format = if self.raw_mode {
+            None
+        } else {
+            self.detected_format.clone()
+        };
         display_text_for_line(
             line_idx,
             &self.file_reader,
-            &self.detected_format,
+            &format,
             &self.field_layout,
             &self.hidden_fields,
             self.show_keys,
@@ -980,7 +985,12 @@ impl TabState {
         let visible: Vec<usize> = self.visible_indices.iter().collect();
         let total = visible.len();
         // Clone display context so the background task searches displayed text only.
-        let detected_format = self.detected_format.clone();
+        // In raw mode the parser is bypassed so search must run against raw bytes.
+        let detected_format = if self.raw_mode {
+            None
+        } else {
+            self.detected_format.clone()
+        };
         let field_layout = self.field_layout.clone();
         let hidden_fields = self.hidden_fields.clone();
         let show_keys = self.show_keys;
@@ -2563,6 +2573,44 @@ mod tests {
         tab.begin_search("needle", true, false);
         drain_search(&mut tab).await;
         assert_eq!(tab.search.get_results().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_begin_search_raw_mode_matches_against_raw_bytes() {
+        // In raw mode the parser is bypassed, so search offsets must be byte
+        // positions within the raw line, not positions in the parsed/rendered text.
+        let line = r#"{"ts":"2024-01-01T00:00:00Z","level":"info","msg":"needle here"}"#;
+        let line_bytes = line.as_bytes();
+        let mut tab = make_tab(&[line]).await;
+        tab.visible_indices = VisibleLines::Filtered(vec![0]);
+        tab.detected_format = crate::parser::detect_format(&[line_bytes]).map(Arc::from);
+        tab.raw_mode = true;
+
+        tab.begin_search("needle", true, false);
+        drain_search(&mut tab).await;
+
+        assert_eq!(tab.search.get_results().len(), 1);
+        let expected_start = line.find("needle").unwrap();
+        assert_eq!(
+            tab.search.get_results()[0].matches[0].0,
+            expected_start,
+            "match offset must be a raw byte position"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_display_text_raw_mode_returns_raw_bytes() {
+        let line = r#"{"ts":"2024-01-01T00:00:00Z","level":"info","msg":"hello"}"#;
+        let line_bytes = line.as_bytes();
+        let mut tab = make_tab(&[line]).await;
+        tab.detected_format = crate::parser::detect_format(&[line_bytes]).map(Arc::from);
+        tab.raw_mode = true;
+
+        let text = tab.get_display_text(0);
+        assert_eq!(
+            text, line,
+            "raw mode must return the raw line, not parsed text"
+        );
     }
 
     #[tokio::test]
