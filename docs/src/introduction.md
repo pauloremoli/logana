@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logana-icon.png" alt="logana" width="120" />
+</p>
+
 # logana
 
 A TUI log analyzer/viewer built for speed - handles files with millions of lines with instant filtering and VIM like navigation.

@@ -324,15 +324,124 @@ jobs:
           done
           git push
 
+  publish-cargo:
+    needs:
+      - plan
+      - host
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    runs-on: "ubuntu-22.04"
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish to crates.io
+        run: cargo publish --no-verify
+
+  publish-aur:
+    needs:
+      - plan
+      - host
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    runs-on: "ubuntu-22.04"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Compute version and sha256
+        id: meta
+        run: |
+          TAG="${{ needs.plan.outputs.tag }}"
+          VERSION="${TAG#v}"
+          URL="https://github.com/pauloremoli/logana/archive/${TAG}.tar.gz"
+          SHA256=$(curl -sL "$URL" | sha256sum | awk '{print $1}')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+      - name: Update PKGBUILD and .SRCINFO
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          SHA256="${{ steps.meta.outputs.sha256 }}"
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" pkg/aur/PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${SHA256}')/" pkg/aur/PKGBUILD
+          sed -i "s/^	pkgver = .*/\tpkgver = ${VERSION}/" pkg/aur/.SRCINFO
+          sed -i "s|logana-[^:]*\.tar\.gz::|logana-${VERSION}.tar.gz::|" pkg/aur/.SRCINFO
+          sed -i "s|/archive/v[^/]*/|/archive/v${VERSION}/|" pkg/aur/.SRCINFO
+          sed -i "s/^	sha256sums = .*/\tsha256sums = ${SHA256}/" pkg/aur/.SRCINFO
+      - name: Push to AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          mkdir -p ~/.ssh
+          echo "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          cat >> ~/.ssh/config <<EOF
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+            StrictHostKeyChecking no
+          EOF
+          git clone ssh://aur@aur.archlinux.org/logana.git /tmp/aur-logana
+          cp pkg/aur/PKGBUILD pkg/aur/.SRCINFO /tmp/aur-logana/
+          cd /tmp/aur-logana
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to v${VERSION}"
+          git push
+
+  update-nix:
+    needs:
+      - plan
+      - host
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    runs-on: "ubuntu-22.04"
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: true
+      - name: Compute version and source hash
+        id: meta
+        run: |
+          TAG="${{ needs.plan.outputs.tag }}"
+          VERSION="${TAG#v}"
+          URL="https://github.com/pauloremoli/logana/archive/${TAG}.tar.gz"
+          SHA256_HEX=$(curl -sL "$URL" | sha256sum | awk '{print $1}')
+          SRI="sha256-$(echo "$SHA256_HEX" | xxd -r -p | base64 -w0)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sri=${SRI}" >> "$GITHUB_OUTPUT"
+      - name: Update pkg/nix/default.nix
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          SRI="${{ steps.meta.outputs.sri }}"
+          sed -i "s/^  version = \".*\";/  version = \"${VERSION}\";/" pkg/nix/default.nix
+          sed -i "s|hash  = \"sha256-.*\";|hash  = \"${SRI}\";|" pkg/nix/default.nix
+      - name: Commit and push
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pkg/nix/default.nix
+          git diff --cached --quiet || git commit -m "chore: update nix derivation to v${VERSION}"
+          git push
+
   announce:
     needs:
       - plan
       - host
       - publish-homebrew-formula
+      - publish-cargo
+      - publish-aur
+      - update-nix
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && (needs.publish-homebrew-formula.result == 'skipped' || needs.publish-homebrew-formula.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.publish-homebrew-formula.result == 'skipped' || needs.publish-homebrew-formula.result == 'success') && (needs.publish-cargo.result == 'skipped' || needs.publish-cargo.result == 'success') && (needs.publish-aur.result == 'skipped' || needs.publish-aur.result == 'success') && (needs.update-nix.result == 'skipped' || needs.update-nix.result == 'success') }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

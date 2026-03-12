@@ -15,9 +15,8 @@
 #     } + "/pkg/nix") {})
 #   ];
 #
-# To update the hashes after a version bump run:
-#   nix-prefetch-url --unpack https://github.com/pauloremoli/logana/archive/vX.Y.Z.tar.gz
-#   cargo vendor   # then re-run nix build to get the cargoHash
+# The `hash` field is updated automatically by the release workflow.
+# No cargoHash is needed — cargo deps are resolved from the committed Cargo.lock.
 
 { lib
 , rustPlatform
@@ -34,13 +33,12 @@ rustPlatform.buildRustPackage rec {
     owner = "pauloremoli";
     repo  = "logana";
     rev   = "v${version}";
-    # Run `nix-prefetch-url --unpack <tarball-url>` to obtain this value.
     hash  = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
   };
 
-  # Run `cargo vendor` inside the source tree and compute the hash with
-  # `nix hash path vendor/` to obtain this value.
-  cargoHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  cargoLock = {
+    lockFile = ../../Cargo.lock;
+  };
 
   nativeBuildInputs = [ pkg-config ];
   buildInputs = [ openssl ];
