@@ -1537,12 +1537,13 @@ mod tests {
         tab.visible_width = 5;
         tab.horizontal_scroll = 0;
         let mut mode = make_mode(line);
-        mode.cursor_col = 4; // rightmost visible col (0..4)
+        mode.cursor_col = 4; // at right edge of visible area
         let (m, _) = press(mode, &mut tab, KeyCode::Char('l')).await;
         assert_eq!(cursor_col(m.as_ref()), 5);
+        // pad=min(3,(5-1)/2)=2; padded_right=5+1+2=8 > 0+5 → H=8-5=3
         assert_eq!(
-            tab.horizontal_scroll, 1,
-            "scroll should follow cursor right"
+            tab.horizontal_scroll, 3,
+            "scroll should advance with padding"
         );
     }
 
@@ -1557,7 +1558,11 @@ mod tests {
         mode.cursor_col = 3; // at left edge of viewport
         let (m, _) = press(mode, &mut tab, KeyCode::Char('h')).await;
         assert_eq!(cursor_col(m.as_ref()), 2);
-        assert_eq!(tab.horizontal_scroll, 2, "scroll should follow cursor left");
+        // pad=2; 2 < 3+2=5 → H=2-2=0
+        assert_eq!(
+            tab.horizontal_scroll, 0,
+            "scroll should retreat with padding"
+        );
     }
 
     #[tokio::test]

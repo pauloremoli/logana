@@ -874,18 +874,26 @@ impl TabState {
     }
 
     /// Adjusts `horizontal_scroll` so that `cursor_col` (a char index into
-    /// `line_text`) stays within the visible horizontal viewport.
+    /// `line_text`) stays within the visible horizontal viewport with some
+    /// padding from the edges.
     /// No-op when wrap is enabled or `visible_width` is not yet known.
     pub fn scroll_char_cursor_into_view(&mut self, cursor_col: usize, line_text: &str) {
+        const PADDING: usize = 3;
+
         if self.wrap || self.visible_width == 0 {
             return;
         }
         let prefix: String = line_text.chars().take(cursor_col).collect();
         let cursor_display_col = unicode_width::UnicodeWidthStr::width(prefix.as_str());
-        if cursor_display_col < self.horizontal_scroll {
-            self.horizontal_scroll = cursor_display_col;
-        } else if cursor_display_col + 1 > self.horizontal_scroll + self.visible_width {
-            self.horizontal_scroll = cursor_display_col + 1 - self.visible_width;
+
+        // Cap padding so it never exceeds half the viewport (prevents oscillation on narrow views).
+        let pad = PADDING.min(self.visible_width.saturating_sub(1) / 2);
+
+        let padded_right = cursor_display_col.saturating_add(1).saturating_add(pad);
+        if padded_right > self.horizontal_scroll + self.visible_width {
+            self.horizontal_scroll = padded_right - self.visible_width;
+        } else if cursor_display_col < self.horizontal_scroll.saturating_add(pad) {
+            self.horizontal_scroll = cursor_display_col.saturating_sub(pad);
         }
     }
 
@@ -2099,30 +2107,33 @@ mod tests {
     async fn test_scroll_char_cursor_into_view_scrolls_right() {
         let mut tab = make_tab(&["hello"]).await;
         tab.wrap = false;
-        tab.visible_width = 5;
+        tab.visible_width = 20;
         tab.horizontal_scroll = 0;
-        tab.scroll_char_cursor_into_view(5, "abcdefgh");
-        assert_eq!(tab.horizontal_scroll, 1);
+        // cursor_display_col=18, padded_right=18+1+3=22 > 0+20 → scroll to 22-20=2
+        tab.scroll_char_cursor_into_view(18, "abcdefghijklmnopqrstuvwxyz");
+        assert_eq!(tab.horizontal_scroll, 2);
     }
 
     #[tokio::test]
     async fn test_scroll_char_cursor_into_view_scrolls_left() {
         let mut tab = make_tab(&["hello"]).await;
         tab.wrap = false;
-        tab.visible_width = 5;
-        tab.horizontal_scroll = 6;
-        tab.scroll_char_cursor_into_view(3, "abcdefgh");
-        assert_eq!(tab.horizontal_scroll, 3);
+        tab.visible_width = 20;
+        tab.horizontal_scroll = 15;
+        // cursor_display_col=5, 5 < 15+3=18 → scroll to 5-3=2
+        tab.scroll_char_cursor_into_view(5, "abcdefghijklmnopqrstuvwxyz");
+        assert_eq!(tab.horizontal_scroll, 2);
     }
 
     #[tokio::test]
     async fn test_scroll_char_cursor_into_view_no_change_when_visible() {
         let mut tab = make_tab(&["hello"]).await;
         tab.wrap = false;
-        tab.visible_width = 5;
-        tab.horizontal_scroll = 2;
-        tab.scroll_char_cursor_into_view(3, "abcdefgh");
-        assert_eq!(tab.horizontal_scroll, 2);
+        tab.visible_width = 20;
+        tab.horizontal_scroll = 5;
+        // cursor_display_col=10, padded_right=10+1+3=14 <= 5+20=25, 10 >= 5+3=8 → no change
+        tab.scroll_char_cursor_into_view(10, "abcdefghijklmnopqrstuvwxyz");
+        assert_eq!(tab.horizontal_scroll, 5);
     }
 
     #[tokio::test]
