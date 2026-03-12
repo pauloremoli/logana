@@ -10,8 +10,8 @@ use crate::theme::Theme;
 use crate::ui::{KeyResult, TabState};
 
 /// Transient mode for toggling display options.  Press `u` in Normal mode to
-/// enter; press any toggle key to flip the setting and remain in UI mode; press
-/// Esc to return to Normal mode.
+/// enter; press any toggle key to flip the setting and return to Normal mode;
+/// press Esc to cancel without toggling.
 #[derive(Debug)]
 pub struct UiMode {
     /// Snapshot of display flags, kept in sync on each toggle so that
@@ -50,22 +50,22 @@ impl Mode for UiMode {
 
         if kb.ui.toggle_sidebar.matches(key, modifiers) {
             tab.show_sidebar = !tab.show_sidebar;
-            return (Box::new(UiMode::from_tab(tab)), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
         if kb.ui.toggle_mode_bar.matches(key, modifiers) {
             // ToggleModeBar is handled at App level so all tabs stay in sync.
-            return (Box::new(UiMode::from_tab(tab)), KeyResult::ToggleModeBar);
+            return (Box::new(NormalMode::default()), KeyResult::ToggleModeBar);
         }
 
         if kb.ui.toggle_borders.matches(key, modifiers) {
             tab.show_borders = !tab.show_borders;
-            return (Box::new(UiMode::from_tab(tab)), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
         if kb.ui.toggle_wrap.matches(key, modifiers) {
             tab.wrap = !tab.wrap;
-            return (Box::new(UiMode::from_tab(tab)), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
         // Pass global keys (quit, tab switch) through to App.
@@ -185,10 +185,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stays_in_ui_mode_after_toggle() {
+    async fn test_returns_to_normal_mode_after_toggle() {
         let mut tab = make_tab().await;
-        let (mode, _) = press(&mut tab, KeyCode::Char('s'), KeyModifiers::NONE).await;
-        assert!(format!("{:?}", mode).contains("UiMode"));
+        for key in [KeyCode::Char('s'), KeyCode::Char('B'), KeyCode::Char('w')] {
+            let (mode, _) = press(&mut tab, key, KeyModifiers::NONE).await;
+            assert!(
+                matches!(mode.render_state(), ModeRenderState::Normal),
+                "Expected NormalMode after pressing {:?}, got {:?}",
+                key,
+                mode.render_state()
+            );
+        }
     }
 
     #[tokio::test]
