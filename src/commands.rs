@@ -40,12 +40,12 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "save-filters",
         usage: "save-filters <path>",
-        description: "Save current filters to JSON. e.g. save-filters filters.json",
+        description: "Save current filters to a file. e.g. save-filters filters.json",
     },
     CommandInfo {
         name: "load-filters",
         usage: "load-filters <path>",
-        description: "Load filters from JSON. e.g. load-filters filters.json",
+        description: "Load filters from a file. e.g. load-filters filters.json",
     },
     CommandInfo {
         name: "wrap",
@@ -100,22 +100,22 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "hide-field",
         usage: "hide-field <name|index>",
-        description: "Hide a JSON field by name or 0-based index. e.g. hide-field MESSAGE or hide-field 0",
+        description: "Hide a field by name or 0-based index. e.g. hide-field level or hide-field 0",
     },
     CommandInfo {
         name: "show-field",
-        usage: "show-field <name|index>",
-        description: "Show a previously hidden JSON field. e.g. show-field MESSAGE",
+        usage: "show-field <name>",
+        description: "Show a previously hidden field. e.g. show-field level",
     },
     CommandInfo {
         name: "show-all-fields",
         usage: "show-all-fields",
-        description: "Clear all hidden fields and show the complete JSON line",
+        description: "Clear all hidden fields and show all fields",
     },
     CommandInfo {
         name: "select-fields",
         usage: "select-fields",
-        description: "Open a modal to select which JSON fields to display and their order",
+        description: "Open a modal to select which fields to display and their order",
     },
     CommandInfo {
         name: "docker",

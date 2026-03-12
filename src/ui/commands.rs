@@ -31,6 +31,24 @@ fn parse_key_value(pattern: &str) -> Result<(&str, &str), String> {
     Ok((key, value))
 }
 
+/// Resolve a `hide-field` argument: index into the currently visible (non-hidden) fields,
+/// or a literal name.
+fn resolve_hide_field_arg(tab: &mut crate::ui::TabState, arg: &str) -> Result<String, String> {
+    if let Ok(idx) = arg.parse::<usize>() {
+        let visible: Vec<String> = tab
+            .collect_field_names()
+            .into_iter()
+            .filter(|n| !tab.hidden_fields.contains(n.as_str()))
+            .collect();
+        visible
+            .into_iter()
+            .nth(idx)
+            .ok_or_else(|| format!("Field index {idx} out of range"))
+    } else {
+        Ok(arg.to_string())
+    }
+}
+
 impl App {
     /// Returns `Ok(true)` when the command sets the mode itself (e.g. select-fields
     /// opens a popup), so `execute_command_str` should not override it.
@@ -348,8 +366,9 @@ impl App {
                 tab.begin_filter_refresh();
             }
             Some(Commands::HideField { field }) => {
+                let resolved = resolve_hide_field_arg(&mut self.tabs[self.active_tab], &field)?;
                 let tab = &mut self.tabs[self.active_tab];
-                tab.hidden_fields.insert(field);
+                tab.hidden_fields.insert(resolved);
                 tab.invalidate_parse_cache();
             }
             Some(Commands::ShowField { field }) => {
@@ -1093,6 +1112,47 @@ mod tests {
         app.tabs[0].hidden_fields.insert("msg".to_string());
         app.run_command("show-all-fields").await.unwrap();
         assert!(app.tabs[0].hidden_fields.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_hide_field_by_index_uses_visible_fields() {
+        let mut app = make_app(&[r#"{"level":"info","msg":"hello"}"#]).await;
+        let all_fields = app.tabs[0].collect_field_names();
+        let first_visible = all_fields
+            .iter()
+            .find(|n| !app.tabs[0].hidden_fields.contains(n.as_str()))
+            .unwrap()
+            .clone();
+        app.run_command("hide-field 0").await.unwrap();
+        assert!(
+            app.tabs[0].hidden_fields.contains(&first_visible),
+            "hide-field 0 should hide the first visible field '{first_visible}'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hide_field_by_index_skips_already_hidden() {
+        let mut app = make_app(&[r#"{"level":"info","msg":"hello"}"#]).await;
+        let all_fields = app.tabs[0].collect_field_names();
+        let first = all_fields[0].clone();
+        let second = all_fields[1].clone();
+        app.tabs[0].hidden_fields.insert(first.clone());
+        // With first field hidden, index 0 should now resolve to the second field.
+        app.run_command("hide-field 0").await.unwrap();
+        assert!(
+            app.tabs[0].hidden_fields.contains(&second),
+            "hide-field 0 should skip hidden '{first}' and hide '{second}'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hide_field_by_index_out_of_range() {
+        let mut app = make_app(&[r#"{"level":"info","msg":"hello"}"#]).await;
+        let result = app.run_command("hide-field 99").await;
+        assert!(
+            result.is_err(),
+            "hide-field with out-of-range index should return an error"
+        );
     }
 
     #[tokio::test]

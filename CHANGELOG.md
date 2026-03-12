@@ -7,14 +7,17 @@ All notable changes to logana will be documented in this file.
 ### Added
 - Headless mode (`--headless`) — run the full filter pipeline without a TUI and write matching lines to stdout or a file via `--output`
 - Keybinding conflict warnings are now shown in the status bar on startup instead of being printed to stderr; the bar grows up to 10 lines and is dismissed on the first keypress
+- Tab-completion for `:hide-field` suggests all known field names; `:show-field` suggests currently hidden fields (falls back to all fields when none are hidden)
 
 ### Fixed
 - Search highlighting in raw mode now computes match offsets against raw bytes instead of parsed text, fixing incorrect highlight positions
 - Viewport size is now reduced when the search or command bar is visible, preventing matches from being hidden behind the bar
 - Cursor no longer disappears in visual character mode
+- `:hide-field <N>` now correctly resolves the index against the currently **visible** (non-hidden) fields instead of all fields, so index 0 always refers to the first field shown on screen
+- `:show-field` now accepts field names only; numeric arguments are no longer misinterpreted as indices
 
 ### Changed
-- Warning and error log lines use a distinct background color; marked lines use a blue background across all themes to avoid visual confusion with warning lines
+- Marked lines now have a different visual than warning lines.
 
 ---
 

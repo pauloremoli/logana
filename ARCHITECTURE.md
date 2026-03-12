@@ -170,6 +170,16 @@ Structured log fields are rendered by `apply_field_layout` (`ui/field_layout.rs`
 - **`TabState.hidden_fields: HashSet<String>`** — the single source of truth for visibility. Any field name present here is excluded from rendering. Supports dotted names for span sub-fields (`"span.request_id"`). Updated by `:hide-field`, `:show-field`, `:show-all-fields`, and the select-fields modal.
 - **`TabState.field_layout: FieldLayout`** — holds an optional ordered list of all column names (`columns: Option<Vec<String>>`). When `Some`, defines the display order; when `None`, the default order is used. Visibility is still determined solely by `hidden_fields`.
 
+### hide-field / show-field argument resolution
+
+`:hide-field` accepts either a field name or a 0-based index. When a numeric argument is given, it is resolved against the **currently visible** (non-hidden) field names returned by `collect_field_names()`. This means `hide-field 0` always refers to the first field the user can see on screen, even when some fields are already hidden. Out-of-range indices produce an error message rather than silently doing nothing.
+
+`:show-field` accepts a field name only. Index-based addressing is intentionally not supported because the hidden set has no stable display order that maps to what the user sees.
+
+Tab completion for both commands is wired in two places that must stay in sync:
+- **`command_mode.rs` `completions_for()`** — drives Tab-key cycling.
+- **`render.rs` `render_command_bar()` / `command_bar_height()`** — renders the suggestion hint bar below the command input. Both places call `tab.build_field_index()` for `:hide-field` and read `tab.hidden_fields` for `:show-field`.
+
 The select-fields modal (`SelectFieldsMode`) writes the full ordered list (enabled + disabled) to `field_layout.columns` on apply, and updates `hidden_fields` accordingly (disabled → insert, enabled → remove). On cancel, both `field_layout` and `hidden_fields` are restored from snapshots taken on modal entry. Both are persisted to SQLite via `FileContext` so session restore reproduces the exact same column visibility and order.
 
 ## Session Persistence

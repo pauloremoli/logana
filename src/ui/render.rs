@@ -20,7 +20,7 @@ use ratatui::{
 use crate::auto_complete::{
     FieldCompletion, complete_color, complete_field_name, complete_field_value, complete_file_path,
     complete_flags, extract_color_partial, extract_field_partial, extract_flag_partial,
-    find_command_completions, shell_split,
+    find_command_completions, fuzzy_match, shell_split,
 };
 use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
 use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
@@ -1367,6 +1367,30 @@ impl App {
                     {
                         let partial = partial_raw.trim_start();
                         complete_theme(partial).join("  ")
+                    } else if let Some(partial_raw) =
+                        query_text.trim_start().strip_prefix("hide-field ")
+                    {
+                        let partial = partial_raw.trim_start();
+                        let index = self.tabs[self.active_tab].build_field_index();
+                        complete_field_name(partial, &index).join("  ")
+                    } else if let Some(partial_raw) =
+                        query_text.trim_start().strip_prefix("show-field ")
+                    {
+                        let partial = partial_raw.trim_start();
+                        let tab = &self.tabs[self.active_tab];
+                        let candidates: Vec<String> = if tab.hidden_fields.is_empty() {
+                            tab.build_field_index().names
+                        } else {
+                            let mut v: Vec<String> = tab.hidden_fields.iter().cloned().collect();
+                            v.sort();
+                            v
+                        };
+                        candidates
+                            .iter()
+                            .filter(|n| fuzzy_match(partial, n))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("  ")
                     } else if completion_index.is_none() {
                         if let Some(cmd) = find_matching_command(query_text) {
                             format!("  {} - {}", cmd.usage, cmd.description)
@@ -1540,6 +1564,65 @@ impl App {
                 {
                     let partial = partial_raw.trim_start();
                     let completions = complete_theme(partial);
+                    if !completions.is_empty() {
+                        let hint_spans: Vec<Span> = completions
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(i, name)| {
+                                let style = if completion_index == Some(i) {
+                                    highlight_style
+                                } else {
+                                    normal_style
+                                };
+                                vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
+                            })
+                            .collect();
+                        let hint = Paragraph::new(Line::from(hint_spans))
+                            .style(Style::default().bg(self.theme.root_bg))
+                            .wrap(Wrap { trim: false });
+                        frame.render_widget(hint, hint_area);
+                    }
+                } else if let Some(partial_raw) =
+                    query_text.trim_start().strip_prefix("hide-field ")
+                {
+                    let partial = partial_raw.trim_start();
+                    let index = self.tabs[self.active_tab].build_field_index();
+                    let completions = complete_field_name(partial, &index);
+                    if !completions.is_empty() {
+                        let hint_spans: Vec<Span> = completions
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(i, name)| {
+                                let style = if completion_index == Some(i) {
+                                    highlight_style
+                                } else {
+                                    normal_style
+                                };
+                                vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
+                            })
+                            .collect();
+                        let hint = Paragraph::new(Line::from(hint_spans))
+                            .style(Style::default().bg(self.theme.root_bg))
+                            .wrap(Wrap { trim: false });
+                        frame.render_widget(hint, hint_area);
+                    }
+                } else if let Some(partial_raw) =
+                    query_text.trim_start().strip_prefix("show-field ")
+                {
+                    let partial = partial_raw.trim_start();
+                    let tab = &self.tabs[self.active_tab];
+                    let candidates: Vec<String> = if tab.hidden_fields.is_empty() {
+                        tab.build_field_index().names
+                    } else {
+                        let mut v: Vec<String> = tab.hidden_fields.iter().cloned().collect();
+                        v.sort();
+                        v
+                    };
+                    let completions: Vec<String> = candidates
+                        .iter()
+                        .filter(|n| fuzzy_match(partial, n))
+                        .cloned()
+                        .collect();
                     if !completions.is_empty() {
                         let hint_spans: Vec<Span> = completions
                             .iter()

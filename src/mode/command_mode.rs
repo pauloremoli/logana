@@ -182,6 +182,14 @@ impl CommandMode {
         }
     }
 
+    /// If `input` starts with `cmd` followed by a space, returns the rest as the argument partial.
+    fn arg_partial<'a>(input: &'a str, cmd: &str) -> Option<&'a str> {
+        input
+            .strip_prefix(cmd)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .map(|rest| rest.trim_start())
+    }
+
     /// Compute completions using the active query (original input before Tab cycling) or
     /// the current input when no completion session is in progress.
     fn compute_completions(&self, tab: &TabState) -> Vec<String> {
@@ -296,6 +304,33 @@ impl CommandMode {
                     .collect();
             }
             return vec![];
+        }
+
+        // hide-field: complete with all known field names
+        if let Some(partial) = Self::arg_partial(input, "hide-field") {
+            let index = tab.build_field_index();
+            return index
+                .names
+                .iter()
+                .filter(|n| fuzzy_match(partial, n))
+                .map(|n| format!("hide-field {n}"))
+                .collect();
+        }
+
+        // show-field: complete with currently hidden fields (or all if none hidden)
+        if let Some(partial) = Self::arg_partial(input, "show-field") {
+            let candidates: Vec<String> = if tab.hidden_fields.is_empty() {
+                tab.build_field_index().names
+            } else {
+                let mut v: Vec<String> = tab.hidden_fields.iter().cloned().collect();
+                v.sort();
+                v
+            };
+            return candidates
+                .iter()
+                .filter(|n| fuzzy_match(partial, n))
+                .map(|n| format!("show-field {n}"))
+                .collect();
         }
 
         // Theme completion
@@ -1131,6 +1166,63 @@ mod tests {
         assert!(
             accepted.contains("level=info") || accepted.contains("level=error"),
             "Accepted value completion should be a known level, got: {accepted}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hide_field_autocomplete_suggests_field_names() {
+        let mut tab = make_json_tab().await;
+        let mode = CommandMode::with_history("hide-field ".to_string(), 11, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"hide-field level".to_string()),
+            "Expected 'hide-field level' in completions, got: {completions:?}"
+        );
+        assert!(
+            completions.contains(&"hide-field message".to_string()),
+            "Expected 'hide-field message' in completions, got: {completions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hide_field_autocomplete_fuzzy() {
+        let mut tab = make_json_tab().await;
+        let mode = CommandMode::with_history("hide-field lv".to_string(), 13, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"hide-field level".to_string()),
+            "Expected 'hide-field level' for partial 'lv', got: {completions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_show_field_autocomplete_suggests_hidden_only() {
+        let mut tab = make_json_tab().await;
+        tab.hidden_fields.insert("level".to_string());
+        let mode = CommandMode::with_history("show-field ".to_string(), 11, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"show-field level".to_string()),
+            "Expected 'show-field level' in completions, got: {completions:?}"
+        );
+        assert!(
+            !completions.contains(&"show-field message".to_string()),
+            "Expected 'show-field message' not in completions (not hidden), got: {completions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_show_field_autocomplete_fallback_when_none_hidden() {
+        let mut tab = make_json_tab().await;
+        let mode = CommandMode::with_history("show-field ".to_string(), 11, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"show-field level".to_string()),
+            "Expected 'show-field level' as fallback when no fields hidden, got: {completions:?}"
+        );
+        assert!(
+            completions.contains(&"show-field message".to_string()),
+            "Expected 'show-field message' as fallback when no fields hidden, got: {completions:?}"
         );
     }
 }

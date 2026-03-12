@@ -846,11 +846,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hide_field_by_name_stores_string() {
+    async fn test_hide_field_by_index_resolves_to_visible_field() {
         let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
-        // Even numeric strings are stored as field names (no index-based hiding).
+        let first_visible = app
+            .tab_mut()
+            .collect_field_names()
+            .into_iter()
+            .find(|n| !app.tab().hidden_fields.contains(n.as_str()))
+            .unwrap();
         app.execute_command_str("hide-field 0".to_string()).await;
-        assert!(app.tab().hidden_fields.contains("0"));
+        assert!(
+            app.tab().hidden_fields.contains(&first_visible),
+            "hide-field 0 should resolve to the first visible field '{first_visible}'"
+        );
     }
 
     #[tokio::test]

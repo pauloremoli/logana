@@ -187,11 +187,14 @@ Search operates on visible lines only (respects active filters). Matches are hig
 When a structured format is detected (JSON, logfmt, syslog, etc.), logana parses each line into columns: timestamp, level, target, and extra fields. Use `:select-fields` to show, hide, and reorder columns interactively.
 
 ```sh
-:fields timestamp level message     # show specific fields
-:hide-field span                    # hide a field
-:show-all-fields                    # reset to defaults
+:hide-field span                    # hide a field by name
+:hide-field 0                       # hide the first visible field (0-based index)
+:show-field span                    # show a previously hidden field by name
+:show-all-fields                    # reset — show all fields
 :select-fields                      # interactive picker
 ```
+
+Tab completion is available for both `:hide-field` and `:show-field`: typing the command followed by a space shows all known field names as suggestions. `:hide-field` indexes into the currently visible (non-hidden) fields; `:show-field` accepts names only.
 
 ---
 
@@ -329,7 +332,7 @@ A picker lists running containers (`j`/`k` to navigate, `Enter` to attach). The 
 
 ## Commands
 
-Type `:` to enter command mode. Tab completes commands, flags, colors, themes, and file paths.
+Type `:` to enter command mode. Tab completes commands, flags, colors, themes, file paths, and field names (for `:hide-field` and `:show-field`).
 
 | Command | Description |
 |---|---|
@@ -346,7 +349,9 @@ Type `:` to enter command mode. Tab completes commands, flags, colors, themes, a
 | `:wrap` | Toggle line wrap |
 | `:level-colors` | Toggle log-level coloring |
 | `:value-colors` | Configure HTTP/IP/UUID token coloring |
-| `:fields [col ...]` | Set visible columns |
+| `:hide-field <name\|N>` | Hide a field by name or visible index |
+| `:show-field <name>` | Show a previously hidden field by name |
+| `:show-all-fields` | Show all fields |
 | `:select-fields` | Interactive column picker |
 | `:set-theme <name>` | Switch color theme |
 | `:save-filters <file>` | Save current filters to JSON |
