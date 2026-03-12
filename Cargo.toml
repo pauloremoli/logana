@@ -57,6 +57,10 @@ harness = false
 name    = "render_pipeline"
 harness = false
 
+[[bench]]
+name    = "headless"
+harness = false
+
 [profile.release]
 debug = true
 

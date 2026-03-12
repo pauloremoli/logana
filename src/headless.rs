@@ -16,6 +16,7 @@ use crate::db::Database;
 use crate::field_filter::extract_field_filters;
 use crate::file_reader::FileReader;
 use crate::log_manager::LogManager;
+use crate::parser::detect_format;
 use crate::types::FilterType;
 
 /// Arguments required to run logana in headless mode.
@@ -137,11 +138,16 @@ fn load_reader(file: &Option<String>) -> io::Result<FileReader> {
     }
 }
 
-pub(crate) fn run_headless_to_writer(
+pub fn run_headless_to_writer(
     reader: FileReader,
     log_manager: LogManager,
     writer: &mut dyn Write,
 ) -> Result<()> {
+    let sample_limit = reader.line_count().min(200);
+    let sample: Vec<&[u8]> = (0..sample_limit).map(|i| reader.get_line(i)).collect();
+    let parser = detect_format(&sample);
+    let parser_ref = parser.as_deref();
+
     let (fm, _, _, _) = log_manager.build_filter_manager();
     let filter_defs = log_manager.get_filters();
     let date_filters = extract_date_filters(filter_defs);
@@ -152,8 +158,15 @@ pub(crate) fn run_headless_to_writer(
 
     for idx in 0..reader.line_count() {
         let line = reader.get_line(idx);
-        if crate::ui::line_is_visible(&fm, line, &date_filters, &df_counts, &inc_ff, &exc_ff, None)
-        {
+        if crate::ui::line_is_visible(
+            &fm,
+            line,
+            &date_filters,
+            &df_counts,
+            &inc_ff,
+            &exc_ff,
+            parser_ref,
+        ) {
             writer.write_all(line)?;
             writer.write_all(b"\n")?;
         }

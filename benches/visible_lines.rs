@@ -100,5 +100,60 @@ fn bench_compute_visible(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_collect_all_visible, bench_compute_visible);
+// ---------------------------------------------------------------------------
+// Benchmark 3: FilterManager::compute_visible with combined exclude + include
+//
+// Represents the common real-world scenario: first exclude noise (e.g. DEBUG),
+// then include a signal pattern (e.g. ERROR).  This exercises the full
+// first-match-wins evaluation path with two filters.
+// ---------------------------------------------------------------------------
+
+fn bench_compute_visible_combined(c: &mut Criterion) {
+    let mut group = c.benchmark_group("visible_lines/compute_visible_combined");
+
+    for &lines in &[10_000usize, 100_000, 1_000_000] {
+        let reader = FileReader::from_bytes(plain_log_bytes(lines));
+        group.throughput(Throughput::Elements(lines as u64));
+
+        // Exclude INFO (90 % of lines), include ERROR (10 %).
+        let fm_combined = FilterManager::new(
+            vec![
+                build_filter("INFO", FilterDecision::Exclude, false, 0).unwrap(),
+                build_filter("ERROR", FilterDecision::Include, false, 1).unwrap(),
+            ],
+            true,
+        );
+        group.bench_with_input(
+            BenchmarkId::new("exclude_info_include_error", lines),
+            &reader,
+            |b, reader| b.iter(|| fm_combined.compute_visible(reader)),
+        );
+
+        // Five mixed filters: two includes, three excludes.
+        let fm_five = FilterManager::new(
+            vec![
+                build_filter("ERROR", FilterDecision::Include, false, 0).unwrap(),
+                build_filter("WARN", FilterDecision::Include, false, 1).unwrap(),
+                build_filter("INFO", FilterDecision::Exclude, false, 2).unwrap(),
+                build_filter("DEBUG", FilterDecision::Exclude, false, 3).unwrap(),
+                build_filter("myapp", FilterDecision::Exclude, false, 4).unwrap(),
+            ],
+            true,
+        );
+        group.bench_with_input(
+            BenchmarkId::new("five_filters", lines),
+            &reader,
+            |b, reader| b.iter(|| fm_five.compute_visible(reader)),
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_collect_all_visible,
+    bench_compute_visible,
+    bench_compute_visible_combined
+);
 criterion_main!(benches);

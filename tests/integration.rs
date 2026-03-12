@@ -1,6 +1,7 @@
 use logana::db::Database;
 use logana::file_reader::FileReader;
 use logana::filters::FilterManager;
+use logana::headless::run_headless_to_writer;
 use logana::log_manager::LogManager;
 use logana::types::FilterType;
 use std::io::Write;
@@ -370,23 +371,7 @@ async fn test_search_on_visible_lines() {
 
 #[tokio::test]
 async fn test_field_filter_level_include() {
-    use logana::field_filter::{
-        FieldVote, any_field_exclude_matches, extract_field_filters, field_include_vote,
-    };
-    use logana::filters::FilterDecision;
-    use logana::parser::detect_format;
-
     let (_db, mut manager) = setup().await;
-
-    // Create a JSON log file with three different log levels.
-    let mut file = NamedTempFile::new().unwrap();
-    writeln!(file, r#"{{"level":"info","msg":"starting up"}}"#).unwrap();
-    writeln!(file, r#"{{"level":"error","msg":"something failed"}}"#).unwrap();
-    writeln!(file, r#"{{"level":"debug","msg":"verbose output"}}"#).unwrap();
-    let path = file.path().to_str().unwrap();
-    let reader = FileReader::new(path).unwrap();
-
-    // Add a field filter: include only level=error.
     manager
         .add_filter_with_color(
             "@field:level:error".into(),
@@ -397,63 +382,23 @@ async fn test_field_filter_level_include() {
         )
         .await;
 
-    // Detect format.
-    let lines: Vec<&[u8]> = (0..reader.line_count())
-        .map(|i| reader.get_line(i))
-        .collect();
-    let parser = detect_format(&lines).expect("should detect json format");
-
-    let (fm, _, _, _) = manager.build_filter_manager();
-    let (inc_ff, exc_ff) = extract_field_filters(manager.get_filters());
-
-    // Use the unified visibility logic: text OR field include.
-    let visible: Vec<usize> = (0..reader.line_count())
-        .filter(|&idx| {
-            let line = reader.get_line(idx);
-            let text_dec = fm.evaluate_text(line);
-            if text_dec == FilterDecision::Exclude {
-                return false;
-            }
-            let parts = parser.parse_line(line);
-            if any_field_exclude_matches(&exc_ff, parts.as_ref()) {
-                return false;
-            }
-            if text_dec == FilterDecision::Include {
-                return true;
-            }
-            match field_include_vote(&inc_ff, parts.as_ref()) {
-                FieldVote::Match => true,
-                FieldVote::Miss => false,
-                FieldVote::PassThrough => !fm.has_include(),
-            }
-        })
-        .collect();
-
-    assert_eq!(visible.len(), 1, "only the error line should be visible");
-    assert!(
-        visible.contains(&1),
-        "line index 1 (error) should be visible"
+    let reader = FileReader::from_bytes(
+        b"{\"level\":\"info\",\"msg\":\"starting up\"}\n\
+          {\"level\":\"error\",\"msg\":\"something failed\"}\n\
+          {\"level\":\"debug\",\"msg\":\"verbose output\"}\n"
+            .to_vec(),
     );
+    let mut out = Vec::new();
+    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    let result = String::from_utf8(out).unwrap();
+    assert!(result.contains("something failed"));
+    assert!(!result.contains("starting up"));
+    assert!(!result.contains("verbose output"));
 }
 
 #[tokio::test]
 async fn test_field_filter_level_exclude() {
-    use logana::field_filter::{
-        FieldVote, any_field_exclude_matches, extract_field_filters, field_include_vote,
-    };
-    use logana::filters::FilterDecision;
-    use logana::parser::detect_format;
-
     let (_db, mut manager) = setup().await;
-
-    let mut file = NamedTempFile::new().unwrap();
-    writeln!(file, r#"{{"level":"info","msg":"starting up"}}"#).unwrap();
-    writeln!(file, r#"{{"level":"error","msg":"something failed"}}"#).unwrap();
-    writeln!(file, r#"{{"level":"debug","msg":"verbose output"}}"#).unwrap();
-    let path = file.path().to_str().unwrap();
-    let reader = FileReader::new(path).unwrap();
-
-    // Add a field filter: exclude level=debug.
     manager
         .add_filter_with_color(
             "@field:level:debug".into(),
@@ -464,38 +409,120 @@ async fn test_field_filter_level_exclude() {
         )
         .await;
 
-    let lines: Vec<&[u8]> = (0..reader.line_count())
-        .map(|i| reader.get_line(i))
+    let reader = FileReader::from_bytes(
+        b"{\"level\":\"info\",\"msg\":\"starting up\"}\n\
+          {\"level\":\"error\",\"msg\":\"something failed\"}\n\
+          {\"level\":\"debug\",\"msg\":\"verbose output\"}\n"
+            .to_vec(),
+    );
+    let mut out = Vec::new();
+    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    let result = String::from_utf8(out).unwrap();
+    assert!(result.contains("starting up"));
+    assert!(result.contains("something failed"));
+    assert!(!result.contains("verbose output"));
+}
+
+#[tokio::test]
+async fn test_headless_multiple_includes_or_semantics() {
+    let (_db, mut manager) = setup().await;
+    manager
+        .add_filter_with_color("ERROR".into(), FilterType::Include, None, None, true)
+        .await;
+    manager
+        .add_filter_with_color("WARNING".into(), FilterType::Include, None, None, true)
+        .await;
+
+    let file = create_sample_log_file();
+    let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
+    let mut out = Vec::new();
+    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    let result = String::from_utf8(out).unwrap();
+    assert!(result.contains("ERROR"));
+    assert!(result.contains("WARNING"));
+    assert!(!result.contains("INFO"));
+    assert!(!result.contains("DEBUG"));
+}
+
+#[tokio::test]
+async fn test_headless_regex_filter() {
+    let (_db, mut manager) = setup().await;
+    manager
+        .add_filter_with_color("INFO|ERROR".into(), FilterType::Include, None, None, true)
+        .await;
+
+    let file = create_sample_log_file();
+    let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
+    let mut out = Vec::new();
+    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    let lines: Vec<&str> = out
+        .split(|&b| b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| std::str::from_utf8(l).unwrap())
         .collect();
-    let parser = detect_format(&lines).expect("should detect json format");
+    assert_eq!(lines.len(), 3);
+    assert!(
+        lines
+            .iter()
+            .all(|l| l.contains("INFO") || l.contains("ERROR"))
+    );
+}
 
-    let (fm, _, _, _) = manager.build_filter_manager();
-    let (inc_ff, exc_ff) = extract_field_filters(manager.get_filters());
+#[tokio::test]
+async fn test_headless_no_matching_lines() {
+    let (_db, mut manager) = setup().await;
+    manager
+        .add_filter_with_color("CRITICAL".into(), FilterType::Include, None, None, true)
+        .await;
 
-    let visible: Vec<usize> = (0..reader.line_count())
-        .filter(|&idx| {
-            let line = reader.get_line(idx);
-            let text_dec = fm.evaluate_text(line);
-            if text_dec == FilterDecision::Exclude {
-                return false;
-            }
-            let parts = parser.parse_line(line);
-            if any_field_exclude_matches(&exc_ff, parts.as_ref()) {
-                return false;
-            }
-            if text_dec == FilterDecision::Include {
-                return true;
-            }
-            match field_include_vote(&inc_ff, parts.as_ref()) {
-                FieldVote::Match => true,
-                FieldVote::Miss => false,
-                FieldVote::PassThrough => !fm.has_include(),
-            }
-        })
-        .collect();
+    let reader = FileReader::from_bytes(b"INFO foo\nDEBUG bar\nERROR baz\n".to_vec());
+    let mut out = Vec::new();
+    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    assert!(out.is_empty());
+}
 
-    assert_eq!(visible.len(), 2, "debug line should be excluded");
-    assert!(visible.contains(&0), "info line should still be visible");
-    assert!(visible.contains(&1), "error line should still be visible");
-    assert!(!visible.contains(&2), "debug line should be hidden");
+#[tokio::test]
+async fn test_headless_exclude_before_include() {
+    // Exclude added first → wins over include for overlapping lines (first-match-wins).
+    let (_db, mut manager) = setup().await;
+    manager
+        .add_filter_with_color("established".into(), FilterType::Exclude, None, None, true)
+        .await;
+    manager
+        .add_filter_with_color("Connection".into(), FilterType::Include, None, None, true)
+        .await;
+
+    let file = create_sample_log_file();
+    let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
+    let mut out = Vec::new();
+    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    let result = String::from_utf8(out).unwrap();
+    assert!(result.contains("Connection failed"));
+    assert!(!result.contains("Connection established"));
+}
+
+#[tokio::test]
+async fn test_headless_filter_file_roundtrip() {
+    let filter_file = NamedTempFile::new().unwrap();
+    let filter_path = filter_file.path().to_str().unwrap().to_string();
+
+    {
+        let (_db, mut manager) = setup().await;
+        manager
+            .add_filter_with_color("ERROR".into(), FilterType::Include, None, None, true)
+            .await;
+        manager
+            .add_filter_with_color("DEBUG".into(), FilterType::Exclude, None, None, true)
+            .await;
+        manager.save_filters(&filter_path).unwrap();
+    }
+
+    let (_db, mut manager) = setup().await;
+    manager.load_filters(&filter_path).await.unwrap();
+
+    let reader = FileReader::from_bytes(b"INFO line\nERROR line\nDEBUG line\n".to_vec());
+    let mut out = Vec::new();
+    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    let result = String::from_utf8(out).unwrap();
+    assert_eq!(result, "ERROR line\n");
 }
