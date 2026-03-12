@@ -220,10 +220,7 @@ async fn main() -> Result<()> {
     let restore_policy = config.restore_session;
     let restore_file_policy = config.restore_file_context;
 
-    for conflict in config.keybindings.validate() {
-        eprintln!("Warning: {}", conflict);
-    }
-
+    let keybinding_conflicts: Vec<String> = config.keybindings.validate();
     let keybindings = Arc::new(config.keybindings);
 
     if args.headless {
@@ -267,6 +264,7 @@ async fn main() -> Result<()> {
         .await;
 
         app.preview_bytes = preview_bytes;
+        app.startup_warnings = keybinding_conflicts;
 
         // If a filter file was provided, load it into the initial tab's log manager
         // so filters are active both for the single-pass optimisation and for

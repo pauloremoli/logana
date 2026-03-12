@@ -100,6 +100,8 @@ pub struct App {
     pub restore_file_policy: RestoreSessionPolicy,
     /// Session files to restore automatically (set when policy is Always and session exists).
     pub pending_session_restore: Option<Vec<String>>,
+    /// Keybinding conflict warnings shown in the status bar on startup. Cleared on first keypress.
+    pub startup_warnings: Vec<String>,
 }
 
 impl std::fmt::Debug for App {
@@ -218,6 +220,7 @@ impl App {
             restore_policy,
             restore_file_policy,
             pending_session_restore,
+            startup_warnings: vec![],
         }
     }
 
@@ -384,6 +387,7 @@ impl App {
                 && let crossterm::event::Event::Key(key) = crossterm::event::read()?
                 && key.kind == crossterm::event::KeyEventKind::Press
             {
+                self.startup_warnings.clear();
                 let tab = &mut self.tabs[self.active_tab];
                 let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode::default()));
                 let (next_mode, result) = mode.handle_key(tab, key.code, key.modifiers).await;
@@ -472,6 +476,7 @@ impl App {
         key_code: KeyCode,
         modifiers: KeyModifiers,
     ) {
+        self.startup_warnings.clear();
         let tab = &mut self.tabs[self.active_tab];
         let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode::default()));
         let (next_mode, result) = mode.handle_key(tab, key_code, modifiers).await;

@@ -100,6 +100,9 @@ impl App {
         let status_line = self.tabs[self.active_tab]
             .mode
             .mode_bar_content(&keybindings, &self.theme);
+        let show_mode_bar = self.show_mode_bar;
+        let has_warnings = !self.startup_warnings.is_empty();
+        let warnings_height = self.startup_warnings.len().min(10) as u16;
         let visual_anchor: Option<usize> = match &render_state {
             ModeRenderState::VisualLine { anchor } => Some(*anchor),
             _ => None,
@@ -166,7 +169,6 @@ impl App {
             _ => None,
         };
 
-        let show_mode_bar = self.show_mode_bar;
         let show_borders = self.tabs[self.active_tab].show_borders;
 
         // Compute how many rows the mode bar needs so wrapped text is fully visible.
@@ -201,6 +203,13 @@ impl App {
             );
             constraints.push(Constraint::Length(hint_height)); // hint line(s)
         }
+        let warnings_chunk_idx = if has_warnings {
+            let idx = constraints.len();
+            constraints.push(Constraint::Length(warnings_height)); // warnings bar
+            Some(idx)
+        } else {
+            None
+        };
         if show_mode_bar {
             if !show_borders {
                 constraints.push(Constraint::Length(1)); // visual gap above mode bar
@@ -295,6 +304,25 @@ impl App {
         );
 
         self.render_input_bar(frame, search_input, &chunks, chunk_idx);
+
+        if let Some(idx) = warnings_chunk_idx {
+            let warnings_area = chunks[idx];
+            let lines: Vec<Line> = self
+                .startup_warnings
+                .iter()
+                .take(10)
+                .map(|w| {
+                    Line::from(vec![
+                        Span::styled("Warning: ", Style::default().fg(Color::Red)),
+                        Span::raw(w.clone()),
+                    ])
+                })
+                .collect();
+            frame.render_widget(
+                Paragraph::new(lines).style(Style::default().bg(self.theme.root_bg)),
+                warnings_area,
+            );
+        }
 
         if show_mode_bar {
             let status_block = if show_borders {
@@ -3016,6 +3044,65 @@ mod tests {
         assert_eq!(
             cell.fg, get_color,
             "GET value color must apply to the unstyled part even when another part of the line is filter-colored"
+        );
+    }
+
+    // When startup_warnings is non-empty a warnings bar must be rendered above
+    // the mode bar and display all warning messages.
+    #[tokio::test]
+    async fn test_startup_warnings_shown_above_mode_bar() {
+        let mut app = make_app(&["line 0"]).await;
+        app.show_mode_bar = true;
+        app.startup_warnings = vec![
+            "keybinding conflict: j".to_string(),
+            "keybinding conflict: k".to_string(),
+        ];
+
+        let mut terminal = make_terminal(); // 80×24
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let content: String = (0..buf.area.height)
+            .map(|y| row_content(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            content.contains("keybinding conflict: j"),
+            "first warning should appear in the warnings bar, got:\n{content}"
+        );
+        assert!(
+            content.contains("keybinding conflict: k"),
+            "second warning should appear in the warnings bar, got:\n{content}"
+        );
+    }
+
+    // More than 10 warnings must be capped at 10 rows.
+    #[tokio::test]
+    async fn test_startup_warnings_capped_at_10_rows() {
+        let mut app = make_app(&["line 0"]).await;
+        app.startup_warnings = (0..15).map(|i| format!("conflict {i}")).collect();
+
+        let mut terminal = make_terminal(); // 80×24
+        terminal.draw(|f| app.ui(f)).unwrap();
+        // Just verify it renders without panicking and shows the first warning.
+        let buf = terminal.backend().buffer().clone();
+        let content: String = (0..buf.area.height)
+            .map(|y| row_content(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(content.contains("conflict 0"));
+    }
+
+    // After a keypress startup_warnings must be cleared.
+    #[tokio::test]
+    async fn test_startup_warnings_cleared_on_keypress() {
+        let mut app = make_app(&["line 0"]).await;
+        app.startup_warnings = vec!["conflict".to_string()];
+        app.handle_key_event(crossterm::event::KeyCode::Esc).await;
+        assert!(
+            app.startup_warnings.is_empty(),
+            "startup_warnings should be cleared after a keypress"
         );
     }
 }
