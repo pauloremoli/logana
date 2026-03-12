@@ -676,7 +676,6 @@ mod tests {
 
         let layout = FieldLayout {
             columns: Some(vec!["level".to_string(), "message".to_string()]),
-            columns_order: None,
         };
         let hidden = HashSet::new();
         let comments = vec![Comment {

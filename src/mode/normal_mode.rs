@@ -205,6 +205,27 @@ impl Mode for NormalMode {
             return (self, KeyResult::Handled);
         }
 
+        if kb.normal.start_of_line.matches(key, modifiers) {
+            tab.horizontal_scroll = 0;
+            tab.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.end_of_line.matches(key, modifiers) {
+            if !tab.wrap
+                && tab.visible_width > 0
+                && let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset)
+            {
+                let text = tab.get_display_text(line_idx);
+                let line_width = unicode_width::UnicodeWidthStr::width(text.as_str());
+                tab.horizontal_scroll = line_width.saturating_sub(tab.visible_width);
+            }
+            tab.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
         if kb.normal.go_to_bottom.matches(key, modifiers) {
             // With a count, `{count}G` jumps to that line number.
             if let Some(count) = self.count.take() {
@@ -919,6 +940,64 @@ mod tests {
         let mut tab = make_tab(&["long line"]).await;
         tab.wrap = true;
         press(&mut tab, KeyCode::Char('l'), KeyModifiers::NONE).await;
+        assert_eq!(tab.horizontal_scroll, 0);
+    }
+
+    #[tokio::test]
+    async fn test_zero_resets_horizontal_scroll_to_start() {
+        let mut tab = make_tab(&["hello world"]).await;
+        tab.wrap = false;
+        tab.horizontal_scroll = 7;
+        press(&mut tab, KeyCode::Char('0'), KeyModifiers::NONE).await;
+        assert_eq!(tab.horizontal_scroll, 0);
+    }
+
+    #[tokio::test]
+    async fn test_zero_as_count_suffix_does_not_reset_scroll() {
+        let mut tab = make_tab(&["hello world"]).await;
+        tab.wrap = false;
+        tab.horizontal_scroll = 7;
+        // Prime a count of 1, then press 0 — should build count 10, not reset scroll.
+        // We must carry the mode instance between key presses to preserve the count state.
+        let (mode, _) = Box::new(NormalMode::default())
+            .handle_key(&mut tab, KeyCode::Char('1'), KeyModifiers::NONE)
+            .await;
+        mode.handle_key(&mut tab, KeyCode::Char('0'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(
+            tab.horizontal_scroll, 7,
+            "scroll must not change while building a count"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dollar_scrolls_to_end_of_line() {
+        let mut tab = make_tab(&["hello world"]).await;
+        tab.wrap = false;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 0;
+        press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
+        // "hello world" is 11 cols wide; visible_width = 5 → scroll = 11 - 5 = 6
+        assert_eq!(tab.horizontal_scroll, 6);
+    }
+
+    #[tokio::test]
+    async fn test_dollar_no_scroll_when_wrapped() {
+        let mut tab = make_tab(&["hello world"]).await;
+        tab.wrap = true;
+        tab.visible_width = 5;
+        tab.horizontal_scroll = 0;
+        press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
+        assert_eq!(tab.horizontal_scroll, 0);
+    }
+
+    #[tokio::test]
+    async fn test_dollar_no_scroll_when_visible_width_unknown() {
+        let mut tab = make_tab(&["hello world"]).await;
+        tab.wrap = false;
+        tab.visible_width = 0;
+        tab.horizontal_scroll = 0;
+        press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
         assert_eq!(tab.horizontal_scroll, 0);
     }
 

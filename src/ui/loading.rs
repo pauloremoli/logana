@@ -1312,6 +1312,8 @@ mod tests {
             show_keys: true,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         app.db.save_file_context(&ctx).await.unwrap();
 
@@ -1545,6 +1547,8 @@ mod tests {
             show_keys: true,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         app.db.save_file_context(&ctx).await.unwrap();
 

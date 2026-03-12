@@ -6,7 +6,6 @@
 //! `fields`, `select-fields`, `value-colors`, `tail`, and more.
 
 use clap::Parser;
-use std::collections::HashSet;
 
 use crate::auto_complete::{expand_tilde, shell_split};
 use crate::mode::command_mode::{CommandLine, Commands};
@@ -369,34 +368,41 @@ impl App {
                 if all_names.is_empty() {
                     return Err("No structured fields found in visible lines".to_string());
                 }
-                let enabled_cols = &tab.field_layout.columns;
-                let saved_order = &tab.field_layout.columns_order;
-                // Restore the previous full ordering (enabled + disabled) if
-                // available, then append any newly-discovered fields.
+                let saved_order = &tab.field_layout.columns;
+                // Restore the previous full ordering if available, then append
+                // any newly-discovered fields. Visibility comes from hidden_fields.
                 let fields: Vec<(String, bool)> = match saved_order {
                     Some(order) => {
-                        let enabled: HashSet<&String> = enabled_cols
-                            .as_ref()
-                            .map(|v| v.iter().collect())
-                            .unwrap_or_default();
                         let mut ordered: Vec<(String, bool)> = order
                             .iter()
                             .filter(|n| all_names.contains(n))
-                            .map(|n| (n.clone(), enabled.contains(n)))
+                            .map(|n| (n.clone(), !tab.hidden_fields.contains(n.as_str())))
                             .collect();
                         // Append fields not yet in the saved order.
                         for name in &all_names {
                             if !order.contains(name) {
-                                ordered.push((name.clone(), false));
+                                ordered.push((
+                                    name.clone(),
+                                    !tab.hidden_fields.contains(name.as_str()),
+                                ));
                             }
                         }
                         ordered
                     }
-                    None => all_names.into_iter().map(|n| (n, true)).collect(),
+                    None => all_names
+                        .into_iter()
+                        .map(|n| {
+                            let enabled = !tab.hidden_fields.contains(n.as_str());
+                            (n, enabled)
+                        })
+                        .collect(),
                 };
-                let original = tab.field_layout.clone();
+                let original_layout = tab.field_layout.clone();
+                let original_hidden_fields = tab.hidden_fields.clone();
                 tab.mode = Box::new(crate::mode::select_fields_mode::SelectFieldsMode::new(
-                    fields, original,
+                    fields,
+                    original_layout,
+                    original_hidden_fields,
                 ));
                 return Ok(true);
             }
@@ -795,9 +801,9 @@ mod tests {
     #[tokio::test]
     async fn test_select_fields_saved_order() {
         let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
-        // Set a saved order on the field_layout
-        app.tabs[0].field_layout.columns = Some(vec!["msg".to_string()]);
-        app.tabs[0].field_layout.columns_order = Some(vec!["msg".to_string(), "level".to_string()]);
+        // Set a saved order on the field_layout (full ordered list) and hide level
+        app.tabs[0].field_layout.columns = Some(vec!["msg".to_string(), "level".to_string()]);
+        app.tabs[0].hidden_fields.insert("level".to_string());
         let result = app.run_command("select-fields").await.unwrap();
         assert!(result);
         if let ModeRenderState::SelectFields { fields, .. } = app.tabs[0].mode.render_state() {

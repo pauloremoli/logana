@@ -100,7 +100,7 @@ pub enum KeyResult {
     CopyToClipboard(String),
     OpenFiles(Vec<String>),
     ToggleModeBar,
-    AlwaysRestoreFile(crate::db::FileContext),
+    AlwaysRestoreFile(Box<crate::db::FileContext>),
     NeverRestoreFile,
     AlwaysRestoreSession(Vec<String>),
     NeverRestoreSession,
@@ -1455,6 +1455,8 @@ impl TabState {
             show_keys: self.show_keys,
             raw_mode: self.raw_mode,
             sidebar_width: self.sidebar_width,
+            hidden_fields: self.hidden_fields.clone(),
+            field_layout_columns: self.field_layout.columns.clone(),
         })
     }
 
@@ -1465,6 +1467,8 @@ impl TabState {
         self.show_keys = ctx.show_keys;
         self.raw_mode = ctx.raw_mode;
         self.sidebar_width = ctx.sidebar_width;
+        self.hidden_fields = ctx.hidden_fields.clone();
+        self.field_layout.columns = ctx.field_layout_columns.clone();
         if !ctx.marked_lines.is_empty() {
             self.log_manager.set_marks(ctx.marked_lines.clone());
         }
@@ -1946,6 +1950,8 @@ mod tests {
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         tab.apply_file_context(&ctx);
         assert_eq!(tab.scroll_offset, 3);
@@ -1971,6 +1977,8 @@ mod tests {
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         tab.apply_file_context(&ctx);
         assert!(tab.level_colors_disabled.is_empty());

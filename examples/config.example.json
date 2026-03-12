@@ -20,6 +20,8 @@
     "normal": {
       "scroll_left": "h",
       "scroll_right": "l",
+      "start_of_line": "0",
+      "end_of_line": "$",
       "command_mode": ":",
       "filter_mode": "f",
       "toggle_filtering": "F",

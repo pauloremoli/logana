@@ -2,14 +2,14 @@
 //!
 //! [`apply_field_layout`] converts a [`DisplayParts`] and a [`FieldLayout`]
 //! into an ordered `Vec<String>` of column values. [`line_row_count`] computes
-//! wrap-aware terminal row height for a line. [`default_cols`] and [`get_col`]
+//! wrap-aware terminal row height for a line. [`get_col`]
 //! handle column name resolution including all canonical key aliases.
 
 use std::collections::HashSet;
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::parser::{DisplayParts, LogFormatParser, format_span_col};
+use crate::parser::{DisplayParts, LogFormatParser, SpanInfo, format_span_col};
 use crate::types::FieldLayout;
 
 /// Number of terminal rows a line occupies when word-wrapped to `inner_width` columns.
@@ -177,6 +177,7 @@ pub(crate) fn get_col(p: &DisplayParts<'_>, name: &str, show_keys: bool) -> Opti
     }
 }
 
+#[cfg(test)]
 fn default_cols(p: &DisplayParts<'_>, show_keys: bool) -> Vec<String> {
     let mut cols = Vec::new();
     if let Some(ts) = p.timestamp {
@@ -204,27 +205,49 @@ fn default_cols(p: &DisplayParts<'_>, show_keys: bool) -> Vec<String> {
     cols
 }
 
+/// Render a span, filtering out sub-fields whose keys are in `excluded_keys`.
+fn render_span(s: &SpanInfo<'_>, excluded_keys: &HashSet<&str>, show_keys: bool) -> String {
+    if excluded_keys.is_empty() {
+        return format_span_col(s, show_keys);
+    }
+    let visible_fields: Vec<(&str, &str)> = s
+        .fields
+        .iter()
+        .filter(|(k, _)| !excluded_keys.contains(k))
+        .copied()
+        .collect();
+    let filtered = SpanInfo {
+        name: s.name,
+        fields: visible_fields,
+    };
+    format_span_col(&filtered, show_keys)
+}
+
 pub(crate) fn apply_field_layout(
     p: &DisplayParts<'_>,
     layout: &FieldLayout,
     hidden_fields: &HashSet<String>,
     show_keys: bool,
 ) -> Vec<String> {
-    let cols = match &layout.columns {
-        None => default_cols(p, show_keys),
-        Some(names) => names
-            .iter()
-            .filter_map(|name| get_col(p, name, show_keys))
-            .collect(),
-    };
-    if hidden_fields.is_empty() {
-        cols
-    } else if let Some(names) = &layout.columns {
-        // Explicit layout — re-filter, excluding hidden names.
+    let excluded_keys: HashSet<&str> = hidden_fields
+        .iter()
+        .filter_map(|h| h.strip_prefix("span."))
+        .collect();
+
+    if let Some(names) = &layout.columns {
+        // Explicit layout — filter hidden column names and span sub-fields.
         names
             .iter()
             .filter(|name| !hidden_fields.contains(name.as_str()))
-            .filter_map(|name| get_col(p, name, show_keys))
+            .filter_map(|name| {
+                if name == "span" {
+                    p.span
+                        .as_ref()
+                        .map(|s| render_span(s, &excluded_keys, show_keys))
+                } else {
+                    get_col(p, name, show_keys)
+                }
+            })
             .collect()
     } else {
         // Default layout — rebuild without hidden fields.
@@ -255,7 +278,7 @@ pub(crate) fn apply_field_layout(
         if !hidden_fields.contains("span")
             && let Some(span) = &p.span
         {
-            cols.push(format_span_col(span, show_keys));
+            cols.push(render_span(span, &excluded_keys, show_keys));
         }
         for (key, value) in &p.extra_fields {
             if !hidden_fields.contains(*key) {
@@ -519,7 +542,6 @@ mod tests {
         let p = make_parts();
         let layout = FieldLayout {
             columns: Some(vec!["level".to_string(), "message".to_string()]),
-            columns_order: None,
         };
         let hidden = HashSet::new();
         let cols = apply_field_layout(&p, &layout, &hidden, false);
@@ -546,7 +568,6 @@ mod tests {
                 "level".to_string(),
                 "message".to_string(),
             ]),
-            columns_order: None,
         };
         let mut hidden = HashSet::new();
         hidden.insert("timestamp".to_string());
@@ -617,6 +638,119 @@ mod tests {
         assert_eq!(
             effective_row_count(json, 20, Some(&parser), &layout, &hidden, false),
             raw_rows
+        );
+    }
+
+    #[test]
+    fn test_hiding_span_subfield_filters_it_from_default_layout() {
+        let p = DisplayParts {
+            timestamp: Some("2024-01-01T00:00:00Z"),
+            level: Some("INFO"),
+            target: Some("app"),
+            span: Some(SpanInfo {
+                name: "request",
+                fields: vec![("request_id", "abc-123"), ("method", "GET")],
+            }),
+            extra_fields: vec![],
+            message: Some("hello"),
+        };
+        let layout = FieldLayout::default();
+        let mut hidden = HashSet::new();
+        hidden.insert("span.request_id".to_string());
+        let cols = apply_field_layout(&p, &layout, &hidden, true);
+        let span_col = cols.iter().find(|c| c.contains("request")).unwrap();
+        assert!(
+            !span_col.contains("request_id"),
+            "hidden span sub-field should not appear: {span_col}"
+        );
+        assert!(
+            span_col.contains("method"),
+            "non-hidden span sub-field should still appear: {span_col}"
+        );
+    }
+
+    #[test]
+    fn test_hiding_span_subfield_via_hidden_fields_explicit_layout() {
+        let p = DisplayParts {
+            timestamp: None,
+            level: None,
+            target: None,
+            span: Some(SpanInfo {
+                name: "request",
+                fields: vec![("request_id", "abc-123"), ("method", "GET")],
+            }),
+            extra_fields: vec![],
+            message: None,
+        };
+        let layout = FieldLayout {
+            columns: Some(vec!["span".to_string()]),
+        };
+        let mut hidden = HashSet::new();
+        hidden.insert("span.request_id".to_string());
+        let cols = apply_field_layout(&p, &layout, &hidden, true);
+        assert_eq!(cols.len(), 1);
+        assert!(
+            !cols[0].contains("request_id"),
+            "hidden span sub-field should not appear in explicit layout: {}",
+            cols[0]
+        );
+        assert!(cols[0].contains("method"));
+    }
+
+    #[test]
+    fn test_hiding_span_subfield_via_select_fields() {
+        // Simulates the select-fields path: field_layout.columns has all fields
+        // ordered, and span.request_id is disabled via hidden_fields.
+        let p = DisplayParts {
+            timestamp: None,
+            level: None,
+            target: None,
+            span: Some(SpanInfo {
+                name: "request",
+                fields: vec![("request_id", "abc-123"), ("method", "GET")],
+            }),
+            extra_fields: vec![],
+            message: None,
+        };
+        let layout = FieldLayout {
+            columns: Some(vec![
+                "span".to_string(),
+                "span.request_id".to_string(),
+                "span.method".to_string(),
+            ]),
+        };
+        let mut hidden = HashSet::new();
+        hidden.insert("span.request_id".to_string());
+        let cols = apply_field_layout(&p, &layout, &hidden, true);
+        // "span" column should render without request_id (it is in hidden_fields)
+        let span_col = cols.iter().find(|c| c.contains("request")).unwrap();
+        assert!(
+            !span_col.contains("request_id"),
+            "disabled span sub-field should be filtered: {span_col}"
+        );
+        assert!(span_col.contains("method"));
+    }
+
+    #[test]
+    fn test_hiding_all_span_subfields_leaves_span_name() {
+        let p = DisplayParts {
+            timestamp: None,
+            level: None,
+            target: None,
+            span: Some(SpanInfo {
+                name: "request",
+                fields: vec![("request_id", "abc-123")],
+            }),
+            extra_fields: vec![],
+            message: None,
+        };
+        let layout = FieldLayout::default();
+        let mut hidden = HashSet::new();
+        hidden.insert("span.request_id".to_string());
+        let cols = apply_field_layout(&p, &layout, &hidden, false);
+        assert!(
+            cols.iter().any(|c| c == "request"),
+            "span name should remain when all sub-fields are hidden"
         );
     }
 

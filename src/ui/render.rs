@@ -386,6 +386,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_logs_panel(
         &mut self,
         frame: &mut Frame<'_>,

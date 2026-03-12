@@ -1198,6 +1198,8 @@ mod tests {
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: std::collections::HashSet::new(),
+            field_layout_columns: None,
         };
         app.tabs[0].mode = Box::new(ConfirmRestoreMode { context });
         let mut terminal = make_terminal();
@@ -1212,7 +1214,11 @@ mod tests {
             ("level".to_string(), true),
             ("message".to_string(), false),
         ];
-        app.tabs[0].mode = Box::new(SelectFieldsMode::new(fields, FieldLayout::default()));
+        app.tabs[0].mode = Box::new(SelectFieldsMode::new(
+            fields,
+            FieldLayout::default(),
+            std::collections::HashSet::new(),
+        ));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1223,7 +1229,11 @@ mod tests {
         let fields: Vec<(String, bool)> = (0..35)
             .map(|i| (format!("field_{}", i), i % 2 == 0))
             .collect();
-        app.tabs[0].mode = Box::new(SelectFieldsMode::new(fields, FieldLayout::default()));
+        app.tabs[0].mode = Box::new(SelectFieldsMode::new(
+            fields,
+            FieldLayout::default(),
+            std::collections::HashSet::new(),
+        ));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }

@@ -320,6 +320,12 @@ fn default_scroll_left() -> KeyBindings {
 fn default_scroll_right() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('l'), KeyModifiers::NONE)])
 }
+fn default_start_of_line() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('0'), KeyModifiers::NONE)])
+}
+fn default_end_of_line() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('$'), KeyModifiers::NONE)])
+}
 fn default_half_page_down() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL)])
 }
@@ -475,6 +481,10 @@ pub struct NormalKeybindings {
     pub scroll_left: KeyBindings,
     #[serde(default = "default_scroll_right")]
     pub scroll_right: KeyBindings,
+    #[serde(default = "default_start_of_line")]
+    pub start_of_line: KeyBindings,
+    #[serde(default = "default_end_of_line")]
+    pub end_of_line: KeyBindings,
     #[serde(default = "default_command_mode")]
     pub command_mode: KeyBindings,
     #[serde(default = "default_filter_mode_key")]
@@ -538,6 +548,8 @@ impl Default for NormalKeybindings {
         Self {
             scroll_left: default_scroll_left(),
             scroll_right: default_scroll_right(),
+            start_of_line: default_start_of_line(),
+            end_of_line: default_end_of_line(),
             command_mode: default_command_mode(),
             filter_mode: default_filter_mode_key(),
             toggle_filtering: default_toggle_filtering(),
@@ -1376,6 +1388,8 @@ impl Keybindings {
             ("navigation.page_up", &nav.page_up),
             ("normal.scroll_left", &self.normal.scroll_left),
             ("normal.scroll_right", &self.normal.scroll_right),
+            ("normal.start_of_line", &self.normal.start_of_line),
+            ("normal.end_of_line", &self.normal.end_of_line),
             ("normal.command_mode", &self.normal.command_mode),
             ("normal.filter_mode", &self.normal.filter_mode),
             ("normal.toggle_filtering", &self.normal.toggle_filtering),

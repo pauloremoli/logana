@@ -69,6 +69,14 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.scroll_right.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Start of line".into(),
+        keys: n.start_of_line.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "End of line".into(),
+        keys: n.end_of_line.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Go to top (gg)".into(),
         keys: format!(
             "{}{}",

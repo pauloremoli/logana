@@ -28,6 +28,7 @@
 //! - v6: `app_settings` table for global runtime key/value preferences
 //! - v7: drop per-file `show_status_bar`, `show_borders`, `show_sidebar`,
 //!   `show_line_numbers`, `wrap` columns — these are now global app settings
+//! - v8: `hidden_fields` and `field_layout_columns` columns on `file_context`
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -88,6 +89,10 @@ pub struct FileContext {
     pub raw_mode: bool,
     /// Width in terminal columns of the filter sidebar (default 30, min 10).
     pub sidebar_width: u16,
+    /// Set of hidden field names (e.g. `"span.request_id"`, `"level"`).
+    pub hidden_fields: HashSet<String>,
+    /// Ordered list of all column names from the select-fields modal (visible + hidden).
+    pub field_layout_columns: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -233,6 +238,13 @@ impl Database {
                 .await?;
         }
 
+        if version < 8 {
+            self.migrate_to_v8().await?;
+            sqlx::query("PRAGMA user_version = 8")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -356,6 +368,18 @@ impl Database {
                 .await
                 .ok();
         }
+        Ok(())
+    }
+
+    async fn migrate_to_v8(&self) -> Result<()> {
+        sqlx::query("ALTER TABLE file_context ADD COLUMN hidden_fields TEXT NOT NULL DEFAULT '[]'")
+            .execute(&self.pool)
+            .await
+            .ok();
+        sqlx::query("ALTER TABLE file_context ADD COLUMN field_layout_columns TEXT")
+            .execute(&self.pool)
+            .await
+            .ok();
         Ok(())
     }
 }
@@ -639,11 +663,18 @@ impl FileContextStore for Database {
         let level_colors_disabled_json =
             serde_json::to_string(&ctx.level_colors_disabled.iter().collect::<Vec<_>>())
                 .unwrap_or_else(|_| "[]".to_string());
+        let hidden_fields_json =
+            serde_json::to_string(&ctx.hidden_fields.iter().collect::<Vec<_>>())
+                .unwrap_or_else(|_| "[]".to_string());
+        let field_layout_columns_json = ctx
+            .field_layout_columns
+            .as_ref()
+            .and_then(|cols| serde_json::to_string(cols).ok());
         // Also keep the legacy `level_colors` column up-to-date for any old readers.
         let level_colors_legacy = ctx.level_colors_disabled.is_empty() as i32;
         sqlx::query(
-            "INSERT INTO file_context (source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width, hidden_fields, field_layout_columns)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_file) DO UPDATE SET
                 scroll_offset = excluded.scroll_offset,
                 search_query = excluded.search_query,
@@ -655,7 +686,9 @@ impl FileContextStore for Database {
                 show_keys = excluded.show_keys,
                 level_colors_disabled = excluded.level_colors_disabled,
                 raw_mode = excluded.raw_mode,
-                sidebar_width = excluded.sidebar_width",
+                sidebar_width = excluded.sidebar_width,
+                hidden_fields = excluded.hidden_fields,
+                field_layout_columns = excluded.field_layout_columns",
         )
         .bind(&ctx.source_file)
         .bind(ctx.scroll_offset as i64)
@@ -669,6 +702,8 @@ impl FileContextStore for Database {
         .bind(&level_colors_disabled_json)
         .bind(ctx.raw_mode as i32)
         .bind(ctx.sidebar_width as i64)
+        .bind(&hidden_fields_json)
+        .bind(&field_layout_columns_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -676,7 +711,7 @@ impl FileContextStore for Database {
 
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
         let row = sqlx::query(
-            "SELECT source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width
+            "SELECT source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width, hidden_fields, field_layout_columns
              FROM file_context WHERE source_file = ?",
         )
         .bind(source_file)
@@ -704,6 +739,17 @@ impl FileContextStore for Database {
                         HashSet::new()
                     }
                 });
+            let hidden_fields: HashSet<String> = r
+                .try_get::<String, _>("hidden_fields")
+                .ok()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                .map(|v| v.into_iter().collect())
+                .unwrap_or_default();
+            let field_layout_columns: Option<Vec<String>> = r
+                .try_get::<Option<String>, _>("field_layout_columns")
+                .ok()
+                .flatten()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
             FileContext {
                 source_file: r.get::<String, _>("source_file"),
                 scroll_offset: r.get::<i64, _>("scroll_offset") as usize,
@@ -719,6 +765,8 @@ impl FileContextStore for Database {
                     .try_get::<i64, _>("sidebar_width")
                     .unwrap_or(30)
                     .clamp(10, 200) as u16,
+                hidden_fields,
+                field_layout_columns,
             }
         }))
     }
@@ -1002,6 +1050,8 @@ mod tests {
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1034,6 +1084,8 @@ mod tests {
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         db.save_file_context(&ctx1).await.unwrap();
 
@@ -1054,6 +1106,8 @@ mod tests {
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         db.save_file_context(&ctx2).await.unwrap();
 
@@ -1100,6 +1154,8 @@ mod tests {
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1132,6 +1188,8 @@ mod tests {
             show_keys: true,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1160,6 +1218,8 @@ mod tests {
             show_keys: true,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1187,6 +1247,8 @@ mod tests {
             show_keys: false,
             raw_mode: false,
             sidebar_width: 45,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1197,6 +1259,44 @@ mod tests {
             .expect("context should exist");
 
         assert_eq!(loaded.sidebar_width, 45);
+    }
+
+    #[tokio::test]
+    async fn test_hidden_fields_and_field_layout_columns_round_trip() {
+        let db = setup_db().await;
+        let mut hidden = HashSet::new();
+        hidden.insert("span.request_id".to_string());
+        hidden.insert("level".to_string());
+        let columns = Some(vec![
+            "timestamp".to_string(),
+            "level".to_string(),
+            "span".to_string(),
+        ]);
+        let ctx = FileContext {
+            source_file: "/tmp/layout.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            level_colors_disabled: HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: hidden.clone(),
+            field_layout_columns: columns.clone(),
+        };
+        db.save_file_context(&ctx).await.unwrap();
+
+        let loaded = db
+            .load_file_context("/tmp/layout.log")
+            .await
+            .unwrap()
+            .expect("context should exist");
+
+        assert_eq!(loaded.hidden_fields, hidden);
+        assert_eq!(loaded.field_layout_columns, columns);
     }
 
     // ── AppSettingsStore ─────────────────────────────────────────────────

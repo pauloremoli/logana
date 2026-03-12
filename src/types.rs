@@ -220,14 +220,12 @@ pub struct DockerContainer {
 /// Controls which structured columns are shown and in what order.
 #[derive(Debug, Clone, Default)]
 pub struct FieldLayout {
-    /// When Some: show only these named columns in this order.
+    /// When Some: ordered list of all column names (visible and hidden).
     /// Names: "timestamp"|"ts"|"time", "level"|"lvl", "target", "span",
     ///         "message"|"msg", or any extra-field key present in the line.
+    /// Visibility of each column is controlled by `hidden_fields` in `TabState`.
     /// When None: show all columns in default order.
     pub columns: Option<Vec<String>>,
-    /// Full ordered field list (enabled + disabled) from the select-fields
-    /// modal.  Used to restore the list order when the modal is reopened.
-    pub columns_order: Option<Vec<String>>,
 }
 
 #[cfg(test)]

@@ -3,6 +3,8 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use std::collections::HashSet;
+
 use crate::{
     config::Keybindings,
     mode::app_mode::{Mode, ModeRenderState, status_entry},
@@ -20,14 +22,21 @@ pub struct SelectFieldsMode {
     pub selected: usize,
     /// Snapshot of the full `FieldLayout` on entry (restored on Esc cancel).
     original_layout: FieldLayout,
+    /// Snapshot of `hidden_fields` on entry (restored on Esc cancel).
+    original_hidden_fields: HashSet<String>,
 }
 
 impl SelectFieldsMode {
-    pub fn new(fields: Vec<(String, bool)>, original_layout: FieldLayout) -> Self {
+    pub fn new(
+        fields: Vec<(String, bool)>,
+        original_layout: FieldLayout,
+        original_hidden_fields: HashSet<String>,
+    ) -> Self {
         SelectFieldsMode {
             fields,
             selected: 0,
             original_layout,
+            original_hidden_fields,
         }
     }
 }
@@ -42,20 +51,21 @@ impl Mode for SelectFieldsMode {
     ) -> (Box<dyn Mode>, KeyResult) {
         let kb = &tab.keybindings;
         if kb.select_fields.apply.matches(key, modifiers) {
-            let enabled: Vec<String> = self
-                .fields
-                .iter()
-                .filter(|(_, on)| *on)
-                .map(|(name, _)| name.clone())
-                .collect();
             let all_ordered: Vec<String> = self.fields.iter().map(|(n, _)| n.clone()).collect();
-            tab.field_layout.columns = Some(enabled);
-            tab.field_layout.columns_order = Some(all_ordered);
+            tab.field_layout.columns = Some(all_ordered);
+            for (name, enabled) in &self.fields {
+                if *enabled {
+                    tab.hidden_fields.remove(name.as_str());
+                } else {
+                    tab.hidden_fields.insert(name.clone());
+                }
+            }
             tab.invalidate_parse_cache();
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
         if kb.select_fields.cancel.matches(key, modifiers) {
             tab.field_layout = std::mem::take(&mut self.original_layout);
+            tab.hidden_fields = std::mem::take(&mut self.original_hidden_fields);
             tab.invalidate_parse_cache();
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
@@ -178,7 +188,7 @@ mod tests {
     #[tokio::test]
     async fn test_j_moves_cursor_down() {
         let mut tab = make_tab().await;
-        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
         match mode2.render_state() {
             ModeRenderState::SelectFields { selected, .. } => assert_eq!(selected, 1),
@@ -189,7 +199,8 @@ mod tests {
     #[tokio::test]
     async fn test_k_moves_cursor_up() {
         let mut tab = make_tab().await;
-        let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mut mode =
+            SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         mode.selected = 2;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
         match mode2.render_state() {
@@ -201,7 +212,7 @@ mod tests {
     #[tokio::test]
     async fn test_k_at_zero_stays() {
         let mut tab = make_tab().await;
-        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
         match mode2.render_state() {
             ModeRenderState::SelectFields { selected, .. } => assert_eq!(selected, 0),
@@ -212,7 +223,8 @@ mod tests {
     #[tokio::test]
     async fn test_j_at_end_stays() {
         let mut tab = make_tab().await;
-        let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mut mode =
+            SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         mode.selected = 3;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
         match mode2.render_state() {
@@ -224,7 +236,7 @@ mod tests {
     #[tokio::test]
     async fn test_space_toggles_field() {
         let mut tab = make_tab().await;
-        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char(' ')).await;
         match mode2.render_state() {
             ModeRenderState::SelectFields { fields, .. } => {
@@ -237,7 +249,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_enables_all() {
         let mut tab = make_tab().await;
-        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('a')).await;
         match mode2.render_state() {
             ModeRenderState::SelectFields { fields, .. } => {
@@ -250,7 +262,7 @@ mod tests {
     #[tokio::test]
     async fn test_n_disables_all() {
         let mut tab = make_tab().await;
-        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('n')).await;
         match mode2.render_state() {
             ModeRenderState::SelectFields { fields, .. } => {
@@ -269,7 +281,7 @@ mod tests {
             ("level".to_string(), false),
             ("message".to_string(), true),
         ];
-        let mode = SelectFieldsMode::new(fields, FieldLayout::default());
+        let mode = SelectFieldsMode::new(fields, FieldLayout::default(), HashSet::new());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Enter).await;
         assert!(!matches!(
             mode2.render_state(),
@@ -277,54 +289,55 @@ mod tests {
         )); // transitioned to NormalMode
         assert_eq!(
             tab.field_layout.columns,
-            Some(vec!["timestamp".to_string(), "message".to_string()])
-        );
-        assert_eq!(
-            tab.field_layout.columns_order,
             Some(vec![
                 "timestamp".to_string(),
                 "level".to_string(),
                 "message".to_string()
             ])
         );
+        assert!(tab.hidden_fields.contains("level"));
+        assert!(!tab.hidden_fields.contains("timestamp"));
+        assert!(!tab.hidden_fields.contains("message"));
     }
 
     #[tokio::test]
     async fn test_enter_all_enabled_saves_columns() {
         let mut tab = make_tab().await;
         let fields = vec![("timestamp".to_string(), true), ("level".to_string(), true)];
-        let mode = SelectFieldsMode::new(fields, FieldLayout::default());
+        let mode = SelectFieldsMode::new(fields, FieldLayout::default(), HashSet::new());
         let (_, _) = press(mode, &mut tab, KeyCode::Enter).await;
         assert_eq!(
             tab.field_layout.columns,
             Some(vec!["timestamp".to_string(), "level".to_string()])
         );
-        assert_eq!(
-            tab.field_layout.columns_order,
-            Some(vec!["timestamp".to_string(), "level".to_string()])
-        );
+        assert!(tab.hidden_fields.is_empty());
     }
 
     #[tokio::test]
     async fn test_esc_restores_original_layout() {
         let mut tab = make_tab().await;
         let original = FieldLayout {
-            columns: Some(vec!["level".to_string()]),
-            columns_order: Some(vec!["level".to_string(), "timestamp".to_string()]),
+            columns: Some(vec!["level".to_string(), "timestamp".to_string()]),
         };
-        let mode = SelectFieldsMode::new(sample_fields(), original.clone());
+        let mut original_hidden = HashSet::new();
+        original_hidden.insert("timestamp".to_string());
+        let mode =
+            SelectFieldsMode::new(sample_fields(), original.clone(), original_hidden.clone());
+        // Modify tab state to verify cancel restores both
+        tab.field_layout.columns = Some(vec!["message".to_string()]);
+        tab.hidden_fields.insert("level".to_string());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(!matches!(
             mode2.render_state(),
             ModeRenderState::SelectFields { .. }
         )); // NormalMode
         assert_eq!(tab.field_layout.columns, original.columns);
-        assert_eq!(tab.field_layout.columns_order, original.columns_order);
+        assert_eq!(tab.hidden_fields, original_hidden);
     }
 
     #[tokio::test]
     async fn test_mode_bar_content() {
-        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         assert!(matches!(
             mode.render_state(),
             ModeRenderState::SelectFields { .. }
@@ -334,7 +347,7 @@ mod tests {
     #[tokio::test]
     async fn test_down_arrow_moves_cursor() {
         let mut tab = make_tab().await;
-        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Down).await;
         match mode2.render_state() {
             ModeRenderState::SelectFields { selected, .. } => assert_eq!(selected, 1),
@@ -345,7 +358,8 @@ mod tests {
     #[tokio::test]
     async fn test_up_arrow_moves_cursor() {
         let mut tab = make_tab().await;
-        let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mut mode =
+            SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         mode.selected = 2;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Up).await;
         match mode2.render_state() {
@@ -357,7 +371,8 @@ mod tests {
     #[tokio::test]
     async fn test_shift_j_moves_field_down() {
         let mut tab = make_tab().await;
-        let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mut mode =
+            SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         mode.selected = 0; // "timestamp"
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('J')).await;
         match mode2.render_state() {
@@ -373,7 +388,8 @@ mod tests {
     #[tokio::test]
     async fn test_shift_k_moves_field_up() {
         let mut tab = make_tab().await;
-        let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mut mode =
+            SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         mode.selected = 2; // "message"
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('K')).await;
         match mode2.render_state() {
@@ -389,7 +405,8 @@ mod tests {
     #[tokio::test]
     async fn test_shift_j_at_end_stays() {
         let mut tab = make_tab().await;
-        let mut mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mut mode =
+            SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         mode.selected = 3; // last item
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('J')).await;
         match mode2.render_state() {
@@ -404,7 +421,7 @@ mod tests {
     #[tokio::test]
     async fn test_shift_k_at_zero_stays() {
         let mut tab = make_tab().await;
-        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('K')).await;
         match mode2.render_state() {
             ModeRenderState::SelectFields { fields, selected } => {
@@ -423,18 +440,24 @@ mod tests {
             ("timestamp".to_string(), true),
             ("message".to_string(), false),
         ];
-        let mode = SelectFieldsMode::new(fields, FieldLayout::default());
+        let mode = SelectFieldsMode::new(fields, FieldLayout::default(), HashSet::new());
         let (_, _) = press(mode, &mut tab, KeyCode::Enter).await;
         assert_eq!(
             tab.field_layout.columns,
-            Some(vec!["level".to_string(), "timestamp".to_string()])
+            Some(vec![
+                "level".to_string(),
+                "timestamp".to_string(),
+                "message".to_string()
+            ])
         );
+        assert!(tab.hidden_fields.contains("message"));
+        assert!(!tab.hidden_fields.contains("level"));
     }
 
     #[tokio::test]
     async fn test_unrecognized_key_returns_ignored() {
         let mut tab = make_tab().await;
-        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default());
+        let mode = SelectFieldsMode::new(sample_fields(), FieldLayout::default(), HashSet::new());
         let (_, result) = press(mode, &mut tab, KeyCode::F(2)).await;
         assert!(matches!(result, KeyResult::Ignored));
     }

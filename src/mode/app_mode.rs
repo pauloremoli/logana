@@ -204,7 +204,7 @@ impl Mode for ConfirmRestoreMode {
             tab.apply_file_context(&self.context);
             (
                 Box::new(NormalMode::default()),
-                KeyResult::AlwaysRestoreFile(self.context),
+                KeyResult::AlwaysRestoreFile(Box::new(self.context)),
             )
         } else if kb.never.matches(key, modifiers) {
             tab.log_manager.clear_filters().await;
@@ -402,6 +402,8 @@ mod tests {
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: std::collections::HashSet::new(),
+            field_layout_columns: None,
         }
     }
 

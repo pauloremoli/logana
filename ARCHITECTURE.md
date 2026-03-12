@@ -163,6 +163,15 @@ This layering is enforced entirely in `render.rs` (level and value) and `filters
 
 The render path never holds a borrow into the active mode. Instead, the mode produces a plain data value (`ModeRenderState`) describing what the screen needs to know (which popup to show, what text is in the search input, etc.) and the render pass reads that value. This avoids lifetime entanglement between the mode and the terminal frame.
 
+## Field Visibility
+
+Structured log fields are rendered by `apply_field_layout` (`ui/field_layout.rs`). Two orthogonal inputs control what is shown:
+
+- **`TabState.hidden_fields: HashSet<String>`** — the single source of truth for visibility. Any field name present here is excluded from rendering. Supports dotted names for span sub-fields (`"span.request_id"`). Updated by `:hide-field`, `:show-field`, `:show-all-fields`, and the select-fields modal.
+- **`TabState.field_layout: FieldLayout`** — holds an optional ordered list of all column names (`columns: Option<Vec<String>>`). When `Some`, defines the display order; when `None`, the default order is used. Visibility is still determined solely by `hidden_fields`.
+
+The select-fields modal (`SelectFieldsMode`) writes the full ordered list (enabled + disabled) to `field_layout.columns` on apply, and updates `hidden_fields` accordingly (disabled → insert, enabled → remove). On cancel, both `field_layout` and `hidden_fields` are restored from snapshots taken on modal entry. Both are persisted to SQLite via `FileContext` so session restore reproduces the exact same column visibility and order.
+
 ## Session Persistence
 
 Session state (scroll offset, marks, comments, filter definitions, display settings) is saved to SQLite keyed by the absolute file path and a hash of the file's first bytes. On reopen, the hash is checked before restoring — if the file has changed significantly the user is given the choice to restore or discard the previous session rather than silently applying stale annotations.
@@ -172,7 +181,7 @@ Filters are scoped per source file because a filter that is meaningful for one l
 ### DB schema
 
 - `filters` — per-file filter definitions
-- `file_context` — per-file session state (PK: `source_file`)
+- `file_context` — per-file session state (PK: `source_file`). Key columns: `scroll_offset`, `horizontal_scroll`, `search_query`, `marked_lines` (JSON), `annotations_json`, `show_keys`, `raw_mode`, `sidebar_width`, `level_colors_disabled` (JSON), `hidden_fields` (JSON — field names hidden via `:hide-field` or select-fields), `field_layout_columns` (JSON — full ordered column list from select-fields modal, `null` when using default order).
 - `session_tabs` — ordered list of last-open source files
 - `app_settings` — global key/value store for runtime preferences set interactively (e.g. `restore_session`, `restore_file_context` policies). The `config.json` file is read-only user configuration; any setting the app changes at runtime is stored here instead.
 

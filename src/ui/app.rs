@@ -1279,6 +1279,8 @@ mod tests {
             show_keys: false,
             raw_mode: false,
             sidebar_width: 30,
+            hidden_fields: std::collections::HashSet::new(),
+            field_layout_columns: None,
         }
     }
 
