@@ -72,6 +72,14 @@ struct Args {
         allow_hyphen_values = true
     )]
     timestamp_filters: Vec<String>,
+
+    /// Run without TUI, write matching lines to stdout or --output.
+    #[arg(long)]
+    headless: bool,
+
+    /// Write output to PATH instead of stdout (requires --headless).
+    #[arg(long, value_name = "PATH", requires = "headless")]
+    output: Option<std::path::PathBuf>,
 }
 
 fn get_db_path() -> String {
@@ -242,6 +250,19 @@ async fn main() -> Result<()> {
     }
 
     let keybindings = Arc::new(config.keybindings);
+
+    if args.headless {
+        logana::headless::run_headless(&logana::headless::HeadlessArgs {
+            file: file_path,
+            filters: args.filters,
+            include_filters: args.include_filters,
+            exclude_filters: args.exclude_filters,
+            timestamp_filters: args.timestamp_filters,
+            output: args.output,
+        })
+        .await?;
+        return Ok(());
+    }
 
     let res = {
         enable_raw_mode()?;

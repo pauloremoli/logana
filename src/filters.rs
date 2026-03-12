@@ -58,6 +58,17 @@ pub enum FilterDecision {
 
 pub trait Filter: Send + Sync {
     fn evaluate(&self, line: &[u8], collector: &mut MatchCollector) -> FilterDecision;
+
+    /// Return the filter decision without collecting match spans.
+    ///
+    /// Used by visibility-check paths that do not need span data, avoiding the
+    /// `MatchCollector` heap allocation entirely.  The default implementation
+    /// delegates to [`evaluate`] with a throwaway collector; implementors should
+    /// override this with a cheaper path.
+    fn matches(&self, line: &[u8]) -> FilterDecision {
+        let mut dummy = MatchCollector::new(line);
+        self.evaluate(line, &mut dummy)
+    }
 }
 
 /// Render a line using the collected match spans and a styles array.
@@ -308,6 +319,14 @@ impl Filter for SubstringFilter {
             FilterDecision::Neutral
         }
     }
+
+    fn matches(&self, line: &[u8]) -> FilterDecision {
+        if self.ac.is_match(line) {
+            self.decision
+        } else {
+            FilterDecision::Neutral
+        }
+    }
 }
 
 /// Include/exclude filter using Regex for pattern matching.
@@ -352,6 +371,18 @@ impl Filter for RegexFilter {
             if matches!(self.decision, FilterDecision::Include) && !self.match_only {
                 collector.push(0, line.len(), self.style_id);
             }
+            self.decision
+        } else {
+            FilterDecision::Neutral
+        }
+    }
+
+    fn matches(&self, line: &[u8]) -> FilterDecision {
+        let text = match std::str::from_utf8(line) {
+            Ok(s) => s,
+            Err(_) => return FilterDecision::Neutral,
+        };
+        if self.re.is_match(text) {
             self.decision
         } else {
             FilterDecision::Neutral
@@ -408,9 +439,8 @@ impl FilterManager {
     /// This is the same as `is_visible` but returns the decision rather than a bool,
     /// allowing callers to combine it with field and date filter results.
     pub fn evaluate_text(&self, line: &[u8]) -> FilterDecision {
-        let mut dummy = MatchCollector::new(line);
         for filter in &self.filters {
-            match filter.evaluate(line, &mut dummy) {
+            match filter.matches(line) {
                 d @ (FilterDecision::Include | FilterDecision::Exclude) => return d,
                 FilterDecision::Neutral => {}
             }
@@ -424,9 +454,8 @@ impl FilterManager {
     /// The first filter that matches (Include or Exclude) determines the outcome.
     /// If no filter matches, the line is visible only when there are no Include filters.
     pub fn is_visible(&self, line: &[u8]) -> bool {
-        let mut dummy = MatchCollector::new(line);
         for filter in &self.filters {
-            match filter.evaluate(line, &mut dummy) {
+            match filter.matches(line) {
                 FilterDecision::Include => return true,
                 FilterDecision::Exclude => return false,
                 FilterDecision::Neutral => {}
@@ -466,8 +495,7 @@ impl FilterManager {
     /// so that per-filter match counts accumulate correctly across lines.
     pub fn count_line_matches(&self, line: &[u8], counts: &[std::sync::atomic::AtomicUsize]) {
         for (i, filter) in self.filters.iter().enumerate() {
-            let mut dummy = MatchCollector::new(line);
-            if filter.evaluate(line, &mut dummy) != FilterDecision::Neutral
+            if filter.matches(line) != FilterDecision::Neutral
                 && let Some(c) = counts.get(i)
             {
                 c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -487,9 +515,8 @@ impl FilterManager {
             .into_par_iter()
             .filter(|&idx| {
                 let line = reader.get_line(idx);
-                let mut dummy = MatchCollector::new(line);
                 for filter in filters.iter() {
-                    match filter.evaluate(line, &mut dummy) {
+                    match filter.matches(line) {
                         FilterDecision::Include => return true,
                         FilterDecision::Exclude => return false,
                         FilterDecision::Neutral => {}
@@ -864,5 +891,57 @@ mod tests {
         fm.count_line_matches(b"ERROR: second", &counts);
 
         assert_eq!(counts[0].load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_substring_filter_matches_include() {
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        assert_eq!(f.matches(b"ERROR: something"), FilterDecision::Include);
+        assert_eq!(f.matches(b"INFO: something"), FilterDecision::Neutral);
+    }
+
+    #[test]
+    fn test_substring_filter_matches_exclude() {
+        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0).unwrap();
+        assert_eq!(f.matches(b"DEBUG: verbose"), FilterDecision::Exclude);
+        assert_eq!(f.matches(b"INFO: important"), FilterDecision::Neutral);
+    }
+
+    #[test]
+    fn test_regex_filter_matches_include() {
+        let f = RegexFilter::new(r"\d{3}", FilterDecision::Include, true, 0).unwrap();
+        assert_eq!(f.matches(b"status 200 OK"), FilterDecision::Include);
+        assert_eq!(f.matches(b"no digits here"), FilterDecision::Neutral);
+    }
+
+    #[test]
+    fn test_regex_filter_matches_exclude() {
+        let f = RegexFilter::new(r"^DEBUG", FilterDecision::Exclude, false, 0).unwrap();
+        assert_eq!(f.matches(b"DEBUG: noise"), FilterDecision::Exclude);
+        assert_eq!(f.matches(b"INFO: keep"), FilterDecision::Neutral);
+    }
+
+    #[test]
+    fn test_regex_filter_matches_invalid_utf8_returns_neutral() {
+        let f = RegexFilter::new("pattern", FilterDecision::Include, false, 0).unwrap();
+        assert_eq!(f.matches(b"\xff\xfe invalid"), FilterDecision::Neutral);
+    }
+
+    #[test]
+    fn test_matches_consistent_with_evaluate_substring() {
+        let line = b"ERROR: connection refused";
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 1).unwrap();
+        let mut col = MatchCollector::new(line);
+        let eval_decision = f.evaluate(line, &mut col);
+        assert_eq!(f.matches(line), eval_decision);
+    }
+
+    #[test]
+    fn test_matches_consistent_with_evaluate_regex() {
+        let line = b"GET /api 200 OK";
+        let f = RegexFilter::new(r"\d+", FilterDecision::Include, true, 0).unwrap();
+        let mut col = MatchCollector::new(line);
+        let eval_decision = f.evaluate(line, &mut col);
+        assert_eq!(f.matches(line), eval_decision);
     }
 }

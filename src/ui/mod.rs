@@ -214,7 +214,7 @@ fn merge_filter_counts(
 /// Pass-through rules (field filters only):
 /// - If the line cannot be parsed (e.g. a stack-trace continuation) → field filters do not apply.
 /// - If the line was parsed but the named field is absent → treated as Miss (hidden).
-fn line_is_visible(
+pub(crate) fn line_is_visible(
     fm: &FilterManager,
     line: &[u8],
     date_filters: &[crate::date_filter::DateFilter],

@@ -41,7 +41,7 @@
 //! than `MADV_DONTNEED`, which is advisory and ignored by the Linux kernel for
 //! file-backed shared mappings.
 
-use memchr::{memchr_iter, memchr3_iter};
+use memchr::{memchr_iter, memchr2, memchr3_iter};
 use memmap2::Mmap;
 #[cfg(unix)]
 use memmap2::{Advice, UncheckedAdvice};
@@ -850,7 +850,29 @@ fn strip_ansi_and_index(input: &[u8]) -> (Vec<u8>, Vec<usize>) {
     let mut out = Vec::with_capacity(input.len());
     let mut starts = vec![0usize];
     let mut i = 0;
+
     while i < input.len() {
+        // Fast path: scan ahead for the next ESC or CR, bulk-copy everything before it.
+        let safe_end = memchr2(b'\x1b', b'\r', &input[i..])
+            .map(|p| i + p)
+            .unwrap_or(input.len());
+
+        if safe_end > i {
+            let segment = &input[i..safe_end];
+            let out_base = out.len();
+            out.extend_from_slice(segment);
+            // Record line starts for every '\n' in the bulk-copied segment.
+            for nl in memchr_iter(b'\n', segment) {
+                starts.push(out_base + nl + 1);
+            }
+            i = safe_end;
+        }
+
+        if i >= input.len() {
+            break;
+        }
+
+        // Slow path: handle the control byte at `i`.
         match input[i] {
             b'\x1b' => {
                 i += 1;
@@ -892,17 +914,10 @@ fn strip_ansi_and_index(input: &[u8]) -> (Vec<u8>, Vec<usize>) {
             b'\r' => {
                 i += 1; // strip CR so \r\n becomes \n
             }
-            b'\n' => {
-                out.push(b'\n');
-                i += 1;
-                starts.push(out.len()); // next line starts at current output length
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
+            _ => unreachable!("memchr2 only stops at ESC or CR"),
         }
     }
+
     (out, starts)
 }
 
@@ -1734,6 +1749,47 @@ mod tests {
         let (out, starts) = strip_ansi_and_index(b"");
         assert!(out.is_empty());
         assert_eq!(starts, vec![0usize]);
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_bulk_copy_long_plain_segment() {
+        // A long plain segment (> 32 bytes) with no control bytes exercises the
+        // memchr2 fast path that bulk-copies the safe region.
+        let plain = b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ\n";
+        let input: Vec<u8> = plain.repeat(10);
+        let (out, starts) = strip_ansi_and_index(&input);
+        assert_eq!(out, input.as_slice());
+        assert_eq!(starts, compute_line_starts(&input));
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_bulk_copy_ansi_surrounded_by_long_plain() {
+        // Long plain prefix → ANSI escape → long plain suffix; verifies that both
+        // bulk-copy segments and the slow escape-parser produce correct output.
+        let prefix = b"a".repeat(100);
+        let suffix = b"b".repeat(100);
+        let mut input = prefix.clone();
+        input.extend_from_slice(b"\x1b[32m");
+        input.extend_from_slice(&suffix);
+        input.push(b'\n');
+
+        let mut expected = prefix;
+        expected.extend_from_slice(&suffix);
+        expected.push(b'\n');
+
+        let (out, starts) = strip_ansi_and_index(&input);
+        assert_eq!(out, expected);
+        assert_eq!(starts, compute_line_starts(&expected));
+    }
+
+    #[test]
+    fn test_strip_ansi_and_index_cr_only_no_newline() {
+        // Bare \r with no following \n — CR is stripped, no new line_start emitted.
+        let input = b"foo\rbar\n";
+        let expected = b"foobar\n";
+        let (out, starts) = strip_ansi_and_index(input);
+        assert_eq!(out, expected);
+        assert_eq!(starts, compute_line_starts(expected));
     }
 
     // -----------------------------------------------------------------------

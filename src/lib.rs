@@ -12,6 +12,7 @@ pub mod export;
 pub mod field_filter;
 pub mod file_reader;
 pub mod filters;
+pub mod headless;
 pub mod log_manager;
 pub mod mode;
 pub mod parser;
