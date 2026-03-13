@@ -6,6 +6,10 @@
 
 A TUI log analyzer/viewer built for speed - handles files with millions of lines with instant filtering and VIM like navigation.
 
+<p align="center">
+  <img src="demo.gif" alt="logana demo" />
+</p>
+
 
 ## What is it for
 

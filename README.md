@@ -4,7 +4,18 @@
 
 # logana
 
+<p align="center">
+  <a href="https://github.com/pauloremoli/logana/actions?query=workflow%3ARust"><img src="https://img.shields.io/github/actions/workflow/status/pauloremoli/logana/rust.yml?style=flat-square" /></a>
+  <a href="https://crates.io/crates/logana"><img src="https://img.shields.io/crates/v/logana.svg?style=flat-square" /></a>
+  <a href="https://crates.io/crates/logana"><img src="https://img.shields.io/crates/d/logana.svg?style=flat-square" /></a>
+  <a href="https://github.com/pauloremoli/logana/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/logana.svg?style=flat-square" /></a>
+</p>
+
 A fast terminal log viewer for files of any size — including multi-GB logs. Built on memory-mapped I/O and SIMD line indexing. Auto-detects log formats, filters by pattern, regex, field value, or date range — bookmark lines, add annotations, and export your analysis.
+
+<p align="center">
+  <img src="docs/src/demo.gif" alt="logana demo" />
+</p>
 
 ---
 
@@ -23,15 +34,6 @@ A fast terminal log viewer for files of any size — including multi-GB logs. Bu
 
 ---
 
-## Performance
-
-- **Zero-copy reads** — memory-mapped files let the OS page in only what's accessed, keeping RAM usage flat regardless of file size.
-- **SIMD-accelerated scanning** — line indexing uses CPU vector instructions to find new lines.
-- **Background filtering** — filter scans run across all CPU cores without blocking the UI.
-
-For a deeper look at design decisions, see [ARCHITECTURE.md](ARCHITECTURE.md).
-
----
 
 ## Supported Log Formats
 
@@ -41,6 +43,7 @@ Detected automatically on open — no flags or config required:
 |---|---|
 | JSON | tracing-subscriber JSON, bunyan, pino, any structured JSON logger |
 | Syslog | RFC 3164 (BSD), RFC 5424 |
+| OpenTelemetry |
 | Journalctl | short-iso, short-precise, short-full |
 | Common / Combined Log | Apache access, nginx access |
 | Logfmt | Go `slog`, Heroku, Grafana Loki |
@@ -81,14 +84,6 @@ cargo install logana
 
 ```sh
 cargo install --git https://github.com/pauloremoli/logana
-```
-
-### AUR (Arch Linux)
-
-```sh
-paru -S logana
-# or
-yay -S logana
 ```
 
 ---
@@ -154,7 +149,7 @@ Filters are layered — include patterns narrow the view, exclude patterns hide 
 :exclude --field level=debug
 ```
 
-Field filters match against parsed structured fields rather than raw line text. Aliases: `level`/`lvl`, `timestamp`/`ts`/`time`, `target`, `message`/`msg`. Any other key is looked up in the line's extra fields. Lines that are unparseable or missing the named field pass through unchanged.
+Field filters match against parsed structured fields rather than raw line text. Aliases: `level`, `timestamp`, `target`, `message`. 
 
 Filters are persisted to SQLite and restored the next time you open the same file.
 
@@ -227,19 +222,6 @@ logana app.log --headless -i "--field level=ERROR" -t "> 2024-02-21" --output ou
 
 All filter flags (`-i`, `-o`, `-t`, `-f`) work the same as in interactive mode.
 
----
-
-## Docker
-
-Stream any running container without leaving the terminal:
-
-```
-:docker
-```
-
-A picker lists running containers (`j`/`k` to navigate, `Enter` to attach). The stream opens in a new tab. Docker tabs are persisted across sessions — logana re-attaches automatically on next launch.
-
----
 
 ## Key Reference
 
@@ -330,38 +312,6 @@ A picker lists running containers (`j`/`k` to navigate, `Enter` to attach). The 
 
 ---
 
-## Commands
-
-Type `:` to enter command mode. Tab completes commands, flags, colors, themes, file paths, and field names (for `:hide-field` and `:show-field`).
-
-| Command | Description |
-|---|---|
-| `:filter <pattern>` | Add include filter |
-| `:filter --field <key>=<value>` | Add field-scoped include filter |
-| `:exclude <pattern>` | Add exclude filter |
-| `:exclude --field <key>=<value>` | Add field-scoped exclude filter |
-| `:date-filter <expr>` | Add date/time range filter |
-| `:set-color [--fg COLOR] [--bg COLOR]` | Set highlight color for selected filter |
-| `:open <path>` | Open file or directory |
-| `:close-tab` | Close current tab |
-| `:docker` | Pick and stream a Docker container |
-| `:tail` | Toggle tail mode (auto-scroll on new content) |
-| `:wrap` | Toggle line wrap |
-| `:level-colors` | Toggle log-level coloring |
-| `:value-colors` | Configure HTTP/IP/UUID token coloring |
-| `:hide-field <name\|N>` | Hide a field by name or visible index |
-| `:show-field <name>` | Show a previously hidden field by name |
-| `:show-all-fields` | Show all fields |
-| `:select-fields` | Interactive column picker |
-| `:set-theme <name>` | Switch color theme |
-| `:save-filters <file>` | Save current filters to JSON |
-| `:load-filters <file>` | Load filters from JSON |
-| `:export <file> [-t template]` | Export annotations to file |
-| `:raw` | Toggle raw mode (disable format parser, show unformatted bytes) |
-| `:<N>` | Jump to line N |
-
----
-
 ## Configuration
 
 Config file: `~/.config/logana/config.json`
@@ -438,5 +388,15 @@ Place custom themes (JSON) in `~/.config/logana/themes/`. Colors accept hex (`"#
 | `~/.config/logana/config.json` | Keybindings, theme, UI defaults, restore policy |
 | `~/.config/logana/themes/` | Custom themes |
 | `~/.config/logana/templates/` | Custom export templates |
+
+---
+
+## Performance
+
+- **Zero-copy reads** — memory-mapped files let the OS page in only what's accessed, keeping RAM usage flat regardless of file size.
+- **SIMD-accelerated scanning** — line indexing uses CPU vector instructions to find new lines.
+- **Background filtering** — filter scans run across all CPU cores without blocking the UI.
+
+For a deeper look at design decisions, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---

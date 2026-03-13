@@ -18,6 +18,7 @@ All notable changes to logana will be documented in this file.
 
 ### Changed
 - Marked lines now have a different visual than warning lines.
+- Return to normal mode after UI commands.
 
 ---
 
