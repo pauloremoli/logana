@@ -887,15 +887,6 @@ pub(crate) fn extract_date_filters(filter_defs: &[FilterDef]) -> Vec<DateFilter>
         .collect()
 }
 
-/// Returns `true` when `timestamp` passes **at least one** of the active date
-/// filters (OR semantics). An empty filter list always returns `true`.
-pub(crate) fn matches_any(filters: &[DateFilter], timestamp: &str) -> bool {
-    if filters.is_empty() {
-        return true;
-    }
-    filters.iter().any(|df| df.matches(timestamp))
-}
-
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -1634,49 +1625,5 @@ mod tests {
     fn test_normalize_iso_no_tz() {
         let n = normalize_log_timestamp("2024-02-22T10:15:30").unwrap();
         assert_eq!(n.canonical, "2024-02-22 10:15:30.000000");
-    }
-
-    // ── matches_any ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_matches_any_empty_filters_always_true() {
-        assert!(matches_any(&[], "2024-01-01T01:30:00Z"));
-        assert!(matches_any(&[], ""));
-    }
-
-    #[test]
-    fn test_matches_any_single_filter_match() {
-        let df = parse_date_filter("01:00 .. 02:00").unwrap();
-        assert!(matches_any(&[df], "2024-01-01T01:30:00Z"));
-    }
-
-    #[test]
-    fn test_matches_any_single_filter_no_match() {
-        let df = parse_date_filter("01:00 .. 02:00").unwrap();
-        assert!(!matches_any(&[df], "2024-01-01T03:30:00Z"));
-    }
-
-    #[test]
-    fn test_matches_any_two_non_overlapping_ranges_first_matches() {
-        let df1 = parse_date_filter("01:00 .. 02:00").unwrap();
-        let df2 = parse_date_filter("03:00 .. 04:00").unwrap();
-        // 01:30 is in the first range only → should pass.
-        assert!(matches_any(&[df1, df2], "2024-01-01T01:30:00Z"));
-    }
-
-    #[test]
-    fn test_matches_any_two_non_overlapping_ranges_second_matches() {
-        let df1 = parse_date_filter("01:00 .. 02:00").unwrap();
-        let df2 = parse_date_filter("03:00 .. 04:00").unwrap();
-        // 03:30 is in the second range only → should pass.
-        assert!(matches_any(&[df1, df2], "2024-01-01T03:30:00Z"));
-    }
-
-    #[test]
-    fn test_matches_any_two_non_overlapping_ranges_neither_matches() {
-        let df1 = parse_date_filter("01:00 .. 02:00").unwrap();
-        let df2 = parse_date_filter("03:00 .. 04:00").unwrap();
-        // 02:30 is between the two ranges → should not pass.
-        assert!(!matches_any(&[df1, df2], "2024-01-01T02:30:00Z"));
     }
 }

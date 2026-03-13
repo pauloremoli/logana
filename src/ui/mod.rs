@@ -206,8 +206,11 @@ fn merge_filter_counts(
 
 /// Decide whether a single log line should be visible given the full set of active filters.
 ///
-/// Text filters (compiled into `fm`) and field filters are combined with **OR** semantics
-/// for includes: a line is visible if any include filter — text or field — matches it.
+/// Accepts a pre-computed `text_dec` (from [`FilterManager::evaluate_and_count`] or
+/// [`FilterManager::evaluate_text`]) and pre-parsed `parts` so both can be produced once
+/// by the caller and reused here without a second scan or parse.
+///
+/// Text filters and field filters are combined with **OR** semantics for includes.
 /// Exclude filters from either source hide the line unconditionally.
 /// Date filters act as strict AND constraints on the timestamp field.
 ///
@@ -215,61 +218,58 @@ fn merge_filter_counts(
 /// - If the line cannot be parsed (e.g. a stack-trace continuation) → field filters do not apply.
 /// - If the line was parsed but the named field is absent → treated as Miss (hidden).
 pub(crate) fn line_is_visible(
-    fm: &FilterManager,
-    line: &[u8],
+    text_dec: FilterDecision,
+    has_text_includes: bool,
     date_filters: &[crate::date_filter::DateFilter],
-    date_counts: &[std::sync::atomic::AtomicUsize],
+    date_counts: &mut [usize],
     inc_ff: &[crate::field_filter::FieldFilter],
     exc_ff: &[crate::field_filter::FieldFilter],
-    parser: Option<&dyn LogFormatParser>,
+    parts: Option<&crate::parser::DisplayParts<'_>>,
 ) -> bool {
-    // Step 1: text filter — fast path, no parsing needed.
-    let text_dec = fm.evaluate_text(line);
+    // Step 1: text filter result — fast path.
     if text_dec == FilterDecision::Exclude {
         return false;
     }
 
-    // Step 2: parse the line once for date/field evaluation.
-    let parts = parser.and_then(|p| p.parse_line(line));
-
-    // Step 3: date filter — AND constraint (timestamp must fall in range).
+    // Step 2: date filter — AND constraint; count and check visibility in one pass.
     if !date_filters.is_empty()
-        && let Some(ref p) = parts
-        && let Some(ts) = p.timestamp
+        && let Some(ts) = parts.and_then(|p| p.timestamp)
     {
-        for (df, count) in date_filters.iter().zip(date_counts.iter()) {
+        let mut any_date_match = false;
+        for (df, count) in date_filters.iter().zip(date_counts.iter_mut()) {
             if df.matches(ts) {
-                count.fetch_add(1, Ordering::Relaxed);
+                *count += 1;
+                any_date_match = true;
             }
         }
-        if !crate::date_filter::matches_any(date_filters, ts) {
+        if !any_date_match {
             return false;
         }
     }
 
-    // Step 4: field exclude — hides the line if any matching exclude is found.
-    if any_field_exclude_matches(exc_ff, parts.as_ref()) {
+    // Step 3: field exclude — hides the line if any matching exclude is found.
+    if any_field_exclude_matches(exc_ff, parts) {
         return false;
     }
 
-    // Step 5: include resolution — text include OR field include.
+    // Step 4: include resolution — text include OR field include.
     if text_dec == FilterDecision::Include {
         return true;
     }
 
     // text_dec is Neutral; check field includes.
     if !inc_ff.is_empty() {
-        return match field_include_vote(inc_ff, parts.as_ref()) {
+        return match field_include_vote(inc_ff, parts) {
             FieldVote::Match => true,
             FieldVote::Miss => false,
             // Pass-through: field filters don't apply to this line; fall back to
             // text-filter-only logic (visible iff there are no text include filters).
-            FieldVote::PassThrough => !fm.has_include(),
+            FieldVote::PassThrough => !has_text_includes,
         };
     }
 
     // No field includes; visible iff no text include filters exist.
-    !fm.has_include()
+    !has_text_includes
 }
 
 /// Snapshot of the filter-driven view: visible indices + filter manager + styles.
@@ -780,44 +780,84 @@ impl TabState {
             let all_filter_defs = self.log_manager.get_filters().to_vec();
             let parser = self.detected_format.as_deref();
             use rayon::prelude::*;
-            use std::sync::atomic::AtomicUsize;
             let file_reader = &self.file_reader;
-            let n_text_filters = fm.filter_count();
-            let filter_counts: Vec<AtomicUsize> =
-                (0..n_text_filters).map(|_| AtomicUsize::new(0)).collect();
-            let ff_counts: Vec<AtomicUsize> =
-                (0..field_defs.len()).map(|_| AtomicUsize::new(0)).collect();
-            let df_counts: Vec<AtomicUsize> = (0..date_filters.len())
-                .map(|_| AtomicUsize::new(0))
-                .collect();
-            let visible: Vec<usize> = (0..self.file_reader.line_count())
+            let n_text = fm.filter_count();
+            let n_field = field_defs.len();
+            let n_date = date_filters.len();
+            let needs_parse = !date_filters.is_empty()
+                || !field_defs.is_empty()
+                || !inc_ff.is_empty()
+                || !exc_ff.is_empty();
+            let has_text_includes = fm.has_include();
+            let line_count = self.file_reader.line_count();
+            let (visible, text_counts, field_counts, date_counts) = (0..line_count)
                 .into_par_iter()
-                .filter(|&idx| {
-                    let line = file_reader.get_line(idx);
-                    fm.count_line_matches(line, &filter_counts);
-                    if !field_defs.is_empty() {
-                        let parts = parser.and_then(|p| p.parse_line(line));
-                        crate::field_filter::count_field_filter_matches(
-                            &field_defs,
+                .with_min_len(1024)
+                .fold(
+                    || {
+                        (
+                            Vec::new(),
+                            vec![0usize; n_text],
+                            vec![0usize; n_field],
+                            vec![0usize; n_date],
+                        )
+                    },
+                    |(mut vis, mut tc, mut fc, mut dc), idx| {
+                        let line = file_reader.get_line(idx);
+                        let text_dec = fm.evaluate_and_count(line, &mut tc);
+                        let can_skip = text_dec == FilterDecision::Exclude
+                            || (text_dec == FilterDecision::Neutral
+                                && has_text_includes
+                                && inc_ff.is_empty());
+                        let parts = if needs_parse && !can_skip {
+                            parser.and_then(|p| p.parse_line(line))
+                        } else {
+                            None
+                        };
+                        if !field_defs.is_empty() {
+                            crate::field_filter::count_field_filter_matches(
+                                &field_defs,
+                                parts.as_ref(),
+                                &mut fc,
+                            );
+                        }
+                        if line_is_visible(
+                            text_dec,
+                            has_text_includes,
+                            &date_filters,
+                            &mut dc,
+                            &inc_ff,
+                            &exc_ff,
                             parts.as_ref(),
-                            &ff_counts,
-                        );
-                    }
-                    line_is_visible(
-                        &fm,
-                        line,
-                        &date_filters,
-                        &df_counts,
-                        &inc_ff,
-                        &exc_ff,
-                        parser,
-                    )
-                })
-                .collect();
-            let text_counts: Vec<usize> =
-                filter_counts.into_iter().map(|c| c.into_inner()).collect();
-            let field_counts: Vec<usize> = ff_counts.into_iter().map(|c| c.into_inner()).collect();
-            let date_counts: Vec<usize> = df_counts.into_iter().map(|c| c.into_inner()).collect();
+                        ) {
+                            vis.push(idx);
+                        }
+                        (vis, tc, fc, dc)
+                    },
+                )
+                .reduce(
+                    || {
+                        (
+                            Vec::new(),
+                            vec![0usize; n_text],
+                            vec![0usize; n_field],
+                            vec![0usize; n_date],
+                        )
+                    },
+                    |(mut va, mut ta, mut fa, mut da), (vb, tb, fb, db)| {
+                        va.extend(vb);
+                        for (a, b) in ta.iter_mut().zip(tb) {
+                            *a += b;
+                        }
+                        for (a, b) in fa.iter_mut().zip(fb) {
+                            *a += b;
+                        }
+                        for (a, b) in da.iter_mut().zip(db) {
+                            *a += b;
+                        }
+                        (va, ta, fa, da)
+                    },
+                );
             self.filter_match_counts =
                 merge_filter_counts(&all_filter_defs, &text_counts, &field_counts, &date_counts);
             self.filter_manager_arc = Arc::new(fm);
@@ -1257,47 +1297,92 @@ impl TabState {
 
             let counter = AtomicUsize::new(0);
             let parser_ref: Option<&dyn LogFormatParser> = parser.as_deref();
-            let filter_counts: Vec<AtomicUsize> =
-                (0..n_text_filters).map(|_| AtomicUsize::new(0)).collect();
-            let ff_counts: Vec<AtomicUsize> =
-                (0..field_defs.len()).map(|_| AtomicUsize::new(0)).collect();
-            let df_counts: Vec<AtomicUsize> = (0..date_filters.len())
-                .map(|_| AtomicUsize::new(0))
-                .collect();
+            let n_text = n_text_filters;
+            let n_field = field_defs.len();
+            let n_date = date_filters.len();
 
             // Unified single pass: text + date + field filters evaluated together.
-            // Per-filter match counts are piggybacked on this pass at negligible cost.
-            let visible: Vec<usize> = (0..line_count)
+            // Per-filter match counts accumulate thread-locally and are merged at the end,
+            // eliminating atomic writes from the hot path entirely.
+            let needs_parse = !date_filters.is_empty()
+                || !field_defs.is_empty()
+                || !inc_ff.is_empty()
+                || !exc_ff.is_empty();
+            let has_text_includes = fm_arc.has_include();
+            let (visible, text_counts, field_counts, date_counts) = (0..line_count)
                 .into_par_iter()
-                .filter(|&i| {
-                    if cancel_clone.load(Ordering::Relaxed) {
-                        return false;
-                    }
-                    let n = counter.fetch_add(1, Ordering::Relaxed);
-                    if n.is_multiple_of(10_000) && line_count > 0 {
-                        let _ = progress_tx.send(n as f64 / line_count as f64);
-                    }
-                    let line = file_reader.get_line(i);
-                    fm_arc.count_line_matches(line, &filter_counts);
-                    if !field_defs.is_empty() {
-                        let parts = parser_ref.and_then(|p| p.parse_line(line));
-                        crate::field_filter::count_field_filter_matches(
-                            &field_defs,
+                .with_min_len(1024)
+                .fold(
+                    || {
+                        (
+                            Vec::new(),
+                            vec![0usize; n_text],
+                            vec![0usize; n_field],
+                            vec![0usize; n_date],
+                        )
+                    },
+                    |(mut vis, mut tc, mut fc, mut dc), i| {
+                        let n = counter.fetch_add(1, Ordering::Relaxed);
+                        if n.is_multiple_of(10_000) {
+                            if cancel_clone.load(Ordering::Relaxed) {
+                                return (vis, tc, fc, dc);
+                            }
+                            if line_count > 0 {
+                                let _ = progress_tx.send(n as f64 / line_count as f64);
+                            }
+                        }
+                        let line = file_reader.get_line(i);
+                        let text_dec = fm_arc.evaluate_and_count(line, &mut tc);
+                        let can_skip = text_dec == FilterDecision::Exclude && field_defs.is_empty();
+                        let parts = if needs_parse && !can_skip {
+                            parser_ref.and_then(|p| p.parse_line(line))
+                        } else {
+                            None
+                        };
+                        if !field_defs.is_empty() {
+                            crate::field_filter::count_field_filter_matches(
+                                &field_defs,
+                                parts.as_ref(),
+                                &mut fc,
+                            );
+                        }
+                        if line_is_visible(
+                            text_dec,
+                            has_text_includes,
+                            &date_filters,
+                            &mut dc,
+                            &inc_ff,
+                            &exc_ff,
                             parts.as_ref(),
-                            &ff_counts,
-                        );
-                    }
-                    line_is_visible(
-                        &fm_arc,
-                        line,
-                        &date_filters,
-                        &df_counts,
-                        &inc_ff,
-                        &exc_ff,
-                        parser_ref,
-                    )
-                })
-                .collect();
+                        ) {
+                            vis.push(i);
+                        }
+                        (vis, tc, fc, dc)
+                    },
+                )
+                .reduce(
+                    || {
+                        (
+                            Vec::new(),
+                            vec![0usize; n_text],
+                            vec![0usize; n_field],
+                            vec![0usize; n_date],
+                        )
+                    },
+                    |(mut va, mut ta, mut fa, mut da), (vb, tb, fb, db)| {
+                        va.extend(vb);
+                        for (a, b) in ta.iter_mut().zip(tb) {
+                            *a += b;
+                        }
+                        for (a, b) in fa.iter_mut().zip(fb) {
+                            *a += b;
+                        }
+                        for (a, b) in da.iter_mut().zip(db) {
+                            *a += b;
+                        }
+                        (va, ta, fa, da)
+                    },
+                );
 
             if cancel_clone.load(Ordering::Relaxed) {
                 return;
@@ -1305,10 +1390,6 @@ impl TabState {
 
             let _ = progress_tx.send(1.0);
 
-            let text_counts: Vec<usize> =
-                filter_counts.into_iter().map(|c| c.into_inner()).collect();
-            let field_counts: Vec<usize> = ff_counts.into_iter().map(|c| c.into_inner()).collect();
-            let date_counts: Vec<usize> = df_counts.into_iter().map(|c| c.into_inner()).collect();
             let unified =
                 merge_filter_counts(&all_filter_defs, &text_counts, &field_counts, &date_counts);
 
@@ -3063,5 +3144,368 @@ mod tests {
             );
         }
         assert!(!index.values.get("level").unwrap_or(&vec![]).is_empty());
+    }
+
+    // ── skip-parse optimisation ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_refresh_visible_skip_parse_for_neutral_with_text_include() {
+        // text include + date filter: lines not matching the include are Neutral
+        // and should be hidden without parse_line being called (no timestamp → invisible).
+        let lines = [
+            r#"{"ts":"2024-01-01T01:00:00","msg":"GET /api"}"#,
+            r#"{"ts":"2024-01-01T01:00:00","msg":"POST /api"}"#,
+            "plain line without timestamp",
+        ];
+        let mut tab = make_tab(&lines).await;
+        tab.log_manager
+            .add_filter_with_color("GET".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.log_manager
+            .add_filter_with_color(
+                "@date:00:00:00 .. 23:59:59".to_string(),
+                FilterType::Include,
+                None,
+                None,
+                true,
+            )
+            .await;
+        tab.refresh_visible();
+        // Only the GET line matches the text include; the others are hidden.
+        assert_eq!(tab.visible_indices.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_visible_skip_parse_for_exclude() {
+        // text exclude filter: matching lines are hidden without needing parse_line.
+        let lines = ["DEBUG: verbose", "INFO: keep", "DEBUG: more noise"];
+        let mut tab = make_tab(&lines).await;
+        tab.log_manager
+            .add_filter_with_color("DEBUG".to_string(), FilterType::Exclude, None, None, true)
+            .await;
+        tab.refresh_visible();
+        assert_eq!(tab.visible_indices.len(), 1);
+        assert_eq!(tab.visible_indices.get(0), 1);
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_skip_parse_for_exclude() {
+        // Exclude filter in background path: matching lines hidden, parse skipped.
+        let lines = ["DEBUG: verbose", "INFO: keep", "DEBUG: more noise"];
+        let mut tab = make_tab(&lines).await;
+        tab.log_manager
+            .add_filter_with_color("DEBUG".to_string(), FilterType::Exclude, None, None, true)
+            .await;
+        tab.begin_filter_refresh();
+        let h = tab.filter_handle.take().unwrap();
+        let result = h.result_rx.await.unwrap();
+        assert_eq!(result.visible, vec![1]);
+    }
+
+    // ── line_is_visible ──────────────────────────────────────────────────────
+
+    fn make_fm_include(pattern: &str) -> FilterManager {
+        let f = crate::filters::SubstringFilter::new(pattern, FilterDecision::Include, false, 0)
+            .unwrap();
+        FilterManager::new(vec![Box::new(f)], true)
+    }
+
+    fn make_fm_exclude(pattern: &str) -> FilterManager {
+        let f = crate::filters::SubstringFilter::new(pattern, FilterDecision::Exclude, false, 0)
+            .unwrap();
+        FilterManager::new(vec![Box::new(f)], false)
+    }
+
+    #[test]
+    fn test_line_is_visible_text_include_matches() {
+        let fm = make_fm_include("ERROR");
+        let dec = fm.evaluate_text(b"ERROR: bad");
+        assert!(line_is_visible(
+            dec,
+            fm.has_include(),
+            &[],
+            &mut [],
+            &[],
+            &[],
+            None
+        ));
+    }
+
+    #[test]
+    fn test_line_is_visible_text_include_no_match_hidden() {
+        let fm = make_fm_include("ERROR");
+        let dec = fm.evaluate_text(b"INFO: fine");
+        assert!(!line_is_visible(
+            dec,
+            fm.has_include(),
+            &[],
+            &mut [],
+            &[],
+            &[],
+            None
+        ));
+    }
+
+    #[test]
+    fn test_line_is_visible_text_exclude_hides() {
+        let fm = make_fm_exclude("DEBUG");
+        let dec = fm.evaluate_text(b"DEBUG: noisy");
+        assert!(!line_is_visible(
+            dec,
+            fm.has_include(),
+            &[],
+            &mut [],
+            &[],
+            &[],
+            None
+        ));
+    }
+
+    #[test]
+    fn test_line_is_visible_text_exclude_non_matching_visible() {
+        let fm = make_fm_exclude("DEBUG");
+        let dec = fm.evaluate_text(b"INFO: keep");
+        assert!(line_is_visible(
+            dec,
+            fm.has_include(),
+            &[],
+            &mut [],
+            &[],
+            &[],
+            None
+        ));
+    }
+
+    #[test]
+    fn test_line_is_visible_no_filters_always_visible() {
+        assert!(line_is_visible(
+            FilterDecision::Neutral,
+            false,
+            &[],
+            &mut [],
+            &[],
+            &[],
+            None
+        ));
+    }
+
+    #[test]
+    fn test_line_is_visible_date_filter_match_passes() {
+        use crate::date_filter::parse_date_filter;
+        use crate::parser::DisplayParts;
+        let df = parse_date_filter("01:00 .. 02:00").unwrap();
+        let mut counts = vec![0usize];
+        let parts = DisplayParts {
+            timestamp: Some("2024-01-01T01:30:00Z"),
+            ..Default::default()
+        };
+        assert!(line_is_visible(
+            FilterDecision::Neutral,
+            false,
+            &[df],
+            &mut counts,
+            &[],
+            &[],
+            Some(&parts),
+        ));
+        assert_eq!(counts[0], 1);
+    }
+
+    #[test]
+    fn test_line_is_visible_date_filter_no_match_hidden() {
+        use crate::date_filter::parse_date_filter;
+        use crate::parser::DisplayParts;
+        let df = parse_date_filter("01:00 .. 02:00").unwrap();
+        let mut counts = vec![0usize];
+        let parts = DisplayParts {
+            timestamp: Some("2024-01-01T03:00:00Z"),
+            ..Default::default()
+        };
+        assert!(!line_is_visible(
+            FilterDecision::Neutral,
+            false,
+            &[df],
+            &mut counts,
+            &[],
+            &[],
+            Some(&parts),
+        ));
+        assert_eq!(counts[0], 0);
+    }
+
+    #[test]
+    fn test_line_is_visible_date_filter_no_timestamp_passes_through() {
+        use crate::date_filter::parse_date_filter;
+        use crate::parser::DisplayParts;
+        let df = parse_date_filter("01:00 .. 02:00").unwrap();
+        let mut counts = vec![0usize];
+        let parts = DisplayParts {
+            timestamp: None,
+            ..Default::default()
+        };
+        // No timestamp → date filter does not apply → line passes through.
+        assert!(line_is_visible(
+            FilterDecision::Neutral,
+            false,
+            &[df],
+            &mut counts,
+            &[],
+            &[],
+            Some(&parts),
+        ));
+    }
+
+    #[test]
+    fn test_line_is_visible_date_filter_counts_all_matching() {
+        use crate::date_filter::parse_date_filter;
+        use crate::parser::DisplayParts;
+        let df1 = parse_date_filter("01:00 .. 02:00").unwrap();
+        let df2 = parse_date_filter("00:00 .. 03:00").unwrap();
+        let mut counts = vec![0usize; 2];
+        let parts = DisplayParts {
+            timestamp: Some("2024-01-01T01:30:00Z"),
+            ..Default::default()
+        };
+        assert!(line_is_visible(
+            FilterDecision::Neutral,
+            false,
+            &[df1, df2],
+            &mut counts,
+            &[],
+            &[],
+            Some(&parts),
+        ));
+        assert_eq!(counts[0], 1);
+        assert_eq!(counts[1], 1);
+    }
+
+    #[test]
+    fn test_line_is_visible_field_exclude_hides() {
+        use crate::field_filter::FieldFilter;
+        use crate::parser::DisplayParts;
+        let exc = FieldFilter {
+            field: "level".to_string(),
+            pattern: "debug".to_string(),
+            decision: FilterDecision::Exclude,
+        };
+        let parts = DisplayParts {
+            level: Some("debug"),
+            ..Default::default()
+        };
+        assert!(!line_is_visible(
+            FilterDecision::Neutral,
+            false,
+            &[],
+            &mut [],
+            &[],
+            &[exc],
+            Some(&parts),
+        ));
+    }
+
+    #[test]
+    fn test_line_is_visible_field_include_match_visible() {
+        use crate::field_filter::FieldFilter;
+        use crate::parser::DisplayParts;
+        let inc = FieldFilter {
+            field: "level".to_string(),
+            pattern: "error".to_string(),
+            decision: FilterDecision::Include,
+        };
+        let parts = DisplayParts {
+            level: Some("error"),
+            ..Default::default()
+        };
+        assert!(line_is_visible(
+            FilterDecision::Neutral,
+            false,
+            &[],
+            &mut [],
+            &[inc],
+            &[],
+            Some(&parts),
+        ));
+    }
+
+    #[test]
+    fn test_line_is_visible_field_include_miss_hidden() {
+        use crate::field_filter::FieldFilter;
+        use crate::parser::DisplayParts;
+        let inc = FieldFilter {
+            field: "level".to_string(),
+            pattern: "error".to_string(),
+            decision: FilterDecision::Include,
+        };
+        let parts = DisplayParts {
+            level: Some("info"),
+            ..Default::default()
+        };
+        assert!(!line_is_visible(
+            FilterDecision::Neutral,
+            false,
+            &[],
+            &mut [],
+            &[inc],
+            &[],
+            Some(&parts),
+        ));
+    }
+
+    #[test]
+    fn test_line_is_visible_text_include_beats_field_include_miss() {
+        use crate::field_filter::FieldFilter;
+        use crate::parser::DisplayParts;
+        // Text include matched; field include miss doesn't override.
+        let inc = FieldFilter {
+            field: "level".to_string(),
+            pattern: "error".to_string(),
+            decision: FilterDecision::Include,
+        };
+        let parts = DisplayParts {
+            level: Some("info"),
+            ..Default::default()
+        };
+        assert!(line_is_visible(
+            FilterDecision::Include,
+            true,
+            &[],
+            &mut [],
+            &[inc],
+            &[],
+            Some(&parts),
+        ));
+    }
+
+    #[test]
+    fn test_line_is_visible_field_passthrough_when_unparseable() {
+        use crate::field_filter::FieldFilter;
+        fn make_inc() -> FieldFilter {
+            FieldFilter {
+                field: "level".to_string(),
+                pattern: "error".to_string(),
+                decision: FilterDecision::Include,
+            }
+        }
+        // parts=None → field filters do not apply → falls back to text-only logic.
+        // has_text_includes=false → visible (no include filter applies)
+        assert!(line_is_visible(
+            FilterDecision::Neutral,
+            false,
+            &[],
+            &mut [],
+            &[make_inc()],
+            &[],
+            None
+        ));
+        // has_text_includes=true → hidden (include filter present but nothing matched)
+        assert!(!line_is_visible(
+            FilterDecision::Neutral,
+            true,
+            &[],
+            &mut [],
+            &[make_inc()],
+            &[],
+            None
+        ));
     }
 }

@@ -7,7 +7,6 @@
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 
 use anyhow::Result;
 
@@ -15,6 +14,7 @@ use crate::date_filter::extract_date_filters;
 use crate::db::Database;
 use crate::field_filter::extract_field_filters;
 use crate::file_reader::FileReader;
+use crate::filters::FilterDecision;
 use crate::log_manager::LogManager;
 use crate::parser::detect_format;
 use crate::types::FilterType;
@@ -156,24 +156,63 @@ pub fn run_headless_to_writer(
     let filter_defs = log_manager.get_filters();
     let date_filters = extract_date_filters(filter_defs);
     let (inc_ff, exc_ff) = extract_field_filters(filter_defs);
-    let df_counts: Vec<AtomicUsize> = (0..date_filters.len())
-        .map(|_| AtomicUsize::new(0))
-        .collect();
+    let needs_parse = !date_filters.is_empty() || !inc_ff.is_empty() || !exc_ff.is_empty();
+    let has_text_includes = fm.has_include();
+    let n_date = date_filters.len();
+    let line_count = reader.line_count();
 
-    for idx in 0..reader.line_count() {
+    // Parallel filter pass: determine visible indices using all available cores.
+    let visible: Vec<usize> = {
+        use rayon::prelude::*;
+        (0..line_count)
+            .into_par_iter()
+            .with_min_len(1024)
+            .fold(
+                || (Vec::new(), vec![0usize; n_date]),
+                |(mut vis, mut dc), idx| {
+                    let line = reader.get_line(idx);
+                    let text_dec = fm.evaluate_text(line);
+                    let can_skip = text_dec == FilterDecision::Exclude
+                        || (text_dec == FilterDecision::Neutral
+                            && has_text_includes
+                            && inc_ff.is_empty());
+                    let parts = if needs_parse && !can_skip {
+                        parser_ref.and_then(|p| p.parse_line(line))
+                    } else {
+                        None
+                    };
+                    if crate::ui::line_is_visible(
+                        text_dec,
+                        has_text_includes,
+                        &date_filters,
+                        &mut dc,
+                        &inc_ff,
+                        &exc_ff,
+                        parts.as_ref(),
+                    ) {
+                        vis.push(idx);
+                    }
+                    (vis, dc)
+                },
+            )
+            .reduce(
+                || (Vec::new(), vec![0usize; n_date]),
+                |(mut va, mut da), (vb, db)| {
+                    va.extend(vb);
+                    for (a, b) in da.iter_mut().zip(db) {
+                        *a += b;
+                    }
+                    (va, da)
+                },
+            )
+            .0
+    };
+
+    // Sequential write pass: output matching lines in original order.
+    for idx in visible {
         let line = reader.get_line(idx);
-        if crate::ui::line_is_visible(
-            &fm,
-            line,
-            &date_filters,
-            &df_counts,
-            &inc_ff,
-            &exc_ff,
-            parser_ref,
-        ) {
-            writer.write_all(line)?;
-            writer.write_all(b"\n")?;
-        }
+        writer.write_all(line)?;
+        writer.write_all(b"\n")?;
     }
 
     Ok(())

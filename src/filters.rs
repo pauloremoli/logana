@@ -540,6 +540,91 @@ impl FilterManager {
         self.filters.len()
     }
 
+    /// Count all matching filters into `counts` and return the first-match [`FilterDecision`]
+    /// in a single scan.
+    ///
+    /// Combines the work of [`count_line_matches`] and [`evaluate_text`]: the Aho-Corasick
+    /// automaton (or individual filter list) is scanned exactly once per call.  All filters
+    /// that match are counted; the decision of the lowest-index matching filter is returned.
+    ///
+    /// `counts` is a plain (non-atomic) slice — callers must use thread-local accumulators
+    /// and merge them after the parallel scan.
+    pub fn evaluate_and_count(&self, line: &[u8], counts: &mut [usize]) -> FilterDecision {
+        if let Some(ref ac) = self.combined_ac {
+            let mut best: Option<(usize, FilterDecision)> = None;
+
+            if self.filters.len() <= 64 {
+                // Bitset dedup: no heap allocation, O(matches) instead of O(K log K).
+                let mut seen: u64 = 0;
+                for m in ac.find_iter(line) {
+                    let (filter_idx, decision) = self.combined_ac_meta[m.pattern().as_usize()];
+                    if best.is_none_or(|(best_idx, _)| filter_idx < best_idx) {
+                        best = Some((filter_idx, decision));
+                    }
+                    seen |= 1u64 << filter_idx;
+                }
+                let mut bits = seen;
+                while bits != 0 {
+                    let bit = bits.trailing_zeros() as usize;
+                    if let Some(c) = counts.get_mut(bit) {
+                        *c += 1;
+                    }
+                    bits &= bits - 1;
+                }
+            } else {
+                let mut matched: Vec<usize> = ac
+                    .find_iter(line)
+                    .map(|m| {
+                        let (filter_idx, decision) = self.combined_ac_meta[m.pattern().as_usize()];
+                        if best.is_none_or(|(best_idx, _)| filter_idx < best_idx) {
+                            best = Some((filter_idx, decision));
+                        }
+                        filter_idx
+                    })
+                    .collect();
+                matched.sort_unstable();
+                matched.dedup();
+                for filter_idx in matched {
+                    if let Some(c) = counts.get_mut(filter_idx) {
+                        *c += 1;
+                    }
+                }
+            }
+
+            for &fi in &self.regex_filter_indices {
+                if let Some(filter) = self.filters.get(fi) {
+                    let d = filter.matches(line);
+                    if d != FilterDecision::Neutral {
+                        if let Some(c) = counts.get_mut(fi) {
+                            *c += 1;
+                        }
+                        if best.is_none_or(|(best_idx, _)| fi < best_idx) {
+                            best = Some((fi, d));
+                        }
+                    }
+                }
+            }
+
+            best.map(|(_, d)| d).unwrap_or(FilterDecision::Neutral)
+        } else {
+            let mut result = FilterDecision::Neutral;
+            let mut has_best = false;
+            for (i, filter) in self.filters.iter().enumerate() {
+                let d = filter.matches(line);
+                if d != FilterDecision::Neutral {
+                    if let Some(c) = counts.get_mut(i) {
+                        *c += 1;
+                    }
+                    if !has_best {
+                        result = d;
+                        has_best = true;
+                    }
+                }
+            }
+            result
+        }
+    }
+
     /// Evaluate each filter independently on `line` and increment the corresponding
     /// counter in `counts` (indexed parallel to the internal filter list).
     ///
@@ -1093,6 +1178,126 @@ mod tests {
         fm.count_line_matches(b"ERROR ERROR", &counts);
         assert_eq!(counts[0].load(std::sync::atomic::Ordering::Relaxed), 1);
         assert_eq!(counts[1].load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    // ── evaluate_and_count ────────────────────────────────────────────
+
+    #[test]
+    fn test_evaluate_and_count_returns_include_decision() {
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f)], true);
+        let mut counts = vec![0usize];
+        let dec = fm.evaluate_and_count(b"ERROR: bad", &mut counts);
+        assert_eq!(dec, FilterDecision::Include);
+        assert_eq!(counts[0], 1);
+    }
+
+    #[test]
+    fn test_evaluate_and_count_returns_exclude_decision() {
+        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f)], false);
+        let mut counts = vec![0usize];
+        let dec = fm.evaluate_and_count(b"DEBUG: noisy", &mut counts);
+        assert_eq!(dec, FilterDecision::Exclude);
+        assert_eq!(counts[0], 1);
+    }
+
+    #[test]
+    fn test_evaluate_and_count_returns_neutral_on_no_match() {
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f)], true);
+        let mut counts = vec![0usize];
+        let dec = fm.evaluate_and_count(b"INFO: fine", &mut counts);
+        assert_eq!(dec, FilterDecision::Neutral);
+        assert_eq!(counts[0], 0);
+    }
+
+    #[test]
+    fn test_evaluate_and_count_counts_all_matching_no_short_circuit() {
+        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f2 = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 1).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f1), Box::new(f2)], true);
+        let mut counts = vec![0usize; 2];
+        let dec = fm.evaluate_and_count(b"ERROR DEBUG both", &mut counts);
+        assert_eq!(dec, FilterDecision::Include);
+        assert_eq!(counts[0], 1);
+        assert_eq!(counts[1], 1);
+    }
+
+    #[test]
+    fn test_evaluate_and_count_first_match_wins_by_index() {
+        let f1 = SubstringFilter::new("WARN", FilterDecision::Include, false, 0).unwrap();
+        let f2 = SubstringFilter::new("ERROR", FilterDecision::Exclude, false, 1).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f1), Box::new(f2)], true);
+        let mut counts = vec![0usize; 2];
+        let dec = fm.evaluate_and_count(b"ERROR only", &mut counts);
+        assert_eq!(dec, FilterDecision::Exclude);
+        let dec2 = fm.evaluate_and_count(b"WARN ERROR both", &mut counts);
+        assert_eq!(dec2, FilterDecision::Include);
+    }
+
+    #[test]
+    fn test_evaluate_and_count_consistent_with_separate_calls() {
+        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f2 = SubstringFilter::new("WARN", FilterDecision::Include, false, 1).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f1), Box::new(f2)], true);
+
+        let lines: &[&[u8]] = &[
+            b"ERROR: critical",
+            b"WARN: degraded",
+            b"INFO: fine",
+            b"ERROR WARN: both",
+        ];
+        for line in lines {
+            let mut counts_a = vec![0usize; 2];
+            let counts_b: Vec<std::sync::atomic::AtomicUsize> = (0..2)
+                .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                .collect();
+
+            let dec_combined = fm.evaluate_and_count(line, &mut counts_a);
+            fm.count_line_matches(line, &counts_b);
+            let dec_separate = fm.evaluate_text(line);
+
+            assert_eq!(
+                dec_combined, dec_separate,
+                "decision mismatch for {:?}",
+                line
+            );
+            for i in 0..2 {
+                assert_eq!(
+                    counts_a[i],
+                    counts_b[i].load(std::sync::atomic::Ordering::Relaxed),
+                    "count mismatch at filter {i} for {:?}",
+                    line
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_evaluate_and_count_combined_ac_path() {
+        let fm = make_combined_fm(
+            &[
+                ("ERROR", FilterDecision::Include),
+                ("WARN", FilterDecision::Include),
+            ],
+            true,
+        );
+        let mut counts = vec![0usize; 2];
+        assert_eq!(
+            fm.evaluate_and_count(b"ERROR WARN line", &mut counts),
+            FilterDecision::Include
+        );
+        assert_eq!(counts[0], 1);
+        assert_eq!(counts[1], 1);
+    }
+
+    #[test]
+    fn test_evaluate_and_count_no_double_count_repeated_pattern() {
+        let fm = make_combined_fm(&[("ERROR", FilterDecision::Include)], true);
+        let mut counts = vec![0usize];
+        fm.evaluate_and_count(b"ERROR ERROR ERROR", &mut counts);
+        assert_eq!(counts[0], 1);
     }
 
     #[test]
