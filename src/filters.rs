@@ -4,34 +4,6 @@
 //! parallel via rayon. Literal patterns use Aho-Corasick; patterns with regex
 //! metacharacters fall back to the `regex` crate. [`render_line`] flattens
 //! overlapping styled spans into a ratatui [`Line`].
-//!
-//! ## Key types
-//!
-//! - `Filter` trait: `fn evaluate(&self, line: &[u8], collector: &mut MatchCollector) -> FilterDecision`
-//! - `FilterDecision`: `Include | Exclude | Neutral`
-//! - `SubstringFilter`: Aho-Corasick for literal patterns (no regex metacharacters).
-//! - `RegexFilter`: `regex` crate fallback for patterns with metacharacters.
-//! - `build_filter(pattern, decision, match_only, style_id)`: dispatches to the
-//!   correct implementation.
-//! - `FilterManager::compute_visible(&FileReader) -> Vec<usize>`: parallel
-//!   evaluation via `rayon::into_par_iter()`, returns ascending sorted indices.
-//! - `FilterManager::is_visible(&[u8]) -> bool`: if any enabled Include filter
-//!   exists, the line must match one; any Exclude match hides the line regardless.
-//! - `MatchCollector`: accumulates `MatchSpan { start, end, style: StyleId,
-//!   priority }` for a single line.
-//! - `StyleId` (`u8`): index into the 256-slot styles array. `SEARCH_STYLE_ID
-//!   = u8::MAX = 255` reserved for search highlights; `CURRENT_SEARCH_STYLE_ID
-//!   = u8::MAX - 1 = 254` reserved for the active search occurrence.
-//!
-//! ## render_line sweep algorithm
-//!
-//! Spans are sorted by start position. All start/end byte positions are
-//! collected as boundary points, sorted and deduplicated. For each interval
-//! `[seg_s, seg_e)`, active spans are composed: `fg` comes from the active span
-//! with the highest priority that has `fg` set; `bg` comes from the active span
-//! with the highest priority that has `bg` set. This allows two filters that set
-//! different attributes on the same segment (e.g. one sets `fg`, another sets
-//! `bg`) to both apply. Adjacent intervals with the same composed style are merged.
 
 use aho_corasick::AhoCorasick;
 use ratatui::text::{Line, Span};
@@ -56,8 +28,29 @@ pub enum FilterDecision {
     Neutral,
 }
 
+impl FilterDecision {
+    /// Returns true when this decision is Include or Exclude (not Neutral).
+    #[inline]
+    pub fn is_decided(self) -> bool {
+        self != FilterDecision::Neutral
+    }
+
+    /// Convert to a visibility boolean given whether include filters exist.
+    #[inline]
+    pub fn to_visibility(self, has_include_filters: bool) -> bool {
+        match self {
+            FilterDecision::Include => true,
+            FilterDecision::Exclude => false,
+            FilterDecision::Neutral => !has_include_filters,
+        }
+    }
+}
+
 pub trait Filter: Send + Sync {
     fn evaluate(&self, line: &[u8], collector: &mut MatchCollector) -> FilterDecision;
+
+    /// The decision this filter produces on a match (Include or Exclude).
+    fn decision(&self) -> FilterDecision;
 
     /// Return the filter decision without collecting match spans.
     ///
@@ -71,6 +64,55 @@ pub trait Filter: Send + Sync {
     }
 }
 
+/// Lossily convert a byte slice to an owned `String`.
+#[inline]
+fn slice_to_string(bytes: &[u8]) -> String {
+    std::str::from_utf8(bytes).unwrap_or("").to_string()
+}
+
+/// Drain set bits from a u64 bitset into a mutable counts slice.
+#[inline]
+fn flush_bitset_counts(mut bits: u64, counts: &mut [usize]) {
+    while bits != 0 {
+        let bit = bits.trailing_zeros() as usize;
+        if let Some(c) = counts.get_mut(bit) {
+            *c += 1;
+        }
+        bits &= bits - 1;
+    }
+}
+
+/// Drain set bits from a u64 bitset into an atomic counts slice.
+#[inline]
+fn flush_bitset_counts_atomic(mut bits: u64, counts: &[std::sync::atomic::AtomicUsize]) {
+    while bits != 0 {
+        let bit = bits.trailing_zeros() as usize;
+        if let Some(c) = counts.get(bit) {
+            c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        bits &= bits - 1;
+    }
+}
+
+/// Extract line bytes at `global` index from a contiguous data buffer.
+///
+/// Strips the trailing newline if present, matching `FileReader::get_line` semantics.
+#[inline]
+fn line_bytes_at<'a>(data: &'a [u8], line_starts: &[usize], global: usize) -> &'a [u8] {
+    let start = line_starts[global];
+    let end = if global + 1 < line_starts.len() {
+        let next = line_starts[global + 1];
+        if next > 0 && data.get(next - 1) == Some(&b'\n') {
+            next - 1
+        } else {
+            next
+        }
+    } else {
+        data.len()
+    };
+    &data[start..end]
+}
+
 /// Render a line using the collected match spans and a styles array.
 ///
 /// For each boundary interval, `fg` and `bg` are composed independently: each attribute
@@ -78,58 +120,68 @@ pub trait Filter: Send + Sync {
 /// a level filter (fg only) and a text filter (bg only) both apply to the same segment.
 pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -> Line<'a> {
     if col.spans.is_empty() {
-        let text = std::str::from_utf8(col.line).unwrap_or("").to_string();
-        return Line::from(text);
+        return Line::from(slice_to_string(col.line));
     }
 
     let line_len = col.line.len();
+    let mut valid = collect_valid_spans(col, line_len);
+    if valid.is_empty() {
+        return Line::from(slice_to_string(col.line));
+    }
+    valid.sort_unstable_by_key(|&(start, _, _, _)| start);
 
-    // Filter to valid spans and sort by start for the sweep activation step.
-    let mut valid: Vec<(usize, usize, u32, StyleId)> = col
-        .spans
+    let boundaries = collect_boundaries(&valid, line_len);
+    let events = sweep_styled_events(&valid, &boundaries, styles);
+    events_to_line(col.line, line_len, &events)
+}
+
+/// Filter collector spans to valid (non-empty, in-bounds) tuples.
+#[inline]
+fn collect_valid_spans(col: &MatchCollector, line_len: usize) -> Vec<(usize, usize, u32, StyleId)> {
+    col.spans
         .iter()
         .filter(|s| s.start < s.end && s.end <= line_len)
         .map(|s| (s.start, s.end, s.priority, s.style))
-        .collect();
+        .collect()
+}
 
-    if valid.is_empty() {
-        let text = std::str::from_utf8(col.line).unwrap_or("").to_string();
-        return Line::from(text);
-    }
-
-    valid.sort_unstable_by_key(|&(start, _, _, _)| start);
-
-    // Collect unique boundary points from valid spans.
-    let mut boundaries: Vec<usize> = Vec::with_capacity(valid.len() * 2 + 2);
+/// Collect unique sorted boundary points from valid spans plus line extents.
+#[inline]
+fn collect_boundaries(valid: &[(usize, usize, u32, StyleId)], line_len: usize) -> Vec<usize> {
+    let mut boundaries = Vec::with_capacity(valid.len() * 2 + 2);
     boundaries.push(0);
     boundaries.push(line_len);
-    for &(start, end, _, _) in &valid {
+    for &(start, end, _, _) in valid {
         boundaries.push(start);
         boundaries.push(end);
     }
     boundaries.sort_unstable();
     boundaries.dedup();
+    boundaries
+}
 
-    // Sweep-line: for each boundary interval [seg_s, seg_e) maintain the list of
-    // active spans and compose fg/bg independently (highest priority wins for each).
-    let mut active: Vec<(u32, usize, StyleId)> = Vec::new(); // (priority, end, style_id)
+/// Sweep-line pass: for each boundary interval compose fg/bg from the active
+/// spans and merge adjacent intervals with the same style.
+fn sweep_styled_events(
+    valid: &[(usize, usize, u32, StyleId)],
+    boundaries: &[usize],
+    styles: &[ratatui::style::Style],
+) -> Vec<(usize, usize, ratatui::style::Style)> {
+    let mut active: Vec<(u32, usize, StyleId)> = Vec::new();
     let mut span_idx = 0usize;
-
-    // Merge adjacent intervals with the same composed style to minimise Span count.
     let mut events: Vec<(usize, usize, ratatui::style::Style)> =
         Vec::with_capacity(boundaries.len());
+
     for w in boundaries.windows(2) {
         let (seg_s, seg_e) = (w[0], w[1]);
         if seg_s >= seg_e {
             continue;
         }
-        // Activate all spans whose start ≤ seg_s.
         while span_idx < valid.len() && valid[span_idx].0 <= seg_s {
             let (_, end, priority, style) = valid[span_idx];
             active.push((priority, end, style));
             span_idx += 1;
         }
-        // Remove spans that no longer cover this interval.
         active.retain(|&(_, end, _)| end > seg_s);
         if active.is_empty() {
             continue;
@@ -147,24 +199,27 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
             events.push((seg_s, seg_e, composed));
         }
     }
+    events
+}
 
-    // Build ratatui spans from events, filling unstyled gaps with raw text.
+/// Build a ratatui [`Line`] from styled events, filling unstyled gaps with raw text.
+fn events_to_line<'a>(
+    line: &[u8],
+    line_len: usize,
+    events: &[(usize, usize, ratatui::style::Style)],
+) -> Line<'a> {
     let mut spans: Vec<Span<'a>> = Vec::new();
     let mut pos = 0usize;
 
-    for (start, end, style) in events {
+    for &(start, end, style) in events {
         if start > pos {
-            let text = std::str::from_utf8(&col.line[pos..start])
-                .unwrap_or("")
-                .to_string();
+            let text = slice_to_string(&line[pos..start]);
             if !text.is_empty() {
                 spans.push(Span::raw(text));
             }
         }
         if end > start {
-            let text = std::str::from_utf8(&col.line[start..end])
-                .unwrap_or("")
-                .to_string();
+            let text = slice_to_string(&line[start..end]);
             if !text.is_empty() {
                 spans.push(Span::styled(text, style));
             }
@@ -173,48 +228,49 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
     }
 
     if pos < line_len {
-        let text = std::str::from_utf8(&col.line[pos..])
-            .unwrap_or("")
-            .to_string();
+        let text = slice_to_string(&line[pos..]);
         if !text.is_empty() {
             spans.push(Span::raw(text));
         }
     }
-
     Line::from(spans)
 }
 
 /// Compose a single [`ratatui::style::Style`] from a set of active spans.
 ///
 /// `fg` is taken from the span with the highest priority that has `fg` set;
-/// `bg` from the span with the highest priority that has `bg` set.  Spans that
-/// set neither attribute are ignored for that attribute's composition.
+/// `bg` from the span with the highest priority that has `bg` set.
+#[inline]
 fn compose_segment_style(
     active: &[(u32, usize, StyleId)],
     styles: &[ratatui::style::Style],
 ) -> ratatui::style::Style {
-    let mut best_fg: Option<(u32, ratatui::style::Color)> = None;
-    let mut best_bg: Option<(u32, ratatui::style::Color)> = None;
+    let mut best_fg: Option<ratatui::style::Color> = None;
+    let mut best_fg_priority: u32 = 0;
+    let mut best_bg: Option<ratatui::style::Color> = None;
+    let mut best_bg_priority: u32 = 0;
 
     for &(priority, _, style_id) in active {
         let style = styles.get(style_id as usize).copied().unwrap_or_default();
         if let Some(fg) = style.fg
-            && best_fg.is_none_or(|(p, _)| priority > p)
+            && (best_fg.is_none() || priority > best_fg_priority)
         {
-            best_fg = Some((priority, fg));
+            best_fg_priority = priority;
+            best_fg = Some(fg);
         }
         if let Some(bg) = style.bg
-            && best_bg.is_none_or(|(p, _)| priority > p)
+            && (best_bg.is_none() || priority > best_bg_priority)
         {
-            best_bg = Some((priority, bg));
+            best_bg_priority = priority;
+            best_bg = Some(bg);
         }
     }
 
     let mut composed = ratatui::style::Style::default();
-    if let Some((_, fg)) = best_fg {
+    if let Some(fg) = best_fg {
         composed = composed.fg(fg);
     }
-    if let Some((_, bg)) = best_bg {
+    if let Some(bg) = best_bg {
         composed = composed.bg(bg);
     }
     composed
@@ -273,8 +329,10 @@ pub struct SubstringFilter {
     ac: AhoCorasick,
     decision: FilterDecision,
     style_id: StyleId,
-    /// If true, only colour the matched spans rather than the whole line.
-    match_only: bool,
+    /// Precomputed: push individual match spans (Include && match_only).
+    push_match_spans: bool,
+    /// Precomputed: push a full-line span (Include && !match_only).
+    push_full_line: bool,
 }
 
 impl SubstringFilter {
@@ -288,27 +346,33 @@ impl SubstringFilter {
             .ascii_case_insensitive(false)
             .build([pattern])
             .ok()?;
+        let is_include = decision == FilterDecision::Include;
         Some(SubstringFilter {
             ac,
             decision,
             style_id,
-            match_only,
+            push_match_spans: is_include && match_only,
+            push_full_line: is_include && !match_only,
         })
     }
 }
 
 impl Filter for SubstringFilter {
+    #[inline]
+    fn decision(&self) -> FilterDecision {
+        self.decision
+    }
+
     fn evaluate(&self, line: &[u8], collector: &mut MatchCollector) -> FilterDecision {
         let mut found = false;
         for mat in self.ac.find_iter(line) {
             found = true;
-            if matches!(self.decision, FilterDecision::Include) && self.match_only {
+            if self.push_match_spans {
                 collector.push(mat.start(), mat.end(), self.style_id);
             }
         }
         if found {
-            // For Include filters, add a full-line span when not match_only
-            if matches!(self.decision, FilterDecision::Include) && !self.match_only {
+            if self.push_full_line {
                 collector.push(0, line.len(), self.style_id);
             }
             self.decision
@@ -331,7 +395,10 @@ pub struct RegexFilter {
     re: Regex,
     decision: FilterDecision,
     style_id: StyleId,
-    match_only: bool,
+    /// Precomputed: push individual match spans (Include && match_only).
+    push_match_spans: bool,
+    /// Precomputed: push a full-line span (Include && !match_only).
+    push_full_line: bool,
 }
 
 impl RegexFilter {
@@ -342,16 +409,23 @@ impl RegexFilter {
         match_only: bool,
         style_id: StyleId,
     ) -> Option<Self> {
+        let is_include = decision == FilterDecision::Include;
         Regex::new(pattern).ok().map(|re| RegexFilter {
             re,
             decision,
             style_id,
-            match_only,
+            push_match_spans: is_include && match_only,
+            push_full_line: is_include && !match_only,
         })
     }
 }
 
 impl Filter for RegexFilter {
+    #[inline]
+    fn decision(&self) -> FilterDecision {
+        self.decision
+    }
+
     fn evaluate(&self, line: &[u8], collector: &mut MatchCollector) -> FilterDecision {
         let text = match std::str::from_utf8(line) {
             Ok(s) => s,
@@ -360,12 +434,12 @@ impl Filter for RegexFilter {
         let mut found = false;
         for mat in self.re.find_iter(text) {
             found = true;
-            if matches!(self.decision, FilterDecision::Include) && self.match_only {
+            if self.push_match_spans {
                 collector.push(mat.start(), mat.end(), self.style_id);
             }
         }
         if found {
-            if matches!(self.decision, FilterDecision::Include) && !self.match_only {
+            if self.push_full_line {
                 collector.push(0, line.len(), self.style_id);
             }
             self.decision
@@ -406,6 +480,10 @@ pub fn build_filter(
 /// Orchestrates a layered pipeline of filters and provides parallel visibility computation.
 pub struct FilterManager {
     filters: Vec<Box<dyn Filter>>,
+    /// Per-filter decision: `filter_decisions[i]` is the `FilterDecision` for
+    /// `filters[i]`. Used by whole-buffer scan paths to map filter index → decision
+    /// without re-evaluating the filter.
+    filter_decisions: Vec<FilterDecision>,
     /// True if any enabled Include filter exists.
     has_include_filters: bool,
     /// Combined Aho-Corasick automaton built from all literal (non-regex) patterns.
@@ -420,8 +498,10 @@ pub struct FilterManager {
 impl FilterManager {
     pub fn new(filters: Vec<Box<dyn Filter>>, has_include_filters: bool) -> Self {
         let n = filters.len();
+        let filter_decisions: Vec<FilterDecision> = filters.iter().map(|f| f.decision()).collect();
         FilterManager {
             filters,
+            filter_decisions,
             has_include_filters,
             combined_ac: None,
             combined_ac_meta: Vec::new(),
@@ -437,8 +517,10 @@ impl FilterManager {
         combined_ac_meta: Vec<(usize, FilterDecision)>,
         regex_filter_indices: Vec<usize>,
     ) -> Self {
+        let filter_decisions: Vec<FilterDecision> = filters.iter().map(|f| f.decision()).collect();
         FilterManager {
             filters,
+            filter_decisions,
             has_include_filters,
             combined_ac,
             combined_ac_meta,
@@ -449,6 +531,7 @@ impl FilterManager {
     pub fn empty() -> Self {
         FilterManager {
             filters: Vec::new(),
+            filter_decisions: Vec::new(),
             has_include_filters: false,
             combined_ac: None,
             combined_ac_meta: Vec::new(),
@@ -457,6 +540,7 @@ impl FilterManager {
     }
 
     /// Returns true if any enabled Include filter exists.
+    #[inline]
     pub fn has_include(&self) -> bool {
         self.has_include_filters
     }
@@ -483,9 +567,7 @@ impl FilterManager {
             for &fi in &self.regex_filter_indices {
                 if let Some(filter) = self.filters.get(fi) {
                     let d = filter.matches(line);
-                    if d != FilterDecision::Neutral
-                        && best.is_none_or(|(best_idx, _)| fi < best_idx)
-                    {
+                    if d.is_decided() && best.is_none_or(|(best_idx, _)| fi < best_idx) {
                         best = Some((fi, d));
                     }
                 }
@@ -494,9 +576,9 @@ impl FilterManager {
             best.map(|(_, d)| d).unwrap_or(FilterDecision::Neutral)
         } else {
             for filter in &self.filters {
-                match filter.matches(line) {
-                    d @ (FilterDecision::Include | FilterDecision::Exclude) => return d,
-                    FilterDecision::Neutral => {}
+                let d = filter.matches(line);
+                if d.is_decided() {
+                    return d;
                 }
             }
             FilterDecision::Neutral
@@ -508,12 +590,10 @@ impl FilterManager {
     /// Filters are evaluated top-to-bottom (index 0 = highest precedence).
     /// The first filter that matches (Include or Exclude) determines the outcome.
     /// If no filter matches, the line is visible only when there are no Include filters.
+    #[inline]
     pub fn is_visible(&self, line: &[u8]) -> bool {
-        match self.evaluate_text(line) {
-            FilterDecision::Include => true,
-            FilterDecision::Exclude => false,
-            FilterDecision::Neutral => !self.has_include_filters,
-        }
+        self.evaluate_text(line)
+            .to_visibility(self.has_include_filters)
     }
 
     /// Run all filters on `line` and collect styling spans for rendering.
@@ -536,6 +616,7 @@ impl FilterManager {
     }
 
     /// Returns the number of compiled text filters in this manager.
+    #[inline]
     pub fn filter_count(&self) -> usize {
         self.filters.len()
     }
@@ -551,33 +632,28 @@ impl FilterManager {
     /// and merge them after the parallel scan.
     pub fn evaluate_and_count(&self, line: &[u8], counts: &mut [usize]) -> FilterDecision {
         if let Some(ref ac) = self.combined_ac {
-            let mut best: Option<(usize, FilterDecision)> = None;
+            let mut best_idx = usize::MAX;
+            let mut best_decision = FilterDecision::Neutral;
 
             if self.filters.len() <= 64 {
-                // Bitset dedup: no heap allocation, O(matches) instead of O(K log K).
                 let mut seen: u64 = 0;
                 for m in ac.find_iter(line) {
                     let (filter_idx, decision) = self.combined_ac_meta[m.pattern().as_usize()];
-                    if best.is_none_or(|(best_idx, _)| filter_idx < best_idx) {
-                        best = Some((filter_idx, decision));
+                    if filter_idx < best_idx {
+                        best_idx = filter_idx;
+                        best_decision = decision;
                     }
                     seen |= 1u64 << filter_idx;
                 }
-                let mut bits = seen;
-                while bits != 0 {
-                    let bit = bits.trailing_zeros() as usize;
-                    if let Some(c) = counts.get_mut(bit) {
-                        *c += 1;
-                    }
-                    bits &= bits - 1;
-                }
+                flush_bitset_counts(seen, counts);
             } else {
                 let mut matched: Vec<usize> = ac
                     .find_iter(line)
                     .map(|m| {
                         let (filter_idx, decision) = self.combined_ac_meta[m.pattern().as_usize()];
-                        if best.is_none_or(|(best_idx, _)| filter_idx < best_idx) {
-                            best = Some((filter_idx, decision));
+                        if filter_idx < best_idx {
+                            best_idx = filter_idx;
+                            best_decision = decision;
                         }
                         filter_idx
                     })
@@ -594,24 +670,25 @@ impl FilterManager {
             for &fi in &self.regex_filter_indices {
                 if let Some(filter) = self.filters.get(fi) {
                     let d = filter.matches(line);
-                    if d != FilterDecision::Neutral {
+                    if d.is_decided() {
                         if let Some(c) = counts.get_mut(fi) {
                             *c += 1;
                         }
-                        if best.is_none_or(|(best_idx, _)| fi < best_idx) {
-                            best = Some((fi, d));
+                        if fi < best_idx {
+                            best_idx = fi;
+                            best_decision = d;
                         }
                     }
                 }
             }
 
-            best.map(|(_, d)| d).unwrap_or(FilterDecision::Neutral)
+            best_decision
         } else {
             let mut result = FilterDecision::Neutral;
             let mut has_best = false;
             for (i, filter) in self.filters.iter().enumerate() {
                 let d = filter.matches(line);
-                if d != FilterDecision::Neutral {
+                if d.is_decided() {
                     if let Some(c) = counts.get_mut(i) {
                         *c += 1;
                     }
@@ -632,21 +709,29 @@ impl FilterManager {
     /// so that per-filter match counts accumulate correctly across lines.
     pub fn count_line_matches(&self, line: &[u8], counts: &[std::sync::atomic::AtomicUsize]) {
         if let Some(ref ac) = self.combined_ac {
-            let mut matched: Vec<usize> = ac
-                .find_iter(line)
-                .map(|m| self.combined_ac_meta[m.pattern().as_usize()].0)
-                .collect();
-            matched.sort_unstable();
-            matched.dedup();
-            for filter_idx in matched {
-                if let Some(c) = counts.get(filter_idx) {
-                    c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.filters.len() <= 64 {
+                let mut seen: u64 = 0;
+                for m in ac.find_iter(line) {
+                    seen |= 1u64 << self.combined_ac_meta[m.pattern().as_usize()].0;
+                }
+                flush_bitset_counts_atomic(seen, counts);
+            } else {
+                let mut matched: Vec<usize> = ac
+                    .find_iter(line)
+                    .map(|m| self.combined_ac_meta[m.pattern().as_usize()].0)
+                    .collect();
+                matched.sort_unstable();
+                matched.dedup();
+                for filter_idx in matched {
+                    if let Some(c) = counts.get(filter_idx) {
+                        c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
             }
 
             for &fi in &self.regex_filter_indices {
                 if let Some(filter) = self.filters.get(fi)
-                    && filter.matches(line) != FilterDecision::Neutral
+                    && filter.matches(line).is_decided()
                     && let Some(c) = counts.get(fi)
                 {
                     c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -654,7 +739,7 @@ impl FilterManager {
             }
         } else {
             for (i, filter) in self.filters.iter().enumerate() {
-                if filter.matches(line) != FilterDecision::Neutral
+                if filter.matches(line).is_decided()
                     && let Some(c) = counts.get(i)
                 {
                     c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -673,6 +758,262 @@ impl FilterManager {
             .filter(|&idx| self.is_visible(reader.get_line(idx)))
             .collect()
     }
+
+    /// Returns true when a combined Aho-Corasick automaton is available and can
+    /// be used for whole-buffer scanning.
+    #[inline]
+    pub fn has_combined_ac(&self) -> bool {
+        self.combined_ac.is_some()
+    }
+
+    /// Evaluate a contiguous range of lines by scanning the raw data buffer with
+    /// a single Aho-Corasick pass instead of per-line iterator calls.
+    ///
+    /// Returns `(visible_indices, text_counts)` where `text_counts[i]` is the
+    /// number of lines matched by text filter `i` within this range.
+    ///
+    /// # Arguments
+    /// - `data`: the contiguous file buffer (`FileReader::data()`).
+    /// - `line_starts`: sorted byte offsets (`FileReader::line_starts()`).
+    /// - `line_range`: the `start..end` range of line indices to evaluate.
+    ///
+    /// # Panics
+    /// Panics if `combined_ac` is `None` — callers must check `has_combined_ac()`.
+    pub fn evaluate_chunk_wholefile(
+        &self,
+        data: &[u8],
+        line_starts: &[usize],
+        line_range: std::ops::Range<usize>,
+    ) -> (Vec<usize>, Vec<usize>) {
+        use rayon::prelude::*;
+
+        let ac = self
+            .combined_ac
+            .as_ref()
+            .expect("evaluate_chunk_wholefile requires combined_ac");
+
+        let n_filters = self.filters.len();
+        let chunk_line_start = line_range.start;
+        let chunk_line_end = line_range.end;
+        let chunk_line_count = chunk_line_end - chunk_line_start;
+        if chunk_line_count == 0 {
+            return (Vec::new(), vec![0; n_filters]);
+        }
+
+        let n_threads = rayon::current_num_threads().max(1);
+        let sub_chunk_len = chunk_line_count.div_ceil(n_threads);
+
+        let results: Vec<(Vec<usize>, Vec<usize>)> = (0..n_threads)
+            .into_par_iter()
+            .filter_map(|t| {
+                let sub_start = chunk_line_start + t * sub_chunk_len;
+                let sub_end = (sub_start + sub_chunk_len).min(chunk_line_end);
+                if sub_start >= sub_end {
+                    return None;
+                }
+                Some(self.scan_sub_chunk(ac, data, line_starts, sub_start, sub_end, n_filters))
+            })
+            .collect();
+
+        merge_sub_chunk_results(results, n_filters)
+    }
+
+    /// Scan a sub-chunk of lines using the AC automaton on the contiguous data
+    /// buffer, then evaluate regex fallback filters, count matches, and build
+    /// the visibility vec.
+    fn scan_sub_chunk(
+        &self,
+        ac: &AhoCorasick,
+        data: &[u8],
+        line_starts: &[usize],
+        sub_start: usize,
+        sub_end: usize,
+        n_filters: usize,
+    ) -> (Vec<usize>, Vec<usize>) {
+        let sub_line_count = sub_end - sub_start;
+        let mut state = SubChunkState::new(sub_line_count, n_filters);
+
+        self.scan_ac_with_cursor(ac, data, line_starts, sub_start, &mut state);
+        self.scan_regex_fallback(data, line_starts, sub_start, &mut state);
+
+        let tc = state.aggregate_counts(n_filters);
+        let vis = self.build_visibility_from_best(&state.best, sub_start);
+        (vis, tc)
+    }
+
+    /// Single AC pass over a contiguous byte range, mapping match positions
+    /// to line indices with a forward cursor.
+    fn scan_ac_with_cursor(
+        &self,
+        ac: &AhoCorasick,
+        data: &[u8],
+        line_starts: &[usize],
+        sub_start: usize,
+        state: &mut SubChunkState,
+    ) {
+        let sub_line_count = state.best.len();
+        let sub_byte_start = line_starts[sub_start];
+        let sub_end = sub_start + sub_line_count;
+        let sub_byte_end = if sub_end < line_starts.len() {
+            line_starts[sub_end]
+        } else {
+            data.len()
+        };
+        let sub_data = &data[sub_byte_start..sub_byte_end];
+
+        let mut cursor: usize = 0;
+        let mut cursor_byte_end = next_line_byte(line_starts, data, sub_start);
+
+        for mat in ac.find_iter(sub_data) {
+            let abs_pos = sub_byte_start + mat.start();
+            while abs_pos >= cursor_byte_end && cursor + 1 < sub_line_count {
+                cursor += 1;
+                cursor_byte_end = next_line_byte(line_starts, data, sub_start + cursor);
+            }
+
+            let (filter_idx, _) = self.combined_ac_meta[mat.pattern().as_usize()];
+            state.record(cursor, filter_idx);
+        }
+    }
+
+    /// Per-line regex fallback for lines not yet decided by a higher-priority AC match.
+    fn scan_regex_fallback(
+        &self,
+        data: &[u8],
+        line_starts: &[usize],
+        sub_start: usize,
+        state: &mut SubChunkState,
+    ) {
+        if self.regex_filter_indices.is_empty() {
+            return;
+        }
+        let sub_line_count = state.best.len();
+        for local in 0..sub_line_count {
+            let global = sub_start + local;
+            for &fi in &self.regex_filter_indices {
+                if state.best[local] != u8::MAX && (state.best[local] as usize) < fi {
+                    continue;
+                }
+                if let Some(filter) = self.filters.get(fi) {
+                    let lb = line_bytes_at(data, line_starts, global);
+                    if filter.matches(lb).is_decided() {
+                        state.record(local, fi);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Build the visible-indices vec from the per-line best-filter array.
+    #[inline]
+    fn build_visibility_from_best(&self, best: &[u8], sub_start: usize) -> Vec<usize> {
+        let mut vis = Vec::new();
+        for (local, &b) in best.iter().enumerate() {
+            let decision = if b == u8::MAX {
+                FilterDecision::Neutral
+            } else {
+                self.filter_decisions
+                    .get(b as usize)
+                    .copied()
+                    .unwrap_or(FilterDecision::Neutral)
+            };
+            if decision.to_visibility(self.has_include_filters) {
+                vis.push(sub_start + local);
+            }
+        }
+        vis
+    }
+}
+
+/// Per-line tracking state for a sub-chunk during whole-buffer scanning.
+struct SubChunkState {
+    /// Best (lowest-index) matching filter per line; `u8::MAX` = no match.
+    best: Vec<u8>,
+    /// Bitset dedup for counting when `≤64` filters.
+    seen_bits: Vec<u64>,
+    /// Fallback dedup for `>64` filters.
+    seen_set: Vec<Vec<usize>>,
+    /// Whether the bitset path is in use.
+    use_bitset: bool,
+}
+
+impl SubChunkState {
+    fn new(sub_line_count: usize, n_filters: usize) -> Self {
+        let use_bitset = n_filters <= 64;
+        SubChunkState {
+            best: vec![u8::MAX; sub_line_count],
+            seen_bits: if use_bitset {
+                vec![0u64; sub_line_count]
+            } else {
+                Vec::new()
+            },
+            seen_set: if use_bitset {
+                Vec::new()
+            } else {
+                vec![Vec::new(); sub_line_count]
+            },
+            use_bitset,
+        }
+    }
+
+    /// Record a filter match for the given local line index.
+    #[inline]
+    fn record(&mut self, local: usize, filter_idx: usize) {
+        let fi8 = filter_idx as u8;
+        if fi8 < self.best[local] {
+            self.best[local] = fi8;
+        }
+        if self.use_bitset {
+            self.seen_bits[local] |= 1u64 << filter_idx;
+        } else {
+            self.seen_set[local].push(filter_idx);
+        }
+    }
+
+    /// Aggregate the seen data into a total counts vec.
+    fn aggregate_counts(&mut self, n_filters: usize) -> Vec<usize> {
+        let mut tc = vec![0usize; n_filters];
+        if self.use_bitset {
+            for &bits in &self.seen_bits {
+                flush_bitset_counts(bits, &mut tc);
+            }
+        } else {
+            for set in &mut self.seen_set {
+                set.sort_unstable();
+                set.dedup();
+                for &fi in set.iter() {
+                    tc[fi] += 1;
+                }
+            }
+        }
+        tc
+    }
+}
+
+/// Byte offset where the line *after* `line_idx` begins (or data length).
+#[inline]
+fn next_line_byte(line_starts: &[usize], data: &[u8], line_idx: usize) -> usize {
+    if line_idx + 1 < line_starts.len() {
+        line_starts[line_idx + 1]
+    } else {
+        data.len()
+    }
+}
+
+/// Merge parallel sub-chunk results into a single (visible, counts) pair.
+fn merge_sub_chunk_results(
+    results: Vec<(Vec<usize>, Vec<usize>)>,
+    n_filters: usize,
+) -> (Vec<usize>, Vec<usize>) {
+    let mut visible = Vec::new();
+    let mut counts = vec![0usize; n_filters];
+    for (vis, tc) in results {
+        visible.extend(vis);
+        for (a, b) in counts.iter_mut().zip(tc) {
+            *a += b;
+        }
+    }
+    (visible, counts)
 }
 
 #[cfg(test)]
@@ -1323,5 +1664,156 @@ mod tests {
         assert!(fm.is_visible(b"ERROR: bad"));
         assert!(fm.is_visible(b"status 200 OK"));
         assert!(!fm.is_visible(b"INFO: plain"));
+    }
+
+    // ── evaluate_chunk_wholefile ─────────────────────────────────────
+
+    fn make_wholefile_data(lines: &[&str]) -> (Vec<u8>, Vec<usize>) {
+        let mut data = Vec::new();
+        let mut starts = vec![0usize];
+        for line in lines {
+            data.extend_from_slice(line.as_bytes());
+            data.push(b'\n');
+            starts.push(data.len());
+        }
+        (data, starts)
+    }
+
+    #[test]
+    fn test_wholefile_include_filters_visible() {
+        let fm = make_combined_fm(
+            &[
+                ("ERROR", FilterDecision::Include),
+                ("WARN", FilterDecision::Include),
+            ],
+            true,
+        );
+        let (data, starts) =
+            make_wholefile_data(&["ERROR: bad", "INFO: ok", "WARN: degraded", "DEBUG: verbose"]);
+        let (visible, counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..4);
+        assert_eq!(visible, vec![0, 2]);
+        assert_eq!(counts[0], 1, "ERROR filter count");
+        assert_eq!(counts[1], 1, "WARN filter count");
+    }
+
+    #[test]
+    fn test_wholefile_exclude_filter() {
+        let fm = make_combined_fm(&[("DEBUG", FilterDecision::Exclude)], false);
+        let (data, starts) = make_wholefile_data(&["ERROR: bad", "DEBUG: noisy", "INFO: ok"]);
+        let (visible, counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..3);
+        assert_eq!(visible, vec![0, 2]);
+        assert_eq!(counts[0], 1, "DEBUG matched once");
+    }
+
+    #[test]
+    fn test_wholefile_no_double_count_repeated_pattern() {
+        let fm = make_combined_fm(&[("ERROR", FilterDecision::Include)], true);
+        let (data, starts) = make_wholefile_data(&["ERROR ERROR ERROR"]);
+        let (visible, counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..1);
+        assert_eq!(visible, vec![0]);
+        assert_eq!(counts[0], 1, "must count line once despite 3 matches");
+    }
+
+    #[test]
+    fn test_wholefile_first_match_wins_by_filter_order() {
+        let fm = make_combined_fm(
+            &[
+                ("WARN", FilterDecision::Include),
+                ("ERROR", FilterDecision::Exclude),
+            ],
+            true,
+        );
+        let (data, starts) = make_wholefile_data(&["WARN ERROR mixed", "ERROR only", "WARN only"]);
+        let (visible, _) = fm.evaluate_chunk_wholefile(&data, &starts, 0..3);
+        assert_eq!(
+            visible,
+            vec![0, 2],
+            "line 0: Include wins; line 1: Exclude; line 2: Include"
+        );
+    }
+
+    #[test]
+    fn test_wholefile_sub_range() {
+        let fm = make_combined_fm(&[("ERROR", FilterDecision::Include)], true);
+        let (data, starts) = make_wholefile_data(&[
+            "ERROR: first",
+            "INFO: skip",
+            "ERROR: second",
+            "INFO: also skip",
+        ]);
+        let (visible, counts) = fm.evaluate_chunk_wholefile(&data, &starts, 1..3);
+        assert_eq!(visible, vec![2], "only line 2 within range 1..3 matches");
+        assert_eq!(counts[0], 1);
+    }
+
+    #[test]
+    fn test_wholefile_empty_range() {
+        let fm = make_combined_fm(&[("ERROR", FilterDecision::Include)], true);
+        let (data, starts) = make_wholefile_data(&["ERROR: line"]);
+        let (visible, counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..0);
+        assert!(visible.is_empty());
+        assert_eq!(counts[0], 0);
+    }
+
+    #[test]
+    fn test_wholefile_consistent_with_per_line() {
+        let fm = make_combined_fm(
+            &[
+                ("ERROR", FilterDecision::Include),
+                ("WARN", FilterDecision::Include),
+                ("DEBUG", FilterDecision::Exclude),
+            ],
+            true,
+        );
+        let lines = [
+            "ERROR: critical",
+            "WARN: degraded",
+            "INFO: fine",
+            "DEBUG: noisy",
+            "ERROR WARN: both",
+        ];
+        let (data, starts) = make_wholefile_data(&lines);
+
+        // Whole-file path
+        let (wf_visible, wf_counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..5);
+
+        // Per-line path
+        let mut pl_counts = vec![0usize; 3];
+        let mut pl_visible = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let dec = fm.evaluate_and_count(line.as_bytes(), &mut pl_counts);
+            let vis = match dec {
+                FilterDecision::Include => true,
+                FilterDecision::Exclude => false,
+                FilterDecision::Neutral => !fm.has_include(),
+            };
+            if vis {
+                pl_visible.push(i);
+            }
+        }
+
+        assert_eq!(wf_visible, pl_visible, "visibility must match per-line");
+        assert_eq!(wf_counts, pl_counts, "counts must match per-line");
+    }
+
+    #[test]
+    fn test_wholefile_with_regex_fallback() {
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let ac = AhoCorasick::builder()
+            .ascii_case_insensitive(false)
+            .build(["ERROR"])
+            .ok();
+        let meta = vec![(0, FilterDecision::Include)];
+        let fm = FilterManager::new_with_combined(vec![f_lit, f_re], true, ac, meta, vec![1]);
+        let (data, starts) = make_wholefile_data(&["ERROR: bad", "status 200 OK", "INFO: plain"]);
+        let (visible, counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..3);
+        assert_eq!(visible, vec![0, 1]);
+        assert_eq!(counts[0], 1, "ERROR filter");
+        assert_eq!(counts[1], 1, "regex digit filter");
     }
 }

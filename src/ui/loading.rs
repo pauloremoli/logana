@@ -15,7 +15,7 @@ use crate::log_manager::LogManager;
 use crate::mode::app_mode::ConfirmRestoreMode;
 use crate::mode::normal_mode::NormalMode;
 
-use super::{App, FileLoadState, FileWatchState, LoadContext, TabState};
+use super::{App, FileLoadState, FileWatchState, LoadContext, TabState, VisibleLines};
 
 impl App {
     pub async fn open_file(&mut self, path: &str) -> Result<(), String> {
@@ -265,7 +265,7 @@ impl App {
                         let visible: Vec<usize> = (0..self.tabs[0].file_reader.line_count())
                             .filter(|&i| pred(self.tabs[0].file_reader.get_line(i)))
                             .collect();
-                        self.tabs[0].visible_indices = super::VisibleLines::Filtered(visible);
+                        self.tabs[0].visible_indices = VisibleLines::Filtered(visible);
                     } else {
                         self.tabs[0].begin_filter_refresh();
                     }
@@ -431,14 +431,7 @@ impl App {
                 // Either way, run a full filter refresh so that occurrence counts are
                 // computed (the single-pass predicate only tracks visibility, not counts).
                 if let Some(visible) = result.precomputed_visible {
-                    self.tabs[0].visible_indices = super::VisibleLines::Filtered(visible);
-                }
-                self.tabs[0].begin_filter_refresh();
-                // Apply startup tail: jump to the last visible line and enable tail mode.
-                if self.startup_tail {
-                    self.tabs[0].tail_mode = true;
-                    self.tabs[0].scroll_offset =
-                        self.tabs[0].visible_indices.len().saturating_sub(1);
+                    self.tabs[0].visible_indices = VisibleLines::Filtered(visible);
                 }
                 if !self.startup_filters
                     && let Ok(Some(ctx)) = self.db.load_file_context(&path).await
@@ -452,6 +445,13 @@ impl App {
                             self.tabs[0].mode = Box::new(ConfirmRestoreMode { context: ctx });
                         }
                     }
+                }
+                self.tabs[0].begin_filter_refresh();
+                // Apply startup tail: jump to the last visible line and enable tail mode.
+                if self.startup_tail {
+                    self.tabs[0].tail_mode = true;
+                    self.tabs[0].scroll_offset =
+                        self.tabs[0].visible_indices.len().saturating_sub(1);
                 }
                 let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
                 self.tabs[0].watch_state = Some(FileWatchState {
@@ -625,34 +625,88 @@ impl App {
         }
     }
 
-    /// Poll each tab's in-flight background filter computation for completion.
+    /// Poll each tab's in-flight background filter computation for new chunks.
     ///
     /// Called every frame from the event loop (non-blocking: `try_recv`).
-    /// On completion, the visible indices and scroll offset are updated.
+    /// Chunks are applied incrementally: the first chunk replaces `visible_indices`,
+    /// subsequent chunks extend it.  Scroll and counts are updated on every chunk.
     pub(super) fn advance_filter_computation(&mut self) {
+        use tokio::sync::mpsc::error::TryRecvError;
         for tab in &mut self.tabs {
-            let Some(ref mut h) = tab.filter_handle else {
-                continue;
-            };
-            let Ok(result) = h.result_rx.try_recv() else {
-                continue;
-            };
-            let scroll_anchor = h.scroll_anchor;
-            tab.filter_handle = None;
-            tab.visible_indices = super::VisibleLines::Filtered(result.visible);
-            if let Some(counts) = result.filter_match_counts {
-                tab.filter_match_counts = counts;
-            }
-            if let Some(line_idx) = scroll_anchor
-                && let Some(pos) = tab.visible_indices.position_of(line_idx)
-            {
-                tab.scroll_offset = pos;
+            if tab.filter_handle.is_none() {
                 continue;
             }
-            if tab.visible_indices.is_empty() {
-                tab.scroll_offset = 0;
-            } else {
-                tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
+
+            // Phase 1: drain available chunks into a local buffer (limits borrow scope).
+            let (chunks, done) = {
+                let h = tab.filter_handle.as_mut().unwrap();
+                let mut chunks = Vec::new();
+                let mut done = false;
+                loop {
+                    match h.result_rx.try_recv() {
+                        Ok(chunk) => {
+                            let last = chunk.is_last;
+                            chunks.push(chunk);
+                            if last {
+                                done = true;
+                                break;
+                            }
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            done = true;
+                            break;
+                        }
+                    }
+                }
+                (chunks, done)
+            };
+
+            if chunks.is_empty() && !done {
+                continue;
+            }
+
+            let already_had_first = tab.filter_handle.as_ref().unwrap().received_first_chunk;
+            let scroll_anchor = tab.filter_handle.as_ref().unwrap().scroll_anchor;
+
+            if !chunks.is_empty() {
+                tab.filter_handle.as_mut().unwrap().received_first_chunk = true;
+            }
+
+            // Phase 2: apply chunks to visible_indices.
+            let mut should_replace = !already_had_first;
+            for chunk in chunks {
+                let is_last = chunk.is_last;
+                if let Some(h) = tab.filter_handle.as_mut() {
+                    h.displayed_progress = chunk.progress;
+                }
+                if should_replace {
+                    tab.visible_indices = VisibleLines::Filtered(chunk.visible);
+                    should_replace = false;
+                } else if let VisibleLines::Filtered(ref mut v) = tab.visible_indices {
+                    v.extend(chunk.visible);
+                }
+                if let Some(counts) = chunk.filter_match_counts {
+                    tab.filter_match_counts = counts;
+                }
+                if is_last {
+                    if let Some(idx) = scroll_anchor
+                        && let Some(pos) = tab.visible_indices.position_of(idx)
+                    {
+                        tab.scroll_offset = pos;
+                    } else if tab.visible_indices.is_empty() {
+                        tab.scroll_offset = 0;
+                    } else {
+                        tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
+                    }
+                } else if tab.visible_indices.is_empty() {
+                    tab.scroll_offset = 0;
+                } else {
+                    tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
+                }
+            }
+            if done {
+                tab.filter_handle = None;
             }
         }
     }
@@ -711,7 +765,7 @@ mod tests {
     use crate::log_manager::LogManager;
     use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
-    use crate::ui::StdinLoadState;
+    use crate::ui::{StdinLoadState, VisibleLines};
     use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -1652,5 +1706,208 @@ mod tests {
 
         assert_eq!(app.tabs[0].next_error_position(0), Some(1));
         assert_eq!(app.tabs[0].next_warning_position(0), Some(2));
+    }
+
+    // ── advance_filter_computation streaming ─────────────────────────────────
+
+    fn make_filter_handle_with_chunks(
+        chunks: Vec<super::super::FilterChunk>,
+    ) -> (
+        super::super::FilterHandle,
+        tokio::sync::mpsc::Sender<super::super::FilterChunk>,
+    ) {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        let (tx, rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(16);
+        let handle = super::super::FilterHandle {
+            result_rx: rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            displayed_progress: 0.0,
+            scroll_anchor: None,
+            received_first_chunk: false,
+        };
+        for chunk in chunks {
+            tx.try_send(chunk).unwrap();
+        }
+        (handle, tx)
+    }
+
+    #[tokio::test]
+    async fn test_advance_filter_computation_first_chunk_replaces_visible() {
+        let mut app = make_app(&["line0", "line1", "line2"]).await;
+        let (handle, _tx) = make_filter_handle_with_chunks(vec![super::super::FilterChunk {
+            visible: vec![0, 2],
+            filter_match_counts: None,
+            is_last: false,
+            progress: 0.5,
+        }]);
+        app.tabs[0].filter_handle = Some(handle);
+        app.advance_filter_computation();
+        assert_eq!(
+            app.tabs[0].visible_indices,
+            VisibleLines::Filtered(vec![0, 2])
+        );
+        assert!(
+            app.tabs[0].filter_handle.is_some(),
+            "handle should remain while not last"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_advance_filter_computation_incremental_accumulates() {
+        let mut app = make_app(&["a", "b", "c", "d"]).await;
+        let (handle, _tx) = make_filter_handle_with_chunks(vec![
+            super::super::FilterChunk {
+                visible: vec![0, 1],
+                filter_match_counts: None,
+                is_last: false,
+                progress: 0.5,
+            },
+            super::super::FilterChunk {
+                visible: vec![2, 3],
+                filter_match_counts: Some(vec![4]),
+                is_last: true,
+                progress: 1.0,
+            },
+        ]);
+        app.tabs[0].filter_handle = Some(handle);
+        app.advance_filter_computation();
+        assert_eq!(
+            app.tabs[0].visible_indices,
+            VisibleLines::Filtered(vec![0, 1, 2, 3])
+        );
+        assert_eq!(app.tabs[0].filter_match_counts, vec![4]);
+        assert!(
+            app.tabs[0].filter_handle.is_none(),
+            "handle should be cleared after last chunk"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_advance_filter_computation_scroll_clamped_on_intermediate() {
+        let mut app = make_app(&["a", "b", "c"]).await;
+        app.tabs[0].scroll_offset = 100;
+        let (handle, _tx) = make_filter_handle_with_chunks(vec![super::super::FilterChunk {
+            visible: vec![0],
+            filter_match_counts: None,
+            is_last: false,
+            progress: 0.3,
+        }]);
+        app.tabs[0].filter_handle = Some(handle);
+        app.advance_filter_computation();
+        assert!(
+            app.tabs[0].scroll_offset <= app.tabs[0].visible_indices.len().saturating_sub(1),
+            "scroll_offset should be clamped to visible length on intermediate chunk"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_advance_filter_computation_scroll_anchor_on_final() {
+        let mut app = make_app(&["a", "b", "c", "d"]).await;
+        let (mut handle, _tx) = make_filter_handle_with_chunks(vec![
+            super::super::FilterChunk {
+                visible: vec![0, 1],
+                filter_match_counts: None,
+                is_last: false,
+                progress: 0.5,
+            },
+            super::super::FilterChunk {
+                visible: vec![2, 3],
+                filter_match_counts: Some(vec![]),
+                is_last: true,
+                progress: 1.0,
+            },
+        ]);
+        handle.scroll_anchor = Some(3);
+        app.tabs[0].filter_handle = Some(handle);
+        app.advance_filter_computation();
+        // Line index 3 is at position 3 in the combined visible vec [0,1,2,3].
+        assert_eq!(app.tabs[0].scroll_offset, 3);
+    }
+
+    #[tokio::test]
+    async fn test_advance_filter_computation_disconnect_clears_handle() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        let mut app = make_app(&["a", "b"]).await;
+        let (tx, rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(4);
+        drop(tx);
+        let handle = super::super::FilterHandle {
+            result_rx: rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            displayed_progress: 0.0,
+            scroll_anchor: None,
+            received_first_chunk: false,
+        };
+        app.tabs[0].filter_handle = Some(handle);
+        app.advance_filter_computation();
+        assert!(
+            app.tabs[0].filter_handle.is_none(),
+            "handle should be cleared when sender is dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_replace_initial_tab_respects_saved_filtering_disabled() {
+        use crate::db::{FileContext, FileContextStore};
+        use std::collections::HashSet;
+        use std::sync::atomic::AtomicBool;
+
+        let mut app = make_app(&[]).await;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"line1\nline2\nline3\n").unwrap();
+        let abs_path = std::fs::canonicalize(tmp.path())
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let ctx = FileContext {
+            source_file: abs_path.clone(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            level_colors_disabled: HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: true,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: false,
+        };
+        app.db.save_file_context(&ctx).await.unwrap();
+
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let fr = FileReader::from_bytes(b"line1\nline2\nline3\n".to_vec());
+        let _ = result_tx.send(Ok(FileLoadResult {
+            reader: fr,
+            precomputed_visible: None,
+        }));
+        drop(progress_tx);
+
+        app.file_load_state = Some(super::FileLoadState {
+            path: abs_path,
+            progress_rx,
+            result_rx,
+            total_bytes: 18,
+            on_complete: LoadContext::ReplaceInitialTab,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+
+        app.advance_file_load().await;
+
+        assert!(
+            app.tabs[0].filter_handle.is_none(),
+            "filter_handle must be None when filtering_enabled=false was restored"
+        );
+        assert!(
+            matches!(app.tabs[0].visible_indices, VisibleLines::All(_)),
+            "visible_indices must be All when filtering is disabled"
+        );
     }
 }

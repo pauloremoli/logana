@@ -9,8 +9,15 @@ All notable changes to logana will be documented in this file.
 - The global filtering toggle state (on/off) is now persisted across sessions via `file_context` in the database (schema v9)
 
 ### Changed
+- Whole-buffer AC scan: when only text filters are active and a combined Aho-Corasick automaton is available, the filter scan now runs a single AC pass over the contiguous data buffer per rayon sub-chunk instead of calling `ac.find_iter()` per line.
 - Selected (cursor) line is now rendered with bold and underline modifiers, making it visually distinct even when surrounded by highlighted lines (log-level colors, search matches, filters)
-- Filter pipeline performance: the Aho-Corasick automaton is now scanned once per line instead of twice (previously `count_line_matches` and `evaluate_text` each triggered a full scan); log lines are also parsed at most once when date or field filters are active (previously parsed separately for counting and for visibility); date filter evaluation merges counting and the visibility check into a single pass eliminating redundant `normalize_log_timestamp` calls; `parse_line` is now skipped entirely for definitively-hidden lines — Exclude matches and Neutral lines when text-includes are active with no field-include filters — avoiding unnecessary timestamp parsing for lines whose visibility is already determined by text evaluation; per-filter match counters now accumulate thread-locally via rayon `fold`+`reduce` and are merged once at the end, eliminating all atomic writes from the hot path; `evaluate_and_count` uses a `u64` bitset for dedup of AC matches (≤64 filters) instead of `Vec`+sort+dedup, removing per-line heap allocations; headless mode now runs the filter scan in parallel and writes results sequentially; all parallel loops use `with_min_len(1024)` to avoid over-splitting on small inputs
+- Filter results now stream in chunks: the first matching lines appear immediately while the remainder of the file is scanned in the background
+- Filter pipeline performance: the Aho-Corasick automaton is now scanned once per line instead of twice (previously `count_line_matches` and `evaluate_text` each triggered a full scan).
+- Log lines are also parsed at most once when date or field filters are active (previously parsed separately for counting and for visibility) 
+- `parse_line` is now skipped entirely for hidden lines
+- Replace all atomics writes from the hot path with thread local counter
+- Headless mode now runs the filter scan in parallel and writes results sequentially
+
 
 ## [0.2.1] - 2026-03-13
 

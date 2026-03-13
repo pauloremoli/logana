@@ -548,6 +548,20 @@ impl FileReader {
         &data[start..end]
     }
 
+    /// The contiguous backing data buffer (mmap or in-memory bytes).
+    ///
+    /// Used by whole-file scanning paths (e.g. Aho-Corasick over the entire
+    /// buffer) that avoid per-line `get_line()` overhead.
+    pub fn data(&self) -> &[u8] {
+        self.storage.as_bytes()
+    }
+
+    /// The sorted byte-offset table: `line_starts()[i]` is the byte offset
+    /// where line `i` begins in [`data()`].
+    pub fn line_starts(&self) -> &[usize] {
+        &self.line_starts
+    }
+
     /// Hint the kernel to prefetch the mmap pages covering lines `first_line..=last_line`.
     /// Called before the render loop so async I/O can overlap with CPU work.
     /// No-op for in-memory (stdin/test) readers or on non-Unix platforms.

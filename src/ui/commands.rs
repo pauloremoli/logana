@@ -617,14 +617,24 @@ mod tests {
 
     async fn await_filter_computations(app: &mut App) {
         for tab in &mut app.tabs {
-            if let Some(h) = tab.filter_handle.take() {
-                if let Ok(result) = h.result_rx.await {
-                    tab.visible_indices = VisibleLines::Filtered(result.visible);
-                    if tab.visible_indices.is_empty() {
-                        tab.scroll_offset = 0;
-                    } else {
-                        tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
+            if let Some(mut h) = tab.filter_handle.take() {
+                let mut all_visible = Vec::new();
+                let mut final_counts = None;
+                while let Some(chunk) = h.result_rx.recv().await {
+                    all_visible.extend(chunk.visible);
+                    if chunk.is_last {
+                        final_counts = chunk.filter_match_counts;
+                        break;
                     }
+                }
+                tab.visible_indices = VisibleLines::Filtered(all_visible);
+                if let Some(counts) = final_counts {
+                    tab.filter_match_counts = counts;
+                }
+                if tab.visible_indices.is_empty() {
+                    tab.scroll_offset = 0;
+                } else {
+                    tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
                 }
             }
         }

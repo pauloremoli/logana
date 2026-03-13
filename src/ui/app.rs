@@ -587,21 +587,31 @@ mod tests {
     /// Use in tests after triggering filter commands so visible_indices is up-to-date.
     async fn await_filter_computations(app: &mut App) {
         for tab in &mut app.tabs {
-            if let Some(h) = tab.filter_handle.take() {
+            if let Some(mut h) = tab.filter_handle.take() {
                 let scroll_anchor = h.scroll_anchor;
-                if let Ok(result) = h.result_rx.await {
-                    tab.visible_indices = crate::ui::VisibleLines::Filtered(result.visible);
-                    if let Some(line_idx) = scroll_anchor {
-                        if let Some(pos) = tab.visible_indices.position_of(line_idx) {
-                            tab.scroll_offset = pos;
-                            continue;
-                        }
+                let mut all_visible = Vec::new();
+                let mut final_counts = None;
+                while let Some(chunk) = h.result_rx.recv().await {
+                    all_visible.extend(chunk.visible);
+                    if chunk.is_last {
+                        final_counts = chunk.filter_match_counts;
+                        break;
                     }
-                    if tab.visible_indices.is_empty() {
-                        tab.scroll_offset = 0;
-                    } else {
-                        tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
+                }
+                tab.visible_indices = crate::ui::VisibleLines::Filtered(all_visible);
+                if let Some(counts) = final_counts {
+                    tab.filter_match_counts = counts;
+                }
+                if let Some(line_idx) = scroll_anchor {
+                    if let Some(pos) = tab.visible_indices.position_of(line_idx) {
+                        tab.scroll_offset = pos;
+                        continue;
                     }
+                }
+                if tab.visible_indices.is_empty() {
+                    tab.scroll_offset = 0;
+                } else {
+                    tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
                 }
             }
         }

@@ -1,68 +1,10 @@
-//! Core TUI types: [`App`], [`TabState`], [`KeyResult`], and [`LoadContext`].
-//!
-//! [`App`] owns the tab list, global theme, and shared [`Keybindings`].
-//! [`TabState`] owns the per-tab file reader, log manager, format parser,
-//! visible indices, scroll state, and active mode.
-//!
-//! ## Key `TabState` fields
-//!
-//! - `file_reader`: the backing log data
-//! - `log_manager`: filter defs and marks
-//! - `detected_format: Option<Arc<dyn LogFormatParser>>`: auto-detected parser,
-//!   stored behind `Arc` so background filter tasks can clone it in O(1)
-//! - `visible_indices: VisibleLines`: `All(n)` when no filters (zero allocation,
-//!   O(1) access), `Filtered(Vec<usize>)` when filters or marks are active
-//! - `scroll_offset`: selected line (index into `visible_indices`)
-//! - `viewport_offset`: first rendered line
-//! - `filter_manager_arc: Arc<FilterManager>`: cached filter manager, cloned
-//!   O(1) per render frame (atomic ref-count increment)
-//! - `parse_cache_gen: u64`: monotonically increasing generation counter;
-//!   incremented whenever filters, field layout, display mode, or raw mode changes
-//! - `parse_cache: HashMap<usize, (u64, CachedParsedLine)>`: per-line parse
-//!   cache; entry valid only when stored generation equals `parse_cache_gen`
-//!
-//! ## Background filter computation
-//!
-//! `FilterHandle` (stored on `TabState` while a filter is in flight):
-//! - `result_rx: oneshot::Receiver<Vec<usize>>` — resolves with new visible indices
-//! - `cancel: Arc<AtomicBool>` — set to abort; checked every 10 000 lines
-//! - `progress_rx: watch::Receiver<f64>` — [0.0, 1.0] shown as "Filtering…" in tab bar
-//!
-//! Fast paths (synchronous, O(1)): no active filters → `VisibleLines::All(n)`;
-//! `show_marks_only = true` → apply marks directly; `filtering_enabled = false`
-//! → `VisibleLines::All(n)`.
-//!
-//! `apply_incremental_exclude(pattern)`: additive fast-path for new exclude
-//! filters — compiles the pattern and calls `VisibleLines::retain()` to remove
-//! matching lines from the current visible set. Avoids scanning the full file
-//! when only lines need to be removed.
-//!
-//! ## Background search
-//!
-//! `SearchHandle` (stored on `TabState` while a search is in flight):
-//! - `result_rx: oneshot::Receiver<(Vec<SearchResult>, Regex)>`
-//! - `cancel: Arc<AtomicBool>` — checked every 10 000 lines
-//! - `progress_rx: watch::Receiver<f64>` — progress for the status bar
-//! - `pattern: String`, `forward: bool`, `navigate: bool`
-//!
-//! ## Rendering pipeline (per frame)
-//!
-//! 1. Compute `visible_height` and `inner_width`.
-//! 2. Wrap-aware viewport adjustment (fast-path for large jumps like `G`).
-//! 3. Clone `tab.filter_manager_arc` (O(1)) and filter style palettes.
-//! 4. Parse cache pre-population for lines in `[start..end)`.
-//! 5. For each line: use cached `rendered` string, evaluate filters, overlay
-//!    search spans, apply level/mark styles, compose final `Line` via
-//!    `render_line`.
-//! 6. Apply `colorize_known_values` to spans with no `fg` set.
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::style::Style;
 use ratatui::text::Line;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 
 use crate::config::Keybindings;
 use crate::date_filter::DateFilterStyle;
@@ -84,10 +26,6 @@ mod loading;
 mod render;
 mod render_popups;
 
-// ---------------------------------------------------------------------------
-// KeyResult
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub enum KeyResult {
     Handled,
@@ -106,10 +44,6 @@ pub enum KeyResult {
     NeverRestoreSession,
 }
 
-// ---------------------------------------------------------------------------
-// SearchHandle
-// ---------------------------------------------------------------------------
-
 /// Handle for a background search task spawned by [`TabState::begin_search`].
 pub struct SearchHandle {
     /// Receives incremental batches of results. Channel closes when scan is done.
@@ -125,29 +59,31 @@ pub struct SearchHandle {
     pub navigate: bool,
 }
 
-// ---------------------------------------------------------------------------
-// FilterHandle
-// ---------------------------------------------------------------------------
-
-/// Result delivered by the background filter task.
-pub struct FilterComputeResult {
+/// A streaming chunk delivered by the background filter task.
+pub struct FilterChunk {
+    /// Visible line indices for this chunk of the file.
     pub visible: Vec<usize>,
-    /// Per-filter match counts unified across all filter types, indexed parallel to
-    /// `filter_defs` (disabled filters get count 0).
+    /// Per-filter match counts unified across all filter types; `Some` only on the last chunk.
     pub filter_match_counts: Option<Vec<usize>>,
+    /// `true` when this is the final chunk (no more will be sent).
+    pub is_last: bool,
+    /// Fraction of the file processed when this chunk was produced (0.0–1.0).
+    pub progress: f64,
 }
 
 /// Handle for a background filter computation task spawned by
 /// [`TabState::begin_filter_refresh`].
 pub struct FilterHandle {
-    /// Receives visible indices. Never sent when cancelled.
-    pub result_rx: oneshot::Receiver<FilterComputeResult>,
+    /// Receives streaming chunks of visible indices.
+    pub result_rx: mpsc::Receiver<FilterChunk>,
     /// Set to `true` to abort the in-flight computation early.
     pub cancel: Arc<AtomicBool>,
-    /// Live fraction-complete (0.0–1.0) polled each frame for the progress bar.
-    pub progress_rx: watch::Receiver<f64>,
+    /// Fraction-complete (0.0–1.0) of the last applied chunk, used for the progress bar.
+    pub displayed_progress: f64,
     /// File-line index to restore scroll position to when the result arrives.
     pub scroll_anchor: Option<usize>,
+    /// `true` after the first chunk has been applied to `visible_indices`.
+    pub received_first_chunk: bool,
 }
 
 /// List the flat (non-recursive), non-hidden regular files in `path`.
@@ -282,10 +218,6 @@ type FilterViewSnapshot = (
     Vec<crate::field_filter::FieldFilterStyle>,
 );
 
-// ---------------------------------------------------------------------------
-// VisibleLines
-// ---------------------------------------------------------------------------
-
 /// Efficient representation of which file lines are currently visible.
 ///
 /// `All(n)` covers the common no-filter case: every index `i` maps to itself,
@@ -392,10 +324,6 @@ impl Default for VisibleLines {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CachedParsedLine
-// ---------------------------------------------------------------------------
-
 /// Cached output of parsing and rendering a structured log line.
 /// Keyed by file-line index; invalidated by incrementing `TabState::parse_cache_gen`.
 pub struct CachedParsedLine {
@@ -443,10 +371,6 @@ pub(crate) fn display_text_for_line(
     }
     String::from_utf8_lossy(bytes).into_owned()
 }
-
-// ---------------------------------------------------------------------------
-// TabState
-// ---------------------------------------------------------------------------
 
 pub struct TabState {
     pub file_reader: FileReader,
@@ -790,74 +714,88 @@ impl TabState {
                 || !exc_ff.is_empty();
             let has_text_includes = fm.has_include();
             let line_count = self.file_reader.line_count();
-            let (visible, text_counts, field_counts, date_counts) = (0..line_count)
-                .into_par_iter()
-                .with_min_len(1024)
-                .fold(
-                    || {
-                        (
-                            Vec::new(),
-                            vec![0usize; n_text],
-                            vec![0usize; n_field],
-                            vec![0usize; n_date],
-                        )
-                    },
-                    |(mut vis, mut tc, mut fc, mut dc), idx| {
-                        let line = file_reader.get_line(idx);
-                        let text_dec = fm.evaluate_and_count(line, &mut tc);
-                        let can_skip = text_dec == FilterDecision::Exclude
-                            || (text_dec == FilterDecision::Neutral
-                                && has_text_includes
-                                && inc_ff.is_empty());
-                        let parts = if needs_parse && !can_skip {
-                            parser.and_then(|p| p.parse_line(line))
-                        } else {
-                            None
-                        };
-                        if !field_defs.is_empty() {
-                            crate::field_filter::count_field_filter_matches(
-                                &field_defs,
-                                parts.as_ref(),
-                                &mut fc,
-                            );
-                        }
-                        if line_is_visible(
-                            text_dec,
-                            has_text_includes,
-                            &date_filters,
-                            &mut dc,
-                            &inc_ff,
-                            &exc_ff,
-                            parts.as_ref(),
-                        ) {
-                            vis.push(idx);
-                        }
-                        (vis, tc, fc, dc)
-                    },
-                )
-                .reduce(
-                    || {
-                        (
-                            Vec::new(),
-                            vec![0usize; n_text],
-                            vec![0usize; n_field],
-                            vec![0usize; n_date],
-                        )
-                    },
-                    |(mut va, mut ta, mut fa, mut da), (vb, tb, fb, db)| {
-                        va.extend(vb);
-                        for (a, b) in ta.iter_mut().zip(tb) {
-                            *a += b;
-                        }
-                        for (a, b) in fa.iter_mut().zip(fb) {
-                            *a += b;
-                        }
-                        for (a, b) in da.iter_mut().zip(db) {
-                            *a += b;
-                        }
-                        (va, ta, fa, da)
-                    },
+
+            // Choose scan strategy: whole-file AC when text-only filters and
+            // combined AC available.
+            let use_wholefile = !needs_parse && fm.has_combined_ac();
+
+            let (visible, text_counts, field_counts, date_counts) = if use_wholefile {
+                let (vis, tc) = fm.evaluate_chunk_wholefile(
+                    file_reader.data(),
+                    file_reader.line_starts(),
+                    0..line_count,
                 );
+                (vis, tc, vec![0usize; n_field], vec![0usize; n_date])
+            } else {
+                (0..line_count)
+                    .into_par_iter()
+                    .with_min_len(1024)
+                    .fold(
+                        || {
+                            (
+                                Vec::new(),
+                                vec![0usize; n_text],
+                                vec![0usize; n_field],
+                                vec![0usize; n_date],
+                            )
+                        },
+                        |(mut vis, mut tc, mut fc, mut dc), idx| {
+                            let line = file_reader.get_line(idx);
+                            let text_dec = fm.evaluate_and_count(line, &mut tc);
+                            let can_skip = text_dec == FilterDecision::Exclude
+                                || (text_dec == FilterDecision::Neutral
+                                    && has_text_includes
+                                    && inc_ff.is_empty());
+                            let parts = if needs_parse && !can_skip {
+                                parser.and_then(|p| p.parse_line(line))
+                            } else {
+                                None
+                            };
+                            if !field_defs.is_empty() {
+                                crate::field_filter::count_field_filter_matches(
+                                    &field_defs,
+                                    parts.as_ref(),
+                                    &mut fc,
+                                );
+                            }
+                            if line_is_visible(
+                                text_dec,
+                                has_text_includes,
+                                &date_filters,
+                                &mut dc,
+                                &inc_ff,
+                                &exc_ff,
+                                parts.as_ref(),
+                            ) {
+                                vis.push(idx);
+                            }
+                            (vis, tc, fc, dc)
+                        },
+                    )
+                    .reduce(
+                        || {
+                            (
+                                Vec::new(),
+                                vec![0usize; n_text],
+                                vec![0usize; n_field],
+                                vec![0usize; n_date],
+                            )
+                        },
+                        |(mut va, mut ta, mut fa, mut da), (vb, tb, fb, db)| {
+                            va.extend(vb);
+                            for (a, b) in ta.iter_mut().zip(tb) {
+                                *a += b;
+                            }
+                            for (a, b) in fa.iter_mut().zip(fb) {
+                                *a += b;
+                            }
+                            for (a, b) in da.iter_mut().zip(db) {
+                                *a += b;
+                            }
+                            (va, ta, fa, da)
+                        },
+                    )
+            };
             self.filter_match_counts =
                 merge_filter_counts(&all_filter_defs, &text_counts, &field_counts, &date_counts);
             self.filter_manager_arc = Arc::new(fm);
@@ -1024,8 +962,10 @@ impl TabState {
 
         // Clone the file reader (O(1) — just increments Arc ref-counts).
         let file_reader = self.file_reader.clone();
-        let visible: Vec<usize> = self.visible_indices.iter().collect();
-        let total = visible.len();
+        let total = self.visible_indices.len();
+        // O(1) for All(n); clones the Vec only for Filtered — avoids blocking the
+        // main thread with a potentially large allocation before the task starts.
+        let visible_indices = self.visible_indices.clone();
         // Clone display context so the background task searches displayed text only.
         // In raw mode the parser is bypassed so search must run against raw bytes.
         let detected_format = if self.raw_mode {
@@ -1047,19 +987,33 @@ impl TabState {
                 .unwrap()
         });
 
-        const CHUNK_SIZE: usize = 5_000;
+        const CHUNK_SIZE: usize = 1_000;
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
 
+            let re_for_search = re;
+            let ac_ref = ac.as_ref();
+            let mut chunk: Vec<usize> = Vec::with_capacity(CHUNK_SIZE);
             let mut processed = 0usize;
-            for chunk in visible.chunks(CHUNK_SIZE) {
+
+            let mut iter = visible_indices.iter();
+            loop {
                 if cancel_clone.load(Ordering::Relaxed) {
                     break;
                 }
 
-                let re_for_search = re.clone();
-                let ac_ref = ac.as_ref();
+                chunk.clear();
+                while chunk.len() < CHUNK_SIZE {
+                    match iter.next() {
+                        Some(idx) => chunk.push(idx),
+                        None => break,
+                    }
+                }
+                if chunk.is_empty() {
+                    break;
+                }
+
                 let mut batch: Vec<SearchResult> = chunk
                     .par_iter()
                     .filter_map(|&line_idx| {
@@ -1270,10 +1224,15 @@ impl TabState {
         // index-based counts would map to the wrong filters until the scan completes.
         self.filter_match_counts = Vec::new();
 
+        const INITIAL_CHUNK_SIZE: usize = 5_000;
+        const MAX_CHUNK_SIZE: usize = 500_000;
+
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_clone = cancel.clone();
-        let (result_tx, result_rx) = oneshot::channel();
-        let (progress_tx, progress_rx) = watch::channel(0.0_f64);
+        let channel_capacity = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let (result_tx, result_rx) = mpsc::channel::<FilterChunk>(channel_capacity);
 
         let file_reader = self.file_reader.clone();
         let fm_arc = self.filter_manager_arc.clone();
@@ -1293,110 +1252,173 @@ impl TabState {
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
-            use std::sync::atomic::AtomicUsize;
 
-            let counter = AtomicUsize::new(0);
             let parser_ref: Option<&dyn LogFormatParser> = parser.as_deref();
             let n_text = n_text_filters;
             let n_field = field_defs.len();
             let n_date = date_filters.len();
 
-            // Unified single pass: text + date + field filters evaluated together.
-            // Per-filter match counts accumulate thread-locally and are merged at the end,
-            // eliminating atomic writes from the hot path entirely.
             let needs_parse = !date_filters.is_empty()
                 || !field_defs.is_empty()
                 || !inc_ff.is_empty()
                 || !exc_ff.is_empty();
             let has_text_includes = fm_arc.has_include();
-            let (visible, text_counts, field_counts, date_counts) = (0..line_count)
-                .into_par_iter()
-                .with_min_len(1024)
-                .fold(
-                    || {
-                        (
-                            Vec::new(),
-                            vec![0usize; n_text],
-                            vec![0usize; n_field],
-                            vec![0usize; n_date],
-                        )
-                    },
-                    |(mut vis, mut tc, mut fc, mut dc), i| {
-                        let n = counter.fetch_add(1, Ordering::Relaxed);
-                        if n.is_multiple_of(10_000) {
-                            if cancel_clone.load(Ordering::Relaxed) {
-                                return (vis, tc, fc, dc);
-                            }
-                            if line_count > 0 {
-                                let _ = progress_tx.send(n as f64 / line_count as f64);
-                            }
-                        }
-                        let line = file_reader.get_line(i);
-                        let text_dec = fm_arc.evaluate_and_count(line, &mut tc);
-                        let can_skip = text_dec == FilterDecision::Exclude && field_defs.is_empty();
-                        let parts = if needs_parse && !can_skip {
-                            parser_ref.and_then(|p| p.parse_line(line))
-                        } else {
-                            None
-                        };
-                        if !field_defs.is_empty() {
-                            crate::field_filter::count_field_filter_matches(
-                                &field_defs,
-                                parts.as_ref(),
-                                &mut fc,
-                            );
-                        }
-                        if line_is_visible(
-                            text_dec,
-                            has_text_includes,
-                            &date_filters,
-                            &mut dc,
-                            &inc_ff,
-                            &exc_ff,
-                            parts.as_ref(),
-                        ) {
-                            vis.push(i);
-                        }
-                        (vis, tc, fc, dc)
-                    },
-                )
-                .reduce(
-                    || {
-                        (
-                            Vec::new(),
-                            vec![0usize; n_text],
-                            vec![0usize; n_field],
-                            vec![0usize; n_date],
-                        )
-                    },
-                    |(mut va, mut ta, mut fa, mut da), (vb, tb, fb, db)| {
-                        va.extend(vb);
-                        for (a, b) in ta.iter_mut().zip(tb) {
-                            *a += b;
-                        }
-                        for (a, b) in fa.iter_mut().zip(fb) {
-                            *a += b;
-                        }
-                        for (a, b) in da.iter_mut().zip(db) {
-                            *a += b;
-                        }
-                        (va, ta, fa, da)
-                    },
-                );
 
-            if cancel_clone.load(Ordering::Relaxed) {
-                return;
+            // Whole-file AC scan: single contiguous pass per chunk instead of
+            // per-line iterator calls.  Used when only text filters are active
+            // and a combined Aho-Corasick automaton is available.
+            let use_wholefile = !needs_parse && fm_arc.has_combined_ac();
+
+            let mut total_text_counts = vec![0usize; n_text];
+            let mut total_field_counts = vec![0usize; n_field];
+            let mut total_date_counts = vec![0usize; n_date];
+
+            let mut chunk_start = 0;
+            let mut chunk_size = INITIAL_CHUNK_SIZE;
+            while chunk_start < line_count {
+                if cancel_clone.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                let chunk_end = (chunk_start + chunk_size).min(line_count);
+                let is_last = chunk_end == line_count;
+                let progress = if is_last {
+                    1.0
+                } else {
+                    chunk_start as f64 / line_count as f64
+                };
+
+                let (visible, text_counts, field_counts, date_counts) = if use_wholefile {
+                    // Fast path: whole-buffer AC scan with rayon sub-chunking.
+                    let (vis, tc) = fm_arc.evaluate_chunk_wholefile(
+                        file_reader.data(),
+                        file_reader.line_starts(),
+                        chunk_start..chunk_end,
+                    );
+                    (vis, tc, vec![0usize; n_field], vec![0usize; n_date])
+                } else {
+                    // Per-line path: needed for date/field filters or regex-only pipelines.
+                    (chunk_start..chunk_end)
+                        .into_par_iter()
+                        .with_min_len(1024)
+                        .fold(
+                            || {
+                                (
+                                    Vec::new(),
+                                    vec![0usize; n_text],
+                                    vec![0usize; n_field],
+                                    vec![0usize; n_date],
+                                )
+                            },
+                            |(mut vis, mut tc, mut fc, mut dc), i| {
+                                let line = file_reader.get_line(i);
+                                let text_dec = fm_arc.evaluate_and_count(line, &mut tc);
+                                let can_skip =
+                                    text_dec == FilterDecision::Exclude && field_defs.is_empty();
+                                let parts = if needs_parse && !can_skip {
+                                    parser_ref.and_then(|p| p.parse_line(line))
+                                } else {
+                                    None
+                                };
+                                if !field_defs.is_empty() {
+                                    crate::field_filter::count_field_filter_matches(
+                                        &field_defs,
+                                        parts.as_ref(),
+                                        &mut fc,
+                                    );
+                                }
+                                if line_is_visible(
+                                    text_dec,
+                                    has_text_includes,
+                                    &date_filters,
+                                    &mut dc,
+                                    &inc_ff,
+                                    &exc_ff,
+                                    parts.as_ref(),
+                                ) {
+                                    vis.push(i);
+                                }
+                                (vis, tc, fc, dc)
+                            },
+                        )
+                        .reduce(
+                            || {
+                                (
+                                    Vec::new(),
+                                    vec![0usize; n_text],
+                                    vec![0usize; n_field],
+                                    vec![0usize; n_date],
+                                )
+                            },
+                            |(mut va, mut ta, mut fa, mut da), (vb, tb, fb, db)| {
+                                va.extend(vb);
+                                for (a, b) in ta.iter_mut().zip(tb) {
+                                    *a += b;
+                                }
+                                for (a, b) in fa.iter_mut().zip(fb) {
+                                    *a += b;
+                                }
+                                for (a, b) in da.iter_mut().zip(db) {
+                                    *a += b;
+                                }
+                                (va, ta, fa, da)
+                            },
+                        )
+                };
+
+                if cancel_clone.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                for (a, b) in total_text_counts.iter_mut().zip(&text_counts) {
+                    *a += b;
+                }
+                for (a, b) in total_field_counts.iter_mut().zip(&field_counts) {
+                    *a += b;
+                }
+                for (a, b) in total_date_counts.iter_mut().zip(&date_counts) {
+                    *a += b;
+                }
+
+                let filter_match_counts = if is_last {
+                    Some(merge_filter_counts(
+                        &all_filter_defs,
+                        &total_text_counts,
+                        &total_field_counts,
+                        &total_date_counts,
+                    ))
+                } else {
+                    None
+                };
+
+                if result_tx
+                    .blocking_send(FilterChunk {
+                        visible,
+                        filter_match_counts,
+                        is_last,
+                        progress,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+
+                chunk_start = chunk_end;
+                chunk_size = (chunk_size * 4).min(MAX_CHUNK_SIZE);
             }
 
-            let _ = progress_tx.send(1.0);
-
-            let unified =
-                merge_filter_counts(&all_filter_defs, &text_counts, &field_counts, &date_counts);
-
-            if !cancel_clone.load(Ordering::Relaxed) {
-                let _ = result_tx.send(FilterComputeResult {
-                    visible,
-                    filter_match_counts: Some(unified),
+            // Guard: if the file is empty the loop body never runs; send one empty final chunk.
+            if line_count == 0 {
+                let _ = result_tx.blocking_send(FilterChunk {
+                    visible: Vec::new(),
+                    filter_match_counts: Some(merge_filter_counts(
+                        &all_filter_defs,
+                        &total_text_counts,
+                        &total_field_counts,
+                        &total_date_counts,
+                    )),
+                    is_last: true,
+                    progress: 1.0,
                 });
             }
         });
@@ -1404,8 +1426,9 @@ impl TabState {
         self.filter_handle = Some(FilterHandle {
             result_rx,
             cancel,
-            progress_rx,
+            displayed_progress: 0.0,
             scroll_anchor,
+            received_first_chunk: false,
         });
     }
 
@@ -1731,10 +1754,6 @@ impl std::fmt::Debug for TabState {
             .finish()
     }
 }
-
-// ---------------------------------------------------------------------------
-// FileLoadState / LoadContext
-// ---------------------------------------------------------------------------
 
 /// What to do once a background file load completes.
 pub enum LoadContext {
@@ -2802,6 +2821,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_first_chunk_size() {
+        // Build a 10_000-line file where every line contains "match".
+        let lines: Vec<String> = (0..10_000).map(|i| format!("match line {i}")).collect();
+        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let mut tab = make_tab(&line_refs).await;
+
+        tab.begin_search("match", true, false);
+
+        // Poll a single batch without consuming the rest.
+        let batch = {
+            let h = tab.search_handle.as_mut().unwrap();
+            h.result_rx.recv().await.unwrap()
+        };
+
+        // The first batch must not exceed CHUNK_SIZE (1_000).
+        assert!(
+            batch.len() <= 1_000,
+            "first batch size {} exceeds CHUNK_SIZE 1_000",
+            batch.len()
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_display_text_raw_mode_returns_raw_bytes() {
         let line = r#"{"ts":"2024-01-01T00:00:00Z","level":"info","msg":"hello"}"#;
         let line_bytes = line.as_bytes();
@@ -2961,10 +3003,16 @@ mod tests {
         tab.begin_filter_refresh();
         // Slow path: background handle is present.
         assert!(tab.filter_handle.is_some());
-        // Await the result and verify correctness.
-        let h = tab.filter_handle.take().unwrap();
-        let result = h.result_rx.await.unwrap();
-        assert_eq!(result.visible, vec![0, 2]);
+        // Drain all chunks and verify the combined visible indices.
+        let mut h = tab.filter_handle.take().unwrap();
+        let mut all_visible = Vec::new();
+        while let Some(chunk) = h.result_rx.recv().await {
+            all_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+        assert_eq!(all_visible, vec![0, 2]);
     }
 
     #[tokio::test]
@@ -2991,10 +3039,15 @@ mod tests {
             .await;
         tab.begin_filter_refresh();
         assert!(tab.filter_handle.is_some());
-        // Await the background task's result and simulate advance_filter_computation.
-        let h = tab.filter_handle.take().unwrap();
-        let result = h.result_rx.await.unwrap();
-        tab.visible_indices = VisibleLines::Filtered(result.visible);
+        let mut h = tab.filter_handle.take().unwrap();
+        let mut all_visible = Vec::new();
+        while let Some(chunk) = h.result_rx.recv().await {
+            all_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+        tab.visible_indices = VisibleLines::Filtered(all_visible);
         assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
     }
 
@@ -3060,9 +3113,15 @@ mod tests {
             .await;
         tab.begin_filter_refresh();
         assert!(tab.filter_handle.is_some());
-        let h = tab.filter_handle.take().unwrap();
-        let result = h.result_rx.await.unwrap();
-        let counts = result.filter_match_counts.expect("counts must be Some");
+        let mut h = tab.filter_handle.take().unwrap();
+        let mut final_counts = None;
+        while let Some(chunk) = h.result_rx.recv().await {
+            if chunk.is_last {
+                final_counts = chunk.filter_match_counts;
+                break;
+            }
+        }
+        let counts = final_counts.expect("counts must be Some");
         // "ERROR" matches 2 lines; "DEBUG" matches 1 line (counted independently).
         assert_eq!(counts, vec![2, 1]);
     }
@@ -3074,11 +3133,14 @@ mod tests {
             .add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
             .await;
         tab.begin_filter_refresh();
-        let h = tab.filter_handle.take().unwrap();
-        let result = h.result_rx.await.unwrap();
-        // Simulate advance_filter_computation applying the result.
-        if let Some(counts) = result.filter_match_counts {
-            tab.filter_match_counts = counts;
+        let mut h = tab.filter_handle.take().unwrap();
+        while let Some(chunk) = h.result_rx.recv().await {
+            if let Some(counts) = chunk.filter_match_counts {
+                tab.filter_match_counts = counts;
+            }
+            if chunk.is_last {
+                break;
+            }
         }
         assert_eq!(tab.filter_match_counts, vec![2]);
     }
@@ -3096,13 +3158,17 @@ mod tests {
             )
             .await;
         tab.begin_filter_refresh();
-        let h = tab.filter_handle.take().unwrap();
-        let result = h.result_rx.await.unwrap();
+        let mut h = tab.filter_handle.take().unwrap();
+        let mut final_counts = None;
+        while let Some(chunk) = h.result_rx.recv().await {
+            if chunk.is_last {
+                final_counts = chunk.filter_match_counts;
+                break;
+            }
+        }
         // Unified vec has length equal to filter_defs (one entry), at position 0.
         // Raw text lines have no parser so count is 0.
-        let counts = result
-            .filter_match_counts
-            .expect("filter_match_counts must be Some");
+        let counts = final_counts.expect("filter_match_counts must be Some");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts[0], 0);
     }
@@ -3133,12 +3199,16 @@ mod tests {
             )
             .await;
         tab.begin_filter_refresh();
-        let h = tab.filter_handle.take().unwrap();
-        let result = h.result_rx.await.unwrap();
+        let mut h = tab.filter_handle.take().unwrap();
+        let mut final_counts = None;
+        while let Some(chunk) = h.result_rx.recv().await {
+            if chunk.is_last {
+                final_counts = chunk.filter_match_counts;
+                break;
+            }
+        }
         // Unified vec has length equal to filter_defs (one date filter at position 0).
-        let counts = result
-            .filter_match_counts
-            .expect("filter_match_counts must be Some");
+        let counts = final_counts.expect("filter_match_counts must be Some");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts[0], 2, "two lines fall within the date range");
     }
@@ -3237,9 +3307,15 @@ mod tests {
             .add_filter_with_color("DEBUG".to_string(), FilterType::Exclude, None, None, true)
             .await;
         tab.begin_filter_refresh();
-        let h = tab.filter_handle.take().unwrap();
-        let result = h.result_rx.await.unwrap();
-        assert_eq!(result.visible, vec![1]);
+        let mut h = tab.filter_handle.take().unwrap();
+        let mut all_visible = Vec::new();
+        while let Some(chunk) = h.result_rx.recv().await {
+            all_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+        assert_eq!(all_visible, vec![1]);
     }
 
     // ── line_is_visible ──────────────────────────────────────────────────────

@@ -1786,7 +1786,7 @@ impl App {
             let filter_progress: Option<usize> = self.tabs[self.active_tab]
                 .filter_handle
                 .as_ref()
-                .map(|h| (*h.progress_rx.borrow() * 100.0) as usize);
+                .map(|h| (h.displayed_progress * 100.0) as usize);
             let sidebar_title = if self.tabs[self.active_tab].show_marks_only {
                 format!("Filters [MARKS ONLY]{}", filter_count_suffix)
             } else if self.tabs[self.active_tab].filtering_enabled {
@@ -1854,7 +1854,7 @@ impl App {
             .enumerate()
             .filter_map(|(i, t)| {
                 t.filter_handle.as_ref().map(|h| {
-                    let pct = (*h.progress_rx.borrow() * 100.0) as usize;
+                    let pct = (h.displayed_progress * 100.0) as usize;
                     (i, pct)
                 })
             })
@@ -2435,13 +2435,13 @@ mod tests {
     #[tokio::test]
     async fn test_ui_filtering_progress_in_sidebar_title() {
         let mut app = make_app(&["line 0", "line 1"]).await;
-        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(0.42f64);
-        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let (_result_tx, result_rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(4);
         app.tabs[0].filter_handle = Some(super::super::FilterHandle {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            progress_rx,
+            displayed_progress: 0.42,
             scroll_anchor: None,
+            received_first_chunk: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2461,13 +2461,13 @@ mod tests {
     #[tokio::test]
     async fn test_ui_indexing_shown_in_sidebar_title() {
         let mut app = make_app(&["line 0", "line 1"]).await;
-        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(1.0f64);
-        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let (_result_tx, result_rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(4);
         app.tabs[0].filter_handle = Some(super::super::FilterHandle {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            progress_rx,
+            displayed_progress: 1.0,
             scroll_anchor: None,
+            received_first_chunk: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2487,13 +2487,13 @@ mod tests {
     #[tokio::test]
     async fn test_ui_filtering_progress_in_tab_name() {
         let mut app = make_app(&["line 0", "line 1"]).await;
-        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(0.42f64);
-        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let (_result_tx, result_rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(4);
         app.tabs[0].filter_handle = Some(super::super::FilterHandle {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            progress_rx,
+            displayed_progress: 0.42,
             scroll_anchor: None,
+            received_first_chunk: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2509,13 +2509,13 @@ mod tests {
     #[tokio::test]
     async fn test_ui_indexing_shown_when_progress_complete() {
         let mut app = make_app(&["line 0", "line 1"]).await;
-        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(1.0f64);
-        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let (_result_tx, result_rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(4);
         app.tabs[0].filter_handle = Some(super::super::FilterHandle {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            progress_rx,
+            displayed_progress: 1.0,
             scroll_anchor: None,
+            received_first_chunk: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
