@@ -9,7 +9,7 @@ repository = "https://github.com/pauloremoli/logana"
 homepage = "https://github.com/pauloremoli/logana"
 keywords = ["log", "tui", "viewer", "terminal", "analyzer"]
 categories = ["command-line-utilities", "development-tools::debugging"]
-exclude = [".github", "pkg"]
+exclude = [".github", "pkg", "docs"]
 
 [package.metadata.wix]
 upgrade-guid = "40A718EC-7645-458F-A8AB-6DE8BC5A8183"
