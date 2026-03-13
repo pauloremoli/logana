@@ -2,7 +2,7 @@
 
 All notable changes to logana will be documented in this file.
 
-## [Unreleased]
+## [0.2.0] - 2025-03-13
 
 ### Added
 - Headless mode (`--headless`) — run the full filter pipeline without a TUI and write matching lines to stdout or a file via `--output`
@@ -23,7 +23,7 @@ All notable changes to logana will be documented in this file.
 
 ---
 
-## [0.1.0] - 2025-02-06
+## [0.1.0] - 2025-03-11
 
 ### Added
 - Auto-detected log formats: JSON (bunyan, pino, tracing-subscriber), syslog RFC 3164/5424, journalctl, logfmt, Common/Combined log, OTel, env_logger, logback, log4j2, Spring Boot, Python logging, loguru, structlog
