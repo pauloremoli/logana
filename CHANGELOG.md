@@ -3,7 +3,7 @@
 All notable changes to logana will be documented in this file.
 
 
-## [For next release]
+## [0.2.1] - 2026-03-13
 
 ### Added
 - Incremental search delivery — results are streamed in chunks of 5,000 lines so the first matches appear almost immediately on large files instead of waiting for the full scan to complete

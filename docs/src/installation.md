@@ -32,11 +32,3 @@ cargo install logana
 ```sh
 cargo install --git https://github.com/pauloremoli/logana
 ```
-
-## AUR (Arch Linux)
-
-```sh
-paru -S logana
-# or
-yay -S logana
-```
