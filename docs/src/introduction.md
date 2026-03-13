@@ -1,10 +1,6 @@
-<p align="center">
-  <img src="logana-icon.png" alt="logana" width="120" />
-</p>
-
 # logana
 
-A TUI log analyzer/viewer built for speed - handles files with millions of lines with instant filtering and VIM like navigation.
+A fast terminal log viewer for files of any size — including multi-GB logs. Built on memory-mapped I/O and SIMD line indexing. Auto-detects log formats, filters by pattern, regex, field value, or date range — bookmark lines, add annotations, and export your analysis.
 
 <p align="center">
   <img src="demo.gif" alt="logana demo" />

@@ -10,6 +10,7 @@ All notable changes to logana will be documented in this file.
 - Tab-completion for `:hide-field` suggests all known field names; `:show-field` suggests currently hidden fields (falls back to all fields when none are hidden)
 
 ### Fixed
+- Filtering with multiple literal include filters now performs a single Aho-Corasick scan per line instead of one scan per filter, eliminating O(N) slowdown on large files with N include patterns
 - Search highlighting in raw mode now computes match offsets against raw bytes instead of parsed text, fixing incorrect highlight positions
 - Viewport size is now reduced when the search or command bar is visible, preventing matches from being hidden behind the bar
 - Cursor no longer disappears in visual character mode

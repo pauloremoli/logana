@@ -38,8 +38,9 @@ use ratatui::style::Style;
 use crate::date_filter::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
 use crate::db::{Database, FilterStore};
 use crate::file_reader::FileReader;
-use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter};
+use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter, is_regex_pattern};
 use crate::types::{ColorConfig, Comment, FilterDef, FilterType, parse_color};
+use aho_corasick::AhoCorasick;
 
 /// Manages filter definitions (persisted to SQLite), marks (in-memory), and
 /// the mapping to a renderable `FilterManager` + style palette.
@@ -403,6 +404,9 @@ impl LogManager {
         let mut date_filter_styles: Vec<DateFilterStyle> = Vec::new();
         let mut field_filter_styles: Vec<crate::field_filter::FieldFilterStyle> = Vec::new();
         let mut has_include = false;
+        let mut literal_patterns: Vec<String> = Vec::new();
+        let mut combined_ac_meta: Vec<(usize, FilterDecision)> = Vec::new();
+        let mut regex_filter_indices: Vec<usize> = Vec::new();
 
         let mut style_idx: usize = 0;
         for def in self.filter_defs.iter().filter(|f| f.enabled) {
@@ -500,15 +504,37 @@ impl LogManager {
                 .unwrap_or(true);
 
             if let Some(f) = build_filter(&def.pattern, decision, match_only, style_id) {
+                let filter_idx = filters.len();
+                if is_regex_pattern(&def.pattern) {
+                    regex_filter_indices.push(filter_idx);
+                } else {
+                    combined_ac_meta.push((filter_idx, decision));
+                    literal_patterns.push(def.pattern.clone());
+                }
                 filters.push(f);
             }
         }
+
+        let combined_ac = if literal_patterns.len() >= 2 {
+            AhoCorasick::builder()
+                .ascii_case_insensitive(false)
+                .build(&literal_patterns)
+                .ok()
+        } else {
+            None
+        };
 
         // Reserve the last slot for search highlights (StyleId = styles.len()).
         // The caller appends the search style.
 
         (
-            FilterManager::new(filters, has_include),
+            FilterManager::new_with_combined(
+                filters,
+                has_include,
+                combined_ac,
+                combined_ac_meta,
+                regex_filter_indices,
+            ),
             styles,
             date_filter_styles,
             field_filter_styles,

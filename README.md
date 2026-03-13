@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/logana-icon.png" alt="logana" width="120" />
-</p>
-
 # logana
 
 <p align="center">

@@ -259,7 +259,7 @@ impl<'a> MatchCollector<'a> {
 }
 
 /// Returns true if `pattern` contains any regex metacharacters.
-fn is_regex_pattern(pattern: &str) -> bool {
+pub(crate) fn is_regex_pattern(pattern: &str) -> bool {
     pattern.chars().any(|c| {
         matches!(
             c,
@@ -408,13 +408,41 @@ pub struct FilterManager {
     filters: Vec<Box<dyn Filter>>,
     /// True if any enabled Include filter exists.
     has_include_filters: bool,
+    /// Combined Aho-Corasick automaton built from all literal (non-regex) patterns.
+    /// `None` when fewer than 2 literal patterns exist (no benefit over per-filter scan).
+    combined_ac: Option<AhoCorasick>,
+    /// Maps combined AC pattern index → (filter index in `self.filters`, FilterDecision).
+    combined_ac_meta: Vec<(usize, FilterDecision)>,
+    /// Indices into `self.filters` that are regex-based (not covered by `combined_ac`).
+    regex_filter_indices: Vec<usize>,
 }
 
 impl FilterManager {
     pub fn new(filters: Vec<Box<dyn Filter>>, has_include_filters: bool) -> Self {
+        let n = filters.len();
         FilterManager {
             filters,
             has_include_filters,
+            combined_ac: None,
+            combined_ac_meta: Vec::new(),
+            // Treat all filters as needing individual evaluation when no combined AC.
+            regex_filter_indices: (0..n).collect(),
+        }
+    }
+
+    pub fn new_with_combined(
+        filters: Vec<Box<dyn Filter>>,
+        has_include_filters: bool,
+        combined_ac: Option<AhoCorasick>,
+        combined_ac_meta: Vec<(usize, FilterDecision)>,
+        regex_filter_indices: Vec<usize>,
+    ) -> Self {
+        FilterManager {
+            filters,
+            has_include_filters,
+            combined_ac,
+            combined_ac_meta,
+            regex_filter_indices,
         }
     }
 
@@ -422,6 +450,9 @@ impl FilterManager {
         FilterManager {
             filters: Vec::new(),
             has_include_filters: false,
+            combined_ac: None,
+            combined_ac_meta: Vec::new(),
+            regex_filter_indices: Vec::new(),
         }
     }
 
@@ -435,14 +466,41 @@ impl FilterManager {
     /// Returns `Include` or `Exclude` on the first match; `Neutral` if no filter matched.
     /// This is the same as `is_visible` but returns the decision rather than a bool,
     /// allowing callers to combine it with field and date filter results.
+    ///
+    /// When a combined Aho-Corasick automaton is available, a single scan covers all
+    /// literal patterns; regex-only filters are checked individually afterwards.
     pub fn evaluate_text(&self, line: &[u8]) -> FilterDecision {
-        for filter in &self.filters {
-            match filter.matches(line) {
-                d @ (FilterDecision::Include | FilterDecision::Exclude) => return d,
-                FilterDecision::Neutral => {}
+        if let Some(ref ac) = self.combined_ac {
+            let mut best: Option<(usize, FilterDecision)> = None;
+
+            for mat in ac.find_iter(line) {
+                let (filter_idx, decision) = self.combined_ac_meta[mat.pattern().as_usize()];
+                if best.is_none_or(|(best_idx, _)| filter_idx < best_idx) {
+                    best = Some((filter_idx, decision));
+                }
             }
+
+            for &fi in &self.regex_filter_indices {
+                if let Some(filter) = self.filters.get(fi) {
+                    let d = filter.matches(line);
+                    if d != FilterDecision::Neutral
+                        && best.is_none_or(|(best_idx, _)| fi < best_idx)
+                    {
+                        best = Some((fi, d));
+                    }
+                }
+            }
+
+            best.map(|(_, d)| d).unwrap_or(FilterDecision::Neutral)
+        } else {
+            for filter in &self.filters {
+                match filter.matches(line) {
+                    d @ (FilterDecision::Include | FilterDecision::Exclude) => return d,
+                    FilterDecision::Neutral => {}
+                }
+            }
+            FilterDecision::Neutral
         }
-        FilterDecision::Neutral
     }
 
     /// Returns true if `line` should be visible under the current filter set.
@@ -451,14 +509,11 @@ impl FilterManager {
     /// The first filter that matches (Include or Exclude) determines the outcome.
     /// If no filter matches, the line is visible only when there are no Include filters.
     pub fn is_visible(&self, line: &[u8]) -> bool {
-        for filter in &self.filters {
-            match filter.matches(line) {
-                FilterDecision::Include => return true,
-                FilterDecision::Exclude => return false,
-                FilterDecision::Neutral => {}
-            }
+        match self.evaluate_text(line) {
+            FilterDecision::Include => true,
+            FilterDecision::Exclude => false,
+            FilterDecision::Neutral => !self.has_include_filters,
         }
-        !self.has_include_filters
     }
 
     /// Run all filters on `line` and collect styling spans for rendering.
@@ -491,11 +546,34 @@ impl FilterManager {
     /// Unlike `is_visible`, this does not short-circuit: every filter is evaluated
     /// so that per-filter match counts accumulate correctly across lines.
     pub fn count_line_matches(&self, line: &[u8], counts: &[std::sync::atomic::AtomicUsize]) {
-        for (i, filter) in self.filters.iter().enumerate() {
-            if filter.matches(line) != FilterDecision::Neutral
-                && let Some(c) = counts.get(i)
-            {
-                c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(ref ac) = self.combined_ac {
+            let mut matched: Vec<usize> = ac
+                .find_iter(line)
+                .map(|m| self.combined_ac_meta[m.pattern().as_usize()].0)
+                .collect();
+            matched.sort_unstable();
+            matched.dedup();
+            for filter_idx in matched {
+                if let Some(c) = counts.get(filter_idx) {
+                    c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+
+            for &fi in &self.regex_filter_indices {
+                if let Some(filter) = self.filters.get(fi)
+                    && filter.matches(line) != FilterDecision::Neutral
+                    && let Some(c) = counts.get(fi)
+                {
+                    c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        } else {
+            for (i, filter) in self.filters.iter().enumerate() {
+                if filter.matches(line) != FilterDecision::Neutral
+                    && let Some(c) = counts.get(i)
+                {
+                    c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
     }
@@ -505,25 +583,10 @@ impl FilterManager {
     pub fn compute_visible(&self, reader: &crate::file_reader::FileReader) -> Vec<usize> {
         use rayon::prelude::*;
         let count = reader.line_count();
-        let has_include = self.has_include_filters;
-        let filters = &self.filters;
-
-        let visible: Vec<usize> = (0..count)
+        (0..count)
             .into_par_iter()
-            .filter(|&idx| {
-                let line = reader.get_line(idx);
-                for filter in filters.iter() {
-                    match filter.matches(line) {
-                        FilterDecision::Include => return true,
-                        FilterDecision::Exclude => return false,
-                        FilterDecision::Neutral => {}
-                    }
-                }
-                !has_include
-            })
-            .collect();
-
-        visible
+            .filter(|&idx| self.is_visible(reader.get_line(idx)))
+            .collect()
     }
 }
 
@@ -940,5 +1003,120 @@ mod tests {
         let mut col = MatchCollector::new(line);
         let eval_decision = f.evaluate(line, &mut col);
         assert_eq!(f.matches(line), eval_decision);
+    }
+
+    fn make_combined_fm(patterns: &[(&str, FilterDecision)], has_include: bool) -> FilterManager {
+        let filters: Vec<Box<dyn Filter>> = patterns
+            .iter()
+            .map(|(p, d)| {
+                SubstringFilter::new(p, *d, false, 0)
+                    .map(|f| Box::new(f) as Box<dyn Filter>)
+                    .unwrap()
+            })
+            .collect();
+        let literal_pats: Vec<&str> = patterns.iter().map(|(p, _)| *p).collect();
+        let meta: Vec<(usize, FilterDecision)> = patterns
+            .iter()
+            .enumerate()
+            .map(|(i, (_, d))| (i, *d))
+            .collect();
+        let ac = AhoCorasick::builder()
+            .ascii_case_insensitive(false)
+            .build(&literal_pats)
+            .ok();
+        FilterManager::new_with_combined(filters, has_include, ac, meta, vec![])
+    }
+
+    #[test]
+    fn test_combined_ac_two_include_filters_both_visible() {
+        let fm = make_combined_fm(
+            &[
+                ("ERROR", FilterDecision::Include),
+                ("WARN", FilterDecision::Include),
+            ],
+            true,
+        );
+        assert!(fm.is_visible(b"ERROR: something bad"));
+        assert!(fm.is_visible(b"WARN: degraded"));
+        assert!(!fm.is_visible(b"INFO: all good"));
+    }
+
+    #[test]
+    fn test_combined_ac_first_match_wins_by_filter_order() {
+        // Filter 0 = Include "WARN", Filter 1 = Exclude "ERROR"
+        // A line matching "ERROR" should be Included because filter 0 (WARN) is checked first,
+        // but "WARN ERROR" line matches both → filter 0 (idx=0) wins → Include.
+        let fm = make_combined_fm(
+            &[
+                ("WARN", FilterDecision::Include),
+                ("ERROR", FilterDecision::Exclude),
+            ],
+            true,
+        );
+        assert!(fm.is_visible(b"WARN ERROR mixed")); // filter 0 (Include) < filter 1 (Exclude)
+        assert!(!fm.is_visible(b"ERROR only")); // only filter 1 matches → Exclude
+        assert!(fm.is_visible(b"WARN only")); // only filter 0 matches → Include
+    }
+
+    #[test]
+    fn test_combined_ac_compute_visible() {
+        let (_f, reader) = make_reader(&[
+            "ERROR: bad",
+            "WARN: degraded",
+            "INFO: ok",
+            "ERROR WARN: both",
+        ]);
+        let fm = make_combined_fm(
+            &[
+                ("ERROR", FilterDecision::Include),
+                ("WARN", FilterDecision::Include),
+            ],
+            true,
+        );
+        let visible = fm.compute_visible(&reader);
+        assert_eq!(visible, vec![0, 1, 3]);
+    }
+
+    #[test]
+    fn test_combined_ac_count_line_matches_no_double_count() {
+        let fm = make_combined_fm(
+            &[
+                ("ERROR", FilterDecision::Include),
+                ("WARN", FilterDecision::Include),
+            ],
+            true,
+        );
+        let counts: Vec<std::sync::atomic::AtomicUsize> = (0..2)
+            .map(|_| std::sync::atomic::AtomicUsize::new(0))
+            .collect();
+        // "ERROR ERROR" — pattern "ERROR" appears twice but should count filter 0 once
+        fm.count_line_matches(b"ERROR ERROR", &counts);
+        assert_eq!(counts[0].load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(counts[1].load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_combined_ac_with_regex_fallback() {
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let ac = AhoCorasick::builder()
+            .ascii_case_insensitive(false)
+            .build(["ERROR"])
+            .ok();
+        let meta = vec![(0, FilterDecision::Include)];
+        let fm = FilterManager::new_with_combined(
+            vec![f_lit, f_re],
+            true,
+            ac,
+            meta,
+            vec![1], // regex filter at index 1
+        );
+        assert!(fm.is_visible(b"ERROR: bad"));
+        assert!(fm.is_visible(b"status 200 OK"));
+        assert!(!fm.is_visible(b"INFO: plain"));
     }
 }
