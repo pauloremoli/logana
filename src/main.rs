@@ -189,6 +189,32 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Headless mode: dispatch before any TUI or session-restore setup.
+    // run_headless always uses an in-memory database so no saved session
+    // state (filters, marks, scroll position) from previous TUI runs is
+    // ever applied — output depends solely on the parameters given.
+    if args.headless {
+        if let Some(ref path) = file_path
+            && std::path::Path::new(path).is_dir()
+        {
+            eprintln!(
+                "Error: '{}' is a directory. --headless requires a file path or stdin.",
+                path
+            );
+            std::process::exit(1);
+        }
+        logana::headless::run_headless(&logana::headless::HeadlessArgs {
+            file: file_path,
+            filters: args.filters,
+            include_filters: args.include_filters,
+            exclude_filters: args.exclude_filters,
+            timestamp_filters: args.timestamp_filters,
+            output: args.output,
+        })
+        .await?;
+        return Ok(());
+    }
+
     // For a directory argument, pre-check that it contains files so we can
     // give a clean error before entering the TUI.
     if let Some(ref path) = file_path
@@ -222,19 +248,6 @@ async fn main() -> Result<()> {
 
     let keybinding_conflicts: Vec<String> = config.keybindings.validate();
     let keybindings = Arc::new(config.keybindings);
-
-    if args.headless {
-        logana::headless::run_headless(&logana::headless::HeadlessArgs {
-            file: file_path,
-            filters: args.filters,
-            include_filters: args.include_filters,
-            exclude_filters: args.exclude_filters,
-            timestamp_filters: args.timestamp_filters,
-            output: args.output,
-        })
-        .await?;
-        return Ok(());
-    }
 
     let res = {
         enable_raw_mode()?;

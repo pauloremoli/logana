@@ -30,6 +30,10 @@ pub struct HeadlessArgs {
 }
 
 /// Run logana without a TUI: apply filters and write matching lines.
+///
+/// Always uses an in-memory database so no saved session state (filters,
+/// marks, scroll position) from previous TUI runs is ever applied.
+/// Output is determined solely by the parameters in `args`.
 pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
     let db = Arc::new(Database::in_memory().await?);
     let mut log_manager = LogManager::new(db, None).await;
@@ -243,5 +247,79 @@ mod tests {
         run_headless_to_writer(reader, lm, &mut out).unwrap();
         let result = String::from_utf8(out).unwrap();
         assert_eq!(result, "beta\n");
+    }
+
+    #[tokio::test]
+    async fn test_headless_no_session_restore_outputs_all_lines() {
+        use std::io::Write as _;
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "INFO foo").unwrap();
+        writeln!(tmp, "ERROR bar").unwrap();
+        writeln!(tmp, "DEBUG baz").unwrap();
+        tmp.flush().unwrap();
+
+        let out_tmp = tempfile::NamedTempFile::new().unwrap();
+
+        run_headless(&HeadlessArgs {
+            file: Some(tmp.path().to_str().unwrap().to_string()),
+            filters: None,
+            include_filters: vec![],
+            exclude_filters: vec![],
+            timestamp_filters: vec![],
+            output: Some(out_tmp.path().to_path_buf()),
+        })
+        .await
+        .unwrap();
+
+        let result = std::fs::read_to_string(out_tmp.path()).unwrap();
+        assert_eq!(result, "INFO foo\nERROR bar\nDEBUG baz\n");
+    }
+
+    #[tokio::test]
+    async fn test_headless_session_filters_in_db_are_not_applied() {
+        use crate::db::FilterStore as _;
+        use std::io::Write as _;
+
+        // Simulate what a previous TUI session would have saved: an include
+        // filter that would restrict output to only ERROR lines.  Headless
+        // must ignore it and output every line.
+        let session_db = Arc::new(Database::in_memory().await.unwrap());
+        session_db
+            .insert_filter(
+                "ERROR",
+                &FilterType::Include,
+                true,
+                None,
+                Some("some-source"),
+            )
+            .await
+            .unwrap();
+        // session_db is intentionally never passed to run_headless; headless
+        // always starts with its own fresh in-memory database.
+        drop(session_db);
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "INFO foo").unwrap();
+        writeln!(tmp, "ERROR bar").unwrap();
+        writeln!(tmp, "INFO baz").unwrap();
+        tmp.flush().unwrap();
+
+        let out_tmp = tempfile::NamedTempFile::new().unwrap();
+
+        run_headless(&HeadlessArgs {
+            file: Some(tmp.path().to_str().unwrap().to_string()),
+            filters: None,
+            include_filters: vec![],
+            exclude_filters: vec![],
+            timestamp_filters: vec![],
+            output: Some(out_tmp.path().to_path_buf()),
+        })
+        .await
+        .unwrap();
+
+        let result = std::fs::read_to_string(out_tmp.path()).unwrap();
+        // All three lines must appear — the saved DB filter was not loaded.
+        assert_eq!(result, "INFO foo\nERROR bar\nINFO baz\n");
     }
 }

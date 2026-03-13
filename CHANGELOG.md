@@ -2,6 +2,12 @@
 
 All notable changes to logana will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- Headless mode (`--headless`) no longer touches the real database before dispatching; it now exits early (before `LogManager` construction) so no saved session state — filters, marks, scroll position — from previous TUI runs can be inadvertently applied. Output is determined solely by the parameters given (`-f`, `-i`, `-o`, `-t`).
+- Headless mode now rejects directory arguments with a clear error message instead of failing with a raw I/O error.
+
 ## [0.2.0] - 2025-03-13
 
 ### Added
