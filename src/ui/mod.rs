@@ -1461,6 +1461,21 @@ impl TabState {
         self.begin_filter_refresh();
     }
 
+    /// Rebuild filter styles after a color-only change.
+    ///
+    /// Visible lines are unchanged, so no file scan is needed. Only the render
+    /// cache is invalidated so the next frame picks up the new highlight colors.
+    pub fn refresh_filter_colors(&mut self) {
+        let (fm, styles, date_filter_styles, field_filter_styles) =
+            self.log_manager.build_filter_manager();
+        self.filter_manager_arc = Arc::new(fm);
+        self.filter_styles = styles;
+        self.filter_date_styles = date_filter_styles;
+        self.filter_field_styles = field_filter_styles;
+        self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
+        self.render_line_cache.clear();
+    }
+
     /// Bump the parse cache generation so that all cached render outputs are re-computed
     /// on the next frame. Call this whenever the field layout or display mode changes.
     pub fn invalidate_parse_cache(&mut self) {
@@ -2525,6 +2540,34 @@ mod tests {
         tab.invalidate_parse_cache();
         assert!(tab.render_cache_gen > old);
         assert!(tab.render_line_cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_filter_colors_updates_styles_without_rescan() {
+        let mut tab = make_tab(&["INFO hello", "WARN world"]).await;
+        tab.log_manager
+            .add_filter_with_color("INFO".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.refresh_visible();
+        let old_parse_gen = tab.parse_cache_gen;
+        let old_render_gen = tab.render_cache_gen;
+        let visible_before = tab.visible_indices.len();
+
+        let filter_id = tab.log_manager.get_filters()[0].id;
+        tab.log_manager
+            .set_color_config(filter_id, Some("red"), None, true)
+            .await;
+        tab.refresh_filter_colors();
+
+        // Visible lines must be unchanged — no rescan occurred.
+        assert_eq!(tab.visible_indices.len(), visible_before);
+        // Parse cache must be untouched.
+        assert_eq!(tab.parse_cache_gen, old_parse_gen);
+        // Render cache must be invalidated so the next frame picks up new colors.
+        assert!(tab.render_cache_gen > old_render_gen);
+        assert!(tab.render_line_cache.is_empty());
+        // Styles must be updated.
+        assert!(!tab.filter_styles.is_empty());
     }
 
     #[tokio::test]

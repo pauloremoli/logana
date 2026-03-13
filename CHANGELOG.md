@@ -10,6 +10,7 @@ All notable changes to logana will be documented in this file.
 - Aho-Corasick acceleration for literal (non-regex) search patterns, matching the fast path already used by filters; regex patterns continue to use the regex engine
 
 ### Fixed
+- Changing a filter's color (`set-color`) no longer triggers a full file rescan; only the render cache is invalidated so visible lines update instantly
 - Headless mode (`--headless`) no longer touches the real database before dispatching; it now exits early (before `LogManager` construction) so no saved session state — filters, marks, scroll position — from previous TUI runs can be inadvertently applied. Output is determined solely by the parameters given (`-f`, `-i`, `-o`, `-t`).
 - Headless mode now rejects directory arguments with a clear error message instead of failing with a raw I/O error.
 

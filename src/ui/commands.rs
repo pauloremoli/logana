@@ -201,7 +201,7 @@ impl App {
                         .log_manager
                         .set_color_config(filter_id, fg.as_deref(), bg.as_deref(), match_only)
                         .await;
-                    self.tabs[self.active_tab].begin_filter_refresh();
+                    self.tabs[self.active_tab].refresh_filter_colors();
                 }
             }
             Some(Commands::ExportMarked { path }) => {
