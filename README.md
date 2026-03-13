@@ -17,33 +17,16 @@ A fast terminal log viewer for files of any size — including multi-GB logs. Bu
 
 ## Features
 
-- **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OTel, and more
-- **Real-time filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters; add filters from the command line with `-i`/`-o`/`-t`
+- **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OpenTelemetry, and more
+- **Filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters; add filters from the command line with `-i`/`-o`/`-t`
 - **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; configurable restore policy (ask / always / never)
-- **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; show/hide/reorder per session
+- **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; select which columns you want visible
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
-- **Annotations** — attach multiline comments to log lines; export analysis to Markdown or Jira
+- **Annotations** — attach comments to log lines; export analysis to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
-- **Multi-tab** — open multiple files or Docker streams side by side; each tab has independent filters and session state
-- **Headless mode** — run the full filter pipeline without a TUI and write matching lines to stdout or a file
+- **Multi-tab** — open multiple files or Docker streams; each tab has independent filters and session state
+- **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs.
 - **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 22 bundled themes
-
----
-
-
-## Supported Log Formats
-
-Detected automatically on open — no flags or config required:
-
-| Format | Examples |
-|---|---|
-| JSON | tracing-subscriber JSON, bunyan, pino, any structured JSON logger |
-| Syslog | RFC 3164 (BSD), RFC 5424 |
-| OpenTelemetry |
-| Journalctl | short-iso, short-precise, short-full |
-| Common / Combined Log | Apache access, nginx access |
-| Logfmt | Go `slog`, Heroku, Grafana Loki |
-| Common log family | env_logger, tracing-subscriber fmt (with/without spans), logback, log4j2, Spring Boot, Python logging, loguru, structlog |
 
 ---
 
@@ -114,6 +97,22 @@ logana app.log -f my-filters.json
 logana app.log --headless -i error -o debug
 logana app.log --headless -i error --output filtered.log
 ```
+
+## Supported Log Formats
+
+Detected automatically on open — no flags or config required:
+
+| Format | Examples |
+|---|---|
+| JSON | tracing-subscriber JSON, bunyan, pino, any structured JSON logger |
+| Syslog | RFC 3164 (BSD), RFC 5424 |
+| OpenTelemetry |
+| Journalctl | short-iso, short-precise, short-full |
+| Common / Combined Log | Apache access, nginx access |
+| Logfmt | Go `slog`, Heroku, Grafana Loki |
+| Common log family | env_logger, tracing-subscriber fmt (with/without spans), logback, log4j2, Spring Boot, Python logging, loguru, structlog |
+
+---
 
 ---
 

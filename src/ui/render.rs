@@ -929,7 +929,11 @@ impl App {
             // In visual-char mode, skip cursor highlight on the current line so
             // the char-level REVERSED selection is the only visual indicator.
             let render_style = if is_current && visual_char_selection.is_none() {
-                Style::default().fg(theme.cursor_fg).bg(theme.cursor_bg)
+                Style::default()
+                    .fg(theme.cursor_fg)
+                    .bg(theme.cursor_bg)
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::UNDERLINED)
             } else {
                 base_style
             };
@@ -3177,6 +3181,30 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(content.contains("conflict 0"));
+    }
+
+    #[tokio::test]
+    async fn test_cursor_line_has_bold_and_underlined() {
+        let mut app = make_app(&["INFO first line", "ERROR second line"]).await;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Row 0 is the top border; row 1 is the first content row (cursor at scroll=0).
+        let cursor_row = 1u16;
+        let has_bold = (0..buf.area.width).any(|x| {
+            buf.cell((x, cursor_row))
+                .map_or(false, |c| c.modifier.contains(Modifier::BOLD))
+        });
+        let has_underlined = (0..buf.area.width).any(|x| {
+            buf.cell((x, cursor_row))
+                .map_or(false, |c| c.modifier.contains(Modifier::UNDERLINED))
+        });
+        assert!(has_bold, "cursor line should have BOLD modifier");
+        assert!(
+            has_underlined,
+            "cursor line should have UNDERLINED modifier"
+        );
     }
 
     // After a keypress startup_warnings must be cleared.

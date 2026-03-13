@@ -3,6 +3,11 @@
 All notable changes to logana will be documented in this file.
 
 
+## [Unreleased]
+
+### Changed
+- Selected (cursor) line is now rendered with bold and underline modifiers, making it visually distinct even when surrounded by highlighted lines (log-level colors, search matches, filters)
+
 ## [0.2.1] - 2026-03-13
 
 ### Added
