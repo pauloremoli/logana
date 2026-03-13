@@ -1086,7 +1086,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_completions_filter_dash_suggests_flags() {
-        let mut tab = make_tab().await;
+        let tab = make_tab().await;
         let mode = CommandMode::with_history("filter -".to_string(), 8, vec![]);
         let completions = mode.compute_completions(&tab);
         assert!(
@@ -1100,7 +1100,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_completions_filter_double_dash_f_suggests_field_and_fg() {
-        let mut tab = make_tab().await;
+        let tab = make_tab().await;
         let mode = CommandMode::with_history("filter --f".to_string(), 10, vec![]);
         let completions = mode.compute_completions(&tab);
         assert!(completions.contains(&"filter --field".to_string()));
@@ -1110,7 +1110,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_completions_set_color_suggests_color_flags() {
-        let mut tab = make_tab().await;
+        let tab = make_tab().await;
         let mode = CommandMode::with_history("set-color -".to_string(), 11, vec![]);
         let completions = mode.compute_completions(&tab);
         assert!(completions.contains(&"set-color --fg".to_string()));
@@ -1120,7 +1120,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_completions_date_filter_color_after_fg() {
-        let mut tab = make_tab().await;
+        let tab = make_tab().await;
         let mode = CommandMode::with_history("date-filter --fg ".to_string(), 17, vec![]);
         let completions = mode.compute_completions(&tab);
         assert!(
@@ -1133,7 +1133,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_completions_color_still_fires_after_flag() {
-        let mut tab = make_tab().await;
+        let tab = make_tab().await;
         let mode = CommandMode::with_history("filter --fg ".to_string(), 12, vec![]);
         let completions = mode.compute_completions(&tab);
         assert!(
@@ -1171,7 +1171,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hide_field_autocomplete_suggests_field_names() {
-        let mut tab = make_json_tab().await;
+        let tab = make_json_tab().await;
         let mode = CommandMode::with_history("hide-field ".to_string(), 11, vec![]);
         let completions = mode.compute_completions(&tab);
         assert!(
@@ -1186,7 +1186,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hide_field_autocomplete_fuzzy() {
-        let mut tab = make_json_tab().await;
+        let tab = make_json_tab().await;
         let mode = CommandMode::with_history("hide-field lv".to_string(), 13, vec![]);
         let completions = mode.compute_completions(&tab);
         assert!(
@@ -1213,7 +1213,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_show_field_autocomplete_fallback_when_none_hidden() {
-        let mut tab = make_json_tab().await;
+        let tab = make_json_tab().await;
         let mode = CommandMode::with_history("show-field ".to_string(), 11, vec![]);
         let completions = mode.compute_completions(&tab);
         assert!(

@@ -2624,6 +2624,7 @@ mod tests {
     // stable_hash
     // -----------------------------------------------------------------------
 
+    #[test]
     fn test_stable_hash_consistent() {
         assert_eq!(stable_hash("my_service"), stable_hash("my_service"));
         assert_ne!(stable_hash("service_a"), stable_hash("service_b"));

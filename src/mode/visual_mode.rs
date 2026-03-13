@@ -722,7 +722,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_G_goes_to_last_line() {
+    async fn test_g_goes_to_last_line() {
         let lines: Vec<&str> = (0..10).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
         tab.scroll_offset = 0;
