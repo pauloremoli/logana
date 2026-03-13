@@ -1328,6 +1328,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         app.db.save_file_context(&ctx).await.unwrap();
 
@@ -1563,6 +1564,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         app.db.save_file_context(&ctx).await.unwrap();
 

@@ -1585,6 +1585,7 @@ impl TabState {
             sidebar_width: self.sidebar_width,
             hidden_fields: self.hidden_fields.clone(),
             field_layout_columns: self.field_layout.columns.clone(),
+            filtering_enabled: self.filtering_enabled,
         })
     }
 
@@ -1597,6 +1598,7 @@ impl TabState {
         self.sidebar_width = ctx.sidebar_width;
         self.hidden_fields = ctx.hidden_fields.clone();
         self.field_layout.columns = ctx.field_layout_columns.clone();
+        self.filtering_enabled = ctx.filtering_enabled;
         if !ctx.marked_lines.is_empty() {
             self.log_manager.set_marks(ctx.marked_lines.clone());
         }
@@ -2080,6 +2082,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         tab.apply_file_context(&ctx);
         assert_eq!(tab.scroll_offset, 3);
@@ -2107,6 +2110,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         tab.apply_file_context(&ctx);
         assert!(tab.level_colors_disabled.is_empty());
@@ -2114,6 +2118,42 @@ mod tests {
         assert_eq!(tab.horizontal_scroll, 0);
         assert!(!tab.log_manager.is_marked(0));
         assert!(!tab.log_manager.has_comment(0));
+    }
+
+    #[tokio::test]
+    async fn test_apply_file_context_restores_filtering_enabled_false() {
+        let mut tab = make_tab_with_source(&["line1", "line2"], "test.log").await;
+        assert!(tab.filtering_enabled);
+        let ctx = FileContext {
+            source_file: "test.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            level_colors_disabled: HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: false,
+        };
+        tab.apply_file_context(&ctx);
+        assert!(!tab.filtering_enabled);
+    }
+
+    #[tokio::test]
+    async fn test_to_file_context_captures_filtering_enabled() {
+        let mut tab = make_tab_with_source(&["line1", "line2"], "test.log").await;
+        tab.filtering_enabled = false;
+        let ctx = tab.to_file_context().expect("should produce context");
+        assert!(!ctx.filtering_enabled);
+
+        tab.filtering_enabled = true;
+        let ctx2 = tab.to_file_context().expect("should produce context");
+        assert!(ctx2.filtering_enabled);
     }
 
     #[tokio::test]

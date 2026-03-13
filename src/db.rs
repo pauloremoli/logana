@@ -93,6 +93,8 @@ pub struct FileContext {
     pub hidden_fields: HashSet<String>,
     /// Ordered list of all column names from the select-fields modal (visible + hidden).
     pub field_layout_columns: Option<Vec<String>>,
+    /// Whether the global filtering toggle is enabled (default true).
+    pub filtering_enabled: bool,
 }
 
 #[async_trait]
@@ -245,6 +247,13 @@ impl Database {
                 .await?;
         }
 
+        if version < 9 {
+            self.migrate_to_v9().await?;
+            sqlx::query("PRAGMA user_version = 9")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -380,6 +389,16 @@ impl Database {
             .execute(&self.pool)
             .await
             .ok();
+        Ok(())
+    }
+
+    async fn migrate_to_v9(&self) -> Result<()> {
+        sqlx::query(
+            "ALTER TABLE file_context ADD COLUMN filtering_enabled INTEGER NOT NULL DEFAULT 1",
+        )
+        .execute(&self.pool)
+        .await
+        .ok();
         Ok(())
     }
 }
@@ -673,8 +692,8 @@ impl FileContextStore for Database {
         // Also keep the legacy `level_colors` column up-to-date for any old readers.
         let level_colors_legacy = ctx.level_colors_disabled.is_empty() as i32;
         sqlx::query(
-            "INSERT INTO file_context (source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width, hidden_fields, field_layout_columns)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width, hidden_fields, field_layout_columns, filtering_enabled)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_file) DO UPDATE SET
                 scroll_offset = excluded.scroll_offset,
                 search_query = excluded.search_query,
@@ -688,7 +707,8 @@ impl FileContextStore for Database {
                 raw_mode = excluded.raw_mode,
                 sidebar_width = excluded.sidebar_width,
                 hidden_fields = excluded.hidden_fields,
-                field_layout_columns = excluded.field_layout_columns",
+                field_layout_columns = excluded.field_layout_columns,
+                filtering_enabled = excluded.filtering_enabled",
         )
         .bind(&ctx.source_file)
         .bind(ctx.scroll_offset as i64)
@@ -704,6 +724,7 @@ impl FileContextStore for Database {
         .bind(ctx.sidebar_width as i64)
         .bind(&hidden_fields_json)
         .bind(&field_layout_columns_json)
+        .bind(ctx.filtering_enabled as i32)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -711,7 +732,7 @@ impl FileContextStore for Database {
 
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
         let row = sqlx::query(
-            "SELECT source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width, hidden_fields, field_layout_columns
+            "SELECT source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width, hidden_fields, field_layout_columns, filtering_enabled
              FROM file_context WHERE source_file = ?",
         )
         .bind(source_file)
@@ -767,6 +788,7 @@ impl FileContextStore for Database {
                     .clamp(10, 200) as u16,
                 hidden_fields,
                 field_layout_columns,
+                filtering_enabled: r.try_get::<i32, _>("filtering_enabled").unwrap_or(1) != 0,
             }
         }))
     }
@@ -1052,6 +1074,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1086,6 +1109,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         db.save_file_context(&ctx1).await.unwrap();
 
@@ -1108,6 +1132,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         db.save_file_context(&ctx2).await.unwrap();
 
@@ -1156,6 +1181,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1190,6 +1216,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1220,6 +1247,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1249,6 +1277,7 @@ mod tests {
             sidebar_width: 45,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
+            filtering_enabled: true,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1286,6 +1315,7 @@ mod tests {
             sidebar_width: 30,
             hidden_fields: hidden.clone(),
             field_layout_columns: columns.clone(),
+            filtering_enabled: true,
         };
         db.save_file_context(&ctx).await.unwrap();
 
@@ -1297,6 +1327,51 @@ mod tests {
 
         assert_eq!(loaded.hidden_fields, hidden);
         assert_eq!(loaded.field_layout_columns, columns);
+    }
+
+    #[tokio::test]
+    async fn test_filtering_enabled_round_trips() {
+        let db = setup_db().await;
+
+        let ctx = FileContext {
+            source_file: "/tmp/filtering.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            level_colors_disabled: HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: false,
+        };
+        db.save_file_context(&ctx).await.unwrap();
+
+        let loaded = db
+            .load_file_context("/tmp/filtering.log")
+            .await
+            .unwrap()
+            .expect("context should exist");
+
+        assert!(!loaded.filtering_enabled);
+
+        let ctx2 = FileContext {
+            filtering_enabled: true,
+            ..ctx
+        };
+        db.save_file_context(&ctx2).await.unwrap();
+
+        let loaded2 = db
+            .load_file_context("/tmp/filtering.log")
+            .await
+            .unwrap()
+            .expect("context should exist");
+
+        assert!(loaded2.filtering_enabled);
     }
 
     // ── AppSettingsStore ─────────────────────────────────────────────────
