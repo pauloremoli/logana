@@ -2651,7 +2651,7 @@ mod tests {
             .search("line", visible.iter(), |li| texts.get(&li).cloned());
 
         if let Some(p) = progress {
-            let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+            let (_result_tx, result_rx) = tokio::sync::mpsc::channel(1);
             let (_progress_tx, progress_rx) = tokio::sync::watch::channel(p);
             app.tabs[0].search_handle = Some(super::super::SearchHandle {
                 result_rx,

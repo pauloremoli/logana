@@ -123,22 +123,21 @@ mod tests {
 
     /// Wait for any in-flight background search to complete and apply results.
     async fn drain_search(tab: &mut TabState) {
-        if let Some(h) = tab.search_handle.take() {
+        if let Some(mut h) = tab.search_handle.take() {
             let forward = h.forward;
             let navigate = h.navigate;
-            if let Ok((results, regex)) = h.result_rx.await {
-                tab.search.set_results(results, regex);
-                tab.search.set_forward(forward);
-                if navigate && !tab.search.get_results().is_empty() {
-                    let current = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
-                    tab.search.set_position_for_search(current, forward);
-                    if forward {
-                        tab.search.next_match();
-                    } else {
-                        tab.search.previous_match();
-                    }
-                    tab.scroll_to_current_search_match();
+            while let Some(batch) = h.result_rx.recv().await {
+                tab.search.extend_results(batch);
+            }
+            if navigate && !tab.search.get_results().is_empty() {
+                let current = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
+                tab.search.set_position_for_search(current, forward);
+                if forward {
+                    tab.search.next_match();
+                } else {
+                    tab.search.previous_match();
                 }
+                tab.scroll_to_current_search_match();
             }
         }
     }

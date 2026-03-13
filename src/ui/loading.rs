@@ -582,31 +582,45 @@ impl App {
     /// On completion, results are written into `tab.search` and the view
     /// is scrolled to the first match when `navigate` was set.
     pub(super) fn advance_search(&mut self) {
+        use tokio::sync::mpsc::error::TryRecvError;
+
         for tab in &mut self.tabs {
             let Some(ref mut h) = tab.search_handle else {
                 continue;
             };
-            let Ok((results, regex)) = h.result_rx.try_recv() else {
-                continue;
-            };
             let forward = h.forward;
             let navigate = h.navigate;
-            tab.search_handle = None;
+            let mut done = false;
 
-            tab.search.set_results(results, regex);
-            tab.search.set_forward(forward);
-            tab.search_result_gen = tab.search_result_gen.wrapping_add(1);
-
-            if navigate && !tab.search.get_results().is_empty() {
-                let current_line_idx = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
-                tab.search
-                    .set_position_for_search(current_line_idx, forward);
-                if forward {
-                    tab.search.next_match();
-                } else {
-                    tab.search.previous_match();
+            loop {
+                match h.result_rx.try_recv() {
+                    Ok(batch) => {
+                        tab.search.extend_results(batch);
+                        tab.search_result_gen = tab.search_result_gen.wrapping_add(1);
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        done = true;
+                        break;
+                    }
                 }
-                tab.scroll_to_current_search_match();
+            }
+
+            if done {
+                tab.search_handle = None;
+
+                if navigate && !tab.search.get_results().is_empty() {
+                    let current_line_idx =
+                        tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
+                    tab.search
+                        .set_position_for_search(current_line_idx, forward);
+                    if forward {
+                        tab.search.next_match();
+                    } else {
+                        tab.search.previous_match();
+                    }
+                    tab.scroll_to_current_search_match();
+                }
             }
         }
     }

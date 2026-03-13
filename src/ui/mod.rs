@@ -62,7 +62,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::style::Style;
 use ratatui::text::Line;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::config::Keybindings;
 use crate::date_filter::DateFilterStyle;
@@ -112,8 +112,8 @@ pub enum KeyResult {
 
 /// Handle for a background search task spawned by [`TabState::begin_search`].
 pub struct SearchHandle {
-    /// Receives the completed results. `None` means the search was cancelled.
-    pub result_rx: oneshot::Receiver<(Vec<SearchResult>, regex::Regex)>,
+    /// Receives incremental batches of results. Channel closes when scan is done.
+    pub result_rx: mpsc::Receiver<Vec<SearchResult>>,
     /// Set to `true` to cancel the in-flight search early.
     pub cancel: Arc<AtomicBool>,
     /// Live fraction-complete (0.0–1.0) updated as lines are scanned.
@@ -972,12 +972,14 @@ impl TabState {
             return;
         };
 
-        // Pre-set the pattern so highlights appear immediately (stale results).
-        self.search.set_pattern(re.clone(), forward);
+        // Set pattern and clear results immediately so highlights appear and
+        // stale results from the previous search don't linger.
+        self.search.set_results(vec![], re.clone());
+        self.search.set_forward(forward);
 
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_clone = cancel.clone();
-        let (result_tx, result_rx) = oneshot::channel();
+        let (result_tx, result_rx) = mpsc::channel::<Vec<SearchResult>>(32);
         let (progress_tx, progress_rx) = watch::channel(0.0_f64);
 
         // Clone the file reader (O(1) — just increments Arc ref-counts).
@@ -995,42 +997,72 @@ impl TabState {
         let hidden_fields = self.hidden_fields.clone();
         let show_keys = self.show_keys;
 
+        // Use Aho-Corasick for literal (non-regex) patterns — much faster.
+        let pattern_str = pattern.to_string();
+        let use_ac = !crate::filters::is_regex_pattern(&pattern_str);
+        let ac = use_ac.then(|| {
+            aho_corasick::AhoCorasick::builder()
+                .ascii_case_insensitive(!case_sensitive)
+                .build([&pattern_str])
+                .unwrap()
+        });
+
+        const CHUNK_SIZE: usize = 5_000;
+
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
-            use std::sync::atomic::AtomicUsize;
-            let counter = AtomicUsize::new(0);
-            let re_for_search = re.clone();
-            let results: Vec<SearchResult> = visible
-                .par_iter()
-                .copied()
-                .filter_map(|line_idx| {
-                    if cancel_clone.load(Ordering::Relaxed) {
-                        return None;
-                    }
-                    let i = counter.fetch_add(1, Ordering::Relaxed);
-                    if i.is_multiple_of(10_000) && total > 0 {
-                        let _ = progress_tx.send(i as f64 / total as f64);
-                    }
-                    let text = display_text_for_line(
-                        line_idx,
-                        &file_reader,
-                        &detected_format,
-                        &field_layout,
-                        &hidden_fields,
-                        show_keys,
-                    );
-                    let matches: Vec<(usize, usize)> = re_for_search
-                        .find_iter(&text)
-                        .map(|m| (m.start(), m.end()))
-                        .collect();
-                    if matches.is_empty() {
-                        None
-                    } else {
-                        Some(SearchResult { line_idx, matches })
-                    }
-                })
-                .collect();
-            let _ = result_tx.send((results, re));
+
+            let mut processed = 0usize;
+            for chunk in visible.chunks(CHUNK_SIZE) {
+                if cancel_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let re_for_search = re.clone();
+                let ac_ref = ac.as_ref();
+                let mut batch: Vec<SearchResult> = chunk
+                    .par_iter()
+                    .filter_map(|&line_idx| {
+                        if cancel_clone.load(Ordering::Relaxed) {
+                            return None;
+                        }
+                        let text = display_text_for_line(
+                            line_idx,
+                            &file_reader,
+                            &detected_format,
+                            &field_layout,
+                            &hidden_fields,
+                            show_keys,
+                        );
+                        let matches: Vec<(usize, usize)> = if let Some(ac) = ac_ref {
+                            ac.find_iter(&text).map(|m| (m.start(), m.end())).collect()
+                        } else {
+                            re_for_search
+                                .find_iter(&text)
+                                .map(|m| (m.start(), m.end()))
+                                .collect()
+                        };
+                        if matches.is_empty() {
+                            None
+                        } else {
+                            Some(SearchResult { line_idx, matches })
+                        }
+                    })
+                    .collect();
+
+                // par_iter doesn't preserve order within the chunk — sort by line_idx.
+                batch.sort_unstable_by_key(|r| r.line_idx);
+
+                processed += chunk.len();
+                if total > 0 {
+                    let _ = progress_tx.send(processed as f64 / total as f64);
+                }
+
+                if result_tx.blocking_send(batch).is_err() {
+                    break;
+                }
+            }
+            // Channel closes here, signalling completion to advance_search.
         });
 
         self.search_handle = Some(SearchHandle {
@@ -2527,23 +2559,22 @@ mod tests {
     }
 
     async fn drain_search(tab: &mut TabState) {
-        if let Some(h) = tab.search_handle.take() {
+        if let Some(mut h) = tab.search_handle.take() {
             let forward = h.forward;
             let navigate = h.navigate;
-            if let Ok((results, regex)) = h.result_rx.await {
-                tab.search.set_results(results, regex);
-                tab.search.set_forward(forward);
+            while let Some(batch) = h.result_rx.recv().await {
+                tab.search.extend_results(batch);
                 tab.search_result_gen = tab.search_result_gen.wrapping_add(1);
-                if navigate && !tab.search.get_results().is_empty() {
-                    let current = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
-                    tab.search.set_position_for_search(current, forward);
-                    if forward {
-                        tab.search.next_match();
-                    } else {
-                        tab.search.previous_match();
-                    }
-                    tab.scroll_to_current_search_match();
+            }
+            if navigate && !tab.search.get_results().is_empty() {
+                let current = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
+                tab.search.set_position_for_search(current, forward);
+                if forward {
+                    tab.search.next_match();
+                } else {
+                    tab.search.previous_match();
                 }
+                tab.scroll_to_current_search_match();
             }
         }
     }

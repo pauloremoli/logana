@@ -163,6 +163,14 @@ impl Search {
         self.current_occurrence_index = 0;
     }
 
+    /// Append a batch of results from an incremental (chunked) search.
+    ///
+    /// Chunks arrive in line order so extending preserves sort.
+    /// Unlike `set_results`, this does NOT reset navigation indices.
+    pub fn extend_results(&mut self, new_results: Vec<crate::types::SearchResult>) {
+        self.results.extend(new_results);
+    }
+
     /// Store the search direction so that `go_next` / `go_prev` respect vim semantics:
     /// `n` repeats in the original direction, `N` reverses it.
     pub fn set_forward(&mut self, forward: bool) {
