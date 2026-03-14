@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-03-14
+
 ### Added
 - DLT (AUTOSAR Diagnostic Log and Trace) format support: supports binary `.dlt` files and `dlt-convert' outuput.
 - DLT client implementation, allows connecting to DLT daemon via TCP.
