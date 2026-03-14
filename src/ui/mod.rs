@@ -953,15 +953,17 @@ impl TabState {
                 .unwrap()
         });
 
-        const CHUNK_SIZE: usize = 1_000;
+        const INITIAL_SEARCH_CHUNK: usize = 5_000;
+        const MAX_SEARCH_CHUNK: usize = 500_000;
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
 
             let re_for_search = re;
             let ac_ref = ac.as_ref();
-            let mut chunk: Vec<usize> = Vec::with_capacity(CHUNK_SIZE);
+            let mut chunk: Vec<usize> = Vec::with_capacity(INITIAL_SEARCH_CHUNK);
             let mut processed = 0usize;
+            let mut chunk_size = INITIAL_SEARCH_CHUNK;
 
             let mut iter = visible_indices.iter();
             loop {
@@ -970,7 +972,7 @@ impl TabState {
                 }
 
                 chunk.clear();
-                while chunk.len() < CHUNK_SIZE {
+                while chunk.len() < chunk_size {
                     match iter.next() {
                         Some(idx) => chunk.push(idx),
                         None => break,
@@ -1021,6 +1023,8 @@ impl TabState {
                 if result_tx.blocking_send(batch).is_err() {
                     break;
                 }
+
+                chunk_size = (chunk_size * 4).min(MAX_SEARCH_CHUNK);
             }
             // Channel closes here, signalling completion to advance_search.
         });
@@ -2951,10 +2955,10 @@ mod tests {
             h.result_rx.recv().await.unwrap()
         };
 
-        // The first batch must not exceed CHUNK_SIZE (1_000).
+        // The first batch must not exceed INITIAL_SEARCH_CHUNK (5_000).
         assert!(
-            batch.len() <= 1_000,
-            "first batch size {} exceeds CHUNK_SIZE 1_000",
+            batch.len() <= 5_000,
+            "first batch size {} exceeds INITIAL_SEARCH_CHUNK 5_000",
             batch.len()
         );
     }
