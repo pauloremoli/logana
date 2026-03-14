@@ -1483,6 +1483,51 @@ impl TabState {
         self.render_line_cache.clear();
     }
 
+    pub fn reset_tab_state(&mut self) {
+        self.log_manager.reset_in_memory();
+        self.scroll_offset = 0;
+        self.horizontal_scroll = 0;
+        self.show_sidebar = true;
+        self.sidebar_width = 30;
+        self.wrap = true;
+        self.show_line_numbers = true;
+        self.show_keys = false;
+        self.raw_mode = false;
+        self.tail_mode = false;
+        self.paused = false;
+        self.filtering_enabled = true;
+        self.show_marks_only = false;
+        self.filter_context = None;
+        self.editing_filter_id = None;
+        self.mode = Box::new(NormalMode::default());
+        self.hidden_fields.clear();
+        self.field_layout = FieldLayout::default();
+        self.search = Search::new();
+        self.command_error = None;
+        self.saved_filter_view = None;
+        self.level_colors_disabled = ["trace", "debug", "info", "notice"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        if let Some(ref h) = self.search_handle {
+            h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.search_handle = None;
+        if let Some(ref h) = self.filter_handle {
+            h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.filter_handle = None;
+        self.parse_cache.clear();
+        self.render_line_cache.clear();
+        self.field_names_cache = None;
+        self.filter_manager_arc = Arc::new(FilterManager::empty());
+        self.filter_styles.clear();
+        self.filter_date_styles.clear();
+        self.filter_field_styles.clear();
+        self.filter_match_counts.clear();
+        self.begin_filter_refresh();
+    }
+
     /// Detect log format from the first lines of the file and store it.
     #[inline]
     pub fn detect_and_apply_format(&mut self) {

@@ -369,6 +369,22 @@ impl Database {
         .ok();
         Ok(())
     }
+
+    pub async fn reset_all(&self) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM filters").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM file_context")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM session_tabs")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM app_settings")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 fn filter_type_to_str(ft: &FilterType) -> &'static str {
@@ -1396,5 +1412,56 @@ mod tests {
         let file = db.load_app_setting("restore_file_context").await.unwrap();
         assert_eq!(session.as_deref(), Some("always"));
         assert!(file.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_reset_all_clears_all_tables() {
+        let db = setup_db().await;
+
+        db.insert_filter("error", &FilterType::Include, true, None, Some("app.log"))
+            .await
+            .unwrap();
+        db.insert_filter("debug", &FilterType::Exclude, true, None, None)
+            .await
+            .unwrap();
+
+        db.save_file_context(&FileContext {
+            source_file: "app.log".into(),
+            scroll_offset: 42,
+            search_query: String::new(),
+            marked_lines: vec![1, 2, 3],
+            file_hash: None,
+            comments: Vec::new(),
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 30,
+            level_colors_disabled: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
+            horizontal_scroll: 0,
+            filtering_enabled: true,
+        })
+        .await
+        .unwrap();
+
+        db.save_session(&["app.log".into(), "server.log".into()])
+            .await
+            .unwrap();
+
+        db.save_app_setting("restore_session", "always")
+            .await
+            .unwrap();
+
+        db.reset_all().await.unwrap();
+
+        assert!(db.get_filters().await.unwrap().is_empty());
+        assert!(db.load_file_context("app.log").await.unwrap().is_none());
+        assert!(db.load_session().await.unwrap().is_empty());
+        assert!(
+            db.load_app_setting("restore_session")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

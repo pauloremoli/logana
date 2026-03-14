@@ -165,6 +165,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "resume",
         description: "Resume applying incoming data after a pause",
     },
+    CommandInfo {
+        name: "reset",
+        usage: "reset",
+        description: "Restore all settings to defaults and clear all persisted state",
+    },
 ];
 
 /// Commands whose last argument is a file path and should receive path auto-completion.
@@ -218,6 +223,7 @@ mod tests {
             "export-marked",
             "save-filters",
             "load-filters",
+            "reset",
         ] {
             assert!(names.contains(expected), "missing command: {expected}");
         }

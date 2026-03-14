@@ -589,6 +589,29 @@ impl App {
             Some(Commands::Resume) => {
                 self.tabs[self.active_tab].paused = false;
             }
+            Some(Commands::Reset) => {
+                self.db
+                    .reset_all()
+                    .await
+                    .map_err(|e| format!("Failed to reset database: {e}"))?;
+
+                self.show_mode_bar = true;
+                self.show_borders_default = false;
+                self.show_line_numbers = true;
+                self.show_sidebar = true;
+                self.wrap = false;
+                self.restore_policy = crate::config::RestoreSessionPolicy::Ask;
+                self.restore_file_policy = crate::config::RestoreSessionPolicy::Ask;
+
+                for tab in &mut self.tabs {
+                    tab.show_mode_bar = true;
+                    tab.show_borders = false;
+                    tab.show_line_numbers = true;
+                    tab.show_sidebar = true;
+                    tab.wrap = false;
+                    tab.reset_tab_state();
+                }
+            }
             None => {}
         }
         Ok(false)
@@ -1436,5 +1459,50 @@ mod tests {
         app.run_command("filter --field level=error").await.unwrap();
         app.run_command("filter --field level=error").await.unwrap();
         assert_eq!(app.tabs[0].log_manager.get_filters().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_reset_clears_filters_and_resets_state() {
+        let mut app = make_app(&["error line", "debug line", "info line"]).await;
+        app.run_command("filter error").await.unwrap();
+        await_filter_computations(&mut app).await;
+        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[0].show_line_numbers = false;
+        app.show_mode_bar = false;
+
+        app.run_command("reset").await.unwrap();
+        await_filter_computations(&mut app).await;
+
+        assert!(app.tabs[0].log_manager.get_filters().is_empty());
+        assert!(app.tabs[0].log_manager.get_marked_indices().is_empty());
+        assert!(app.tabs[0].show_line_numbers);
+        assert!(app.show_mode_bar);
+        assert_eq!(app.tabs[0].scroll_offset, 0);
+        assert!(app.tabs[0].filtering_enabled);
+        assert!(!app.tabs[0].show_marks_only);
+    }
+
+    #[tokio::test]
+    async fn test_reset_resets_all_tabs() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        let data2: Vec<u8> = "alpha\nbeta".as_bytes().to_vec();
+        let reader2 = FileReader::from_bytes(data2);
+        let db = app.db.clone();
+        let lm2 = LogManager::new(db, None).await;
+        let tab2 = crate::ui::TabState::new(reader2, lm2, "tab2".into());
+        app.tabs.push(tab2);
+
+        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[1].log_manager.toggle_mark(1);
+        app.tabs[0].tail_mode = true;
+        app.tabs[1].raw_mode = true;
+
+        app.run_command("reset").await.unwrap();
+
+        for tab in &app.tabs {
+            assert!(tab.log_manager.get_marked_indices().is_empty());
+            assert!(!tab.tail_mode);
+            assert!(!tab.raw_mode);
+        }
     }
 }

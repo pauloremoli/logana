@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `:reset` command to restore all settings to defaults and clear all persisted state (filters, marks, comments, hidden fields, session tabs, and app settings)
+
 ### Fixed
 - The global filtering toggle state (on/off) is now persisted across sessions via `file_context` in the database (schema v9)
 

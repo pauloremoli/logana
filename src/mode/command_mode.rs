@@ -157,6 +157,8 @@ pub enum Commands {
     Pause,
     /// Resume applying incoming data after a pause
     Resume,
+    /// Restore all settings to defaults and clear all persisted state
+    Reset,
 }
 
 #[derive(Debug)]

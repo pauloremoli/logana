@@ -350,6 +350,12 @@ impl LogManager {
         self.comments.clear();
     }
 
+    pub fn reset_in_memory(&mut self) {
+        self.filter_defs.clear();
+        self.marks.clear();
+        self.comments.clear();
+    }
+
     /// Build a `FilterManager`, its associated `Vec<Style>`, and date filter styles
     /// from the current enabled filter definitions.
     ///
@@ -959,5 +965,21 @@ mod tests {
         // have no has_include flag — every line is visible.
         assert!(fm.is_visible(b"INFO: something unrelated"));
         assert!(fm.is_visible(b"ERROR: bad thing"));
+    }
+
+    #[tokio::test]
+    async fn test_reset_in_memory() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color("error".into(), FilterType::Include, None, None, true)
+            .await;
+        mgr.toggle_mark(5);
+        mgr.toggle_mark(10);
+        mgr.add_comment("note".into(), vec![1, 2]);
+
+        mgr.reset_in_memory();
+
+        assert!(mgr.get_filters().is_empty());
+        assert!(mgr.get_marked_indices().is_empty());
+        assert!(mgr.get_comments().is_empty());
     }
 }
