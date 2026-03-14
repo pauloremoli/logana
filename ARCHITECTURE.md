@@ -6,15 +6,37 @@ Terminal-based log analysis tool built in Rust with a Ratatui TUI. Logs are read
 
 logana is structured around a strict separation between domain logic and the UI layer. The application is divided into five broad concerns:
 
-**File I/O & Ingestion** — `FileReader` memory-maps regular files and exposes O(1) random line access via a pre-built offset index. Stdin is handled separately by a background thread that accumulates bytes and publishes snapshots. In both cases the data source is abstracted away from the rest of the system.
+**File I/O & Ingestion** — `FileReader` memory-maps regular files and exposes O(1) random line access via a pre-built offset index. 
+- Stdin is handled separately by a background thread that accumulates bytes and publishes snapshots. 
+- Streaming sources (DLT TCP, Docker logs, file tailing) deliver chunks through a watch channel that the event loop appends each frame. 
+- Binary data formats like DLT are converted to newline-delimited text before entering the line-based pipeline.
 
-**Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, DLT, etc.). Parsers extract a normalised set of fields (timestamp, level, message, structured fields) that the rest of the system consumes uniformly regardless of the original format. Binary formats (DLT) are converted to text at the ingestion boundary in `FileReader` before entering the line-based pipeline.
+**Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, DLT, etc.). 
+- Parsers extract a normalised set of fields (timestamp, level, message, structured fields) that the rest of the system consumes uniformly regardless of the original format. 
 
-**Filter Pipeline** — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap. The pipeline runs in a `spawn_blocking` thread so the UI stays responsive during large scans. Filter definitions are persisted to SQLite by `LogManager` / `db` and reloaded on startup. Date filters (`@date:` prefix) and field filters (`@field:` prefix) are stored as regular `FilterDef` entries but skipped by `build_filter_manager` and applied as separate post-processing steps after text filters run.
+**Filter Pipeline** — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap.
+- The pipeline runs in a background thread so the UI stays responsive during large scans. 
+- For streaming sources, new lines are filtered incrementally. 
+- Filter definitions are persisted to SQLite and reloaded on startup.
+- Date filters (`@date:` prefix) and field filters (`@field:` prefix) are stored as regular filter entries but applied as separate post-processing steps after text filters run.
 
-**Mode System** — Input handling is a state machine (`mode/`) where each mode owns its key handler and returns a `KeyResult` for side-effects it cannot perform itself. Modes hold only tab-scoped state; application-level effects (closing tabs, clipboard, global toggles) are dispatched back to the event loop. This keeps modes independently testable.
+**Mode System** — The UI is vim-inspired: a state machine (`mode/`) where each mode captures keyboard input and handles it independently. Modes return a `KeyResult` that the event loop acts on for effects beyond the mode's scope (closing tabs, clipboard, navigation).
+- **Normal** — default log browsing, scrolling, marks
+- **Command** — `:` command input with tab completion
+- **Search** — `/` and `?` incremental search
+- **Filter** — sidebar filter management (add, edit, toggle, reorder)
+- **Visual / Visual Char** — line and character selection for copy/export
+- **Comment** — annotate individual log lines
+- **Select Fields** — choose and reorder displayed fields
+- **DLT Select / Docker Select** — pick a streaming source to connect to
+- **UI / Keybindings Help** — settings and shortcut reference
 
-**UI & Rendering** — `ui/` owns the terminal handle and drives the Ratatui render loop. `Renderer` reads tab state and produces widgets each frame; it never mutates state. `App` owns the event loop, dispatches key events to the active mode, and acts on the returned `KeyResult`. Session state is persisted to SQLite and restored on reopen.
+**UI & Rendering** — `ui/` owns the terminal handle and drives the Ratatui render loop. 
+- The renderer reads tab state and produces widgets each frame; it never mutates state. 
+- The event loop dispatches key events to the active mode and acts on the returned result. 
+- Session state (open tabs, filters, marks, scroll position) is persisted to SQLite and restored on reopen. 
+
+**Headless** - A headless mode bypasses the TUI for scripted filter-and-export workflows.
 
 ## Component Diagram
 
@@ -28,185 +50,77 @@ flowchart TD
     Tab -->|owns| LogManager[LogManager]
     Tab -->|owns| FM[FilterManager]
     Tab -->|owns| Parser[LogFormatParser]
+    Tab -->|owns| Retry[StreamRetryState]
     LogManager -->|queries| DB[(SQLite DB)]
     LogManager -->|builds| FM
     FileReader -->|reads| Files[(Log files / stdin)]
+    FileReader -->|streams from| DLT[DLT daemon / TCP]
+    FileReader -->|streams from| Docker[Docker logs]
     Renderer -->|reads| Tab
     Parser -->|detects from| FileReader
 ```
 
-## Project Structure
+## Headless Mode
 
-```
-src/
-  main.rs             - Entry point, CLI args, runtime setup, app lifecycle
-  lib.rs              - Library re-exports
-  types.rs            - Shared data types
-  parser/             - Log format detection and parsers
-    mod.rs            - Format detection registry
-    types.rs          - LogFormatParser trait and display types
-    timestamp.rs      - Shared timestamp parsing and level normalization
-    dlt.rs            - DLT (AUTOSAR Diagnostic Log and Trace) text parser
-    dlt_binary.rs     - DLT binary-to-text converter (storage, wire, and simplified formats)
-    json.rs           - JSON log parser (tracing, bunyan, GELF)
-    syslog.rs         - RFC 3164 + RFC 5424 syslog
-    journalctl.rs     - journalctl text output (short-iso, short-precise, short-full)
-    clf.rs            - Common Log Format + Combined Log Format
-    logfmt.rs         - Logfmt key=value (Go slog, Heroku, Grafana Loki)
-    common_log.rs     - env_logger, tracing fmt, logback, Spring Boot, Python, loguru
-    otlp.rs           - OpenTelemetry log format
-  date_filter.rs      - Date/time range and comparison filter
-  field_filter.rs     - Field-scoped filter (match by parsed field name/value)
-  file_reader.rs      - Memory-mapped file I/O with SIMD line indexing
-  filters.rs          - Filter pipeline: matching, visibility, span rendering
-  log_manager.rs      - Filter/mark/comment state with SQLite persistence bridge
-  db.rs               - SQLite layer via sqlx
-  search.rs           - Regex search with match positions and wrapping navigation
-  mode/               - Mode state machine
-    app_mode.rs       - Mode trait, ModeRenderState enum, KeyResult
-    normal_mode.rs    - Scroll, mark, search, visual entry, count prefix
-    command_mode.rs   - Command input with history and tab completion
-    filter_mode.rs    - Navigate, toggle, delete, edit filters
-    search_mode.rs    - Incremental search with live highlighting
-    visual_mode.rs    - Line-range selection
-    visual_char_mode.rs - Intra-line character selection
-    comment_mode.rs   - Multiline comment editor
-    ui_mode.rs        - Display-only toggles (sidebar, bar, borders, wrap)
-    (other popup modes: keybindings_help, select_fields, docker_select, value_colors)
-  ui/                 - Ratatui TUI
-    mod.rs            - TabState, App structs, KeyResult, VisibleLines
-    app.rs            - App lifecycle, key dispatch, command execution
-    loading.rs        - File/stdin/docker loading, file watchers, session restore
-    render.rs         - Logs panel, tab bar, sidebar, status bar
-    render_popups.rs  - Popup/modal renders
-    field_layout.rs   - Structured field layout helpers
-  export.rs           - Template-based export to Markdown, Jira, etc.
-  theme.rs            - JSON theme loading and color management
-  value_colors.rs     - Per-token coloring for HTTP, status codes, IPs, UUIDs
-  config.rs           - JSON config file loading
-  auto_complete.rs    - Tab completion for commands, colors, file paths
-  commands.rs         - Clap-based command definitions
-templates/
-  markdown.txt        - Bundled Markdown export template
-  jira.txt            - Bundled Jira wiki export template
-tests/
-  integration.rs      - End-to-end flows
-  stdin.rs            - Stdin reading tests
-.github/workflows/rust.yml - CI: fmt, clippy, test, coverage (80% threshold via tarpaulin)
+```mermaid
+flowchart LR
+    CLI[CLI --headless] --> FR[FileReader]
+    CLI -->|--include / --exclude| FM[FilterManager]
+    FR -->|lines| FM
+    FM -->|visible lines| Out[file / stdout]
 ```
 
-## File I/O & Ingestion
+## File-Based Ingestion
 
-### File loading
+```mermaid
+flowchart LR
+    File[(Log file)] -->|mmap| FR[FileReader]
+    FR -->|build line index| Lines[Line offsets]
+    FR -->|sample lines| Detect{Format detection}
+    Detect -->|select| Parser[LogFormatParser]
+    Parser -->|parse_line| Fields[timestamp, level, message, ...]
+```
 
-When a file begins with the DLT storage header magic (`DLT\x01`), `FileReader` converts the binary data to newline-delimited text (matching the `dlt-convert -a` output format) before building the line index. This conversion happens in `new`, `from_file_head`, `from_file_tail`, and `index_chunked`. The `is_dlt` flag is set so that `append_bytes` also converts incoming binary chunks for live file watching.
+## Stream-Based Ingestion
 
-Opening a file involves two concerns that pull in opposite directions: users want to see content immediately, but indexing a large file takes time. The solution is a two-phase load. The first phase reads the first (or last, in tail mode) `preview_bytes` of the file asynchronously and shows it right away. The second phase indexes the whole file in a background thread and swaps the reader in when done; progress is shown in the tab title. The preview size defaults to 16 MiB and is configurable via `preview_bytes` in `config.json`.
+```mermaid
+flowchart LR
+    Source[DLT daemon / Docker / file tail] -->|TCP / process / poll| BG[Background task]
+    BG -->|chunks| WatchCh[watch channel]
+    WatchCh -->|each frame| Append[FileReader.append]
+    Append -->|incremental| Filter[Filter new lines]
 
-Memory-mapped files make it tempting to keep the entire file resident, but that wastes RSS on large files when only a few hundred lines are visible at a time. The indexing thread uses a separate "scan" mapping, then drops it after building the line-offset index. The "access" mapping used at runtime starts with zero RSS and faults in only the 4 KiB pages that contain lines currently being rendered. These two mappings are separate objects: on Linux, `MADV_DONTNEED` is advisory and may be ignored for file-backed shared mappings, so the only reliable way to free pages after indexing is to unmap and remap.
-
-### Parallel line indexing
-
-Phase 1 of `index_chunked` — building the `line_starts` offset table — is parallelised with Rayon. The scan mmap is divided into `ceil(len / rayon_threads)` chunks (minimum 4 MiB each so small files use a single chunk with no Rayon overhead). Each thread independently scans its chunk with `memchr3_iter`, collecting absolute newline positions into a local `Vec<usize>`. After all threads complete, the per-chunk vectors are concatenated in order to form the final `line_starts` — no sort is needed because chunks are non-overlapping and ordered. Progress is tracked with a shared `AtomicUsize`; `watch::Sender<f64>` is `Sync` so it can be referenced (not cloned) inside the Rayon closure.
-
-If any chunk detects an ESC or CR byte the ANSI fallback (`strip_ansi_and_index`) runs serially over the full mmap — the state machine nature of escape sequences makes chunk-level parallelism unsound for that path.
-
-On a warm page cache (file already resident) this reduces Phase 1 from O(file\_size / 1 core) to O(file\_size / N cores). Cold-cache (first open, disk-bound) benefits less since disk bandwidth is the bottleneck regardless of thread count.
-
-### Stdin ingestion
-
-Stdin cannot be memory-mapped. A background thread accumulates bytes and publishes snapshots over a `watch` channel (last-value semantics). The event loop checks for a new snapshot each frame and replaces the tab's data if one arrived. A `watch` channel is used rather than `mpsc` because intermediate chunks are not interesting — what matters is always the most recent buffer state, avoiding unbounded queue growth when the producer outpaces the frame rate. The tab is updated in place so any active mode (such as a session-restore prompt) is not disrupted.
+    Fail{Connection lost?} -->|yes| Retry[StreamRetryState]
+    Retry -->|backoff delay| Reconnect[ConnectFn]
+    Reconnect -->|success| WatchCh
+    Reconnect -->|failure| Retry
+```
 
 ## Filter Pipeline
 
-### Persistence vs. runtime representation
+```mermaid
+flowchart TD
+    Defs[Filter definitions from SQLite] --> Build{Build filter sets}
+    Build --> Text[Text filters: Aho-Corasick / Regex]
+    Build --> Date[Date filters]
+    Build --> Field[Field filters]
 
-Filter definitions are stored in SQLite and loaded back as plain data records. At runtime they are compiled into a `FilterManager` that holds the actual Aho-Corasick automata or compiled regexes. This separation means the persistence layer deals only with strings and integers, and the expensive compilation step happens once when filters change rather than on every line scan.
+    Line[Each line] --> Text
+    Text -->|Include / Exclude / Neutral| Decision{Text decision}
+    Decision -->|Exclude| Hidden[Line hidden]
+    Decision -->|Include or Neutral| DateCheck{Date filters active?}
+    DateCheck -->|yes| Date
+    Date -->|no match| Hidden
+    Date -->|match| FieldCheck
+    DateCheck -->|no| FieldCheck{Field filters active?}
+    FieldCheck -->|yes| Field
+    Field -->|exclude match| Hidden
+    Field -->|include match| Visible[Line visible]
+    FieldCheck -->|no| Resolve{Has text includes?}
+    Resolve -->|yes + Neutral| Hidden
+    Resolve -->|no or Include| Visible
+```
 
-The compiled `FilterManager` is shared across the tab via a reference-counted pointer. The render path clones the pointer (cheap), not the automata (expensive), so rendering never pays for recompilation.
-
-### Why Aho-Corasick for literals
-
-When a filter pattern contains no regex metacharacters it is treated as a plain substring. Aho-Corasick builds a single automaton from all literal patterns and scans the input in one pass, making it efficient regardless of how many filters are active. Regex is only compiled when the pattern actually requires it.
-
-### Visibility semantics
-
-Filters are evaluated top-to-bottom. The first matching filter wins — an Include match makes the line visible, an Exclude match hides it. If no filter matches and at least one Include filter exists, the line is hidden (Include filters act as an allowlist). If only Exclude filters exist, unmatched lines are shown.
-
-This precedence model means the user can add a broad Exclude filter and then punch exceptions back in with higher-priority Include filters, without needing a separate "exception" concept.
-
-### Keeping the UI responsive during large scans
-
-Computing which lines are visible requires scanning every byte of the file. On a multi-gigabyte file this can take seconds. The scan is offloaded to a `spawn_blocking` thread so the Tokio event loop and the render path continue running. A cancel flag lets a new filter change abort an in-flight scan immediately rather than waiting for it to finish.
-
-### Startup single-pass optimisation
-
-Without this optimisation, startup with filters would require two full passes over the file: one to build the line-offset index, and a second to evaluate which lines are visible.
-
-When filters are supplied via `--filters` at launch, the visibility predicate is evaluated on each line during the indexing pass itself, so the file is read exactly once. The speedup comes from two sources. First, total work is halved — each byte is touched once instead of twice. Second, cache locality: during indexing each page is already resident in the CPU's L2/L3 cache. Evaluating the filter immediately while the data is hot avoids re-faulting those pages in a later pass.
-
-### Level navigation (lazy on-demand scan)
-
-Normal-mode navigation (`]e`/`[e`, `]w`/`[w`) uses lazy scanning rather than a pre-computed index. When the user presses a level-navigation key, `TabState::next_error_position`, `prev_error_position`, `next_warning_position`, or `prev_warning_position` is called with the current `scroll_offset`. Each method scans `visible_indices` forward or backward from that position until the first matching line is found, using the detected-format parser (or byte-pattern detection in raw mode).
-
-Cost is O(k) where k is the distance to the next/previous match — typically a handful of lines. There is no pre-computation step and no background task for level positions; the scan runs entirely on the event loop at key-press time.
-
-### Style layering
-
-Rendering applies styles in priority order (highest to lowest):
-
-1. **Cursor / mark / visual selection** — applied as a line-level style.
-2. **Search highlights** — priority 1000, always on top of filter colors.
-3. **Filter highlights** — one `StyleId` per enabled filter; `render_line` composes `fg` and `bg` independently per boundary segment so that two filters covering the same text each contribute their attribute without overwriting the other (e.g. a level filter setting `fg` and a text filter setting `bg` both apply).
-4. **Value colors** — HTTP methods, status codes, IPs, and UUIDs colored by `colorize_known_values`. This pass always runs after `render_line` and skips any span that already has `fg` or `bg` set by a filter or process color, so filter highlights always win. Value colors apply even on lines where some parts are filter-colored, as long as those specific spans are unstyled.
-5. **Level colors** — applied as a line-level fallback style (`Line::style`). Spans with an explicit color (from filters or value colors) override it; unstyled spans inherit it.
-
-This layering is enforced entirely in `render.rs` (level and value) and `filters.rs` (`render_line` composition).
-
-## Mode System
-
-The render path never holds a borrow into the active mode. Instead, the mode produces a plain data value (`ModeRenderState`) describing what the screen needs to know (which popup to show, what text is in the search input, etc.) and the render pass reads that value. This avoids lifetime entanglement between the mode and the terminal frame.
-
-## Field Visibility
-
-Structured log fields are rendered by `apply_field_layout` (`ui/field_layout.rs`). Two orthogonal inputs control what is shown:
-
-- **`TabState.hidden_fields: HashSet<String>`** — the single source of truth for visibility. Any field name present here is excluded from rendering. Supports dotted names for span sub-fields (`"span.request_id"`). Updated by `:hide-field`, `:show-field`, `:show-all-fields`, and the select-fields modal.
-- **`TabState.field_layout: FieldLayout`** — holds an optional ordered list of all column names (`columns: Option<Vec<String>>`). When `Some`, defines the display order; when `None`, the default order is used. Visibility is still determined solely by `hidden_fields`.
-
-### hide-field / show-field argument resolution
-
-`:hide-field` accepts either a field name or a 0-based index. When a numeric argument is given, it is resolved against the **currently visible** (non-hidden) field names returned by `collect_field_names()`. This means `hide-field 0` always refers to the first field the user can see on screen, even when some fields are already hidden. Out-of-range indices produce an error message rather than silently doing nothing.
-
-`:show-field` accepts a field name only. Index-based addressing is intentionally not supported because the hidden set has no stable display order that maps to what the user sees.
-
-Tab completion for both commands is wired in two places that must stay in sync:
-- **`command_mode.rs` `completions_for()`** — drives Tab-key cycling.
-- **`render.rs` `render_command_bar()` / `command_bar_height()`** — renders the suggestion hint bar below the command input. Both places call `tab.build_field_index()` for `:hide-field` and read `tab.hidden_fields` for `:show-field`.
-
-The select-fields modal (`SelectFieldsMode`) writes the full ordered list (enabled + disabled) to `field_layout.columns` on apply, and updates `hidden_fields` accordingly (disabled → insert, enabled → remove). On cancel, both `field_layout` and `hidden_fields` are restored from snapshots taken on modal entry. Both are persisted to SQLite via `FileContext` so session restore reproduces the exact same column visibility and order.
-
-## Session Persistence
-
-Session state (scroll offset, marks, comments, filter definitions, display settings) is saved to SQLite keyed by the absolute file path and a hash of the file's first bytes. On reopen, the hash is checked before restoring — if the file has changed significantly the user is given the choice to restore or discard the previous session rather than silently applying stale annotations.
-
-Filters are scoped per source file because a filter that is meaningful for one log file is usually noise for another. The exception is the `--filters` flag, which loads a filter set from a JSON file and applies it regardless of the source, intended for reusable filter profiles.
-
-### DB schema
-
-- `filters` — per-file filter definitions
-- `file_context` — per-file session state (PK: `source_file`). Key columns: `scroll_offset`, `horizontal_scroll`, `search_query`, `marked_lines` (JSON), `annotations_json`, `show_keys`, `raw_mode`, `sidebar_width`, `level_colors_disabled` (JSON), `hidden_fields` (JSON — field names hidden via `:hide-field` or select-fields), `field_layout_columns` (JSON — full ordered column list from select-fields modal, `null` when using default order).
-- `session_tabs` — ordered list of last-open source files
-- `app_settings` — global key/value store for runtime preferences set interactively (e.g. `restore_session`, `restore_file_context` policies). The `config.json` file is read-only user configuration; any setting the app changes at runtime is stored here instead.
-
-### Restore policy separation
-
-Two independent policies control restore behaviour:
-
-- `restore_file_context` — whether to restore per-file scroll/filter/mark context when opening a file (`ConfirmRestoreMode`)
-- `restore_session` — whether to restore the last set of open tabs when launching without arguments (`ConfirmRestoreSessionMode`)
-
-Each policy defaults to `ask` (from `config.json` or hardcoded). When the user presses Shift+Y ("always") or Shift+N ("never") at either prompt, only the corresponding key is written to `app_settings`. The two policies are stored and loaded independently so a choice made at one prompt never affects the other.
 
 ## Dependencies
 
@@ -226,7 +140,6 @@ Each policy defaults to `ask` (from `config.json` or hardcoded). When the user p
 | **serde_with** | Serde helpers | Provides derive macros for custom serialisation of types that don't implement `Serialize`/`Deserialize` directly, used for persisting ratatui `Color` values in the DB |
 | **time** | Date and time parsing | Parses and normalises timestamps for the date-range filter; chosen over `chrono` for its stricter API and active maintenance |
 | **unicode-width** | Terminal column width | Correctly measures the display width of Unicode characters (CJK double-width, zero-width combiners) so cursor positioning and text truncation stay accurate |
-| **tracing / tracing-subscriber / tracing-appender** | Structured logging | Used for internal debug diagnostics; in release builds logging is compiled out entirely; in debug builds logs are written to a file so they don't interfere with the TUI |
 | **arboard** | Clipboard | Cross-platform clipboard access for yank/copy operations |
 | **dirs** | XDG data directory | Locates the platform-appropriate directory for the SQLite database without hardcoding paths |
 | **anyhow** | Error handling | Ergonomic error propagation with context in the top-level `main` |

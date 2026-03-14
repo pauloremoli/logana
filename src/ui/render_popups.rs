@@ -704,6 +704,335 @@ impl App {
         );
     }
 
+    pub(super) fn render_dlt_select_popup(
+        &mut self,
+        frame: &mut Frame<'_>,
+        devices: &[crate::config::DltDevice],
+        selected: usize,
+        error: Option<&str>,
+        adding: Option<&crate::mode::dlt_select_mode::AddDeviceRenderState>,
+    ) {
+        let area = frame.area();
+        let popup_width = (area.width.saturating_sub(4)).clamp(50, 80);
+
+        if let Some(add_state) = adding {
+            // Add device form
+            let popup_height = 12u16.min(area.height.saturating_sub(2));
+            let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+            let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+            let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+            frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.theme.border_title))
+                .title(" Add DLT Device ")
+                .title_style(
+                    Style::default()
+                        .fg(self.theme.text_highlight_fg)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .title_alignment(Alignment::Center)
+                .style(Style::default().bg(self.theme.root_bg));
+
+            let inner = block.inner(popup_area);
+            frame.render_widget(block, popup_area);
+
+            let labels = ["Name", "Host", "Port"];
+            let vsplit = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2), // Name
+                    Constraint::Length(2), // Host
+                    Constraint::Length(2), // Port
+                    Constraint::Length(1), // error
+                    Constraint::Min(0),    // padding
+                    Constraint::Length(1), // footer
+                ])
+                .split(inner);
+
+            let txt_style = Style::default().fg(self.theme.text);
+            let active_style = Style::default()
+                .fg(self.theme.text_highlight_fg)
+                .add_modifier(Modifier::BOLD);
+
+            for (i, label) in labels.iter().enumerate() {
+                let is_active = i == add_state.active_field;
+                let label_style = if is_active { active_style } else { txt_style };
+                let value = &add_state.fields[i];
+                let display = if is_active {
+                    let cursor_pos = add_state.cursor;
+                    let before: String = value.chars().take(cursor_pos).collect();
+                    let cursor_ch: String = value.chars().skip(cursor_pos).take(1).collect();
+                    let after: String = value.chars().skip(cursor_pos + 1).collect();
+                    let cursor_display = if cursor_ch.is_empty() {
+                        " ".to_string()
+                    } else {
+                        cursor_ch
+                    };
+                    vec![
+                        Span::styled(format!("  {}: ", label), label_style),
+                        Span::styled(before, txt_style),
+                        Span::styled(
+                            cursor_display,
+                            Style::default()
+                                .fg(self.theme.root_bg)
+                                .bg(self.theme.text_highlight_fg),
+                        ),
+                        Span::styled(after, txt_style),
+                    ]
+                } else {
+                    vec![
+                        Span::styled(format!("  {}: ", label), label_style),
+                        Span::styled(value.clone(), txt_style),
+                    ]
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(display))
+                        .style(Style::default().bg(self.theme.root_bg)),
+                    vsplit[i],
+                );
+            }
+
+            if let Some(err) = error {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        format!("  {}", err),
+                        Style::default().fg(self.theme.error_fg),
+                    ))
+                    .style(Style::default().bg(self.theme.root_bg)),
+                    vsplit[3],
+                );
+            }
+
+            let kb = &self.keybindings.dlt_select;
+            let key_style = Style::default()
+                .fg(self.theme.text_highlight_fg)
+                .add_modifier(Modifier::BOLD);
+            let br_style = Style::default().fg(self.theme.text);
+            let mut footer_spans: Vec<Span<'static>> = Vec::new();
+            popup_entry(
+                &mut footer_spans,
+                self.keybindings.dlt_select.next_field.display(),
+                "next field",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut footer_spans,
+                kb.confirm.display(),
+                "save",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut footer_spans,
+                kb.cancel.display(),
+                "cancel",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(footer_spans))
+                    .style(Style::default().bg(self.theme.root_bg)),
+                vsplit[5],
+            );
+            return;
+        }
+
+        // List view
+        let total_entries = devices.len() + 1; // +1 for "Add new device..."
+        let content_rows = if error.is_some() {
+            3u16
+        } else {
+            total_entries as u16
+        };
+        let popup_height = (content_rows + 4)
+            .min(area.height * 4 / 5)
+            .max(8)
+            .min(area.height.saturating_sub(2));
+        let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.border_title))
+            .title(" DLT Devices ")
+            .title_style(
+                Style::default()
+                    .fg(self.theme.text_highlight_fg)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .title_alignment(Alignment::Center)
+            .style(Style::default().bg(self.theme.root_bg));
+
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        let vsplit = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),    // content
+                Constraint::Length(1), // separator
+                Constraint::Length(1), // footer
+            ])
+            .split(inner);
+
+        let inner_h = inner.height as usize;
+        let footer_lines = 2usize;
+        let content_h = inner_h.saturating_sub(footer_lines);
+
+        if let Some(err) = error {
+            let err_line = Line::from(Span::styled(
+                err.to_string(),
+                Style::default().fg(self.theme.error_fg),
+            ));
+            frame.render_widget(
+                Paragraph::new(vec![Line::from(""), err_line])
+                    .alignment(Alignment::Center)
+                    .style(Style::default().bg(self.theme.root_bg)),
+                vsplit[0],
+            );
+        } else {
+            let scroll = if selected >= content_h {
+                selected - content_h + 1
+            } else {
+                0
+            };
+
+            let total_w = vsplit[0].width as usize;
+            let name_w = total_w * 40 / 100;
+            let host_w = total_w.saturating_sub(name_w + 2);
+
+            let mut lines: Vec<Line> = Vec::new();
+            for (i, dev) in devices.iter().enumerate().skip(scroll).take(content_h) {
+                let is_selected = i == selected;
+                let prefix = if is_selected { "> " } else { "  " };
+                let name = if dev.name.len() > name_w {
+                    &dev.name[..name_w]
+                } else {
+                    &dev.name
+                };
+                let host_port = format!("{}:{}", dev.host, dev.port);
+                let hp_display = if host_port.len() > host_w {
+                    &host_port[..host_w]
+                } else {
+                    &host_port
+                };
+                let style = if is_selected {
+                    Style::default()
+                        .fg(self.theme.text_highlight_fg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(self.theme.text)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{}{:<nw$} {}", prefix, name, hp_display, nw = name_w),
+                    style,
+                )));
+            }
+
+            // "Add new device..." entry
+            let add_idx = devices.len();
+            if add_idx >= scroll && lines.len() < content_h {
+                let is_selected = selected == add_idx;
+                let prefix = if is_selected { "> " } else { "  " };
+                let style = if is_selected {
+                    Style::default()
+                        .fg(self.theme.text_highlight_fg)
+                        .add_modifier(Modifier::BOLD | Modifier::DIM)
+                } else {
+                    Style::default()
+                        .fg(self.theme.text)
+                        .add_modifier(Modifier::DIM)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{}+ Add new device...", prefix),
+                    style,
+                )));
+            }
+
+            while lines.len() < content_h {
+                lines.push(Line::from(""));
+            }
+
+            frame.render_widget(
+                Paragraph::new(lines).style(Style::default().bg(self.theme.root_bg)),
+                vsplit[0],
+            );
+
+            if total_entries > content_h {
+                let mut sb_state =
+                    ScrollbarState::new(total_entries.saturating_sub(content_h)).position(scroll);
+                frame.render_stateful_widget(
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                        .style(Style::default().fg(self.theme.border)),
+                    vsplit[0],
+                    &mut sb_state,
+                );
+            }
+        }
+
+        // Separator
+        let sep = "─".repeat(vsplit[1].width as usize);
+        frame.render_widget(
+            Paragraph::new(sep).style(Style::default().fg(self.theme.text)),
+            vsplit[1],
+        );
+
+        // Footer
+        let kb = &self.keybindings.dlt_select;
+        let nav = &self.keybindings.navigation;
+        let key_style = Style::default()
+            .fg(self.theme.text_highlight_fg)
+            .add_modifier(Modifier::BOLD);
+        let txt_style = Style::default().fg(self.theme.text);
+        let br_style = Style::default().fg(self.theme.text);
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::styled("<", br_style));
+        spans.push(Span::styled(
+            format!("{}/{}", nav.scroll_up.display(), nav.scroll_down.display()),
+            key_style,
+        ));
+        spans.push(Span::styled("> navigate  ", txt_style));
+        popup_entry(
+            &mut spans,
+            kb.confirm.display(),
+            "connect",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut spans,
+            kb.delete.display(),
+            "delete",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut spans,
+            kb.cancel.display(),
+            "cancel",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        let footer = Line::from(spans);
+        frame.render_widget(
+            Paragraph::new(footer).style(Style::default().bg(self.theme.root_bg)),
+            vsplit[2],
+        );
+    }
+
     pub(super) fn render_keybindings_help_popup(
         &mut self,
         frame: &mut Frame<'_>,

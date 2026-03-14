@@ -598,8 +598,8 @@ fn test_detect_format_selects_dlt_for_dlt_text() {
     use logana::parser::detect_format;
 
     let lines: Vec<&[u8]> = vec![
-        b"2024/01/15 09:50:45.000000 0 ECU1 APP1 CTX1 log info verbose 0 msg1",
-        b"2024/01/15 09:50:46.000000 0 ECU1 APP1 CTX1 log warn verbose 0 msg2",
+        b"2024/01/15 09:50:45.000000 0 000 ECU1 APP1 CTX1 log info verbose 0 msg1",
+        b"2024/01/15 09:50:46.000000 0 000 ECU1 APP1 CTX1 log warn verbose 0 msg2",
     ];
     let parser = detect_format(&lines).unwrap();
     assert_eq!(parser.name(), "dlt");

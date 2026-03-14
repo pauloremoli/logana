@@ -6,10 +6,12 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- DLT (AUTOSAR Diagnostic Log and Trace) format support: binary `.dlt` files and `dlt-convert -a` text output
+- DLT (AUTOSAR Diagnostic Log and Trace) format support: supports binary `.dlt` files and `dlt-convert' outuput.
+- DLT client implementation, allows connecting to DLT daemon via TCP.
 - `:reset` command to restore all settings to defaults and clear all persisted state (filters, marks, comments, hidden fields, session tabs, and app settings)
 
 ### Fixed
+- Streaming tabs no longer flicker "Filtering…" in the tab name when new data arrives; filters are applied incrementally to new lines only
 - The global filtering toggle state (on/off) is now persisted across sessions via `file_context` in the database (schema v9)
 
 ### Changed

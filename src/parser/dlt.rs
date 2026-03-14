@@ -65,9 +65,10 @@ fn parse_dlt_text_line<'a>(line: &'a [u8]) -> Option<DisplayParts<'a>> {
 
     // Split remaining by whitespace
     let rest = s[26..].trim_start();
-    let mut parts_iter = rest.splitn(9, char::is_whitespace);
+    let mut parts_iter = rest.splitn(10, char::is_whitespace);
 
-    let _hw_timestamp = parts_iter.next()?; // DLT timestamp counter
+    let hw_timestamp = parts_iter.next()?; // DLT timestamp counter
+    let mcnt = parts_iter.next()?; // message counter
     let ecu = parts_iter.next()?;
     let apid = parts_iter.next()?;
     let ctid = parts_iter.next()?;
@@ -90,6 +91,12 @@ fn parse_dlt_text_line<'a>(line: &'a [u8]) -> Option<DisplayParts<'a>> {
     let target = if apid != "----" { Some(apid) } else { None };
 
     let mut extra_fields = Vec::new();
+    if hw_timestamp != "0" && hw_timestamp != "----" {
+        extra_fields.push(("hw_ts", hw_timestamp));
+    }
+    if mcnt != "---" {
+        extra_fields.push(("mcnt", mcnt));
+    }
     if ecu != "----" {
         extra_fields.push(("ecu", ecu));
     }
@@ -128,6 +135,8 @@ impl LogFormatParser for DltParser {
             "timestamp".to_string(),
             "level".to_string(),
             "target".to_string(),
+            "hw_ts".to_string(),
+            "mcnt".to_string(),
             "ecu".to_string(),
             "ctid".to_string(),
             "type".to_string(),
@@ -163,7 +172,7 @@ mod tests {
     use super::*;
 
     const FULL_LINE: &[u8] =
-        b"2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 log info verbose 1 Message text here";
+        b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 log info verbose 1 Message text here";
 
     #[test]
     fn test_parse_complete_line() {
@@ -173,6 +182,12 @@ mod tests {
         assert_eq!(parts.level, Some("INFO"));
         assert_eq!(parts.target, Some("APP1"));
         assert_eq!(parts.message, Some("Message text here"));
+        assert!(
+            parts
+                .extra_fields
+                .iter()
+                .any(|&(k, v)| k == "hw_ts" && v == "1234567")
+        );
         assert!(
             parts
                 .extra_fields
@@ -207,12 +222,12 @@ mod tests {
 
     #[test]
     fn test_parse_line_with_placeholder_fields() {
-        let line =
-            b"2024/01/15 10:30:45.123456 1234567 ---- ---- ---- log info ---- 0 Some payload";
+        let line = b"2024/01/15 10:30:45.123456 0 000 ---- ---- ---- log info ---- 0 Some payload";
         let parser = DltParser;
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024/01/15 10:30:45.123456"));
         assert_eq!(parts.target, None);
+        assert!(!parts.extra_fields.iter().any(|&(k, _)| k == "hw_ts"));
         assert!(!parts.extra_fields.iter().any(|&(k, _)| k == "ecu"));
         assert!(!parts.extra_fields.iter().any(|&(k, _)| k == "ctid"));
         assert!(!parts.extra_fields.iter().any(|&(k, _)| k == "mode"));
@@ -221,7 +236,7 @@ mod tests {
     #[test]
     fn test_subtype_fatal_to_level() {
         let line =
-            b"2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 log fatal verbose 1 Fatal error";
+            b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 log fatal verbose 1 Fatal error";
         let parts = DltParser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("FATAL"));
     }
@@ -229,7 +244,7 @@ mod tests {
     #[test]
     fn test_subtype_error_to_level() {
         let line =
-            b"2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 log error verbose 1 An error";
+            b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 log error verbose 1 An error";
         let parts = DltParser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("ERROR"));
     }
@@ -237,7 +252,7 @@ mod tests {
     #[test]
     fn test_subtype_warn_to_level() {
         let line =
-            b"2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 log warn verbose 1 A warning";
+            b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 log warn verbose 1 A warning";
         let parts = DltParser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("WARN"));
     }
@@ -245,7 +260,7 @@ mod tests {
     #[test]
     fn test_subtype_debug_to_level() {
         let line =
-            b"2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 log debug verbose 1 Debug msg";
+            b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 log debug verbose 1 Debug msg";
         let parts = DltParser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("DEBUG"));
     }
@@ -253,7 +268,7 @@ mod tests {
     #[test]
     fn test_subtype_verbose_to_level() {
         let line =
-            b"2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 log verbose verbose 1 Trace msg";
+            b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 log verbose verbose 1 Trace msg";
         let parts = DltParser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("TRACE"));
     }
@@ -262,7 +277,7 @@ mod tests {
     fn test_non_log_type_no_level() {
         for msg_type in &["trace", "network", "control"] {
             let line = format!(
-                "2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 {} info verbose 1 Payload",
+                "2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 {} info verbose 1 Payload",
                 msg_type
             );
             let parts = DltParser.parse_line(line.as_bytes()).unwrap();
@@ -274,8 +289,8 @@ mod tests {
     fn test_detect_score_high_for_dlt() {
         let parser = DltParser;
         let lines: Vec<&[u8]> = vec![
-            b"2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 log info verbose 1 Msg1",
-            b"2024/01/15 10:30:46.123456 1234568 ECU1 APP1 CTX1 log warn verbose 1 Msg2",
+            b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 log info verbose 1 Msg1",
+            b"2024/01/15 10:30:46.123456 1234568 001 ECU1 APP1 CTX1 log warn verbose 1 Msg2",
         ];
         let score = parser.detect_score(&lines);
         assert!(score > 1.0, "DLT text should score > 1.0, got {score}");
@@ -304,6 +319,8 @@ mod tests {
                 "timestamp",
                 "level",
                 "target",
+                "hw_ts",
+                "mcnt",
                 "ecu",
                 "ctid",
                 "type",
@@ -321,14 +338,14 @@ mod tests {
 
     #[test]
     fn test_empty_payload() {
-        let line = b"2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 log info verbose 0 ";
+        let line = b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 log info verbose 0 ";
         let parts = DltParser.parse_line(line).unwrap();
         assert_eq!(parts.message, None);
     }
 
     #[test]
     fn test_multi_word_payload() {
-        let line = b"2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 log info verbose 1 This is a multi word payload with spaces";
+        let line = b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 log info verbose 1 This is a multi word payload with spaces";
         let parts = DltParser.parse_line(line).unwrap();
         assert_eq!(
             parts.message,
@@ -343,13 +360,14 @@ mod tests {
 
     #[test]
     fn test_invalid_timestamp_rejected() {
-        let line = b"not-a-timestamp 1234567 ECU1 APP1 CTX1 log info verbose 1 msg";
+        let line = b"not-a-timestamp 1234567 000 ECU1 APP1 CTX1 log info verbose 1 msg";
         assert!(DltParser.parse_line(line).is_none());
     }
 
     #[test]
     fn test_invalid_type_rejected() {
-        let line = b"2024/01/15 10:30:45.123456 1234567 ECU1 APP1 CTX1 unknown info verbose 1 msg";
+        let line =
+            b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 unknown info verbose 1 msg";
         assert!(DltParser.parse_line(line).is_none());
     }
 }

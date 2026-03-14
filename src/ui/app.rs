@@ -87,6 +87,8 @@ pub struct App {
     pub pending_session_restore: Option<Vec<String>>,
     /// Keybinding conflict warnings shown in the status bar on startup. Cleared on first keypress.
     pub startup_warnings: Vec<String>,
+    /// Configured DLT devices from config.json.
+    pub dlt_devices: Vec<crate::config::DltDevice>,
 }
 
 impl std::fmt::Debug for App {
@@ -205,6 +207,7 @@ impl App {
             restore_file_policy,
             pending_session_restore,
             startup_warnings: vec![],
+            dlt_devices: vec![],
         }
     }
 
@@ -370,6 +373,7 @@ impl App {
             self.advance_file_load().await;
             self.advance_stdin_load().await;
             self.advance_file_watches();
+            self.advance_stream_retries();
             self.advance_search();
             self.advance_filter_computation();
 
@@ -430,6 +434,7 @@ impl App {
             KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd).await,
             KeyResult::RestoreSession(files) => self.restore_session(files).await,
             KeyResult::DockerAttach(id, name) => self.open_docker_logs(id, name).await,
+            KeyResult::DltAttach(host, port, name) => self.open_dlt_stream(host, port, name).await,
             KeyResult::ApplyValueColors(disabled) => {
                 self.theme.value_colors.disabled = disabled;
                 for tab in &mut self.tabs {

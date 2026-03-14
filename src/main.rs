@@ -243,6 +243,7 @@ async fn main() -> Result<()> {
     let show_sidebar = config.show_sidebar;
     let wrap = config.wrap;
     let preview_bytes = config.preview_bytes;
+    let dlt_devices = config.dlt_devices;
     let restore_policy = config.restore_session;
     let restore_file_policy = config.restore_file_context;
 
@@ -277,6 +278,7 @@ async fn main() -> Result<()> {
         .await;
 
         app.preview_bytes = preview_bytes;
+        app.dlt_devices = dlt_devices;
         app.startup_warnings = keybinding_conflicts;
 
         // If a filter file was provided, load it into the initial tab's log manager

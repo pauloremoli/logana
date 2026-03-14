@@ -159,6 +159,8 @@ pub enum Commands {
     Resume,
     /// Restore all settings to defaults and clear all persisted state
     Reset,
+    /// Show configured DLT devices and connect to one
+    Dlt,
 }
 
 #[derive(Debug)]

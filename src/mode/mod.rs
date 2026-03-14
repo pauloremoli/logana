@@ -1,6 +1,7 @@
 pub mod app_mode;
 pub mod command_mode;
 pub mod comment_mode;
+pub mod dlt_select_mode;
 pub mod docker_select_mode;
 pub mod filter_mode;
 pub mod keybindings_help_mode;

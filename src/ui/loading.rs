@@ -9,7 +9,25 @@ use crate::log_manager::LogManager;
 use crate::mode::app_mode::ConfirmRestoreMode;
 use crate::mode::normal_mode::NormalMode;
 
-use super::{App, FileLoadState, FileWatchState, LoadContext, TabState, VisibleLines};
+use super::{
+    App, ConnectFn, FileLoadState, FileWatchState, LoadContext, StreamRetryState, TabState,
+    VisibleLines, dlt_connect_fn, docker_connect_fn,
+};
+
+fn connect_fn_for_source(source: Option<&str>) -> Option<ConnectFn> {
+    let source = source?;
+    if let Some(stripped) = source.strip_prefix("dlt://") {
+        let (host, port) = match stripped.rsplit_once(':') {
+            Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(3490)),
+            None => (stripped.to_string(), 3490),
+        };
+        Some(dlt_connect_fn(host, port))
+    } else if let Some(name) = source.strip_prefix("docker:") {
+        Some(docker_connect_fn(name.to_string()))
+    } else {
+        None
+    }
+}
 
 impl App {
     pub async fn open_file(&mut self, path: &str) -> Result<(), String> {
@@ -76,12 +94,66 @@ impl App {
                 tab.watch_state = Some(FileWatchState { new_data_rx: rx });
             }
             Err(e) => {
-                tab.command_error = Some(format!("Failed to attach to container: {}", e));
+                let err_msg = e.to_string();
+                tab.command_error = Some(format!("Docker attach failed: {}", err_msg));
+                tab.stream_retry = Some(StreamRetryState::new(
+                    docker_connect_fn(container_id),
+                    err_msg,
+                ));
             }
         }
 
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
+    }
+
+    pub(super) async fn open_dlt_stream(&mut self, host: String, port: u16, name: String) {
+        let source_label = format!("dlt://{}:{}", host, port);
+        let file_reader = FileReader::from_bytes(vec![]);
+        let log_manager = LogManager::new(self.db.clone(), Some(source_label.clone())).await;
+        let title = format!("dlt:{}", name);
+
+        let mut tab = TabState::new(file_reader, log_manager, title);
+        self.apply_tab_defaults(&mut tab);
+
+        match FileReader::spawn_dlt_tcp_stream(host.clone(), port).await {
+            Ok(rx) => {
+                tab.watch_state = Some(FileWatchState { new_data_rx: rx });
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                tab.command_error = Some(format!("DLT connection failed: {}", err_msg));
+                tab.stream_retry = Some(StreamRetryState::new(dlt_connect_fn(host, port), err_msg));
+            }
+        }
+
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    async fn restore_dlt_tab(&mut self, source: &str) {
+        let stripped = source.strip_prefix("dlt://").unwrap_or(source);
+        let (host, port) = match stripped.rsplit_once(':') {
+            Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(3490)),
+            None => (stripped.to_string(), 3490),
+        };
+        let file_reader = FileReader::from_bytes(vec![]);
+        let log_manager = LogManager::new(self.db.clone(), Some(source.to_string())).await;
+        let title = source.to_string();
+
+        let mut tab = TabState::new(file_reader, log_manager, title);
+        self.apply_tab_defaults(&mut tab);
+
+        tab.stream_retry = Some(StreamRetryState::new(
+            dlt_connect_fn(host, port),
+            "reconnecting…".to_string(),
+        ));
+
+        if let Ok(Some(ctx)) = self.db.load_file_context(source).await {
+            tab.apply_file_context(&ctx);
+        }
+
+        self.tabs.push(tab);
     }
 
     /// Create a docker streaming tab from a `"docker:name"` source string
@@ -96,14 +168,10 @@ impl App {
         let mut tab = TabState::new(file_reader, log_manager, title);
         self.apply_tab_defaults(&mut tab);
 
-        match FileReader::spawn_process_stream("docker", &["logs", "-f", name]).await {
-            Ok(rx) => {
-                tab.watch_state = Some(FileWatchState { new_data_rx: rx });
-            }
-            Err(e) => {
-                tab.command_error = Some(format!("Failed to attach to container: {}", e));
-            }
-        }
+        tab.stream_retry = Some(StreamRetryState::new(
+            docker_connect_fn(name.to_string()),
+            "reconnecting…".to_string(),
+        ));
 
         if let Ok(Some(ctx)) = self.db.load_file_context(source).await {
             tab.apply_file_context(&ctx);
@@ -142,6 +210,10 @@ impl App {
             };
             if next.starts_with("docker:") {
                 self.restore_docker_tab(&next).await;
+                continue;
+            }
+            if next.starts_with("dlt://") {
+                self.restore_dlt_tab(&next).await;
                 continue;
             }
             // Regular file — create a preview tab immediately, then load the full index in the background.
@@ -488,6 +560,7 @@ impl App {
                         continue;
                     }
                     let tail_mode = self.tabs[i].tail_mode;
+                    let old_line_count = self.tabs[i].file_reader.line_count();
                     self.tabs[i].file_reader.append_bytes(&new_data);
                     // Re-detect format if not yet known (e.g. docker-logs
                     // tab that started empty).
@@ -496,17 +569,56 @@ impl App {
                     {
                         self.tabs[i].detect_and_apply_format();
                     }
-                    self.tabs[i].begin_filter_refresh();
-                    if self.tabs[i].filter_handle.is_none() && tail_mode {
+                    self.tabs[i].filter_new_lines(old_line_count);
+                    if tail_mode {
                         let new_count = self.tabs[i].visible_indices.len();
                         self.tabs[i].scroll_offset = new_count.saturating_sub(1);
                     }
                 }
                 Some(Err(_)) => {
-                    // Sender dropped — background watcher task stopped.
                     self.tabs[i].watch_state = None;
+                    if let Some(connect_fn) =
+                        connect_fn_for_source(self.tabs[i].log_manager.source_file())
+                    {
+                        let err_msg = "connection lost".to_string();
+                        self.tabs[i].command_error = Some(format!("Disconnected: {}", err_msg));
+                        self.tabs[i].stream_retry =
+                            Some(StreamRetryState::new(connect_fn, err_msg));
+                    }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Poll DLT retry channels for reconnection results.
+    pub(super) fn advance_stream_retries(&mut self) {
+        for tab in &mut self.tabs {
+            let retry = match &mut tab.stream_retry {
+                Some(r) => r,
+                None => continue,
+            };
+            let rx = match &mut retry.retry_rx {
+                Some(rx) => rx,
+                None => continue,
+            };
+            match rx.try_recv() {
+                Ok(Ok(watch_rx)) => {
+                    tab.watch_state = Some(FileWatchState {
+                        new_data_rx: watch_rx,
+                    });
+                    tab.command_error = None;
+                    tab.stream_retry = None;
+                }
+                Ok(Err(e)) => {
+                    retry.last_error = e.clone();
+                    tab.command_error = Some(format!(
+                        "Connection failed (retry #{}): {}",
+                        retry.attempt, e
+                    ));
+                    retry.schedule_retry();
+                }
+                Err(_) => {}
             }
         }
     }
@@ -1844,5 +1956,181 @@ mod tests {
             matches!(app.tabs[0].visible_indices, VisibleLines::All(_)),
             "visible_indices must be All when filtering is disabled"
         );
+    }
+
+    // ── Stream retry ──────────────────────────────────────────────────────────
+
+    fn make_dummy_connect_fn() -> super::super::ConnectFn {
+        std::sync::Arc::new(|| Box::pin(async { Err("test".to_string()) }))
+    }
+
+    #[tokio::test]
+    async fn test_advance_stream_retries_successful_reconnect() {
+        let mut app = make_app(&["line"]).await;
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+
+        let (result_tx, result_rx) = tokio::sync::mpsc::channel(1);
+        result_tx.send(Ok(rx)).await.unwrap();
+
+        app.tabs[0].stream_retry = Some(StreamRetryState {
+            attempt: 3,
+            last_error: "connection refused".to_string(),
+            retry_rx: Some(result_rx),
+            connect: make_dummy_connect_fn(),
+        });
+        app.tabs[0].command_error = Some("connection failed".to_string());
+
+        app.advance_stream_retries();
+
+        assert!(
+            app.tabs[0].stream_retry.is_none(),
+            "retry should be cleared"
+        );
+        assert!(
+            app.tabs[0].command_error.is_none(),
+            "error should be cleared"
+        );
+        assert!(
+            app.tabs[0].watch_state.is_some(),
+            "watch_state should be set"
+        );
+
+        tx.send(b"test data".to_vec()).unwrap();
+        assert!(
+            app.tabs[0]
+                .watch_state
+                .as_mut()
+                .unwrap()
+                .new_data_rx
+                .has_changed()
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_advance_stream_retries_failed_reschedules() {
+        let mut app = make_app(&["line"]).await;
+
+        let (result_tx, result_rx) = tokio::sync::mpsc::channel(1);
+        result_tx
+            .send(Err("connection refused".to_string()))
+            .await
+            .unwrap();
+
+        app.tabs[0].stream_retry = Some(StreamRetryState {
+            attempt: 1,
+            last_error: "old error".to_string(),
+            retry_rx: Some(result_rx),
+            connect: make_dummy_connect_fn(),
+        });
+
+        app.advance_stream_retries();
+
+        let retry = app.tabs[0].stream_retry.as_ref().unwrap();
+        assert_eq!(retry.attempt, 2, "attempt should be incremented");
+        assert_eq!(retry.last_error, "connection refused");
+        assert!(retry.retry_rx.is_some(), "new retry should be scheduled");
+        assert!(
+            app.tabs[0]
+                .command_error
+                .as_ref()
+                .unwrap()
+                .contains("retry #1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_advance_stream_retries_pending_no_change() {
+        let mut app = make_app(&["line"]).await;
+
+        let (_result_tx, result_rx) = tokio::sync::mpsc::channel::<Result<_, String>>(1);
+
+        app.tabs[0].stream_retry = Some(StreamRetryState {
+            attempt: 1,
+            last_error: "waiting".to_string(),
+            retry_rx: Some(result_rx),
+            connect: make_dummy_connect_fn(),
+        });
+
+        app.advance_stream_retries();
+
+        let retry = app.tabs[0].stream_retry.as_ref().unwrap();
+        assert_eq!(retry.attempt, 1, "attempt should not change while pending");
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_triggers_retry_for_dlt() {
+        let mut app = make_app(&["line"]).await;
+
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, Some("dlt://192.168.1.1:3490".to_string())).await;
+        let file_reader = FileReader::from_bytes(vec![]);
+        let mut tab = TabState::new(file_reader, log_manager, "dlt:test".to_string());
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        tab.watch_state = Some(FileWatchState { new_data_rx: rx });
+        drop(tx);
+
+        app.tabs.push(tab);
+        let tab_idx = app.tabs.len() - 1;
+
+        app.advance_file_watches();
+
+        assert!(app.tabs[tab_idx].watch_state.is_none());
+        assert!(app.tabs[tab_idx].stream_retry.is_some());
+        assert_eq!(app.tabs[tab_idx].stream_retry.as_ref().unwrap().attempt, 1);
+        assert!(app.tabs[tab_idx].command_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_triggers_retry_for_docker() {
+        let mut app = make_app(&["line"]).await;
+
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, Some("docker:mycontainer".to_string())).await;
+        let file_reader = FileReader::from_bytes(vec![]);
+        let mut tab = TabState::new(file_reader, log_manager, "docker:mycontainer".to_string());
+
+        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        tab.watch_state = Some(FileWatchState { new_data_rx: rx });
+        drop(tx);
+
+        app.tabs.push(tab);
+        let tab_idx = app.tabs.len() - 1;
+
+        app.advance_file_watches();
+
+        assert!(app.tabs[tab_idx].watch_state.is_none());
+        assert!(app.tabs[tab_idx].stream_retry.is_some());
+        assert_eq!(app.tabs[tab_idx].stream_retry.as_ref().unwrap().attempt, 1);
+        assert!(app.tabs[tab_idx].command_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_restore_dlt_tab_uses_non_blocking_retry() {
+        let mut app = make_app(&["line"]).await;
+        app.restore_dlt_tab("dlt://192.168.1.1:3490").await;
+
+        let tab_idx = app.tabs.len() - 1;
+        assert!(
+            app.tabs[tab_idx].stream_retry.is_some(),
+            "stream_retry should be set immediately without blocking"
+        );
+        assert_eq!(app.tabs[tab_idx].stream_retry.as_ref().unwrap().attempt, 1);
+        assert!(app.tabs[tab_idx].watch_state.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_restore_docker_tab_uses_non_blocking_retry() {
+        let mut app = make_app(&["line"]).await;
+        app.restore_docker_tab("docker:mycontainer").await;
+
+        let tab_idx = app.tabs.len() - 1;
+        assert!(
+            app.tabs[tab_idx].stream_retry.is_some(),
+            "stream_retry should be set immediately without blocking"
+        );
+        assert_eq!(app.tabs[tab_idx].stream_retry.as_ref().unwrap().attempt, 1);
+        assert!(app.tabs[tab_idx].watch_state.is_none());
     }
 }

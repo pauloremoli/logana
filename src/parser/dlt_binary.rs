@@ -34,6 +34,7 @@ const TINFO_BOOL: u32 = 0x10;
 const TINFO_SINT: u32 = 0x20;
 const TINFO_UINT: u32 = 0x40;
 const TINFO_STRG: u32 = 0x200;
+const TINFO_FLOA: u32 = 0x80;
 const TINFO_RAWD: u32 = 0x400;
 
 /// Returns `true` if the buffer starts with the DLT storage header magic bytes (`DLT\x01`).
@@ -97,7 +98,32 @@ fn validate_wire_message(data: &[u8]) -> bool {
             return false;
         }
     }
+    // Validate that ECU ID (when present) contains only printable ASCII or null.
+    // Real DLT ECU IDs are short human-readable identifiers; random text data
+    // will rarely have valid ASCII in these exact byte positions.
+    if htyp & WEID != 0 {
+        let ecu_start = 4;
+        if !is_ascii_id(&data[ecu_start..ecu_start + 4]) {
+            return false;
+        }
+    }
+    // Validate APID and CTID in the extended header (offsets +2 and +6 from ext_offset).
+    if ext_offset + 10 <= data.len() {
+        let apid_start = ext_offset + 2;
+        let ctid_start = ext_offset + 6;
+        if !is_ascii_id(&data[apid_start..apid_start + 4])
+            || !is_ascii_id(&data[ctid_start..ctid_start + 4])
+        {
+            return false;
+        }
+    }
     true
+}
+
+fn is_ascii_id(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .all(|&b| b == 0 || b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Returns `true` when bytes 4-15 (after the magic) are all printable ASCII or null,
@@ -172,7 +198,7 @@ fn convert_simplified(data: &[u8]) -> Vec<u8> {
         let mut line = String::new();
         let _ = write!(
             line,
-            "{} 0 {} {} {} log info non-verbose 0 {}",
+            "{} 0 000 {} {} {} log info non-verbose 0 {}",
             ts_str, ecu, apid, ctid, payload_text
         );
         output.extend_from_slice(line.as_bytes());
@@ -247,9 +273,9 @@ fn convert_wire(data: &[u8]) -> Vec<u8> {
         }
 
         let msg_bytes = &data[pos..pos + msg_len];
-        let ts_placeholder = "0000/00/00 00:00:00.000000";
+        let ts_str = wire_timestamp_str(msg_bytes);
 
-        if let Some(line) = format_dlt_message(msg_bytes, ts_placeholder, None) {
+        if let Some(line) = format_dlt_message(msg_bytes, &ts_str, None) {
             output.extend_from_slice(line.as_bytes());
             output.push(b'\n');
         }
@@ -258,6 +284,67 @@ fn convert_wire(data: &[u8]) -> Vec<u8> {
     }
 
     output
+}
+
+/// Parse wire-format DLT messages, returning converted text and the number of
+/// bytes consumed. Unconsumed trailing bytes are a partial message that should
+/// be kept for the next call. Unlike `is_dlt_wire_format`, this does not
+/// require 2 messages — a single valid message is enough for streaming use
+/// where the caller already knows the data is DLT.
+pub fn convert_wire_streaming(data: &[u8], received_ts: &str) -> (Vec<u8>, usize) {
+    let mut output = Vec::new();
+    let mut pos = 0;
+
+    while pos + STD_HEADER_MIN_LEN <= data.len() {
+        let htyp = data[pos];
+        if htyp & VERSION_MASK != VERSION_1 {
+            break;
+        }
+
+        let msg_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
+        if msg_len < STD_HEADER_MIN_LEN || pos + msg_len > data.len() {
+            break;
+        }
+
+        let msg_bytes = &data[pos..pos + msg_len];
+
+        if let Some(line) = format_dlt_message(msg_bytes, received_ts, None) {
+            output.extend_from_slice(line.as_bytes());
+            output.push(b'\n');
+        }
+
+        pos += msg_len;
+    }
+
+    (output, pos)
+}
+
+fn wire_timestamp_str(msg_bytes: &[u8]) -> String {
+    let htyp = msg_bytes[0];
+    let mut off = 4;
+    if htyp & WEID != 0 {
+        off += 4;
+    }
+    if htyp & WSID != 0 {
+        off += 4;
+    }
+    if htyp & WTMS != 0 && off + 4 <= msg_bytes.len() {
+        let raw = u32::from_be_bytes([
+            msg_bytes[off],
+            msg_bytes[off + 1],
+            msg_bytes[off + 2],
+            msg_bytes[off + 3],
+        ]);
+        let total_us = raw as u64 * 100;
+        let secs = total_us / 1_000_000;
+        let us = total_us % 1_000_000;
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        let s = secs % 60;
+        format!("0000/00/00 {:02}:{:02}:{:02}.{:06}", h, m, s, us)
+    } else {
+        "0000/00/00 00:00:00.000000".to_string()
+    }
 }
 
 /// Parse a single DLT message (standard header + optional extended header + payload)
@@ -274,6 +361,7 @@ fn format_dlt_message(
     }
 
     let htyp = msg_bytes[0];
+    let mcnt = msg_bytes[1];
     let mut offset = 4usize;
 
     let std_ecu = if htyp & WEID != 0 {
@@ -373,8 +461,18 @@ fn format_dlt_message(
     let mut line = String::new();
     let _ = write!(
         line,
-        "{} {} {} {} {} {} {} {} {} {}",
-        ts_str, hw_ts, ecu, apid, ctid, msg_type_str, subtype_str, mode_str, noar, payload_text
+        "{} {} {:03} {} {} {} {} {} {} {} {}",
+        ts_str,
+        hw_ts,
+        mcnt,
+        ecu,
+        apid,
+        ctid,
+        msg_type_str,
+        subtype_str,
+        mode_str,
+        noar,
+        payload_text
     );
     Some(line)
 }
@@ -406,7 +504,7 @@ fn read_ascii4(bytes: &[u8]) -> String {
     if s.is_empty() { "----".to_string() } else { s }
 }
 
-fn format_storage_timestamp(secs: u32, usecs: u32) -> String {
+pub fn format_storage_timestamp(secs: u32, usecs: u32) -> String {
     let total_secs = secs as i64;
 
     let mut days = total_secs / 86400;
@@ -500,7 +598,7 @@ fn decode_verbose_payload(data: &[u8], noar: u8) -> String {
             u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
         pos += 4;
 
-        let tlen = ((type_info >> 8) & 0x0F) as usize;
+        let tlen = (type_info & 0x0F) as usize;
 
         if type_info & TINFO_BOOL != 0 {
             if pos < data.len() {
@@ -523,6 +621,42 @@ fn decode_verbose_payload(data: &[u8], noar: u8) -> String {
                 let val = read_int_le(&data[pos..pos + byte_len], type_info & TINFO_SINT != 0);
                 result.push(val);
                 pos += byte_len;
+            }
+        } else if type_info & TINFO_FLOA != 0 {
+            let byte_len = match tlen {
+                3 => 4,
+                4 => 8,
+                _ => 0,
+            };
+            if byte_len == 4 && pos + 4 <= data.len() {
+                let val =
+                    f32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+                result.push(format!("{}", val));
+                pos += 4;
+            } else if byte_len == 8 && pos + 8 <= data.len() {
+                let val = f64::from_le_bytes([
+                    data[pos],
+                    data[pos + 1],
+                    data[pos + 2],
+                    data[pos + 3],
+                    data[pos + 4],
+                    data[pos + 5],
+                    data[pos + 6],
+                    data[pos + 7],
+                ]);
+                result.push(format!("{}", val));
+                pos += 8;
+            } else {
+                let remaining = if byte_len > 0 && pos + byte_len <= data.len() {
+                    let chunk = &data[pos..pos + byte_len];
+                    pos += byte_len;
+                    chunk
+                } else {
+                    let chunk = &data[pos..];
+                    pos = data.len();
+                    chunk
+                };
+                result.push(hex_dump(remaining));
             }
         } else if type_info & TINFO_STRG != 0 {
             if pos + 2 > data.len() {
@@ -727,6 +861,16 @@ mod tests {
         ext: Option<(&[u8; 4], &[u8; 4], u8, u8)>,
         payload: &[u8],
     ) -> Vec<u8> {
+        build_wire_msg_with_ts(htyp, mcnt, ext, payload, 12345)
+    }
+
+    fn build_wire_msg_with_ts(
+        htyp: u8,
+        mcnt: u8,
+        ext: Option<(&[u8; 4], &[u8; 4], u8, u8)>,
+        payload: &[u8],
+        timestamp: u32,
+    ) -> Vec<u8> {
         let ext_len = if ext.is_some() { 10 } else { 0 };
         let ecu_len = if htyp & WEID != 0 { 4 } else { 0 };
         let sid_len = if htyp & WSID != 0 { 4 } else { 0 };
@@ -740,7 +884,7 @@ mod tests {
             data.extend_from_slice(&0u32.to_be_bytes());
         }
         if htyp & WTMS != 0 {
-            data.extend_from_slice(&12345u32.to_be_bytes());
+            data.extend_from_slice(&timestamp.to_be_bytes());
         }
         if let Some((apid, ctid, msin, noar)) = ext {
             data.extend_from_slice(&build_ext_header(msin, noar, apid, ctid));
@@ -1171,7 +1315,7 @@ mod tests {
 
         let htyp = UEH;
         let mut payload = Vec::new();
-        let type_info: u32 = TINFO_UINT | (3 << 8);
+        let type_info: u32 = TINFO_UINT | 3; // TYLE=3 → 4 bytes
         payload.extend_from_slice(&type_info.to_le_bytes());
         payload.extend_from_slice(&42u32.to_le_bytes());
 
@@ -1332,5 +1476,283 @@ mod tests {
     fn test_hex_dump() {
         assert_eq!(hex_dump(&[0xFF, 0x00, 0xAB]), "ff00ab");
         assert_eq!(hex_dump(&[]), "");
+    }
+
+    // ——— convert_wire_streaming ———
+
+    #[test]
+    fn test_convert_wire_streaming_full_messages() {
+        let msin = (0 << 1) | (4 << 4);
+        let mut data = Vec::new();
+        for i in 0..3u8 {
+            data.extend(build_wire_msg(
+                VERSION_1 | UEH,
+                i,
+                Some((b"APP1", b"CTX1", msin, 0)),
+                format!("msg{}", i).as_bytes(),
+            ));
+        }
+        let total_len = data.len();
+        let test_ts = "2026/03/14 17:22:07.847993";
+        let (text, consumed) = convert_wire_streaming(&data, test_ts);
+        assert_eq!(consumed, total_len);
+        let output = std::str::from_utf8(&text).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn test_convert_wire_streaming_partial_message_preserved() {
+        let msin = (0 << 1) | (4 << 4);
+        let msg1 = build_wire_msg(
+            VERSION_1 | UEH,
+            0,
+            Some((b"APP1", b"CTX1", msin, 0)),
+            b"complete",
+        );
+        let msg2 = build_wire_msg(
+            VERSION_1 | UEH,
+            1,
+            Some((b"APP1", b"CTX1", msin, 0)),
+            b"truncated",
+        );
+        let msg1_len = msg1.len();
+        let mut data = msg1;
+        data.extend_from_slice(&msg2[..msg2.len() / 2]); // truncated
+
+        let test_ts = "2026/03/14 17:22:07.847993";
+        let (text, consumed) = convert_wire_streaming(&data, test_ts);
+        assert_eq!(consumed, msg1_len);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("complete"));
+        assert!(!output.contains("truncated"));
+    }
+
+    #[test]
+    fn test_convert_wire_streaming_empty() {
+        let (text, consumed) = convert_wire_streaming(&[], "2026/03/14 17:22:07.847993");
+        assert!(text.is_empty());
+        assert_eq!(consumed, 0);
+    }
+
+    #[test]
+    fn test_convert_wire_streaming_single_message() {
+        let msin = (0 << 1) | (4 << 4);
+        let data = build_wire_msg(
+            VERSION_1 | UEH,
+            0,
+            Some((b"APP1", b"CTX1", msin, 0)),
+            b"single",
+        );
+        let test_ts = "2026/03/14 17:22:07.847993";
+        let (text, consumed) = convert_wire_streaming(&data, test_ts);
+        assert_eq!(consumed, data.len());
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("single"));
+    }
+
+    // ——— Verbose payload decoding ———
+
+    #[test]
+    fn test_verbose_uint16_and_string_args() {
+        let mut payload = Vec::new();
+        // Arg 1: UINT16 value 0
+        let ti_uint16: u32 = TINFO_UINT | 2; // TYLE=2 → 2 bytes
+        payload.extend_from_slice(&ti_uint16.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        // Arg 2: string "docker ECU"
+        let ti_strg: u32 = TINFO_STRG;
+        let s = b"docker ECU\0";
+        payload.extend_from_slice(&ti_strg.to_le_bytes());
+        payload.extend_from_slice(&(s.len() as u16).to_le_bytes());
+        payload.extend_from_slice(s);
+
+        let msin = VERBOSE_BIT | (0 << 1) | (3 << 4); // log warn
+        let data = make_two_wire_msgs(
+            VERSION_1 | UEH,
+            Some((b"LOG\0", b"TEST", msin, 2)),
+            &payload,
+        );
+        let text = convert_dlt_binary_to_text(&data);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("0 docker ECU"), "got: {}", output);
+    }
+
+    #[test]
+    fn test_verbose_sint_args() {
+        let mut payload = Vec::new();
+        // SINT8
+        let ti: u32 = TINFO_SINT | 1;
+        payload.extend_from_slice(&ti.to_le_bytes());
+        payload.push((-5i8) as u8);
+        // SINT32
+        let ti32: u32 = TINFO_SINT | 3;
+        payload.extend_from_slice(&ti32.to_le_bytes());
+        payload.extend_from_slice(&(-42i32).to_le_bytes());
+
+        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 2)), &payload);
+        let text = convert_dlt_binary_to_text(&data);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("-5"), "got: {}", output);
+        assert!(output.contains("-42"), "got: {}", output);
+    }
+
+    #[test]
+    fn test_verbose_bool_arg() {
+        let mut payload = Vec::new();
+        let ti: u32 = TINFO_BOOL | 1;
+        payload.extend_from_slice(&ti.to_le_bytes());
+        payload.push(1);
+
+        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 1)), &payload);
+        let text = convert_dlt_binary_to_text(&data);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("true"), "got: {}", output);
+    }
+
+    #[test]
+    fn test_verbose_rawd_arg() {
+        let mut payload = Vec::new();
+        let ti: u32 = TINFO_RAWD;
+        payload.extend_from_slice(&ti.to_le_bytes());
+        let raw_data: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
+        payload.extend_from_slice(&(raw_data.len() as u16).to_le_bytes());
+        payload.extend_from_slice(raw_data);
+
+        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 1)), &payload);
+        let text = convert_dlt_binary_to_text(&data);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("deadbeef"), "got: {}", output);
+    }
+
+    #[test]
+    fn test_verbose_floa_f32_arg() {
+        let mut payload = Vec::new();
+        let ti: u32 = TINFO_FLOA | 3; // TYLE=3 → 4 bytes (f32)
+        payload.extend_from_slice(&ti.to_le_bytes());
+        payload.extend_from_slice(&3.14f32.to_le_bytes());
+
+        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 1)), &payload);
+        let text = convert_dlt_binary_to_text(&data);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("3.14"), "got: {}", output);
+    }
+
+    #[test]
+    fn test_verbose_floa_f64_arg() {
+        let mut payload = Vec::new();
+        let ti: u32 = TINFO_FLOA | 4; // TYLE=4 → 8 bytes (f64)
+        payload.extend_from_slice(&ti.to_le_bytes());
+        payload.extend_from_slice(&2.718281828f64.to_le_bytes());
+
+        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 1)), &payload);
+        let text = convert_dlt_binary_to_text(&data);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("2.718281828"), "got: {}", output);
+    }
+
+    // ——— Wire timestamp ———
+
+    #[test]
+    fn test_wire_timestamp_with_wtms() {
+        // 10000 in 0.1ms units = 1 second → "00:00:01.000000"
+        let msin = (0 << 1) | (4 << 4);
+        let data = build_wire_msg_with_ts(
+            VERSION_1 | UEH | WTMS,
+            0,
+            Some((b"APP1", b"CTX1", msin, 0)),
+            b"payload",
+            10000,
+        );
+        let text = convert_wire(&data);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("00:00:01.000000"), "got: {}", output);
+    }
+
+    #[test]
+    fn test_wire_timestamp_without_wtms() {
+        let msin = (0 << 1) | (4 << 4);
+        let mut data = build_wire_msg(
+            VERSION_1 | UEH,
+            0,
+            Some((b"APP1", b"CTX1", msin, 0)),
+            b"payload",
+        );
+        data.extend(build_wire_msg(
+            VERSION_1 | UEH,
+            1,
+            Some((b"APP1", b"CTX1", msin, 0)),
+            b"payload",
+        ));
+        let text = convert_dlt_binary_to_text(&data);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("00:00:00.000000"), "got: {}", output);
+    }
+
+    #[test]
+    fn test_wire_timestamp_large_value() {
+        // 36_000_000 * 0.1ms = 3_600_000ms = 3600s = 1 hour
+        let msin = (0 << 1) | (4 << 4);
+        let data = build_wire_msg_with_ts(
+            VERSION_1 | UEH | WTMS,
+            0,
+            Some((b"APP1", b"CTX1", msin, 0)),
+            b"payload",
+            36_000_000,
+        );
+        let text = convert_wire(&data);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains("01:00:00.000000"), "got: {}", output);
+    }
+
+    #[test]
+    fn test_wire_streaming_uses_received_timestamp() {
+        let msin = (0 << 1) | (4 << 4);
+        let data = build_wire_msg_with_ts(
+            VERSION_1 | UEH | WTMS,
+            0,
+            Some((b"APP1", b"CTX1", msin, 0)),
+            b"payload",
+            50000,
+        );
+        let received_ts = "2026/03/14 17:22:07.847993";
+        let (text, consumed) = convert_wire_streaming(&data, received_ts);
+        assert_eq!(consumed, data.len());
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(
+            output.contains("2026/03/14 17:22:07.847993"),
+            "got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_wire_streaming_mcnt_in_output() {
+        let msin = (0 << 1) | (4 << 4);
+        let data = build_wire_msg(
+            VERSION_1 | UEH,
+            42,
+            Some((b"APP1", b"CTX1", msin, 0)),
+            b"payload",
+        );
+        let received_ts = "2026/03/14 17:22:07.847993";
+        let (text, _) = convert_wire_streaming(&data, received_ts);
+        let output = std::str::from_utf8(&text).unwrap();
+        assert!(output.contains(" 042 "), "got: {}", output);
+    }
+
+    #[test]
+    fn test_apache_clf_not_detected_as_wire_format() {
+        let clf = b"54.36.149.41 - - [22/Jan/2019:03:56:14 +0330] \"GET /filter/27|13 HTTP/1.1\" 200 30577 \"-\" \"Mozilla/5.0\" \"-\"\n\
+                     31.56.96.51 - - [22/Jan/2019:03:56:16 +0330] \"GET /image/60844/productModel/200x200 HTTP/1.1\" 200 5667 \"https://www.zanbil.ir\" \"Mozilla/5.0\" \"-\"\n";
+        assert!(
+            !is_dlt_wire_format(clf),
+            "Apache CLF data must not be detected as DLT wire format"
+        );
     }
 }

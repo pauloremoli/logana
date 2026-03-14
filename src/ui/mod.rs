@@ -33,6 +33,7 @@ pub enum KeyResult {
     ExecuteCommand(String),
     RestoreSession(Vec<String>),
     DockerAttach(String, String),
+    DltAttach(String, u16, String),
     ApplyValueColors(std::collections::HashSet<String>),
     ApplyLevelColors(std::collections::HashSet<String>),
     CopyToClipboard(String),
@@ -463,6 +464,8 @@ pub struct TabState {
     /// Per-filter match counts unified across all filter types, indexed parallel to
     /// `filter_defs` (disabled filters get count 0). Updated after each filter computation.
     pub filter_match_counts: Vec<usize>,
+    /// Reconnection state for streaming tabs (DLT, Docker, etc.).
+    pub stream_retry: Option<StreamRetryState>,
 }
 
 impl TabState {
@@ -524,6 +527,7 @@ impl TabState {
             search_result_gen: 0,
             render_line_cache: HashMap::new(),
             filter_match_counts: Vec::new(),
+            stream_retry: None,
         };
         tab.refresh_visible();
         tab
@@ -1333,6 +1337,97 @@ impl TabState {
         });
     }
 
+    /// Incrementally filter only the newly appended lines (from `old_line_count`
+    /// to the current line count). Used by streaming/watch to avoid a full
+    /// rescan that would cause the "Filtering…" indicator to flicker.
+    pub fn filter_new_lines(&mut self, old_line_count: usize) {
+        self.invalidate_parse_cache();
+
+        let new_count = self.file_reader.line_count();
+        if new_count <= old_line_count {
+            return;
+        }
+
+        let has_active_filters =
+            self.show_marks_only || self.log_manager.get_filters().iter().any(|f| f.enabled);
+
+        if !has_active_filters {
+            match &mut self.visible_indices {
+                VisibleLines::All(n) => *n = new_count,
+                VisibleLines::Filtered(_) => {
+                    self.visible_indices = VisibleLines::All(new_count);
+                }
+            }
+            return;
+        }
+
+        if !self.filtering_enabled {
+            match &mut self.visible_indices {
+                VisibleLines::All(n) => *n = new_count,
+                VisibleLines::Filtered(_) => {
+                    self.visible_indices = VisibleLines::All(new_count);
+                }
+            }
+            return;
+        }
+
+        if self.show_marks_only {
+            let mut indices = self.log_manager.get_marked_indices();
+            indices.retain(|&i| i < new_count);
+            self.visible_indices = VisibleLines::Filtered(indices);
+            return;
+        }
+
+        let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
+        let (inc_ff, exc_ff) =
+            crate::field_filter::extract_field_filters(self.log_manager.get_filters());
+        let has_text_includes = self.filter_manager_arc.has_include();
+        let needs_parse = !date_filters.is_empty() || !inc_ff.is_empty() || !exc_ff.is_empty();
+        let parser: Option<&dyn crate::parser::LogFormatParser> = if self.raw_mode {
+            None
+        } else {
+            self.detected_format.as_deref()
+        };
+
+        let mut new_visible = Vec::new();
+        let mut dummy_date_counts = vec![0usize; date_filters.len()];
+        let mut dummy_text_counts = vec![0usize; self.filter_manager_arc.filter_count()];
+
+        for i in old_line_count..new_count {
+            let line = self.file_reader.get_line(i);
+            let text_dec = self
+                .filter_manager_arc
+                .evaluate_and_count(line, &mut dummy_text_counts);
+            let can_skip =
+                text_dec == FilterDecision::Exclude && inc_ff.is_empty() && exc_ff.is_empty();
+            let parts = if needs_parse && !can_skip {
+                parser.and_then(|p| p.parse_line(line))
+            } else {
+                None
+            };
+            if line_is_visible(
+                text_dec,
+                has_text_includes,
+                &date_filters,
+                &mut dummy_date_counts,
+                &inc_ff,
+                &exc_ff,
+                parts.as_ref(),
+            ) {
+                new_visible.push(i);
+            }
+        }
+
+        match &mut self.visible_indices {
+            VisibleLines::All(n) => {
+                *n = new_count;
+            }
+            VisibleLines::Filtered(v) => {
+                v.extend(new_visible);
+            }
+        }
+    }
+
     /// Jump to a 1-based line number, or the closest visible line if the
     /// target is hidden by filters.  Returns an error message when the
     /// line number is invalid (zero).
@@ -1745,6 +1840,78 @@ pub struct StdinLoadState {
 pub struct FileWatchState {
     /// Receives stripped byte chunks whenever new lines are appended to the file.
     pub new_data_rx: tokio::sync::watch::Receiver<Vec<u8>>,
+}
+
+type ConnectFn = Arc<
+    dyn Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<watch::Receiver<Vec<u8>>, String>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+pub struct StreamRetryState {
+    pub attempt: u32,
+    pub last_error: String,
+    pub retry_rx: Option<mpsc::Receiver<Result<watch::Receiver<Vec<u8>>, String>>>,
+    connect: ConnectFn,
+}
+
+impl StreamRetryState {
+    pub fn new(connect: ConnectFn, error: String) -> Self {
+        let mut state = Self {
+            attempt: 0,
+            last_error: error,
+            retry_rx: None,
+            connect,
+        };
+        state.schedule_retry();
+        state
+    }
+
+    pub fn schedule_retry(&mut self) {
+        self.attempt += 1;
+        let (tx, rx) = mpsc::channel(1);
+        let delay_secs = self.retry_delay_secs();
+        let connect = self.connect.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+            let result = connect().await;
+            let _ = tx.send(result).await;
+        });
+        self.retry_rx = Some(rx);
+    }
+
+    fn retry_delay_secs(&self) -> u64 {
+        match self.attempt {
+            1 => 0,
+            2 => 2,
+            3 => 5,
+            _ => 10,
+        }
+    }
+}
+
+pub fn dlt_connect_fn(host: String, port: u16) -> ConnectFn {
+    Arc::new(move || {
+        let h = host.clone();
+        let p = port;
+        Box::pin(async move {
+            FileReader::spawn_dlt_tcp_stream(h, p)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    })
+}
+
+pub fn docker_connect_fn(container: String) -> ConnectFn {
+    Arc::new(move || {
+        let c = container.clone();
+        Box::pin(async move {
+            FileReader::spawn_process_stream("docker", &["logs", "-f", &c])
+                .await
+                .map_err(|e| e.to_string())
+        })
+    })
 }
 
 pub use app::App;
@@ -3572,5 +3739,96 @@ mod tests {
             &[],
             None
         ));
+    }
+
+    // ── filter_new_lines ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_filter_new_lines_no_filters_updates_all() {
+        let data = b"a\nb\n".to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut tab = TabState::new(file_reader, log_manager, "test".to_string());
+        let old = tab.file_reader.line_count();
+        assert_eq!(old, 2);
+        tab.file_reader.append_bytes(b"c\nd\n");
+        assert_eq!(tab.file_reader.line_count(), 4);
+        tab.filter_new_lines(old);
+        assert_eq!(tab.visible_indices, VisibleLines::All(4));
+    }
+
+    #[tokio::test]
+    async fn test_filter_new_lines_with_include_filter() {
+        let data = b"INFO keep\nDEBUG skip\n".to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut tab = TabState::new(file_reader, log_manager, "test".to_string());
+        tab.log_manager
+            .add_filter_with_color("INFO".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.begin_filter_refresh();
+        let mut h = tab.filter_handle.take().unwrap();
+        let mut all_visible = Vec::new();
+        while let Some(chunk) = h.result_rx.recv().await {
+            all_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+        tab.visible_indices = VisibleLines::Filtered(all_visible);
+        tab.rebuild_filter_manager_cache();
+
+        let old_count = tab.file_reader.line_count();
+        tab.file_reader.append_bytes(b"INFO new\nDEBUG noise\n");
+        tab.filter_new_lines(old_count);
+
+        match &tab.visible_indices {
+            VisibleLines::Filtered(v) => {
+                assert!(
+                    v.contains(&0),
+                    "line 0 (INFO keep) should be visible: {:?}",
+                    v
+                );
+                assert!(
+                    !v.contains(&1),
+                    "line 1 (DEBUG skip) should be hidden: {:?}",
+                    v
+                );
+                assert!(
+                    v.contains(&old_count),
+                    "new INFO line should be visible: {:?}",
+                    v
+                );
+                assert!(
+                    !v.contains(&(old_count + 1)),
+                    "new DEBUG line should be hidden: {:?}",
+                    v
+                );
+            }
+            _ => panic!("expected Filtered variant"),
+        }
+        assert!(tab.filter_handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_filter_new_lines_filtering_disabled() {
+        let data = b"a\nb\n".to_vec();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut tab = TabState::new(file_reader, log_manager, "test".to_string());
+        tab.log_manager
+            .add_filter_with_color("a".to_string(), FilterType::Include, None, None, true)
+            .await;
+        tab.filtering_enabled = false;
+        let old = tab.file_reader.line_count();
+        tab.file_reader.append_bytes(b"c\n");
+        tab.filter_new_lines(old);
+        assert_eq!(
+            tab.visible_indices,
+            VisibleLines::All(tab.file_reader.line_count())
+        );
     }
 }

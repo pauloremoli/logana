@@ -244,7 +244,8 @@ impl App {
         let has_multiple_tabs = self.tabs.len() > 1;
         let is_loading = self.file_load_state.is_some();
         let is_filtering = self.tabs.iter().any(|t| t.filter_handle.is_some());
-        let show_tab_bar = has_multiple_tabs || is_loading || is_filtering;
+        let is_retrying = self.tabs.iter().any(|t| t.stream_retry.is_some());
+        let show_tab_bar = has_multiple_tabs || is_loading || is_filtering || is_retrying;
 
         // Extract mode-derived state up front via a single render_state() call,
         // avoiding holding a borrow over the rest of rendering.
@@ -349,6 +350,21 @@ impl App {
                 } => Some((containers.clone(), *selected, error.clone())),
                 _ => None,
             };
+        #[allow(clippy::type_complexity)]
+        let dlt_select: Option<(
+            Vec<crate::config::DltDevice>,
+            usize,
+            Option<String>,
+            Option<crate::mode::dlt_select_mode::AddDeviceRenderState>,
+        )> = match &render_state {
+            ModeRenderState::DltSelect {
+                devices,
+                selected,
+                error,
+                adding,
+            } => Some((devices.clone(), *selected, error.clone(), adding.clone())),
+            _ => None,
+        };
         let value_colors_state: Option<(
             Vec<crate::mode::value_colors_mode::ValueColorGroup>,
             String,
@@ -569,6 +585,16 @@ impl App {
 
         if let Some((containers, selected, error)) = docker_select {
             self.render_docker_select_popup(frame, &containers, selected, error.as_deref());
+        }
+
+        if let Some((devices, selected, error, adding)) = dlt_select {
+            self.render_dlt_select_popup(
+                frame,
+                &devices,
+                selected,
+                error.as_deref(),
+                adding.as_ref(),
+            );
         }
 
         if let Some((groups, search, selected, title)) = value_colors_state {
@@ -1789,10 +1815,12 @@ impl App {
                 .iter()
                 .find(|(idx, _)| *idx == i)
                 .map(|(_, p)| *p);
-            let suffix = match (loading_info, filter_pct) {
-                (Some((idx, pct)), _) if idx == i => format!(" {}% ", pct),
-                (_, Some(pct)) if pct < 100 => format!(" Filtering… {}% ", pct),
-                (_, Some(_)) => " Indexing… ".to_string(),
+            let retry_info = self.tabs[i].stream_retry.as_ref().map(|r| r.attempt);
+            let suffix = match (loading_info, filter_pct, retry_info) {
+                (Some((idx, pct)), _, _) if idx == i => format!(" {}% ", pct),
+                (_, Some(pct), _) if pct < 100 => format!(" Filtering… {}% ", pct),
+                (_, Some(_), _) => " Indexing… ".to_string(),
+                (_, _, Some(attempt)) => format!(" [RETRY #{}] ", attempt),
                 _ if is_active => {
                     let num_visible = self.tabs[i].visible_indices.len();
                     let tail = self.tabs[i].tail_mode;

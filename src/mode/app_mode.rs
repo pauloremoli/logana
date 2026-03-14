@@ -4,9 +4,12 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::{
-    config::Keybindings,
+    config::{DltDevice, Keybindings},
     db::FileContext,
-    mode::{normal_mode::NormalMode, value_colors_mode::ValueColorGroup},
+    mode::{
+        dlt_select_mode::AddDeviceRenderState, normal_mode::NormalMode,
+        value_colors_mode::ValueColorGroup,
+    },
     theme::Theme,
     types::DockerContainer,
     ui::{KeyResult, TabState},
@@ -60,6 +63,12 @@ pub enum ModeRenderState {
         selected: usize,
         error: Option<String>,
     },
+    DltSelect {
+        devices: Vec<DltDevice>,
+        selected: usize,
+        error: Option<String>,
+        adding: Option<AddDeviceRenderState>,
+    },
     ValueColors {
         groups: Vec<ValueColorGroup>,
         search: String,
@@ -99,6 +108,7 @@ impl ModeRenderState {
             ModeRenderState::KeybindingsHelp { .. } => "HELP",
             ModeRenderState::SelectFields { .. } => "FIELDS",
             ModeRenderState::DockerSelect { .. } => "DOCKER",
+            ModeRenderState::DltSelect { .. } => "DLT",
             ModeRenderState::ValueColors { .. } => "VALUE COLORS",
             ModeRenderState::LevelColors { .. } => "LEVEL COLORS",
             ModeRenderState::ConfirmRestore
@@ -862,6 +872,16 @@ mod tests {
             }
             .mode_name(),
             "DOCKER"
+        );
+        assert_eq!(
+            ModeRenderState::DltSelect {
+                devices: vec![],
+                selected: 0,
+                error: None,
+                adding: None
+            }
+            .mode_name(),
+            "DLT"
         );
         assert_eq!(
             ModeRenderState::ValueColors {

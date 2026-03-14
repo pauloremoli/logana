@@ -738,6 +738,125 @@ impl FileReader {
         Ok(rx)
     }
 
+    pub async fn spawn_dlt_tcp_stream(
+        host: String,
+        port: u16,
+    ) -> io::Result<watch::Receiver<Vec<u8>>> {
+        use tokio::net::TcpStream;
+
+        let stream = TcpStream::connect((host.as_str(), port)).await?;
+        let (tx, rx) = watch::channel(Vec::<u8>::new());
+        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+
+        spawn(async move {
+            use tokio::io::AsyncReadExt;
+            // Keep the full stream alive — splitting and dropping the write
+            // half sends a FIN that causes dlt-daemon to disconnect.
+            let mut stream = stream;
+            let mut buf = vec![0u8; 8192];
+            loop {
+                match stream.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if chunk_tx.send(buf[..n].to_vec()).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        spawn(async move {
+            use std::time::Duration;
+
+            let mut accumulated: Vec<u8> = Vec::new();
+            let mut partial: Vec<u8> = Vec::new();
+            let mut format_confirmed = false;
+
+            let mut interval = tokio::time::interval(Duration::from_millis(500));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    chunk = chunk_rx.recv() => {
+                        match chunk {
+                            Some(data) => partial.extend_from_slice(&data),
+                            None => {
+                                if !partial.is_empty() {
+                                    let now_ts = {
+                                        let d = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default();
+                                        dlt_binary::format_storage_timestamp(
+                                            d.as_secs() as u32,
+                                            d.subsec_micros(),
+                                        )
+                                    };
+                                    let (text, consumed) =
+                                        dlt_binary::convert_wire_streaming(&partial, &now_ts);
+                                    if !text.is_empty() {
+                                        accumulated.extend_from_slice(&text);
+                                    }
+                                    if consumed < partial.len() {
+                                        let remainder = &partial[consumed..];
+                                        accumulated.extend_from_slice(
+                                            String::from_utf8_lossy(remainder).as_bytes(),
+                                        );
+                                    }
+                                }
+                                let _ = tx.send(accumulated);
+                                return;
+                            }
+                        }
+                    }
+                    _ = interval.tick() => {
+                        if partial.is_empty() {
+                            continue;
+                        }
+                        if !format_confirmed {
+                            if dlt_binary::is_dlt_wire_format(&partial)
+                                || dlt_binary::is_dlt_binary(&partial)
+                            {
+                                format_confirmed = true;
+                            } else {
+                                continue;
+                            }
+                        }
+                        if dlt_binary::is_dlt_binary(&partial) {
+                            let text =
+                                dlt_binary::convert_dlt_binary_to_text(&partial);
+                            if !text.is_empty() {
+                                accumulated.extend_from_slice(&text);
+                                partial.clear();
+                                let _ = tx.send(accumulated.clone());
+                            }
+                        } else {
+                            let now_ts = {
+                                let d = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default();
+                                dlt_binary::format_storage_timestamp(
+                                    d.as_secs() as u32,
+                                    d.subsec_micros(),
+                                )
+                            };
+                            let (text, consumed) =
+                                dlt_binary::convert_wire_streaming(&partial, &now_ts);
+                            if !text.is_empty() {
+                                accumulated.extend_from_slice(&text);
+                                partial.drain(..consumed);
+                                let _ = tx.send(accumulated.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
     /// Spawn a background task that polls `path` for new bytes every 500 ms.
     ///
     /// `initial_offset` must be the **original** (unstripped) file size in

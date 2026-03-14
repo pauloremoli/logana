@@ -170,6 +170,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "reset",
         description: "Restore all settings to defaults and clear all persisted state",
     },
+    CommandInfo {
+        name: "dlt",
+        usage: "dlt",
+        description: "Show configured DLT devices and connect to one",
+    },
 ];
 
 /// Commands whose last argument is a file path and should receive path auto-completion.

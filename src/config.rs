@@ -968,6 +968,48 @@ impl Default for DockerSelectKeybindings {
     }
 }
 
+fn default_dlt_confirm() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
+}
+fn default_dlt_cancel() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
+fn default_dlt_delete() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('d'), KeyModifiers::NONE)])
+}
+fn default_dlt_tab() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Tab, KeyModifiers::NONE)])
+}
+fn default_dlt_backtab() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::BackTab, KeyModifiers::NONE)])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DltSelectKeybindings {
+    #[serde(default = "default_dlt_confirm")]
+    pub confirm: KeyBindings,
+    #[serde(default = "default_dlt_cancel")]
+    pub cancel: KeyBindings,
+    #[serde(default = "default_dlt_delete")]
+    pub delete: KeyBindings,
+    #[serde(default = "default_dlt_tab")]
+    pub next_field: KeyBindings,
+    #[serde(default = "default_dlt_backtab")]
+    pub prev_field: KeyBindings,
+}
+
+impl Default for DltSelectKeybindings {
+    fn default() -> Self {
+        Self {
+            confirm: default_dlt_confirm(),
+            cancel: default_dlt_cancel(),
+            delete: default_dlt_delete(),
+            next_field: default_dlt_tab(),
+            prev_field: default_dlt_backtab(),
+        }
+    }
+}
+
 fn default_vc_toggle() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)])
 }
@@ -1178,6 +1220,8 @@ pub struct Keybindings {
     #[serde(default)]
     pub docker_select: DockerSelectKeybindings,
     #[serde(default)]
+    pub dlt_select: DltSelectKeybindings,
+    #[serde(default)]
     pub value_colors: ValueColorsKeybindings,
     #[serde(default)]
     pub select_fields: SelectFieldsKeybindings,
@@ -1333,6 +1377,14 @@ impl Keybindings {
             ("docker_select.cancel", &self.docker_select.cancel),
         ];
 
+        let dlt_select_actions: &[(&str, &KeyBindings)] = &[
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
+            ("dlt_select.confirm", &self.dlt_select.confirm),
+            ("dlt_select.cancel", &self.dlt_select.cancel),
+            ("dlt_select.delete", &self.dlt_select.delete),
+        ];
+
         let value_colors_actions: &[(&str, &KeyBindings)] = &[
             ("navigation.scroll_down", &nav.scroll_down),
             ("navigation.scroll_up", &nav.scroll_up),
@@ -1381,6 +1433,7 @@ impl Keybindings {
         check_conflicts(visual_line_actions, &mut conflicts);
         check_conflicts(visual_char_actions, &mut conflicts);
         check_conflicts(docker_select_actions, &mut conflicts);
+        check_conflicts(dlt_select_actions, &mut conflicts);
         check_conflicts(value_colors_actions, &mut conflicts);
         check_conflicts(select_fields_actions, &mut conflicts);
         check_conflicts(help_actions, &mut conflicts);
@@ -1416,6 +1469,79 @@ fn check_conflicts(actions: &[(&str, &KeyBindings)], out: &mut Vec<String>) {
 
 fn default_preview_bytes() -> u64 {
     16 * 1024 * 1024
+}
+
+fn default_dlt_port() -> u16 {
+    3490
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DltDevice {
+    pub name: String,
+    pub host: String,
+    #[serde(default = "default_dlt_port")]
+    pub port: u16,
+}
+
+impl DltDevice {
+    pub fn save(device: &DltDevice) -> Result<(), String> {
+        let config_path = dirs::config_dir()
+            .map(|d| d.join("logana").join("config.json"))
+            .ok_or_else(|| "Could not determine config directory".to_string())?;
+
+        let mut value: serde_json::Value = if config_path.exists() {
+            let contents =
+                std::fs::read_to_string(&config_path).map_err(|e| format!("Read error: {e}"))?;
+            serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            if let Some(parent) = config_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Could not create config dir: {e}"))?;
+            }
+            serde_json::json!({})
+        };
+
+        let device_val =
+            serde_json::to_value(device).map_err(|e| format!("Serialize error: {e}"))?;
+
+        match value.get_mut("dlt_devices") {
+            Some(arr) if arr.is_array() => {
+                arr.as_array_mut().unwrap().push(device_val);
+            }
+            _ => {
+                value["dlt_devices"] = serde_json::json!([device_val]);
+            }
+        }
+
+        let json =
+            serde_json::to_string_pretty(&value).map_err(|e| format!("Serialize error: {e}"))?;
+        std::fs::write(&config_path, json).map_err(|e| format!("Write error: {e}"))?;
+        Ok(())
+    }
+
+    pub fn remove(device_name: &str) -> Result<(), String> {
+        let config_path = dirs::config_dir()
+            .map(|d| d.join("logana").join("config.json"))
+            .ok_or_else(|| "Could not determine config directory".to_string())?;
+
+        if !config_path.exists() {
+            return Ok(());
+        }
+
+        let contents =
+            std::fs::read_to_string(&config_path).map_err(|e| format!("Read error: {e}"))?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}));
+
+        if let Some(arr) = value.get_mut("dlt_devices").and_then(|v| v.as_array_mut()) {
+            arr.retain(|d| d.get("name").and_then(|n| n.as_str()) != Some(device_name));
+        }
+
+        let json =
+            serde_json::to_string_pretty(&value).map_err(|e| format!("Serialize error: {e}"))?;
+        std::fs::write(&config_path, json).map_err(|e| format!("Write error: {e}"))?;
+        Ok(())
+    }
 }
 
 /// Controls whether logana asks before restoring a previous session.
@@ -1462,6 +1588,8 @@ pub struct Config {
     /// When `Some`, overrides the DB-stored wrap runtime setting.
     #[serde(default)]
     pub wrap: Option<bool>,
+    #[serde(default)]
+    pub dlt_devices: Vec<DltDevice>,
 }
 
 impl Default for Config {
@@ -1477,6 +1605,7 @@ impl Default for Config {
             show_sidebar: None,
             show_line_numbers: None,
             wrap: None,
+            dlt_devices: vec![],
         }
     }
 }
@@ -2779,5 +2908,104 @@ mod tests {
             config.restore_file_context,
             Some(RestoreSessionPolicy::Never)
         );
+    }
+
+    // ── DltDevice config ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_deserialize_config_with_dlt_devices() {
+        let json = r#"{
+            "dlt_devices": [
+                {"name": "ecu1", "host": "192.168.1.10", "port": 3490},
+                {"name": "ecu2", "host": "10.0.0.1"}
+            ]
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.dlt_devices.len(), 2);
+        assert_eq!(config.dlt_devices[0].name, "ecu1");
+        assert_eq!(config.dlt_devices[0].port, 3490);
+        assert_eq!(config.dlt_devices[1].name, "ecu2");
+        assert_eq!(config.dlt_devices[1].port, 3490); // default
+    }
+
+    #[test]
+    fn test_default_config_has_empty_dlt_devices() {
+        let config = Config::default();
+        assert!(config.dlt_devices.is_empty());
+    }
+
+    #[test]
+    fn test_dlt_device_default_port() {
+        let json = r#"{"name": "test", "host": "localhost"}"#;
+        let device: DltDevice = serde_json::from_str(json).unwrap();
+        assert_eq!(device.port, 3490);
+    }
+
+    #[test]
+    fn test_save_dlt_device_creates_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        std::fs::write(&config_path, r#"{"theme": "dark"}"#).unwrap();
+
+        // Override config dir by writing directly
+        let device = DltDevice {
+            name: "test".to_string(),
+            host: "localhost".to_string(),
+            port: 3490,
+        };
+        let device_val = serde_json::to_value(&device).unwrap();
+
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        value["dlt_devices"] = serde_json::json!([device_val]);
+        let json = serde_json::to_string_pretty(&value).unwrap();
+        std::fs::write(&config_path, &json).unwrap();
+
+        let contents2 = std::fs::read_to_string(&config_path).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&contents2).unwrap();
+        assert_eq!(config["theme"], "dark");
+        assert_eq!(config["dlt_devices"].as_array().unwrap().len(), 1);
+        assert_eq!(config["dlt_devices"][0]["name"], "test");
+    }
+
+    #[test]
+    fn test_save_dlt_device_appends_to_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            r#"{"dlt_devices": [{"name": "a", "host": "h1", "port": 3490}]}"#,
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let device = DltDevice {
+            name: "b".to_string(),
+            host: "h2".to_string(),
+            port: 3491,
+        };
+        let device_val = serde_json::to_value(&device).unwrap();
+        value["dlt_devices"]
+            .as_array_mut()
+            .unwrap()
+            .push(device_val);
+        let json = serde_json::to_string_pretty(&value).unwrap();
+        std::fs::write(&config_path, &json).unwrap();
+
+        let contents2 = std::fs::read_to_string(&config_path).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&contents2).unwrap();
+        assert_eq!(config["dlt_devices"].as_array().unwrap().len(), 2);
+        assert_eq!(config["dlt_devices"][1]["name"], "b");
+    }
+
+    #[test]
+    fn test_dlt_select_keybindings_default() {
+        let kb = DltSelectKeybindings::default();
+        assert!(kb.confirm.matches(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(kb.delete.matches(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(kb.next_field.matches(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(kb.prev_field.matches(KeyCode::BackTab, KeyModifiers::NONE));
     }
 }

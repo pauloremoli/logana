@@ -612,6 +612,12 @@ impl App {
                     tab.reset_tab_state();
                 }
             }
+            Some(Commands::Dlt) => {
+                let devices = self.dlt_devices.clone();
+                self.tabs[self.active_tab].mode =
+                    Box::new(crate::mode::dlt_select_mode::DltSelectMode::new(devices));
+                return Ok(true);
+            }
             None => {}
         }
         Ok(false)
