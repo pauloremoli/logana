@@ -1,46 +1,3 @@
-//! Zero-copy log file I/O backed by memory-mapped files.
-//!
-//! [`FileReader`] uses `memmap2` for files or a `Vec<u8>` for stdin/tests.
-//! Line offsets are indexed at startup via `memchr` for O(1) random access.
-//! [`FileReader::spawn_process_stream`] spawns a child process and streams
-//! its output as complete lines, used by the `docker` command.
-//!
-//! ## Key types and functions
-//!
-//! - `strip_ansi_and_index(input) -> (Vec<u8>, Vec<usize>)`: single-pass ANSI
-//!   stripping and line indexing. Handles CSI sequences (`ESC [` … final byte),
-//!   OSC sequences, two-byte ESC sequences, and `\r` stripping. Emits
-//!   `line_starts` inline when each `\n` is written, eliminating a second O(N)
-//!   scan over stripped data.
-//! - `get_line(idx)`: O(1) slice into the backing storage — no heap allocation.
-//! - `from_bytes(Vec<u8>)`: used for stdin input and in-memory test data.
-//! - `from_file_head(path, preview_bytes)`: reads the first N bytes of a file
-//!   asynchronously (without mmap), drops the last partial line, and returns a
-//!   `FileReader::from_bytes`. Used to show an immediate preview before the
-//!   background indexing job completes.
-//! - `from_file_tail(path, preview_bytes)`: same but reads the last N bytes;
-//!   drops the first partial line.
-//! - `load(path, predicate, tail) -> FileLoadHandle`: starts background
-//!   indexing via `spawn_blocking`. When `predicate` is `Some`, each line is
-//!   tested during indexing and matching indices are stored in
-//!   `FileLoadResult::precomputed_visible`, avoiding a second pass after load.
-//! - `VisibilityPredicate`: `Box<dyn Fn(&[u8]) -> bool + Send + Sync>` — passed
-//!   from `main.rs` as a closure over a `FilterManager`, keeping `file_reader`
-//!   free of filter dependencies.
-//! - `spawn_process_stream(program, args)`: spawns a child process, merges
-//!   stdout+stderr via mpsc, strips ANSI, and delivers complete lines every
-//!   500 ms through a `watch::Receiver<Vec<u8>>`.
-//!
-//! ## Scan mmap / access mmap split
-//!
-//! Both `new()` and `index_chunked()` create two separate mmaps. The *scan
-//! mmap* is used for indexing (`MADV_SEQUENTIAL` for prefetch throughput),
-//! then explicitly `drop`ped — `munmap()` removes all its pages from RSS
-//! immediately. A fresh *access mmap* is then created with zero RSS; `get_line`
-//! faults in only the specific 4 KiB page(s) it needs. This is more reliable
-//! than `MADV_DONTNEED`, which is advisory and ignored by the Linux kernel for
-//! file-backed shared mappings.
-
 use memchr::{memchr_iter, memchr2, memchr3_iter};
 use memmap2::Mmap;
 #[cfg(unix)]
@@ -55,49 +12,18 @@ use tokio::{
     task::spawn_blocking,
 };
 
-/// A predicate used to test line visibility during file loading.
-///
-/// Takes raw line bytes and returns `true` if the line should be included in
-/// the visible set. Passed to [`FileReader::load`] for the single-pass
-/// optimisation; `None` skips the phase-2 filter evaluation entirely.
 pub type VisibilityPredicate = Box<dyn Fn(&[u8]) -> bool + Send + Sync>;
-
-// ---------------------------------------------------------------------------
-// FileLoadHandle
-// ---------------------------------------------------------------------------
-
-/// Result returned through [`FileLoadHandle::result_rx`] when indexing completes.
-///
-/// `precomputed_visible` is `Some` only when a visibility predicate was passed
-/// to [`FileReader::load`]; it contains the ascending sorted indices of all
-/// lines that satisfy the predicate, computed during the load pass itself.
 pub struct FileLoadResult {
     pub reader: FileReader,
     pub precomputed_visible: Option<Vec<usize>>,
 }
 
-/// Handle returned by [`FileReader::load`].
-///
-/// * `progress_rx` — watch channel carrying the current progress fraction
-///   (0.0 – 1.0).  Updated in ~4 MiB increments by the background task.
-/// * `result_rx`   — oneshot channel; receives the completed [`FileLoadResult`]
-///   (or an IO error) when indexing finishes.
-/// * `total_bytes` — size of the file in bytes (for display).
 pub struct FileLoadHandle {
     pub progress_rx: watch::Receiver<f64>,
     pub result_rx: oneshot::Receiver<io::Result<FileLoadResult>>,
     pub total_bytes: u64,
 }
 
-// ---------------------------------------------------------------------------
-// FileReader internals
-// ---------------------------------------------------------------------------
-
-/// Backing storage for a `FileReader`: either a memory-mapped file or an
-/// in-memory buffer (used for stdin / tests).
-///
-/// Both variants are wrapped in `Arc` so `FileReader` can be cloned cheaply
-/// (O(1) reference-count increment) for background search tasks.
 #[derive(Clone)]
 enum Storage {
     Mmap(std::sync::Arc<Mmap>),
@@ -113,11 +39,6 @@ impl Storage {
     }
 }
 
-/// A fast, random-access log file reader backed by a memory-mapped file or
-/// an in-memory byte buffer.
-///
-/// Cloning is O(1): both the storage and the line-start index are
-/// `Arc`-wrapped so clones share the same backing data.
 #[derive(Clone)]
 pub struct FileReader {
     storage: Storage,
@@ -125,7 +46,6 @@ pub struct FileReader {
 }
 
 impl FileReader {
-    /// Memory-map `path` and index all line starts synchronously.
     pub fn new(path: &str) -> io::Result<Self> {
         let file = File::open(path)?;
         let scan_mmap = unsafe { Mmap::map(&file)? };
@@ -135,9 +55,6 @@ impl FileReader {
         #[cfg(unix)]
         let _ = scan_mmap.advise(Advice::Sequential);
 
-        // Single pass: scan for '\n', '\x1b', '\r' simultaneously.
-        // For the common (no-ANSI) case this halves I/O vs the previous two-pass
-        // approach (memchr2 check then compute_line_starts).
         let mut starts = vec![0usize];
         let mut has_ansi = false;
         for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &scan_mmap) {
@@ -153,8 +70,6 @@ impl FileReader {
         }
 
         if has_ansi {
-            // Strip into a Vec<u8>; scan_mmap is dropped here so munmap
-            // reclaims the pages — no explicit DontNeed needed.
             let (stripped, line_starts) = strip_ansi_and_index(&scan_mmap);
             return Ok(FileReader {
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),

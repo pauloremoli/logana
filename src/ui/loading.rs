@@ -1,9 +1,3 @@
-//! File, stdin, and Docker tab loading; file watchers; session restore.
-//!
-//! Handles opening files (mmap), piped stdin (byte accumulation), Docker log
-//! streams ([`crate::file_reader::FileReader::spawn_process_stream`]),
-//! directory listings, and restoring previously saved sessions from the DB.
-
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

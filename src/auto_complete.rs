@@ -1,17 +1,6 @@
-//! Tab completion for the command bar.
-//!
-//! Provides fuzzy completion for command names (via [`crate::commands`]),
-//! color names, file paths, export template names, and field names/values
-//! for `filter --field` and `exclude --field` commands.
-//! [`shell_split`] and [`expand_tilde`] are shared parsing helpers.
-
 use std::collections::HashMap;
 
 use crate::commands::{COMMANDS, command_names};
-
-// ---------------------------------------------------------------------------
-// Flag completion
-// ---------------------------------------------------------------------------
 
 pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
     ("filter", &["--field", "-f", "--fg", "--bg", "-l"]),
@@ -55,10 +44,6 @@ pub fn complete_flags(cmd: &str, partial: &str) -> Vec<&'static str> {
         .copied()
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Field completion
-// ---------------------------------------------------------------------------
 
 /// Index of unique field names and values collected from visible log lines.
 #[derive(Debug, Default, Clone)]

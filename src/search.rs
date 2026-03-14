@@ -1,21 +1,3 @@
-//! Regex-based search over visible log lines with wrapping navigation.
-//!
-//! [`Search`] operates on `visible_indices` only (respects active filters).
-//! Builds a [`Vec<SearchResult>`] with byte-position match spans, then
-//! provides wrapping [`Search::next_match`] / [`Search::previous_match`].
-//!
-//! - `search(pattern, impl Iterator<Item=usize>, &FileReader)`: accepts an
-//!   iterator so both `VisibleLines::All` and `VisibleLines::Filtered` can be
-//!   passed without materialising a `Vec`.
-//! - `set_pattern(regex, forward)`: pre-sets the active regex without replacing
-//!   results; used during background search so highlights appear immediately.
-//! - `set_results(results, regex)`: called when the background task delivers
-//!   results; replaces the result set and updates the pattern atomically.
-//! - `set_case_sensitive`: toggles case sensitivity.
-//! - `results` is always sorted by `line_idx`; render uses
-//!   `binary_search_by_key` for O(log N) per-line lookup with zero allocation
-//!   per frame.
-
 use crate::types::SearchResult;
 use regex::Regex;
 

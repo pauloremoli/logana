@@ -1,22 +1,9 @@
-//! Template-based export of analysis (annotations + marked lines).
-//!
-//! Template syntax: `{{#section}}...{{/section}}` with recognized sections:
-//! `header` (once), `comment_group` (per comment/mark entry), `footer` (once,
-//! optional). Placeholders: `{{filename}}`, `{{date}}`, `{{commentary}}`,
-//! `{{lines}}`, `{{line_numbers}}`.
-//!
-//! Templates are resolved from `~/.config/logana/templates/` → `templates/`
-//! (dev CWD) → bundled templates embedded via `include_str!`. Bundled
-//! templates: `markdown` and `jira`.
-
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
 use crate::auto_complete::fuzzy_match;
 
-/// Templates embedded into the binary at compile time.
-/// Lookup order: user config dir → local `templates/` (dev) → here.
 static BUNDLED_TEMPLATES: &[(&str, &str)] = &[
     ("markdown", include_str!("../templates/markdown.txt")),
     ("jira", include_str!("../templates/jira.txt")),
@@ -26,7 +13,6 @@ use crate::parser::LogFormatParser;
 use crate::types::{Comment, FieldLayout};
 use crate::ui::field_layout::apply_field_layout;
 
-/// A parsed export template with named sections.
 #[derive(Debug, Clone)]
 pub struct ExportTemplate {
     pub header: String,
@@ -35,7 +21,6 @@ pub struct ExportTemplate {
     pub footer: Option<String>,
 }
 
-/// Data required to render an export.
 pub struct ExportData<'a> {
     pub filename: &'a str,
     pub comments: &'a [Comment],

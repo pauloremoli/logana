@@ -1,16 +1,3 @@
-//! Per-token color coding for well-known values in log lines.
-//!
-//! [`colorize_known_values`] post-processes a rendered ratatui [`Line`],
-//! scanning unstyled spans (no `fg` **or** `bg` set) for HTTP methods, HTTP status codes,
-//! IPv4/IPv6 addresses, and UUIDs. Spans already colored by filters (fg or bg) or search
-//! are left untouched so filter highlights always win. Regex patterns are compiled once
-//! via [`std::sync::LazyLock`].
-//!
-//! ## Priority layering (highest wins)
-//!
-//! cursor/mark/visual selection → search highlights → filter highlights →
-//! value colors → level colors (line-level fallback)
-
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use regex::Regex;

@@ -1,49 +1,9 @@
-//! Date/time filter for log lines.
-//!
-//! Parses user expressions like `01:00:00 .. 02:00:00`, `> Feb 21 01:00:00`,
-//! or a bare value like `Feb/21` (equals the whole day).
-//!
-//! Date filters are stored as regular [`crate::types::FilterDef`] entries with
-//! the pattern prefixed by `@date:` and `FilterType::Include`. The `@date:`
-//! prefix is intentionally an invalid regex/substring so it never conflicts
-//! with text filters. Applied as a post-processing `retain()` step after the
-//! text-based [`crate::filters::FilterManager`] runs.
-//!
-//! ## User syntax (after `date-filter` command or `@date:` prefix)
-//!
-//! - Range: `01:00:00 .. 02:00:00`, `Feb 21 .. Feb 22`, `2024-02-21 .. 2024-02-22`
-//! - Comparison: `> Feb 21 01:00:00`, `>= 2024-02-22`, `< 2024-02-22T10:15:30`
-//! - Time-only (`HH:MM:SS` or `HH:MM`): compares seconds since midnight
-//! - Full datetime: canonical `YYYY-MM-DD HH:MM:SS.ffffff` string comparison
-//!
-//! ## Key types
-//!
-//! - `ComparisonOp`: `Gt | Ge | Lt | Le`
-//! - `ComparisonMode`: `TimeOnly | FullDatetime`
-//! - `DateBound`: holds either `time_val: u32` (seconds since midnight) or
-//!   `datetime_val: String` (canonical form)
-//! - `DateFilter`: `Range { mode, lower, upper }` or `Comparison { mode, op, bound }`
-//! - `parse_date_filter(input) -> Result<DateFilter, String>`: parses expression
-//!   after the `@date:` prefix
-//! - `normalize_log_timestamp(ts) -> Option<NormalizedTimestamp>`: normalizes any
-//!   parser-produced timestamp to canonical `YYYY-MM-DD HH:MM:SS.ffffff` form
-//!
-//! ## Integration in `refresh_visible()`
-//!
-//! After text filters compute `visible_indices`, date filters are extracted via
-//! `extract_date_filters()`. If any exist and a format parser is detected, each
-//! visible line is parsed to extract its timestamp and tested against all date
-//! filters (AND logic). Lines without a parseable timestamp pass through
-//! (continuation/stack-trace lines).
-
 use crate::filters::StyleId;
 use crate::parser::timestamp::BSD_MONTHS;
 use crate::types::FilterDef;
 
-/// The `@date:` prefix used in `FilterDef.pattern` to mark date filters.
 pub const DATE_PREFIX: &str = "@date:";
 
-/// A date filter paired with a `StyleId` for timestamp highlighting.
 #[derive(Debug, Clone)]
 pub struct DateFilterStyle {
     pub filter: DateFilter,
@@ -51,10 +11,6 @@ pub struct DateFilterStyle {
     /// When `false`, the style is applied to the whole line instead of just the timestamp.
     pub match_only: bool,
 }
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComparisonOp {
@@ -70,9 +26,6 @@ pub enum ComparisonMode {
     FullDatetime,
 }
 
-/// Granularity of a parsed date/time bound; used to expand an equality filter
-/// to the appropriate inclusive range (e.g. a day-level bound covers the whole
-/// day rather than a single instant).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Granularity {
     Day,    // date with no time component
@@ -107,10 +60,6 @@ struct NormalizedTimestamp {
     time_of_day: u32,
     canonical: String,
 }
-
-// ---------------------------------------------------------------------------
-// User-input parsing helpers
-// ---------------------------------------------------------------------------
 
 /// Parse a user-provided date/time token into a `(DateBound, ComparisonMode, Granularity)`.
 ///
@@ -366,10 +315,6 @@ fn parse_iso_bound(s: &str) -> Result<(DateBound, ComparisonMode, Granularity), 
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Range-separator detection
-// ---------------------------------------------------------------------------
-
 /// Find the byte position of `..` in `s`, skipping any surrounding whitespace
 /// so that both `"09:00..10:00"` and `"09:00 .. 10:00"` are detected.
 fn find_range_separator(s: &str) -> Option<usize> {
@@ -383,10 +328,6 @@ fn find_range_separator(s: &str) -> Option<usize> {
     }
     None
 }
-
-// ---------------------------------------------------------------------------
-// Equals expansion helpers
-// ---------------------------------------------------------------------------
 
 /// Expand a bound to the **end** of the period implied by its granularity:
 /// - `Day`    → 23:59:59.999999 of that day
@@ -437,10 +378,6 @@ fn make_equals_range(
     let upper = expand_upper_bound(bound.clone(), mode, granularity);
     (lower, upper)
 }
-
-// ---------------------------------------------------------------------------
-// Public API — parse date filter expression
-// ---------------------------------------------------------------------------
 
 /// Parse the expression that follows `@date:`.
 ///
@@ -532,10 +469,6 @@ pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
     let (lower, upper) = make_equals_range(&bound, mode, gran);
     Ok(DateFilter::Range { mode, lower, upper })
 }
-
-// ---------------------------------------------------------------------------
-// Timestamp normalization
-// ---------------------------------------------------------------------------
 
 /// Normalize a raw timestamp string (as produced by a log format parser's
 /// `DisplayParts.timestamp`) into a canonical form for comparison.
@@ -802,10 +735,6 @@ fn parse_hms_frac(s: &str) -> Option<(u32, u32, u32, String)> {
     Some((h, m, sec, frac))
 }
 
-// ---------------------------------------------------------------------------
-// Matching
-// ---------------------------------------------------------------------------
-
 impl DateFilter {
     /// Check if a raw timestamp string (from a parser's `DisplayParts.timestamp`)
     /// passes this filter.
@@ -870,10 +799,6 @@ impl DateFilter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Extract date filters from filter definitions
-// ---------------------------------------------------------------------------
-
 /// Collect all enabled `@date:` filters from the filter list, parsed.
 /// Filters that fail to parse are silently skipped.
 pub(crate) fn extract_date_filters(filter_defs: &[FilterDef]) -> Vec<DateFilter> {
@@ -887,15 +812,9 @@ pub(crate) fn extract_date_filters(filter_defs: &[FilterDef]) -> Vec<DateFilter>
         .collect()
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── parse_bound ──────────────────────────────────────────────────
 
     #[test]
     fn test_parse_bound_time_only_hms() {

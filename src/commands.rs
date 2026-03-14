@@ -1,10 +1,3 @@
-//! Command registry: metadata and lookup for all TUI commands.
-//!
-//! [`COMMANDS`] is the authoritative list of all available commands.
-//! [`find_matching_command`] resolves a command-line input string to its
-//! [`CommandInfo`] entry. [`FILE_PATH_COMMANDS`] lists commands whose last
-//! argument expects a file path (used by tab completion).
-
 pub struct CommandInfo {
     pub name: &'static str,
     pub usage: &'static str,

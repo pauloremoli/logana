@@ -1,8 +1,3 @@
-//! logana library — re-exports all public crate modules.
-//!
-//! The binary entry point is `main.rs`; this crate root exposes the same
-//! modules for integration tests and external tooling.
-
 pub mod auto_complete;
 pub mod commands;
 pub mod config;

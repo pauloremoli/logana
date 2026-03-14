@@ -11,10 +11,6 @@ use crate::{
     ui::{KeyResult, TabState},
 };
 
-// ---------------------------------------------------------------------------
-// HelpRow — one entry in the keybindings table
-// ---------------------------------------------------------------------------
-
 /// A single row in the keybindings popup: section header OR action+key pair.
 #[derive(Clone)]
 pub enum HelpRow {
@@ -31,7 +27,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
 
     let mut rows: Vec<HelpRow> = Vec::new();
 
-    // ── Navigation (all modes) ───────────────────────────────────────────────
     rows.push(HelpRow::Header("Navigation (all modes)".to_string()));
     rows.push(HelpRow::Entry {
         action: "Scroll down".into(),
@@ -58,7 +53,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: nav.page_up.display(),
     });
 
-    // ── Normal Mode ──────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Normal Mode".to_string()));
     rows.push(HelpRow::Entry {
         action: "Scroll left".into(),
@@ -193,7 +187,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.show_keybindings.display(),
     });
 
-    // ── Visual Line Mode ──────────────────────────────────────────────────────
     let vl = &kb.visual_line;
     rows.push(HelpRow::Header("Visual Line Mode".to_string()));
     rows.push(HelpRow::Entry {
@@ -217,7 +210,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: vl.exit.display(),
     });
 
-    // ── Visual Char Mode ─────────────────────────────────────────────────────
     let vc = &kb.visual;
     rows.push(HelpRow::Header("Visual Char Mode".to_string()));
     rows.push(HelpRow::Entry {
@@ -313,7 +305,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: vc.exit.display(),
     });
 
-    // ── Global ───────────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Global".to_string()));
     rows.push(HelpRow::Entry {
         action: "Quit".into(),
@@ -336,7 +327,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: g.new_tab.display(),
     });
 
-    // ── UI Mode ──────────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("UI Mode".to_string()));
     let ui = &kb.ui;
     rows.push(HelpRow::Entry {
@@ -360,7 +350,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: ui.exit.display(),
     });
 
-    // ── Filter Mode ──────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Filter Mode".to_string()));
     rows.push(HelpRow::Entry {
         action: "Add include filter".into(),
@@ -419,7 +408,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: f.exit_mode.display(),
     });
 
-    // ── Comment Mode ────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Comment Mode".to_string()));
     rows.push(HelpRow::Entry {
         action: "Save comment".into(),
@@ -438,7 +426,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: kb.comment.cancel.display(),
     });
 
-    // ── Search Mode ─────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Search Mode".to_string()));
     rows.push(HelpRow::Entry {
         action: "Confirm search".into(),
@@ -449,7 +436,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: kb.search.cancel.display(),
     });
 
-    // ── Filter Edit Mode ────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Filter Edit Mode".to_string()));
     rows.push(HelpRow::Entry {
         action: "Save".into(),
@@ -460,7 +446,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: kb.filter_edit.cancel.display(),
     });
 
-    // ── Command Mode ────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Command Mode".to_string()));
     rows.push(HelpRow::Entry {
         action: "Execute".into(),
@@ -471,7 +456,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: kb.command.cancel.display(),
     });
 
-    // ── Docker Select Mode ──────────────────────────────────────────────────
     let ds = &kb.docker_select;
     rows.push(HelpRow::Header("Docker Select Mode".to_string()));
     rows.push(HelpRow::Entry {
@@ -483,7 +467,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: ds.cancel.display(),
     });
 
-    // ── Value Colors Mode ───────────────────────────────────────────────────
     let vc = &kb.value_colors;
     rows.push(HelpRow::Header("Value Colors Mode".to_string()));
     rows.push(HelpRow::Entry {
@@ -507,7 +490,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: vc.cancel.display(),
     });
 
-    // ── Select Fields Mode ──────────────────────────────────────────────────
     let sf = &kb.select_fields;
     rows.push(HelpRow::Header("Select Fields Mode".to_string()));
     rows.push(HelpRow::Entry {
@@ -539,7 +521,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: sf.cancel.display(),
     });
 
-    // ── Help Mode ───────────────────────────────────────────────────────────
     let h = &kb.help;
     rows.push(HelpRow::Header("Help Mode".to_string()));
     rows.push(HelpRow::Entry {
@@ -547,7 +528,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: h.close.display(),
     });
 
-    // ── Confirm Mode ────────────────────────────────────────────────────────
     rows.push(HelpRow::Header("Confirm Mode".to_string()));
     rows.push(HelpRow::Entry {
         action: "Yes".into(),
@@ -603,10 +583,6 @@ pub fn filter_rows(rows: &[HelpRow], query: &str) -> Vec<HelpRow> {
 
     result
 }
-
-// ---------------------------------------------------------------------------
-// KeybindingsHelpMode
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct KeybindingsHelpMode {

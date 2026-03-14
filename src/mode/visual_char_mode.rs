@@ -1,10 +1,3 @@
-//! Character-level visual mode, entered with `v` from NormalMode.
-//!
-//! On entry the cursor moves freely with vim-style motions (h/l, w/b/e,
-//! W/B/E, 0/^/$, f/F/t/T/;/,). Pressing `v` anchors the selection at the
-//! current cursor position. Actions (i/o///y) work at any time: without an
-//! anchor they operate on the single char under the cursor.
-
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
@@ -20,10 +13,6 @@ use crate::{
     ui::{KeyResult, TabState, field_layout::apply_field_layout},
 };
 
-// ---------------------------------------------------------------------------
-// PendingMotion
-// ---------------------------------------------------------------------------
-
 /// A character-search motion waiting for the target character.
 #[derive(Debug, Clone)]
 pub enum PendingMotion {
@@ -32,10 +21,6 @@ pub enum PendingMotion {
     TillForward,
     TillBackward,
 }
-
-// ---------------------------------------------------------------------------
-// VisualMode
-// ---------------------------------------------------------------------------
 
 /// Character-level visual mode.
 ///
@@ -642,10 +627,6 @@ pub fn apply_char_selection(line: Line<'static>, lo: usize, hi: usize) -> Line<'
 
     Line::from(new_spans).style(base_style)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

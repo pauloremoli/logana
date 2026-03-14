@@ -1,24 +1,6 @@
-//! Benchmarks for visible-line computation.
-//!
-//! Two targets:
-//!
-//! 1. `collect_all_visible` — the `(0..n).collect::<Vec<usize>>()` call inside
-//!    `refresh_visible` when no filters are active.  This is the baseline for
-//!    the `VisibleLines::All` optimisation.
-//!
-//! 2. `compute_visible` — `FilterManager::compute_visible` with zero, one include,
-//!    and one exclude filter.  Measures rayon parallel throughput.
-//!
-//! Run with:
-//!   cargo bench --bench visible_lines
-
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use logana::file_reader::FileReader;
 use logana::filters::{FilterDecision, FilterManager, build_filter};
-
-// ---------------------------------------------------------------------------
-// Data generator
-// ---------------------------------------------------------------------------
 
 fn plain_log_bytes(lines: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(lines * 90);
@@ -34,14 +16,6 @@ fn plain_log_bytes(lines: usize) -> Vec<u8> {
     buf
 }
 
-// ---------------------------------------------------------------------------
-// Benchmark 1: collect_all_visible
-//
-// Isolates the cost of `(0..n).collect::<Vec<usize>>()` — the no-filter fast
-// path in `refresh_visible`.  After the VisibleLines::All change, this call
-// disappears entirely; comparing new vs old baselines shows the saving.
-// ---------------------------------------------------------------------------
-
 fn bench_collect_all_visible(c: &mut Criterion) {
     let mut group = c.benchmark_group("visible_lines/collect_all");
 
@@ -55,10 +29,6 @@ fn bench_collect_all_visible(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// Benchmark 2: FilterManager::compute_visible
-// ---------------------------------------------------------------------------
-
 fn bench_compute_visible(c: &mut Criterion) {
     let mut group = c.benchmark_group("visible_lines/compute_visible");
 
@@ -66,15 +36,12 @@ fn bench_compute_visible(c: &mut Criterion) {
         let reader = FileReader::from_bytes(plain_log_bytes(lines));
         group.throughput(Throughput::Elements(lines as u64));
 
-        // No filters — currently also calls collect() inside compute_visible
-        // via the rayon parallel iterator.
         group.bench_with_input(
             BenchmarkId::new("no_filters", lines),
             &reader,
             |b, reader| b.iter(|| FilterManager::empty().compute_visible(reader)),
         );
 
-        // One include filter (Aho-Corasick substring).
         let fm_include = FilterManager::new(
             vec![build_filter("INFO", FilterDecision::Include, false, 0).unwrap()],
             true,
@@ -85,7 +52,6 @@ fn bench_compute_visible(c: &mut Criterion) {
             |b, reader| b.iter(|| fm_include.compute_visible(reader)),
         );
 
-        // One exclude filter.
         let fm_exclude = FilterManager::new(
             vec![build_filter("ERROR", FilterDecision::Exclude, false, 0).unwrap()],
             false,
@@ -100,14 +66,6 @@ fn bench_compute_visible(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// Benchmark 3: FilterManager::compute_visible with combined exclude + include
-//
-// Represents the common real-world scenario: first exclude noise (e.g. DEBUG),
-// then include a signal pattern (e.g. ERROR).  This exercises the full
-// first-match-wins evaluation path with two filters.
-// ---------------------------------------------------------------------------
-
 fn bench_compute_visible_combined(c: &mut Criterion) {
     let mut group = c.benchmark_group("visible_lines/compute_visible_combined");
 
@@ -115,7 +73,6 @@ fn bench_compute_visible_combined(c: &mut Criterion) {
         let reader = FileReader::from_bytes(plain_log_bytes(lines));
         group.throughput(Throughput::Elements(lines as u64));
 
-        // Exclude INFO (90 % of lines), include ERROR (10 %).
         let fm_combined = FilterManager::new(
             vec![
                 build_filter("INFO", FilterDecision::Exclude, false, 0).unwrap(),
@@ -129,7 +86,6 @@ fn bench_compute_visible_combined(c: &mut Criterion) {
             |b, reader| b.iter(|| fm_combined.compute_visible(reader)),
         );
 
-        // Five mixed filters: two includes, three excludes.
         let fm_five = FilterManager::new(
             vec![
                 build_filter("ERROR", FilterDecision::Include, false, 0).unwrap(),

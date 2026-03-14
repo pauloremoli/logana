@@ -9,14 +9,8 @@ use crate::mode::normal_mode::NormalMode;
 use crate::theme::Theme;
 use crate::ui::{KeyResult, TabState};
 
-/// Transient mode for toggling display options.  Press `u` in Normal mode to
-/// enter; press any toggle key to flip the setting and return to Normal mode;
-/// press Esc to cancel without toggling.
 #[derive(Debug)]
 pub struct UiMode {
-    /// Snapshot of display flags, kept in sync on each toggle so that
-    /// `mode_bar_content` can show current ON/OFF state without needing
-    /// access to `TabState`.
     pub sidebar: bool,
     pub mode_bar: bool,
     pub borders: bool,

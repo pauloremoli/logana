@@ -1,28 +1,3 @@
-//! JSON-based theme loading and color management.
-//!
-//! Lookup order: `~/.config/logana/themes/` → `themes/` (dev CWD) → bundled
-//! themes embedded at compile time via `include_str!`. Colors accept
-//! `"#RRGGBB"` or `[r, g, b]`.
-//!
-//! ## Bundled themes (19 total)
-//!
-//! Dark: catppuccin-mocha, catppuccin-macchiato, dracula, everforest-dark,
-//! gruvbox-dark, jandedobbeleer, kanagawa, monokai, nord, onedark, paradox,
-//! rose-pine, solarized, tokyonight, atomic.
-//! Light: catppuccin-latte, everforest-light, onelight, rose-pine-dawn.
-//!
-//! ## ValueColors fields
-//!
-//! Per-token color mappings for HTTP methods (`http_get`, `http_post`,
-//! `http_put`, `http_delete`, `http_patch`, `http_other`), status codes
-//! (`status_2xx`–`status_5xx`), IP addresses (`ip_address`), and UUIDs
-//! (`uuid`). All fields have `#[serde(default)]` so existing theme files need
-//! no changes. Overridable in theme JSON under `"value_colors": { ... }`.
-//!
-//! `Theme::list_available_themes()`: seeds from bundled names, then overlays
-//! names from `themes/` and `~/.config/logana/themes/`. Returns sorted
-//! deduplicated list.
-
 use anyhow::Context;
 use ratatui::style::Color;
 use serde::de::Error;
@@ -34,8 +9,6 @@ use std::str::FromStr;
 
 use crate::auto_complete::fuzzy_match;
 
-/// Themes embedded into the binary at compile time.
-/// Lookup order: user config dir → local `themes/` (dev) → here.
 static BUNDLED_THEMES: &[(&str, &str)] = &[
     ("atomic", include_str!("../themes/atomic.json")),
     (
@@ -221,7 +194,6 @@ impl Default for ValueColors {
     }
 }
 
-/// A group of related value-color categories.
 pub struct ValueColorGroup {
     pub label: &'static str,
     pub children: Vec<(&'static str, &'static str, Color)>,
@@ -284,14 +256,6 @@ pub struct Theme {
     pub root_bg: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
     pub border: Color,
-    /// Background colour for the cursor line, command bar, and search bar.
-    ///
-    /// Defaults to `border` when not present in the theme file — the
-    /// `from_file` loader backfills it automatically, so existing theme JSON
-    /// files keep working unchanged. Set this explicitly to decouple panel
-    /// borders from interactive highlights (useful for light themes where
-    /// `border` might be a subtle separator, but the cursor/command bar needs
-    /// more contrast).
     #[serde(
         serialize_with = "color_to_str",
         deserialize_with = "color_from_str",
@@ -314,8 +278,6 @@ pub struct Theme {
         default = "default_text_highlight_bg"
     )]
     pub text_highlight_bg: Color,
-    /// Foreground colour used for the currently-selected (cursor) line.
-    /// Should contrast well against `cursor_bg`.
     #[serde(
         serialize_with = "color_to_str",
         deserialize_with = "color_from_str",
@@ -404,29 +366,18 @@ pub struct Theme {
         default = "default_mark_fg"
     )]
     pub mark_fg: Color,
-    /// Foreground colour for line-number gutter text.
-    ///
-    /// Defaults to a neutral mid-gray (`#808080`) so it is readable on both
-    /// dark and light themes without requiring every theme file to specify it.
     #[serde(
         serialize_with = "color_to_str",
         deserialize_with = "color_from_str",
         default = "default_line_number_fg"
     )]
     pub line_number_fg: Color,
-    /// Foreground colour for inactive (non-selected) tab labels.
-    ///
-    /// Defaults to a neutral mid-gray so it is readable on both dark and light
-    /// backgrounds without requiring every theme file to specify it. Light themes
-    /// should override this with a darker colour for adequate contrast.
     #[serde(
         serialize_with = "color_to_str",
         deserialize_with = "color_from_str",
         default = "default_inactive_tab_fg"
     )]
     pub inactive_tab_fg: Color,
-    /// Foreground colour for comment annotations: the `│` gutter bar on annotated
-    /// lines and the `──` separator banner text.
     #[serde(
         serialize_with = "color_to_str",
         deserialize_with = "color_from_str",
@@ -539,28 +490,28 @@ impl<'de> serde::de::DeserializeSeed<'de> for ColorDeserializer {
 }
 
 fn default_cursor_bg() -> Color {
-    Color::Rgb(98, 114, 164) // #6272a4 — dracula border; overridden by from_file preprocessing
+    Color::Rgb(98, 114, 164)
 }
 fn default_text_highlight_fg() -> Color {
-    Color::Rgb(255, 184, 108) // #ffb86c
+    Color::Rgb(255, 184, 108)
 }
 fn default_text_highlight_bg() -> Color {
-    Color::Rgb(122, 74, 16) // #7a4a10
+    Color::Rgb(122, 74, 16)
 }
 fn default_trace_fg() -> Color {
-    Color::Rgb(98, 114, 164) // dimmed/gray (Dracula comment color)
+    Color::Rgb(98, 114, 164)
 }
 fn default_debug_fg() -> Color {
-    Color::Rgb(139, 233, 253) // cyan (Dracula cyan)
+    Color::Rgb(139, 233, 253)
 }
 fn default_info_fg() -> Color {
-    Color::Rgb(248, 248, 242) // same as default text (Dracula foreground)
+    Color::Rgb(248, 248, 242)
 }
 fn default_notice_fg() -> Color {
-    Color::Rgb(248, 248, 242) // same as default text (Dracula foreground)
+    Color::Rgb(248, 248, 242)
 }
 fn default_fatal_fg() -> Color {
-    Color::Rgb(255, 85, 85) // bright red (same as error, Dracula red)
+    Color::Rgb(255, 85, 85)
 }
 fn default_cursor_fg() -> Color {
     Color::Rgb(28, 28, 28)
@@ -581,22 +532,22 @@ fn default_mark_fg() -> Color {
     Color::Rgb(248, 248, 242)
 }
 fn default_line_number_fg() -> Color {
-    Color::Rgb(128, 128, 128) // neutral gray — visible on both dark and light themes
+    Color::Rgb(128, 128, 128)
 }
 fn default_inactive_tab_fg() -> Color {
-    Color::Rgb(128, 128, 128) // neutral gray — readable on both dark and light backgrounds
+    Color::Rgb(128, 128, 128)
 }
 fn default_comment_fg() -> Color {
-    Color::Rgb(139, 233, 253) // soft cyan — visible on both dark and light backgrounds
+    Color::Rgb(139, 233, 253)
 }
 fn default_warning_bg() -> Color {
-    Color::Rgb(0x3d, 0x2b, 0x00) // dark amber — muted warning background
+    Color::Rgb(0x3d, 0x2b, 0x00)
 }
 fn default_error_bg() -> Color {
-    Color::Rgb(0x3d, 0x0d, 0x0c) // dark red — muted error background
+    Color::Rgb(0x3d, 0x0d, 0x0c)
 }
 fn default_fatal_bg() -> Color {
-    Color::Rgb(0x3d, 0x0d, 0x0c) // dark red — muted fatal background
+    Color::Rgb(0x3d, 0x0d, 0x0c)
 }
 
 impl Theme {
@@ -743,8 +694,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    // ── ValueColors defaults ────────────────────────────────────────────
-
     #[test]
     fn test_value_colors_default() {
         let vc = ValueColors::default();
@@ -762,8 +711,6 @@ mod tests {
         assert_eq!(vc.uuid, Color::Rgb(108, 113, 196));
         assert!(vc.disabled.is_empty());
     }
-
-    // ── ValueColors::grouped_categories ─────────────────────────────────
 
     #[test]
     fn test_grouped_categories_structure() {
@@ -824,8 +771,6 @@ mod tests {
         assert_eq!(groups_none[4].children[0].2, Color::Rgb(255, 85, 85));
     }
 
-    // ── ValueColors::is_disabled ────────────────────────────────────────
-
     #[test]
     fn test_is_disabled_false_by_default() {
         let vc = ValueColors::default();
@@ -840,8 +785,6 @@ mod tests {
         assert!(vc.is_disabled("http_get"));
         assert!(!vc.is_disabled("http_post"));
     }
-
-    // ── ValueColors serde ───────────────────────────────────────────────
 
     #[test]
     fn test_value_colors_serde_roundtrip() {
@@ -871,8 +814,6 @@ mod tests {
         assert_eq!(vc.uuid, default_uuid());
     }
 
-    // ── Theme defaults ──────────────────────────────────────────────────
-
     #[test]
     fn test_theme_default_loads_successfully() {
         let theme = Theme::default();
@@ -883,7 +824,6 @@ mod tests {
 
     #[test]
     fn test_default_fallback_level_colors() {
-        // Tests the fallback functions used when optional fields are absent from a theme file.
         assert_eq!(default_trace_fg(), Color::Rgb(98, 114, 164));
         assert_eq!(default_debug_fg(), Color::Rgb(139, 233, 253));
         assert_eq!(default_info_fg(), Color::Rgb(248, 248, 242));
@@ -900,8 +840,6 @@ mod tests {
         assert_eq!(default_error_bg(), Color::Rgb(0x3d, 0x0d, 0x0c));
         assert_eq!(default_fatal_bg(), Color::Rgb(0x3d, 0x0d, 0x0c));
     }
-
-    // ── Theme serde ─────────────────────────────────────────────────────
 
     #[test]
     fn test_theme_serde_roundtrip() {
@@ -985,8 +923,6 @@ mod tests {
         assert_eq!(theme.process_colors[1], Color::Rgb(40, 50, 60));
     }
 
-    // ── Theme::from_file ────────────────────────────────────────────────
-
     #[test]
     fn test_theme_from_file_nonexistent() {
         let result = Theme::from_file("nonexistent_theme_xyz123.json");
@@ -1062,8 +998,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Theme::list_available_themes ────────────────────────────────────
-
     #[test]
     fn test_theme_loading_from_config_dir() {
         let temp_dir = tempdir().unwrap();
@@ -1088,8 +1022,6 @@ mod tests {
         assert!(!themes.contains(&"readme".to_string()));
         assert!(!themes.contains(&"readme.txt".to_string()));
     }
-
-    // ── complete_theme ──────────────────────────────────────────────────
 
     #[test]
     fn test_complete_theme_empty_returns_available_themes() {
@@ -1118,8 +1050,6 @@ mod tests {
         assert!(results.contains(&"monokai".to_string()));
         assert!(!results.contains(&"solarized".to_string()));
     }
-
-    // ── color serde helpers ─────────────────────────────────────────────
 
     #[test]
     fn test_color_deserialize_string() {

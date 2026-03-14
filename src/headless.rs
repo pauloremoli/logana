@@ -1,10 +1,3 @@
-//! Headless (non-TUI) execution mode.
-//!
-//! [`run_headless`] reads a file (or stdin), applies the same filter pipeline
-//! as the interactive TUI, and writes matching lines to stdout or a file.
-//! [`run_headless_to_writer`] is the testable inner function that accepts an
-//! arbitrary [`std::io::Write`] sink.
-
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
@@ -29,11 +22,6 @@ pub struct HeadlessArgs {
     pub output: Option<std::path::PathBuf>,
 }
 
-/// Run logana without a TUI: apply filters and write matching lines.
-///
-/// Always uses an in-memory database so no saved session state (filters,
-/// marks, scroll position) from previous TUI runs is ever applied.
-/// Output is determined solely by the parameters in `args`.
 pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
     let db = Arc::new(Database::in_memory().await?);
     let mut log_manager = LogManager::new(db, None).await;

@@ -1,20 +1,7 @@
-//! Benchmarks for [`FileReader`] line indexing.
-//!
-//! Covers both the plain (no ANSI) and ANSI-stripped paths, and the
-//! `from_bytes` (stdin) variant. These are the targets for the single-pass
-//! ANSI+index optimisation.
-//!
-//! Run with:
-//!   cargo bench --bench file_reader
-
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use logana::file_reader::FileReader;
 use std::io::Write as _;
 use tempfile::NamedTempFile;
-
-// ---------------------------------------------------------------------------
-// Data generators
-// ---------------------------------------------------------------------------
 
 fn plain_log_bytes(lines: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(lines * 90);
@@ -46,10 +33,6 @@ fn write_tmp(data: &[u8]) -> NamedTempFile {
     f.flush().unwrap();
     f
 }
-
-// ---------------------------------------------------------------------------
-// Benchmarks
-// ---------------------------------------------------------------------------
 
 /// `FileReader::new` — reads from a file path (OS page cache warm after first
 /// iteration, so this measures the CPU-bound memchr scan + Vec allocation).

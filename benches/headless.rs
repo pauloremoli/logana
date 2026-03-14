@@ -1,12 +1,3 @@
-//! Benchmarks for the headless filter pipeline.
-//!
-//! Measures the full path that `--headless` exercises: build a `FileReader`
-//! from in-memory bytes, apply a compiled `FilterManager`, and write matching
-//! lines to a `Vec<u8>` sink via `run_headless_to_writer`.
-//!
-//! Run with:
-//!   cargo bench --bench headless
-
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use logana::db::Database;
 use logana::file_reader::FileReader;
@@ -14,10 +5,6 @@ use logana::headless::run_headless_to_writer;
 use logana::log_manager::LogManager;
 use logana::types::FilterType;
 use std::sync::Arc;
-
-// ---------------------------------------------------------------------------
-// Data generators
-// ---------------------------------------------------------------------------
 
 fn plain_log_bytes(lines: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(lines * 90);
@@ -45,10 +32,6 @@ fn json_log_bytes(lines: usize) -> Vec<u8> {
     buf
 }
 
-// ---------------------------------------------------------------------------
-// Async helpers — block_on inside criterion iter closures
-// ---------------------------------------------------------------------------
-
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -71,10 +54,6 @@ async fn make_manager_with(filters: &[(&str, FilterType)]) -> LogManager {
     lm
 }
 
-// ---------------------------------------------------------------------------
-// Benchmark: no filters
-// ---------------------------------------------------------------------------
-
 fn bench_headless_no_filters(c: &mut Criterion) {
     let mut group = c.benchmark_group("headless/no_filters");
     let runtime = rt();
@@ -95,10 +74,6 @@ fn bench_headless_no_filters(c: &mut Criterion) {
 
     group.finish();
 }
-
-// ---------------------------------------------------------------------------
-// Benchmark: one include filter
-// ---------------------------------------------------------------------------
 
 fn bench_headless_one_include(c: &mut Criterion) {
     let mut group = c.benchmark_group("headless/one_include");
@@ -121,10 +96,6 @@ fn bench_headless_one_include(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// Benchmark: one exclude filter
-// ---------------------------------------------------------------------------
-
 fn bench_headless_one_exclude(c: &mut Criterion) {
     let mut group = c.benchmark_group("headless/one_exclude");
     let runtime = rt();
@@ -145,10 +116,6 @@ fn bench_headless_one_exclude(c: &mut Criterion) {
 
     group.finish();
 }
-
-// ---------------------------------------------------------------------------
-// Benchmark: combined include + exclude
-// ---------------------------------------------------------------------------
 
 fn bench_headless_include_and_exclude(c: &mut Criterion) {
     let mut group = c.benchmark_group("headless/include_and_exclude");
@@ -173,10 +140,6 @@ fn bench_headless_include_and_exclude(c: &mut Criterion) {
 
     group.finish();
 }
-
-// ---------------------------------------------------------------------------
-// Benchmark: field filter on JSON logs
-// ---------------------------------------------------------------------------
 
 fn bench_headless_field_filter(c: &mut Criterion) {
     let mut group = c.benchmark_group("headless/field_filter");

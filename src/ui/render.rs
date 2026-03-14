@@ -1,10 +1,3 @@
-//! Main rendering pipeline: log panel, tab bar, sidebar, and command bar.
-//!
-//! [`App::ui`] is called every frame. Wrap-aware viewport math uses
-//! [`line_row_count`] to keep the selected line on-screen. Each visible line
-//! is parsed by the detected format parser, evaluated through the filter
-//! pipeline, and post-processed by value-based coloring.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 

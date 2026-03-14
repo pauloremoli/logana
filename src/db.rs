@@ -1,10 +1,3 @@
-//! SQLite persistence layer via sqlx.
-//!
-//! Three trait abstractions: [`FilterStore`], [`FileContextStore`],
-//! [`SessionStore`]. Schema versioning uses `PRAGMA user_version`;
-//! `run_migrations` applies each migration exactly once.
-//! [`Database::in_memory`] creates an in-memory DB for tests.
-
 use anyhow::Result;
 use async_trait::async_trait;
 use sqlx::Row;

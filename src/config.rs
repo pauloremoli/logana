@@ -1,69 +1,7 @@
-//! Configuration loaded from `~/.config/logana/config.json`.
-//!
-//! Falls back to defaults on parse/IO error — never prevents startup.
-//!
-//! ## Config fields
-//!
-//! - `theme: Option<String>`: theme name without `.json` extension (e.g. `"dracula"`)
-//! - `show_mode_bar: Option<bool>`: when `Some`, overrides the DB-stored runtime value
-//! - `show_borders: Option<bool>`: when `Some`, overrides the DB-stored runtime value
-//! - `show_sidebar: Option<bool>`: when `Some`, overrides the DB-stored runtime value
-//! - `show_line_numbers: Option<bool>`: when `Some`, overrides the DB-stored runtime value
-//! - `wrap: Option<bool>`: when `Some`, overrides the DB-stored runtime value
-//! - `restore_session: Option<RestoreSessionPolicy>`: when `Some`, overrides DB value
-//! - `restore_file_context: Option<RestoreSessionPolicy>`: when `Some`, overrides DB value
-//! - `preview_bytes: u64` (default `16777216` = 16 MiB): bytes read for the instant
-//!   preview shown while the full file index is built in the background
-//! - `keybindings: Keybindings`: keybinding groups (see below)
-//!
-//! Config-file values take the highest priority. When absent, the last value
-//! saved to `app_settings` (by an interactive toggle) is used. When neither is
-//! set, the built-in default applies.
-//!
-//! ## Keybindings groups
-//!
-//! `NavigationKeybindings` (shared scroll/page keys), `NormalKeybindings`,
-//! `FilterKeybindings`, `GlobalKeybindings`, `CommentKeybindings`,
-//! `VisualLineKeybindings`, `VisualKeybindings`, `DockerSelectKeybindings`,
-//! `ValueColorsKeybindings`, `SelectFieldsKeybindings`, `HelpKeybindings`,
-//! `ConfirmKeybindings`, `UiKeybindings`. Each group uses `#[serde(default)]`
-//! so any absent field uses its built-in default.
-//!
-//! Each action holds a `Vec<KeyBinding>` — multiple alternative keys are
-//! supported (e.g. `["j", "Down"]` for scroll down).
-//!
-//! ## KeyBinding parse format
-//!
-//! `"j"`, `"Ctrl+d"`, `"Shift+Tab"`, `"Tab"`, `"PageDown"`, `"Space"`, `"Esc"`, `"F1"`, …
-//! `"Shift+Tab"` maps to `KeyCode::BackTab`. For `Char` keys, `NONE` or
-//! `SHIFT` modifiers are accepted (terminals vary). For non-`Char` keys,
-//! `SHIFT` must match exactly.
-//!
-//! `Keybindings::validate()`: checks all (action, keybinding) pairs within
-//! each mode scope for overlaps; conflicts are printed to stderr at startup.
-//!
-//! Example config file:
-//! ```json
-//! {
-//!   "theme": "dracula",
-//!   "show_mode_bar": false,
-//!   "keybindings": {
-//!     "normal": { "scroll_down": ["j", "Down"], "half_page_down": "Ctrl+d" },
-//!     "global": { "quit": "q" }
-//!   }
-//! }
-//! ```
-
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize, de};
 use std::fmt;
 
-// ---------------------------------------------------------------------------
-// KeyBinding
-// ---------------------------------------------------------------------------
-
-/// A single keybinding: `(KeyCode, KeyModifiers)` serialised/deserialised
-/// as a human-readable string such as `"Ctrl+d"` or `"Shift+Tab"`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyBinding(pub KeyCode, pub KeyModifiers);
 
@@ -229,17 +167,6 @@ impl<'de> Deserialize<'de> for KeyBinding {
     }
 }
 
-// ---------------------------------------------------------------------------
-// KeyBindings  (Vec<KeyBinding> with single-string OR array JSON support)
-// ---------------------------------------------------------------------------
-
-/// One or more alternative keybindings for a single action.
-///
-/// In JSON either a single string or an array is accepted:
-/// ```json
-/// "scroll_down": "j"
-/// "scroll_down": ["j", "Down"]
-/// ```
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct KeyBindings(pub Vec<KeyBinding>);
 
@@ -248,7 +175,6 @@ impl KeyBindings {
         self.0.iter().any(|b| b.matches(key, mods))
     }
 
-    /// Human-readable string joining all alternatives with `/` (e.g. `"j/Down"`).
     pub fn display(&self) -> String {
         self.0
             .iter()
@@ -297,10 +223,6 @@ impl<'de> Deserialize<'de> for KeyBindings {
         deserializer.deserialize_any(Visitor)
     }
 }
-
-// ---------------------------------------------------------------------------
-// NormalKeybindings — defaults
-// ---------------------------------------------------------------------------
 
 fn default_scroll_down() -> KeyBindings {
     KeyBindings(vec![
@@ -438,10 +360,6 @@ fn default_clear_search() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
 
-// ---------------------------------------------------------------------------
-// NavigationKeybindings — shared across all modes
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavigationKeybindings {
     #[serde(default = "default_scroll_down")]
@@ -470,10 +388,6 @@ impl Default for NavigationKeybindings {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// NormalKeybindings
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NormalKeybindings {
@@ -582,10 +496,6 @@ impl Default for NormalKeybindings {
     }
 }
 
-// ---------------------------------------------------------------------------
-// FilterKeybindings — defaults
-// ---------------------------------------------------------------------------
-
 fn default_filter_toggle() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)])
 }
@@ -628,10 +538,6 @@ fn default_filter_sidebar_grow() -> KeyBindings {
 fn default_filter_sidebar_shrink() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('<'), KeyModifiers::NONE)])
 }
-
-// ---------------------------------------------------------------------------
-// FilterKeybindings
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilterKeybindings {
@@ -686,10 +592,6 @@ impl Default for FilterKeybindings {
     }
 }
 
-// ---------------------------------------------------------------------------
-// GlobalKeybindings — defaults
-// ---------------------------------------------------------------------------
-
 fn default_quit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('q'), KeyModifiers::NONE)])
 }
@@ -705,10 +607,6 @@ fn default_close_tab() -> KeyBindings {
 fn default_new_tab() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('t'), KeyModifiers::CONTROL)])
 }
-
-// ---------------------------------------------------------------------------
-// GlobalKeybindings
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalKeybindings {
@@ -735,10 +633,6 @@ impl Default for GlobalKeybindings {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// CommentKeybindings — defaults
-// ---------------------------------------------------------------------------
 
 fn default_comment_save() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::CONTROL)])
@@ -780,10 +674,6 @@ impl Default for CommentKeybindings {
     }
 }
 
-// ---------------------------------------------------------------------------
-// VisualLineKeybindings — defaults
-// ---------------------------------------------------------------------------
-
 fn default_visual_comment() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('c'), KeyModifiers::NONE)])
 }
@@ -799,10 +689,6 @@ fn default_visual_exit() -> KeyBindings {
 fn default_visual_line_search() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('/'), KeyModifiers::NONE)])
 }
-
-// ---------------------------------------------------------------------------
-// VisualLineKeybindings
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualLineKeybindings {
@@ -829,10 +715,6 @@ impl Default for VisualLineKeybindings {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// VisualKeybindings (character-level visual mode) — defaults
-// ---------------------------------------------------------------------------
 
 fn default_vc_move_left() -> KeyBindings {
     KeyBindings(vec![
@@ -909,10 +791,6 @@ fn default_vc_start_selection() -> KeyBindings {
 fn default_vc_exit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
-
-// ---------------------------------------------------------------------------
-// VisualKeybindings
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualKeybindings {
@@ -994,10 +872,6 @@ impl Default for VisualKeybindings {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SearchKeybindings — defaults
-// ---------------------------------------------------------------------------
-
 fn default_search_cancel() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
@@ -1021,10 +895,6 @@ impl Default for SearchKeybindings {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// FilterEditKeybindings — defaults
-// ---------------------------------------------------------------------------
 
 fn default_filter_edit_cancel() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
@@ -1050,10 +920,6 @@ impl Default for FilterEditKeybindings {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CommandModeKeybindings — defaults
-// ---------------------------------------------------------------------------
-
 fn default_command_cancel() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
@@ -1078,10 +944,6 @@ impl Default for CommandModeKeybindings {
     }
 }
 
-// ---------------------------------------------------------------------------
-// DockerSelectKeybindings — defaults
-// ---------------------------------------------------------------------------
-
 fn default_docker_confirm() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
 }
@@ -1105,10 +967,6 @@ impl Default for DockerSelectKeybindings {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// ValueColorsKeybindings — defaults
-// ---------------------------------------------------------------------------
 
 fn default_vc_toggle() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)])
@@ -1151,10 +1009,6 @@ impl Default for ValueColorsKeybindings {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// SelectFieldsKeybindings — defaults
-// ---------------------------------------------------------------------------
 
 fn default_sf_toggle() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)])
@@ -1210,10 +1064,6 @@ impl Default for SelectFieldsKeybindings {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HelpKeybindings — defaults
-// ---------------------------------------------------------------------------
-
 fn default_help_close() -> KeyBindings {
     KeyBindings(vec![
         KeyBinding(KeyCode::Char('q'), KeyModifiers::NONE),
@@ -1234,10 +1084,6 @@ impl Default for HelpKeybindings {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// ConfirmKeybindings — defaults
-// ---------------------------------------------------------------------------
 
 fn default_confirm_yes() -> KeyBindings {
     KeyBindings(vec![
@@ -1281,10 +1127,6 @@ impl Default for ConfirmKeybindings {
     }
 }
 
-// ---------------------------------------------------------------------------
-// UiKeybindings — UI display toggles accessible from UiMode
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiKeybindings {
     #[serde(default = "default_toggle_sidebar")]
@@ -1310,10 +1152,6 @@ impl Default for UiKeybindings {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Keybindings
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Keybindings {
@@ -1576,10 +1414,6 @@ fn check_conflicts(actions: &[(&str, &KeyBindings)], out: &mut Vec<String>) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
 fn default_preview_bytes() -> u64 {
     16 * 1024 * 1024
 }
@@ -1665,10 +1499,6 @@ impl Config {
         serde_json::from_str(&contents).unwrap_or_default()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

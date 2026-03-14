@@ -1,37 +1,7 @@
-//! Field-scoped filter logic for structured log lines.
-//!
-//! Field filters let users match against specific parsed fields rather than raw line
-//! text (e.g. `:filter --field level=error`). They follow the same storage model as
-//! date filters: a [`crate::types::FilterDef`] whose pattern starts with `@field:` is
-//! saved to SQLite and skipped by `build_filter_manager`. After the text-filter pass
-//! (and the date-filter pass), `extract_field_filters` extracts enabled `@field:`
-//! entries and evaluates them per line using the detected [`crate::parser::LogFormatParser`].
-//!
-//! Lines that cannot be parsed, or where the named field is absent, are never hidden
-//! by a field filter — they pass through unchanged. This prevents spurious filtering of
-//! plain-text lines mixed into an otherwise structured file.
-//!
-//! Multiple include field filters combine with AND logic (all must match). Any matching
-//! exclude field filter hides the line regardless of include filters.
-//!
-//! ## Syntax
-//!
-//! Stored pattern: `@field:level:error`  (after stripping the prefix: `level:error`)
-//! The first colon separates key from value, so values may contain colons.
-//!
-//! ## Field aliases
-//!
-//! - `level` / `lvl`            → `parts.level`
-//! - `timestamp` / `ts` / `time`→ `parts.timestamp`
-//! - `target`                    → `parts.target`
-//! - `message` / `msg`          → `parts.message`
-//! - anything else              → linear search of `parts.extra_fields`
-
 use crate::filters::{FilterDecision, StyleId};
 use crate::parser::DisplayParts;
 use crate::types::{FilterDef, FilterType};
 
-/// Internal prefix stored in `FilterDef.pattern` for field-scoped filters.
 pub const FIELD_PREFIX: &str = "@field:";
 
 /// A compiled, ready-to-evaluate field-scoped filter.

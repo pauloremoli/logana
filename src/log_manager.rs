@@ -1,33 +1,3 @@
-//! Filter, mark, and annotation state management with SQLite persistence.
-//!
-//! [`LogManager`] owns `filter_defs`, `marks`, and `comments` in memory and
-//! bridges to the database via `async fn` methods. `build_filter_manager`
-//! converts enabled [`FilterDef`]s into a renderable [`FilterManager`] +
-//! parallel style palette, skipping `@date:` prefixed entries.
-//!
-//! ## Filter CRUD
-//!
-//! `add_filter_with_color`, `remove_filter`, `toggle_filter`, `edit_filter`,
-//! `move_filter_up/down`, `set_color_config`, `clear_filters`, `save_filters`
-//! (JSON), `load_filters` (JSON).
-//!
-//! `build_filter_manager() -> (FilterManager, Vec<Style>)`: converts enabled
-//! `FilterDef`s into a compiled `FilterManager` + parallel style palette (one
-//! `Style` per enabled filter, indexed by `StyleId`). Skips `@date:` prefixed
-//! patterns — date filters are applied separately in `refresh_visible()`.
-//!
-//! ## Marks API
-//!
-//! `toggle_mark`, `is_marked`, `get_marked_indices`, `get_marked_lines(&FileReader)`.
-//!
-//! ## Comments API
-//!
-//! `add_comment(text, line_indices)`, `get_comments() -> &[Comment]`,
-//! `has_comment(line_idx) -> bool`, `set_comments(Vec<Comment>)`,
-//! `remove_comment(index)`, `clear_all_marks_and_comments()`.
-//!
-//! `compute_file_hash(path)`: hashes file size + mtime for change detection.
-
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -42,11 +12,6 @@ use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter, is_re
 use crate::types::{ColorConfig, Comment, FilterDef, FilterType, parse_color};
 use aho_corasick::AhoCorasick;
 
-/// Manages filter definitions (persisted to SQLite), marks (in-memory), and
-/// the mapping to a renderable `FilterManager` + style palette.
-///
-/// Does NOT own the `FileReader`; callers pass it when needed so that
-/// `LogManager` stays independent of file-format concerns.
 pub struct LogManager {
     pub(crate) db: Arc<Database>,
     source_file: Option<String>,

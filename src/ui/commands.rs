@@ -1,10 +1,3 @@
-//! Command handler — implements all 30+ TUI commands.
-//!
-//! [`run_command`] is the single dispatch point called by
-//! [`crate::ui::app::App::execute_command_str`]. Commands include: `filter`,
-//! `exclude`, `set-color`, `export`, `wrap`, `open`, `docker`, `date-filter`,
-//! `fields`, `select-fields`, `value-colors`, `tail`, and more.
-
 use clap::Parser;
 
 use crate::auto_complete::{expand_tilde, shell_split};
@@ -661,8 +654,6 @@ mod tests {
         .await
     }
 
-    // ── tail ──────────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_tail_command_toggles_on() {
         let mut app = make_app(&["line1", "line2", "line3"]).await;
@@ -1213,8 +1204,6 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("contains no files"));
     }
-
-    // ── export ─────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_export_writes_file() {

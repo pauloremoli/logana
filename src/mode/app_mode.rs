@@ -1,10 +1,3 @@
-//! Core mode trait, render state enum, and shared mode infrastructure.
-//!
-//! [`Mode`] is the central trait: `handle_key` consumes `Box<Self>` and
-//! returns a new `(Box<dyn Mode>, KeyResult)`. [`ModeRenderState`] is an
-//! ISP-compliant enum — each variant carries exactly the data its popup
-//! renderer needs, avoiding optional trait methods.
-
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};

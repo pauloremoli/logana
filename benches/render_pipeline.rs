@@ -1,28 +1,3 @@
-//! Benchmarks for the render pipeline optimisations.
-//!
-//! Four groups, each targeting a specific improvement:
-//!
-//! 1. `collect_field_names` — parser-level field discovery (the operation
-//!    memoised by Item 3). Compares the raw cost of a fresh call against the
-//!    cost of returning a cached `Vec` clone.
-//!
-//! 2. `date_filter_timestamp_parse` — parsing every visible line to extract a
-//!    timestamp (the double-parse that Item 4 eliminates). The bench isolates
-//!    `parse_line` × N lines so the regression from the second identical pass
-//!    is visible.
-//!
-//! 3. `incremental_include_vs_full` — compares `FilterManager::compute_visible`
-//!    (full O(file_lines) scan) against `VisibleLines::retain` (O(visible_lines)
-//!    scan) when adding the first include filter to an already-filtered set
-//!    (Item 2).
-//!
-//! 4. `render_line_pipeline` — the per-line render cost that the full Line
-//!    cache (Item 1) would skip: `evaluate_line` + `render_line` +
-//!    `colorize_known_values`.
-//!
-//! Run with:
-//!   cargo bench --bench render_pipeline
-
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use logana::file_reader::FileReader;
 use logana::filters::{FilterDecision, FilterManager, MatchCollector, build_filter, render_line};
@@ -31,10 +6,6 @@ use logana::theme::ValueColors;
 use logana::ui::VisibleLines;
 use logana::value_colors::colorize_known_values;
 use ratatui::style::Style;
-
-// ---------------------------------------------------------------------------
-// Data generators
-// ---------------------------------------------------------------------------
 
 fn json_log_bytes(lines: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(lines * 120);
@@ -65,14 +36,6 @@ fn default_styles() -> Vec<Style> {
     vec![Style::default(); 256]
 }
 
-// ---------------------------------------------------------------------------
-// 1. collect_field_names: raw call vs Vec clone (cache hit)
-//
-// The memoisation in Item 3 means repeated calls within the same
-// filter/layout generation return a clone instead of reparsing up to 200
-// lines through the format parser.
-// ---------------------------------------------------------------------------
-
 fn bench_collect_field_names(c: &mut Criterion) {
     let mut group = c.benchmark_group("render_pipeline/collect_field_names");
 
@@ -85,14 +48,12 @@ fn bench_collect_field_names(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(lines as u64));
 
-        // Fresh call: re-parse all sample lines through the format parser.
         group.bench_with_input(
             BenchmarkId::new("fresh_call", lines),
             &bench_lines,
             |b, lines| b.iter(|| parser.collect_field_names(black_box(lines))),
         );
 
-        // Cache hit: just clone the pre-computed Vec.
         let cached: Vec<String> = parser.collect_field_names(&bench_lines);
         group.bench_function(BenchmarkId::new("cache_hit_clone", lines), |b| {
             b.iter(|| black_box(cached.clone()))
@@ -101,15 +62,6 @@ fn bench_collect_field_names(c: &mut Criterion) {
 
     group.finish();
 }
-
-// ---------------------------------------------------------------------------
-// 2. date_filter_timestamp_parse: single pass vs double pass
-//
-// Before Item 4, refresh_visible and the first render frame each parsed every
-// visible line independently to extract timestamps. The bench shows the cost
-// of one pass vs two passes so the saving of pre-populating the parse cache
-// during refresh_visible is quantified.
-// ---------------------------------------------------------------------------
 
 fn bench_date_filter_timestamp_parse(c: &mut Criterion) {
     let mut group = c.benchmark_group("render_pipeline/date_filter_parse");
@@ -123,8 +75,6 @@ fn bench_date_filter_timestamp_parse(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(lines as u64));
 
-        // Single pass: what refresh_visible pays when date filters are active
-        // (and what the render frame now skips thanks to the pre-populated cache).
         group.bench_with_input(
             BenchmarkId::new("single_pass", lines),
             &reader,
@@ -144,8 +94,6 @@ fn bench_date_filter_timestamp_parse(c: &mut Criterion) {
             },
         );
 
-        // Double pass: the old behaviour — refresh_visible then first render
-        // both parse every visible line.
         group.bench_with_input(
             BenchmarkId::new("double_pass", lines),
             &reader,
@@ -176,15 +124,6 @@ fn bench_date_filter_timestamp_parse(c: &mut Criterion) {
 
     group.finish();
 }
-
-// ---------------------------------------------------------------------------
-// 3. incremental_include_vs_full: retain O(visible) vs compute_visible O(all)
-//
-// Scenario: a file with N total lines where 90 % are hidden by an exclude
-// filter (visible set ≈ N/10). Adding the first include filter:
-//   - Full path:        compute_visible scans all N lines.
-//   - Incremental path: retain scans only the ≈ N/10 visible lines.
-// ---------------------------------------------------------------------------
 
 fn bench_incremental_include_vs_full(c: &mut Criterion) {
     let mut group = c.benchmark_group("render_pipeline/incremental_include");
@@ -250,15 +189,6 @@ fn bench_incremental_include_vs_full(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------------------------------------------------------------------------
-// 4. render_line_pipeline: per-line cost skipped by the full Line cache
-//
-// Measures the sequence that runs for every viewport line every render frame:
-//   evaluate_line → render_line → colorize_known_values
-// The full Line cache (Item 1) skips this entire sequence on cache hits.
-// Individual sub-steps are also benched separately for attribution.
-// ---------------------------------------------------------------------------
-
 fn bench_render_line_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("render_pipeline/per_line");
 
@@ -278,7 +208,6 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
         })
     });
 
-    // One include filter (Aho-Corasick, the common filtered case).
     let fm_one = FilterManager::new(
         vec![build_filter("ERROR", FilterDecision::Include, false, 0).unwrap()],
         true,
@@ -291,7 +220,6 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
         })
     });
 
-    // Five filters (heavier realistic scenario).
     let fm_five = FilterManager::new(
         vec![
             build_filter("ERROR", FilterDecision::Include, false, 0).unwrap(),
@@ -310,7 +238,6 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
         })
     });
 
-    // Isolated sub-steps for cost attribution.
     group.bench_function("five_filters/evaluate_line_only", |b| {
         b.iter(|| fm_five.evaluate_line(black_box(line_bytes)))
     });

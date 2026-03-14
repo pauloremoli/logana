@@ -1,10 +1,3 @@
-//! App lifecycle: initialisation, the main event loop, key dispatch, and command execution.
-//!
-//! [`App::run`] drives the 250 ms poll loop: render → wait for key → dispatch
-//! to the active mode's [`handle_key`] → fall through to [`App::handle_global_key`]
-//! for tab management and quit. [`App::execute_command_str`] parses and runs
-//! command strings produced by [`KeyResult::ExecuteCommand`].
-
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{Terminal, prelude::*};
 use std::sync::Arc;
