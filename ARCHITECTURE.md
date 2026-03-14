@@ -8,7 +8,7 @@ logana is structured around a strict separation between domain logic and the UI 
 
 **File I/O & Ingestion** — `FileReader` memory-maps regular files and exposes O(1) random line access via a pre-built offset index. Stdin is handled separately by a background thread that accumulates bytes and publishes snapshots. In both cases the data source is abstracted away from the rest of the system.
 
-**Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, etc.). Parsers extract a normalised set of fields (timestamp, level, message, structured fields) that the rest of the system consumes uniformly regardless of the original format.
+**Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, DLT, etc.). Parsers extract a normalised set of fields (timestamp, level, message, structured fields) that the rest of the system consumes uniformly regardless of the original format. Binary formats (DLT) are converted to text at the ingestion boundary in `FileReader` before entering the line-based pipeline.
 
 **Filter Pipeline** — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap. The pipeline runs in a `spawn_blocking` thread so the UI stays responsive during large scans. Filter definitions are persisted to SQLite by `LogManager` / `db` and reloaded on startup. Date filters (`@date:` prefix) and field filters (`@field:` prefix) are stored as regular `FilterDef` entries but skipped by `build_filter_manager` and applied as separate post-processing steps after text filters run.
 
@@ -46,6 +46,8 @@ src/
     mod.rs            - Format detection registry
     types.rs          - LogFormatParser trait and display types
     timestamp.rs      - Shared timestamp parsing and level normalization
+    dlt.rs            - DLT (AUTOSAR Diagnostic Log and Trace) text parser
+    dlt_binary.rs     - DLT binary-to-text converter (storage, wire, and simplified formats)
     json.rs           - JSON log parser (tracing, bunyan, GELF)
     syslog.rs         - RFC 3164 + RFC 5424 syslog
     journalctl.rs     - journalctl text output (short-iso, short-precise, short-full)
@@ -96,6 +98,8 @@ tests/
 ## File I/O & Ingestion
 
 ### File loading
+
+When a file begins with the DLT storage header magic (`DLT\x01`), `FileReader` converts the binary data to newline-delimited text (matching the `dlt-convert -a` output format) before building the line index. This conversion happens in `new`, `from_file_head`, `from_file_tail`, and `index_chunked`. The `is_dlt` flag is set so that `append_bytes` also converts incoming binary chunks for live file watching.
 
 Opening a file involves two concerns that pull in opposite directions: users want to see content immediately, but indexing a large file takes time. The solution is a two-phase load. The first phase reads the first (or last, in tail mode) `preview_bytes` of the file asynchronously and shows it right away. The second phase indexes the whole file in a background thread and swaps the reader in when done; progress is shown in the tab title. The preview size defaults to 16 MiB and is configurable via `preview_bytes` in `config.json`.
 

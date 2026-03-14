@@ -1,4 +1,9 @@
+use crate::parser::dlt_binary;
 use memchr::{memchr_iter, memchr2, memchr3_iter};
+
+fn is_any_dlt_binary(data: &[u8]) -> bool {
+    dlt_binary::is_dlt_binary(data) || dlt_binary::is_dlt_wire_format(data)
+}
 use memmap2::Mmap;
 #[cfg(unix)]
 use memmap2::{Advice, UncheckedAdvice};
@@ -43,6 +48,7 @@ impl Storage {
 pub struct FileReader {
     storage: Storage,
     line_starts: std::sync::Arc<Vec<usize>>,
+    is_dlt: bool,
 }
 
 impl FileReader {
@@ -54,6 +60,14 @@ impl FileReader {
         // Hint sequential access so the kernel prefetches ahead during the scan.
         #[cfg(unix)]
         let _ = scan_mmap.advise(Advice::Sequential);
+
+        if is_any_dlt_binary(&scan_mmap) {
+            let text = dlt_binary::convert_dlt_binary_to_text(&scan_mmap);
+            drop(scan_mmap);
+            let mut reader = Self::from_bytes(text);
+            reader.is_dlt = true;
+            return Ok(reader);
+        }
 
         let mut starts = vec![0usize];
         let mut has_ansi = false;
@@ -74,6 +88,7 @@ impl FileReader {
             return Ok(FileReader {
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
+                is_dlt: false,
             });
         }
 
@@ -92,6 +107,7 @@ impl FileReader {
         Ok(FileReader {
             storage: Storage::Mmap(std::sync::Arc::new(access_mmap)),
             line_starts: std::sync::Arc::new(starts),
+            is_dlt: false,
         })
     }
 
@@ -117,12 +133,14 @@ impl FileReader {
             return FileReader {
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
+                is_dlt: false,
             };
         }
 
         FileReader {
             storage: Storage::Bytes(std::sync::Arc::new(data)),
             line_starts: std::sync::Arc::new(starts),
+            is_dlt: false,
         }
     }
 
@@ -139,6 +157,27 @@ impl FileReader {
     pub async fn from_file_tail(path: &str, preview_bytes: u64) -> io::Result<Self> {
         let mut file = tokio::fs::File::open(path).await?;
         let total_len = file.metadata().await?.len();
+
+        // For DLT binary files, read the full file and convert, then take tail lines.
+        // We need to peek at the beginning to check for the DLT magic.
+        let mut magic_buf = [0u8; 4];
+        let is_dlt = if total_len >= 4 {
+            file.read_exact(&mut magic_buf).await?;
+            file.seek(io::SeekFrom::Start(0)).await?;
+            is_any_dlt_binary(&magic_buf)
+        } else {
+            false
+        };
+
+        if is_dlt {
+            let mut full_buf = vec![0u8; total_len as usize];
+            file.read_exact(&mut full_buf).await?;
+            let text = dlt_binary::convert_dlt_binary_to_text(&full_buf);
+            let mut reader = Self::from_bytes(text);
+            reader.is_dlt = true;
+            return Ok(reader);
+        }
+
         let offset = total_len.saturating_sub(preview_bytes);
         file.seek(io::SeekFrom::Start(offset)).await?;
         let read_len = (total_len - offset) as usize;
@@ -169,6 +208,14 @@ impl FileReader {
         let read_len = total_len.min(preview_bytes) as usize;
         let mut buf = vec![0u8; read_len];
         file.read_exact(&mut buf).await?;
+
+        if is_any_dlt_binary(&buf) {
+            let text = dlt_binary::convert_dlt_binary_to_text(&buf);
+            let mut reader = Self::from_bytes(text);
+            reader.is_dlt = true;
+            return Ok(reader);
+        }
+
         // Truncate to the last complete line so no partial line leaks out.
         if let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') {
             buf.truncate(last_nl + 1);
@@ -295,6 +342,37 @@ impl FileReader {
         let scan_mmap = unsafe { Mmap::map(&file)? };
         let len = scan_mmap.len();
 
+        if is_any_dlt_binary(&scan_mmap) {
+            let text = dlt_binary::convert_dlt_binary_to_text(&scan_mmap);
+            drop(scan_mmap);
+            let _ = progress_tx.send(1.0);
+            let mut reader = Self::from_bytes(text);
+            reader.is_dlt = true;
+
+            let precomputed_visible = predicate.map(|pred| {
+                let count = reader.line_count();
+                if tail {
+                    let mut visible: Vec<usize> = (0..count)
+                        .rev()
+                        .filter(|&i| pred(reader.get_line(i)))
+                        .collect();
+                    visible.reverse();
+                    visible
+                } else {
+                    use rayon::prelude::*;
+                    (0..count)
+                        .into_par_iter()
+                        .filter(|&i| pred(reader.get_line(i)))
+                        .collect()
+                }
+            });
+
+            return Ok(FileLoadResult {
+                reader,
+                precomputed_visible,
+            });
+        }
+
         // Phase 1: parallel chunk scan for '\n', '\x1b', '\r'.
         //
         // Divide the mmap into one chunk per rayon thread (minimum 4 MiB each so
@@ -357,6 +435,7 @@ impl FileReader {
             FileReader {
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
+                is_dlt: false,
             }
         } else {
             // Merge per-chunk newline positions into the final line_starts.
@@ -383,6 +462,7 @@ impl FileReader {
             FileReader {
                 storage: Storage::Mmap(std::sync::Arc::new(access_mmap)),
                 line_starts: std::sync::Arc::new(starts),
+                is_dlt: false,
             }
         };
 
@@ -508,10 +588,29 @@ impl FileReader {
     /// calling this (e.g. [`FileReader::spawn_file_watcher`] does it automatically).
     /// Converting an mmap-backed reader to heap-owned bytes on first call is
     /// unavoidable but cheap relative to the file I/O that precedes it.
+    /// Returns `true` if this reader was constructed from a DLT binary file.
+    pub fn is_dlt(&self) -> bool {
+        self.is_dlt
+    }
+
     pub fn append_bytes(&mut self, new_data: &[u8]) {
         if new_data.is_empty() {
             return;
         }
+
+        let effective_data;
+        let converted;
+        if self.is_dlt {
+            converted = dlt_binary::convert_dlt_binary_to_text(new_data);
+            effective_data = converted.as_slice();
+        } else {
+            effective_data = new_data;
+        }
+
+        if effective_data.is_empty() {
+            return;
+        }
+
         // Convert mmap to owned bytes before extending.
         let old_storage = std::mem::replace(
             &mut self.storage,
@@ -522,7 +621,7 @@ impl FileReader {
             Storage::Mmap(m) => m.to_vec(),
         };
         let offset = data.len();
-        data.extend_from_slice(new_data);
+        data.extend_from_slice(effective_data);
         // Extend line_starts incrementally — only scan the new bytes.
         let starts = std::sync::Arc::make_mut(&mut self.line_starts);
         for pos in memchr_iter(b'\n', &data[offset..]) {
@@ -2033,5 +2132,124 @@ mod tests {
         assert_eq!(result.reader.get_line(0), line.as_bytes());
         assert_eq!(result.reader.get_line(lines_to_boundary), b"extra0");
         assert_eq!(result.reader.get_line(expected - 1), b"extra9");
+    }
+
+    fn build_dlt_storage_header(secs: u32, usecs: u32, ecu: &[u8; 4]) -> Vec<u8> {
+        let mut h = Vec::new();
+        h.extend_from_slice(b"DLT\x01");
+        h.extend_from_slice(&secs.to_le_bytes());
+        h.extend_from_slice(&usecs.to_le_bytes());
+        h.extend_from_slice(ecu);
+        h
+    }
+
+    fn build_dlt_std_header(htyp: u8, mcnt: u8, length: u16) -> Vec<u8> {
+        let mut h = Vec::new();
+        h.push(htyp);
+        h.push(mcnt);
+        h.extend_from_slice(&length.to_be_bytes());
+        h
+    }
+
+    fn build_dlt_ext_header(msin: u8, noar: u8, apid: &[u8; 4], ctid: &[u8; 4]) -> Vec<u8> {
+        let mut h = Vec::new();
+        h.push(msin);
+        h.push(noar);
+        h.extend_from_slice(apid);
+        h.extend_from_slice(ctid);
+        h
+    }
+
+    fn make_dlt_binary_data(count: usize) -> Vec<u8> {
+        let mut data = Vec::new();
+        for i in 0..count {
+            data.extend_from_slice(&build_dlt_storage_header(1705312245 + i as u32, 0, b"ECU1"));
+            let htyp = 0x01; // UEH
+            let msin = 0x01 | (0 << 1) | (4 << 4); // verbose, log, info
+            let ext = build_dlt_ext_header(msin, 0, b"APP1", b"CTX1");
+            let msg_len = (4 + ext.len()) as u16;
+            let mut msg = build_dlt_std_header(htyp, i as u8, msg_len);
+            msg.extend_from_slice(&ext);
+            data.extend_from_slice(&msg);
+        }
+        data
+    }
+
+    #[test]
+    fn test_file_reader_new_with_dlt_binary() {
+        let dlt_data = make_dlt_binary_data(3);
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(&dlt_data).unwrap();
+        f.flush().unwrap();
+
+        let reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
+        assert!(reader.is_dlt());
+        assert_eq!(reader.line_count(), 3);
+    }
+
+    #[test]
+    fn test_file_reader_new_non_dlt_unchanged() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "line1").unwrap();
+        writeln!(f, "line2").unwrap();
+        f.flush().unwrap();
+
+        let reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
+        assert!(!reader.is_dlt());
+        assert_eq!(reader.line_count(), 2);
+    }
+
+    #[test]
+    fn test_dlt_binary_lines_parseable() {
+        use crate::parser::dlt::DltParser;
+        use crate::parser::types::LogFormatParser;
+
+        let dlt_data = make_dlt_binary_data(2);
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(&dlt_data).unwrap();
+        f.flush().unwrap();
+
+        let reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
+        let parser = DltParser;
+
+        for i in 0..reader.line_count() {
+            let line = reader.get_line(i);
+            let parts = parser.parse_line(line);
+            assert!(
+                parts.is_some(),
+                "Line {} should be parseable: {:?}",
+                i,
+                std::str::from_utf8(line)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_from_file_head_with_dlt_binary() {
+        let dlt_data = make_dlt_binary_data(5);
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(&dlt_data).unwrap();
+        f.flush().unwrap();
+
+        let reader = FileReader::from_file_head(f.path().to_str().unwrap(), 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(reader.is_dlt());
+        assert_eq!(reader.line_count(), 5);
+    }
+
+    #[test]
+    fn test_append_bytes_with_dlt_flag() {
+        let dlt_data = make_dlt_binary_data(2);
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(&dlt_data).unwrap();
+        f.flush().unwrap();
+
+        let mut reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(reader.line_count(), 2);
+
+        let more_data = make_dlt_binary_data(1);
+        reader.append_bytes(&more_data);
+        assert_eq!(reader.line_count(), 3);
     }
 }

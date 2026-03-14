@@ -2,6 +2,8 @@
 
 pub mod clf;
 pub mod common_log;
+pub mod dlt;
+pub mod dlt_binary;
 pub mod journalctl;
 pub mod json;
 pub mod logfmt;
@@ -12,6 +14,7 @@ pub mod types;
 
 pub use clf::ClfParser;
 pub use common_log::CommonLogParser;
+pub use dlt::DltParser;
 pub use journalctl::JournalctlParser;
 pub use json::{
     JsonField, JsonParser, LEVEL_KEYS, LogFormat, LogLine, MESSAGE_KEYS, TARGET_KEYS,
@@ -31,6 +34,8 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
     let parsers: Vec<Box<dyn LogFormatParser>> = vec![
         // OtlpParser scores up to 1.5 to beat JsonParser (max 1.0) on OTLP files
         Box::new(OtlpParser),
+        // DltParser scores up to 1.2 — DLT text is highly distinctive
+        Box::new(DltParser),
         Box::new(JsonParser),
         Box::new(SyslogParser),
         Box::new(JournalctlParser),

@@ -1798,12 +1798,14 @@ impl App {
                     let tail = self.tabs[i].tail_mode;
                     let raw = self.tabs[i].raw_mode;
                     let paused = self.tabs[i].paused;
+                    let unknown_fmt = !raw && self.tabs[i].detected_format.is_none();
                     format!(
-                        " ({}){}{}{}  ",
+                        " ({}){}{}{}{}  ",
                         num_visible,
                         if tail { " [TAIL]" } else { "" },
                         if raw { " [RAW]" } else { "" },
                         if paused { " [PAUSED]" } else { "" },
+                        if unknown_fmt { " [unknown format]" } else { "" },
                     )
                 }
                 _ => " ".to_string(),
@@ -2841,6 +2843,66 @@ mod tests {
         assert!(
             tab_row.contains('('),
             "active tab in tab bar should contain line count, got: {:?}",
+            tab_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_active_tab_shows_unknown_format_when_no_parser() {
+        let mut app = make_two_tab_app().await;
+        app.tabs[0].title = "myfile.log".to_string();
+        app.tabs[0].show_borders = true;
+        app.tabs[1].show_borders = true;
+        assert!(app.tabs[0].detected_format.is_none());
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let tab_row = row_content(&buf, 0);
+        assert!(
+            tab_row.contains("[unknown format]"),
+            "active tab should show [unknown format] when no parser detected, got: {:?}",
+            tab_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_active_tab_hides_unknown_format_in_raw_mode() {
+        let mut app = make_two_tab_app().await;
+        app.tabs[0].title = "myfile.log".to_string();
+        app.tabs[0].show_borders = true;
+        app.tabs[0].raw_mode = true;
+        app.tabs[1].show_borders = true;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let tab_row = row_content(&buf, 0);
+        assert!(
+            !tab_row.contains("[unknown format]"),
+            "active tab should not show [unknown format] in raw mode, got: {:?}",
+            tab_row,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_active_tab_hides_unknown_format_when_parser_detected() {
+        let mut app = make_two_tab_app().await;
+        app.tabs[0].title = "myfile.log".to_string();
+        app.tabs[0].show_borders = true;
+        app.tabs[0].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser));
+        app.tabs[1].show_borders = true;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let tab_row = row_content(&buf, 0);
+        assert!(
+            !tab_row.contains("[unknown format]"),
+            "active tab should not show [unknown format] when parser is detected, got: {:?}",
             tab_row,
         );
     }

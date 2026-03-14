@@ -526,3 +526,93 @@ async fn test_headless_filter_file_roundtrip() {
     let result = String::from_utf8(out).unwrap();
     assert_eq!(result, "ERROR line\n");
 }
+
+fn build_dlt_storage_header(secs: u32, usecs: u32, ecu: &[u8; 4]) -> Vec<u8> {
+    let mut h = Vec::new();
+    h.extend_from_slice(b"DLT\x01");
+    h.extend_from_slice(&secs.to_le_bytes());
+    h.extend_from_slice(&usecs.to_le_bytes());
+    h.extend_from_slice(ecu);
+    h
+}
+
+fn build_dlt_std_header(htyp: u8, mcnt: u8, length: u16) -> Vec<u8> {
+    let mut h = Vec::new();
+    h.push(htyp);
+    h.push(mcnt);
+    h.extend_from_slice(&length.to_be_bytes());
+    h
+}
+
+fn build_dlt_ext_header(msin: u8, noar: u8, apid: &[u8; 4], ctid: &[u8; 4]) -> Vec<u8> {
+    let mut h = Vec::new();
+    h.push(msin);
+    h.push(noar);
+    h.extend_from_slice(apid);
+    h.extend_from_slice(ctid);
+    h
+}
+
+fn make_dlt_binary_data(count: usize) -> Vec<u8> {
+    let mut data = Vec::new();
+    for i in 0..count {
+        data.extend_from_slice(&build_dlt_storage_header(1705312245 + i as u32, 0, b"ECU1"));
+        let htyp = 0x01; // UEH
+        let msin = 0x01 | (0 << 1) | (4 << 4); // verbose, log, info
+        let ext = build_dlt_ext_header(msin, 0, b"APP1", b"CTX1");
+        let msg_len = (4 + ext.len()) as u16;
+        let mut msg = build_dlt_std_header(htyp, i as u8, msg_len);
+        msg.extend_from_slice(&ext);
+        data.extend_from_slice(&msg);
+    }
+    data
+}
+
+#[test]
+fn test_dlt_binary_roundtrip() {
+    use logana::parser::dlt::DltParser;
+    use logana::parser::types::LogFormatParser;
+
+    let dlt_data = make_dlt_binary_data(3);
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(&dlt_data).unwrap();
+    f.flush().unwrap();
+
+    let reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
+    assert!(reader.is_dlt());
+    assert_eq!(reader.line_count(), 3);
+
+    let parser = DltParser;
+    for i in 0..reader.line_count() {
+        let line = reader.get_line(i);
+        let parts = parser.parse_line(line);
+        assert!(parts.is_some(), "Line {} should be parseable", i);
+        let parts = parts.unwrap();
+        assert_eq!(parts.level, Some("INFO"));
+        assert_eq!(parts.target, Some("APP1"));
+    }
+}
+
+#[test]
+fn test_detect_format_selects_dlt_for_dlt_text() {
+    use logana::parser::detect_format;
+
+    let lines: Vec<&[u8]> = vec![
+        b"2024/01/15 09:50:45.000000 0 ECU1 APP1 CTX1 log info verbose 0 msg1",
+        b"2024/01/15 09:50:46.000000 0 ECU1 APP1 CTX1 log warn verbose 0 msg2",
+    ];
+    let parser = detect_format(&lines).unwrap();
+    assert_eq!(parser.name(), "dlt");
+}
+
+#[test]
+fn test_detect_format_does_not_select_dlt_for_non_dlt() {
+    use logana::parser::detect_format;
+
+    let lines: Vec<&[u8]> = vec![
+        br#"{"level":"INFO","msg":"hello"}"#,
+        br#"{"level":"WARN","msg":"world"}"#,
+    ];
+    let parser = detect_format(&lines).unwrap();
+    assert_ne!(parser.name(), "dlt");
+}

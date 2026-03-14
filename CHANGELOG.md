@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- DLT (AUTOSAR Diagnostic Log and Trace) format support: binary `.dlt` files and `dlt-convert -a` text output
 - `:reset` command to restore all settings to defaults and clear all persisted state (filters, marks, comments, hidden fields, session tabs, and app settings)
 
 ### Fixed
