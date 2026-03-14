@@ -44,12 +44,7 @@ impl App {
             .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
         let log_manager = LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
         let mut tab = TabState::new(preview, log_manager, title);
-        tab.keybindings = self.keybindings.clone();
-        tab.show_mode_bar = self.show_mode_bar;
-        tab.show_borders = self.show_borders_default;
-        tab.show_line_numbers = self.show_line_numbers;
-        tab.show_sidebar = self.show_sidebar;
-        tab.wrap = self.wrap;
+        self.apply_tab_defaults(&mut tab);
 
         if let Ok(Some(ctx)) = self.db.load_file_context(&abs_path).await {
             match self.restore_file_policy {
@@ -80,12 +75,7 @@ impl App {
         let title = format!("docker:{}", container_name);
 
         let mut tab = TabState::new(file_reader, log_manager, title);
-        tab.keybindings = self.keybindings.clone();
-        tab.show_mode_bar = self.show_mode_bar;
-        tab.show_borders = self.show_borders_default;
-        tab.show_line_numbers = self.show_line_numbers;
-        tab.show_sidebar = self.show_sidebar;
-        tab.wrap = self.wrap;
+        self.apply_tab_defaults(&mut tab);
 
         match FileReader::spawn_process_stream("docker", &["logs", "-f", &container_id]).await {
             Ok(rx) => {
@@ -110,12 +100,7 @@ impl App {
         let title = source.to_string();
 
         let mut tab = TabState::new(file_reader, log_manager, title);
-        tab.keybindings = self.keybindings.clone();
-        tab.show_mode_bar = self.show_mode_bar;
-        tab.show_borders = self.show_borders_default;
-        tab.show_line_numbers = self.show_line_numbers;
-        tab.show_sidebar = self.show_sidebar;
-        tab.wrap = self.wrap;
+        self.apply_tab_defaults(&mut tab);
 
         match FileReader::spawn_process_stream("docker", &["logs", "-f", name]).await {
             Ok(rx) => {
@@ -176,12 +161,7 @@ impl App {
                 .to_string();
             let log_manager = LogManager::new(self.db.clone(), Some(next.clone())).await;
             let mut tab = TabState::new(preview, log_manager, title);
-            tab.keybindings = self.keybindings.clone();
-            tab.show_mode_bar = self.show_mode_bar;
-            tab.show_borders = self.show_borders_default;
-            tab.show_line_numbers = self.show_line_numbers;
-            tab.show_sidebar = self.show_sidebar;
-            tab.wrap = self.wrap;
+            self.apply_tab_defaults(&mut tab);
             let abs_path = std::fs::canonicalize(&next)
                 .ok()
                 .and_then(|c| c.to_str().map(|s| s.to_string()))
@@ -253,14 +233,8 @@ impl App {
                 if let Ok(preview) = preview_result
                     && preview.line_count() > 0
                 {
-                    // Detect log format from the preview lines so structured
-                    // rendering works during the load wait.
-                    let sample_limit = preview.line_count().min(200);
-                    let sample: Vec<&[u8]> =
-                        (0..sample_limit).map(|j| preview.get_line(j)).collect();
-                    self.tabs[0].detected_format =
-                        crate::parser::detect_format(&sample).map(Arc::from);
                     self.tabs[0].file_reader = preview;
+                    self.tabs[0].detect_and_apply_format();
                     if let Some(ref pred) = predicate {
                         let visible: Vec<usize> = (0..self.tabs[0].file_reader.line_count())
                             .filter(|&i| pred(self.tabs[0].file_reader.get_line(i)))
@@ -370,12 +344,7 @@ impl App {
             if file_reader.line_count() > 0 {
                 let log_manager = LogManager::new(self.db.clone(), None).await;
                 let mut tab = TabState::new(file_reader, log_manager, "stdin".to_string());
-                tab.keybindings = self.keybindings.clone();
-                tab.show_mode_bar = self.show_mode_bar;
-                tab.show_borders = self.show_borders_default;
-                tab.show_line_numbers = self.show_line_numbers;
-                tab.show_sidebar = self.show_sidebar;
-                tab.wrap = self.wrap;
+                self.apply_tab_defaults(&mut tab);
                 tab.scroll_offset = tab.visible_indices.len().saturating_sub(1);
                 self.tabs.push(tab);
             }
@@ -416,16 +385,7 @@ impl App {
                     return;
                 }
                 self.tabs[0].file_reader = result.reader;
-                // Re-detect format now that real data is available (the tab was
-                // created with an empty placeholder reader).
-                let limit = self.tabs[0].file_reader.line_count().min(200);
-                if limit > 0 {
-                    let sample: Vec<&[u8]> = (0..limit)
-                        .map(|j| self.tabs[0].file_reader.get_line(j))
-                        .collect();
-                    self.tabs[0].detected_format =
-                        crate::parser::detect_format(&sample).map(Arc::from);
-                }
+                self.tabs[0].detect_and_apply_format();
                 // Use precomputed visible indices when available (single-pass optimisation);
                 // otherwise fall back to a full compute_visible scan.
                 // Either way, run a full filter refresh so that occurrence counts are
@@ -463,14 +423,7 @@ impl App {
                     return;
                 }
                 self.tabs[tab_idx].file_reader = result.reader;
-                let limit = self.tabs[tab_idx].file_reader.line_count().min(200);
-                if limit > 0 {
-                    let sample: Vec<&[u8]> = (0..limit)
-                        .map(|j| self.tabs[tab_idx].file_reader.get_line(j))
-                        .collect();
-                    self.tabs[tab_idx].detected_format =
-                        crate::parser::detect_format(&sample).map(Arc::from);
-                }
+                self.tabs[tab_idx].detect_and_apply_format();
                 self.tabs[tab_idx].begin_filter_refresh();
                 let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
                 self.tabs[tab_idx].watch_state = Some(FileWatchState {
@@ -489,14 +442,7 @@ impl App {
                     return;
                 }
                 self.tabs[tab_idx].file_reader = result.reader;
-                let limit = self.tabs[tab_idx].file_reader.line_count().min(200);
-                if limit > 0 {
-                    let sample: Vec<&[u8]> = (0..limit)
-                        .map(|j| self.tabs[tab_idx].file_reader.get_line(j))
-                        .collect();
-                    self.tabs[tab_idx].detected_format =
-                        crate::parser::detect_format(&sample).map(Arc::from);
-                }
+                self.tabs[tab_idx].detect_and_apply_format();
                 if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     self.tabs[tab_idx].apply_file_context(&ctx);
                 }
@@ -554,12 +500,7 @@ impl App {
                     if self.tabs[i].detected_format.is_none()
                         && self.tabs[i].file_reader.line_count() > 0
                     {
-                        let limit = self.tabs[i].file_reader.line_count().min(200);
-                        let sample: Vec<&[u8]> = (0..limit)
-                            .map(|j| self.tabs[i].file_reader.get_line(j))
-                            .collect();
-                        self.tabs[i].detected_format =
-                            crate::parser::detect_format(&sample).map(Arc::from);
+                        self.tabs[i].detect_and_apply_format();
                     }
                     self.tabs[i].begin_filter_refresh();
                     if self.tabs[i].filter_handle.is_none() && tail_mode {

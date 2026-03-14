@@ -31,7 +31,217 @@ use crate::value_colors::colorize_known_values;
 use crate::mode::app_mode::ModeRenderState;
 
 use super::field_layout::{apply_field_layout, count_wrapped_lines, effective_row_count};
-use super::{App, LoadContext};
+use super::{App, LoadContext, TabState, VisibleLines};
+
+/// Prepend a line number gutter to a rendered line.
+#[inline]
+fn prepend_line_number(
+    line: Line<'static>,
+    line_idx: usize,
+    line_number_width: usize,
+    is_annotated: bool,
+    comment_fg: Color,
+    line_number_fg: Color,
+    render_style: Style,
+) -> Line<'static> {
+    let line_num = line_idx + 1;
+    let line_num_str = format!("{:>width$} ", line_num, width = line_number_width);
+    let bar_span = if is_annotated {
+        Span::styled("│", Style::default().fg(comment_fg))
+    } else {
+        Span::styled(" ", Style::default().fg(line_number_fg))
+    };
+    let num_span = Span::styled(line_num_str, Style::default().fg(line_number_fg));
+    let mut all_spans = vec![bar_span, num_span];
+    all_spans.extend(line.spans);
+    Line::from(all_spans).style(render_style)
+}
+
+/// Build comment banner and annotation maps for the visible viewport.
+///
+/// Returns `(banner_at, vis_comment_map)`:
+/// - `banner_at`: `abs_vis_idx → cmt_idx` — where to inject a comment banner
+/// - `vis_comment_map`: `abs_vis_idx → cmt_idx` — drives the annotation bar characters
+#[inline]
+fn prepare_comment_maps(
+    comments: &[(Vec<usize>, String)],
+    visible_indices: &VisibleLines,
+    start: usize,
+    end: usize,
+) -> (HashMap<usize, usize>, HashMap<usize, usize>) {
+    let mut line_cmt_map: HashMap<usize, usize> = HashMap::new();
+    for (cmt_idx, (line_indices, _)) in comments.iter().enumerate() {
+        for &li in line_indices {
+            line_cmt_map.entry(li).or_insert(cmt_idx);
+        }
+    }
+    let mut banner_at: HashMap<usize, usize> = HashMap::new();
+    let mut vis_comment_map: HashMap<usize, usize> = HashMap::new();
+    let mut seen_cmts: HashSet<usize> = HashSet::new();
+    for abs_vi in start..end {
+        let li = visible_indices.get(abs_vi);
+        if let Some(&cmt_idx) = line_cmt_map.get(&li) {
+            vis_comment_map.insert(abs_vi, cmt_idx);
+            if seen_cmts.insert(cmt_idx) {
+                banner_at.insert(abs_vi, cmt_idx);
+            }
+        }
+    }
+    (banner_at, vis_comment_map)
+}
+
+/// Extract display name from a file path for completion hints.
+#[inline]
+fn file_display_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| {
+            if path.ends_with('/') {
+                format!("{}/", n.trim_end_matches('/'))
+            } else {
+                n.to_string()
+            }
+        })
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// Which completion list to show in the command bar.
+enum CompletionSource {
+    Error(String),
+    Items(Vec<String>),
+    ColorItems(Vec<String>),
+    FileItems(Vec<String>),
+    CommandHelp(String),
+}
+
+/// Resolve which completions to display given the current command query.
+fn resolve_completions(
+    tab: &mut TabState,
+    query_text: &str,
+    completion_index: Option<usize>,
+) -> CompletionSource {
+    if let Some(err) = &tab.command_error {
+        return CompletionSource::Error(err.clone());
+    }
+    if let Some(fc) = extract_field_partial(query_text.trim_start()) {
+        let field_index = tab.build_field_index();
+        let completions = match &fc {
+            FieldCompletion::Name(partial) => complete_field_name(partial, &field_index),
+            FieldCompletion::Value { field, partial } => {
+                complete_field_value(field, partial, &field_index)
+            }
+        };
+        return CompletionSource::Items(completions);
+    }
+    if let Some((_, partial)) = extract_flag_partial(query_text) {
+        let cmd = shell_split(query_text)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        return CompletionSource::Items(
+            complete_flags(&cmd, &partial)
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect(),
+        );
+    }
+    if let Some(partial) = extract_color_partial(query_text.trim_start()) {
+        return CompletionSource::ColorItems(
+            complete_color(partial)
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect(),
+        );
+    }
+    let trimmed = query_text.trim();
+    let file_cmd = FILE_PATH_COMMANDS
+        .iter()
+        .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
+    if let Some(&cmd) = file_cmd {
+        let partial = trimmed[cmd.len()..].trim_start();
+        return CompletionSource::FileItems(complete_file_path(partial));
+    }
+    if let Some(partial_raw) = query_text.trim_start().strip_prefix("set-theme ") {
+        return CompletionSource::Items(complete_theme(partial_raw.trim_start()));
+    }
+    if let Some(partial_raw) = query_text.trim_start().strip_prefix("hide-field ") {
+        let partial = partial_raw.trim_start();
+        let index = tab.build_field_index();
+        return CompletionSource::Items(complete_field_name(partial, &index));
+    }
+    if let Some(partial_raw) = query_text.trim_start().strip_prefix("show-field ") {
+        let partial = partial_raw.trim_start();
+        let candidates: Vec<String> = if tab.hidden_fields.is_empty() {
+            tab.build_field_index().names
+        } else {
+            let mut v: Vec<String> = tab.hidden_fields.iter().cloned().collect();
+            v.sort();
+            v
+        };
+        let completions = candidates
+            .iter()
+            .filter(|n| fuzzy_match(partial, n))
+            .cloned()
+            .collect();
+        return CompletionSource::Items(completions);
+    }
+    if completion_index.is_none()
+        && let Some(cmd) = find_matching_command(query_text)
+    {
+        return CompletionSource::CommandHelp(format!("  {} - {}", cmd.usage, cmd.description));
+    }
+    CompletionSource::Items(
+        find_command_completions(trimmed)
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )
+}
+
+/// Render a list of completion hints as styled spans.
+#[inline]
+fn render_completion_hints(
+    frame: &mut Frame<'_>,
+    completions: &[String],
+    completion_index: Option<usize>,
+    bg: Color,
+    area: Rect,
+    span_fn: impl Fn(usize, &str) -> (String, Style, Style),
+) {
+    if completions.is_empty() {
+        return;
+    }
+    let hint_spans: Vec<Span> = completions
+        .iter()
+        .enumerate()
+        .flat_map(|(i, name)| {
+            let (display, item_normal, item_highlight) = span_fn(i, name);
+            let style = if completion_index == Some(i) {
+                item_highlight
+            } else {
+                item_normal
+            };
+            vec![
+                Span::styled(format!(" {} ", display), style),
+                Span::raw(" "),
+            ]
+        })
+        .collect();
+    let hint = Paragraph::new(Line::from(hint_spans))
+        .style(Style::default().bg(bg))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(hint, area);
+}
+
+/// Default span formatter for most completion hint types.
+#[inline]
+fn default_span_fn(
+    normal_style: Style,
+    highlight_style: Style,
+) -> impl Fn(usize, &str) -> (String, Style, Style) {
+    move |_i, name| (name.to_string(), normal_style, highlight_style)
+}
 
 impl App {
     pub(super) fn ui(&mut self, frame: &mut Frame) {
@@ -343,44 +553,35 @@ impl App {
             }
         }
 
-        // Confirm-restore modal renders on top of the full TUI.
         if is_confirm_restore {
             self.render_confirm_restore_modal(frame);
         }
 
-        // Session restore modal renders on top of the full TUI so stdin content
-        // is visible behind it.
         if let Some(files) = session_files {
             self.render_confirm_restore_session_modal(frame, &files);
         }
 
-        // Open-directory confirmation popup.
         if let Some((dir, files)) = confirm_open_dir {
             self.render_confirm_open_dir_modal(frame, &dir, &files);
         }
 
-        // Comment popup renders over everything.
         if let Some((lines, cursor_row, cursor_col, line_count)) = comment_popup {
             let kb = self.tabs[self.active_tab].keybindings.clone();
             self.render_comment_popup(frame, &lines, cursor_row, cursor_col, line_count, &kb);
         }
 
-        // Select-fields popup renders over everything.
         if let Some((fields, selected)) = select_fields_state {
             self.render_select_fields_popup(frame, &fields, selected);
         }
 
-        // Docker container selection popup.
         if let Some((containers, selected, error)) = docker_select {
             self.render_docker_select_popup(frame, &containers, selected, error.as_deref());
         }
 
-        // Value colors / level colors popup.
         if let Some((groups, search, selected, title)) = value_colors_state {
             self.render_value_colors_popup(frame, &groups, &search, selected, title);
         }
 
-        // Keybindings help popup renders over everything.
         if let Some((scroll, search)) = help_state {
             self.render_keybindings_help_popup(frame, &keybindings, scroll, &search);
         }
@@ -445,7 +646,6 @@ impl App {
         let show_keys = self.tabs[self.active_tab].show_keys;
         let raw_mode = self.tabs[self.active_tab].raw_mode;
 
-        // Clamp scroll_offset and viewport_offset when the visible set has shrunk.
         if num_visible == 0 {
             self.tabs[self.active_tab].scroll_offset = 0;
             self.tabs[self.active_tab].viewport_offset = 0;
@@ -818,7 +1018,6 @@ impl App {
             .fg(theme.visual_select_fg)
             .bg(theme.visual_select_bg);
 
-        // Clone comment data before borrowing visible_indices for iteration.
         let comments_for_render: Vec<(Vec<usize>, String)> = self.tabs[self.active_tab]
             .log_manager
             .get_comments()
@@ -826,32 +1025,12 @@ impl App {
             .map(|a| (a.line_indices.clone(), a.text.clone()))
             .collect();
 
-        // Build a reverse map: file-line index → first comment index that owns it.
-        // O(total comment lines) instead of the previous O(comments × viewport) double loop.
-        let mut line_cmt_map: HashMap<usize, usize> = HashMap::new();
-        for (cmt_idx, (line_indices, _)) in comments_for_render.iter().enumerate() {
-            for &li in line_indices {
-                // Lowest cmt_idx wins when a line belongs to multiple groups.
-                line_cmt_map.entry(li).or_insert(cmt_idx);
-            }
-        }
-
-        // Single O(viewport) pass to build both render maps:
-        //   banner_at:       abs_vis_idx → cmt_idx  (where to inject a comment banner)
-        //   vis_comment_map: abs_vis_idx → cmt_idx  (drives the tree │/└ characters)
-        let mut banner_at: HashMap<usize, usize> = HashMap::new();
-        let mut vis_comment_map: HashMap<usize, usize> = HashMap::new();
-        let mut seen_cmts: HashSet<usize> = HashSet::new();
-        for abs_vi in start..end {
-            let li = self.tabs[self.active_tab].visible_indices.get(abs_vi);
-            if let Some(&cmt_idx) = line_cmt_map.get(&li) {
-                vis_comment_map.insert(abs_vi, cmt_idx);
-                if seen_cmts.insert(cmt_idx) {
-                    // First visible line of this comment group: place the banner here.
-                    banner_at.insert(abs_vi, cmt_idx);
-                }
-            }
-        }
+        let (banner_at, vis_comment_map) = prepare_comment_maps(
+            &comments_for_render,
+            &self.tabs[self.active_tab].visible_indices,
+            start,
+            end,
+        );
 
         // Comment banner styles — full-width separator bar.
         let banner_dash_style = Style::default()
@@ -1101,21 +1280,16 @@ impl App {
             }
 
             if show_line_numbers {
-                let line_num = line_idx + 1;
                 let is_annotated = vis_comment_map.contains_key(&abs_vis_idx);
-                // Format: {bar_or_space}{line_num right-aligned}{space}
-                // Total width = 1 + line_number_width + 1 = ln_prefix_width ✓
-                let line_num_str = format!("{:>width$} ", line_num, width = line_number_width);
-                let bar_span = if is_annotated {
-                    Span::styled("│", Style::default().fg(theme.comment_fg))
-                } else {
-                    Span::styled(" ", Style::default().fg(theme.line_number_fg))
-                };
-                let num_span =
-                    Span::styled(line_num_str, Style::default().fg(theme.line_number_fg));
-                let mut all_spans = vec![bar_span, num_span];
-                all_spans.extend(line.spans);
-                line = Line::from(all_spans).style(render_style);
+                line = prepend_line_number(
+                    line,
+                    line_idx,
+                    line_number_width,
+                    is_annotated,
+                    theme.comment_fg,
+                    theme.line_number_fg,
+                    render_style,
+                );
             }
 
             // Prepend a full-width separator banner before the first visible line of each
@@ -1304,7 +1478,7 @@ impl App {
 
     /// Compute how many rows the command-mode hint area needs (1–3).
     fn compute_hint_height(
-        &self,
+        &mut self,
         command_input: &Option<(String, usize)>,
         completion_query: Option<&str>,
         width: usize,
@@ -1312,98 +1486,22 @@ impl App {
     ) -> u16 {
         let text = match command_input {
             Some((input_text, _)) => {
-                // Use the original query for computing suggestions when Tab cycling is active.
                 let query_text = completion_query.unwrap_or(input_text.as_str());
-                if let Some(err) = &self.tabs[self.active_tab].command_error {
-                    err.clone()
-                } else if let Some(fc) = extract_field_partial(query_text.trim_start()) {
-                    let field_index = self.tabs[self.active_tab].build_field_index();
-                    let completions: Vec<String> = match &fc {
-                        FieldCompletion::Name(partial) => {
-                            complete_field_name(partial, &field_index)
-                        }
-                        FieldCompletion::Value { field, partial } => {
-                            complete_field_value(field, partial, &field_index)
-                        }
-                    };
-                    completions.join("  ")
-                } else if let Some((_, partial)) = extract_flag_partial(query_text) {
-                    let cmd = shell_split(query_text)
-                        .into_iter()
-                        .next()
-                        .unwrap_or_default();
-                    complete_flags(&cmd, &partial).join("  ")
-                } else if let Some(partial) = extract_color_partial(query_text.trim_start()) {
-                    let completions = complete_color(partial);
-                    completions
+                let tab = &mut self.tabs[self.active_tab];
+                match resolve_completions(tab, query_text, completion_index) {
+                    CompletionSource::Error(e) => e,
+                    CompletionSource::Items(items) => items.join("  "),
+                    CompletionSource::ColorItems(items) => items
                         .iter()
                         .map(|n| format!(" {} ", n))
                         .collect::<Vec<_>>()
-                        .join(" ")
-                } else {
-                    let trimmed = query_text.trim();
-                    let file_cmd = FILE_PATH_COMMANDS
+                        .join(" "),
+                    CompletionSource::FileItems(items) => items
                         .iter()
-                        .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
-
-                    if let Some(&cmd) = file_cmd {
-                        let partial = trimmed[cmd.len()..].trim_start();
-                        let completions = complete_file_path(partial);
-                        completions
-                            .iter()
-                            .map(|c| {
-                                std::path::Path::new(c)
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .map(|n| {
-                                        if c.ends_with('/') {
-                                            format!("{}/", n.trim_end_matches('/'))
-                                        } else {
-                                            n.to_string()
-                                        }
-                                    })
-                                    .unwrap_or_else(|| c.clone())
-                            })
-                            .collect::<Vec<_>>()
-                            .join("  ")
-                    } else if let Some(partial_raw) =
-                        query_text.trim_start().strip_prefix("set-theme ")
-                    {
-                        let partial = partial_raw.trim_start();
-                        complete_theme(partial).join("  ")
-                    } else if let Some(partial_raw) =
-                        query_text.trim_start().strip_prefix("hide-field ")
-                    {
-                        let partial = partial_raw.trim_start();
-                        let index = self.tabs[self.active_tab].build_field_index();
-                        complete_field_name(partial, &index).join("  ")
-                    } else if let Some(partial_raw) =
-                        query_text.trim_start().strip_prefix("show-field ")
-                    {
-                        let partial = partial_raw.trim_start();
-                        let tab = &self.tabs[self.active_tab];
-                        let candidates: Vec<String> = if tab.hidden_fields.is_empty() {
-                            tab.build_field_index().names
-                        } else {
-                            let mut v: Vec<String> = tab.hidden_fields.iter().cloned().collect();
-                            v.sort();
-                            v
-                        };
-                        candidates
-                            .iter()
-                            .filter(|n| fuzzy_match(partial, n))
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join("  ")
-                    } else if completion_index.is_none() {
-                        if let Some(cmd) = find_matching_command(query_text) {
-                            format!("  {} - {}", cmd.usage, cmd.description)
-                        } else {
-                            find_command_completions(trimmed).join("  ")
-                        }
-                    } else {
-                        find_command_completions(trimmed).join("  ")
-                    }
+                        .map(|c| file_display_name(c))
+                        .collect::<Vec<_>>()
+                        .join("  "),
+                    CompletionSource::CommandHelp(help) => help,
                 }
             }
             None => String::new(),
@@ -1424,7 +1522,6 @@ impl App {
         chunk_idx: usize,
     ) {
         if let Some((input_text, cursor_pos)) = command_input {
-            // Use the original query for suggestion lists when Tab cycling is active.
             let query_text = completion_query.unwrap_or(input_text.as_str());
             let input_prefix = ":";
             let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
@@ -1446,262 +1543,62 @@ impl App {
             let highlight_style = Style::default()
                 .fg(self.theme.cursor_fg)
                 .bg(self.theme.cursor_bg);
+            let root_bg = self.theme.root_bg;
+            let cursor_bg = self.theme.cursor_bg;
 
-            if let Some(err) = &self.tabs[self.active_tab].command_error {
-                let error_paragraph = Paragraph::new(err.as_str())
-                    .style(Style::default().fg(Color::Red).bg(self.theme.root_bg))
-                    .wrap(Wrap { trim: false });
-                frame.render_widget(error_paragraph, hint_area);
-            } else if let Some(fc) = extract_field_partial(query_text.trim_start()) {
-                let field_index = self.tabs[self.active_tab].build_field_index();
-                let completions: Vec<String> = match &fc {
-                    FieldCompletion::Name(partial) => complete_field_name(partial, &field_index),
-                    FieldCompletion::Value { field, partial } => {
-                        complete_field_value(field, partial, &field_index)
-                    }
-                };
-                if !completions.is_empty() {
-                    let hint_spans: Vec<Span> = completions
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, name)| {
-                            let style = if completion_index == Some(i) {
-                                highlight_style
-                            } else {
-                                normal_style
-                            };
-                            vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
-                        })
-                        .collect();
-                    let hint = Paragraph::new(Line::from(hint_spans))
-                        .style(Style::default().bg(self.theme.root_bg))
+            let tab = &mut self.tabs[self.active_tab];
+            let source = resolve_completions(tab, query_text, completion_index);
+            match source {
+                CompletionSource::Error(err) => {
+                    let error_paragraph = Paragraph::new(err)
+                        .style(Style::default().fg(Color::Red).bg(root_bg))
                         .wrap(Wrap { trim: false });
-                    frame.render_widget(hint, hint_area);
+                    frame.render_widget(error_paragraph, hint_area);
                 }
-            } else if let Some((_, partial)) = extract_flag_partial(query_text) {
-                let cmd = shell_split(query_text)
-                    .into_iter()
-                    .next()
-                    .unwrap_or_default();
-                let completions = complete_flags(&cmd, &partial);
-                if !completions.is_empty() {
-                    let hint_spans: Vec<Span> = completions
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, name)| {
-                            let style = if completion_index == Some(i) {
-                                highlight_style
-                            } else {
-                                normal_style
-                            };
-                            vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
-                        })
-                        .collect();
-                    let hint = Paragraph::new(Line::from(hint_spans))
-                        .style(Style::default().bg(self.theme.root_bg))
-                        .wrap(Wrap { trim: false });
-                    frame.render_widget(hint, hint_area);
-                }
-            } else if let Some(partial) = extract_color_partial(query_text.trim_start()) {
-                let completions = complete_color(partial);
-                if !completions.is_empty() {
-                    let hint_spans: Vec<Span> = completions
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, name)| {
-                            let color = parse_color(name).unwrap_or(Color::White);
-                            let style = if completion_index == Some(i) {
-                                Style::default().fg(color).bg(self.theme.cursor_bg)
-                            } else {
-                                Style::default().fg(color).bg(self.theme.root_bg)
-                            };
-                            vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
-                        })
-                        .collect();
-                    let hint = Paragraph::new(Line::from(hint_spans))
-                        .style(Style::default().bg(self.theme.root_bg))
-                        .wrap(Wrap { trim: false });
-                    frame.render_widget(hint, hint_area);
-                }
-            } else {
-                let trimmed_query = query_text.trim();
-                let file_cmd = FILE_PATH_COMMANDS
-                    .iter()
-                    .find(|cmd| trimmed_query.starts_with(&format!("{} ", cmd)));
-
-                if let Some(&cmd) = file_cmd {
-                    let partial = trimmed_query[cmd.len()..].trim_start();
-                    let completions = complete_file_path(partial);
-                    if !completions.is_empty() {
-                        let hint_spans: Vec<Span> = completions
-                            .iter()
-                            .enumerate()
-                            .flat_map(|(i, c)| {
-                                let display = std::path::Path::new(c)
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .map(|n| {
-                                        if c.ends_with('/') {
-                                            format!("{}/", n.trim_end_matches('/'))
-                                        } else {
-                                            n.to_string()
-                                        }
-                                    })
-                                    .unwrap_or_else(|| c.clone());
-                                let style = if completion_index == Some(i) {
-                                    highlight_style
-                                } else {
-                                    normal_style
-                                };
-                                vec![
-                                    Span::styled(format!(" {} ", display), style),
-                                    Span::raw(" "),
-                                ]
-                            })
-                            .collect();
-                        let hint = Paragraph::new(Line::from(hint_spans))
-                            .style(Style::default().bg(self.theme.root_bg))
-                            .wrap(Wrap { trim: false });
-                        frame.render_widget(hint, hint_area);
-                    }
-                } else if let Some(partial_raw) = query_text.trim_start().strip_prefix("set-theme ")
-                {
-                    let partial = partial_raw.trim_start();
-                    let completions = complete_theme(partial);
-                    if !completions.is_empty() {
-                        let hint_spans: Vec<Span> = completions
-                            .iter()
-                            .enumerate()
-                            .flat_map(|(i, name)| {
-                                let style = if completion_index == Some(i) {
-                                    highlight_style
-                                } else {
-                                    normal_style
-                                };
-                                vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
-                            })
-                            .collect();
-                        let hint = Paragraph::new(Line::from(hint_spans))
-                            .style(Style::default().bg(self.theme.root_bg))
-                            .wrap(Wrap { trim: false });
-                        frame.render_widget(hint, hint_area);
-                    }
-                } else if let Some(partial_raw) =
-                    query_text.trim_start().strip_prefix("hide-field ")
-                {
-                    let partial = partial_raw.trim_start();
-                    let index = self.tabs[self.active_tab].build_field_index();
-                    let completions = complete_field_name(partial, &index);
-                    if !completions.is_empty() {
-                        let hint_spans: Vec<Span> = completions
-                            .iter()
-                            .enumerate()
-                            .flat_map(|(i, name)| {
-                                let style = if completion_index == Some(i) {
-                                    highlight_style
-                                } else {
-                                    normal_style
-                                };
-                                vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
-                            })
-                            .collect();
-                        let hint = Paragraph::new(Line::from(hint_spans))
-                            .style(Style::default().bg(self.theme.root_bg))
-                            .wrap(Wrap { trim: false });
-                        frame.render_widget(hint, hint_area);
-                    }
-                } else if let Some(partial_raw) =
-                    query_text.trim_start().strip_prefix("show-field ")
-                {
-                    let partial = partial_raw.trim_start();
-                    let tab = &self.tabs[self.active_tab];
-                    let candidates: Vec<String> = if tab.hidden_fields.is_empty() {
-                        tab.build_field_index().names
-                    } else {
-                        let mut v: Vec<String> = tab.hidden_fields.iter().cloned().collect();
-                        v.sort();
-                        v
-                    };
-                    let completions: Vec<String> = candidates
-                        .iter()
-                        .filter(|n| fuzzy_match(partial, n))
-                        .cloned()
-                        .collect();
-                    if !completions.is_empty() {
-                        let hint_spans: Vec<Span> = completions
-                            .iter()
-                            .enumerate()
-                            .flat_map(|(i, name)| {
-                                let style = if completion_index == Some(i) {
-                                    highlight_style
-                                } else {
-                                    normal_style
-                                };
-                                vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
-                            })
-                            .collect();
-                        let hint = Paragraph::new(Line::from(hint_spans))
-                            .style(Style::default().bg(self.theme.root_bg))
-                            .wrap(Wrap { trim: false });
-                        frame.render_widget(hint, hint_area);
-                    }
-                } else if completion_index.is_none() {
-                    if let Some(cmd) = find_matching_command(query_text) {
-                        let hint = Paragraph::new(format!("  {} - {}", cmd.usage, cmd.description))
-                            .style(normal_style)
-                            .wrap(Wrap { trim: false });
-                        frame.render_widget(hint, hint_area);
-                    } else {
-                        self.render_command_completions(
-                            frame,
-                            query_text,
-                            completion_index,
-                            hint_area,
-                            normal_style,
-                            highlight_style,
-                        );
-                    }
-                } else {
-                    self.render_command_completions(
+                CompletionSource::Items(items) => {
+                    render_completion_hints(
                         frame,
-                        query_text,
+                        &items,
                         completion_index,
+                        root_bg,
                         hint_area,
-                        normal_style,
-                        highlight_style,
+                        default_span_fn(normal_style, highlight_style),
                     );
                 }
+                CompletionSource::ColorItems(items) => {
+                    render_completion_hints(
+                        frame,
+                        &items,
+                        completion_index,
+                        root_bg,
+                        hint_area,
+                        |_i, name| {
+                            let color = parse_color(name).unwrap_or(Color::White);
+                            (
+                                name.to_string(),
+                                Style::default().fg(color).bg(root_bg),
+                                Style::default().fg(color).bg(cursor_bg),
+                            )
+                        },
+                    );
+                }
+                CompletionSource::FileItems(items) => {
+                    render_completion_hints(
+                        frame,
+                        &items,
+                        completion_index,
+                        root_bg,
+                        hint_area,
+                        |_i, path| (file_display_name(path), normal_style, highlight_style),
+                    );
+                }
+                CompletionSource::CommandHelp(help) => {
+                    let hint = Paragraph::new(help)
+                        .style(normal_style)
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(hint, hint_area);
+                }
             }
-        }
-    }
-
-    fn render_command_completions(
-        &self,
-        frame: &mut Frame<'_>,
-        input_text: &str,
-        completion_index: Option<usize>,
-        hint_area: Rect,
-        normal_style: Style,
-        highlight_style: Style,
-    ) {
-        let completions = find_command_completions(input_text.trim());
-        if !completions.is_empty() {
-            let hint_spans: Vec<Span> = completions
-                .iter()
-                .enumerate()
-                .flat_map(|(i, name)| {
-                    let style = if completion_index == Some(i) {
-                        highlight_style
-                    } else {
-                        normal_style
-                    };
-                    vec![Span::styled(format!(" {} ", name), style), Span::raw(" ")]
-                })
-                .collect();
-            let hint = Paragraph::new(Line::from(hint_spans))
-                .style(Style::default().bg(self.theme.root_bg))
-                .wrap(Wrap { trim: false });
-            frame.render_widget(hint, hint_area);
         }
     }
 
@@ -2369,14 +2266,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_compute_hint_height_empty() {
-        let app = make_app(&["line"]).await;
+        let mut app = make_app(&["line"]).await;
         let result = app.compute_hint_height(&None, None, 80, None);
         assert_eq!(result, 1);
     }
 
     #[tokio::test]
     async fn test_compute_hint_height_matching_command() {
-        let app = make_app(&["line"]).await;
+        let mut app = make_app(&["line"]).await;
         let input = Some(("filter".to_string(), 6));
         let result = app.compute_hint_height(&input, None, 80, None);
         assert!(result >= 1);

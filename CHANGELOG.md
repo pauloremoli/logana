@@ -17,6 +17,7 @@ All notable changes to logana will be documented in this file.
 - `parse_line` is now skipped entirely for hidden lines
 - Replace all atomics writes from the hot path with thread local counter
 - Headless mode now runs the filter scan in parallel and writes results sequentially
+- Refactored UI module into smaller functions.
 
 
 ## [0.2.1] - 2026-03-13

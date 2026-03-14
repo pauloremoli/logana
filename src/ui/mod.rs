@@ -615,29 +615,12 @@ impl TabState {
             self.filter_date_styles = Vec::new();
             self.filter_field_styles = Vec::new();
             self.filter_match_counts = Vec::new();
-            if let Some(line_idx) = current_line
-                && let Some(pos) = self.visible_indices.position_of(line_idx)
-            {
-                self.scroll_offset = pos;
-                return;
-            }
-            // Still clamp scroll so it stays valid if the file shrank.
-            if self.visible_indices.is_empty() {
-                self.scroll_offset = 0;
-            } else {
-                self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
-            }
+            self.restore_scroll_to_line(current_line);
             return;
         }
 
-        // Invalidate the parse cache: field layout, filters, or file content may have changed.
-        self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
-        self.parse_cache.clear();
-        self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
-        self.render_line_cache.clear();
+        self.invalidate_parse_cache();
 
-        // Capture the currently selected file-line so we can restore the selection after
-        // visible_indices changes (e.g. toggling filters or marks-only mode).
         let current_line = self.visible_indices.get_opt(self.scroll_offset);
 
         if self.show_marks_only {
@@ -659,13 +642,7 @@ impl TabState {
             let mut indices = self.log_manager.get_marked_indices();
             indices.retain(|&i| i < self.file_reader.line_count());
             self.visible_indices = VisibleLines::Filtered(indices);
-            // Rebuild filter cache so the render path always has a valid manager.
-            let (fm, styles, date_filter_styles, field_filter_styles) =
-                self.log_manager.build_filter_manager();
-            self.filter_manager_arc = Arc::new(fm);
-            self.filter_styles = styles;
-            self.filter_date_styles = date_filter_styles;
-            self.filter_field_styles = field_filter_styles;
+            self.rebuild_filter_manager_cache();
             self.filter_match_counts = Vec::new();
         } else if let Some((
             saved_visible,
@@ -675,16 +652,13 @@ impl TabState {
             saved_field_styles,
         )) = self.saved_filter_view.take()
         {
-            // Leaving marks-only: restore the saved filter view — O(1), no file scan.
             self.visible_indices = saved_visible;
             self.filter_manager_arc = saved_fm;
             self.filter_styles = saved_styles;
             self.filter_date_styles = saved_date_styles;
             self.filter_field_styles = saved_field_styles;
         } else if !self.filtering_enabled {
-            // No allocation: All(n) represents identity mapping i→i.
             self.visible_indices = VisibleLines::All(self.file_reader.line_count());
-            // Keep an empty manager so the render path produces no filter highlights.
             self.filter_manager_arc = Arc::new(FilterManager::empty());
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
@@ -805,18 +779,7 @@ impl TabState {
             self.visible_indices = VisibleLines::Filtered(visible);
         }
 
-        // Restore the selection to the same file-line if it is still visible; otherwise clamp.
-        if let Some(line_idx) = current_line
-            && let Some(pos) = self.visible_indices.position_of(line_idx)
-        {
-            self.scroll_offset = pos;
-            return;
-        }
-        if self.visible_indices.is_empty() {
-            self.scroll_offset = 0;
-        } else {
-            self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
-        }
+        self.restore_scroll_to_line(current_line);
     }
 
     /// Returns the text that is actually displayed for `line_idx`.
@@ -934,7 +897,6 @@ impl TabState {
             return;
         }
 
-        // Cancel any in-flight search.
         if let Some(ref h) = self.search_handle {
             h.cancel.store(true, Ordering::Relaxed);
         }
@@ -1078,23 +1040,17 @@ impl TabState {
     ///
     /// Any in-flight filter computation is cancelled before the new one starts.
     pub fn begin_filter_refresh(&mut self) {
-        // Cancel any in-flight filter computation.
         if let Some(ref h) = self.filter_handle {
             h.cancel.store(true, Ordering::Relaxed);
         }
         self.filter_handle = None;
 
-        // Invalidate parse/render caches — filters or content changed.
-        self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
-        self.parse_cache.clear();
-        self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
-        self.render_line_cache.clear();
+        self.invalidate_parse_cache();
 
         let has_active_filters =
             self.show_marks_only || self.log_manager.get_filters().iter().any(|f| f.enabled);
 
         if !has_active_filters {
-            // Fast path: no filters — O(1), no allocation.
             let current_line = if self.saved_filter_view.is_some() {
                 self.visible_indices.get_opt(self.scroll_offset)
             } else {
@@ -1107,22 +1063,11 @@ impl TabState {
             self.filter_date_styles = Vec::new();
             self.filter_field_styles = Vec::new();
             self.filter_match_counts = Vec::new();
-            if let Some(line_idx) = current_line
-                && let Some(pos) = self.visible_indices.position_of(line_idx)
-            {
-                self.scroll_offset = pos;
-                return;
-            }
-            if self.visible_indices.is_empty() {
-                self.scroll_offset = 0;
-            } else {
-                self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
-            }
+            self.restore_scroll_to_line(current_line);
             return;
         }
 
         if self.show_marks_only {
-            // Marks-only: O(marks count) — sync.
             let current_line = self.visible_indices.get_opt(self.scroll_offset);
             if self.saved_filter_view.is_none() {
                 self.saved_filter_view = Some((
@@ -1138,24 +1083,9 @@ impl TabState {
             let mut indices = self.log_manager.get_marked_indices();
             indices.retain(|&i| i < self.file_reader.line_count());
             self.visible_indices = VisibleLines::Filtered(indices);
-            let (fm, styles, date_filter_styles, field_filter_styles) =
-                self.log_manager.build_filter_manager();
-            self.filter_manager_arc = Arc::new(fm);
-            self.filter_styles = styles;
-            self.filter_date_styles = date_filter_styles;
-            self.filter_field_styles = field_filter_styles;
+            self.rebuild_filter_manager_cache();
             self.filter_match_counts = Vec::new();
-            if let Some(line_idx) = current_line
-                && let Some(pos) = self.visible_indices.position_of(line_idx)
-            {
-                self.scroll_offset = pos;
-                return;
-            }
-            if self.visible_indices.is_empty() {
-                self.scroll_offset = 0;
-            } else {
-                self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
-            }
+            self.restore_scroll_to_line(current_line);
             return;
         }
 
@@ -1167,29 +1097,17 @@ impl TabState {
             saved_field_styles,
         )) = self.saved_filter_view.take()
         {
-            // Leaving marks-only: restore saved filter view — O(1).
             let current_line = self.visible_indices.get_opt(self.scroll_offset);
             self.visible_indices = saved_visible;
             self.filter_manager_arc = saved_fm;
             self.filter_styles = saved_styles;
             self.filter_date_styles = saved_date_styles;
             self.filter_field_styles = saved_field_styles;
-            if let Some(line_idx) = current_line
-                && let Some(pos) = self.visible_indices.position_of(line_idx)
-            {
-                self.scroll_offset = pos;
-                return;
-            }
-            if self.visible_indices.is_empty() {
-                self.scroll_offset = 0;
-            } else {
-                self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
-            }
+            self.restore_scroll_to_line(current_line);
             return;
         }
 
         if !self.filtering_enabled {
-            // Filtering disabled: show all lines — O(1).
             let current_line = self.visible_indices.get_opt(self.scroll_offset);
             self.visible_indices = VisibleLines::All(self.file_reader.line_count());
             self.filter_manager_arc = Arc::new(FilterManager::empty());
@@ -1197,29 +1115,12 @@ impl TabState {
             self.filter_date_styles = Vec::new();
             self.filter_field_styles = Vec::new();
             self.filter_match_counts = Vec::new();
-            if let Some(line_idx) = current_line
-                && let Some(pos) = self.visible_indices.position_of(line_idx)
-            {
-                self.scroll_offset = pos;
-                return;
-            }
-            if self.visible_indices.is_empty() {
-                self.scroll_offset = 0;
-            } else {
-                self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
-            }
+            self.restore_scroll_to_line(current_line);
             return;
         }
 
-        // Slow path: active text/date filters require a full file scan.
         let scroll_anchor = self.visible_indices.get_opt(self.scroll_offset);
-        let (fm, styles, date_filter_styles, field_filter_styles) =
-            self.log_manager.build_filter_manager();
-        // Update immediately so render highlights reflect new filters before results arrive.
-        self.filter_manager_arc = Arc::new(fm);
-        self.filter_styles = styles;
-        self.filter_date_styles = date_filter_styles;
-        self.filter_field_styles = field_filter_styles;
+        self.rebuild_filter_manager_cache();
         // Clear stale counts — the filter order may have changed (e.g. reorder) so old
         // index-based counts would map to the wrong filters until the scan completes.
         self.filter_match_counts = Vec::new();
@@ -1483,42 +1384,9 @@ impl TabState {
     /// is equivalent to a full recompute (O(visible) instead of O(all)).
     /// The filter manager cache is rebuilt afterward so render highlights stay correct.
     pub fn apply_incremental_include(&mut self, pattern: &str) {
-        use crate::filters::{FilterDecision, MatchCollector, build_filter};
-        use rayon::prelude::*;
-        if let Some(filter) = build_filter(pattern, FilterDecision::Include, true, 0) {
-            let file_reader = &self.file_reader;
-            let indices: Vec<usize> = self.visible_indices.iter().collect();
-            let new_visible: Vec<usize> = indices
-                .par_iter()
-                .copied()
-                .filter(|&line_idx| {
-                    let line = file_reader.get_line(line_idx);
-                    let mut dummy = MatchCollector::new(line);
-                    matches!(filter.evaluate(line, &mut dummy), FilterDecision::Include)
-                })
-                .collect();
-            self.visible_indices = VisibleLines::Filtered(new_visible);
-        }
-        // Rebuild filter manager cache so the render path sees the updated filters.
-        let (fm, styles, date_filter_styles, field_filter_styles) =
-            self.log_manager.build_filter_manager();
-        self.filter_manager_arc = Arc::new(fm);
-        self.filter_styles = styles;
-        self.filter_date_styles = date_filter_styles;
-        self.filter_field_styles = field_filter_styles;
-        // Invalidate parse cache (filter change affects highlight output).
-        self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
-        self.parse_cache.clear();
-        // Clamp scroll.
-        if self.visible_indices.is_empty() {
-            self.scroll_offset = 0;
-        } else {
-            self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
-        }
-        // Kick off a background refresh to compute per-filter match counts and level
-        // positions. The visible set computed above stays until the background result
-        // arrives, at which point it is confirmed (same filters) and counts are applied.
-        self.begin_filter_refresh();
+        self.apply_incremental_filter(pattern, FilterDecision::Include, |dec| {
+            matches!(dec, FilterDecision::Include)
+        });
     }
 
     /// Apply a new exclude filter incrementally against the currently visible lines,
@@ -1527,9 +1395,20 @@ impl TabState {
     /// Only safe for pure-text exclude additions when no include-filter-only changes are needed.
     /// The filter manager cache is rebuilt afterward so render highlights stay correct.
     pub fn apply_incremental_exclude(&mut self, pattern: &str) {
-        use crate::filters::{FilterDecision, MatchCollector, build_filter};
+        self.apply_incremental_filter(pattern, FilterDecision::Exclude, |dec| {
+            !matches!(dec, FilterDecision::Exclude)
+        });
+    }
+
+    fn apply_incremental_filter(
+        &mut self,
+        pattern: &str,
+        decision: FilterDecision,
+        keep_fn: impl Fn(FilterDecision) -> bool + Sync,
+    ) {
+        use crate::filters::{MatchCollector, build_filter};
         use rayon::prelude::*;
-        if let Some(filter) = build_filter(pattern, FilterDecision::Exclude, true, 0) {
+        if let Some(filter) = build_filter(pattern, decision, true, 0) {
             let file_reader = &self.file_reader;
             let indices: Vec<usize> = self.visible_indices.iter().collect();
             let new_visible: Vec<usize> = indices
@@ -1538,30 +1417,15 @@ impl TabState {
                 .filter(|&line_idx| {
                     let line = file_reader.get_line(line_idx);
                     let mut dummy = MatchCollector::new(line);
-                    !matches!(filter.evaluate(line, &mut dummy), FilterDecision::Exclude)
+                    keep_fn(filter.evaluate(line, &mut dummy))
                 })
                 .collect();
             self.visible_indices = VisibleLines::Filtered(new_visible);
         }
-        // Rebuild filter manager cache so the render path sees the updated filters.
-        let (fm, styles, date_filter_styles, field_filter_styles) =
-            self.log_manager.build_filter_manager();
-        self.filter_manager_arc = Arc::new(fm);
-        self.filter_styles = styles;
-        self.filter_date_styles = date_filter_styles;
-        self.filter_field_styles = field_filter_styles;
-        // Invalidate parse cache (filter change affects highlight output).
+        self.rebuild_filter_manager_cache();
         self.parse_cache_gen = self.parse_cache_gen.wrapping_add(1);
         self.parse_cache.clear();
-        // Clamp scroll.
-        if self.visible_indices.is_empty() {
-            self.scroll_offset = 0;
-        } else {
-            self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
-        }
-        // Kick off a background refresh to compute per-filter match counts and level
-        // positions. The visible set computed above stays until the background result
-        // arrives, at which point it is confirmed (same filters) and counts are applied.
+        self.clamp_scroll_offset();
         self.begin_filter_refresh();
     }
 
@@ -1570,14 +1434,44 @@ impl TabState {
     /// Visible lines are unchanged, so no file scan is needed. Only the render
     /// cache is invalidated so the next frame picks up the new highlight colors.
     pub fn refresh_filter_colors(&mut self) {
+        self.rebuild_filter_manager_cache();
+        self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
+        self.render_line_cache.clear();
+    }
+
+    /// Clamp `scroll_offset` so it stays within the visible set.
+    #[inline]
+    pub fn clamp_scroll_offset(&mut self) {
+        if self.visible_indices.is_empty() {
+            self.scroll_offset = 0;
+        } else {
+            self.scroll_offset = self.scroll_offset.min(self.visible_indices.len() - 1);
+        }
+    }
+
+    /// Rebuild the compiled filter manager and highlight styles from the current
+    /// `LogManager` filter definitions.
+    #[inline]
+    pub fn rebuild_filter_manager_cache(&mut self) {
         let (fm, styles, date_filter_styles, field_filter_styles) =
             self.log_manager.build_filter_manager();
         self.filter_manager_arc = Arc::new(fm);
         self.filter_styles = styles;
         self.filter_date_styles = date_filter_styles;
         self.filter_field_styles = field_filter_styles;
-        self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
-        self.render_line_cache.clear();
+    }
+
+    /// Try to restore `scroll_offset` to the position of `line_idx` in the
+    /// (potentially changed) visible set; fall back to clamping.
+    #[inline]
+    pub fn restore_scroll_to_line(&mut self, line_idx: Option<usize>) {
+        if let Some(idx) = line_idx
+            && let Some(pos) = self.visible_indices.position_of(idx)
+        {
+            self.scroll_offset = pos;
+        } else {
+            self.clamp_scroll_offset();
+        }
     }
 
     /// Bump the parse cache generation so that all cached render outputs are re-computed
@@ -1587,6 +1481,16 @@ impl TabState {
         self.parse_cache.clear();
         self.render_cache_gen = self.render_cache_gen.wrapping_add(1);
         self.render_line_cache.clear();
+    }
+
+    /// Detect log format from the first lines of the file and store it.
+    #[inline]
+    pub fn detect_and_apply_format(&mut self) {
+        let limit = self.file_reader.line_count().min(200);
+        if limit > 0 {
+            let sample: Vec<&[u8]> = (0..limit).map(|j| self.file_reader.get_line(j)).collect();
+            self.detected_format = detect_format(&sample).map(Arc::from);
+        }
     }
 
     pub fn to_file_context(&self) -> Option<FileContext> {

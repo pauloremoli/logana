@@ -22,10 +22,6 @@ use crate::theme::Theme;
 
 use super::{FileLoadState, KeyResult, StdinLoadState, TabState};
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 async fn resolve_bool_setting(
     db: &crate::db::Database,
     key: &str,
@@ -58,10 +54,6 @@ async fn resolve_policy_setting(
     }
     RestoreSessionPolicy::Ask
 }
-
-// ---------------------------------------------------------------------------
-// App
-// ---------------------------------------------------------------------------
 
 pub struct App {
     pub tabs: Vec<TabState>,
@@ -157,6 +149,11 @@ impl App {
 
         let mut tab = TabState::new(file_reader, log_manager, title);
         tab.keybindings = keybindings.clone();
+        tab.show_mode_bar = show_mode_bar;
+        tab.show_borders = show_borders_default;
+        tab.show_line_numbers = show_line_numbers;
+        tab.show_sidebar = show_sidebar;
+        tab.wrap = wrap;
         let mut pending_session_restore: Option<Vec<String>> = None;
 
         // Check for saved context only when we have real data (not a placeholder
@@ -193,12 +190,6 @@ impl App {
             }
         }
 
-        tab.show_mode_bar = show_mode_bar;
-        tab.show_borders = show_borders_default;
-        tab.show_line_numbers = show_line_numbers;
-        tab.show_sidebar = show_sidebar;
-        tab.wrap = wrap;
-
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -222,6 +213,17 @@ impl App {
             pending_session_restore,
             startup_warnings: vec![],
         }
+    }
+
+    /// Apply shared defaults (keybindings, display toggles) to a new tab.
+    #[inline]
+    pub(super) fn apply_tab_defaults(&self, tab: &mut TabState) {
+        tab.keybindings = self.keybindings.clone();
+        tab.show_mode_bar = self.show_mode_bar;
+        tab.show_borders = self.show_borders_default;
+        tab.show_line_numbers = self.show_line_numbers;
+        tab.show_sidebar = self.show_sidebar;
+        tab.wrap = self.wrap;
     }
 
     pub fn tab(&self) -> &TabState {
@@ -263,7 +265,6 @@ impl App {
         use std::sync::atomic::Ordering;
         self.save_tab_context(&self.tabs[self.active_tab]).await;
 
-        // Cancel any in-flight search and filter computation on the closing tab.
         let tab = &self.tabs[self.active_tab];
         if let Some(ref h) = tab.search_handle {
             h.cancel.store(true, Ordering::Relaxed);
@@ -392,68 +393,8 @@ impl App {
                 let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode::default()));
                 let (next_mode, result) = mode.handle_key(tab, key.code, key.modifiers).await;
                 tab.mode = next_mode;
-                match result {
-                    KeyResult::Handled => {}
-                    KeyResult::Ignored => self.handle_global_key(key.code, key.modifiers).await,
-                    KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd).await,
-                    KeyResult::RestoreSession(files) => self.restore_session(files).await,
-                    KeyResult::DockerAttach(id, name) => self.open_docker_logs(id, name).await,
-                    KeyResult::ApplyValueColors(disabled) => {
-                        self.theme.value_colors.disabled = disabled;
-                        for tab in &mut self.tabs {
-                            tab.render_cache_gen = tab.render_cache_gen.wrapping_add(1);
-                            tab.render_line_cache.clear();
-                        }
-                    }
-                    KeyResult::ApplyLevelColors(disabled) => {
-                        self.tabs[self.active_tab].level_colors_disabled = disabled;
-                    }
-                    KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
-                    KeyResult::ToggleModeBar => {
-                        self.show_mode_bar = !self.show_mode_bar;
-                        for tab in &mut self.tabs {
-                            tab.show_mode_bar = self.show_mode_bar;
-                        }
-                        let _ = self
-                            .db
-                            .save_app_setting(
-                                "show_mode_bar",
-                                if self.show_mode_bar { "true" } else { "false" },
-                            )
-                            .await;
-                    }
-                    KeyResult::OpenFiles(paths) => {
-                        for path in paths {
-                            if let Err(e) = self.open_file(&path).await {
-                                self.tabs[self.active_tab].command_error = Some(e);
-                                break;
-                            }
-                        }
-                    }
-                    KeyResult::AlwaysRestoreFile(_) => {
-                        self.restore_file_policy = RestoreSessionPolicy::Always;
-                        let _ = self
-                            .db
-                            .save_app_setting("restore_file_context", "always")
-                            .await;
-                    }
-                    KeyResult::NeverRestoreFile => {
-                        self.restore_file_policy = RestoreSessionPolicy::Never;
-                        let _ = self
-                            .db
-                            .save_app_setting("restore_file_context", "never")
-                            .await;
-                    }
-                    KeyResult::AlwaysRestoreSession(files) => {
-                        self.restore_policy = RestoreSessionPolicy::Always;
-                        let _ = self.db.save_app_setting("restore_session", "always").await;
-                        self.restore_session(files).await;
-                    }
-                    KeyResult::NeverRestoreSession => {
-                        self.restore_policy = RestoreSessionPolicy::Never;
-                        let _ = self.db.save_app_setting("restore_session", "never").await;
-                    }
-                }
+                self.dispatch_key_result(result, key.code, key.modifiers)
+                    .await;
             }
 
             if self.should_quit {
@@ -481,6 +422,15 @@ impl App {
         let mode = std::mem::replace(&mut tab.mode, Box::new(NormalMode::default()));
         let (next_mode, result) = mode.handle_key(tab, key_code, modifiers).await;
         tab.mode = next_mode;
+        self.dispatch_key_result(result, key_code, modifiers).await;
+    }
+
+    async fn dispatch_key_result(
+        &mut self,
+        result: KeyResult,
+        key_code: KeyCode,
+        modifiers: KeyModifiers,
+    ) {
         match result {
             KeyResult::Handled => {}
             KeyResult::Ignored => self.handle_global_key(key_code, modifiers).await,
@@ -489,6 +439,10 @@ impl App {
             KeyResult::DockerAttach(id, name) => self.open_docker_logs(id, name).await,
             KeyResult::ApplyValueColors(disabled) => {
                 self.theme.value_colors.disabled = disabled;
+                for tab in &mut self.tabs {
+                    tab.render_cache_gen = tab.render_cache_gen.wrapping_add(1);
+                    tab.render_line_cache.clear();
+                }
             }
             KeyResult::ApplyLevelColors(disabled) => {
                 self.tabs[self.active_tab].level_colors_disabled = disabled;
