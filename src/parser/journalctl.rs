@@ -1,24 +1,4 @@
-//! Journalctl text output parser.
-//!
-//! Handles `journalctl` output formats that [`super::syslog::SyslogParser`] does not cover:
-//! - `short-iso`:     `2024-02-22T10:15:30+0000 hostname unit[pid]: message`
-//! - `short-precise`: `Feb 22 10:15:30.123456 hostname unit[pid]: message`
-//! - `short-full`:    `Mon 2024-02-22 10:15:30 UTC hostname unit[pid]: message`
-//!
-//! The default `journalctl -o short` output (BSD timestamp without priority)
-//! is already handled by `SyslogParser`, so [`JournalctlParser`] yields a lower
-//! `detect_score` when the input looks like plain BSD syslog.
-//!
-//! ## Hostname validation
-//!
-//! `is_likely_hostname()` rejects tokens that are recognized level keywords
-//! (via `normalize_level`), contain `::` (Rust module paths), or are short
-//! all-uppercase tokens. This prevents false positives where lines like
-//! `2024-07-24T10:00:00Z INFO myapp::server: msg` would incorrectly match as
-//! journalctl format.
-//!
-//! Journalctl text output carries no priority/level field — `level` is always
-//! `None` in the returned `DisplayParts`.
+//! Journalctl text output parser (short-iso, short-precise, short-full).
 
 use std::collections::HashSet;
 
@@ -27,39 +7,31 @@ use super::timestamp::{
 };
 use super::types::{DisplayParts, LogFormatParser};
 
-/// Zero-copy parser for journalctl text output.
 #[derive(Debug)]
 pub struct JournalctlParser;
 
-/// Check if a token looks like a plausible hostname (not a level keyword, not
-/// a Rust module path, and not a short all-uppercase token that is likely a
-/// log level).
+/// Rejects known level keywords, `::` module paths, and short all-uppercase
+/// tokens to prevent false positives against common-log format lines.
 fn is_likely_hostname(token: &str) -> bool {
     if token.is_empty() {
         return false;
     }
-    // Reject known level keywords
     if is_level_keyword(token) {
         return false;
     }
-    // Reject tokens containing "::" (Rust module paths like myapp::server)
     if token.contains("::") {
         return false;
     }
-    // Reject all-uppercase tokens ≤ 8 chars (likely level abbreviations)
     if token.len() <= 8
         && token
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
     {
-        // Allow single-char hostnames only if they are lowercase (already filtered above)
         return false;
     }
     true
 }
 
-/// Extract hostname + unit[pid]: message after a timestamp.
-/// Input `rest` should start right after the timestamp (leading space expected).
 fn parse_host_unit_message<'a>(rest: &'a str) -> Option<DisplayParts<'a>> {
     let rest = rest.strip_prefix(' ')?;
     if rest.is_empty() {
@@ -68,11 +40,9 @@ fn parse_host_unit_message<'a>(rest: &'a str) -> Option<DisplayParts<'a>> {
 
     let mut parts = DisplayParts::default();
 
-    // hostname (next space-delimited token)
     let space = rest.find(' ')?;
     let hostname = &rest[..space];
 
-    // Validate that the token looks like a hostname
     if !is_likely_hostname(hostname) {
         return None;
     }
@@ -84,7 +54,6 @@ fn parse_host_unit_message<'a>(rest: &'a str) -> Option<DisplayParts<'a>> {
         return Some(parts);
     }
 
-    // unit[pid]: message
     if let Some(colon_pos) = rest.find(": ") {
         let tag = &rest[..colon_pos];
         extract_unit_pid(tag, &mut parts);
@@ -100,14 +69,12 @@ fn parse_host_unit_message<'a>(rest: &'a str) -> Option<DisplayParts<'a>> {
             parts.message = Some(message);
         }
     } else {
-        // No colon — treat as message
         parts.message = Some(rest);
     }
 
     Some(parts)
 }
 
-/// Extract unit name and optional PID from a tag like `sshd[1234]` or `kernel`.
 fn extract_unit_pid<'a>(tag: &'a str, parts: &mut DisplayParts<'a>) {
     if let Some(bracket_start) = tag.find('[') {
         let unit = &tag[..bracket_start];
@@ -128,26 +95,22 @@ impl LogFormatParser for JournalctlParser {
             return None;
         }
 
-        // Skip journalctl header/footer lines
         if s.starts_with("-- ") {
             return None;
         }
 
-        // Try short-full first (weekday prefix is most distinctive)
         if let Some((timestamp, consumed)) = parse_full_timestamp(s) {
             let mut parts = parse_host_unit_message(&s[consumed..])?;
             parts.timestamp = Some(timestamp);
             return Some(parts);
         }
 
-        // Try ISO 8601 timestamp (short-iso)
         if let Some((timestamp, consumed)) = parse_iso_timestamp(s) {
             let mut parts = parse_host_unit_message(&s[consumed..])?;
             parts.timestamp = Some(timestamp);
             return Some(parts);
         }
 
-        // Try BSD with microseconds (short-precise)
         if let Some((timestamp, consumed)) = parse_bsd_precise_timestamp(s) {
             let mut parts = parse_host_unit_message(&s[consumed..])?;
             parts.timestamp = Some(timestamp);
@@ -180,36 +143,14 @@ impl LogFormatParser for JournalctlParser {
         result
     }
 
-    fn detect_score(&self, sample: &[&[u8]]) -> f64 {
-        if sample.is_empty() {
-            return 0.0;
-        }
-        let mut parsed = 0usize;
-        for &line in sample {
-            if self.parse_line(line).is_some() {
-                parsed += 1;
-            }
-        }
-        if parsed == 0 {
-            return 0.0;
-        }
-        parsed as f64 / sample.len() as f64
-    }
-
     fn name(&self) -> &str {
         "journalctl"
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── JournalctlParser: short-iso format ─────────────────────────────
 
     #[test]
     fn test_short_iso_full_line() {

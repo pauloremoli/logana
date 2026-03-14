@@ -1,27 +1,18 @@
-//! Syslog parser supporting RFC 3164 (BSD syslog) and RFC 5424.
-//!
-//! - **RFC 3164**: `<PRI>Mmm DD HH:MM:SS hostname app[pid]: message`
-//! - **RFC 5424**: `<PRI>VER TIMESTAMP HOSTNAME APP PROCID MSGID [SD] MSG`
-//!
-//! Priority is decoded as `facility * 8 + severity`; severity maps to
-//! `ERROR` (0–3), `WARN` (4), `INFO` (5–6), `DEBUG` (7).
+//! Syslog parser supporting RFC 3164 (BSD) and RFC 5424.
 
 use std::collections::HashSet;
 
 use super::types::{DisplayParts, LogFormatParser};
 
-/// Zero-copy syslog parser supporting both RFC 3164 and RFC 5424 formats.
 #[derive(Debug)]
 pub struct SyslogParser;
 
-// Facility names indexed by facility code (0..23).
 const FACILITY_NAMES: &[&str] = &[
     "kern", "user", "mail", "daemon", "auth", "syslog", "lpr", "news", "uucp", "cron", "authpriv",
     "ftp", "ntp", "audit", "alert", "clock", "local0", "local1", "local2", "local3", "local4",
     "local5", "local6", "local7",
 ];
 
-/// Map syslog severity (0-7) to a human-readable level string.
 fn severity_to_level(severity: u8) -> &'static str {
     match severity {
         0..=3 => "ERROR",
@@ -32,30 +23,24 @@ fn severity_to_level(severity: u8) -> &'static str {
     }
 }
 
-/// Parse a `<PRI>` prefix. Returns `(priority, bytes_consumed)`.
 fn parse_priority(line: &[u8]) -> Option<(u8, usize)> {
     if line.is_empty() || line[0] != b'<' {
         return None;
     }
-    // Find closing '>'
     let close = line[1..].iter().position(|&b| b == b'>')?;
     if close == 0 || close > 3 {
-        return None; // 1-3 digits
+        return None;
     }
     let pri_str = std::str::from_utf8(&line[1..1 + close]).ok()?;
     let pri: u8 = pri_str.parse().ok()?;
-    Some((pri, close + 2)) // skip '<', digits, '>'
+    Some((pri, close + 2))
 }
 
-// BSD month abbreviations for RFC 3164 timestamp detection.
 const BSD_MONTHS: &[&str] = &[
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// Check if the given slice starts with a BSD timestamp (`Mmm DD HH:MM:SS` or `Mmm  D HH:MM:SS`).
-/// Returns the timestamp string and bytes consumed if matched.
 fn parse_bsd_timestamp(s: &str) -> Option<(&str, usize)> {
-    // Minimum: "Mmm DD HH:MM:SS" = 15 chars, "Mmm  D HH:MM:SS" = 15 chars
     if s.len() < 15 {
         return None;
     }
@@ -63,13 +48,10 @@ fn parse_bsd_timestamp(s: &str) -> Option<(&str, usize)> {
     if !BSD_MONTHS.contains(&month) {
         return None;
     }
-    // Space after month
     if s.as_bytes()[3] != b' ' {
         return None;
     }
-    // Day: either " D" (space-padded single digit) or "DD"
     let day_end = if s.as_bytes()[4] == b' ' {
-        // " D " — single digit day
         if !s.as_bytes()[5].is_ascii_digit() {
             return None;
         }
@@ -79,11 +61,9 @@ fn parse_bsd_timestamp(s: &str) -> Option<(&str, usize)> {
     } else {
         return None;
     };
-    // Space before time
     if day_end >= s.len() || s.as_bytes()[day_end] != b' ' {
         return None;
     }
-    // HH:MM:SS
     let time_start = day_end + 1;
     if time_start + 8 > s.len() {
         return None;
@@ -104,31 +84,20 @@ fn parse_bsd_timestamp(s: &str) -> Option<(&str, usize)> {
     Some((&s[..end], end))
 }
 
-/// Try to parse an RFC 5424 line: `<PRI>VER TIMESTAMP HOSTNAME APP PROCID MSGID [SD] MSG`
 fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
     let severity = priority & 0x07;
     let facility = priority >> 3;
 
-    // Version digit + space
     if s.is_empty() || !s.as_bytes()[0].is_ascii_digit() {
         return None;
     }
     let ver_end = s.find(' ')?;
     let rest = &s[ver_end + 1..];
 
-    // TIMESTAMP (ISO 8601 or "-")
     let (timestamp, rest) = next_token(rest)?;
-
-    // HOSTNAME
     let (hostname, rest) = next_token(rest)?;
-
-    // APP-NAME
     let (app_name, rest) = next_token(rest)?;
-
-    // PROCID
     let (procid, rest) = next_token(rest)?;
-
-    // MSGID
     let (msgid, rest) = next_token(rest)?;
 
     let mut parts = DisplayParts::default();
@@ -140,7 +109,6 @@ fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
         parts.target = Some(app_name);
     }
 
-    // Extra fields
     if hostname != "-" {
         parts.extra_fields.push(("hostname", hostname));
     }
@@ -156,7 +124,6 @@ fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
         parts.extra_fields.push(("msgid", msgid));
     }
 
-    // Structured data and message
     let rest = rest.trim_start();
     if rest.is_empty() {
         return Some(parts);
@@ -164,16 +131,13 @@ fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
 
     let msg_start;
     if rest.starts_with('[') {
-        // Parse structured data sections: [SD-ID param="val" ...]
         let mut pos = 0;
         let rest_bytes = rest.as_bytes();
         while pos < rest_bytes.len() && rest_bytes[pos] == b'[' {
-            let sd_start = pos + 1; // position after '['
-            // Find the matching ']', handling quoted values
-            pos += 1; // skip '['
+            let sd_start = pos + 1;
+            pos += 1;
             while pos < rest_bytes.len() && rest_bytes[pos] != b']' {
                 if rest_bytes[pos] == b'"' {
-                    // Skip quoted string
                     pos += 1;
                     while pos < rest_bytes.len() {
                         if rest_bytes[pos] == b'\\' {
@@ -190,11 +154,9 @@ fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
                 }
             }
             if pos < rest_bytes.len() && rest_bytes[pos] == b']' {
-                // Extract SD params from this section
-                let sd_content = &rest[sd_start..pos]; // between [ and ]
+                let sd_content = &rest[sd_start..pos];
                 parse_sd_params(sd_content, &mut parts);
-                pos += 1; // skip ']'
-                // Skip whitespace between SD sections
+                pos += 1;
                 while pos < rest_bytes.len() && rest_bytes[pos] == b' ' {
                     pos += 1;
                 }
@@ -204,7 +166,6 @@ fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
         }
         msg_start = pos;
     } else if rest.starts_with('-') {
-        // No structured data
         msg_start = if rest.len() > 1 && rest.as_bytes()[1] == b' ' {
             2
         } else {
@@ -216,7 +177,6 @@ fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
 
     let msg = rest[msg_start..].trim_start();
     if !msg.is_empty() {
-        // Skip BOM if present
         let msg = msg.strip_prefix('\u{FEFF}').unwrap_or(msg);
         if !msg.is_empty() {
             parts.message = Some(msg);
@@ -226,26 +186,21 @@ fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
     Some(parts)
 }
 
-/// Parse structured data params from an SD element content (between `[` and `]`).
-/// Format: `SD-ID param1="val1" param2="val2"`
 fn parse_sd_params<'a>(content: &'a str, parts: &mut DisplayParts<'a>) {
-    // Skip the SD-ID (first space-delimited token)
     let rest = match content.find(' ') {
         Some(pos) => &content[pos + 1..],
-        None => return, // No params, just SD-ID
+        None => return,
     };
 
     let mut pos = 0;
     let bytes = rest.as_bytes();
     while pos < bytes.len() {
-        // Skip whitespace
         while pos < bytes.len() && bytes[pos] == b' ' {
             pos += 1;
         }
         if pos >= bytes.len() {
             break;
         }
-        // Read param name up to '='
         let name_start = pos;
         while pos < bytes.len() && bytes[pos] != b'=' {
             pos += 1;
@@ -254,13 +209,12 @@ fn parse_sd_params<'a>(content: &'a str, parts: &mut DisplayParts<'a>) {
             break;
         }
         let param_name = &rest[name_start..pos];
-        pos += 1; // skip '='
+        pos += 1;
 
-        // Read quoted value
         if pos >= bytes.len() || bytes[pos] != b'"' {
             break;
         }
-        pos += 1; // skip opening '"'
+        pos += 1;
         let val_start = pos;
         while pos < bytes.len() {
             if bytes[pos] == b'\\' {
@@ -273,146 +227,23 @@ fn parse_sd_params<'a>(content: &'a str, parts: &mut DisplayParts<'a>) {
         }
         let param_val = &rest[val_start..pos];
         if pos < bytes.len() {
-            pos += 1; // skip closing '"'
+            pos += 1;
         }
 
         parts.extra_fields.push((param_name, param_val));
     }
 }
 
-/// Try to parse an RFC 3164 line: `<PRI>Mmm DD HH:MM:SS hostname app[pid]: message`
-fn parse_rfc3164<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
-    let severity = priority & 0x07;
-    let facility = priority >> 3;
-
-    let (timestamp, ts_end) = parse_bsd_timestamp(s)?;
-
-    let mut parts = DisplayParts {
-        timestamp: Some(timestamp),
-        level: Some(severity_to_level(severity)),
-        ..Default::default()
-    };
-
-    // Skip space after timestamp
-    let rest = &s[ts_end..];
-    let rest = rest.strip_prefix(' ').unwrap_or(rest);
-
-    if rest.is_empty() {
-        return Some(parts);
-    }
-
-    // hostname (next space-delimited token)
-    let (hostname, rest) = next_token(rest)?;
-    parts.extra_fields.push(("hostname", hostname));
-
-    if rest.is_empty() {
-        return Some(parts);
-    }
-
-    // app_name, optionally followed by [pid], then ':'
-    // Find the colon that ends the tag
+/// Extract `target[pid]: message` from a tag+message region.
+fn extract_tag_and_message<'a>(rest: &'a str, parts: &mut DisplayParts<'a>) {
     if let Some(colon_pos) = rest.find(": ") {
-        let tag = &rest[..colon_pos];
-        // Extract app_name and optional PID
-        if let Some(bracket_start) = tag.find('[') {
-            let app_name = &tag[..bracket_start];
-            parts.target = Some(app_name);
-            if let Some(bracket_end) = tag[bracket_start..].find(']') {
-                let pid = &tag[bracket_start + 1..bracket_start + bracket_end];
-                parts.extra_fields.push(("pid", pid));
-            }
-        } else {
-            parts.target = Some(tag);
-        }
+        extract_unit_pid(&rest[..colon_pos], parts);
         let message = &rest[colon_pos + 2..];
         if !message.is_empty() {
             parts.message = Some(message);
         }
     } else if let Some(colon_pos) = rest.find(':') {
-        // Colon at end of line with no space after
-        let tag = &rest[..colon_pos];
-        if let Some(bracket_start) = tag.find('[') {
-            let app_name = &tag[..bracket_start];
-            parts.target = Some(app_name);
-            if let Some(bracket_end) = tag[bracket_start..].find(']') {
-                let pid = &tag[bracket_start + 1..bracket_start + bracket_end];
-                parts.extra_fields.push(("pid", pid));
-            }
-        } else {
-            parts.target = Some(tag);
-        }
-        let message = rest[colon_pos + 1..].trim_start();
-        if !message.is_empty() {
-            parts.message = Some(message);
-        }
-    } else {
-        // No colon — treat the rest as message
-        parts.message = Some(rest);
-    }
-
-    if facility < FACILITY_NAMES.len() as u8 {
-        parts
-            .extra_fields
-            .push(("facility", FACILITY_NAMES[facility as usize]));
-    }
-
-    Some(parts)
-}
-
-/// Try to parse an RFC 3164 line without a priority prefix.
-/// e.g. `Oct 11 22:14:15 myhost sshd[1234]: Accepted password`
-fn parse_rfc3164_no_pri<'a>(s: &'a str) -> Option<DisplayParts<'a>> {
-    let (timestamp, ts_end) = parse_bsd_timestamp(s)?;
-
-    let mut parts = DisplayParts {
-        timestamp: Some(timestamp),
-        ..Default::default()
-    };
-
-    let rest = &s[ts_end..];
-    let rest = rest.strip_prefix(' ').unwrap_or(rest);
-
-    if rest.is_empty() {
-        return Some(parts);
-    }
-
-    // hostname
-    let (hostname, rest) = next_token(rest)?;
-    parts.extra_fields.push(("hostname", hostname));
-
-    if rest.is_empty() {
-        return Some(parts);
-    }
-
-    // app_name[pid]: message
-    if let Some(colon_pos) = rest.find(": ") {
-        let tag = &rest[..colon_pos];
-        if let Some(bracket_start) = tag.find('[') {
-            let app_name = &tag[..bracket_start];
-            parts.target = Some(app_name);
-            if let Some(bracket_end) = tag[bracket_start..].find(']') {
-                let pid = &tag[bracket_start + 1..bracket_start + bracket_end];
-                parts.extra_fields.push(("pid", pid));
-            }
-        } else {
-            parts.target = Some(tag);
-        }
-        let message = &rest[colon_pos + 2..];
-        if !message.is_empty() {
-            parts.message = Some(message);
-        }
-    } else if let Some(colon_pos) = rest.find(':') {
-        let tag = &rest[..colon_pos];
-        if let Some(bracket_start) = tag.find('[') {
-            let app_name = &tag[..bracket_start];
-            parts.target = Some(app_name);
-            if let Some(bracket_end) = tag[bracket_start..].find(']') {
-                let pid = &tag[bracket_start + 1..bracket_start + bracket_end];
-                parts.extra_fields.push(("pid", pid));
-            }
-        } else {
-            parts.target = Some(tag);
-        }
+        extract_unit_pid(&rest[..colon_pos], parts);
         let message = rest[colon_pos + 1..].trim_start();
         if !message.is_empty() {
             parts.message = Some(message);
@@ -420,11 +251,56 @@ fn parse_rfc3164_no_pri<'a>(s: &'a str) -> Option<DisplayParts<'a>> {
     } else {
         parts.message = Some(rest);
     }
+}
+
+fn extract_unit_pid<'a>(tag: &'a str, parts: &mut DisplayParts<'a>) {
+    if let Some(bracket_start) = tag.find('[') {
+        parts.target = Some(&tag[..bracket_start]);
+        if let Some(bracket_end) = tag[bracket_start..].find(']') {
+            parts
+                .extra_fields
+                .push(("pid", &tag[bracket_start + 1..bracket_start + bracket_end]));
+        }
+    } else {
+        parts.target = Some(tag);
+    }
+}
+
+fn parse_rfc3164_inner<'a>(s: &'a str, priority: Option<u8>) -> Option<DisplayParts<'a>> {
+    let (timestamp, ts_end) = parse_bsd_timestamp(s)?;
+
+    let mut parts = DisplayParts {
+        timestamp: Some(timestamp),
+        level: priority.map(|p| severity_to_level(p & 0x07)),
+        ..Default::default()
+    };
+
+    let rest = s[ts_end..].strip_prefix(' ').unwrap_or(&s[ts_end..]);
+    if rest.is_empty() {
+        return Some(parts);
+    }
+
+    let (hostname, rest) = next_token(rest)?;
+    parts.extra_fields.push(("hostname", hostname));
+
+    if rest.is_empty() {
+        return Some(parts);
+    }
+
+    extract_tag_and_message(rest, &mut parts);
+
+    if let Some(pri) = priority {
+        let facility = pri >> 3;
+        if facility < FACILITY_NAMES.len() as u8 {
+            parts
+                .extra_fields
+                .push(("facility", FACILITY_NAMES[facility as usize]));
+        }
+    }
 
     Some(parts)
 }
 
-/// Extract the next space-delimited token and the remaining string.
 fn next_token(s: &str) -> Option<(&str, &str)> {
     if s.is_empty() {
         return None;
@@ -442,25 +318,17 @@ impl LogFormatParser for SyslogParser {
             return None;
         }
 
-        // Try with priority prefix first
         if let Some((priority, consumed)) = parse_priority(line) {
             let rest = &s[consumed..];
-            // Try RFC 5424 first (starts with version digit)
             if let Some(parts) = parse_rfc5424(rest, priority) {
                 return Some(parts);
             }
-            // Try RFC 3164
-            if let Some(parts) = parse_rfc3164(rest, priority) {
+            if let Some(parts) = parse_rfc3164_inner(rest, Some(priority)) {
                 return Some(parts);
             }
         }
 
-        // Try RFC 3164 without priority (bare BSD timestamp)
-        if let Some(parts) = parse_rfc3164_no_pri(s) {
-            return Some(parts);
-        }
-
-        None
+        parse_rfc3164_inner(s, None)
     }
 
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String> {
@@ -491,36 +359,14 @@ impl LogFormatParser for SyslogParser {
         result
     }
 
-    fn detect_score(&self, sample: &[&[u8]]) -> f64 {
-        if sample.is_empty() {
-            return 0.0;
-        }
-        let mut parsed = 0usize;
-        for &line in sample {
-            if self.parse_line(line).is_some() {
-                parsed += 1;
-            }
-        }
-        if parsed == 0 {
-            return 0.0;
-        }
-        parsed as f64 / sample.len() as f64
-    }
-
     fn name(&self) -> &str {
         "syslog"
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Priority decoding ────────────────────────────────────────────────
 
     #[test]
     fn test_parse_priority_valid() {

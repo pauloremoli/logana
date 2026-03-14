@@ -1,33 +1,13 @@
-//! OpenTelemetry (OTLP) log format parser.
-//!
-//! Handles two common serialization variants, both detected automatically:
-//!
-//! - **OTLP/JSON (protobuf-JSON encoding)**
-//!   Fields: `timeUnixNano`, `severityNumber`/`severityText`,
-//!   `body` as `{"stringValue":"…"}`, `attributes` as
-//!   `[{"key":"k","value":{"stringValue":"v"}}]`.
-//!
-//! - **OTel SDK JSON** (Python, Node, Java, etc.)
-//!   Fields: `timestamp` (ISO), `severity_text`/`severity_number`,
-//!   `body` as a direct string, `attributes` as a flat `{"key":"value"}` object.
-//!
-//! Detection scores above 1.0 (up to 1.5) so the parser beats the generic
-//! JSON parser when OTLP-specific fields are present.
+//! OpenTelemetry (OTLP) log format parser. Handles protobuf-JSON and OTel SDK JSON.
 
 use std::collections::HashSet;
 
 use super::json::parse_json_line;
 use super::types::{DisplayParts, LogFormatParser};
 
-/// OTLP log format parser.
 #[derive(Debug)]
 pub struct OtlpParser;
 
-// ---------------------------------------------------------------------------
-// Detection helpers
-// ---------------------------------------------------------------------------
-
-/// Returns `true` when the field list looks like an OTel log record.
 fn is_otlp_record(fields: &[super::json::JsonField<'_>]) -> bool {
     let has_time_unix_nano = fields
         .iter()
@@ -45,15 +25,9 @@ fn is_otlp_record(fields: &[super::json::JsonField<'_>]) -> bool {
     });
     let has_body = fields.iter().any(|f| matches!(f.key, "body" | "Body"));
 
-    // Nanosecond timestamp is OTLP/JSON-only; severity+body covers SDK variants.
     has_time_unix_nano || (has_severity && has_body)
 }
 
-// ---------------------------------------------------------------------------
-// Value extraction helpers
-// ---------------------------------------------------------------------------
-
-/// Map an OTLP `severityNumber` (1–24) to a canonical level string.
 fn severity_number_to_level(num_str: &str) -> Option<&'static str> {
     let n: u32 = num_str.trim().parse().ok()?;
     Some(match n {
@@ -67,8 +41,6 @@ fn severity_number_to_level(num_str: &str) -> Option<&'static str> {
     })
 }
 
-/// Extract a scalar string from an OTLP `AnyValue` object such as
-/// `{"stringValue":"GET"}`, `{"intValue":"42"}`, `{"boolValue":"true"}`.
 fn extract_any_value_str(value: &str) -> Option<&str> {
     let fields = parse_json_line(value.as_bytes())?;
     for f in &fields {
@@ -82,7 +54,6 @@ fn extract_any_value_str(value: &str) -> Option<&str> {
     None
 }
 
-/// Returns `true` for attribute keys that should fill the `target` slot.
 fn is_target_attr(key: &str) -> bool {
     matches!(
         key,
@@ -90,15 +61,6 @@ fn is_target_attr(key: &str) -> bool {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Attribute parsing
-// ---------------------------------------------------------------------------
-
-/// Parse OTLP array-style attributes:
-/// `[{"key":"k","value":{"stringValue":"v"}}, …]`
-///
-/// Also handles the Go SDK variant:
-/// `[{"Key":"k","Value":{"Type":"STRING","Value":"v"}}, …]`
 fn parse_otlp_attr_array<'a>(array_str: &'a str) -> Vec<(&'a str, &'a str)> {
     let mut result = Vec::new();
     let bytes = array_str.as_bytes();
@@ -106,9 +68,8 @@ fn parse_otlp_attr_array<'a>(array_str: &'a str) -> Vec<(&'a str, &'a str)> {
         return result;
     }
 
-    let mut i = 1usize; // skip '['
+    let mut i = 1usize;
     while i < bytes.len() {
-        // Skip whitespace and commas between elements.
         while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n' | b',') {
             i += 1;
         }
@@ -119,7 +80,6 @@ fn parse_otlp_attr_array<'a>(array_str: &'a str) -> Vec<(&'a str, &'a str)> {
             break;
         }
 
-        // Find the closing `}` for this element, respecting nesting and strings.
         let start = i;
         let mut depth = 0usize;
         let mut in_str = false;
@@ -127,7 +87,7 @@ fn parse_otlp_attr_array<'a>(array_str: &'a str) -> Vec<(&'a str, &'a str)> {
             match bytes[i] {
                 b'"' => in_str = !in_str,
                 b'\\' if in_str => {
-                    i += 1; // skip escaped char; outer i++ skips the backslash
+                    i += 1;
                 }
                 b'{' if !in_str => depth += 1,
                 b'}' if !in_str => {
@@ -163,7 +123,6 @@ fn parse_otlp_attr_array<'a>(array_str: &'a str) -> Vec<(&'a str, &'a str)> {
     result
 }
 
-/// Parse OTel SDK flat-dict attributes: `{"http.method":"GET","service.name":"svc"}`
 fn parse_sdk_attr_dict(dict_str: &str) -> Vec<(&str, &str)> {
     parse_json_line(dict_str.as_bytes())
         .unwrap_or_default()
@@ -171,10 +130,6 @@ fn parse_sdk_attr_dict(dict_str: &str) -> Vec<(&str, &str)> {
         .map(|f| (f.key, f.value))
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Classification
-// ---------------------------------------------------------------------------
 
 fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayParts<'a> {
     let mut timestamp: Option<&'a str> = None;
@@ -186,8 +141,6 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
 
     for f in fields {
         match f.key {
-            // Timestamps — nanosecond (OTLP/JSON) or ISO (SDK).
-            // Prefer timeUnixNano; observed* is fallback.
             "timeUnixNano" => {
                 timestamp = Some(f.value);
             }
@@ -198,7 +151,6 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
                 timestamp = Some(f.value);
             }
 
-            // Level text form takes priority over numeric.
             "severityText" | "severity_text" | "SeverityText"
                 if level_text.is_none() && !f.value.is_empty() =>
             {
@@ -209,7 +161,6 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
                 level_num = Some(f.value);
             }
 
-            // Body: direct string (SDK) or AnyValue object (OTLP/JSON).
             "body" | "Body" if message.is_none() => {
                 if f.value_is_string {
                     message = Some(f.value);
@@ -218,7 +169,6 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
                 }
             }
 
-            // Attributes: array (OTLP/JSON, Go SDK) or flat dict (Python/JS SDK).
             "attributes" | "Attributes" => {
                 let attrs = if f.value.trim_start().starts_with('[') {
                     parse_otlp_attr_array(f.value)
@@ -234,7 +184,6 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
                 }
             }
 
-            // Resource block — mine it for service.name.
             "resource" | "Resource" => {
                 if let Some(res_fields) = parse_json_line(f.value.as_bytes()) {
                     for rf in &res_fields {
@@ -254,7 +203,6 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
                 }
             }
 
-            // Trace context — expose as extra fields.
             "traceId" | "trace_id" | "TraceID" => {
                 extra_fields.push(("traceId", f.value));
             }
@@ -262,7 +210,6 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
                 extra_fields.push(("spanId", f.value));
             }
 
-            // Internal / bookkeeping fields — skip.
             "flags"
             | "traceFlags"
             | "trace_flags"
@@ -277,7 +224,6 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
         }
     }
 
-    // Derive level from numeric severity when text form is absent.
     let level: Option<&'a str> = level_text.or_else(|| {
         level_num
             .and_then(severity_number_to_level)
@@ -293,10 +239,6 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
         message,
     }
 }
-
-// ---------------------------------------------------------------------------
-// LogFormatParser impl
-// ---------------------------------------------------------------------------
 
 impl LogFormatParser for OtlpParser {
     fn parse_line<'a>(&self, line: &'a [u8]) -> Option<DisplayParts<'a>> {
@@ -353,8 +295,6 @@ impl LogFormatParser for OtlpParser {
         if otlp_count == 0 {
             return 0.0;
         }
-        // Score above 1.0 to take priority over the generic JSON parser when
-        // OTLP-specific fields are present.
         otlp_count as f64 / sample.len() as f64 * 1.5
     }
 
@@ -363,15 +303,9 @@ impl LogFormatParser for OtlpParser {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── severity_number_to_level ─────────────────────────────────────────────
 
     #[test]
     fn test_severity_number_trace() {

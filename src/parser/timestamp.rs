@@ -1,43 +1,11 @@
-//! Shared timestamp parsing utilities used across all log format parsers.
-//!
-//! Each function returns `Option<(&str, usize)>` where the `&str` is the
-//! matched timestamp slice borrowed from the input and `usize` is the number
-//! of bytes consumed. All functions are `pub(crate)` — internal to the parser
-//! module.
-//!
-//! ## Timestamp parsers
-//!
-//! - `parse_iso_timestamp`: `YYYY-MM-DDTHH:MM:SS...` (ISO 8601, with optional
-//!   fractional seconds and timezone)
-//! - `parse_bsd_precise_timestamp`: `Mmm DD HH:MM:SS.FFFFFF` (BSD with microseconds)
-//! - `parse_full_timestamp`: `Www YYYY-MM-DD HH:MM:SS TZ` (weekday-prefixed)
-//! - `parse_datetime_timestamp`: `YYYY-MM-DD HH:MM:SS[.mmm][,mmm]` (logback,
-//!   Python, Spring Boot; supports `.` and `,` as fractional separator, optional
-//!   timezone)
-//! - `parse_slash_datetime`: `YYYY/MM/DD HH:MM:SS[.frac]` (nginx error, Go
-//!   standard log)
-//!
-//! ## Level normalization
-//!
-//! `normalize_level(token) -> Option<&'static str>`: maps level keywords
-//! (case-insensitive) to canonical strings: TRACE, DEBUG, INFO, NOTICE, WARN,
-//! ERROR, FATAL. Recognizes abbreviations: TRC, DBG, INF, WRN, ERR, FTL,
-//! CRIT, EMERG, ALERT.
+//! Shared timestamp parsing and level normalization utilities.
 
-/// Weekday abbreviations used by `journalctl -o short-full`.
 pub(crate) const WEEKDAYS: &[&str] = &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-/// BSD month abbreviations.
 pub(crate) const BSD_MONTHS: &[&str] = &[
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-// ---------------------------------------------------------------------------
-// Timestamp parsers — each returns `(timestamp_slice, bytes_consumed)`.
-// ---------------------------------------------------------------------------
-
-/// Try ISO 8601 timestamp: `2024-02-22T10:15:30+0000` or `2024-02-22T10:15:30.123456+00:00`.
-/// Stops at the first space after the 'T'.
 pub(crate) fn parse_iso_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 19 {
         return None;
@@ -61,8 +29,6 @@ pub(crate) fn parse_iso_timestamp(s: &str) -> Option<(&str, usize)> {
     Some((&s[..end], end))
 }
 
-/// Try BSD timestamp with microseconds: `Feb 22 10:15:30.123456`.
-/// Returns the full timestamp including microseconds.
 pub(crate) fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 16 {
         return None;
@@ -117,8 +83,6 @@ pub(crate) fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
     Some((&s[..end], end))
 }
 
-/// Try short-full timestamp: `Mon 2024-02-22 10:15:30 UTC`.
-/// Format: `Www YYYY-MM-DD HH:MM:SS TZ`
 pub(crate) fn parse_full_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 27 {
         return None;
@@ -177,16 +141,11 @@ pub(crate) fn parse_full_timestamp(s: &str) -> Option<(&str, usize)> {
     Some((&s[..tz_end], tz_end))
 }
 
-/// Parse `YYYY-MM-DD HH:MM:SS[.mmm][,mmm]` (logback, Python, Spring Boot).
-/// Supports both `.` and `,` as fractional separator.
-/// Also handles optional timezone suffix like `+00:00` or `Z`.
 pub(crate) fn parse_datetime_timestamp(s: &str) -> Option<(&str, usize)> {
-    // Minimum: "YYYY-MM-DD HH:MM:SS" = 19 chars
     if s.len() < 19 {
         return None;
     }
     let b = s.as_bytes();
-    // YYYY-MM-DD
     if !b[0].is_ascii_digit()
         || !b[1].is_ascii_digit()
         || !b[2].is_ascii_digit()
@@ -200,11 +159,9 @@ pub(crate) fn parse_datetime_timestamp(s: &str) -> Option<(&str, usize)> {
     {
         return None;
     }
-    // Space (not 'T' — that's ISO handled elsewhere)
     if b[10] != b' ' {
         return None;
     }
-    // HH:MM:SS
     if !b[11].is_ascii_digit()
         || !b[12].is_ascii_digit()
         || b[13] != b':'
@@ -217,39 +174,29 @@ pub(crate) fn parse_datetime_timestamp(s: &str) -> Option<(&str, usize)> {
         return None;
     }
     let mut end = 19;
-    // Optional fractional seconds: `.mmm` or `,mmm`
     if end < s.len() && (b[end] == b'.' || b[end] == b',') {
         end += 1;
         while end < s.len() && b[end].is_ascii_digit() {
             end += 1;
         }
     }
-    // Optional timezone: Z, +HH:MM, +HHMM, +HH
     if end < s.len() {
         if b[end] == b'Z' {
             end += 1;
         } else if (b[end] == b'+' || b[end] == b'-') && end + 2 < s.len() {
             let tz_start = end;
             end += 1;
-            // digits
             while end < s.len() && (b[end].is_ascii_digit() || b[end] == b':') {
                 end += 1;
             }
-            // Validate we consumed something meaningful (at least +HH)
             if end - tz_start < 3 {
-                end = tz_start; // revert
+                end = tz_start;
             }
         }
     }
     Some((&s[..end], end))
 }
 
-// ---------------------------------------------------------------------------
-// Level normalization
-// ---------------------------------------------------------------------------
-
-/// Map a level keyword (case-insensitive) to a canonical uppercase string.
-/// Returns `None` for unrecognized tokens.
 pub(crate) fn normalize_level(token: &str) -> Option<&'static str> {
     match token.to_ascii_uppercase().as_str() {
         "TRACE" | "TRC" => Some("TRACE"),
@@ -263,7 +210,6 @@ pub(crate) fn normalize_level(token: &str) -> Option<&'static str> {
     }
 }
 
-/// Check if a token looks like a known log level keyword (case-insensitive).
 pub(crate) fn is_level_keyword(token: &str) -> bool {
     normalize_level(token).is_some()
 }

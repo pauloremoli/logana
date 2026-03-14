@@ -1,21 +1,5 @@
-//! Catch-all parser for the `TIMESTAMP + LEVEL + TARGET + MESSAGE` log family.
-//!
-//! Covers env_logger, tracing fmt, log4rs, logback, log4j2, Spring Boot,
-//! Python logging, loguru, structlog, and more. Tries sub-strategies in order:
-//! env_logger → logback/log4j2 → Spring Boot → Python basic/prod → loguru →
-//! structlog → tracing-subscriber (with spans) → generic fallback.
-//!
-//! A recognizable level keyword is required in all sub-strategies to prevent
-//! false positives against syslog/journalctl lines. Applies a 0.95× score
-//! penalty to yield to more specific parsers on ties.
-//!
-//! ## Span prefix detection
-//!
-//! `try_parse_span_prefix(s)` detects `identifier{k=v ...}: ` prefix and
-//! returns `(Some(SpanInfo), remaining)`. `parse_tracing_span_fields(s)` parses
-//! space-separated `key=value` pairs inside braces, handling both quoted
-//! (`"value"`) and unquoted values. `collect_field_names` emits `"span"` plus
-//! dotted names like `"span.method"` for each discovered span sub-field.
+//! Catch-all parser for the TIMESTAMP + LEVEL + TARGET + MESSAGE log family.
+//! Covers env_logger, tracing fmt, logback, Spring Boot, Python, loguru, structlog.
 
 use std::collections::HashSet;
 
@@ -24,16 +8,8 @@ use super::timestamp::{
 };
 use super::types::{DisplayParts, LogFormatParser, SpanInfo};
 
-/// Zero-copy parser for the TIMESTAMP + LEVEL + TARGET + MESSAGE family.
 #[derive(Debug)]
 pub struct CommonLogParser;
-
-// ---------------------------------------------------------------------------
-// Sub-strategy parsers
-// ---------------------------------------------------------------------------
-
-/// env_logger: `[ISO LEVEL  target] msg`
-/// or `[DATETIME LEVEL target] msg`
 fn try_env_logger(s: &str) -> Option<DisplayParts<'_>> {
     if !s.starts_with('[') {
         return None;
@@ -43,13 +19,9 @@ fn try_env_logger(s: &str) -> Option<DisplayParts<'_>> {
     let rest = &s[close + 1..];
     let rest = rest.strip_prefix(' ').unwrap_or(rest);
 
-    // Split bracket content: timestamp, level, target
     let mut tokens = bracket_content.split_whitespace();
-
-    // First token(s): try to find a timestamp + level
     let first = tokens.next()?;
 
-    // Check if first is a timestamp
     if let Some((_ts, ts_end)) = parse_iso_timestamp(bracket_content) {
         let after_ts = bracket_content[ts_end..].trim_start();
         let mut after_tokens = after_ts.split_whitespace();
@@ -92,7 +64,6 @@ fn try_env_logger(s: &str) -> Option<DisplayParts<'_>> {
         return Some(parts);
     }
 
-    // Maybe just LEVEL target (no timestamp inside brackets)
     let level = normalize_level(first)?;
     let target = tokens.next();
     let remaining: String = tokens.collect::<Vec<_>>().join(" ");
@@ -104,10 +75,7 @@ fn try_env_logger(s: &str) -> Option<DisplayParts<'_>> {
     if let Some(t) = target.filter(|t| !t.is_empty()) {
         parts.target = Some(t);
     }
-    let msg = if remaining.is_empty() {
-        rest
-    } else if rest.is_empty() {
-        // Shouldn't happen but be safe
+    let msg = if rest.is_empty() && !remaining.is_empty() {
         return Some(parts);
     } else {
         rest
@@ -118,14 +86,6 @@ fn try_env_logger(s: &str) -> Option<DisplayParts<'_>> {
     Some(parts)
 }
 
-// ---------------------------------------------------------------------------
-// Tracing-subscriber span helpers
-// ---------------------------------------------------------------------------
-
-/// Parse a span prefix `name{k=v ...}: ` from `s`.
-///
-/// Returns `(Some(SpanInfo), rest_after_colon_space)` on success, or
-/// `(None, s)` unchanged if the prefix is not present.
 fn try_parse_span_prefix(s: &str) -> (Option<SpanInfo<'_>>, &str) {
     let brace = match s.find('{') {
         Some(p) => p,
@@ -148,10 +108,6 @@ fn try_parse_span_prefix(s: &str) -> (Option<SpanInfo<'_>>, &str) {
     (Some(SpanInfo { name, fields }), &after[2..])
 }
 
-/// Parse `key=value` pairs from a span body string (zero-copy).
-///
-/// Handles quoted values (`key="hello world"`) and unquoted values
-/// (`key=GET`, `key=/api/path`). Pairs are whitespace-separated.
 fn parse_tracing_span_fields(s: &str) -> Vec<(&str, &str)> {
     let mut fields = Vec::new();
     let mut rest = s.trim();
@@ -182,10 +138,6 @@ fn parse_tracing_span_fields(s: &str) -> Vec<(&str, &str)> {
     fields
 }
 
-/// Rust tracing-subscriber fmt: `ISO LEVEL  span{k=v}: target: message`.
-///
-/// Only matches when a span prefix is present; non-span lines are handled by
-/// `try_generic` which already correctly parses `TIMESTAMP LEVEL target: msg`.
 fn try_tracing_fmt(s: &str) -> Option<DisplayParts<'_>> {
     let (timestamp, consumed) = parse_iso_timestamp(s)?;
     let rest = s.get(consumed..)?.trim_start();
@@ -194,7 +146,7 @@ fn try_tracing_fmt(s: &str) -> Option<DisplayParts<'_>> {
     let rest = rest[space..].trim_start();
 
     let (span, rest) = try_parse_span_prefix(rest);
-    let span = span?; // bail — non-span lines fall through to try_generic
+    let span = span?;
 
     let mut parts = DisplayParts {
         timestamp: Some(timestamp),
@@ -219,7 +171,6 @@ fn try_tracing_fmt(s: &str) -> Option<DisplayParts<'_>> {
     Some(parts)
 }
 
-/// logback/log4j2: `DATETIME [thread] LEVEL target - msg`
 fn try_logback(s: &str) -> Option<DisplayParts<'_>> {
     let (timestamp, consumed) = parse_datetime_timestamp(s)?;
 
@@ -228,23 +179,17 @@ fn try_logback(s: &str) -> Option<DisplayParts<'_>> {
         return None;
     }
 
-    // [thread]
     if !rest.starts_with('[') {
         return None;
     }
     let close = rest.find(']')?;
     let thread = &rest[1..close];
-    let rest = &rest[close + 1..];
-    let rest = rest.trim_start();
+    let rest = &rest[close + 1..].trim_start();
 
-    // LEVEL
     let space = rest.find(' ')?;
-    let level_token = &rest[..space];
-    let level = normalize_level(level_token)?;
-    let rest = &rest[space + 1..];
-    let rest = rest.trim_start();
+    let level = normalize_level(&rest[..space])?;
+    let rest = rest[space + 1..].trim_start();
 
-    // target - message  or  target : message
     let mut parts = DisplayParts {
         timestamp: Some(timestamp),
         level: Some(level),
@@ -277,7 +222,6 @@ fn try_logback(s: &str) -> Option<DisplayParts<'_>> {
     Some(parts)
 }
 
-/// Spring Boot: `DATETIME  LEVEL PID --- [thread] target : msg`
 fn try_spring_boot(s: &str) -> Option<DisplayParts<'_>> {
     let (timestamp, consumed) = parse_datetime_timestamp(s)?;
 
@@ -286,36 +230,28 @@ fn try_spring_boot(s: &str) -> Option<DisplayParts<'_>> {
         return None;
     }
 
-    // LEVEL
     let space = rest.find(' ')?;
-    let level_token = &rest[..space];
-    let level = normalize_level(level_token)?;
-    let rest = &rest[space + 1..];
-    let rest = rest.trim_start();
+    let level = normalize_level(&rest[..space])?;
+    let rest = rest[space + 1..].trim_start();
 
-    // PID (numeric)
     let space = rest.find(' ')?;
     let pid = &rest[..space];
     if !pid.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let rest = &rest[space + 1..];
-    let rest = rest.trim_start();
+    let rest = rest[space + 1..].trim_start();
 
-    // --- separator
     if !rest.starts_with("--- ") {
         return None;
     }
     let rest = &rest[4..];
 
-    // [thread]
     if !rest.starts_with('[') {
         return None;
     }
     let close = rest.find(']')?;
     let thread = &rest[1..close];
-    let rest = &rest[close + 1..];
-    let rest = rest.trim_start();
+    let rest = rest[close + 1..].trim_start();
 
     let mut parts = DisplayParts {
         timestamp: Some(timestamp),
@@ -325,7 +261,6 @@ fn try_spring_boot(s: &str) -> Option<DisplayParts<'_>> {
     parts.extra_fields.push(("pid", pid));
     parts.extra_fields.push(("thread", thread.trim()));
 
-    // target : message
     if let Some(sep_pos) = rest.find(" : ") {
         let target = &rest[..sep_pos];
         if !target.is_empty() {
@@ -342,15 +277,12 @@ fn try_spring_boot(s: &str) -> Option<DisplayParts<'_>> {
     Some(parts)
 }
 
-/// Python basic: `LEVEL:target:msg` (no timestamp)
 fn try_python_basic(s: &str) -> Option<DisplayParts<'_>> {
-    // Must start with a level keyword followed by ':'
     let colon1 = s.find(':')?;
     let level_token = &s[..colon1];
     let level = normalize_level(level_token)?;
     let rest = &s[colon1 + 1..];
 
-    // target:msg
     if let Some(colon2) = rest.find(':') {
         let target = &rest[..colon2];
         let msg = &rest[colon2 + 1..];
@@ -367,7 +299,6 @@ fn try_python_basic(s: &str) -> Option<DisplayParts<'_>> {
         }
         Some(parts)
     } else {
-        // Just LEVEL:msg
         let mut parts = DisplayParts {
             level: Some(level),
             ..Default::default()
@@ -386,15 +317,12 @@ fn try_python_prod(s: &str) -> Option<DisplayParts<'_>> {
     let rest = s.get(consumed..)?;
     let rest = rest.strip_prefix(" - ")?;
 
-    // Split by " - "
     let segments: Vec<&str> = rest.splitn(4, " - ").collect();
     if segments.len() < 3 {
         return None;
     }
 
-    let target = segments[0];
-    let level_token = segments[1];
-    let level = normalize_level(level_token)?;
+    let level = normalize_level(segments[1])?;
 
     let mut parts = DisplayParts {
         timestamp: Some(timestamp),
@@ -402,59 +330,31 @@ fn try_python_prod(s: &str) -> Option<DisplayParts<'_>> {
         ..Default::default()
     };
 
-    if !target.is_empty() {
-        parts.target = Some(target);
+    if !segments[0].is_empty() {
+        parts.target = Some(segments[0]);
     }
 
-    // Remaining segments form the message
-    let msg = if segments.len() > 3 {
-        segments[2..].join(" - ")
-    } else {
-        segments[2].to_string()
-    };
-    // We need to return a reference, but the joined string is owned.
-    // Re-find the message position in the original string.
-    let msg_start = s.len() - rest[rest.len() - segments[segments.len() - 1].len()..].len();
-    if segments.len() == 3 {
-        let msg_slice = segments[2];
-        if !msg_slice.is_empty() {
-            parts.message = Some(msg_slice);
-        }
-    } else {
-        // For messages containing " - ", find the start of the third segment
-        let mut offset = 0;
-        for (i, seg) in segments.iter().enumerate() {
-            if i == 2 {
-                let remaining = &rest[offset..];
-                if !remaining.is_empty() {
-                    parts.message = Some(remaining);
-                }
-                break;
-            }
-            offset += seg.len() + 3; // " - "
-        }
+    // Find the message start as a slice into `rest` to stay zero-copy
+    let msg_offset = segments[0].len() + 3 + segments[1].len() + 3;
+    let msg = &rest[msg_offset..];
+    if !msg.is_empty() {
+        parts.message = Some(msg);
     }
-    // Silence unused variable warning
-    let _ = msg_start;
-    let _ = msg;
 
     Some(parts)
 }
 
-/// loguru: `DATETIME | LEVEL    | location - msg`
 fn try_loguru(s: &str) -> Option<DisplayParts<'_>> {
     let (timestamp, consumed) = parse_datetime_timestamp(s)?;
 
     let rest = s.get(consumed..)?;
     let rest = rest.strip_prefix(" | ")?;
 
-    // LEVEL (possibly padded with spaces)
     let pipe = rest.find(" | ")?;
     let level_token = rest[..pipe].trim();
     let level = normalize_level(level_token)?;
     let rest = &rest[pipe + 3..];
 
-    // location - message
     let mut parts = DisplayParts {
         timestamp: Some(timestamp),
         level: Some(level),
@@ -477,13 +377,11 @@ fn try_loguru(s: &str) -> Option<DisplayParts<'_>> {
     Some(parts)
 }
 
-/// structlog: `DATETIME [level    ] msg key=val...`
 fn try_structlog(s: &str) -> Option<DisplayParts<'_>> {
     let (timestamp, consumed) = parse_datetime_timestamp(s)?;
 
     let rest = s.get(consumed..)?.trim_start();
 
-    // [level]
     if !rest.starts_with('[') {
         return None;
     }
@@ -505,10 +403,7 @@ fn try_structlog(s: &str) -> Option<DisplayParts<'_>> {
     Some(parts)
 }
 
-/// Generic fallback: `TIMESTAMP LEVEL rest-as-message`
-/// Also handles: `TIMESTAMP LEVEL target: message` and `TIMESTAMP LEVEL target - message`
 fn try_generic(s: &str) -> Option<DisplayParts<'_>> {
-    // Try ISO timestamp first, then datetime
     let (timestamp, consumed) = parse_iso_timestamp(s).or_else(|| parse_datetime_timestamp(s))?;
 
     let rest = s.get(consumed..)?.trim_start();
@@ -516,7 +411,6 @@ fn try_generic(s: &str) -> Option<DisplayParts<'_>> {
         return None;
     }
 
-    // Next token should be a level keyword
     let space = rest.find(' ').unwrap_or(rest.len());
     let level_token = &rest[..space];
     let level = normalize_level(level_token)?;
@@ -537,11 +431,8 @@ fn try_generic(s: &str) -> Option<DisplayParts<'_>> {
         return Some(parts);
     }
 
-    // Try to extract target: "target:: msg", "target: msg", "target - msg"
-    // Check for Rust module path (contains ::)
     if let Some(double_colon) = rest.find(":: ") {
         let target = &rest[..double_colon];
-        // Validate it looks like a module path
         if !target.is_empty()
             && target
                 .chars()
@@ -556,11 +447,8 @@ fn try_generic(s: &str) -> Option<DisplayParts<'_>> {
         }
     }
 
-    // target: msg (single colon with space)
     if let Some(colon_space) = rest.find(": ") {
         let target_candidate = &rest[..colon_space];
-        // Target should be a reasonable identifier (no spaces before colon for the
-        // first word; allow module paths and simple names)
         let first_space = target_candidate.find(' ');
         if first_space.is_none()
             || target_candidate
@@ -568,7 +456,6 @@ fn try_generic(s: &str) -> Option<DisplayParts<'_>> {
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':' || c == '-' || c == '.')
         {
             if let Some(sp) = first_space {
-                // If there's a space, only take the first word as target
                 let t = &target_candidate[..sp];
                 if !t.is_empty() && !is_level_keyword(t) {
                     parts.target = Some(t);
@@ -589,7 +476,6 @@ fn try_generic(s: &str) -> Option<DisplayParts<'_>> {
         }
     }
 
-    // target - msg (dash separator)
     if let Some(dash_pos) = rest.find(" - ") {
         let target_candidate = &rest[..dash_pos];
         if !target_candidate.contains(' ')
@@ -605,7 +491,6 @@ fn try_generic(s: &str) -> Option<DisplayParts<'_>> {
         }
     }
 
-    // No target detected — entire rest is message
     parts.message = Some(rest);
     Some(parts)
 }
@@ -617,7 +502,6 @@ impl LogFormatParser for CommonLogParser {
             return None;
         }
 
-        // Try sub-strategies in order from most specific to least
         if let Some(parts) = try_spring_boot(s) {
             return Some(parts);
         }
@@ -725,7 +609,6 @@ impl LogFormatParser for CommonLogParser {
         if parsed == 0 {
             return 0.0;
         }
-        // 0.95 penalty: yield to more specific parsers on ties
         (parsed as f64 / sample.len() as f64) * 0.95
     }
 

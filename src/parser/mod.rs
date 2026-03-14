@@ -1,10 +1,4 @@
 //! Log format detection and parser registry.
-//!
-//! [`detect_format`] samples up to 200 lines and returns the [`LogFormatParser`]
-//! with the highest confidence score. Registered parsers in priority order:
-//! [`OtlpParser`] (scores up to 1.5 to beat JSON), [`JsonParser`], [`SyslogParser`],
-//! [`JournalctlParser`], [`ClfParser`], [`LogfmtParser`],
-//! [`CommonLogParser`] (0.95× score penalty as catch-all).
 
 pub mod clf;
 pub mod common_log;
@@ -16,7 +10,6 @@ pub mod syslog;
 pub(crate) mod timestamp;
 pub mod types;
 
-// Re-export all public items for backward-compatible access via `crate::parser::*`.
 pub use clf::ClfParser;
 pub use common_log::CommonLogParser;
 pub use journalctl::JournalctlParser;
@@ -30,7 +23,6 @@ pub use otlp::OtlpParser;
 pub use syslog::SyslogParser;
 pub use types::{DisplayParts, LogFormatParser, SpanInfo, format_span_col};
 
-/// Sample lines, try all registered parsers, return best match.
 pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
     if sample.is_empty() {
         return None;

@@ -1,83 +1,56 @@
 //! Common Log Format (CLF) and Combined Log Format parser.
-//!
-//! - **CLF**:      `host ident authuser [date] "request" status bytes`
-//! - **Combined**: CLF + `"referer" "user-agent"`
-//!
-//! Fields with value `"-"` (ident, authuser, bytes, referer, user_agent) are
-//! omitted from `extra_fields`. Status must be a 3-digit number or `"-"`.
-//!
-//! Date validation uses strict `dd/Mmm/yyyy:HH:MM:SS ±ZZZZ` format (month
-//! abbreviation + digit positions). Field mapping: `timestamp` = date field,
-//! `target` = host, `message` = request line. Extras: `ident`, `authuser`,
-//! `status`, `bytes`, `referer`, `user_agent`.
 
 use std::collections::HashSet;
 
 use super::types::{DisplayParts, LogFormatParser};
 
-/// Zero-copy parser for CLF and Combined Log Format.
 #[derive(Debug)]
 pub struct ClfParser;
 
-/// Month abbreviations for CLF date validation.
 const CLF_MONTHS: &[&str] = &[
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// Parse a CLF/Combined line into `DisplayParts`.
-///
-/// Format: `host ident authuser [dd/Mmm/yyyy:HH:MM:SS ±ZZZZ] "request" status bytes ["referer" "user-agent"]`
 fn parse_clf_line(s: &str) -> Option<DisplayParts<'_>> {
     let mut pos = 0;
 
-    // host
     let (host, new_pos) = next_token(s, pos)?;
     pos = new_pos;
 
-    // ident
     let (ident, new_pos) = next_token(s, pos)?;
     pos = new_pos;
 
-    // authuser
     let (authuser, new_pos) = next_token(s, pos)?;
     pos = new_pos;
 
-    // [date] — must start with '['
     pos = skip_spaces(s, pos);
     if pos >= s.len() || s.as_bytes()[pos] != b'[' {
         return None;
     }
-    pos += 1; // skip '['
+    pos += 1;
     let date_start = pos;
     let close_bracket = s[pos..].find(']')?;
     let date = &s[date_start..pos + close_bracket];
-    pos = pos + close_bracket + 1; // skip ']'
+    pos = pos + close_bracket + 1;
 
-    // Validate date format: dd/Mmm/yyyy:HH:MM:SS ±ZZZZ
     if !validate_clf_date(date) {
         return None;
     }
 
-    // "request"
     pos = skip_spaces(s, pos);
     let (request, new_pos) = read_quoted(s, pos)?;
     pos = new_pos;
 
-    // status
     let (status, new_pos) = next_token(s, pos)?;
     pos = new_pos;
-
-    // Validate status is a 3-digit number or "-"
     if status != "-" && (status.len() != 3 || !status.as_bytes().iter().all(|b| b.is_ascii_digit()))
     {
         return None;
     }
 
-    // bytes
     let (bytes_str, new_pos) = next_token(s, pos)?;
     pos = new_pos;
 
-    // Build parts
     let mut parts = DisplayParts {
         timestamp: Some(date),
         message: Some(request),
@@ -85,7 +58,6 @@ fn parse_clf_line(s: &str) -> Option<DisplayParts<'_>> {
         ..Default::default()
     };
 
-    // Extra fields
     if ident != "-" {
         parts.extra_fields.push(("ident", ident));
     }
@@ -97,7 +69,6 @@ fn parse_clf_line(s: &str) -> Option<DisplayParts<'_>> {
         parts.extra_fields.push(("bytes", bytes_str));
     }
 
-    // Optional Combined fields: "referer" "user-agent"
     pos = skip_spaces(s, pos);
     if pos < s.len()
         && s.as_bytes()[pos] == b'"'
@@ -121,23 +92,18 @@ fn parse_clf_line(s: &str) -> Option<DisplayParts<'_>> {
     Some(parts)
 }
 
-/// Validate a CLF date: `dd/Mmm/yyyy:HH:MM:SS ±ZZZZ`
 fn validate_clf_date(date: &str) -> bool {
-    // Minimum length: "01/Jan/2000:00:00:00 +0000" = 26
     if date.len() < 26 {
         return false;
     }
     let b = date.as_bytes();
-    // dd/
     if !b[0].is_ascii_digit() || !b[1].is_ascii_digit() || b[2] != b'/' {
         return false;
     }
-    // Mmm/
     let month = &date[3..6];
     if !CLF_MONTHS.contains(&month) || b[6] != b'/' {
         return false;
     }
-    // yyyy:
     if !b[7].is_ascii_digit()
         || !b[8].is_ascii_digit()
         || !b[9].is_ascii_digit()
@@ -146,7 +112,6 @@ fn validate_clf_date(date: &str) -> bool {
     {
         return false;
     }
-    // HH:MM:SS
     if !b[12].is_ascii_digit()
         || !b[13].is_ascii_digit()
         || b[14] != b':'
@@ -158,7 +123,6 @@ fn validate_clf_date(date: &str) -> bool {
     {
         return false;
     }
-    // Space and timezone offset
     if b[20] != b' ' || !matches!(b[21], b'+' | b'-') {
         return false;
     }
@@ -172,7 +136,6 @@ fn validate_clf_date(date: &str) -> bool {
     true
 }
 
-/// Read the next space-delimited token starting at `pos`. Returns `(token, pos_after_spaces)`.
 fn next_token(s: &str, pos: usize) -> Option<(&str, usize)> {
     let start = skip_spaces(s, pos);
     if start >= s.len() {
@@ -183,15 +146,11 @@ fn next_token(s: &str, pos: usize) -> Option<(&str, usize)> {
     Some((&s[start..end], after))
 }
 
-/// Read a double-quoted string starting at `pos` (which must point to `"`).
-/// Returns `(content, pos_after_closing_quote)`.
 fn read_quoted(s: &str, pos: usize) -> Option<(&str, usize)> {
     if pos >= s.len() || s.as_bytes()[pos] != b'"' {
         return None;
     }
     let start = pos + 1;
-    // Find closing quote — CLF doesn't use backslash escapes in the standard
-    // but we handle escaped quotes for robustness
     let mut end = start;
     let bytes = s.as_bytes();
     while end < bytes.len() {
@@ -204,12 +163,11 @@ fn read_quoted(s: &str, pos: usize) -> Option<(&str, usize)> {
         }
     }
     if end >= bytes.len() {
-        return None; // unclosed quote
+        return None;
     }
     Some((&s[start..end], end + 1))
 }
 
-/// Skip ASCII spaces, return new position.
 fn skip_spaces(s: &str, mut pos: usize) -> usize {
     let bytes = s.as_bytes();
     while pos < bytes.len() && bytes[pos] == b' ' {
@@ -243,26 +201,9 @@ impl LogFormatParser for ClfParser {
         }
 
         let mut result = vec!["timestamp".to_string(), "target".to_string()];
-        // Preserve discovery order (status, bytes come first, then referer, user_agent)
         result.extend(extras);
         result.push("message".to_string());
         result
-    }
-
-    fn detect_score(&self, sample: &[&[u8]]) -> f64 {
-        if sample.is_empty() {
-            return 0.0;
-        }
-        let mut parsed = 0usize;
-        for &line in sample {
-            if self.parse_line(line).is_some() {
-                parsed += 1;
-            }
-        }
-        if parsed == 0 {
-            return 0.0;
-        }
-        parsed as f64 / sample.len() as f64
     }
 
     fn name(&self) -> &str {
@@ -270,15 +211,9 @@ impl LogFormatParser for ClfParser {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── CLF parsing ────────────────────────────────────────────────────
 
     #[test]
     fn test_clf_full_line() {

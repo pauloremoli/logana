@@ -1,50 +1,21 @@
 //! Logfmt `key=value` parser for Go slog, Heroku, Grafana Loki, and 12-factor apps.
-//!
-//! Parses space-separated `key=value` pairs; quoted values support backslash
-//! escapes. Requires ≥ 3 pairs to match; lines starting with `{` are skipped
-//! (handled by [`super::json::JsonParser`]).
-//!
-//! Example: `time=2024-01-01T00:00:00Z level=info msg="request handled" status=200`
-//!
-//! ## Key mapping
-//!
-//! | Input key(s) | Canonical slot |
-//! |---|---|
-//! | `time`, `timestamp`, `ts`, `datetime` | timestamp |
-//! | `level`, `lvl`, `severity` | level (normalized) |
-//! | `msg`, `message` | message |
-//! | `source`, `caller`, `logger`, `component`, `module` | target |
-//! | all other keys | extra_fields |
-//!
-//! Lines with only unknown keys score at 0.5× weight during detection.
 
 use std::collections::HashSet;
 
 use super::timestamp::normalize_level;
 use super::types::{DisplayParts, LogFormatParser};
 
-/// Known keys that map to the `timestamp` slot.
 const TIMESTAMP_KEYS: &[&str] = &["time", "timestamp", "ts", "datetime"];
-
-/// Known keys that map to the `level` slot.
 const LEVEL_KEYS: &[&str] = &["level", "lvl", "severity"];
-
-/// Known keys that map to the `message` slot.
 const MESSAGE_KEYS: &[&str] = &["msg", "message"];
-
-/// Known keys that map to the `target` slot.
 const TARGET_KEYS: &[&str] = &["source", "caller", "logger", "component", "module"];
 
-/// Zero-copy logfmt parser.
 #[derive(Debug)]
 pub struct LogfmtParser;
 
-/// Parse a single `key=value` pair starting at `pos`.
-/// Returns `(key, value, new_pos)` or `None`.
 fn parse_pair(s: &str, mut pos: usize) -> Option<(&str, &str, usize)> {
     let b = s.as_bytes();
 
-    // Skip spaces
     while pos < b.len() && b[pos] == b' ' {
         pos += 1;
     }
@@ -52,7 +23,6 @@ fn parse_pair(s: &str, mut pos: usize) -> Option<(&str, &str, usize)> {
         return None;
     }
 
-    // Key: everything up to '='
     let key_start = pos;
     while pos < b.len() && b[pos] != b'=' && b[pos] != b' ' {
         pos += 1;
@@ -64,11 +34,10 @@ fn parse_pair(s: &str, mut pos: usize) -> Option<(&str, &str, usize)> {
     if key.is_empty() {
         return None;
     }
-    pos += 1; // skip '='
+    pos += 1;
 
-    // Value: quoted or unquoted
     if pos < b.len() && b[pos] == b'"' {
-        pos += 1; // skip opening quote
+        pos += 1;
         let val_start = pos;
         while pos < b.len() {
             if b[pos] == b'\\' && pos + 1 < b.len() {
@@ -81,11 +50,10 @@ fn parse_pair(s: &str, mut pos: usize) -> Option<(&str, &str, usize)> {
         }
         let value = &s[val_start..pos];
         if pos < b.len() && b[pos] == b'"' {
-            pos += 1; // skip closing quote
+            pos += 1;
         }
         Some((key, value, pos))
     } else {
-        // Unquoted: everything up to next space
         let val_start = pos;
         while pos < b.len() && b[pos] != b' ' {
             pos += 1;
@@ -94,33 +62,24 @@ fn parse_pair(s: &str, mut pos: usize) -> Option<(&str, &str, usize)> {
     }
 }
 
-/// Count the number of `key=value` pairs in a line.
-fn count_pairs(s: &str) -> usize {
+/// Count pairs and check for known keys in a single pass.
+fn analyze_pairs(s: &str) -> (usize, bool) {
     let mut count = 0;
-    let mut pos = 0;
-    while let Some((_, _, new_pos)) = parse_pair(s, pos) {
-        count += 1;
-        pos = new_pos;
-    }
-    count
-}
-
-/// Check if any pair uses a known semantic key.
-fn has_known_keys(s: &str) -> bool {
+    let mut has_known = false;
     let mut pos = 0;
     while let Some((key, _, new_pos)) = parse_pair(s, pos) {
-        let k = key.to_ascii_lowercase();
-        let k = k.as_str();
-        if TIMESTAMP_KEYS.contains(&k)
-            || LEVEL_KEYS.contains(&k)
-            || MESSAGE_KEYS.contains(&k)
-            || TARGET_KEYS.contains(&k)
-        {
-            return true;
+        count += 1;
+        if !has_known {
+            let k = key.to_ascii_lowercase();
+            let k = k.as_str();
+            has_known = TIMESTAMP_KEYS.contains(&k)
+                || LEVEL_KEYS.contains(&k)
+                || MESSAGE_KEYS.contains(&k)
+                || TARGET_KEYS.contains(&k);
         }
         pos = new_pos;
     }
-    false
+    (count, has_known)
 }
 
 fn parse_logfmt_line(s: &str) -> Option<DisplayParts<'_>> {
@@ -226,14 +185,10 @@ impl LogFormatParser for LogfmtParser {
                 Ok(s) if !s.is_empty() && !s.starts_with('{') => s,
                 _ => continue,
             };
-            let pairs = count_pairs(s);
+            let (pairs, has_known) = analyze_pairs(s);
             if pairs >= 3 {
                 parseable += 1;
-                if has_known_keys(s) {
-                    total_score += 1.0;
-                } else {
-                    total_score += 0.5;
-                }
+                total_score += if has_known { 1.0 } else { 0.5 };
             }
         }
         if parseable == 0 {

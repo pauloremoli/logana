@@ -1,21 +1,8 @@
 //! JSON log parser supporting tracing, bunyan, GELF, and similar formats.
-//!
-//! Zero-copy field extraction via [`parse_json_line`]; semantic classification
-//! via [`classify_json_fields`] / [`classify_json_fields_all`]. Format
-//! detection samples the first 200 lines and scores by the proportion that
-//! start with `{` and parse successfully.
-//!
-//! `collect_field_names` returns raw JSON key names ordered by canonical slot:
-//! timestamp-group → level-group → target-group → sorted extras → message-group
-//! last. Dotted sub-fields like `span.name` and `fields.count` are included.
 
 use std::collections::HashSet;
 
 use super::types::{DisplayParts, LogFormatParser, SpanInfo};
-
-// ---------------------------------------------------------------------------
-// Legacy parser (kept for backward compatibility)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct LogLine<'a> {
@@ -67,47 +54,28 @@ impl<'a> LogLine<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Zero-copy JSON log line parsers
-// ---------------------------------------------------------------------------
-
-/// A single key-value field extracted from a JSON log line.
-/// Both `key` and `value` are string slices directly into the original line bytes —
-/// no heap allocation beyond the `Vec` that holds them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JsonField<'a> {
     pub key: &'a str,
-    /// The field value, stripped of surrounding quotes for string values.
     pub value: &'a str,
-    /// `true` when the JSON value was a quoted string.
     pub value_is_string: bool,
 }
 
-/// Detected JSON log format, determined by the field names present.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LogFormat {
-    /// Not a recognised JSON log format.
     Plain,
-    /// `journalctl -o json` output: ALL_CAPS field names, mandatory `MESSAGE` key.
     JournalctlJson,
-    /// Structured syslog / application JSON: lowercase `message`, `msg`, `log`, or `text` key.
     SyslogJson,
 }
 
-/// Parse a single JSON log line into a list of zero-copy key-value fields.
-///
-/// Returns `None` for lines that do not start with `{` or are otherwise not
-/// valid JSON objects.  Only the subset of JSON used by journalctl and syslog
-/// is supported: string, number, boolean, null, and raw nested objects/arrays
-/// (nested values are captured verbatim, not recursed into).
-///
-/// Escape sequences inside string values are preserved verbatim.
+/// Parse a JSON log line into zero-copy key-value fields.
+/// Nested objects/arrays are captured verbatim, not recursed into.
 pub fn parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'_>>> {
     if line.is_empty() || line[0] != b'{' {
         return None;
     }
 
-    let mut pos = 1; // skip '{'
+    let mut pos = 1;
     let mut fields = Vec::new();
 
     loop {
@@ -117,14 +85,12 @@ pub fn parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'_>>> {
             break;
         }
 
-        // Key must be a quoted string
         if line[pos] != b'"' {
             return None;
         }
-        pos += 1; // skip opening '"'
+        pos += 1;
         let key = read_string(line, &mut pos)?;
 
-        // Skip optional whitespace, then ':'
         pos += skip_ws(line, pos);
         if pos >= line.len() || line[pos] != b':' {
             return None;
@@ -132,7 +98,6 @@ pub fn parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'_>>> {
         pos += 1;
         pos += skip_ws(line, pos);
 
-        // Read value
         let (value, value_is_string) = read_value(line, &mut pos)?;
 
         fields.push(JsonField {
@@ -141,7 +106,6 @@ pub fn parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'_>>> {
             value_is_string,
         });
 
-        // Skip optional comma and whitespace before next key
         pos += skip_ws(line, pos);
         if pos < line.len() && line[pos] == b',' {
             pos += 1;
@@ -155,7 +119,6 @@ pub fn parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'_>>> {
     }
 }
 
-/// Detect the JSON log format from a parsed field list.
 pub fn detect_json_format(fields: &[JsonField<'_>]) -> LogFormat {
     if fields.iter().any(|f| f.key == "MESSAGE") {
         LogFormat::JournalctlJson
@@ -169,11 +132,6 @@ pub fn detect_json_format(fields: &[JsonField<'_>]) -> LogFormat {
     }
 }
 
-/// Build a display string from `fields`, omitting any field whose name is in
-/// `hidden_names` or whose 0-based index is in `hidden_indices`.
-///
-/// Output format: logfmt-style `key=value` pairs separated by two spaces.
-/// String values that contain spaces or are empty are double-quoted.
 pub fn build_display_json(
     fields: &[JsonField<'_>],
     hidden_names: &HashSet<String>,
@@ -192,10 +150,6 @@ pub fn build_display_json(
     }
     parts.join(" ")
 }
-
-// ---------------------------------------------------------------------------
-// Structured JSON display
-// ---------------------------------------------------------------------------
 
 pub const TIMESTAMP_KEYS: &[&str] = &[
     "timestamp",
@@ -229,66 +183,8 @@ pub const MESSAGE_KEYS: &[&str] = &[
     "short_message",
 ];
 
-/// Classify `fields` into known slots and extra fields, without any hidden-field
-/// filtering. This is the primary classification function used by `JsonParser`.
-///
-/// Special containers:
-/// - `fields` (nested object) — tracing-subscriber format; its contents are
-///   inlined: `message`-keyed sub-fields fill the message slot, others go to
-///   `extra_fields`.
-/// - `span` (nested object) — tracing span context; `name` becomes
-///   `SpanInfo::name`, all other sub-fields become `SpanInfo::fields`.
-/// - `spans` (array) — parent span stack; skipped (duplicates `span`).
 pub fn classify_json_fields_all<'a>(fields: &[JsonField<'a>]) -> DisplayParts<'a> {
-    let mut parts = DisplayParts::default();
-
-    for field in fields {
-        let key = field.key;
-
-        if key == "fields" && !field.value_is_string {
-            // tracing-subscriber JSON: "fields" holds message + event-level fields.
-            if let Some(sub_fields) = parse_json_line(field.value.as_bytes()) {
-                for sub in &sub_fields {
-                    if MESSAGE_KEYS.contains(&sub.key) {
-                        parts.message.get_or_insert(sub.value);
-                    } else {
-                        parts.extra_fields.push((sub.key, sub.value));
-                    }
-                }
-            }
-        } else if key == "span" && !field.value_is_string {
-            // Span context: extract "name" as the span label, rest as span fields.
-            if let Some(sub_fields) = parse_json_line(field.value.as_bytes()) {
-                let mut span_name = "";
-                let mut span_fields: Vec<(&str, &str)> = Vec::new();
-                for sub in &sub_fields {
-                    if sub.key == "name" {
-                        span_name = sub.value;
-                    } else {
-                        span_fields.push((sub.key, sub.value));
-                    }
-                }
-                parts.span = Some(SpanInfo {
-                    name: span_name,
-                    fields: span_fields,
-                });
-            }
-        } else if key == "spans" {
-            // Parent span stack — skip; the current span is already in "span".
-        } else if TIMESTAMP_KEYS.contains(&key) {
-            parts.timestamp.get_or_insert(field.value);
-        } else if LEVEL_KEYS.contains(&key) {
-            parts.level.get_or_insert(field.value);
-        } else if TARGET_KEYS.contains(&key) {
-            parts.target.get_or_insert(field.value);
-        } else if MESSAGE_KEYS.contains(&key) {
-            parts.message.get_or_insert(field.value);
-        } else {
-            parts.extra_fields.push((key, field.value));
-        }
-    }
-
-    parts
+    classify_json_fields(fields, &HashSet::new(), &HashSet::new())
 }
 
 /// Classify `fields` into known slots and extra fields, honouring hidden-field
@@ -306,11 +202,15 @@ pub fn classify_json_fields<'a>(
         if hidden_indices.contains(&idx) || hidden_names.contains(field.key) {
             continue;
         }
+        classify_field(field, &mut parts);
+    }
 
-        let key = field.key;
+    parts
+}
 
-        if key == "fields" && !field.value_is_string {
-            // tracing-subscriber JSON: "fields" holds message + event-level fields.
+fn classify_field<'a>(field: &JsonField<'a>, parts: &mut DisplayParts<'a>) {
+    match field.key {
+        "fields" if !field.value_is_string => {
             if let Some(sub_fields) = parse_json_line(field.value.as_bytes()) {
                 for sub in &sub_fields {
                     if MESSAGE_KEYS.contains(&sub.key) {
@@ -320,8 +220,8 @@ pub fn classify_json_fields<'a>(
                     }
                 }
             }
-        } else if key == "span" && !field.value_is_string {
-            // Span context: extract "name" as the span label, rest as span fields.
+        }
+        "span" if !field.value_is_string => {
             if let Some(sub_fields) = parse_json_line(field.value.as_bytes()) {
                 let mut span_name = "";
                 let mut span_fields: Vec<(&str, &str)> = Vec::new();
@@ -337,29 +237,26 @@ pub fn classify_json_fields<'a>(
                     fields: span_fields,
                 });
             }
-        } else if key == "spans" {
-            // Parent span stack — skip; the current span is already in "span".
-        } else if TIMESTAMP_KEYS.contains(&key) {
+        }
+        "spans" => {}
+        key if TIMESTAMP_KEYS.contains(&key) => {
             parts.timestamp.get_or_insert(field.value);
-        } else if LEVEL_KEYS.contains(&key) {
+        }
+        key if LEVEL_KEYS.contains(&key) => {
             parts.level.get_or_insert(field.value);
-        } else if TARGET_KEYS.contains(&key) {
+        }
+        key if TARGET_KEYS.contains(&key) => {
             parts.target.get_or_insert(field.value);
-        } else if MESSAGE_KEYS.contains(&key) {
+        }
+        key if MESSAGE_KEYS.contains(&key) => {
             parts.message.get_or_insert(field.value);
-        } else {
+        }
+        key => {
             parts.extra_fields.push((key, field.value));
         }
     }
-
-    parts
 }
 
-// ---------------------------------------------------------------------------
-// JsonParser: LogFormatParser implementation for JSON logs
-// ---------------------------------------------------------------------------
-
-/// JSON log format parser implementing the `LogFormatParser` trait.
 #[derive(Debug)]
 pub struct JsonParser;
 
@@ -444,30 +341,11 @@ impl LogFormatParser for JsonParser {
         result
     }
 
-    fn detect_score(&self, sample: &[&[u8]]) -> f64 {
-        if sample.is_empty() {
-            return 0.0;
-        }
-        let parsed = sample
-            .iter()
-            .filter(|line| parse_json_line(line).is_some())
-            .count();
-        if parsed == 0 {
-            return 0.0;
-        }
-        parsed as f64 / sample.len() as f64
-    }
-
     fn name(&self) -> &str {
         "json"
     }
 }
 
-// ---------------------------------------------------------------------------
-// Parser helpers (private)
-// ---------------------------------------------------------------------------
-
-/// Return the number of leading whitespace bytes at `pos`.
 fn skip_ws(line: &[u8], mut pos: usize) -> usize {
     let start = pos;
     while pos < line.len() && matches!(line[pos], b' ' | b'\t' | b'\r' | b'\n') {
@@ -476,39 +354,35 @@ fn skip_ws(line: &[u8], mut pos: usize) -> usize {
     pos - start
 }
 
-/// Read a JSON string starting *after* the opening `"`.
-/// Advances `*pos` past the closing `"` on success.
 fn read_string<'a>(line: &'a [u8], pos: &mut usize) -> Option<&'a str> {
     let start = *pos;
     loop {
         if *pos >= line.len() {
-            return None; // unclosed string
+            return None;
         }
         match line[*pos] {
             b'"' => {
                 let s = std::str::from_utf8(&line[start..*pos]).ok()?;
-                *pos += 1; // skip closing '"'
+                *pos += 1;
                 return Some(s);
             }
-            b'\\' => *pos += 2, // skip escape + next byte
+            b'\\' => *pos += 2,
             _ => *pos += 1,
         }
     }
 }
 
-/// Read a JSON value starting at `*pos`. Returns `(value_str, is_string)`.
 fn read_value<'a>(line: &'a [u8], pos: &mut usize) -> Option<(&'a str, bool)> {
     if *pos >= line.len() {
         return None;
     }
     match line[*pos] {
         b'"' => {
-            *pos += 1; // skip opening '"'
+            *pos += 1;
             let value = read_string(line, pos)?;
             Some((value, true))
         }
         b'{' | b'[' => {
-            // Nested object or array — capture raw bytes, track depth.
             let start = *pos;
             let open = line[*pos];
             let close = if open == b'{' { b'}' } else { b']' };
@@ -519,7 +393,6 @@ fn read_value<'a>(line: &'a [u8], pos: &mut usize) -> Option<(&'a str, bool)> {
                 }
                 let c = line[*pos];
                 if c == b'"' {
-                    // Skip string literal inside the nested structure.
                     *pos += 1;
                     while *pos < line.len() {
                         let sc = line[*pos];
@@ -528,7 +401,7 @@ fn read_value<'a>(line: &'a [u8], pos: &mut usize) -> Option<(&'a str, bool)> {
                             break;
                         }
                         if sc == b'\\' {
-                            *pos += 1; // skip escaped char
+                            *pos += 1;
                         }
                     }
                 } else {
@@ -547,7 +420,6 @@ fn read_value<'a>(line: &'a [u8], pos: &mut usize) -> Option<(&'a str, bool)> {
             Some((value, false))
         }
         _ => {
-            // Number, boolean, null — runs until `,`, `}`, `]`, or whitespace.
             let start = *pos;
             while *pos < line.len()
                 && !matches!(
@@ -563,15 +435,9 @@ fn read_value<'a>(line: &'a [u8], pos: &mut usize) -> Option<(&'a str, bool)> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Legacy LogLine parser ────────────────────────────────────────────────
 
     #[test]
     fn test_parse_log_line_full() {
