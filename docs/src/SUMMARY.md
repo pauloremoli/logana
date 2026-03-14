@@ -22,6 +22,7 @@
 - [Structured Fields](structured-fields.md)
 - [Annotations & Export](annotations.md)
 - [Docker Logs](docker.md)
+- [DLT Streaming](dlt.md)
 - [Multi-Tab](multi-tab.md)
 
 # Reference

@@ -24,7 +24,7 @@ The typical use cases are:
 
 ### Log format detection
 
-logana recognises common log formats automatically — JSON, syslog, journalctl, logfmt, logback, Spring Boot, Python logging, Apache access logs, and more — and shows each line broken into columns: timestamp, level, service name, message. You can hide columns you don't care about and reorder the ones you do, per file.
+logana recognises common log formats automatically — JSON, syslog, journalctl, logfmt, logback, Spring Boot, Python logging, Apache access logs, DLT (AUTOSAR), and more — and shows each line broken into columns: timestamp, level, service name, message. You can hide columns you don't care about and reorder the ones you do, per file.
 
 ### Filtering
 
@@ -50,7 +50,7 @@ Feels like vim. Full motion support: `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, `/`/`?` se
 
 | Feature | Description |
 |---|---|
-| **Auto-detected formats** | JSON, syslog, journalctl, logfmt, logback/log4j2, Spring Boot, Python, loguru, Apache CLF, and more |
+| **Auto-detected formats** | JSON, syslog, journalctl, logfmt, DLT, logback/log4j2, Spring Boot, Python, loguru, Apache CLF, and more |
 | **Structured columns** | Timestamp, level, service, message as separate columns; show/hide/reorder per file |
 | **Persistent sessions** | Filters, scroll position, bookmarks, and notes restored on next open |
 | **Include/exclude filters** | Plain text or regex; include and exclude stack freely |
@@ -61,7 +61,8 @@ Feels like vim. Full motion support: `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, `/`/`?` se
 | **Visual line mode** | Select a line range to bookmark, annotate, copy, or build a filter from |
 | **Visual character mode** | Select within a line using vim motions to filter, search, or copy |
 | **Vim navigation** | Full motions: `j`/`k`, `gg`/`G`, `w`/`b`/`e`, `f`/`t`, count prefixes, `/`/`?` search |
-| **Multi-tab** | Open multiple files or Docker streams side-by-side |
+| **Multi-tab** | Open multiple files, Docker streams, or DLT connections side-by-side |
 | **Docker** | Attach to any running container with `:docker` |
+| **DLT** | Stream from a DLT daemon with `:dlt`, or open binary `.dlt` files directly |
 | **Value coloring** | HTTP methods, status codes, IP addresses, and UUIDs colored automatically; filter colors always take priority and multiple filter styles (fg + bg) compose |
 | **Configurable** | All keys remappable; 19 bundled themes; custom themes and export templates |

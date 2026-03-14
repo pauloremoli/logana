@@ -7,6 +7,7 @@ logana detects the log format automatically by sampling the first lines of the f
 | Format | Examples |
 |---|---|
 | OpenTelemetry (OTLP) | OTLP/JSON protobuf-JSON encoding, OTel SDK JSON |
+| DLT | AUTOSAR binary (storage, wire, simplified) and `dlt-convert -a` text |
 | JSON | tracing-subscriber JSON, bunyan, pino, any structured JSON logger |
 | Syslog | RFC 3164 (BSD), RFC 5424 |
 | Journalctl | short-iso, short-precise, short-full |
@@ -21,6 +22,20 @@ All registered parsers score a confidence value against the first 200 lines of t
 The detected format name is shown in the status bar.
 
 ## Format Details
+
+### DLT (AUTOSAR Diagnostic Log and Trace)
+
+Three binary layouts are supported and converted to text at load time:
+
+- **Storage format** — standard AUTOSAR DLT files with 16-byte storage headers (magic bytes `DLT\x01`)
+- **Wire format** — concatenated DLT messages without storage headers, as received from a `dlt-daemon` TCP connection
+- **Simplified format** — compact `DLT\x01` + ECU + APID + CTID + timestamp + payload
+
+The text output produced by `dlt-convert -a` is also parsed directly.
+
+Fields extracted: `timestamp`, `hw_ts` (hardware timestamp), `mcnt` (message counter), `ecu`, `apid` (application ID), `ctid` (context ID), `type`, `subtype`, `mode` (verbose/non-verbose).
+
+Verbose payloads are decoded (strings, integers, floats, booleans, raw data). Non-verbose payloads are shown as hex.
 
 ### OpenTelemetry (OTLP)
 

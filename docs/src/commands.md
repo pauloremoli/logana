@@ -77,12 +77,19 @@ These commands control how the current tab handles incoming data from a file wat
 | `:show-keys` | Show field keys alongside values (e.g. `method=GET`) |
 | `:hide-keys` | Show only values, hiding field keys (default) |
 
-## Export and Docker
+## Export and Streaming
 
 | Command | Description |
 |---|---|
 | `:export <file> [-t <template>]` | Export annotations to a file (default template: markdown) |
 | `:docker` | Pick and stream a running Docker container |
+| `:dlt` | Pick and stream from a DLT daemon over TCP |
+
+## Session
+
+| Command | Description |
+|---|---|
+| `:reset` | Restore all settings to defaults and clear all persisted state |
 
 ## Tab Completion
 

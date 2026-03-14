@@ -17,14 +17,14 @@ A fast terminal log viewer for files of any size — including multi-GB logs. Bu
 
 ## Features
 
-- **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OpenTelemetry, and more
+- **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OpenTelemetry, DLT (AUTOSAR), and more
 - **Filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters; add filters from the command line with `-i`/`-o`/`-t`
 - **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; configurable restore policy (ask / always / never)
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns; select which columns you want visible
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
 - **Annotations** — attach comments to log lines; export analysis to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
-- **Multi-tab** — open multiple files or Docker streams; each tab has independent filters and session state
+- **Multi-tab** — open multiple files, Docker streams, or DLT daemon connections; each tab has independent filters and session state
 - **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs.
 - **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 22 bundled themes
 
@@ -86,6 +86,12 @@ logana app.log --tail
 # Stream a Docker container
 logana            # then type :docker
 
+# Stream from a DLT daemon
+logana            # then type :dlt
+
+# Open a DLT binary file
+logana trace.dlt
+
 # Add inline filters on the command line
 logana app.log -i error -o debug
 logana app.log -i "--field level=ERROR" -t "> 2024-02-21"
@@ -106,7 +112,8 @@ Detected automatically on open — no flags or config required:
 |---|---|
 | JSON | tracing-subscriber JSON, bunyan, pino, any structured JSON logger |
 | Syslog | RFC 3164 (BSD), RFC 5424 |
-| OpenTelemetry |
+| OpenTelemetry | OTLP/JSON, OTel SDK JSON |
+| DLT | AUTOSAR binary (storage, wire, simplified) and `dlt-convert -a` text |
 | Journalctl | short-iso, short-precise, short-full |
 | Common / Combined Log | Apache access, nginx access |
 | Logfmt | Go `slog`, Heroku, Grafana Loki |

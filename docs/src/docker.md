@@ -18,6 +18,10 @@ A picker lists all running containers. Navigate with `j` / `k` and press `Enter`
 | `Enter` | Attach to selected container |
 | `Esc` | Cancel |
 
+## Auto-Reconnect
+
+If the connection to a Docker container fails or drops, logana retries automatically with increasing backoff. The tab name shows `[RETRY #N]` while reconnecting.
+
 ## Session Persistence
 
 Docker tabs are persisted across sessions. When you reopen logana, it automatically re-attaches to any Docker containers that were open in the previous session, by container name. The source identifier stored in the session database is `docker:<container-name>`.
