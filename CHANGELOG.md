@@ -14,8 +14,9 @@ All notable changes to logana will be documented in this file.
 - Extended journalctl output format support with `short`, `short-monotonic`, `short-unix`, `json-sse`, and `json-seq`. 
 
 ### Changed
+- Default keybinding for saving a comment changed from `Ctrl+Enter` to `Ctrl+s` for compatibility with macOS Terminal.
 - Performance improvements on file writing for headless mode and export/save commands, it now uses mmap/rayon to speed up the process.
-- All stream sources (stdin, Docker, DLT TCP) now write to a temp file and use mmap with incremental indexing and filtering, keeping memory flat for long-running sessions.
+- All stream sources (stdin, Docker, DLT TCP) now write to a temp file and use mmap with incremental indexing and filtering, keeping low memory usage.
 - Headless mode now rejects `--output` paths that point to the same file as the input, preventing data loss.
 
 ## [0.3.0] - 2026-03-14

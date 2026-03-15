@@ -26,7 +26,7 @@ use crate::{
 ///   Backspace     → delete char / merge with previous line
 ///   Left/Right    → move cursor within / across lines
 ///   Up/Down       → move cursor between rows
-///   Ctrl+Enter    → save comment and return to NormalMode (configurable)
+///   Ctrl+S        → save comment and return to NormalMode (configurable)
 ///   Esc           → cancel, discard text, return to NormalMode
 #[derive(Debug)]
 pub struct CommentMode {
@@ -324,7 +324,8 @@ mod tests {
         let mut tab = make_tab().await;
         let mut mode = CommentMode::new(vec![0, 1, 2]);
         mode.lines = vec!["line one".to_string(), "line two".to_string()];
-        let (mode2, result) = press(mode, &mut tab, KeyCode::Enter, KeyModifiers::CONTROL).await;
+        let (mode2, result) =
+            press(mode, &mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
         assert!(matches!(result, KeyResult::Handled));
         // returned to NormalMode
         assert!(!matches!(
@@ -482,7 +483,8 @@ mod tests {
 
         let mut mode = CommentMode::edit(0, "original".to_string(), vec![0, 1]);
         mode.lines = vec!["updated text".to_string()];
-        let (mode2, result) = press(mode, &mut tab, KeyCode::Enter, KeyModifiers::CONTROL).await;
+        let (mode2, result) =
+            press(mode, &mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(!matches!(
             mode2.render_state(),

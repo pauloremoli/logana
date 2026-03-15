@@ -635,7 +635,7 @@ impl Default for GlobalKeybindings {
 }
 
 fn default_comment_save() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::CONTROL)])
+    KeyBindings(vec![KeyBinding(KeyCode::Char('s'), KeyModifiers::CONTROL)])
 }
 fn default_comment_newline() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
@@ -2511,7 +2511,7 @@ mod tests {
     #[test]
     fn test_comment_keybindings_default() {
         let kb = CommentKeybindings::default();
-        assert!(kb.save.matches(KeyCode::Enter, KeyModifiers::CONTROL));
+        assert!(kb.save.matches(KeyCode::Char('s'), KeyModifiers::CONTROL));
         assert!(kb.newline.matches(KeyCode::Enter, KeyModifiers::NONE));
         assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
         assert!(kb.delete.matches(KeyCode::Char('d'), KeyModifiers::CONTROL));
