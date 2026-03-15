@@ -303,9 +303,11 @@ impl App {
                     self.tabs[0].detect_and_apply_format();
                     if let Some(ref pred) = predicate {
                         let visible: Vec<usize> = (0..self.tabs[0].file_reader.line_count())
-                            .filter(|&i| pred(self.tabs[0].file_reader.get_line(i)))
+                            .filter(|&i| pred.is_visible(self.tabs[0].file_reader.get_line(i)))
                             .collect();
                         self.tabs[0].visible_indices = VisibleLines::Filtered(visible);
+                        self.tabs[0].rebuild_filter_manager_cache();
+                        self.tabs[0].invalidate_parse_cache();
                     } else {
                         self.tabs[0].begin_filter_refresh();
                     }
@@ -470,10 +472,7 @@ impl App {
                 }
                 self.tabs[0].file_reader = result.reader;
                 self.tabs[0].detect_and_apply_format();
-                // Use precomputed visible indices when available (single-pass optimisation);
-                // otherwise fall back to a full compute_visible scan.
-                // Either way, run a full filter refresh so that occurrence counts are
-                // computed (the single-pass predicate only tracks visibility, not counts).
+                let had_precomputed = result.precomputed_visible.is_some();
                 if let Some(visible) = result.precomputed_visible {
                     self.tabs[0].visible_indices = VisibleLines::Filtered(visible);
                 }
@@ -490,7 +489,19 @@ impl App {
                         }
                     }
                 }
-                self.tabs[0].begin_filter_refresh();
+                if had_precomputed {
+                    self.tabs[0].rebuild_filter_manager_cache();
+                    self.tabs[0].invalidate_parse_cache();
+                    if let Some(text_counts) = result.precomputed_text_counts {
+                        let all_filter_defs = self.tabs[0].log_manager.get_filters().to_vec();
+                        self.tabs[0].filter_match_counts =
+                            super::merge_filter_counts(&all_filter_defs, &text_counts, &[], &[]);
+                    } else {
+                        self.tabs[0].filter_match_counts = Vec::new();
+                    }
+                } else {
+                    self.tabs[0].begin_filter_refresh();
+                }
                 // Apply startup tail: jump to the last visible line and enable tail mode.
                 if self.startup_tail {
                     self.tabs[0].tail_mode = true;
@@ -785,6 +796,21 @@ impl App {
                 }
             }
             if done {
+                if let Some(h) = &tab.filter_handle {
+                    tab.cached_scan_result = Some(super::CachedScanResult {
+                        filter_fingerprint: h.scan_fingerprint.clone(),
+                        line_count: h.scan_line_count,
+                        raw_mode: h.scan_raw_mode,
+                        view: (
+                            tab.visible_indices.clone(),
+                            tab.filter_manager_arc.clone(),
+                            tab.filter_styles.clone(),
+                            tab.filter_date_styles.clone(),
+                            tab.filter_field_styles.clone(),
+                        ),
+                        match_counts: tab.filter_match_counts.clone(),
+                    });
+                }
                 tab.filter_handle = None;
             }
         }
@@ -1528,6 +1554,7 @@ mod tests {
         let _ = result_tx.send(Ok(FileLoadResult {
             reader: fr,
             precomputed_visible: None,
+            precomputed_text_counts: None,
         }));
         drop(progress_tx);
 
@@ -1564,6 +1591,7 @@ mod tests {
         let _ = result_tx.send(Ok(FileLoadResult {
             reader: fr,
             precomputed_visible: None,
+            precomputed_text_counts: None,
         }));
         drop(progress_tx);
 
@@ -1583,6 +1611,125 @@ mod tests {
             app.tabs[0].detected_format.is_some(),
             "Format should be re-detected after ReplaceInitialTab load"
         );
+    }
+
+    #[tokio::test]
+    async fn test_on_load_success_precomputed_skips_filter_refresh() {
+        let mut app = make_app(&[]).await;
+
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let fr = FileReader::from_bytes(b"ERROR line\nINFO line\nERROR again\n".to_vec());
+        let _ = result_tx.send(Ok(FileLoadResult {
+            reader: fr,
+            precomputed_visible: Some(vec![0, 2]),
+            precomputed_text_counts: None,
+        }));
+        drop(progress_tx);
+
+        app.file_load_state = Some(super::FileLoadState {
+            path: "test.log".to_string(),
+            progress_rx,
+            result_rx,
+            total_bytes: 32,
+            on_complete: LoadContext::ReplaceInitialTab,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+
+        app.advance_file_load().await;
+
+        assert!(
+            app.tabs[0].filter_handle.is_none(),
+            "no background filter scan should be started when precomputed_visible was set"
+        );
+        assert_eq!(
+            app.tabs[0].visible_indices.len(),
+            2,
+            "visible_indices should reflect the precomputed result"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_load_success_precomputed_sets_filter_styles() {
+        use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
+        let mut app = make_app(&[]).await;
+
+        let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(filter)], true);
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "ERROR".into(),
+                crate::types::FilterType::Include,
+                None,
+                None,
+                true,
+            )
+            .await;
+
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let fr = FileReader::from_bytes(b"ERROR line\nINFO line\nERROR again\n".to_vec());
+        let _ = result_tx.send(Ok(FileLoadResult {
+            reader: fr,
+            precomputed_visible: Some(vec![0, 2]),
+            precomputed_text_counts: Some(vec![2]),
+        }));
+        drop(progress_tx);
+
+        app.file_load_state = Some(super::FileLoadState {
+            path: "test.log".to_string(),
+            progress_rx,
+            result_rx,
+            total_bytes: 32,
+            on_complete: LoadContext::ReplaceInitialTab,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        let _ = fm; // suppress unused warning
+
+        app.advance_file_load().await;
+
+        assert!(
+            app.tabs[0].filter_handle.is_none(),
+            "no background filter scan when precomputed"
+        );
+        assert_eq!(app.tabs[0].visible_indices.len(), 2);
+        assert!(
+            !app.tabs[0].filter_styles.is_empty(),
+            "filter_styles must be populated after precomputed load so highlighting works"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_load_success_no_precomputed_starts_filter_refresh() {
+        let mut app = make_app(&[]).await;
+
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let fr = FileReader::from_bytes(b"ERROR line\nINFO line\n".to_vec());
+        let _ = result_tx.send(Ok(FileLoadResult {
+            reader: fr,
+            precomputed_visible: None,
+            precomputed_text_counts: None,
+        }));
+        drop(progress_tx);
+
+        app.file_load_state = Some(super::FileLoadState {
+            path: "test.log".to_string(),
+            progress_rx,
+            result_rx,
+            total_bytes: 21,
+            on_complete: LoadContext::ReplaceInitialTab,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+
+        app.advance_file_load().await;
+
+        assert!(
+            app.tabs[0].filter_handle.is_none(),
+            "no background scan when there are no active filters"
+        );
+        assert_eq!(app.tabs[0].file_reader.line_count(), 2);
     }
 
     #[tokio::test]
@@ -1749,8 +1896,10 @@ mod tests {
         std::fs::write(tmp.path(), b"match line\nskip line\nmatch again\n").unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
 
-        let pred: crate::file_reader::VisibilityPredicate =
-            Box::new(|line: &[u8]| line.starts_with(b"match"));
+        use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
+        let filter = SubstringFilter::new("match", FilterDecision::Include, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(filter)], true);
+        let pred = crate::file_reader::VisibilityPredicate::new(fm);
 
         app.begin_file_load(path, LoadContext::ReplaceInitialTab, Some(pred), false)
             .await;
@@ -1804,6 +1953,9 @@ mod tests {
             displayed_progress: 0.0,
             scroll_anchor: None,
             received_first_chunk: false,
+            scan_fingerprint: Vec::new(),
+            scan_line_count: 0,
+            scan_raw_mode: false,
         };
         for chunk in chunks {
             tx.try_send(chunk).unwrap();
@@ -1917,6 +2069,9 @@ mod tests {
             displayed_progress: 0.0,
             scroll_anchor: None,
             received_first_chunk: false,
+            scan_fingerprint: Vec::new(),
+            scan_line_count: 0,
+            scan_raw_mode: false,
         };
         app.tabs[0].filter_handle = Some(handle);
         app.advance_filter_computation();
@@ -1966,6 +2121,7 @@ mod tests {
         let _ = result_tx.send(Ok(FileLoadResult {
             reader: fr,
             precomputed_visible: None,
+            precomputed_text_counts: None,
         }));
         drop(progress_tx);
 
@@ -2270,6 +2426,7 @@ mod tests {
         let _ = result_tx.send(Ok(FileLoadResult {
             reader: fr,
             precomputed_visible: None,
+            precomputed_text_counts: None,
         }));
         drop(progress_tx);
 
@@ -2393,5 +2550,34 @@ mod tests {
             text.contains("Accepted"),
             "rendered line must contain the message: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_advance_filter_computation_saves_cached_scan_result() {
+        use crate::types::FilterType;
+        let mut app = make_app(&["error line", "info line", "error again"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .await;
+        app.tabs[0].begin_filter_refresh();
+        assert!(app.tabs[0].filter_handle.is_some());
+
+        // Drain until completion via advance_filter_computation.
+        loop {
+            app.advance_filter_computation();
+            if app.tabs[0].filter_handle.is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let cached = app.tabs[0]
+            .cached_scan_result
+            .as_ref()
+            .expect("cached_scan_result must be set after scan completes");
+        assert_eq!(cached.line_count, 3);
+        assert!(!cached.filter_fingerprint.is_empty());
+        assert_eq!(cached.raw_mode, false);
     }
 }

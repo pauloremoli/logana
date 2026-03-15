@@ -6,14 +6,17 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
-- Fix flickering tab name due to connection retries. 
+- Fix per-filter match counts missing in sidebar when startup predicate (`-i`/`-o`/`-f`) is used.
+- Fix flickering tab name due to connection retries.
 - Fix issue with style priority between filters and value colors(e.g IP address).
 - Fix parsing for Journalctl with short format (timestamp wihtout seconds)
+- Filter was being applied twice when a path to a filter file was given as parameter.
 
 ### Added
 - Extended journalctl output format support with `short`, `short-monotonic`, `short-unix`, `json-sse`, and `json-seq`. 
 
 ### Changed
+- Toggling filters off and back on with no changes in between no longer re-runs the full file scan; the previous result is restored in O(1).
 - Default keybinding for saving a comment changed from `Ctrl+Enter` to `Ctrl+s` for compatibility with macOS Terminal.
 - Performance improvements on file writing for headless mode and export/save commands, it now uses mmap/rayon to speed up the process.
 - All stream sources (stdin, Docker, DLT TCP) now write to a temp file and use mmap with incremental indexing and filtering, keeping low memory usage.

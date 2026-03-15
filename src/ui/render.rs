@@ -2460,6 +2460,9 @@ mod tests {
             displayed_progress: 0.42,
             scroll_anchor: None,
             received_first_chunk: false,
+            scan_fingerprint: Vec::new(),
+            scan_line_count: 0,
+            scan_raw_mode: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2486,6 +2489,9 @@ mod tests {
             displayed_progress: 1.0,
             scroll_anchor: None,
             received_first_chunk: false,
+            scan_fingerprint: Vec::new(),
+            scan_line_count: 0,
+            scan_raw_mode: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2512,6 +2518,9 @@ mod tests {
             displayed_progress: 0.42,
             scroll_anchor: None,
             received_first_chunk: false,
+            scan_fingerprint: Vec::new(),
+            scan_line_count: 0,
+            scan_raw_mode: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2534,6 +2543,9 @@ mod tests {
             displayed_progress: 1.0,
             scroll_anchor: None,
             received_first_chunk: false,
+            scan_fingerprint: Vec::new(),
+            scan_line_count: 0,
+            scan_raw_mode: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

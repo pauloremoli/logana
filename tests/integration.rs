@@ -324,8 +324,7 @@ async fn test_single_pass_predicate_matches_compute_visible() {
     let expected = fm.compute_visible(&reader);
 
     // Single-pass path: predicate evaluated during indexing.
-    let pred: logana::file_reader::VisibilityPredicate =
-        Box::new(move |line: &[u8]| fm.is_visible(line));
+    let pred = logana::file_reader::VisibilityPredicate::new(fm);
     let handle = FileReader::load(
         path,
         Some(pred),

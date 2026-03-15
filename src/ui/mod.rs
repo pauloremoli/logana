@@ -85,6 +85,25 @@ pub struct FilterHandle {
     pub scroll_anchor: Option<usize>,
     /// `true` after the first chunk has been applied to `visible_indices`.
     pub received_first_chunk: bool,
+    /// Enabled filter snapshot captured at scan-start; stored here so
+    /// `advance_filter_computation` can persist a `CachedScanResult` on completion.
+    pub scan_fingerprint: Vec<crate::types::FilterDef>,
+    /// File line count at scan-start; part of the cache key.
+    pub scan_line_count: usize,
+    /// `raw_mode` value at scan-start; part of the cache key.
+    pub scan_raw_mode: bool,
+}
+
+/// Cached result of a completed background filter scan.
+/// Keyed by the set of enabled filters, file line count, and raw-mode flag at scan time.
+/// Used by [`TabState::begin_filter_refresh`] to skip a redundant re-scan when the
+/// filter state is toggled off and then back on without any changes in between.
+pub(super) struct CachedScanResult {
+    filter_fingerprint: Vec<crate::types::FilterDef>,
+    line_count: usize,
+    raw_mode: bool,
+    view: FilterViewSnapshot,
+    match_counts: Vec<usize>,
 }
 
 /// List the flat (non-recursive), non-hidden regular files in `path`.
@@ -442,6 +461,10 @@ pub struct TabState {
     /// Filter view saved when entering marks-only mode. Restored on exit so
     /// the O(file_size) `compute_visible` scan is not repeated.
     saved_filter_view: Option<FilterViewSnapshot>,
+    /// Result of the most recently completed background filter scan.
+    /// Restored in O(1) when `begin_filter_refresh` is called with an identical
+    /// filter state (same enabled filters, same file length, same raw-mode).
+    cached_scan_result: Option<CachedScanResult>,
     /// Monotonically increasing counter; bumped in `refresh_visible` and whenever the
     /// field layout or display mode changes. Cache entries with a stale generation are
     /// re-computed on the next render.
@@ -543,6 +566,7 @@ impl TabState {
             filter_date_styles: Vec::new(),
             filter_field_styles: Vec::new(),
             saved_filter_view: None,
+            cached_scan_result: None,
             parse_cache_gen: 0,
             parse_cache: HashMap::new(),
             search_handle: None,
@@ -1185,6 +1209,32 @@ impl TabState {
             return;
         }
 
+        let desired_fingerprint: Vec<crate::types::FilterDef> = self
+            .log_manager
+            .get_filters()
+            .iter()
+            .filter(|f| f.enabled)
+            .cloned()
+            .collect();
+        let current_line_count = self.file_reader.line_count();
+        if let Some(cached) = &self.cached_scan_result
+            && cached.filter_fingerprint == desired_fingerprint
+            && cached.line_count == current_line_count
+            && cached.raw_mode == self.raw_mode
+        {
+            let current_line = self.visible_indices.get_opt(self.scroll_offset);
+            let (saved_visible, saved_fm, saved_styles, saved_date_styles, saved_field_styles) =
+                cached.view.clone();
+            self.visible_indices = saved_visible;
+            self.filter_manager_arc = saved_fm;
+            self.filter_styles = saved_styles;
+            self.filter_date_styles = saved_date_styles;
+            self.filter_field_styles = saved_field_styles;
+            self.filter_match_counts = cached.match_counts.clone();
+            self.restore_scroll_to_line(current_line);
+            return;
+        }
+
         let scroll_anchor = self.visible_indices.get_opt(self.scroll_offset);
         self.rebuild_filter_manager_cache();
         // Clear stale counts — the filter order may have changed (e.g. reorder) so old
@@ -1396,6 +1446,9 @@ impl TabState {
             displayed_progress: 0.0,
             scroll_anchor,
             received_first_chunk: false,
+            scan_fingerprint: desired_fingerprint,
+            scan_line_count: current_line_count,
+            scan_raw_mode: self.raw_mode,
         });
     }
 
@@ -3311,6 +3364,136 @@ mod tests {
             cancel_1.load(std::sync::atomic::Ordering::Relaxed),
             "first handle's cancel should be true after second begin_filter_refresh"
         );
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_cache_hit_skips_scan() {
+        let mut tab = make_tab(&["error line", "info line", "error again"]).await;
+        let filter_id = tab
+            .log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .await;
+        // Seed the cache as if a completed scan had run.
+        let fingerprint: Vec<crate::types::FilterDef> = tab
+            .log_manager
+            .get_filters()
+            .iter()
+            .filter(|f| f.enabled)
+            .cloned()
+            .collect();
+        tab.cached_scan_result = Some(CachedScanResult {
+            filter_fingerprint: fingerprint,
+            line_count: tab.file_reader.line_count(),
+            raw_mode: false,
+            view: (
+                VisibleLines::Filtered(vec![0, 2]),
+                tab.filter_manager_arc.clone(),
+                tab.filter_styles.clone(),
+                tab.filter_date_styles.clone(),
+                tab.filter_field_styles.clone(),
+            ),
+            match_counts: vec![2],
+        });
+        tab.begin_filter_refresh();
+        // Cache hit: no background scan spawned.
+        assert!(tab.filter_handle.is_none());
+        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
+        assert_eq!(tab.filter_match_counts, vec![2]);
+        let _ = filter_id;
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_cache_miss_on_line_count_change() {
+        let mut tab = make_tab(&["error line", "info line"]).await;
+        tab.log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .await;
+        let fingerprint: Vec<crate::types::FilterDef> = tab
+            .log_manager
+            .get_filters()
+            .iter()
+            .filter(|f| f.enabled)
+            .cloned()
+            .collect();
+        // Cache records a stale line count.
+        tab.cached_scan_result = Some(CachedScanResult {
+            filter_fingerprint: fingerprint,
+            line_count: 999,
+            raw_mode: false,
+            view: (
+                VisibleLines::Filtered(vec![0]),
+                tab.filter_manager_arc.clone(),
+                tab.filter_styles.clone(),
+                tab.filter_date_styles.clone(),
+                tab.filter_field_styles.clone(),
+            ),
+            match_counts: vec![1],
+        });
+        tab.begin_filter_refresh();
+        // Cache miss: background scan is spawned.
+        assert!(tab.filter_handle.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_cache_miss_on_filter_change() {
+        let mut tab = make_tab(&["error line", "info line"]).await;
+        tab.log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .await;
+        // Cache built for a different enabled filter.
+        let stale_filter = crate::types::FilterDef {
+            id: 99,
+            pattern: "other".to_string(),
+            filter_type: FilterType::Include,
+            enabled: true,
+            color_config: None,
+        };
+        tab.cached_scan_result = Some(CachedScanResult {
+            filter_fingerprint: vec![stale_filter],
+            line_count: tab.file_reader.line_count(),
+            raw_mode: false,
+            view: (
+                VisibleLines::Filtered(vec![]),
+                tab.filter_manager_arc.clone(),
+                tab.filter_styles.clone(),
+                tab.filter_date_styles.clone(),
+                tab.filter_field_styles.clone(),
+            ),
+            match_counts: vec![0],
+        });
+        tab.begin_filter_refresh();
+        assert!(tab.filter_handle.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_cache_miss_on_raw_mode_change() {
+        let mut tab = make_tab(&["error line", "info line"]).await;
+        tab.log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .await;
+        let fingerprint: Vec<crate::types::FilterDef> = tab
+            .log_manager
+            .get_filters()
+            .iter()
+            .filter(|f| f.enabled)
+            .cloned()
+            .collect();
+        // Cache was built with raw_mode=true, but tab has raw_mode=false.
+        tab.cached_scan_result = Some(CachedScanResult {
+            filter_fingerprint: fingerprint,
+            line_count: tab.file_reader.line_count(),
+            raw_mode: true,
+            view: (
+                VisibleLines::Filtered(vec![0]),
+                tab.filter_manager_arc.clone(),
+                tab.filter_styles.clone(),
+                tab.filter_date_styles.clone(),
+                tab.filter_field_styles.clone(),
+            ),
+            match_counts: vec![1],
+        });
+        tab.begin_filter_refresh();
+        assert!(tab.filter_handle.is_some());
     }
 
     #[tokio::test]

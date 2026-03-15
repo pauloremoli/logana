@@ -17,10 +17,26 @@ use tokio::{
     task::spawn_blocking,
 };
 
-pub type VisibilityPredicate = Box<dyn Fn(&[u8]) -> bool + Send + Sync>;
+pub struct VisibilityPredicate {
+    fm: std::sync::Arc<crate::filters::FilterManager>,
+}
+
+impl VisibilityPredicate {
+    pub fn new(fm: crate::filters::FilterManager) -> Self {
+        Self {
+            fm: std::sync::Arc::new(fm),
+        }
+    }
+
+    pub fn is_visible(&self, line: &[u8]) -> bool {
+        self.fm.is_visible(line)
+    }
+}
+
 pub struct FileLoadResult {
     pub reader: FileReader,
     pub precomputed_visible: Option<Vec<usize>>,
+    pub precomputed_text_counts: Option<Vec<usize>>,
 }
 
 pub struct FileLoadHandle {
@@ -385,27 +401,56 @@ impl FileReader {
             let mut reader = Self::from_bytes(text);
             reader.is_dlt = true;
 
-            let precomputed_visible = predicate.map(|pred| {
+            let (precomputed_visible, precomputed_text_counts) = if let Some(pred) = predicate {
                 let count = reader.line_count();
+                let n = pred.fm.filter_count();
+                let has_include = pred.fm.has_include();
                 if tail {
+                    let mut text_counts = vec![0usize; n];
                     let mut visible: Vec<usize> = (0..count)
                         .rev()
-                        .filter(|&i| pred(reader.get_line(i)))
+                        .filter(|&i| {
+                            pred.fm
+                                .evaluate_and_count(reader.get_line(i), &mut text_counts)
+                                .to_visibility(has_include)
+                        })
                         .collect();
                     visible.reverse();
-                    visible
+                    (Some(visible), Some(text_counts))
                 } else {
                     use rayon::prelude::*;
-                    (0..count)
+                    let (visible, text_counts) = (0..count)
                         .into_par_iter()
-                        .filter(|&i| pred(reader.get_line(i)))
-                        .collect()
+                        .fold(
+                            || (Vec::new(), vec![0usize; n]),
+                            |(mut vis, mut tc), i| {
+                                let dec = pred.fm.evaluate_and_count(reader.get_line(i), &mut tc);
+                                if dec.to_visibility(has_include) {
+                                    vis.push(i);
+                                }
+                                (vis, tc)
+                            },
+                        )
+                        .reduce(
+                            || (Vec::new(), vec![0usize; n]),
+                            |(mut va, mut ta), (vb, tb)| {
+                                va.extend(vb);
+                                for (a, b) in ta.iter_mut().zip(tb) {
+                                    *a += b;
+                                }
+                                (va, ta)
+                            },
+                        );
+                    (Some(visible), Some(text_counts))
                 }
-            });
+            } else {
+                (None, None)
+            };
 
             return Ok(FileLoadResult {
                 reader,
                 precomputed_visible,
+                precomputed_text_counts,
             });
         }
 
@@ -484,44 +529,61 @@ impl FileReader {
                 starts.extend(local);
             }
 
-            // Drop the scan mmap. munmap() is guaranteed to remove all its
-            // pages from process RSS immediately — unlike MADV_DONTNEED which
-            // is advisory and can be ignored for file-backed shared mappings.
-            drop(scan_mmap);
-
-            // Fresh mmap for on-demand access: zero pages in RSS until
-            // get_line faults in only the specific page(s) it needs.
-            let access_mmap = unsafe { Mmap::map(&file)? };
-            #[cfg(unix)]
-            let _ = access_mmap.advise(Advice::Random);
-
             FileReader {
-                storage: Storage::Mmap(std::sync::Arc::new(access_mmap)),
+                storage: Storage::Mmap(std::sync::Arc::new(scan_mmap)),
                 line_starts: std::sync::Arc::new(starts),
                 is_dlt: false,
             }
         };
 
         // Phase 2: evaluate the predicate on each line when provided.
-        let precomputed_visible = predicate.map(|pred| {
+        let (precomputed_visible, precomputed_text_counts) = if let Some(pred) = predicate {
             let count = reader.line_count();
-            if tail {
+            let n = pred.fm.filter_count();
+            let has_include = pred.fm.has_include();
+            let (visible, text_counts) = if tail {
                 // Evaluate from the last line backward so lines near the tail
                 // are confirmed first; reverse at the end to restore ascending order.
+                let mut text_counts = vec![0usize; n];
                 let mut visible: Vec<usize> = (0..count)
                     .rev()
-                    .filter(|&i| pred(reader.get_line(i)))
+                    .filter(|&i| {
+                        pred.fm
+                            .evaluate_and_count(reader.get_line(i), &mut text_counts)
+                            .to_visibility(has_include)
+                    })
                     .collect();
                 visible.reverse();
-                visible
+                (visible, text_counts)
             } else {
                 use rayon::prelude::*;
                 (0..count)
                     .into_par_iter()
-                    .filter(|&i| pred(reader.get_line(i)))
-                    .collect()
-            }
-        });
+                    .fold(
+                        || (Vec::new(), vec![0usize; n]),
+                        |(mut vis, mut tc), i| {
+                            let dec = pred.fm.evaluate_and_count(reader.get_line(i), &mut tc);
+                            if dec.to_visibility(has_include) {
+                                vis.push(i);
+                            }
+                            (vis, tc)
+                        },
+                    )
+                    .reduce(
+                        || (Vec::new(), vec![0usize; n]),
+                        |(mut va, mut ta), (vb, tb)| {
+                            va.extend(vb);
+                            for (a, b) in ta.iter_mut().zip(tb) {
+                                *a += b;
+                            }
+                            (va, ta)
+                        },
+                    )
+            };
+            (Some(visible), Some(text_counts))
+        } else {
+            (None, None)
+        };
 
         // If phase 2 ran, the predicate accessed every line and re-faulted all
         // pages into RSS. Release them now — only the viewport pages will be
@@ -538,6 +600,7 @@ impl FileReader {
         Ok(FileLoadResult {
             reader,
             precomputed_visible,
+            precomputed_text_counts,
         })
     }
 
@@ -1181,23 +1244,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_predicate_forward_filters_correctly() {
+        use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
         let f = make_tmp(&["ERROR: bad", "INFO: ok", "ERROR: also bad"]);
         let path = f.path().to_str().unwrap().to_string();
-        let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
-            Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
+        let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(filter)], true);
+        let pred = VisibilityPredicate::new(fm);
         let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
             .await
             .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![0, 2]));
+        assert_eq!(result.precomputed_text_counts, Some(vec![2]));
     }
 
     #[tokio::test]
     async fn test_load_predicate_tail_result_is_ascending() {
+        use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
         let f = make_tmp(&["ERROR: first", "INFO: skip", "ERROR: last"]);
         let path = f.path().to_str().unwrap().to_string();
-        let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
-            Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
+        let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(filter)], true);
+        let pred = VisibilityPredicate::new(fm);
         let handle = FileReader::load(path, Some(pred), true, Arc::new(AtomicBool::new(false)))
             .await
             .unwrap();
@@ -1206,20 +1274,23 @@ mod tests {
         // Backward evaluation, but result must be sorted ascending.
         assert_eq!(visible, vec![0, 2]);
         assert!(visible.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(result.precomputed_text_counts, Some(vec![2]));
     }
 
     #[tokio::test]
     async fn test_load_predicate_ansi_file_indices_correct() {
         // ANSI file: predicate must evaluate against stripped bytes and indices
         // must reference stripped-line positions (same as get_line returns).
+        use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
         let mut f = NamedTempFile::new().unwrap();
         writeln!(f, "\x1b[32mERROR\x1b[0m: red").unwrap(); // line 0 — contains ERROR
         writeln!(f, "\x1b[32mINFO\x1b[0m: green").unwrap(); // line 1 — skipped
         writeln!(f, "\x1b[31mERROR\x1b[0m: also red").unwrap(); // line 2 — contains ERROR
         let path = f.path().to_str().unwrap().to_string();
 
-        let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
-            Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
+        let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(filter)], true);
+        let pred = VisibilityPredicate::new(fm);
         let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
             .await
             .unwrap();
@@ -1236,25 +1307,29 @@ mod tests {
     async fn test_load_predicate_tail_all_match() {
         let f = make_tmp(&["a", "b", "c"]);
         let path = f.path().to_str().unwrap().to_string();
-        let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> = Box::new(|_| true);
+        let pred = VisibilityPredicate::new(crate::filters::FilterManager::empty());
         let handle = FileReader::load(path, Some(pred), true, Arc::new(AtomicBool::new(false)))
             .await
             .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![0, 1, 2]));
+        assert_eq!(result.precomputed_text_counts, Some(vec![]));
     }
 
     #[tokio::test]
     async fn test_load_predicate_none_match() {
+        use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
         let f = make_tmp(&["INFO: ok", "DEBUG: verbose"]);
         let path = f.path().to_str().unwrap().to_string();
-        let pred: Box<dyn Fn(&[u8]) -> bool + Send + Sync> =
-            Box::new(|line: &[u8]| line.starts_with(b"ERROR"));
+        let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(filter)], true);
+        let pred = VisibilityPredicate::new(fm);
         let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
             .await
             .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![]));
+        assert_eq!(result.precomputed_text_counts, Some(vec![0]));
     }
 
     #[test]
@@ -2264,7 +2339,10 @@ mod tests {
         f.flush().unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let pred: VisibilityPredicate = Box::new(|line| line.starts_with(b"EVEN"));
+        use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
+        let filter = SubstringFilter::new("EVEN", FilterDecision::Include, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(filter)], true);
+        let pred = VisibilityPredicate::new(fm);
         let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
             .await
             .unwrap();
