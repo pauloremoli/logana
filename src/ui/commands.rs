@@ -203,13 +203,13 @@ impl App {
                 if !path.is_empty() {
                     let expanded = expand_tilde(&path);
                     let tab = &self.tabs[self.active_tab];
-                    if let Some(src) = tab.log_manager.source_file() {
-                        if crate::headless::same_file(src, std::path::Path::new(&expanded)) {
-                            return Err(format!(
-                                "Output path '{}' is the same as the input file",
-                                expanded
-                            ));
-                        }
+                    if let Some(src) = tab.log_manager.source_file()
+                        && crate::headless::same_file(src, std::path::Path::new(&expanded))
+                    {
+                        return Err(format!(
+                            "Output path '{}' is the same as the input file",
+                            expanded
+                        ));
                     }
                     let marked_lines = tab.log_manager.get_marked_lines(&tab.file_reader);
                     let file = std::fs::File::create(&expanded)
@@ -232,13 +232,13 @@ impl App {
                 }
                 let expanded = expand_tilde(&path);
                 let tab = &self.tabs[self.active_tab];
-                if let Some(src) = tab.log_manager.source_file() {
-                    if crate::headless::same_file(src, std::path::Path::new(&expanded)) {
-                        return Err(format!(
-                            "Output path '{}' is the same as the input file",
-                            expanded
-                        ));
-                    }
+                if let Some(src) = tab.log_manager.source_file()
+                    && crate::headless::same_file(src, std::path::Path::new(&expanded))
+                {
+                    return Err(format!(
+                        "Output path '{}' is the same as the input file",
+                        expanded
+                    ));
                 }
                 let file = std::fs::File::create(&expanded)
                     .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
@@ -258,13 +258,13 @@ impl App {
                     return Err("Path is required".to_string());
                 }
                 let tab = &self.tabs[self.active_tab];
-                if let Some(src) = tab.log_manager.source_file() {
-                    if crate::headless::same_file(src, std::path::Path::new(&path)) {
-                        return Err(format!(
-                            "Output path '{}' is the same as the input file",
-                            path
-                        ));
-                    }
+                if let Some(src) = tab.log_manager.source_file()
+                    && crate::headless::same_file(src, std::path::Path::new(&path))
+                {
+                    return Err(format!(
+                        "Output path '{}' is the same as the input file",
+                        path
+                    ));
                 }
                 let tpl = crate::export::load_template(&template).map_err(|e| e.to_string())?;
                 let data = crate::export::ExportData {
@@ -1375,8 +1375,14 @@ mod tests {
     #[tokio::test]
     async fn test_stop_clears_watch_state() {
         let mut app = make_app(&["line1"]).await;
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(super::super::FileWatchState { new_data_rx: rx });
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let reader_path = temp_file.path().to_owned();
+        let (tx, rx) = tokio::sync::watch::channel(());
+        app.tabs[0].watch_state = Some(super::super::FileWatchState {
+            snapshot_rx: rx,
+            reader_path,
+            temp_file: Some(temp_file),
+        });
         assert!(app.tab().watch_state.is_some());
         app.run_command("stop").await.unwrap();
         assert!(app.tab().watch_state.is_none());
@@ -1386,8 +1392,14 @@ mod tests {
     #[tokio::test]
     async fn test_stop_clears_stdin_load_state() {
         let mut app = make_app(&["line1"]).await;
-        let (_tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.stdin_load_state = Some(super::super::StdinLoadState { snapshot_rx: rx });
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let temp_path = temp_file.path().to_owned();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        app.stdin_load_state = Some(super::super::StdinLoadState {
+            snapshot_rx: rx,
+            temp_path,
+            temp_file,
+        });
         assert!(app.stdin_load_state.is_some());
         app.run_command("stop").await.unwrap();
         assert!(app.stdin_load_state.is_none());

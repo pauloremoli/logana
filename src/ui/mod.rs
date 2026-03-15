@@ -1835,20 +1835,36 @@ pub struct FileLoadState {
 /// Tracks an in-progress stdin stream.  Kept separate from `file_load_state`
 /// so session-restore loads cannot overwrite it.
 pub struct StdinLoadState {
-    /// Receives snapshots of all complete lines accumulated so far.
-    /// Updated every second.  When the sender is dropped stdin has closed.
-    pub snapshot_rx: tokio::sync::watch::Receiver<Vec<u8>>,
+    /// Fires each time new data has been appended to `temp_path`.
+    /// When the sender is dropped stdin has closed.
+    pub snapshot_rx: tokio::sync::watch::Receiver<()>,
+    /// Path to the temp file on disk.
+    pub temp_path: std::path::PathBuf,
+    /// Keeps the temp file alive; dropped after the final mmap is established.
+    #[allow(dead_code)]
+    temp_file: tempfile::NamedTempFile,
 }
 
 /// Per-tab state for watching a file for new appended content.
 pub struct FileWatchState {
-    /// Receives stripped byte chunks whenever new lines are appended to the file.
-    pub new_data_rx: tokio::sync::watch::Receiver<Vec<u8>>,
+    /// Fires each time new data has been appended to `reader_path`.
+    pub snapshot_rx: tokio::sync::watch::Receiver<()>,
+    /// Path to mmap for incremental updates.
+    /// - For growing files: the original file path (grows in-place).
+    /// - For streams (docker/dlt/stdin): a temp file path (all data written here).
+    pub reader_path: std::path::PathBuf,
+    /// Keeps the temp file alive for stream sources. `None` for file watchers.
+    #[allow(dead_code)]
+    temp_file: Option<tempfile::NamedTempFile>,
 }
+
+/// The result of a successful stream connection: a notification channel and
+/// the temp file that receives all stream data.
+pub type StreamConnection = (tokio::sync::watch::Receiver<()>, tempfile::NamedTempFile);
 
 type ConnectFn = Arc<
     dyn Fn() -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<watch::Receiver<Vec<u8>>, String>> + Send>,
+            Box<dyn std::future::Future<Output = Result<StreamConnection, String>> + Send>,
         > + Send
         + Sync,
 >;
@@ -1856,7 +1872,7 @@ type ConnectFn = Arc<
 pub struct StreamRetryState {
     pub attempt: u32,
     pub last_error: String,
-    pub retry_rx: Option<mpsc::Receiver<Result<watch::Receiver<Vec<u8>>, String>>>,
+    pub retry_rx: Option<mpsc::Receiver<Result<StreamConnection, String>>>,
     connect: ConnectFn,
 }
 
@@ -1916,6 +1932,31 @@ pub fn docker_connect_fn(container: String) -> ConnectFn {
                 .map_err(|e| e.to_string())
         })
     })
+}
+
+/// Construct a `FileWatchState` for a stream (docker/dlt/stdin) connection.
+/// The temp file holds all stream data and must stay alive until the tab is closed.
+pub fn watch_state_from_connection(conn: StreamConnection) -> FileWatchState {
+    let (snapshot_rx, temp_file) = conn;
+    let reader_path = temp_file.path().to_owned();
+    FileWatchState {
+        snapshot_rx,
+        reader_path,
+        temp_file: Some(temp_file),
+    }
+}
+
+/// Construct a `FileWatchState` for a growing file on disk.
+/// The reader will mmap the original file directly as it grows.
+pub fn watch_state_from_file(
+    snapshot_rx: tokio::sync::watch::Receiver<()>,
+    path: String,
+) -> FileWatchState {
+    FileWatchState {
+        snapshot_rx,
+        reader_path: std::path::PathBuf::from(path),
+        temp_file: None,
+    }
 }
 
 pub use app::App;

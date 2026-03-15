@@ -225,23 +225,47 @@ impl FileReader {
         Ok(Self::from_bytes(buf))
     }
 
-    /// Stream stdin asynchronously, flushing complete lines every second.
+    /// Extend this reader from a growing file, scanning only new bytes.
     ///
-    /// Returns a `watch::Receiver<Vec<u8>>` whose value is replaced each time a
-    /// batch of complete lines is ready.  When stdin closes the sender is
-    /// dropped, which callers can detect via `has_changed() == Err(_)`.
+    /// Returns `true` when incremental extension succeeded.
+    /// Returns `false` when storage is `Bytes` (ANSI/DLT) — caller falls back to `FileReader::new()`.
+    pub fn try_extend_from_mmap(&mut self, path: &str) -> io::Result<bool> {
+        if matches!(self.storage, Storage::Bytes(_)) {
+            return Ok(false);
+        }
+        let file = File::open(path)?;
+        let new_mmap = unsafe { Mmap::map(&file)? };
+        let old_size = self.storage.as_bytes().len();
+        let new_size = new_mmap.len();
+        if new_size <= old_size {
+            return Ok(true);
+        }
+        let starts = Arc::make_mut(&mut self.line_starts);
+        for pos in memchr_iter(b'\n', &new_mmap[old_size..]) {
+            starts.push(old_size + pos + 1);
+        }
+        self.storage = Storage::Mmap(Arc::new(new_mmap));
+        Ok(true)
+    }
+
+    /// Stream stdin asynchronously, appending complete lines to a temp file every second.
     ///
-    /// Only complete lines (up to the last `\n`) are flushed on each interval
-    /// tick; any trailing partial line is held until EOF.
-    pub async fn stream_stdin() -> watch::Receiver<Vec<u8>> {
-        let (snapshot_tx, snapshot_rx) = watch::channel(Vec::<u8>::new());
+    /// Returns a `watch::Receiver<()>` that fires each time new data is written
+    /// and the `NamedTempFile` that owns the on-disk bytes.  When stdin closes
+    /// the sender is dropped, which callers detect via `has_changed() == Err(_)`.
+    pub async fn stream_stdin() -> (watch::Receiver<()>, tempfile::NamedTempFile) {
+        use std::io::Write as _;
+        use std::time::Duration;
+
+        let temp_file =
+            tempfile::NamedTempFile::new().expect("failed to create temp file for stdin stream");
+        let temp_path = temp_file.path().to_owned();
+        let (snapshot_tx, snapshot_rx) = watch::channel(());
 
         spawn(async move {
-            use std::time::Duration;
             use tokio::io::AsyncReadExt;
 
             let mut stdin = tokio::io::stdin();
-            let mut accumulated: Vec<u8> = Vec::new();
             let mut partial: Vec<u8> = Vec::new();
             let mut buf = vec![0u8; 4096];
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -253,27 +277,39 @@ impl FileReader {
                     result = stdin.read(&mut buf) => {
                         match result {
                             Ok(0) | Err(_) => {
-                                // EOF or error — flush everything including any partial line.
-                                accumulated.extend_from_slice(&partial);
-                                let _ = snapshot_tx.send(accumulated);
+                                if !partial.is_empty()
+                                    && let Ok(mut f) = std::fs::OpenOptions::new()
+                                        .append(true)
+                                        .open(&temp_path)
+                                {
+                                    let _ = f.write_all(&partial);
+                                    let _ = f.flush();
+                                }
+                                let _ = snapshot_tx.send(());
                                 return;
                             }
                             Ok(n) => partial.extend_from_slice(&buf[..n]),
                         }
                     }
                     _ = interval.tick() => {
-                        // Flush only complete lines (up to the last '\n').
-                        if let Some(last_nl) = partial.iter().rposition(|&b| b == b'\n') {
-                            accumulated.extend_from_slice(&partial[..=last_nl]);
+                        if let Some(last_nl) = partial.iter().rposition(|&b| b == b'\n')
+                            && let Ok(mut f) = std::fs::OpenOptions::new()
+                                .append(true)
+                                .open(&temp_path)
+                        {
+                            let complete = partial[..=last_nl].to_vec();
                             partial.drain(..=last_nl);
-                            let _ = snapshot_tx.send(accumulated.clone());
+                            if f.write_all(&complete).is_ok() {
+                                let _ = f.flush();
+                                let _ = snapshot_tx.send(());
+                            }
                         }
                     }
                 }
             }
         });
 
-        snapshot_rx
+        (snapshot_rx, temp_file)
     }
 
     /// Start loading `path` on tokio's blocking thread pool.
@@ -635,14 +671,14 @@ impl FileReader {
 
     /// Spawn a child process and stream its combined stdout+stderr output.
     ///
-    /// Returns a `watch::Receiver<Vec<u8>>` whose value is replaced whenever
-    /// new complete lines arrive (flushed every 500 ms).  ANSI escape
-    /// sequences are stripped from the output.  When the process exits the
-    /// sender is dropped.
+    /// Appends ANSI-stripped complete lines to a `NamedTempFile` every 500 ms.
+    /// Returns a `watch::Receiver<()>` that fires on each flush and the temp
+    /// file.  When the process exits the sender is dropped.
     pub async fn spawn_process_stream(
         program: &str,
         args: &[&str],
-    ) -> io::Result<watch::Receiver<Vec<u8>>> {
+    ) -> io::Result<(watch::Receiver<()>, tempfile::NamedTempFile)> {
+        use std::io::Write as _;
         use tokio::process::Command;
 
         let mut child = Command::new(program)
@@ -655,7 +691,9 @@ impl FileReader {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
-        let (tx, rx) = watch::channel(Vec::<u8>::new());
+        let temp_file = tempfile::NamedTempFile::new()?;
+        let temp_path = temp_file.path().to_owned();
+        let (tx, rx) = watch::channel(());
 
         // Merge stdout and stderr by spawning a reader task for each,
         // both writing into a shared mpsc channel.
@@ -703,7 +741,6 @@ impl FileReader {
         spawn(async move {
             use std::time::Duration;
 
-            let mut accumulated: Vec<u8> = Vec::new();
             let mut partial: Vec<u8> = Vec::new();
 
             let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -717,35 +754,52 @@ impl FileReader {
                             Some(data) => partial.extend_from_slice(&data),
                             None => {
                                 // Both readers done — flush remaining.
-                                accumulated.extend_from_slice(&strip_ansi_escapes(&partial));
-                                let _ = tx.send(accumulated);
+                                if !partial.is_empty()
+                                    && let Ok(mut f) = std::fs::OpenOptions::new()
+                                        .append(true)
+                                        .open(&temp_path)
+                                {
+                                    let stripped = strip_ansi_escapes(&partial);
+                                    let _ = f.write_all(&stripped);
+                                    let _ = f.flush();
+                                }
+                                let _ = tx.send(());
                                 return;
                             }
                         }
                     }
                     _ = interval.tick() => {
-                        if let Some(last_nl) = partial.iter().rposition(|&b| b == b'\n') {
-                            let chunk = &partial[..=last_nl];
-                            accumulated.extend_from_slice(&strip_ansi_escapes(chunk));
+                        if let Some(last_nl) = partial.iter().rposition(|&b| b == b'\n')
+                            && let Ok(mut f) = std::fs::OpenOptions::new()
+                                .append(true)
+                                .open(&temp_path)
+                        {
+                            let stripped = strip_ansi_escapes(&partial[..=last_nl]);
                             partial.drain(..=last_nl);
-                            let _ = tx.send(accumulated.clone());
+                            if f.write_all(&stripped).is_ok() {
+                                let _ = f.flush();
+                                let _ = tx.send(());
+                            }
                         }
                     }
                 }
             }
         });
 
-        Ok(rx)
+        Ok((rx, temp_file))
     }
 
     pub async fn spawn_dlt_tcp_stream(
         host: String,
         port: u16,
-    ) -> io::Result<watch::Receiver<Vec<u8>>> {
+    ) -> io::Result<(watch::Receiver<()>, tempfile::NamedTempFile)> {
+        use std::io::Write as _;
         use tokio::net::TcpStream;
 
         let stream = TcpStream::connect((host.as_str(), port)).await?;
-        let (tx, rx) = watch::channel(Vec::<u8>::new());
+        let temp_file = tempfile::NamedTempFile::new()?;
+        let temp_path = temp_file.path().to_owned();
+        let (tx, rx) = watch::channel(());
         let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
 
         spawn(async move {
@@ -769,13 +823,24 @@ impl FileReader {
         spawn(async move {
             use std::time::Duration;
 
-            let mut accumulated: Vec<u8> = Vec::new();
             let mut partial: Vec<u8> = Vec::new();
             let mut format_confirmed = false;
 
             let mut interval = tokio::time::interval(Duration::from_millis(500));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             interval.tick().await;
+
+            let flush = |data: &[u8]| -> bool {
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&temp_path)
+                    .ok()
+                    .and_then(|mut f| {
+                        f.write_all(data).ok()?;
+                        f.flush().ok()
+                    })
+                    .is_some()
+            };
 
             loop {
                 tokio::select! {
@@ -795,17 +860,17 @@ impl FileReader {
                                     };
                                     let (text, consumed) =
                                         dlt_binary::convert_wire_streaming(&partial, &now_ts);
-                                    if !text.is_empty() {
-                                        accumulated.extend_from_slice(&text);
-                                    }
+                                    let mut out = text;
                                     if consumed < partial.len() {
-                                        let remainder = &partial[consumed..];
-                                        accumulated.extend_from_slice(
-                                            String::from_utf8_lossy(remainder).as_bytes(),
+                                        out.extend_from_slice(
+                                            String::from_utf8_lossy(&partial[consumed..]).as_bytes(),
                                         );
                                     }
+                                    if !out.is_empty() {
+                                        flush(&out);
+                                    }
                                 }
-                                let _ = tx.send(accumulated);
+                                let _ = tx.send(());
                                 return;
                             }
                         }
@@ -824,12 +889,10 @@ impl FileReader {
                             }
                         }
                         if dlt_binary::is_dlt_binary(&partial) {
-                            let text =
-                                dlt_binary::convert_dlt_binary_to_text(&partial);
-                            if !text.is_empty() {
-                                accumulated.extend_from_slice(&text);
+                            let text = dlt_binary::convert_dlt_binary_to_text(&partial);
+                            if !text.is_empty() && flush(&text) {
                                 partial.clear();
-                                let _ = tx.send(accumulated.clone());
+                                let _ = tx.send(());
                             }
                         } else {
                             let now_ts = {
@@ -843,10 +906,9 @@ impl FileReader {
                             };
                             let (text, consumed) =
                                 dlt_binary::convert_wire_streaming(&partial, &now_ts);
-                            if !text.is_empty() {
-                                accumulated.extend_from_slice(&text);
+                            if !text.is_empty() && flush(&text) {
                                 partial.drain(..consumed);
-                                let _ = tx.send(accumulated.clone());
+                                let _ = tx.send(());
                             }
                         }
                     }
@@ -854,21 +916,25 @@ impl FileReader {
             }
         });
 
-        Ok(rx)
+        Ok((rx, temp_file))
     }
 
     /// Spawn a background task that polls `path` for new bytes every 500 ms.
     ///
     /// `initial_offset` must be the **original** (unstripped) file size in
     /// bytes at the time the file was first loaded (from
-    /// `std::fs::metadata(path)?.len()`).  The watcher reads from that offset
-    /// onwards, strips ANSI escape sequences, and delivers each chunk via the
-    /// returned watch channel.
+    /// `std::fs::metadata(path)?.len()`).
     ///
-    /// The channel value is replaced on each new chunk.  When the background
-    /// task stops (receiver dropped), the sender is also dropped.
-    pub async fn spawn_file_watcher(path: String, initial_offset: u64) -> watch::Receiver<Vec<u8>> {
-        let (tx, rx) = watch::channel(Vec::<u8>::new());
+    /// Returns a `watch::Receiver<()>` that fires when the file grows.
+    /// The caller should mmap the original `path` directly to read new content,
+    /// using `FileReader::try_extend_from_mmap`.  For ANSI-containing files
+    /// (where `try_extend_from_mmap` returns `false`), `FileReader::new` will
+    /// re-load and strip the whole file.
+    ///
+    /// When the background task stops (receiver dropped), the sender is dropped.
+    pub async fn spawn_file_watcher(path: String, initial_offset: u64) -> watch::Receiver<()> {
+        let (tx, rx) = watch::channel(());
+
         tokio::spawn(async move {
             use tokio::time::MissedTickBehavior;
 
@@ -881,29 +947,22 @@ impl FileReader {
                 interval.tick().await;
 
                 let path_clone = path.clone();
-                let result = tokio::task::spawn_blocking(move || -> io::Result<(u64, Vec<u8>)> {
-                    use std::io::{Read, Seek};
+                let result = tokio::task::spawn_blocking(move || -> io::Result<u64> {
                     let current_size = std::fs::metadata(&path_clone)?.len();
-                    if current_size <= last_offset {
-                        return Ok((current_size, vec![]));
-                    }
-                    let mut file = File::open(&path_clone)?;
-                    file.seek(std::io::SeekFrom::Start(last_offset))?;
-                    let new_len = (current_size - last_offset) as usize;
-                    let mut buf = vec![0u8; new_len];
-                    file.read_exact(&mut buf)?;
-                    Ok((current_size, buf))
+                    Ok(current_size)
                 })
                 .await;
 
-                if let Ok(Ok((new_size, buf))) = result {
-                    if new_size < last_offset {
+                if let Ok(Ok(current_size)) = result {
+                    if current_size < last_offset {
                         // File was truncated (e.g. log rotation) — reset offset.
-                        last_offset = new_size;
-                    } else if !buf.is_empty() {
-                        last_offset = new_size;
-                        let stripped = strip_ansi_escapes(&buf);
-                        if tx.send(stripped).is_err() {
+                        last_offset = current_size;
+                        if tx.send(()).is_err() {
+                            break;
+                        }
+                    } else if current_size > last_offset {
+                        last_offset = current_size;
+                        if tx.send(()).is_err() {
                             break; // Receiver dropped — stop watching.
                         }
                     }
@@ -1703,11 +1762,14 @@ mod tests {
         // Wait for the watcher to detect the change (polls every 500ms)
         sleep(Duration::from_millis(1500)).await;
 
-        let data = rx.borrow_and_update().clone();
-        let text = String::from_utf8_lossy(&data);
+        assert!(
+            rx.has_changed().unwrap(),
+            "watcher should have sent a notification"
+        );
+        let text = std::fs::read_to_string(f.path()).unwrap();
         assert!(
             text.contains("appended"),
-            "watcher should detect appended data, got: {text}"
+            "file should contain appended data, got: {text}"
         );
     }
 
@@ -1735,15 +1797,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_process_stream_basic() {
-        let mut rx = FileReader::spawn_process_stream("echo", &["hello world"])
+        let (mut rx, tmp) = FileReader::spawn_process_stream("echo", &["hello world"])
             .await
             .unwrap();
 
         // Wait for the process to finish and the final flush.
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
-        let data = rx.borrow_and_update().clone();
-        let text = String::from_utf8_lossy(&data);
+        rx.borrow_and_update();
+        let text = std::fs::read_to_string(tmp.path()).unwrap();
         assert!(
             text.contains("hello world"),
             "stdout should be captured, got: {text}"
@@ -1753,14 +1815,15 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_process_stream_stderr() {
         // Use sh -c to write to stderr
-        let mut rx = FileReader::spawn_process_stream("sh", &["-c", "echo error_output >&2"])
-            .await
-            .unwrap();
+        let (mut rx, tmp) =
+            FileReader::spawn_process_stream("sh", &["-c", "echo error_output >&2"])
+                .await
+                .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
-        let data = rx.borrow_and_update().clone();
-        let text = String::from_utf8_lossy(&data);
+        rx.borrow_and_update();
+        let text = std::fs::read_to_string(tmp.path()).unwrap();
         assert!(
             text.contains("error_output"),
             "stderr should be captured, got: {text}"
@@ -1770,14 +1833,15 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_process_stream_strips_ansi() {
         // printf outputs ANSI codes; they should be stripped
-        let mut rx = FileReader::spawn_process_stream("printf", &["\x1b[31mred text\x1b[0m\n"])
-            .await
-            .unwrap();
+        let (mut rx, tmp) =
+            FileReader::spawn_process_stream("printf", &["\x1b[31mred text\x1b[0m\n"])
+                .await
+                .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
-        let data = rx.borrow_and_update().clone();
-        let text = String::from_utf8_lossy(&data);
+        rx.borrow_and_update();
+        let text = std::fs::read_to_string(tmp.path()).unwrap();
         assert!(
             text.contains("red text"),
             "should contain stripped text, got: {text}"
@@ -2112,11 +2176,14 @@ mod tests {
         f.flush().unwrap();
         sleep(Duration::from_millis(1500)).await;
 
-        let data = rx.borrow_and_update().clone();
-        let text = String::from_utf8_lossy(&data);
+        assert!(
+            rx.has_changed().unwrap(),
+            "watcher should have sent a notification after truncation"
+        );
+        let text = std::fs::read_to_string(f.path()).unwrap();
         assert!(
             text.contains("after truncation"),
-            "watcher should detect data after truncation, got: {text}"
+            "file should contain data written after truncation, got: {text}"
         );
     }
 

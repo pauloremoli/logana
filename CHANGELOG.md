@@ -12,6 +12,7 @@ All notable changes to logana will be documented in this file.
 
 ### Changed
 - Performance improvements on file writing for headless mode and export/save commands, it now uses mmap/rayon to speed up the process.
+- All stream sources (stdin, Docker, DLT TCP) now write to a temp file and use mmap with incremental indexing and filtering, keeping memory flat for long-running sessions.
 
 ## [0.3.0] - 2026-03-14
 

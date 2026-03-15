@@ -47,13 +47,13 @@ pub(crate) fn same_file(input: &str, output: &std::path::Path) -> bool {
 }
 
 pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
-    if let (Some(input), Some(output)) = (&args.file, &args.output) {
-        if same_file(input.as_str(), output) {
-            anyhow::bail!(
-                "Output path '{}' is the same as the input file — writing would destroy it",
-                output.display()
-            );
-        }
+    if let (Some(input), Some(output)) = (&args.file, &args.output)
+        && same_file(input.as_str(), output)
+    {
+        anyhow::bail!(
+            "Output path '{}' is the same as the input file — writing would destroy it",
+            output.display()
+        );
     }
 
     let db = Arc::new(Database::in_memory().await?);

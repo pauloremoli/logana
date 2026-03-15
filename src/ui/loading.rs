@@ -10,8 +10,8 @@ use crate::mode::app_mode::ConfirmRestoreMode;
 use crate::mode::normal_mode::NormalMode;
 
 use super::{
-    App, ConnectFn, FileLoadState, FileWatchState, LoadContext, StreamRetryState, TabState,
-    VisibleLines, dlt_connect_fn, docker_connect_fn,
+    App, ConnectFn, FileLoadState, LoadContext, StreamRetryState, TabState, VisibleLines,
+    dlt_connect_fn, docker_connect_fn, watch_state_from_connection, watch_state_from_file,
 };
 
 fn connect_fn_for_source(source: Option<&str>) -> Option<ConnectFn> {
@@ -90,8 +90,8 @@ impl App {
         self.apply_tab_defaults(&mut tab);
 
         match FileReader::spawn_process_stream("docker", &["logs", "-f", &container_id]).await {
-            Ok(rx) => {
-                tab.watch_state = Some(FileWatchState { new_data_rx: rx });
+            Ok(conn) => {
+                tab.watch_state = Some(watch_state_from_connection(conn));
             }
             Err(e) => {
                 let err_msg = e.to_string();
@@ -117,8 +117,8 @@ impl App {
         self.apply_tab_defaults(&mut tab);
 
         match FileReader::spawn_dlt_tcp_stream(host.clone(), port).await {
-            Ok(rx) => {
-                tab.watch_state = Some(FileWatchState { new_data_rx: rx });
+            Ok(conn) => {
+                tab.watch_state = Some(watch_state_from_connection(conn));
             }
             Err(e) => {
                 let err_msg = e.to_string();
@@ -340,8 +340,13 @@ impl App {
     /// Start streaming stdin in the background.  Stored in a dedicated slot so
     /// session-restore file loads cannot overwrite it.
     pub async fn begin_stdin_load(&mut self) {
-        let snapshot_rx = FileReader::stream_stdin().await;
-        self.stdin_load_state = Some(super::StdinLoadState { snapshot_rx });
+        let (snapshot_rx, temp_file) = FileReader::stream_stdin().await;
+        let temp_path = temp_file.path().to_owned();
+        self.stdin_load_state = Some(super::StdinLoadState {
+            snapshot_rx,
+            temp_path,
+            temp_file,
+        });
     }
 
     /// Poll for new stdin data each frame and apply it to the stdin tab.
@@ -353,26 +358,20 @@ impl App {
 
         match status {
             Some(Ok(true)) => {
-                let data = self
+                let _ = self
                     .stdin_load_state
                     .as_mut()
                     .unwrap()
                     .snapshot_rx
-                    .borrow_and_update()
-                    .clone();
-                self.update_stdin_tab(data).await;
+                    .borrow_and_update();
+                let path = self.stdin_load_state.as_ref().unwrap().temp_path.clone();
+                self.update_stdin_tab(&path).await;
             }
             Some(Err(_)) => {
-                // Sender dropped — stdin closed.  Apply final snapshot and clean up.
-                let data = self
-                    .stdin_load_state
-                    .as_mut()
-                    .unwrap()
-                    .snapshot_rx
-                    .borrow()
-                    .clone();
+                // Sender dropped — stdin closed.  mmap FIRST, then unlink temp file.
+                let path = self.stdin_load_state.as_ref().unwrap().temp_path.clone();
+                self.update_stdin_tab(&path).await;
                 self.stdin_load_state = None;
-                self.update_stdin_tab(data).await;
             }
             _ => {}
         }
@@ -384,10 +383,8 @@ impl App {
     /// in-place preserving its mode (e.g. session-restore modal).  Otherwise
     /// a new tab is pushed (session restore already claimed the placeholder).
     /// Follow mode: if the user was at the last line, stay there.
-    async fn update_stdin_tab(&mut self, data: Vec<u8>) {
-        if data.is_empty() {
-            return;
-        }
+    async fn update_stdin_tab(&mut self, path: &std::path::Path) {
+        let path_str = path.to_str().unwrap_or_default();
         if let Some(idx) = self
             .tabs
             .iter()
@@ -396,26 +393,44 @@ impl App {
             if self.tabs[idx].paused {
                 return;
             }
+            let old_count = self.tabs[idx].file_reader.line_count();
             let tail_mode = self.tabs[idx].tail_mode;
-            self.tabs[idx].file_reader = FileReader::from_bytes(data);
+            let incremental = self.tabs[idx]
+                .file_reader
+                .try_extend_from_mmap(path_str)
+                .unwrap_or(false);
+            if !incremental {
+                match FileReader::new(path_str) {
+                    Ok(r) => self.tabs[idx].file_reader = r,
+                    Err(_) => return,
+                }
+            }
+            if self.tabs[idx].file_reader.line_count() == 0 {
+                return;
+            }
             if self.tabs[idx].detected_format.is_none() {
                 self.tabs[idx].detect_and_apply_format();
             }
-            self.tabs[idx].begin_filter_refresh();
-
+            if incremental {
+                self.tabs[idx].filter_new_lines(old_count);
+            } else {
+                self.tabs[idx].begin_filter_refresh();
+            }
             if tail_mode {
                 let new_count = self.tabs[idx].visible_indices.len();
                 self.tabs[idx].scroll_offset = new_count.saturating_sub(1);
             }
         } else {
             // Placeholder was removed by session restore — push a new stdin tab.
-            let file_reader = FileReader::from_bytes(data);
-            if file_reader.line_count() > 0 {
-                let log_manager = LogManager::new(self.db.clone(), None).await;
-                let mut tab = TabState::new(file_reader, log_manager, "stdin".to_string());
-                self.apply_tab_defaults(&mut tab);
-                tab.scroll_offset = tab.visible_indices.len().saturating_sub(1);
-                self.tabs.push(tab);
+            match FileReader::new(path_str) {
+                Ok(file_reader) if file_reader.line_count() > 0 => {
+                    let log_manager = LogManager::new(self.db.clone(), None).await;
+                    let mut tab = TabState::new(file_reader, log_manager, "stdin".to_string());
+                    self.apply_tab_defaults(&mut tab);
+                    tab.scroll_offset = tab.visible_indices.len().saturating_sub(1);
+                    self.tabs.push(tab);
+                }
+                _ => {}
             }
         }
     }
@@ -482,10 +497,8 @@ impl App {
                     self.tabs[0].scroll_offset =
                         self.tabs[0].visible_indices.len().saturating_sub(1);
                 }
-                let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
-                self.tabs[0].watch_state = Some(FileWatchState {
-                    new_data_rx: watch_rx,
-                });
+                let rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
+                self.tabs[0].watch_state = Some(watch_state_from_file(rx, path));
             }
             LoadContext::ReplaceTab { tab_idx } => {
                 if tab_idx >= self.tabs.len() {
@@ -494,10 +507,8 @@ impl App {
                 self.tabs[tab_idx].file_reader = result.reader;
                 self.tabs[tab_idx].detect_and_apply_format();
                 self.tabs[tab_idx].begin_filter_refresh();
-                let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
-                self.tabs[tab_idx].watch_state = Some(FileWatchState {
-                    new_data_rx: watch_rx,
-                });
+                let rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
+                self.tabs[tab_idx].watch_state = Some(watch_state_from_file(rx, path));
             }
             LoadContext::SessionRestoreTab {
                 tab_idx,
@@ -516,10 +527,8 @@ impl App {
                     self.tabs[tab_idx].apply_file_context(&ctx);
                 }
                 self.tabs[tab_idx].begin_filter_refresh();
-                let watch_rx = FileReader::spawn_file_watcher(path, total_bytes).await;
-                self.tabs[tab_idx].watch_state = Some(FileWatchState {
-                    new_data_rx: watch_rx,
-                });
+                let rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
+                self.tabs[tab_idx].watch_state = Some(watch_state_from_file(rx, path));
 
                 self.continue_session_restore(remaining, total, initial_tab_idx)
                     .await;
@@ -536,35 +545,38 @@ impl App {
             let status = self.tabs[i]
                 .watch_state
                 .as_mut()
-                .map(|ws| ws.new_data_rx.has_changed());
+                .map(|ws| ws.snapshot_rx.has_changed());
 
             match status {
                 Some(Ok(true)) => {
-                    if self.tabs[i].paused {
-                        // Mark the channel as seen so we don't spin, but
-                        // discard the payload — it will be re-delivered on
-                        // the next change after the user resumes.
-                        let _ = self.tabs[i]
-                            .watch_state
-                            .as_mut()
-                            .unwrap()
-                            .new_data_rx
-                            .borrow_and_update();
-                        continue;
-                    }
-                    let new_data = self.tabs[i]
+                    let _ = self.tabs[i]
                         .watch_state
                         .as_mut()
                         .unwrap()
-                        .new_data_rx
-                        .borrow_and_update()
-                        .clone();
-                    if new_data.is_empty() {
+                        .snapshot_rx
+                        .borrow_and_update();
+                    if self.tabs[i].paused {
                         continue;
                     }
+                    let reader_path = self.tabs[i]
+                        .watch_state
+                        .as_ref()
+                        .unwrap()
+                        .reader_path
+                        .clone();
+                    let path_str = reader_path.to_str().unwrap_or_default();
                     let tail_mode = self.tabs[i].tail_mode;
                     let old_line_count = self.tabs[i].file_reader.line_count();
-                    self.tabs[i].file_reader.append_bytes(&new_data);
+                    let incremental = self.tabs[i]
+                        .file_reader
+                        .try_extend_from_mmap(path_str)
+                        .unwrap_or(false);
+                    if !incremental {
+                        match crate::file_reader::FileReader::new(path_str) {
+                            Ok(r) => self.tabs[i].file_reader = r,
+                            Err(_) => continue,
+                        }
+                    }
                     // Re-detect format if not yet known (e.g. docker-logs
                     // tab that started empty).
                     if self.tabs[i].detected_format.is_none()
@@ -572,7 +584,11 @@ impl App {
                     {
                         self.tabs[i].detect_and_apply_format();
                     }
-                    self.tabs[i].filter_new_lines(old_line_count);
+                    if incremental {
+                        self.tabs[i].filter_new_lines(old_line_count);
+                    } else {
+                        self.tabs[i].begin_filter_refresh();
+                    }
                     if tail_mode {
                         let new_count = self.tabs[i].visible_indices.len();
                         self.tabs[i].scroll_offset = new_count.saturating_sub(1);
@@ -606,10 +622,8 @@ impl App {
                 None => continue,
             };
             match rx.try_recv() {
-                Ok(Ok(watch_rx)) => {
-                    tab.watch_state = Some(FileWatchState {
-                        new_data_rx: watch_rx,
-                    });
+                Ok(Ok(conn)) => {
+                    tab.watch_state = Some(watch_state_from_connection(conn));
                     tab.command_error = None;
                     tab.stream_retry = None;
                 }
@@ -815,10 +829,45 @@ mod tests {
     use crate::log_manager::LogManager;
     use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
-    use crate::ui::{StdinLoadState, VisibleLines};
+    use crate::ui::{FileWatchState, StdinLoadState, VisibleLines};
     use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+
+    fn make_stdin_file(data: &[u8]) -> tempfile::NamedTempFile {
+        use std::io::Write as _;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(data).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    /// Create a stream-type `FileWatchState` backed by a temp file pre-populated
+    /// with `data`.  Returns the sender so tests can trigger notifications.
+    fn make_watch_state(data: &[u8]) -> (tokio::sync::watch::Sender<()>, FileWatchState) {
+        use std::io::Write as _;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(data).unwrap();
+        f.flush().unwrap();
+        let reader_path = f.path().to_owned();
+        let (tx, rx) = tokio::sync::watch::channel(());
+        let state = FileWatchState {
+            snapshot_rx: rx,
+            reader_path,
+            temp_file: Some(f),
+        };
+        (tx, state)
+    }
+
+    fn append_to_watch_file(state: &FileWatchState, data: &[u8]) {
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&state.reader_path)
+            .unwrap();
+        f.write_all(data).unwrap();
+        f.flush().unwrap();
+    }
 
     async fn make_app(lines: &[&str]) -> App {
         let data: Vec<u8> = lines.join("\n").into_bytes();
@@ -845,7 +894,8 @@ mod tests {
     async fn test_update_stdin_tab_empty_data() {
         let mut app = make_app(&[]).await;
         let line_count_before = app.tabs[0].file_reader.line_count();
-        app.update_stdin_tab(vec![]).await;
+        let f = make_stdin_file(b"");
+        app.update_stdin_tab(f.path()).await;
         assert_eq!(app.tabs[0].file_reader.line_count(), line_count_before);
     }
 
@@ -854,7 +904,8 @@ mod tests {
         let mut app = make_app(&[]).await;
         assert_eq!(app.tabs[0].file_reader.line_count(), 0);
 
-        app.update_stdin_tab(b"line1\nline2\n".to_vec()).await;
+        let f = make_stdin_file(b"line1\nline2\n");
+        app.update_stdin_tab(f.path()).await;
 
         assert_eq!(app.tabs[0].file_reader.line_count(), 2);
         assert_eq!(app.tabs[0].visible_indices.len(), 2);
@@ -866,7 +917,8 @@ mod tests {
         assert!(app.tabs[0].detected_format.is_none());
 
         let journalctl_line = b"Mar 15 10:00:00 myhost sshd[1234]: Accepted password for user\n";
-        app.update_stdin_tab(journalctl_line.to_vec()).await;
+        let f = make_stdin_file(journalctl_line);
+        app.update_stdin_tab(f.path()).await;
 
         assert!(app.tabs[0].detected_format.is_some());
         assert_eq!(
@@ -878,8 +930,8 @@ mod tests {
     #[tokio::test]
     async fn test_update_stdin_tab_does_not_redetect_after_format_known() {
         let mut app = make_app(&[]).await;
-        app.update_stdin_tab(b"Mar 15 10:00:00 myhost sshd[1234]: first line\n".to_vec())
-            .await;
+        let f1 = make_stdin_file(b"Mar 15 10:00:00 myhost sshd[1234]: first line\n");
+        app.update_stdin_tab(f1.path()).await;
         assert_eq!(
             app.tabs[0].detected_format.as_ref().unwrap().name(),
             "journalctl"
@@ -890,8 +942,8 @@ mod tests {
         use std::sync::Arc;
         app.tabs[0].detected_format = Some(Arc::new(SyslogParser));
 
-        app.update_stdin_tab(b"Mar 15 10:00:01 myhost sshd[1234]: second line\n".to_vec())
-            .await;
+        let f2 = make_stdin_file(b"Mar 15 10:00:00 myhost sshd[1234]: first line\nMar 15 10:00:01 myhost sshd[1234]: second line\n");
+        app.update_stdin_tab(f2.path()).await;
 
         assert_eq!(
             app.tabs[0].detected_format.as_ref().unwrap().name(),
@@ -905,8 +957,8 @@ mod tests {
         app.tabs[0].tail_mode = true;
         app.tabs[0].scroll_offset = 0;
 
-        app.update_stdin_tab(b"first\nsecond\nthird\nfourth\n".to_vec())
-            .await;
+        let f = make_stdin_file(b"first\nsecond\nthird\nfourth\n");
+        app.update_stdin_tab(f.path()).await;
 
         // With tail_mode on, scroll_offset should be at the new last line.
         let new_last = app.tabs[0].visible_indices.len().saturating_sub(1);
@@ -920,8 +972,8 @@ mod tests {
         app.tabs[0].tail_mode = false;
         app.tabs[0].scroll_offset = 0;
 
-        app.update_stdin_tab(b"first\nsecond\nthird\nfourth\n".to_vec())
-            .await;
+        let f = make_stdin_file(b"first\nsecond\nthird\nfourth\n");
+        app.update_stdin_tab(f.path()).await;
 
         // With tail_mode off, scroll_offset should stay where it was.
         assert_eq!(app.tabs[0].scroll_offset, 0);
@@ -951,7 +1003,8 @@ mod tests {
 
         assert_eq!(app.tabs.len(), 1);
 
-        app.update_stdin_tab(b"stdin line\n".to_vec()).await;
+        let f = make_stdin_file(b"stdin line\n");
+        app.update_stdin_tab(f.path()).await;
 
         assert_eq!(app.tabs.len(), 2);
     }
@@ -966,32 +1019,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_file_watches_with_data() {
-        // Use data with trailing newline so append_bytes starts a new line.
-        let data: Vec<u8> = b"original\n".to_vec();
-        let file_reader = FileReader::from_bytes(data);
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let log_manager = LogManager::new(db, None).await;
-        let mut app = App::new(
-            log_manager,
-            file_reader,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
-
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
-
+        // Stream tabs start empty; all data comes through the watch state.
+        let mut app = make_app(&[]).await;
         let original_count = app.tabs[0].file_reader.line_count();
 
-        tx.send(b"new line\n".to_vec()).unwrap();
+        let (tx, state) = make_watch_state(b"new line\n");
+        app.tabs[0].watch_state = Some(state);
+
+        tx.send(()).unwrap();
         app.advance_file_watches();
 
         assert!(app.tabs[0].file_reader.line_count() > original_count);
@@ -1005,34 +1040,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_stream_tail_on_always_scrolls_to_last() {
-        // Start with 3 existing lines and scroll at the top.
-        let data = b"line1\nline2\nline3\n".to_vec();
-        let file_reader = FileReader::from_bytes(data);
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let log_manager = LogManager::new(db, None).await;
-        let mut app = App::new(
-            log_manager,
-            file_reader,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
-
+        // Stream tab starts empty; all 6 lines come through the watch state.
+        let mut app = make_app(&[]).await;
         app.tabs[0].tail_mode = true;
-        app.tabs[0].scroll_offset = 0; // user is NOT at the end
+        app.tabs[0].scroll_offset = 0;
 
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+        let (tx, state) = make_watch_state(b"line1\nline2\nline3\nline4\nline5\nline6\n");
+        app.tabs[0].watch_state = Some(state);
 
-        // Simulate the watcher delivering 3 new lines appended to the file.
-        tx.send(b"line4\nline5\nline6\n".to_vec()).unwrap();
+        tx.send(()).unwrap();
         app.advance_file_watches();
 
         let last = app.tabs[0].visible_indices.len().saturating_sub(1);
@@ -1046,32 +1062,24 @@ mod tests {
     #[tokio::test]
     async fn test_file_stream_tail_off_preserves_scroll() {
         // Same setup but tail_mode is off — scroll must not move.
-        let data = b"line1\nline2\nline3\n".to_vec();
-        let file_reader = FileReader::from_bytes(data);
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let log_manager = LogManager::new(db, None).await;
-        let mut app = App::new(
-            log_manager,
-            file_reader,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
-
+        // Stream tab starts empty; all 6 lines come through the watch state.
+        let mut app = make_app(&[]).await;
         app.tabs[0].tail_mode = false;
-        app.tabs[0].scroll_offset = 1; // user is in the middle
+        app.tabs[0].scroll_offset = 0;
 
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+        // First delivery: 3 lines so user has a position to stay at.
+        let (tx, state) = make_watch_state(b"line1\nline2\nline3\n");
+        app.tabs[0].watch_state = Some(state);
+        tx.send(()).unwrap();
+        app.advance_file_watches();
+        app.tabs[0].scroll_offset = 1; // user moves to middle
 
-        tx.send(b"line4\nline5\nline6\n".to_vec()).unwrap();
+        // Second delivery: 3 more lines.
+        append_to_watch_file(
+            app.tabs[0].watch_state.as_ref().unwrap(),
+            b"line4\nline5\nline6\n",
+        );
+        tx.send(()).unwrap();
         app.advance_file_watches();
 
         assert_eq!(
@@ -1084,32 +1092,15 @@ mod tests {
     #[tokio::test]
     async fn test_file_stream_multiple_batches_tail_on() {
         // New lines arrive in multiple watch batches; tail_mode keeps up.
-        let data = b"a\n".to_vec();
-        let file_reader = FileReader::from_bytes(data);
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let log_manager = LogManager::new(db, None).await;
-        let mut app = App::new(
-            log_manager,
-            file_reader,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
-
+        let mut app = make_app(&[]).await;
         app.tabs[0].tail_mode = true;
 
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+        let (tx, state) = make_watch_state(b"");
+        app.tabs[0].watch_state = Some(state);
 
-        for batch in &[b"b\nc\n".as_ref(), b"d\ne\n".as_ref(), b"f\n".as_ref()] {
-            tx.send(batch.to_vec()).unwrap();
+        for batch in &[b"a\nb\nc\n".as_ref(), b"d\ne\n".as_ref(), b"f\n".as_ref()] {
+            append_to_watch_file(app.tabs[0].watch_state.as_ref().unwrap(), batch);
+            tx.send(()).unwrap();
             app.advance_file_watches();
             let last = app.tabs[0].visible_indices.len().saturating_sub(1);
             assert_eq!(
@@ -1123,7 +1114,7 @@ mod tests {
     #[tokio::test]
     async fn test_file_stream_tail_on_with_real_file() {
         // Write initial content to a temp file, set up the app via open_file,
-        // then write more lines and deliver them through the watch channel —
+        // then append more lines to the same file and deliver a notification —
         // verifying that the scroll is dragged to the end.
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
@@ -1138,12 +1129,20 @@ mod tests {
         app.tabs[tab_idx].tail_mode = true;
         app.tabs[tab_idx].scroll_offset = 0; // scroll to top
 
-        // Replace the real watcher with a manual channel so the test controls delivery.
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[tab_idx].watch_state = Some(FileWatchState { new_data_rx: rx });
+        // Replace the real watcher with a manual channel watching the original file.
+        let (tx, rx) = tokio::sync::watch::channel(());
+        app.tabs[tab_idx].watch_state = Some(super::watch_state_from_file(rx, path.clone()));
 
-        // Simulate new lines being appended.
-        tx.send(b"fourth\nfifth\n".to_vec()).unwrap();
+        // Append new lines to the original file, then notify.
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"fourth\nfifth\n").unwrap();
+        f.flush().unwrap();
+
+        tx.send(()).unwrap();
         app.advance_file_watches();
 
         let last = app.tabs[tab_idx].visible_indices.len().saturating_sub(1);
@@ -1183,11 +1182,12 @@ mod tests {
         app.tabs[0].tail_mode = false;
         app.tabs[0].scroll_offset = 0;
 
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+        let (tx, state) = make_watch_state(b"");
+        app.tabs[0].watch_state = Some(state);
 
         // First batch with tail off — scroll stays.
-        tx.send(b"l4\nl5\n".to_vec()).unwrap();
+        append_to_watch_file(app.tabs[0].watch_state.as_ref().unwrap(), b"l4\nl5\n");
+        tx.send(()).unwrap();
         app.advance_file_watches();
         assert_eq!(app.tabs[0].scroll_offset, 0, "tail off: should not scroll");
 
@@ -1195,7 +1195,8 @@ mod tests {
         app.tabs[0].tail_mode = true;
 
         // Second batch — now scroll should follow.
-        tx.send(b"l6\nl7\n".to_vec()).unwrap();
+        append_to_watch_file(app.tabs[0].watch_state.as_ref().unwrap(), b"l6\nl7\n");
+        tx.send(()).unwrap();
         app.advance_file_watches();
         let last = app.tabs[0].visible_indices.len().saturating_sub(1);
         assert_eq!(
@@ -1210,10 +1211,10 @@ mod tests {
         app.tabs[0].paused = true;
         let initial_count = app.tabs[0].visible_indices.len();
 
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+        let (tx, state) = make_watch_state(b"new line\n");
+        app.tabs[0].watch_state = Some(state);
 
-        tx.send(b"new line\n".to_vec()).unwrap();
+        tx.send(()).unwrap();
         app.advance_file_watches();
 
         // Paused: no new lines should have been appended.
@@ -1223,33 +1224,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_file_watches_unpaused_applies_update() {
-        let file_reader = FileReader::from_bytes(b"old line\n".to_vec());
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let log_manager = LogManager::new(db, None).await;
-        let mut app = App::new(
-            log_manager,
-            file_reader,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
-        let initial_count = app.tabs[0].file_reader.line_count();
+        let mut app = make_app(&[]).await;
 
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+        let (tx, state) = make_watch_state(b"new line\n");
+        app.tabs[0].watch_state = Some(state);
 
-        tx.send(b"new line\n".to_vec()).unwrap();
+        tx.send(()).unwrap();
         app.advance_file_watches();
 
         // Not paused: new line should have been appended.
-        assert!(app.tabs[0].file_reader.line_count() > initial_count);
+        assert!(app.tabs[0].file_reader.line_count() > 0);
         drop(tx);
     }
 
@@ -1261,8 +1245,8 @@ mod tests {
         let initial_count = app.tabs[0].visible_indices.len();
 
         app.tabs[0].paused = true;
-        app.update_stdin_tab(b"new line\nmore data\n".to_vec())
-            .await;
+        let f = make_stdin_file(b"new line\nmore data\n");
+        app.update_stdin_tab(f.path()).await;
 
         assert_eq!(app.tabs[0].visible_indices.len(), initial_count);
     }
@@ -1270,8 +1254,8 @@ mod tests {
     #[tokio::test]
     async fn test_advance_file_watches_sender_dropped() {
         let mut app = make_app(&["line"]).await;
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+        let (tx, state) = make_watch_state(b"");
+        app.tabs[0].watch_state = Some(state);
 
         drop(tx);
         app.advance_file_watches();
@@ -1284,12 +1268,11 @@ mod tests {
         let mut app = make_app(&[]).await;
         assert!(app.tabs[0].detected_format.is_none());
 
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
-
-        // Send JSON data so the format detector can pick it up.
         let json_data = b"{\"level\":\"INFO\",\"msg\":\"hello\"}\n";
-        tx.send(json_data.to_vec()).unwrap();
+        let (tx, state) = make_watch_state(json_data);
+        app.tabs[0].watch_state = Some(state);
+
+        tx.send(()).unwrap();
         app.advance_file_watches();
 
         assert!(app.tabs[0].detected_format.is_some());
@@ -1375,10 +1358,16 @@ mod tests {
     #[tokio::test]
     async fn test_advance_stdin_load_with_data() {
         let mut app = make_app(&[]).await;
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.stdin_load_state = Some(StdinLoadState { snapshot_rx: rx });
+        let temp_file = make_stdin_file(b"stdin line\n");
+        let temp_path = temp_file.path().to_owned();
+        let (tx, rx) = tokio::sync::watch::channel(());
+        app.stdin_load_state = Some(StdinLoadState {
+            snapshot_rx: rx,
+            temp_path,
+            temp_file,
+        });
 
-        tx.send(b"stdin line\n".to_vec()).unwrap();
+        tx.send(()).unwrap();
         app.advance_stdin_load().await;
 
         assert_eq!(app.tabs[0].file_reader.line_count(), 1);
@@ -1387,11 +1376,15 @@ mod tests {
     #[tokio::test]
     async fn test_advance_stdin_load_sender_dropped() {
         let mut app = make_app(&[]).await;
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.stdin_load_state = Some(StdinLoadState { snapshot_rx: rx });
+        let temp_file = make_stdin_file(b"final line\n");
+        let temp_path = temp_file.path().to_owned();
+        let (tx, rx) = tokio::sync::watch::channel(());
+        app.stdin_load_state = Some(StdinLoadState {
+            snapshot_rx: rx,
+            temp_path,
+            temp_file,
+        });
 
-        // Send some data, then drop sender.
-        tx.send(b"final line\n".to_vec()).unwrap();
         drop(tx);
 
         app.advance_stdin_load().await;
@@ -1757,8 +1750,8 @@ mod tests {
     #[tokio::test]
     async fn test_update_stdin_tab_updates_visible_indices() {
         let mut app = make_app(&[]).await;
-        app.update_stdin_tab(b"ERROR bad\nINFO ok\nWARN maybe\n".to_vec())
-            .await;
+        let f = make_stdin_file(b"ERROR bad\nINFO ok\nWARN maybe\n");
+        app.update_stdin_tab(f.path()).await;
         assert_eq!(app.tabs[0].visible_indices.len(), 3);
         assert_eq!(app.tabs[0].next_error_position(0), None);
         assert_eq!(app.tabs[0].prev_error_position(1), Some(0));
@@ -1767,30 +1760,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_file_watches_updates_visible_indices() {
-        let data: Vec<u8> = b"INFO start\n".to_vec();
-        let file_reader = FileReader::from_bytes(data);
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let log_manager = LogManager::new(db, None).await;
-        let mut app = App::new(
-            log_manager,
-            file_reader,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let mut app = make_app(&[]).await;
 
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        app.tabs[0].watch_state = Some(FileWatchState { new_data_rx: rx });
+        let (tx, state) = make_watch_state(b"INFO start\nERROR bad\nWARN careful\n");
+        app.tabs[0].watch_state = Some(state);
 
-        // Append ERROR (pos 1) and WARN (pos 2) after the existing INFO (pos 0).
-        tx.send(b"ERROR bad\nWARN careful\n".to_vec()).unwrap();
+        tx.send(()).unwrap();
         app.advance_file_watches();
 
         assert_eq!(app.tabs[0].next_error_position(0), Some(1));
@@ -2009,10 +1984,12 @@ mod tests {
     #[tokio::test]
     async fn test_advance_stream_retries_successful_reconnect() {
         let mut app = make_app(&["line"]).await;
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(());
+        let conn: super::super::StreamConnection = (rx, temp_file);
 
         let (result_tx, result_rx) = tokio::sync::mpsc::channel(1);
-        result_tx.send(Ok(rx)).await.unwrap();
+        result_tx.send(Ok(conn)).await.unwrap();
 
         app.tabs[0].stream_retry = Some(StreamRetryState {
             attempt: 3,
@@ -2037,13 +2014,13 @@ mod tests {
             "watch_state should be set"
         );
 
-        tx.send(b"test data".to_vec()).unwrap();
+        tx.send(()).unwrap();
         assert!(
             app.tabs[0]
                 .watch_state
                 .as_mut()
                 .unwrap()
-                .new_data_rx
+                .snapshot_rx
                 .has_changed()
                 .is_ok()
         );
@@ -2109,8 +2086,8 @@ mod tests {
         let file_reader = FileReader::from_bytes(vec![]);
         let mut tab = TabState::new(file_reader, log_manager, "dlt:test".to_string());
 
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        tab.watch_state = Some(FileWatchState { new_data_rx: rx });
+        let (tx, state) = make_watch_state(b"");
+        tab.watch_state = Some(state);
         drop(tx);
 
         app.tabs.push(tab);
@@ -2133,8 +2110,8 @@ mod tests {
         let file_reader = FileReader::from_bytes(vec![]);
         let mut tab = TabState::new(file_reader, log_manager, "docker:mycontainer".to_string());
 
-        let (tx, rx) = tokio::sync::watch::channel(vec![]);
-        tab.watch_state = Some(FileWatchState { new_data_rx: rx });
+        let (tx, state) = make_watch_state(b"");
+        tab.watch_state = Some(state);
         drop(tx);
 
         app.tabs.push(tab);
