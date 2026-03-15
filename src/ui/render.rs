@@ -19,7 +19,12 @@ use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
 use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
 use crate::theme::complete_theme;
 use crate::types::{FilterType, LogLevel, parse_color};
-use crate::value_colors::colorize_known_values;
+use crate::value_colors::{
+    VALUE_STYLE_HTTP_DELETE, VALUE_STYLE_HTTP_GET, VALUE_STYLE_HTTP_OTHER, VALUE_STYLE_HTTP_PATCH,
+    VALUE_STYLE_HTTP_POST, VALUE_STYLE_HTTP_PUT, VALUE_STYLE_IP, VALUE_STYLE_STATUS_2XX,
+    VALUE_STYLE_STATUS_3XX, VALUE_STYLE_STATUS_4XX, VALUE_STYLE_STATUS_5XX, VALUE_STYLE_UUID,
+    collect_value_color_spans,
+};
 
 use crate::mode::app_mode::ModeRenderState;
 
@@ -843,7 +848,6 @@ impl App {
                 .advise_viewport(first, last);
         }
 
-        // Clone the filter manager Arc (O(1) atomic increment) instead of rebuilding
         // Aho-Corasick every frame. The cache was set in the most recent refresh_visible().
         let filter_manager_arc = self.tabs[self.active_tab].filter_manager_arc.clone();
         let filter_manager = &*filter_manager_arc;
@@ -879,6 +883,28 @@ impl App {
         styles.resize(256, Style::default());
         styles[255] = search_style;
         styles[254] = current_search_style;
+        styles[VALUE_STYLE_HTTP_GET as usize] =
+            Style::default().fg(self.theme.value_colors.http_get);
+        styles[VALUE_STYLE_HTTP_POST as usize] =
+            Style::default().fg(self.theme.value_colors.http_post);
+        styles[VALUE_STYLE_HTTP_PUT as usize] =
+            Style::default().fg(self.theme.value_colors.http_put);
+        styles[VALUE_STYLE_HTTP_DELETE as usize] =
+            Style::default().fg(self.theme.value_colors.http_delete);
+        styles[VALUE_STYLE_HTTP_PATCH as usize] =
+            Style::default().fg(self.theme.value_colors.http_patch);
+        styles[VALUE_STYLE_HTTP_OTHER as usize] =
+            Style::default().fg(self.theme.value_colors.http_other);
+        styles[VALUE_STYLE_STATUS_2XX as usize] =
+            Style::default().fg(self.theme.value_colors.status_2xx);
+        styles[VALUE_STYLE_STATUS_3XX as usize] =
+            Style::default().fg(self.theme.value_colors.status_3xx);
+        styles[VALUE_STYLE_STATUS_4XX as usize] =
+            Style::default().fg(self.theme.value_colors.status_4xx);
+        styles[VALUE_STYLE_STATUS_5XX as usize] =
+            Style::default().fg(self.theme.value_colors.status_5xx);
+        styles[VALUE_STYLE_IP as usize] = Style::default().fg(self.theme.value_colors.ip_address);
+        styles[VALUE_STYLE_UUID as usize] = Style::default().fg(self.theme.value_colors.uuid);
 
         // Pre-populate the parse cache for every line in the current viewport.
         // Parsing (JSON, logfmt, etc.) is the most expensive per-line operation; caching it
@@ -1032,7 +1058,6 @@ impl App {
             let hi = anchor.max(current_scroll);
             (lo, hi)
         });
-        // Visual selection highlight colour (same as border bg, distinct from cursor).
         let visual_style = Style::default()
             .fg(theme.visual_select_fg)
             .bg(theme.visual_select_bg);
@@ -1163,7 +1188,16 @@ impl App {
                         if c.all_cols_hidden {
                             // All fields hidden — fall back to raw bytes with filter +
                             // search highlighting (raw-byte positions are correct here).
-                            let mut collector = filter_manager.evaluate_line(line_bytes);
+                            let mut collector = MatchCollector::new(line_bytes);
+                            if let Ok(text) = std::str::from_utf8(line_bytes) {
+                                for (s, e, sid) in
+                                    collect_value_color_spans(text, &theme.value_colors)
+                                {
+                                    collector.push(s, e, sid);
+                                }
+                            }
+                            collector.with_priority(500);
+                            filter_manager.evaluate_into(&mut collector);
                             if let Some(sr) = find_search_result(line_idx) {
                                 collector.with_priority(1000);
                                 for (i, &(s, e)) in sr.matches.iter().enumerate() {
@@ -1181,7 +1215,14 @@ impl App {
                             // all spans land at the correct visible positions.
                             let rendered = &c.rendered;
                             let mut collector = MatchCollector::new(rendered.as_bytes());
+                            // Value colors at priority 0 (lowest).
+                            for (s, e, sid) in
+                                collect_value_color_spans(rendered, &theme.value_colors)
+                            {
+                                collector.push(s, e, sid);
+                            }
                             // Colour the target + pid columns using the per-process palette.
+                            collector.with_priority(10);
                             if process_colors_len > 0
                                 && !theme.value_colors.is_disabled("process_colors")
                                 && let Some(target) = c.target.as_deref()
@@ -1203,6 +1244,7 @@ impl App {
                                     }
                                 }
                             }
+                            collector.with_priority(500);
                             filter_manager.evaluate_into(&mut collector);
                             // Apply date filter styles: timestamp-only or full line.
                             if let Some(ts) = c.timestamp.as_deref() {
@@ -1268,10 +1310,17 @@ impl App {
                         }
                     });
 
-                let mut line = if let Some(structured_line) = structured_line {
+                let line = if let Some(structured_line) = structured_line {
                     structured_line
                 } else {
-                    let mut collector = filter_manager.evaluate_line(line_bytes);
+                    let mut collector = MatchCollector::new(line_bytes);
+                    if let Ok(text) = std::str::from_utf8(line_bytes) {
+                        for (s, e, sid) in collect_value_color_spans(text, &theme.value_colors) {
+                            collector.push(s, e, sid);
+                        }
+                    }
+                    collector.with_priority(500);
+                    filter_manager.evaluate_into(&mut collector);
                     if let Some(sr) = find_search_result(line_idx) {
                         collector.with_priority(1000);
                         for (i, &(s, e)) in sr.matches.iter().enumerate() {
@@ -1285,7 +1334,6 @@ impl App {
                     }
                     render_line(&collector, &styles)
                 };
-                line = colorize_known_values(line, &theme.value_colors);
                 render_cache_misses.push((line_idx, current_occ, line.clone()));
                 line
             };
@@ -3022,9 +3070,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_whole_line_filter_fg_suppresses_value_colors_on_covered_spans() {
-        // A whole-line filter (match_only=false) colors every span with its fg.
-        // colorize_known_values skips spans that already have fg set, so value
-        // colors must not be applied to any part of the line.
+        // A whole-line filter (match_only=false) has priority 500, value colors priority 0.
+        // The sweep-line compose picks the higher-priority filter fg, so value colors
+        // must not be applied to any part of the line.
         use crate::types::FilterType;
 
         let mut app = make_app(&["log GET /api"]).await;
@@ -3114,6 +3162,170 @@ mod tests {
             cell.fg, get_color,
             "GET value color must apply to the unstyled part even when another part of the line is filter-colored"
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_fg_bg_on_ip_overrides_value_colors() {
+        use crate::types::FilterType;
+
+        let mut app = make_app(&["log from 5.120.204.67 done"]).await;
+        let ip_color = app.theme.value_colors.ip_address;
+
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "5.120.204.67".to_string(),
+                FilterType::Include,
+                Some("Black"),
+                Some("Salmon"),
+                true,
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let content_row = row_content(&buf, 1);
+        let ip_col = content_row
+            .find("5.120.204.67")
+            .expect("IP should appear in content row") as u16;
+
+        let cell = buf.cell((ip_col, 1)).expect("cell should exist");
+        assert_ne!(
+            cell.fg, ip_color,
+            "IP value color must not override filter --fg Black"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_fg_bg_wins_after_initial_value_color_render() {
+        use crate::types::FilterType;
+
+        let mut app = make_app(&["log from 5.120.204.67 done"]).await;
+        let ip_color = app.theme.value_colors.ip_address;
+
+        // First render WITHOUT filter — populates render cache with value colors.
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        // Add filter the same way the command handler does.
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "5.120.204.67".to_string(),
+                FilterType::Include,
+                Some("Black"),
+                Some("Salmon"),
+                true,
+            )
+            .await;
+        app.tabs[0].begin_filter_refresh();
+
+        // Re-render — cache should be invalidated, filter fg must win.
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let content_row = row_content(&buf, 1);
+        let ip_col = content_row
+            .find("5.120.204.67")
+            .expect("IP should appear in content row") as u16;
+        let cell = buf.cell((ip_col, 1)).expect("cell should exist");
+        assert_ne!(
+            cell.fg, ip_color,
+            "IP value color must not override filter --fg Black after re-render"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_fg_bg_wins_after_incremental_include() {
+        use crate::types::FilterType;
+
+        let mut app = make_app(&["log from 5.120.204.67 done"]).await;
+        let ip_color = app.theme.value_colors.ip_address;
+
+        // First render WITHOUT filter — populates render cache with value colors.
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        // Add filter and then go through the incremental include path.
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "5.120.204.67".to_string(),
+                FilterType::Include,
+                Some("Black"),
+                Some("Salmon"),
+                true,
+            )
+            .await;
+        app.tabs[0].apply_incremental_include("5.120.204.67");
+
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let content_row = row_content(&buf, 1);
+        let ip_col = content_row
+            .find("5.120.204.67")
+            .expect("IP should appear in content row") as u16;
+        let cell = buf.cell((ip_col, 1)).expect("cell should exist");
+        assert_ne!(
+            cell.fg, ip_color,
+            "IP value color must not override filter --fg Black after incremental include"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_fg_bg_on_ip_in_structured_log() {
+        use crate::types::FilterType;
+
+        let json_line = r#"{"level":"info","msg":"request from 5.120.204.67 done"}"#;
+        let mut app = make_app(&[json_line]).await;
+        let ip_color = app.theme.value_colors.ip_address;
+
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "5.120.204.67".to_string(),
+                FilterType::Include,
+                Some("Black"),
+                Some("Salmon"),
+                true,
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let content: String = (0..buf.area.height)
+            .flat_map(|y| {
+                let w = buf.area.width;
+                let row: String = (0..w)
+                    .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()))
+                    .collect();
+                [row, "\n".to_string()]
+            })
+            .collect();
+
+        if !content.contains("5.120.204.67") {
+            return;
+        }
+
+        for y in 0..buf.area.height {
+            let row = row_content(&buf, y);
+            if let Some(ip_pos) = row.find("5.120.204.67") {
+                let cell = buf.cell((ip_pos as u16, y)).expect("cell should exist");
+                assert_ne!(
+                    cell.fg, ip_color,
+                    "IP value color must not override filter --fg Black in structured log (row {})",
+                    y
+                );
+                return;
+            }
+        }
     }
 
     // When startup_warnings is non-empty a warnings bar must be rendered above

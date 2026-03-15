@@ -1,9 +1,21 @@
-use ratatui::style::Color;
-use ratatui::text::{Line, Span};
 use regex::Regex;
 use std::sync::LazyLock;
 
+use crate::filters::StyleId;
 use crate::theme::ValueColors;
+
+pub const VALUE_STYLE_HTTP_GET: StyleId = 242;
+pub const VALUE_STYLE_HTTP_POST: StyleId = 243;
+pub const VALUE_STYLE_HTTP_PUT: StyleId = 244;
+pub const VALUE_STYLE_HTTP_DELETE: StyleId = 245;
+pub const VALUE_STYLE_HTTP_PATCH: StyleId = 246;
+pub const VALUE_STYLE_HTTP_OTHER: StyleId = 247;
+pub const VALUE_STYLE_STATUS_2XX: StyleId = 248;
+pub const VALUE_STYLE_STATUS_3XX: StyleId = 249;
+pub const VALUE_STYLE_STATUS_4XX: StyleId = 250;
+pub const VALUE_STYLE_STATUS_5XX: StyleId = 251;
+pub const VALUE_STYLE_IP: StyleId = 252;
+pub const VALUE_STYLE_UUID: StyleId = 253;
 
 static HTTP_METHOD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b").unwrap());
@@ -24,31 +36,14 @@ static IPV6_RE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-struct ColorMatch {
-    start: usize,
-    end: usize,
-    color: Color,
-}
-
-fn http_method_color(method: &str, colors: &ValueColors) -> Color {
+fn http_method_style_id(method: &str) -> StyleId {
     match method {
-        "GET" => colors.http_get,
-        "POST" => colors.http_post,
-        "PUT" => colors.http_put,
-        "DELETE" => colors.http_delete,
-        "PATCH" => colors.http_patch,
-        _ => colors.http_other,
-    }
-}
-
-fn status_code_color(code: &str, colors: &ValueColors) -> Option<Color> {
-    let first = code.as_bytes()[0];
-    match first {
-        b'2' => Some(colors.status_2xx),
-        b'3' => Some(colors.status_3xx),
-        b'4' => Some(colors.status_4xx),
-        b'5' => Some(colors.status_5xx),
-        _ => None,
+        "GET" => VALUE_STYLE_HTTP_GET,
+        "POST" => VALUE_STYLE_HTTP_POST,
+        "PUT" => VALUE_STYLE_HTTP_PUT,
+        "DELETE" => VALUE_STYLE_HTTP_DELETE,
+        "PATCH" => VALUE_STYLE_HTTP_PATCH,
+        _ => VALUE_STYLE_HTTP_OTHER,
     }
 }
 
@@ -63,6 +58,16 @@ fn http_method_key(method: &str) -> &'static str {
     }
 }
 
+fn status_code_style_id(code: &str) -> Option<StyleId> {
+    match code.as_bytes()[0] {
+        b'2' => Some(VALUE_STYLE_STATUS_2XX),
+        b'3' => Some(VALUE_STYLE_STATUS_3XX),
+        b'4' => Some(VALUE_STYLE_STATUS_4XX),
+        b'5' => Some(VALUE_STYLE_STATUS_5XX),
+        _ => None,
+    }
+}
+
 fn status_code_key(code: &str) -> &'static str {
     match code.as_bytes()[0] {
         b'2' => "status_2xx",
@@ -73,17 +78,13 @@ fn status_code_key(code: &str) -> &'static str {
     }
 }
 
-fn collect_matches(text: &str, colors: &ValueColors) -> Vec<ColorMatch> {
-    let mut matches = Vec::new();
+pub fn collect_value_color_spans(text: &str, colors: &ValueColors) -> Vec<(usize, usize, StyleId)> {
+    let mut matches: Vec<(usize, usize, StyleId)> = Vec::new();
 
     for m in HTTP_METHOD_RE.find_iter(text) {
         let key = http_method_key(m.as_str());
         if !colors.is_disabled(key) {
-            matches.push(ColorMatch {
-                start: m.start(),
-                end: m.end(),
-                color: http_method_color(m.as_str(), colors),
-            });
+            matches.push((m.start(), m.end(), http_method_style_id(m.as_str())));
         }
     }
 
@@ -107,13 +108,9 @@ fn collect_matches(text: &str, colors: &ValueColors) -> Vec<ColorMatch> {
 
         let key = status_code_key(m.as_str());
         if !colors.is_disabled(key)
-            && let Some(color) = status_code_color(m.as_str(), colors)
+            && let Some(sid) = status_code_style_id(m.as_str())
         {
-            matches.push(ColorMatch {
-                start: m.start(),
-                end: m.end(),
-                color,
-            });
+            matches.push((m.start(), m.end(), sid));
         }
     }
 
@@ -135,465 +132,302 @@ fn collect_matches(text: &str, colors: &ValueColors) -> Vec<ColorMatch> {
                 .split('.')
                 .all(|part| part.len() <= 3 && part.parse::<u16>().is_ok_and(|n| n <= 255));
             if valid {
-                matches.push(ColorMatch {
-                    start: m.start(),
-                    end: m.end(),
-                    color: colors.ip_address,
-                });
+                matches.push((m.start(), m.end(), VALUE_STYLE_IP));
             }
         }
     }
 
     for m in UUID_RE.find_iter(text) {
         if !colors.is_disabled("uuid") {
-            matches.push(ColorMatch {
-                start: m.start(),
-                end: m.end(),
-                color: colors.uuid,
-            });
+            matches.push((m.start(), m.end(), VALUE_STYLE_UUID));
         }
     }
 
     for m in IPV6_RE.find_iter(text) {
         if !colors.is_disabled("ip_address") {
-            matches.push(ColorMatch {
-                start: m.start(),
-                end: m.end(),
-                color: colors.ip_address,
-            });
+            matches.push((m.start(), m.end(), VALUE_STYLE_IP));
         }
     }
 
-    // Sort by start position; for overlapping matches, keep the first (longest first by regex).
-    matches.sort_by_key(|m| m.start);
+    // Sort by start position; for overlapping matches, keep the first.
+    matches.sort_by_key(|m| m.0);
 
     // Remove overlapping matches — keep the first one encountered.
-    let mut deduped: Vec<ColorMatch> = Vec::with_capacity(matches.len());
+    let mut deduped: Vec<(usize, usize, StyleId)> = Vec::with_capacity(matches.len());
     let mut last_end = 0;
     for m in matches {
-        if m.start >= last_end {
-            last_end = m.end;
+        if m.0 >= last_end {
+            last_end = m.1;
             deduped.push(m);
         }
     }
     deduped
 }
 
-fn colorize_span(span: Span<'static>, colors: &ValueColors) -> Vec<Span<'static>> {
-    let matches = collect_matches(&span.content, colors);
-    if matches.is_empty() {
-        return vec![span];
-    }
-
-    let text = span.content.into_owned();
-    let base_style = span.style;
-    let mut result = Vec::with_capacity(matches.len() * 2 + 1);
-    let mut pos = 0;
-
-    for m in &matches {
-        if m.start > pos {
-            result.push(Span::styled(text[pos..m.start].to_string(), base_style));
-        }
-        result.push(Span::styled(
-            text[m.start..m.end].to_string(),
-            base_style.fg(m.color),
-        ));
-        pos = m.end;
-    }
-
-    if pos < text.len() {
-        result.push(Span::styled(text[pos..].to_string(), base_style));
-    }
-
-    result
-}
-
-/// Post-processes a rendered `Line`, applying value-based colors to spans that carry no
-/// explicit styling. Spans already colored by filters (fg **or** bg) or search are left
-/// untouched so that filter highlighting always takes precedence.
-pub fn colorize_known_values(line: Line<'static>, colors: &ValueColors) -> Line<'static> {
-    let alignment = line.alignment;
-    let style = line.style;
-    let mut new_spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
-
-    for span in line.spans {
-        if span.style.fg.is_some() || span.style.bg.is_some() {
-            // Already styled by a filter, date filter, process color, or search — keep as-is.
-            new_spans.push(span);
-        } else {
-            new_spans.extend(colorize_span(span, colors));
-        }
-    }
-
-    let mut new_line = Line::from(new_spans);
-    new_line.style = style;
-    new_line.alignment = alignment;
-    new_line
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::Style;
 
     fn default_colors() -> ValueColors {
         ValueColors::default()
     }
 
     #[test]
-    fn test_http_methods_colorized() {
+    fn test_http_get_style_id() {
         let colors = default_colors();
-        let line = Line::from("GET /api/users HTTP/1.1");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("GET /api/users HTTP/1.1", &colors);
 
-        // First span should be "GET" with http_get color
-        assert_eq!(result.spans[0].content.as_ref(), "GET");
-        assert_eq!(result.spans[0].style.fg, Some(colors.http_get));
+        assert!(!spans.is_empty());
+        assert_eq!(spans[0].0, 0);
+        assert_eq!(spans[0].1, 3);
+        assert_eq!(spans[0].2, VALUE_STYLE_HTTP_GET);
     }
 
     #[test]
-    fn test_post_method_colorized() {
+    fn test_http_post_style_id() {
         let colors = default_colors();
-        let line = Line::from("POST /api/data HTTP/1.1");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("POST /api/data HTTP/1.1", &colors);
 
-        assert_eq!(result.spans[0].content.as_ref(), "POST");
-        assert_eq!(result.spans[0].style.fg, Some(colors.http_post));
+        assert!(!spans.is_empty());
+        assert_eq!(spans[0].2, VALUE_STYLE_HTTP_POST);
     }
 
     #[test]
-    fn test_delete_method_colorized() {
+    fn test_http_put_style_id() {
         let colors = default_colors();
-        let line = Line::from("DELETE /api/item/42");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("PUT /api/item/1", &colors);
 
-        assert_eq!(result.spans[0].content.as_ref(), "DELETE");
-        assert_eq!(result.spans[0].style.fg, Some(colors.http_delete));
+        assert!(!spans.is_empty());
+        assert_eq!(spans[0].2, VALUE_STYLE_HTTP_PUT);
     }
 
     #[test]
-    fn test_status_codes_colorized() {
+    fn test_http_delete_style_id() {
         let colors = default_colors();
-        let line = Line::from("HTTP/1.1 200 OK");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("DELETE /api/item/42", &colors);
 
-        // Find the span with "200"
-        let status_span = result.spans.iter().find(|s| s.content.contains("200"));
-        assert!(status_span.is_some());
-        assert_eq!(status_span.unwrap().style.fg, Some(colors.status_2xx));
+        assert!(!spans.is_empty());
+        assert_eq!(spans[0].2, VALUE_STYLE_HTTP_DELETE);
     }
 
     #[test]
-    fn test_status_4xx_colorized() {
+    fn test_http_patch_style_id() {
         let colors = default_colors();
-        let line = Line::from("responded with 404 Not Found");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("PATCH /api/item/1", &colors);
 
-        let status_span = result.spans.iter().find(|s| s.content.contains("404"));
-        assert!(status_span.is_some());
-        assert_eq!(status_span.unwrap().style.fg, Some(colors.status_4xx));
+        assert!(!spans.is_empty());
+        assert_eq!(spans[0].2, VALUE_STYLE_HTTP_PATCH);
     }
 
     #[test]
-    fn test_status_5xx_colorized() {
+    fn test_http_head_other_style_id() {
         let colors = default_colors();
-        let line = Line::from("error 500 Internal Server Error");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("HEAD /health", &colors);
 
-        let status_span = result.spans.iter().find(|s| s.content.contains("500"));
-        assert!(status_span.is_some());
-        assert_eq!(status_span.unwrap().style.fg, Some(colors.status_5xx));
+        assert!(!spans.is_empty());
+        assert_eq!(spans[0].2, VALUE_STYLE_HTTP_OTHER);
+    }
+
+    #[test]
+    fn test_status_2xx_style_id() {
+        let colors = default_colors();
+        let spans = collect_value_color_spans("HTTP/1.1 200 OK", &colors);
+
+        let status = spans.iter().find(|s| s.2 == VALUE_STYLE_STATUS_2XX);
+        assert!(status.is_some());
+    }
+
+    #[test]
+    fn test_status_3xx_style_id() {
+        let colors = default_colors();
+        let spans = collect_value_color_spans("redirected 301 Moved", &colors);
+
+        let status = spans.iter().find(|s| s.2 == VALUE_STYLE_STATUS_3XX);
+        assert!(status.is_some());
+    }
+
+    #[test]
+    fn test_status_4xx_style_id() {
+        let colors = default_colors();
+        let spans = collect_value_color_spans("responded with 404 Not Found", &colors);
+
+        let status = spans.iter().find(|s| s.2 == VALUE_STYLE_STATUS_4XX);
+        assert!(status.is_some());
+    }
+
+    #[test]
+    fn test_status_5xx_style_id() {
+        let colors = default_colors();
+        let spans = collect_value_color_spans("error 500 Internal Server Error", &colors);
+
+        let status = spans.iter().find(|s| s.2 == VALUE_STYLE_STATUS_5XX);
+        assert!(status.is_some());
     }
 
     #[test]
     fn test_status_1xx_not_colorized() {
         let colors = default_colors();
-        let line = Line::from("status 100 Continue");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("status 100 Continue", &colors);
 
-        // 1xx has no color mapping
-        let status_span = result.spans.iter().find(|s| s.content.contains("100"));
-        assert!(status_span.is_some());
-        assert_eq!(status_span.unwrap().style.fg, None);
+        assert!(spans.is_empty());
     }
 
     #[test]
-    fn test_ipv4_colorized() {
+    fn test_ipv4_style_id() {
         let colors = default_colors();
-        let line = Line::from("request from 192.168.1.1 received");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("request from 192.168.1.1 received", &colors);
 
-        let ip_span = result
-            .spans
-            .iter()
-            .find(|s| s.content.contains("192.168.1.1"));
-        assert!(ip_span.is_some());
-        assert_eq!(ip_span.unwrap().style.fg, Some(colors.ip_address));
+        let ip = spans.iter().find(|s| s.2 == VALUE_STYLE_IP);
+        assert!(ip.is_some());
     }
 
     #[test]
     fn test_ipv4_invalid_octet_not_colorized() {
         let colors = default_colors();
-        let line = Line::from("addr 999.999.999.999 invalid");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("addr 999.999.999.999 invalid", &colors);
 
-        // Invalid IP — should not be colored as IP
-        let ip_span = result
-            .spans
-            .iter()
-            .find(|s| s.content.contains("999.999.999.999"));
-        assert!(ip_span.is_some());
-        assert_eq!(ip_span.unwrap().style.fg, None);
+        assert!(!spans.iter().any(|s| s.2 == VALUE_STYLE_IP));
     }
 
     #[test]
-    fn test_ipv6_loopback_colorized() {
+    fn test_ipv6_loopback_style_id() {
         let colors = default_colors();
-        let line = Line::from("listening on ::1 port 8080");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("listening on ::1 port 8080", &colors);
 
-        let ip_span = result.spans.iter().find(|s| s.content.contains("::1"));
-        assert!(ip_span.is_some());
-        assert_eq!(ip_span.unwrap().style.fg, Some(colors.ip_address));
+        let ip = spans.iter().find(|s| s.2 == VALUE_STYLE_IP);
+        assert!(ip.is_some());
     }
 
     #[test]
-    fn test_filter_colored_spans_untouched_fg() {
+    fn test_uuid_style_id() {
         let colors = default_colors();
-        let styled = Span::styled("GET /api", Style::default().fg(Color::Yellow));
-        let line = Line::from(vec![styled]);
-        let result = colorize_known_values(line, &colors);
-
-        // Should remain exactly as-is because fg was already set.
-        assert_eq!(result.spans.len(), 1);
-        assert_eq!(result.spans[0].style.fg, Some(Color::Yellow));
-    }
-
-    #[test]
-    fn test_filter_bg_only_spans_untouched() {
-        // A filter that sets only a background color (no fg) should still
-        // prevent value colors from overriding the span.
-        let colors = default_colors();
-        let bg_color = Color::DarkGray;
-        let styled = Span::styled("GET /api 200 OK", Style::default().bg(bg_color));
-        let line = Line::from(vec![styled]);
-        let result = colorize_known_values(line, &colors);
-
-        // Even though fg is None, the bg means a filter colored this span —
-        // value colors must not be applied.
-        assert_eq!(result.spans.len(), 1);
-        assert_eq!(result.spans[0].style.bg, Some(bg_color));
-        assert_eq!(result.spans[0].style.fg, None);
-    }
-
-    #[test]
-    fn test_mixed_styled_and_unstyled_spans() {
-        let colors = default_colors();
-        let spans = vec![
-            Span::styled("filter: ", Style::default().fg(Color::Red)),
-            Span::raw("GET /api/v1 200"),
-        ];
-        let line = Line::from(spans);
-        let result = colorize_known_values(line, &colors);
-
-        // First span should be unchanged (has fg)
-        assert_eq!(result.spans[0].content.as_ref(), "filter: ");
-        assert_eq!(result.spans[0].style.fg, Some(Color::Red));
-
-        // GET should be colorized
-        let get_span = result.spans.iter().find(|s| s.content.as_ref() == "GET");
-        assert!(get_span.is_some());
-        assert_eq!(get_span.unwrap().style.fg, Some(colors.http_get));
-    }
-
-    #[test]
-    fn test_no_matches_returns_same_line() {
-        let colors = default_colors();
-        let line = Line::from("just a regular log line with no patterns");
-        let result = colorize_known_values(line, &colors);
-
-        assert_eq!(result.spans.len(), 1);
-        assert_eq!(
-            result.spans[0].content.as_ref(),
-            "just a regular log line with no patterns"
+        let spans = collect_value_color_spans(
+            "request_id=550e8400-e29b-41d4-a716-446655440000 processed",
+            &colors,
         );
-        assert_eq!(result.spans[0].style.fg, None);
+
+        let uuid = spans.iter().find(|s| s.2 == VALUE_STYLE_UUID);
+        assert!(uuid.is_some());
     }
 
     #[test]
-    fn test_multiple_matches_in_single_span() {
+    fn test_uuid_uppercase_style_id() {
         let colors = default_colors();
-        let line = Line::from("GET /api 200 from 10.0.0.1");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("id: 550E8400-E29B-41D4-A716-446655440000", &colors);
 
-        let get_span = result.spans.iter().find(|s| s.content.as_ref() == "GET");
-        assert!(get_span.is_some());
-        assert_eq!(get_span.unwrap().style.fg, Some(colors.http_get));
-
-        let status_span = result.spans.iter().find(|s| s.content.as_ref() == "200");
-        assert!(status_span.is_some());
-        assert_eq!(status_span.unwrap().style.fg, Some(colors.status_2xx));
-
-        let ip_span = result
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref() == "10.0.0.1");
-        assert!(ip_span.is_some());
-        assert_eq!(ip_span.unwrap().style.fg, Some(colors.ip_address));
+        let uuid = spans.iter().find(|s| s.2 == VALUE_STYLE_UUID);
+        assert!(uuid.is_some());
     }
 
     #[test]
-    fn test_line_style_preserved() {
+    fn test_no_matches_returns_empty() {
         let colors = default_colors();
-        let mut line = Line::from("GET /api");
-        line.style = Style::default().bg(Color::Blue);
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("just a regular log line with no patterns", &colors);
 
-        assert_eq!(result.style.bg, Some(Color::Blue));
+        assert!(spans.is_empty());
     }
 
     #[test]
-    fn test_uuid_colorized() {
+    fn test_multiple_matches() {
         let colors = default_colors();
-        let line = Line::from("request_id=550e8400-e29b-41d4-a716-446655440000 processed");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("GET /api 200 from 10.0.0.1", &colors);
 
-        let uuid_span = result
-            .spans
-            .iter()
-            .find(|s| s.content.contains("550e8400-e29b-41d4-a716-446655440000"));
-        assert!(uuid_span.is_some());
-        assert_eq!(uuid_span.unwrap().style.fg, Some(colors.uuid));
-    }
-
-    #[test]
-    fn test_uuid_uppercase_colorized() {
-        let colors = default_colors();
-        let line = Line::from("id: 550E8400-E29B-41D4-A716-446655440000");
-        let result = colorize_known_values(line, &colors);
-
-        let uuid_span = result
-            .spans
-            .iter()
-            .find(|s| s.content.contains("550E8400-E29B-41D4-A716-446655440000"));
-        assert!(uuid_span.is_some());
-        assert_eq!(uuid_span.unwrap().style.fg, Some(colors.uuid));
+        assert!(spans.iter().any(|s| s.2 == VALUE_STYLE_HTTP_GET));
+        assert!(spans.iter().any(|s| s.2 == VALUE_STYLE_STATUS_2XX));
+        assert!(spans.iter().any(|s| s.2 == VALUE_STYLE_IP));
     }
 
     #[test]
     fn test_uuid_mixed_with_other_values() {
         let colors = default_colors();
-        let line =
-            Line::from("GET /api/item/550e8400-e29b-41d4-a716-446655440000 200 from 10.0.0.1");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans(
+            "GET /api/item/550e8400-e29b-41d4-a716-446655440000 200 from 10.0.0.1",
+            &colors,
+        );
 
-        let get_span = result.spans.iter().find(|s| s.content.as_ref() == "GET");
-        assert!(get_span.is_some());
-        assert_eq!(get_span.unwrap().style.fg, Some(colors.http_get));
-
-        let uuid_span = result.spans.iter().find(|s| s.content.contains("550e8400"));
-        assert!(uuid_span.is_some());
-        assert_eq!(uuid_span.unwrap().style.fg, Some(colors.uuid));
-
-        let status_span = result.spans.iter().find(|s| s.content.as_ref() == "200");
-        assert!(status_span.is_some());
-        assert_eq!(status_span.unwrap().style.fg, Some(colors.status_2xx));
+        assert!(spans.iter().any(|s| s.2 == VALUE_STYLE_HTTP_GET));
+        assert!(spans.iter().any(|s| s.2 == VALUE_STYLE_UUID));
+        assert!(spans.iter().any(|s| s.2 == VALUE_STYLE_STATUS_2XX));
+        assert!(spans.iter().any(|s| s.2 == VALUE_STYLE_IP));
     }
 
     #[test]
     fn test_status_code_not_in_version_number() {
         let colors = default_colors();
-        let line = Line::from("AppleWebKit/537.36 Chrome/120.0.0.0");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("AppleWebKit/537.36 Chrome/120.0.0.0", &colors);
 
-        // "537" and "120" should NOT be colorized — they are part of version numbers
-        for span in &result.spans {
-            if span.content.contains("537") || span.content.contains("120") {
-                assert_eq!(
-                    span.style.fg, None,
-                    "version number fragment '{}' should not be colorized",
-                    span.content
-                );
-            }
-        }
+        assert!(!spans.iter().any(|s| {
+            s.2 == VALUE_STYLE_STATUS_3XX
+                || s.2 == VALUE_STYLE_STATUS_2XX
+                || s.2 == VALUE_STYLE_STATUS_5XX
+        }));
     }
 
     #[test]
     fn test_status_code_not_in_path_segment() {
         let colors = default_colors();
-        let line = Line::from("GET /api/v2/items/300/details HTTP/1.1");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("GET /api/v2/items/300/details HTTP/1.1", &colors);
 
-        // "300" is a path segment (/300/), should NOT be colorized
-        let path_300 = result.spans.iter().find(|s| s.content.contains("300"));
-        assert!(path_300.is_some());
-        assert_eq!(path_300.unwrap().style.fg, None);
+        assert!(!spans.iter().any(|s| s.2 == VALUE_STYLE_STATUS_3XX));
     }
 
     #[test]
     fn test_status_code_standalone_still_works() {
         let colors = default_colors();
-        let line = Line::from("responded 404 Not Found");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("responded 404 Not Found", &colors);
 
-        let status_span = result.spans.iter().find(|s| s.content.as_ref() == "404");
-        assert!(status_span.is_some());
-        assert_eq!(status_span.unwrap().style.fg, Some(colors.status_4xx));
-    }
-
-    #[test]
-    fn test_status_code_at_end_of_line() {
-        let colors = default_colors();
-        let line = Line::from("request completed 500");
-        let result = colorize_known_values(line, &colors);
-
-        let status_span = result.spans.iter().find(|s| s.content.as_ref() == "500");
-        assert!(status_span.is_some());
-        assert_eq!(status_span.unwrap().style.fg, Some(colors.status_5xx));
-    }
-
-    #[test]
-    fn test_status_code_not_in_port_number() {
-        let colors = default_colors();
-        let line = Line::from("listening on :443 and :200");
-        let _result = colorize_known_values(line, &colors);
-        // Port numbers like :443 and :200 are preceded by ':' which is not a
-        // word char, so \b still matches. This is acceptable — port numbers
-        // in the status code range do get colored. The important cases are
-        // version numbers (.) and path segments (/) which are now excluded.
+        assert!(spans.iter().any(|s| s.2 == VALUE_STYLE_STATUS_4XX));
     }
 
     #[test]
     fn test_disabled_category_skipped() {
         let mut colors = default_colors();
         colors.disabled.insert("http_get".to_string());
-        let line = Line::from("GET /api 200");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans("GET /api 200", &colors);
 
-        // GET should NOT be colorized (disabled)
-        let get_span = result.spans.iter().find(|s| s.content.contains("GET"));
-        assert!(get_span.is_some());
-        assert_eq!(get_span.unwrap().style.fg, None);
-
-        // 200 should still be colorized
-        let status_span = result.spans.iter().find(|s| s.content.contains("200"));
-        assert!(status_span.is_some());
-        assert_eq!(status_span.unwrap().style.fg, Some(colors.status_2xx));
+        assert!(!spans.iter().any(|s| s.2 == VALUE_STYLE_HTTP_GET));
+        assert!(spans.iter().any(|s| s.2 == VALUE_STYLE_STATUS_2XX));
     }
 
     #[test]
-    fn test_disabled_all_categories_no_coloring() {
+    fn test_disabled_all_categories_no_spans() {
         let mut colors = default_colors();
         for group in colors.grouped_categories(None) {
             for (key, _, _) in group.children {
                 colors.disabled.insert(key.to_string());
             }
         }
-        let line = Line::from("GET /api 200 from 10.0.0.1 id=550e8400-e29b-41d4-a716-446655440000");
-        let result = colorize_known_values(line, &colors);
+        let spans = collect_value_color_spans(
+            "GET /api 200 from 10.0.0.1 id=550e8400-e29b-41d4-a716-446655440000",
+            &colors,
+        );
 
-        // Should be a single unstyled span
-        assert_eq!(result.spans.len(), 1);
-        assert_eq!(result.spans[0].style.fg, None);
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn test_no_overlapping_spans() {
+        let colors = default_colors();
+        let spans = collect_value_color_spans("GET /api 200 from 10.0.0.1", &colors);
+
+        let mut last_end = 0;
+        for (start, end, _) in &spans {
+            assert!(
+                *start >= last_end,
+                "overlapping span at {start}..{end}, previous ended at {last_end}"
+            );
+            last_end = *end;
+        }
+    }
+
+    #[test]
+    fn test_spans_sorted_by_start() {
+        let colors = default_colors();
+        let spans = collect_value_color_spans("GET /api 200 from 10.0.0.1", &colors);
+
+        let starts: Vec<usize> = spans.iter().map(|s| s.0).collect();
+        let mut sorted = starts.clone();
+        sorted.sort();
+        assert_eq!(starts, sorted);
     }
 }

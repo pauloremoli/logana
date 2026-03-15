@@ -337,6 +337,9 @@ mod tests {
         assert_eq!(parse_color("Red"), Some(Color::Red));
         assert_eq!(parse_color("LightBlue"), Some(Color::LightBlue));
         assert_eq!(parse_color("green"), Some(Color::Green));
+        assert_eq!(parse_color("Black"), Some(Color::Black));
+        assert_eq!(parse_color("black"), Some(Color::Black));
+        assert_eq!(parse_color("White"), Some(Color::White));
     }
 
     #[test]

@@ -5,7 +5,10 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
-## [0.3.1] - 2026-03-14
+### Fixed 
+- Fix issue with style priority between filters and value colors(e.g IP address).
+
+## [0.3.0] - 2026-03-14
 
 ### Added
 - DLT (AUTOSAR Diagnostic Log and Trace) format support: supports binary `.dlt` files and `dlt-convert' outuput.
