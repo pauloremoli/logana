@@ -391,10 +391,10 @@ impl App {
 
         let show_borders = self.tabs[self.active_tab].show_borders;
         // Auto-dismiss the notification after 10 seconds.
-        if let Some(set_at) = self.tabs[self.active_tab].notification_set_at {
-            if set_at.elapsed() > std::time::Duration::from_secs(10) {
-                self.tabs[self.active_tab].clear_notification();
-            }
+        if let Some(set_at) = self.tabs[self.active_tab].notification_set_at
+            && set_at.elapsed() > std::time::Duration::from_secs(10)
+        {
+            self.tabs[self.active_tab].clear_notification();
         }
         let notification = self.tabs[self.active_tab].notification.clone();
         // Show the notification row when there is a message and the command bar
@@ -542,18 +542,18 @@ impl App {
 
         self.render_input_bar(frame, search_input, &chunks, chunk_idx);
 
-        if let Some(idx) = notification_chunk_idx {
-            if let Some(msg) = &notification {
-                let notification_area = chunks[idx];
-                frame.render_widget(
-                    Paragraph::new(msg.as_str()).style(
-                        Style::default()
-                            .fg(self.theme.warning_fg)
-                            .bg(self.theme.root_bg),
-                    ),
-                    notification_area,
-                );
-            }
+        if let Some(idx) = notification_chunk_idx
+            && let Some(msg) = &notification
+        {
+            let notification_area = chunks[idx];
+            frame.render_widget(
+                Paragraph::new(msg.as_str()).style(
+                    Style::default()
+                        .fg(self.theme.warning_fg)
+                        .bg(self.theme.root_bg),
+                ),
+                notification_area,
+            );
         }
 
         if let Some(idx) = warnings_chunk_idx {

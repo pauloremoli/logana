@@ -1720,16 +1720,16 @@ impl TabState {
             // Apply default hidden fields only when the tab currently has none
             // (first detection for a streaming source, or non-streaming source
             // whose preview was too short for detection).
-            if self.hidden_fields.is_empty() {
-                if let Some(f) = &fmt {
-                    let defaults = f.default_hidden_fields(&sample);
-                    if !defaults.is_empty() {
-                        self.hidden_fields = defaults;
-                        self.invalidate_parse_cache();
-                        const FIELDS_HIDDEN_MSG: &str = "Some fields are hidden. Use 'select-fields' to choose fields \
+            if self.hidden_fields.is_empty()
+                && let Some(f) = &fmt
+            {
+                let defaults = f.default_hidden_fields(&sample);
+                if !defaults.is_empty() {
+                    self.hidden_fields = defaults;
+                    self.invalidate_parse_cache();
+                    const FIELDS_HIDDEN_MSG: &str = "Some fields are hidden. Use 'select-fields' to choose fields \
                              or 'show-all-fields' to show all.";
-                        self.set_notification(FIELDS_HIDDEN_MSG);
-                    }
+                    self.set_notification(FIELDS_HIDDEN_MSG);
                 }
             }
             self.detected_format = fmt;
