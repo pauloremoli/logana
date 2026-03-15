@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Fix flickering tab name and layout shift when a docker/DLT stream is in retry mode: `[unknown format]` is suppressed while the stream tab is empty, the file reader is reset on reconnect so stale mmap data no longer blocks fresh stream content, and the retry state is now preserved across reconnect cycles so the exponential backoff accumulates correctly instead of resetting to attempt #1 on every drop.
 - Fix issue with style priority between filters and value colors(e.g IP address).
 - Headless mode now rejects `--output` paths that point to the same file as the input, preventing data loss.
 - Fix parsing for Journalctl with short format (timestamp wihtout seconds)

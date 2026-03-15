@@ -246,11 +246,7 @@ impl App {
         let size = frame.area();
         frame.render_widget(Block::default().bg(self.theme.root_bg), size);
 
-        let has_multiple_tabs = self.tabs.len() > 1;
-        let is_loading = self.file_load_state.is_some();
-        let is_filtering = self.tabs.iter().any(|t| t.filter_handle.is_some());
-        let is_retrying = self.tabs.iter().any(|t| t.stream_retry.is_some());
-        let show_tab_bar = has_multiple_tabs || is_loading || is_filtering || is_retrying;
+        let show_tab_bar = !self.tabs.is_empty();
 
         // Extract mode-derived state up front via a single render_state() call,
         // avoiding holding a borrow over the rest of rendering.
@@ -1863,7 +1859,11 @@ impl App {
                 .iter()
                 .find(|(idx, _)| *idx == i)
                 .map(|(_, p)| *p);
-            let retry_info = self.tabs[i].stream_retry.as_ref().map(|r| r.attempt);
+            let retry_info = self.tabs[i]
+                .stream_retry
+                .as_ref()
+                .filter(|r| !r.connected)
+                .map(|r| r.attempt);
             let suffix = match (loading_info, filter_pct, retry_info) {
                 (Some((idx, pct)), _, _) if idx == i => format!(" {}% ", pct),
                 (_, Some(pct), _) if pct < 100 => format!(" Filtering… {}% ", pct),
@@ -1879,6 +1879,7 @@ impl App {
                     } else {
                         match &self.tabs[i].detected_format {
                             Some(p) => format!(" [{}]", p.name()),
+                            None if num_visible == 0 => String::new(),
                             None => " [unknown format]".to_string(),
                         }
                     };
@@ -1891,7 +1892,18 @@ impl App {
                         fmt_label,
                     )
                 }
-                _ => " ".to_string(),
+                _ => {
+                    if self.tabs[i].raw_mode {
+                        " ".to_string()
+                    } else {
+                        let has_lines = self.tabs[i].file_reader.line_count() > 0;
+                        match &self.tabs[i].detected_format {
+                            Some(p) => format!(" [{}] ", p.name()),
+                            None if has_lines => " [unknown format] ".to_string(),
+                            None => " ".to_string(),
+                        }
+                    }
+                }
             };
             let tab_text = format!(" {}{}", t.title, suffix);
             used_width += unicode_width::UnicodeWidthStr::width(tab_text.as_str());
@@ -2957,6 +2969,7 @@ mod tests {
         app.tabs[0].show_borders = true;
         app.tabs[0].raw_mode = true;
         app.tabs[1].show_borders = true;
+        app.tabs[1].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser));
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2977,6 +2990,7 @@ mod tests {
         app.tabs[0].show_borders = true;
         app.tabs[0].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser));
         app.tabs[1].show_borders = true;
+        app.tabs[1].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser));
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

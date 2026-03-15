@@ -1873,6 +1873,10 @@ pub struct StreamRetryState {
     pub attempt: u32,
     pub last_error: String,
     pub retry_rx: Option<mpsc::Receiver<Result<StreamConnection, String>>>,
+    /// `true` while the connection is up after a successful retry.
+    /// The retry state is kept alive so the attempt counter survives reconnect
+    /// cycles and the backoff keeps increasing on repeated drops.
+    pub connected: bool,
     connect: ConnectFn,
 }
 
@@ -1882,6 +1886,7 @@ impl StreamRetryState {
             attempt: 0,
             last_error: error,
             retry_rx: None,
+            connected: false,
             connect,
         };
         state.schedule_retry();
@@ -1903,9 +1908,8 @@ impl StreamRetryState {
 
     fn retry_delay_secs(&self) -> u64 {
         match self.attempt {
-            1 => 0,
-            2 => 2,
-            3 => 5,
+            1 => 2,
+            2 => 5,
             _ => 10,
         }
     }

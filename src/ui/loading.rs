@@ -596,13 +596,19 @@ impl App {
                 }
                 Some(Err(_)) => {
                     self.tabs[i].watch_state = None;
-                    if let Some(connect_fn) =
+                    self.tabs[i].command_error = Some("Disconnected: connection lost".to_string());
+                    if let Some(retry) = &mut self.tabs[i].stream_retry {
+                        // Reuse the existing retry state to preserve the backoff counter.
+                        retry.connected = false;
+                        retry.last_error = "connection lost".to_string();
+                        retry.schedule_retry();
+                    } else if let Some(connect_fn) =
                         connect_fn_for_source(self.tabs[i].log_manager.source_file())
                     {
-                        let err_msg = "connection lost".to_string();
-                        self.tabs[i].command_error = Some(format!("Disconnected: {}", err_msg));
-                        self.tabs[i].stream_retry =
-                            Some(StreamRetryState::new(connect_fn, err_msg));
+                        self.tabs[i].stream_retry = Some(StreamRetryState::new(
+                            connect_fn,
+                            "connection lost".to_string(),
+                        ));
                     }
                 }
                 _ => {}
@@ -623,9 +629,20 @@ impl App {
             };
             match rx.try_recv() {
                 Ok(Ok(conn)) => {
+                    tab.file_reader = crate::file_reader::FileReader::from_bytes(vec![]);
+                    tab.detected_format = None;
+                    tab.visible_indices = crate::ui::VisibleLines::default();
+                    tab.filter_handle = None;
+                    tab.scroll_offset = 0;
                     tab.watch_state = Some(watch_state_from_connection(conn));
                     tab.command_error = None;
-                    tab.stream_retry = None;
+                    // Keep stream_retry alive so the attempt counter is preserved
+                    // across reconnect cycles; clear the pending rx and mark as connected
+                    // so the [RETRY #N] label is suppressed.
+                    if let Some(retry) = &mut tab.stream_retry {
+                        retry.connected = true;
+                        retry.retry_rx = None;
+                    }
                 }
                 Ok(Err(e)) => {
                     retry.last_error = e.clone();
@@ -1995,16 +2012,20 @@ mod tests {
             attempt: 3,
             last_error: "connection refused".to_string(),
             retry_rx: Some(result_rx),
+            connected: false,
             connect: make_dummy_connect_fn(),
         });
         app.tabs[0].command_error = Some("connection failed".to_string());
 
         app.advance_stream_retries();
 
-        assert!(
-            app.tabs[0].stream_retry.is_none(),
-            "retry should be cleared"
-        );
+        let retry = app.tabs[0]
+            .stream_retry
+            .as_ref()
+            .expect("retry state should be kept");
+        assert!(retry.connected, "retry should be marked connected");
+        assert!(retry.retry_rx.is_none(), "pending rx should be cleared");
+        assert_eq!(retry.attempt, 3, "attempt count should be preserved");
         assert!(
             app.tabs[0].command_error.is_none(),
             "error should be cleared"
@@ -2012,6 +2033,15 @@ mod tests {
         assert!(
             app.tabs[0].watch_state.is_some(),
             "watch_state should be set"
+        );
+        assert_eq!(
+            app.tabs[0].file_reader.line_count(),
+            0,
+            "file_reader should be reset to empty on reconnect"
+        );
+        assert!(
+            app.tabs[0].detected_format.is_none(),
+            "detected_format should be reset on reconnect"
         );
 
         tx.send(()).unwrap();
@@ -2040,6 +2070,7 @@ mod tests {
             attempt: 1,
             last_error: "old error".to_string(),
             retry_rx: Some(result_rx),
+            connected: false,
             connect: make_dummy_connect_fn(),
         });
 
@@ -2068,6 +2099,7 @@ mod tests {
             attempt: 1,
             last_error: "waiting".to_string(),
             retry_rx: Some(result_rx),
+            connected: false,
             connect: make_dummy_connect_fn(),
         });
 
@@ -2123,6 +2155,42 @@ mod tests {
         assert!(app.tabs[tab_idx].stream_retry.is_some());
         assert_eq!(app.tabs[tab_idx].stream_retry.as_ref().unwrap().attempt, 1);
         assert!(app.tabs[tab_idx].command_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_after_retry_preserves_backoff_count() {
+        // Simulates: retry#3 succeeds → connection established → drops again immediately.
+        // The new retry attempt must start at #4 (not reset to #1).
+        let mut app = make_app(&["line"]).await;
+
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, Some("docker:mycontainer".to_string())).await;
+        let file_reader = FileReader::from_bytes(vec![]);
+        let mut tab = TabState::new(file_reader, log_manager, "docker:mycontainer".to_string());
+
+        // Simulate the state after retry #3 succeeded: connected=true, attempt=3.
+        let (tx, state) = make_watch_state(b"");
+        tab.watch_state = Some(state);
+        tab.stream_retry = Some(StreamRetryState {
+            attempt: 3,
+            last_error: String::new(),
+            retry_rx: None,
+            connected: true,
+            connect: make_dummy_connect_fn(),
+        });
+        drop(tx); // drop sender so has_changed() returns Err
+
+        app.tabs.push(tab);
+        let tab_idx = app.tabs.len() - 1;
+
+        app.advance_file_watches();
+
+        let retry = app.tabs[tab_idx].stream_retry.as_ref().unwrap();
+        assert!(!retry.connected, "should be back in retry mode");
+        assert_eq!(
+            retry.attempt, 4,
+            "attempt should continue from 3, not reset to 1"
+        );
     }
 
     #[tokio::test]
