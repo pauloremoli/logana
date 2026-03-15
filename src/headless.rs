@@ -1,4 +1,4 @@
-use std::io::{self, Read, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -22,7 +22,40 @@ pub struct HeadlessArgs {
     pub output: Option<std::path::PathBuf>,
 }
 
+pub(crate) fn same_file(input: &str, output: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(mi) = std::fs::metadata(input) else {
+            return false;
+        };
+        let Ok(mo) = std::fs::metadata(output) else {
+            return false;
+        };
+        mi.dev() == mo.dev() && mi.ino() == mo.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let Ok(a) = std::fs::canonicalize(input) else {
+            return false;
+        };
+        let Ok(b) = std::fs::canonicalize(output) else {
+            return false;
+        };
+        a == b
+    }
+}
+
 pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
+    if let (Some(input), Some(output)) = (&args.file, &args.output) {
+        if same_file(input.as_str(), output) {
+            anyhow::bail!(
+                "Output path '{}' is the same as the input file — writing would destroy it",
+                output.display()
+            );
+        }
+    }
+
     let db = Arc::new(Database::in_memory().await?);
     let mut log_manager = LogManager::new(db, None).await;
 
@@ -41,11 +74,16 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
     let reader = load_reader(&args.file)?;
 
     let mut writer: Box<dyn Write> = match &args.output {
-        Some(path) => Box::new(std::fs::File::create(path)?),
-        None => Box::new(io::stdout()),
+        Some(path) => Box::new(BufWriter::with_capacity(
+            8 * 1024 * 1024,
+            std::fs::File::create(path)?,
+        )),
+        None => Box::new(BufWriter::new(io::stdout())),
     };
 
-    run_headless_to_writer(reader, log_manager, &mut *writer)
+    run_headless_to_writer(reader, log_manager, &mut *writer)?;
+    writer.flush()?;
+    Ok(())
 }
 
 async fn apply_inline_filters(
@@ -149,12 +187,20 @@ pub fn run_headless_to_writer(
     let n_date = date_filters.len();
     let line_count = reader.line_count();
 
-    // Parallel filter pass: determine visible indices using all available cores.
-    let visible: Vec<usize> = {
-        use rayon::prelude::*;
-        (0..line_count)
+    use rayon::prelude::*;
+
+    // Pipeline: filter each chunk in parallel, then write it before moving on.
+    // Bounds peak memory to one chunk's worth of visible indices instead of
+    // accumulating all of them before the first byte is written.
+    const CHUNK_LINES: usize = 16_384;
+
+    let mut chunk_start = 0;
+    while chunk_start < line_count {
+        let chunk_end = (chunk_start + CHUNK_LINES).min(line_count);
+
+        let visible: Vec<usize> = (chunk_start..chunk_end)
             .into_par_iter()
-            .with_min_len(1024)
+            .with_min_len(512)
             .fold(
                 || (Vec::new(), vec![0usize; n_date]),
                 |(mut vis, mut dc), idx| {
@@ -193,14 +239,14 @@ pub fn run_headless_to_writer(
                     (va, da)
                 },
             )
-            .0
-    };
+            .0;
 
-    // Sequential write pass: output matching lines in original order.
-    for idx in visible {
-        let line = reader.get_line(idx);
-        writer.write_all(line)?;
-        writer.write_all(b"\n")?;
+        for idx in visible {
+            writer.write_all(reader.get_line(idx))?;
+            writer.write_all(b"\n")?;
+        }
+
+        chunk_start = chunk_end;
     }
 
     Ok(())
@@ -348,5 +394,31 @@ mod tests {
         let result = std::fs::read_to_string(out_tmp.path()).unwrap();
         // All three lines must appear — the saved DB filter was not loaded.
         assert_eq!(result, "INFO foo\nERROR bar\nINFO baz\n");
+    }
+
+    #[tokio::test]
+    async fn test_headless_same_input_output_is_rejected() {
+        use std::io::Write as _;
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "INFO foo").unwrap();
+        tmp.flush().unwrap();
+
+        let path = tmp.path().to_path_buf();
+        let result = run_headless(&HeadlessArgs {
+            file: Some(path.to_str().unwrap().to_string()),
+            filters: None,
+            include_filters: vec![],
+            exclude_filters: vec![],
+            timestamp_filters: vec![],
+            output: Some(path.clone()),
+        })
+        .await;
+
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("same as the input file"));
+        // Original file must be untouched.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "INFO foo\n");
     }
 }

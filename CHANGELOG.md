@@ -5,8 +5,12 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed 
+### Fixed
 - Fix issue with style priority between filters and value colors(e.g IP address).
+- Headless mode now rejects `--output` paths that point to the same file as the input, preventing data loss.
+
+### Changed
+- Performance improvements on file writing for headless mode and export/save commands, it now uses mmap/rayon to speed up the process.
 
 ## [0.3.0] - 2026-03-14
 

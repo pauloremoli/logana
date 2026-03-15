@@ -1,3 +1,5 @@
+use std::io::{BufWriter, Write};
+
 use clap::Parser;
 
 use crate::auto_complete::{expand_tilde, shell_split};
@@ -201,13 +203,26 @@ impl App {
                 if !path.is_empty() {
                     let expanded = expand_tilde(&path);
                     let tab = &self.tabs[self.active_tab];
-                    let marked_lines = tab.log_manager.get_marked_lines(&tab.file_reader);
-                    let mut content: Vec<u8> = Vec::new();
-                    for line in marked_lines {
-                        content.extend_from_slice(line);
-                        content.push(b'\n');
+                    if let Some(src) = tab.log_manager.source_file() {
+                        if crate::headless::same_file(src, std::path::Path::new(&expanded)) {
+                            return Err(format!(
+                                "Output path '{}' is the same as the input file",
+                                expanded
+                            ));
+                        }
                     }
-                    std::fs::write(&expanded, content)
+                    let marked_lines = tab.log_manager.get_marked_lines(&tab.file_reader);
+                    let file = std::fs::File::create(&expanded)
+                        .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
+                    let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
+                    for line in marked_lines {
+                        writer
+                            .write_all(line)
+                            .and_then(|_| writer.write_all(b"\n"))
+                            .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
+                    }
+                    writer
+                        .flush()
                         .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
                 }
             }
@@ -217,20 +232,41 @@ impl App {
                 }
                 let expanded = expand_tilde(&path);
                 let tab = &self.tabs[self.active_tab];
-                let mut content: Vec<u8> = Vec::new();
-                for file_idx in tab.visible_indices.iter() {
-                    content.extend_from_slice(tab.file_reader.get_line(file_idx));
-                    content.push(b'\n');
+                if let Some(src) = tab.log_manager.source_file() {
+                    if crate::headless::same_file(src, std::path::Path::new(&expanded)) {
+                        return Err(format!(
+                            "Output path '{}' is the same as the input file",
+                            expanded
+                        ));
+                    }
                 }
-                std::fs::write(&expanded, &content)
+                let file = std::fs::File::create(&expanded)
+                    .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
+                let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
+                for file_idx in tab.visible_indices.iter() {
+                    writer
+                        .write_all(tab.file_reader.get_line(file_idx))
+                        .and_then(|_| writer.write_all(b"\n"))
+                        .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
+                }
+                writer
+                    .flush()
                     .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
             }
             Some(Commands::Export { path, template }) => {
                 if path.is_empty() {
                     return Err("Path is required".to_string());
                 }
-                let tpl = crate::export::load_template(&template).map_err(|e| e.to_string())?;
                 let tab = &self.tabs[self.active_tab];
+                if let Some(src) = tab.log_manager.source_file() {
+                    if crate::headless::same_file(src, std::path::Path::new(&path)) {
+                        return Err(format!(
+                            "Output path '{}' is the same as the input file",
+                            path
+                        ));
+                    }
+                }
+                let tpl = crate::export::load_template(&template).map_err(|e| e.to_string())?;
                 let data = crate::export::ExportData {
                     filename: tab.log_manager.source_file().unwrap_or("stdin"),
                     comments: tab.log_manager.get_comments(),
@@ -246,7 +282,13 @@ impl App {
                     show_keys: tab.show_keys,
                 };
                 let output = crate::export::render_export(&tpl, &data);
-                std::fs::write(&path, output).map_err(|e| format!("Failed to write: {}", e))?;
+                let file =
+                    std::fs::File::create(&path).map_err(|e| format!("Failed to write: {}", e))?;
+                let mut writer = BufWriter::new(file);
+                writer
+                    .write_all(output.as_bytes())
+                    .and_then(|_| writer.flush())
+                    .map_err(|e| format!("Failed to write: {}", e))?;
             }
             Some(Commands::SaveFilters { path }) => {
                 if !path.is_empty() {
@@ -1510,5 +1552,79 @@ mod tests {
             assert!(!tab.tail_mode);
             assert!(!tab.raw_mode);
         }
+    }
+
+    // ── same-file guard ───────────────────────────────────────────────────────
+
+    async fn make_app_with_file(tmp: &tempfile::NamedTempFile) -> App {
+        use std::io::Write as _;
+        let mut f = tmp.reopen().unwrap();
+        writeln!(f, "line0").unwrap();
+        writeln!(f, "line1").unwrap();
+        f.flush().unwrap();
+        drop(f);
+
+        let path = tmp.path().to_str().unwrap().to_string();
+        let file_reader = FileReader::new(&path).unwrap();
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, Some(path)).await;
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_save_same_file_as_input_is_rejected() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut app = make_app_with_file(&tmp).await;
+        let path = tmp.path().to_str().unwrap().to_string();
+        let result = app.run_command(&format!("save {}", path)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("same as the input file"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path()).unwrap(),
+            "line0\nline1\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_export_marked_same_file_as_input_is_rejected() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut app = make_app_with_file(&tmp).await;
+        app.tabs[0].log_manager.toggle_mark(0);
+        let path = tmp.path().to_str().unwrap().to_string();
+        let result = app.run_command(&format!("export-marked {}", path)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("same as the input file"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path()).unwrap(),
+            "line0\nline1\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_export_same_file_as_input_is_rejected() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut app = make_app_with_file(&tmp).await;
+        app.tabs[0].log_manager.toggle_mark(0);
+        let path = tmp.path().to_str().unwrap().to_string();
+        let result = app.run_command(&format!("export {}", path)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("same as the input file"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path()).unwrap(),
+            "line0\nline1\n"
+        );
     }
 }
