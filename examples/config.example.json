@@ -8,6 +8,9 @@
   "preview_bytes": 16777216,
   "restore_session": "ask",
   "restore_file_context": "ask",
+  "dlt_devices": [
+    { "name": "my-ecu", "host": "192.168.1.100", "port": 3490 }
+  ],
   "keybindings": {
     "navigation": {
       "scroll_down": ["j", "Down"],
@@ -75,7 +78,7 @@
       "new_tab": "Ctrl+t"
     },
     "comment": {
-      "save": "Ctrl+Enter",
+      "save": "Ctrl+s",
       "newline": "Enter",
       "cancel": "Esc",
       "delete": "Ctrl+d"
@@ -127,6 +130,13 @@
     "docker_select": {
       "confirm": "Enter",
       "cancel": "Esc"
+    },
+    "dlt_select": {
+      "confirm": "Enter",
+      "cancel": "Esc",
+      "delete": "d",
+      "next_field": "Tab",
+      "prev_field": "Shift+Tab"
     },
     "value_colors": {
       "toggle": "Space",

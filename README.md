@@ -2,6 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/pauloremoli/logana/actions?query=workflow%3ARust"><img src="https://img.shields.io/github/actions/workflow/status/pauloremoli/logana/rust.yml?style=flat-square" /></a>
+  <a href="https://codecov.io/gh/pauloremoli/logana"><img src="https://codecov.io/gh/pauloremoli/logana/branch/main/graph/badge.svg?style=flat-square" /></a>
   <a href="https://crates.io/crates/logana"><img src="https://img.shields.io/crates/v/logana.svg?style=flat-square" /></a>
   <a href="https://crates.io/crates/logana"><img src="https://img.shields.io/crates/d/logana.svg?style=flat-square" /></a>
   <a href="https://github.com/pauloremoli/logana/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/logana.svg?style=flat-square" /></a>
@@ -114,7 +115,7 @@ Detected automatically on open — no flags or config required:
 | Syslog | RFC 3164 (BSD), RFC 5424 |
 | OpenTelemetry | OTLP/JSON, OTel SDK JSON |
 | DLT | AUTOSAR binary (storage, wire, simplified) and `dlt-convert -a` text |
-| Journalctl | short-iso, short-precise, short-full |
+| Journalctl | short, short-iso, short-precise, short-full, short-monotonic, short-unix, json-sse, json-seq |
 | Common / Combined Log | Apache access, nginx access |
 | Logfmt | Go `slog`, Heroku, Grafana Loki |
 | Common log family | env_logger, tracing-subscriber fmt (with/without spans), logback, log4j2, Spring Boot, Python logging, loguru, structlog |
@@ -224,6 +225,8 @@ logana app.log --headless -i "--field level=ERROR" -t "> 2024-02-21" --output ou
 
 All filter flags (`-i`, `-o`, `-t`, `-f`) work the same as in interactive mode.
 
+> **Note:** `--output` must point to a different file than the input — logana rejects same-file paths to prevent data loss.
+
 
 ## Key Reference
 
@@ -329,6 +332,9 @@ Config file: `~/.config/logana/config.json`
   "preview_bytes": 16777216,
   "restore_session": "ask",
   "restore_file_context": "ask",
+  "dlt_devices": [
+    { "name": "my-ecu", "host": "192.168.1.100", "port": 3490 }
+  ],
   "keybindings": {
     "navigation": {
       "scroll_down": ["j", "Down"],
@@ -354,6 +360,7 @@ Config file: `~/.config/logana/config.json`
 | `preview_bytes` | `16777216` | Bytes read for instant preview while the full index builds in the background (16 MiB) |
 | `restore_session` | `"ask"` | Whether to reopen the tabs that were open when you last quit (`"ask"`, `"always"`, `"never"`) |
 | `restore_file_context` | `"ask"` | Whether to restore per-file state (scroll position, marks, search query) when reopening a previously visited file (`"ask"`, `"always"`, `"never"`) |
+| `dlt_devices` | `[]` | Pre-configured DLT daemon connections shown in the `:dlt` picker; each entry requires `name` and `host`, and accepts an optional `port` (default `3490`) |
 
 Both options accept:
 - `"ask"` — prompt on every open (default)

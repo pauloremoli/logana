@@ -10,7 +10,7 @@ logana detects the log format automatically by sampling the first lines of the f
 | DLT | AUTOSAR binary (storage, wire, simplified) and `dlt-convert -a` text |
 | JSON | tracing-subscriber JSON, bunyan, pino, any structured JSON logger |
 | Syslog | RFC 3164 (BSD), RFC 5424 |
-| Journalctl | short-iso, short-precise, short-full |
+| Journalctl | short, short-iso, short-precise, short-full, short-monotonic, short-unix, json-sse, json-seq |
 | Common / Combined Log | Apache access, nginx access |
 | Logfmt | Go `slog`, Heroku, Grafana Loki |
 | Common log family | env_logger, tracing-subscriber fmt (with/without spans), logback, log4j2, Spring Boot, Python logging, loguru, structlog |
@@ -81,9 +81,14 @@ Priority is decoded to a log level; facility is exposed as an extra field.
 ### Journalctl
 
 Text output from `journalctl` in several formats:
+- **short**: `Mmm DD HH:MM:SS hostname unit[pid]: message`
 - **short-iso**: `YYYY-MM-DDTHH:MM:SS±ZZZZ hostname unit[pid]: message`
 - **short-precise**: `Mmm DD HH:MM:SS.FFFFFF hostname unit[pid]: message`
 - **short-full**: `Www YYYY-MM-DD HH:MM:SS TZ hostname unit[pid]: message`
+- **short-monotonic**: `[SSSSS.FFFFFF] hostname unit[pid]: message`
+- **short-unix**: `[EPOCH.FFFFFF] hostname unit[pid]: message`
+- **json-sse**: server-sent events wrapping JSON journal entries (`data: {...}`)
+- **json-seq**: RFC 7464 JSON sequence (`\x1e{...}\n`)
 
 Header/footer lines (`-- Journal begins...`, `-- No entries --`) are silently skipped.
 

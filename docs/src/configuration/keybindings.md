@@ -145,7 +145,7 @@ Multiple alternatives:
 ```json
 "comment": {
   "newline": "Enter",
-  "save": "Ctrl+Enter",
+  "save": "Ctrl+s",
   "cancel": "Esc",
   "delete": "Ctrl+d"
 }

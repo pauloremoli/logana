@@ -49,6 +49,11 @@ jobs:
       run: cargo install cargo-tarpaulin
     - name: Run coverage
       run: cargo tarpaulin --out xml --skip-clean -- --test-threads=1
+    - name: Upload to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: cobertura.xml
+        fail_ci_if_error: true
     - name: Check coverage threshold
       run: |
         COVERAGE=$(cargo tarpaulin --skip-clean -- --test-threads=1 2>&1 | grep -oP '[\d.]+% coverage' | grep -oP '[\d.]+')

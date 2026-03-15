@@ -15,7 +15,7 @@ With lines selected in visual mode, press `c` to open the comment editor:
 - `Backspace` — delete character / merge lines
 - `Left` / `Right` — move cursor (wraps between lines)
 - `Up` / `Down` — move between rows
-- `Ctrl+Enter` — save the comment
+- `Ctrl+s` — save the comment
 - `Esc` — cancel without saving
 
 After saving, annotated lines show a `◆` marker in the gutter.
