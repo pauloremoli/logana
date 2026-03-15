@@ -1,9 +1,23 @@
-//! Journalctl text output parser (short-iso, short-precise, short-full).
+//! Journalctl text output parser.
+//!
+//! Supported output modes (journalctl --output):
+//! - `short`             BSD timestamp without fractional seconds
+//! - `short-iso`         ISO-8601 timestamp
+//! - `short-iso-precise` ISO-8601 with microseconds (handled by iso parser)
+//! - `short-full`        Weekday + date + time + timezone
+//! - `short-precise`     BSD timestamp with microseconds
+//! - `short-monotonic`   Boot-relative monotonic clock in brackets
+//! - `short-unix`        Unix epoch with decimal seconds
+//! - `with-unit`         Like `short` but identifies source by unit name
+//!
+//! Not currently supported (multi-line formats): `verbose`, `export`,
+//! `json-pretty`. Use the JSON parser for `json`, `json-sse`, `json-seq`.
 
 use std::collections::HashSet;
 
 use super::timestamp::{
-    is_level_keyword, parse_bsd_precise_timestamp, parse_full_timestamp, parse_iso_timestamp,
+    is_level_keyword, parse_bsd_plain_timestamp, parse_bsd_precise_timestamp, parse_full_timestamp,
+    parse_iso_timestamp, parse_monotonic_timestamp, parse_unix_timestamp,
 };
 use super::types::{DisplayParts, LogFormatParser};
 
@@ -112,6 +126,27 @@ impl LogFormatParser for JournalctlParser {
         }
 
         if let Some((timestamp, consumed)) = parse_bsd_precise_timestamp(s) {
+            let mut parts = parse_host_unit_message(&s[consumed..])?;
+            parts.timestamp = Some(timestamp);
+            return Some(parts);
+        }
+
+        // short: Jul 12 22:23:01 hostname sshd[1]: msg
+        if let Some((timestamp, consumed)) = parse_bsd_plain_timestamp(s) {
+            let mut parts = parse_host_unit_message(&s[consumed..])?;
+            parts.timestamp = Some(timestamp);
+            return Some(parts);
+        }
+
+        // short-monotonic: [     0.000000] hostname sshd[1]: msg
+        if let Some((timestamp, consumed)) = parse_monotonic_timestamp(s) {
+            let mut parts = parse_host_unit_message(&s[consumed..])?;
+            parts.timestamp = Some(timestamp);
+            return Some(parts);
+        }
+
+        // short-unix: 1436735381.000000 hostname sshd[1]: msg
+        if let Some((timestamp, consumed)) = parse_unix_timestamp(s) {
             let mut parts = parse_host_unit_message(&s[consumed..])?;
             parts.timestamp = Some(timestamp);
             return Some(parts);
@@ -319,6 +354,97 @@ mod tests {
         assert_eq!(parts.message, Some("kernel"));
     }
 
+    // ── JournalctlParser: short format (plain BSD, no microseconds) ────
+
+    #[test]
+    fn test_short_full_line() {
+        let line = b"Jul 12 22:23:01 hostname sshd[1234]: Accepted password";
+        let parser = JournalctlParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("Jul 12 22:23:01"));
+        assert_eq!(parts.target, Some("sshd"));
+        assert_eq!(parts.message, Some("Accepted password"));
+        assert!(
+            parts
+                .extra_fields
+                .iter()
+                .any(|(k, v)| *k == "hostname" && *v == "hostname")
+        );
+        assert!(
+            parts
+                .extra_fields
+                .iter()
+                .any(|(k, v)| *k == "pid" && *v == "1234")
+        );
+    }
+
+    #[test]
+    fn test_short_single_digit_day() {
+        let line = b"Feb  5 10:15:30 myhost kernel: something";
+        let parser = JournalctlParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("Feb  5 10:15:30"));
+        assert_eq!(parts.message, Some("something"));
+    }
+
+    #[test]
+    fn test_short_does_not_match_precise() {
+        // short-precise (with dot) should NOT be matched by the plain BSD parser
+        let line = b"Feb 22 10:15:30.123456 myhost sshd[5678]: msg";
+        let parser = JournalctlParser;
+        let parts = parser.parse_line(line).unwrap();
+        // It should still parse via parse_bsd_precise_timestamp
+        assert_eq!(parts.timestamp, Some("Feb 22 10:15:30.123456"));
+    }
+
+    // ── JournalctlParser: short-monotonic format ────────────────────
+
+    #[test]
+    fn test_short_monotonic_basic() {
+        let line = b"[     0.000000] myhost sshd[1]: Started";
+        let parser = JournalctlParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("[     0.000000]"));
+        assert_eq!(parts.target, Some("sshd"));
+        assert_eq!(parts.message, Some("Started"));
+    }
+
+    #[test]
+    fn test_short_monotonic_large_value() {
+        let line = b"[12345.678901] myhost kernel: IRQ routing";
+        let parser = JournalctlParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("[12345.678901]"));
+        assert_eq!(parts.target, Some("kernel"));
+    }
+
+    // ── JournalctlParser: short-unix format ─────────────────────────
+
+    #[test]
+    fn test_short_unix_basic() {
+        let line = b"1436735381.000000 myhost sshd[1234]: Connection closed";
+        let parser = JournalctlParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("1436735381.000000"));
+        assert_eq!(parts.target, Some("sshd"));
+        assert_eq!(parts.message, Some("Connection closed"));
+    }
+
+    #[test]
+    fn test_short_unix_with_pid() {
+        let line = b"1700000000.123456 myhost systemd[1]: Started service";
+        let parser = JournalctlParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("1700000000.123456"));
+        assert_eq!(parts.target, Some("systemd"));
+        assert!(
+            parts
+                .extra_fields
+                .iter()
+                .any(|(k, v)| *k == "pid" && *v == "1")
+        );
+    }
+
     // ── False positive rejection ──────────────────────────────────────
 
     #[test]
@@ -385,6 +511,39 @@ mod tests {
     }
 
     // ── detect_score ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_detect_score_short_format() {
+        let parser = JournalctlParser;
+        let lines: Vec<&[u8]> = vec![
+            b"Jul 12 22:23:01 host1 sshd[1]: msg1",
+            b"Jul 12 22:23:02 host1 sshd[1]: msg2",
+        ];
+        let score = parser.detect_score(&lines);
+        assert!((score - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_detect_score_short_monotonic() {
+        let parser = JournalctlParser;
+        let lines: Vec<&[u8]> = vec![
+            b"[     0.000000] host1 sshd[1]: msg1",
+            b"[12345.678901] host1 kernel: msg2",
+        ];
+        let score = parser.detect_score(&lines);
+        assert!((score - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_detect_score_short_unix() {
+        let parser = JournalctlParser;
+        let lines: Vec<&[u8]> = vec![
+            b"1436735381.000000 host1 sshd[1]: msg1",
+            b"1436735382.000001 host1 sshd[1]: msg2",
+        ];
+        let score = parser.detect_score(&lines);
+        assert!((score - 1.0).abs() < 0.001);
+    }
 
     #[test]
     fn test_detect_score_all_journalctl() {
@@ -502,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_score_short_format() {
+    fn test_detect_score_short_format_month_abbrev() {
         let parser = JournalctlParser;
         let lines: Vec<&[u8]> = vec![
             b"Mar 15 10:00:00 myhost sshd[1234]: Accepted password",

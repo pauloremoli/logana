@@ -394,8 +394,11 @@ impl Mode for NormalMode {
             return (self, KeyResult::Handled);
         }
 
-        if kb.normal.clear_search.matches(key, modifiers) && tab.search.get_pattern().is_some() {
+        if kb.normal.clear_search.matches(key, modifiers)
+            && (tab.search.get_pattern().is_some() || tab.notification.is_some())
+        {
             tab.cancel_search();
+            tab.clear_notification();
             tab.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);

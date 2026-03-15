@@ -577,8 +577,6 @@ impl App {
                             Err(_) => continue,
                         }
                     }
-                    // Re-detect format if not yet known (e.g. docker-logs
-                    // tab that started empty).
                     if self.tabs[i].detected_format.is_none()
                         && self.tabs[i].file_reader.line_count() > 0
                     {
@@ -2219,5 +2217,181 @@ mod tests {
         );
         assert_eq!(app.tabs[tab_idx].stream_retry.as_ref().unwrap().attempt, 1);
         assert!(app.tabs[tab_idx].watch_state.is_none());
+    }
+
+    // ── Journalctl JSON default hidden fields ─────────────────────────────────
+
+    #[tokio::test]
+    async fn test_journalctl_json_hidden_fields_applied_on_stdin() {
+        // Simulate `journalctl --user -o json | logana`
+        let mut app = make_app(&[]).await;
+        assert!(app.tabs[0].hidden_fields.is_empty());
+
+        let jctl_line = b"{\"__CURSOR\":\"s=abc\",\"__REALTIME_TIMESTAMP\":\"1699999999000000\",\"_BOOT_ID\":\"abc\",\"PRIORITY\":\"6\",\"_HOSTNAME\":\"myhost\",\"SYSLOG_IDENTIFIER\":\"sshd\",\"_PID\":\"1234\",\"_TRANSPORT\":\"journal\",\"MESSAGE\":\"Accepted password\"}\n";
+        let mut data = Vec::new();
+        for _ in 0..25 {
+            data.extend_from_slice(jctl_line);
+        }
+
+        let f = make_stdin_file(&data);
+        app.update_stdin_tab(f.path()).await;
+
+        assert!(
+            !app.tabs[0].hidden_fields.is_empty(),
+            "hidden_fields should be non-empty for journalctl JSON stdin"
+        );
+        assert!(
+            app.tabs[0].hidden_fields.contains("__CURSOR"),
+            "expected __CURSOR to be hidden"
+        );
+        assert!(
+            !app.tabs[0].hidden_fields.contains("MESSAGE"),
+            "MESSAGE should remain visible"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_journalctl_json_hidden_fields_applied_on_load() {
+        // Simulate startup: empty initial tab, then full journalctl JSON loaded
+        // via ReplaceInitialTab (the normal file-open path).
+        let mut app = make_app(&[]).await;
+        assert!(app.tabs[0].hidden_fields.is_empty());
+
+        let jctl_line = br#"{"__CURSOR":"s=abc","__REALTIME_TIMESTAMP":"1699999999000000","__MONOTONIC_TIMESTAMP":"123","_BOOT_ID":"abc","PRIORITY":"6","_HOSTNAME":"myhost","SYSLOG_IDENTIFIER":"sshd","_PID":"1234","_UID":"1000","_COMM":"sshd","_TRANSPORT":"journal","MESSAGE":"Accepted password"}"#;
+        let mut data = Vec::new();
+        for _ in 0..25 {
+            data.extend_from_slice(jctl_line);
+            data.push(b'\n');
+        }
+        let fr = FileReader::from_bytes(data);
+
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let _ = result_tx.send(Ok(FileLoadResult {
+            reader: fr,
+            precomputed_visible: None,
+        }));
+        drop(progress_tx);
+
+        app.file_load_state = Some(super::FileLoadState {
+            path: "journalctl.json".to_string(),
+            progress_rx,
+            result_rx,
+            total_bytes: 200,
+            on_complete: LoadContext::ReplaceInitialTab,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+
+        app.advance_file_load().await;
+
+        assert!(
+            !app.tabs[0].hidden_fields.is_empty(),
+            "hidden_fields should be non-empty for journalctl JSON"
+        );
+        assert!(
+            app.tabs[0].hidden_fields.contains("__CURSOR"),
+            "expected __CURSOR to be hidden"
+        );
+        assert!(
+            app.tabs[0].hidden_fields.contains("_TRANSPORT"),
+            "expected _TRANSPORT to be hidden"
+        );
+        assert!(
+            !app.tabs[0].hidden_fields.contains("MESSAGE"),
+            "MESSAGE should remain visible"
+        );
+        assert!(
+            !app.tabs[0].hidden_fields.contains("_HOSTNAME"),
+            "_HOSTNAME should remain visible"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_file_journalctl_json_hidden_fields() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let jctl_line = b"{\"__CURSOR\":\"s=abc\",\"__REALTIME_TIMESTAMP\":\"1699999999000000\",\"__MONOTONIC_TIMESTAMP\":\"123\",\"_BOOT_ID\":\"abc\",\"PRIORITY\":\"6\",\"_HOSTNAME\":\"myhost\",\"SYSLOG_IDENTIFIER\":\"sshd\",\"_PID\":\"1234\",\"_UID\":\"1000\",\"_TRANSPORT\":\"journal\",\"MESSAGE\":\"Accepted\"}\n";
+        let mut data = Vec::new();
+        for _ in 0..25 {
+            data.extend_from_slice(jctl_line);
+        }
+        std::fs::write(tmp.path(), &data).unwrap();
+
+        let mut app = make_app(&[]).await;
+        app.open_file(tmp.path().to_str().unwrap()).await.unwrap();
+        let tab_idx = app.tabs.len() - 1;
+
+        assert!(
+            !app.tabs[tab_idx].hidden_fields.is_empty(),
+            "hidden_fields should be non-empty for journalctl JSON file"
+        );
+        assert!(
+            app.tabs[tab_idx].hidden_fields.contains("__CURSOR"),
+            "expected __CURSOR to be hidden"
+        );
+        assert!(
+            !app.tabs[tab_idx].hidden_fields.contains("MESSAGE"),
+            "MESSAGE should remain visible"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_startup_journalctl_json_full_flow() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let jctl_line = b"{\"__CURSOR\":\"s=abc\",\"__REALTIME_TIMESTAMP\":\"1699999999000000\",\"__MONOTONIC_TIMESTAMP\":\"123\",\"_BOOT_ID\":\"abc\",\"PRIORITY\":\"6\",\"_HOSTNAME\":\"myhost\",\"SYSLOG_IDENTIFIER\":\"sshd\",\"_PID\":\"1234\",\"_UID\":\"1000\",\"_TRANSPORT\":\"journal\",\"MESSAGE\":\"Accepted\"}\n";
+        let mut data = Vec::new();
+        for _ in 0..25 {
+            data.extend_from_slice(jctl_line);
+        }
+        std::fs::write(tmp.path(), &data).unwrap();
+
+        let path = tmp.path().to_str().unwrap().to_string();
+        let mut app = make_app(&[]).await;
+
+        // Simulate CLI startup: begin_file_load with ReplaceInitialTab loads the
+        // preview synchronously (calls detect_and_apply_format) then spawns the
+        // background full-file load.
+        app.begin_file_load(path.clone(), LoadContext::ReplaceInitialTab, None, false)
+            .await;
+
+        // After begin_file_load, preview has been loaded and detect_and_apply_format called.
+        assert!(
+            !app.tabs[0].hidden_fields.is_empty(),
+            "hidden_fields should be set from preview"
+        );
+        assert!(app.tabs[0].hidden_fields.contains("__CURSOR"));
+
+        // Poll until the background full-file load completes.
+        for _ in 0..100 {
+            if app.file_load_state.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            app.advance_file_load().await;
+        }
+        assert!(app.file_load_state.is_none(), "file load should complete");
+
+        // After full load, hidden_fields must still be set.
+        assert!(
+            !app.tabs[0].hidden_fields.is_empty(),
+            "hidden_fields should survive the full load"
+        );
+        assert!(app.tabs[0].hidden_fields.contains("__CURSOR"));
+        assert!(!app.tabs[0].hidden_fields.contains("MESSAGE"));
+
+        // The rendered text must NOT contain hidden field names.
+        let text = app.tabs[0].get_display_text(0);
+        assert!(
+            !text.contains("__CURSOR"),
+            "rendered line should not contain __CURSOR: {text}"
+        );
+        assert!(
+            !text.contains("_TRANSPORT"),
+            "rendered line should not contain _TRANSPORT: {text}"
+        );
+        // The message must be visible.
+        assert!(
+            text.contains("Accepted"),
+            "rendered line must contain the message: {text}"
+        );
     }
 }

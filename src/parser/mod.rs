@@ -19,7 +19,7 @@ pub use journalctl::JournalctlParser;
 pub use json::{
     JsonField, JsonParser, LEVEL_KEYS, LogFormat, LogLine, MESSAGE_KEYS, TARGET_KEYS,
     TIMESTAMP_KEYS, build_display_json, classify_json_fields, classify_json_fields_all,
-    detect_json_format, parse_json_line,
+    detect_json_format, parse_json_line, strip_json_prefixes,
 };
 pub use logfmt::LogfmtParser;
 pub use otlp::OtlpParser;
@@ -280,6 +280,59 @@ mod tests {
         ];
         let parser = detect_format(&lines).unwrap();
         assert_eq!(parser.name(), "otlp");
+    }
+
+    // ── New journalctl format detection tests ─────────────────────────
+
+    #[test]
+    fn test_detect_format_journalctl_short() {
+        let lines: Vec<&[u8]> = vec![
+            b"Jul 12 22:23:01 myhost sshd[1234]: Accepted password",
+            b"Jul 12 22:23:02 myhost sshd[1234]: Session opened",
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "journalctl");
+    }
+
+    #[test]
+    fn test_detect_format_journalctl_short_monotonic() {
+        let lines: Vec<&[u8]> = vec![
+            b"[     0.000000] myhost sshd[1]: msg1",
+            b"[12345.678901] myhost kernel: msg2",
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "journalctl");
+    }
+
+    #[test]
+    fn test_detect_format_journalctl_short_unix() {
+        let lines: Vec<&[u8]> = vec![
+            b"1436735381.000000 myhost sshd[1234]: msg1",
+            b"1436735382.000001 myhost sshd[1234]: msg2",
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "journalctl");
+    }
+
+    #[test]
+    fn test_detect_format_json_sse() {
+        let lines: Vec<&[u8]> = vec![
+            br#"data: {"level":"INFO","msg":"hello"}"#,
+            br#"data: {"level":"WARN","msg":"world"}"#,
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "json");
+    }
+
+    #[test]
+    fn test_detect_format_json_seq() {
+        let mut line1 = vec![0x1eu8];
+        line1.extend_from_slice(br#"{"level":"INFO","msg":"hello"}"#);
+        let mut line2 = vec![0x1eu8];
+        line2.extend_from_slice(br#"{"level":"WARN","msg":"world"}"#);
+        let lines: Vec<&[u8]> = vec![&line1, &line2];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "json");
     }
 
     // ── Priority: specific parsers beat common-log ────────────────────

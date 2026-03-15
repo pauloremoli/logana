@@ -1,5 +1,7 @@
 //! Log format abstraction: trait, shared types, and span utilities.
 
+use std::collections::HashSet;
+
 #[derive(Debug)]
 pub struct SpanInfo<'a> {
     pub name: &'a str,
@@ -24,20 +26,35 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String>;
 
     fn detect_score(&self, sample: &[&[u8]]) -> f64 {
-        if sample.is_empty() {
+        // Empty lines are structural delimiters (e.g. SSE separators), not
+        // log records. Exclude them from both numerator and denominator so they
+        // don't dilute the score.
+        let non_empty: Vec<&[u8]> = sample.iter().copied().filter(|l| !l.is_empty()).collect();
+        if non_empty.is_empty() {
             return 0.0;
         }
-        let parsed = sample
+        let parsed = non_empty
             .iter()
             .filter(|l| self.parse_line(l).is_some())
             .count();
         if parsed == 0 {
             return 0.0;
         }
-        parsed as f64 / sample.len() as f64
+        parsed as f64 / non_empty.len() as f64
     }
 
     fn name(&self) -> &str;
+
+    /// Returns field names that should be hidden by default when this format is
+    /// first detected. Parsers override this to suppress noisy internal fields
+    /// (e.g. journalctl JSON exports dozens of systemd-internal fields that are
+    /// not visible in the default `short` output mode).
+    ///
+    /// Called once at tab creation with the format-detection sample. Returns an
+    /// empty set by default (show all fields).
+    fn default_hidden_fields(&self, _sample: &[&[u8]]) -> HashSet<String> {
+        HashSet::new()
+    }
 }
 
 pub fn format_span_col(s: &SpanInfo<'_>, show_keys: bool) -> String {

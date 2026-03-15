@@ -390,6 +390,16 @@ impl App {
         };
 
         let show_borders = self.tabs[self.active_tab].show_borders;
+        // Auto-dismiss the notification after 10 seconds.
+        if let Some(set_at) = self.tabs[self.active_tab].notification_set_at {
+            if set_at.elapsed() > std::time::Duration::from_secs(10) {
+                self.tabs[self.active_tab].clear_notification();
+            }
+        }
+        let notification = self.tabs[self.active_tab].notification.clone();
+        // Show the notification row when there is a message and the command bar
+        // is not already open (where it would appear in the hint area instead).
+        let has_notification = notification.is_some() && !has_input_bar;
 
         // Compute how many rows the mode bar needs so wrapped text is fully visible.
         // When borders are on they consume 1 col on each side (2 total); when off we
@@ -423,6 +433,13 @@ impl App {
             );
             constraints.push(Constraint::Length(hint_height)); // hint line(s)
         }
+        let notification_chunk_idx = if has_notification {
+            let idx = constraints.len();
+            constraints.push(Constraint::Length(1)); // notification bar
+            Some(idx)
+        } else {
+            None
+        };
         let warnings_chunk_idx = if has_warnings {
             let idx = constraints.len();
             constraints.push(Constraint::Length(warnings_height)); // warnings bar
@@ -524,6 +541,20 @@ impl App {
         );
 
         self.render_input_bar(frame, search_input, &chunks, chunk_idx);
+
+        if let Some(idx) = notification_chunk_idx {
+            if let Some(msg) = &notification {
+                let notification_area = chunks[idx];
+                frame.render_widget(
+                    Paragraph::new(msg.as_str()).style(
+                        Style::default()
+                            .fg(self.theme.warning_fg)
+                            .bg(self.theme.root_bg),
+                    ),
+                    notification_area,
+                );
+            }
+        }
 
         if let Some(idx) = warnings_chunk_idx {
             let warnings_area = chunks[idx];

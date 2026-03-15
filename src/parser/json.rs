@@ -1,4 +1,9 @@
-//! JSON log parser supporting tracing, bunyan, GELF, and similar formats.
+//! JSON log parser supporting tracing, bunyan, GELF, journalctl JSON, and similar formats.
+//!
+//! Also handles journalctl JSON output variants:
+//! - `json`      one JSON object per line
+//! - `json-sse`  server-sent events wrapper: `data: {...}`
+//! - `json-seq`  RFC 7464 JSON sequence: RS (0x1E) + `{...}`
 
 use std::collections::HashSet;
 
@@ -208,6 +213,20 @@ pub fn classify_json_fields<'a>(
     parts
 }
 
+fn priority_to_level(value: &str) -> &'static str {
+    match value {
+        "0" => "EMERG",
+        "1" => "ALERT",
+        "2" => "CRITICAL",
+        "3" => "ERROR",
+        "4" => "WARNING",
+        "5" => "NOTICE",
+        "6" => "INFO",
+        "7" => "DEBUG",
+        _ => "UNKNOWN",
+    }
+}
+
 fn classify_field<'a>(field: &JsonField<'a>, parts: &mut DisplayParts<'a>) {
     match field.key {
         "fields" if !field.value_is_string => {
@@ -243,7 +262,12 @@ fn classify_field<'a>(field: &JsonField<'a>, parts: &mut DisplayParts<'a>) {
             parts.timestamp.get_or_insert(field.value);
         }
         key if LEVEL_KEYS.contains(&key) => {
-            parts.level.get_or_insert(field.value);
+            let value = if key == "PRIORITY" {
+                priority_to_level(field.value)
+            } else {
+                field.value
+            };
+            parts.level.get_or_insert(value);
         }
         key if TARGET_KEYS.contains(&key) => {
             parts.target.get_or_insert(field.value);
@@ -257,11 +281,35 @@ fn classify_field<'a>(field: &JsonField<'a>, parts: &mut DisplayParts<'a>) {
     }
 }
 
+/// Strip a `json-sse` `data: ` prefix if present.
+fn strip_sse_prefix(line: &[u8]) -> &[u8] {
+    line.strip_prefix(b"data: ").unwrap_or(line)
+}
+
+/// Strip a `json-seq` RS (0x1E) prefix if present.
+fn strip_seq_prefix(line: &[u8]) -> &[u8] {
+    if line.first() == Some(&0x1e) {
+        &line[1..]
+    } else {
+        line
+    }
+}
+
+/// Strip all known journalctl JSON wrapper prefixes (SSE and seq).
+pub fn strip_json_prefixes(line: &[u8]) -> &[u8] {
+    strip_seq_prefix(strip_sse_prefix(line))
+}
+
+/// Fields visible in journalctl `short` output mode. When journalctl JSON is
+/// detected these are kept visible and all other extra fields are hidden.
+const JOURNALCTL_KEEP_EXTRA: &[&str] = &["_HOSTNAME", "_PID"];
+
 #[derive(Debug)]
 pub struct JsonParser;
 
 impl LogFormatParser for JsonParser {
     fn parse_line<'a>(&self, line: &'a [u8]) -> Option<DisplayParts<'a>> {
+        let line = strip_json_prefixes(line);
         let fields = parse_json_line(line)?;
         Some(classify_json_fields_all(&fields))
     }
@@ -276,6 +324,7 @@ impl LogFormatParser for JsonParser {
         let mut extras = Vec::new();
 
         for &line in lines {
+            let line = strip_json_prefixes(line);
             if let Some(fields) = parse_json_line(line) {
                 for field in &fields {
                     let key = field.key;
@@ -343,6 +392,37 @@ impl LogFormatParser for JsonParser {
 
     fn name(&self) -> &str {
         "json"
+    }
+
+    /// For journalctl JSON output, hide all systemd-internal fields that are not
+    /// visible in `short` mode. Only timestamp, level, target, `_HOSTNAME`,
+    /// `_PID`, and message are kept visible by default.
+    fn default_hidden_fields(&self, sample: &[&[u8]]) -> HashSet<String> {
+        let is_journalctl = sample.iter().any(|&line| {
+            let line = strip_json_prefixes(line);
+            if let Some(fields) = parse_json_line(line) {
+                matches!(detect_json_format(&fields), LogFormat::JournalctlJson)
+            } else {
+                false
+            }
+        });
+
+        if !is_journalctl {
+            return HashSet::new();
+        }
+
+        // Hide every extra field that isn't one of the short-mode visible extras.
+        self.collect_field_names(sample)
+            .into_iter()
+            .filter(|name| {
+                let is_canonical = TIMESTAMP_KEYS.contains(&name.as_str())
+                    || LEVEL_KEYS.contains(&name.as_str())
+                    || TARGET_KEYS.contains(&name.as_str())
+                    || MESSAGE_KEYS.contains(&name.as_str());
+                let is_kept = JOURNALCTL_KEEP_EXTRA.contains(&name.as_str());
+                !is_canonical && !is_kept
+            })
+            .collect()
     }
 }
 
@@ -778,7 +858,7 @@ mod tests {
         let fields = parse_json_line(line).unwrap();
         let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
         assert_eq!(parts.timestamp, Some("1699999999"));
-        assert_eq!(parts.level, Some("6"));
+        assert_eq!(parts.level, Some("INFO"));
         assert_eq!(parts.target, Some("sshd"));
         assert_eq!(parts.message, Some("Accepted"));
     }
@@ -908,5 +988,137 @@ mod tests {
     fn test_json_parser_name() {
         let parser = JsonParser;
         assert_eq!(parser.name(), "json");
+    }
+
+    // ── json-sse (Server-Sent Events) support ────────────────────────────────
+
+    #[test]
+    fn test_json_sse_parse_line() {
+        let parser = JsonParser;
+        let line = br#"data: {"level":"INFO","msg":"hello"}"#;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.level, Some("INFO"));
+        assert_eq!(parts.message, Some("hello"));
+    }
+
+    #[test]
+    fn test_json_sse_detect_score() {
+        let parser = JsonParser;
+        let lines: Vec<&[u8]> = vec![
+            br#"data: {"level":"INFO","msg":"hello"}"#,
+            br#"data: {"level":"WARN","msg":"world"}"#,
+        ];
+        let score = parser.detect_score(&lines);
+        assert!((score - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_json_sse_collect_field_names() {
+        let parser = JsonParser;
+        let lines: Vec<&[u8]> = vec![br#"data: {"timestamp":"2024","level":"INFO","msg":"hi"}"#];
+        let names = parser.collect_field_names(&lines);
+        assert!(names.contains(&"timestamp".to_string()));
+        assert!(names.contains(&"level".to_string()));
+        assert!(names.contains(&"msg".to_string()));
+    }
+
+    // ── json-seq (RFC 7464 JSON Sequence) support ────────────────────────────
+
+    #[test]
+    fn test_json_seq_parse_line() {
+        let parser = JsonParser;
+        // 0x1e is the RS (record separator) character
+        let mut line = vec![0x1eu8];
+        line.extend_from_slice(br#"{"level":"INFO","msg":"hello"}"#);
+        let parts = parser.parse_line(&line).unwrap();
+        assert_eq!(parts.level, Some("INFO"));
+        assert_eq!(parts.message, Some("hello"));
+    }
+
+    #[test]
+    fn test_json_seq_detect_score() {
+        let parser = JsonParser;
+        let mut line1 = vec![0x1eu8];
+        line1.extend_from_slice(br#"{"level":"INFO","msg":"hello"}"#);
+        let mut line2 = vec![0x1eu8];
+        line2.extend_from_slice(br#"{"level":"WARN","msg":"world"}"#);
+        let lines: Vec<&[u8]> = vec![&line1, &line2];
+        let score = parser.detect_score(&lines);
+        assert!((score - 1.0).abs() < 0.001);
+    }
+
+    // ── journalctl JSON default_hidden_fields ────────────────────────────────
+
+    #[test]
+    fn test_default_hidden_fields_journalctl_json() {
+        let parser = JsonParser;
+        let lines: Vec<&[u8]> = vec![
+            br#"{"__CURSOR":"s=abc","__REALTIME_TIMESTAMP":"1699","__MONOTONIC_TIMESTAMP":"123","_BOOT_ID":"abc","PRIORITY":"6","_HOSTNAME":"myhost","SYSLOG_IDENTIFIER":"sshd","_PID":"1234","_UID":"1000","_COMM":"sshd","MESSAGE":"Accepted"}"#,
+        ];
+        let hidden = parser.default_hidden_fields(&lines);
+        // Internal fields should be hidden
+        assert!(hidden.contains("__CURSOR"), "__CURSOR should be hidden");
+        assert!(
+            hidden.contains("__MONOTONIC_TIMESTAMP"),
+            "__MONOTONIC_TIMESTAMP should be hidden"
+        );
+        assert!(hidden.contains("_BOOT_ID"), "_BOOT_ID should be hidden");
+        assert!(hidden.contains("_UID"), "_UID should be hidden");
+        // Short-mode visible fields should NOT be hidden
+        assert!(
+            !hidden.contains("__REALTIME_TIMESTAMP"),
+            "__REALTIME_TIMESTAMP should be visible"
+        );
+        assert!(!hidden.contains("PRIORITY"), "PRIORITY should be visible");
+        assert!(
+            !hidden.contains("SYSLOG_IDENTIFIER"),
+            "SYSLOG_IDENTIFIER should be visible"
+        );
+        assert!(!hidden.contains("_HOSTNAME"), "_HOSTNAME should be visible");
+        assert!(!hidden.contains("_PID"), "_PID should be visible");
+        assert!(!hidden.contains("MESSAGE"), "MESSAGE should be visible");
+    }
+
+    #[test]
+    fn test_default_hidden_fields_non_journalctl_json() {
+        // Regular JSON logs should not have any default hidden fields
+        let parser = JsonParser;
+        let lines: Vec<&[u8]> =
+            vec![br#"{"timestamp":"2024","level":"INFO","message":"hello","request_id":"abc"}"#];
+        let hidden = parser.default_hidden_fields(&lines);
+        assert!(
+            hidden.is_empty(),
+            "Non-journalctl JSON should have no hidden fields by default"
+        );
+    }
+
+    #[test]
+    fn test_default_hidden_fields_journalctl_json_sse() {
+        // json-sse wrapper should also trigger journalctl JSON hidden fields
+        let parser = JsonParser;
+        let lines: Vec<&[u8]> = vec![
+            br#"data: {"__CURSOR":"s=abc","__REALTIME_TIMESTAMP":"1699","PRIORITY":"6","_HOSTNAME":"myhost","SYSLOG_IDENTIFIER":"sshd","_PID":"1234","_BOOT_ID":"xyz","MESSAGE":"Started"}"#,
+        ];
+        let hidden = parser.default_hidden_fields(&lines);
+        assert!(hidden.contains("__CURSOR"));
+        assert!(hidden.contains("_BOOT_ID"));
+        assert!(!hidden.contains("_HOSTNAME"));
+        assert!(!hidden.contains("_PID"));
+    }
+
+    // ── strip_json_prefixes ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_strip_sse_prefix() {
+        assert_eq!(strip_sse_prefix(b"data: {}"), b"{}");
+        assert_eq!(strip_sse_prefix(b"{}"), b"{}");
+        assert_eq!(strip_sse_prefix(b"data:{}"), b"data:{}"); // no space → no strip
+    }
+
+    #[test]
+    fn test_strip_seq_prefix() {
+        let with_rs = [0x1eu8, b'{', b'}'];
+        assert_eq!(strip_seq_prefix(&with_rs), b"{}");
+        assert_eq!(strip_seq_prefix(b"{}"), b"{}");
     }
 }

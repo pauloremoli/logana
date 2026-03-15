@@ -198,6 +198,135 @@ pub(crate) fn parse_datetime_timestamp(s: &str) -> Option<(&str, usize)> {
     Some((&s[..end], end))
 }
 
+/// Parse a plain BSD syslog timestamp without fractional seconds: `Jul 12 22:23:01`.
+/// Returns `(timestamp_slice, bytes_consumed)` or `None`.
+/// Unlike `parse_bsd_precise_timestamp`, this rejects timestamps followed by `.`
+/// so the two parsers remain mutually exclusive.
+pub(crate) fn parse_bsd_plain_timestamp(s: &str) -> Option<(&str, usize)> {
+    if s.len() < 15 {
+        return None;
+    }
+    let month = &s[..3];
+    if !BSD_MONTHS.contains(&month) {
+        return None;
+    }
+    if s.as_bytes()[3] != b' ' {
+        return None;
+    }
+    let day_end = if s.as_bytes()[4] == b' ' {
+        if !s.as_bytes()[5].is_ascii_digit() {
+            return None;
+        }
+        6
+    } else if s.as_bytes()[4].is_ascii_digit() && s.as_bytes()[5].is_ascii_digit() {
+        6
+    } else {
+        return None;
+    };
+    if day_end >= s.len() || s.as_bytes()[day_end] != b' ' {
+        return None;
+    }
+    let time_start = day_end + 1;
+    if time_start + 8 > s.len() {
+        return None;
+    }
+    let t = &s[time_start..time_start + 8];
+    if t.as_bytes()[2] != b':'
+        || t.as_bytes()[5] != b':'
+        || !t.as_bytes()[0].is_ascii_digit()
+        || !t.as_bytes()[1].is_ascii_digit()
+        || !t.as_bytes()[3].is_ascii_digit()
+        || !t.as_bytes()[4].is_ascii_digit()
+        || !t.as_bytes()[6].is_ascii_digit()
+        || !t.as_bytes()[7].is_ascii_digit()
+    {
+        return None;
+    }
+    let end = time_start + 8;
+    // If followed by `.`, this is `short-precise` — let that parser handle it.
+    if end < s.len() && s.as_bytes()[end] == b'.' {
+        return None;
+    }
+    Some((&s[..end], end))
+}
+
+/// Parse a monotonic (boot-relative) timestamp: `[     0.000000]` or `[1234.567890]`.
+/// Returns `(timestamp_slice, bytes_consumed)` or `None`.
+pub(crate) fn parse_monotonic_timestamp(s: &str) -> Option<(&str, usize)> {
+    if s.is_empty() || s.as_bytes()[0] != b'[' {
+        return None;
+    }
+    let mut pos = 1;
+    // Skip optional leading spaces
+    while pos < s.len() && s.as_bytes()[pos] == b' ' {
+        pos += 1;
+    }
+    // Require at least one digit
+    if pos >= s.len() || !s.as_bytes()[pos].is_ascii_digit() {
+        return None;
+    }
+    while pos < s.len() && s.as_bytes()[pos].is_ascii_digit() {
+        pos += 1;
+    }
+    // Require a dot
+    if pos >= s.len() || s.as_bytes()[pos] != b'.' {
+        return None;
+    }
+    pos += 1;
+    // Require at least one decimal digit
+    if pos >= s.len() || !s.as_bytes()[pos].is_ascii_digit() {
+        return None;
+    }
+    while pos < s.len() && s.as_bytes()[pos].is_ascii_digit() {
+        pos += 1;
+    }
+    // Require closing bracket
+    if pos >= s.len() || s.as_bytes()[pos] != b']' {
+        return None;
+    }
+    pos += 1;
+    Some((&s[..pos], pos))
+}
+
+/// Parse a Unix epoch timestamp with decimal seconds: `1436735381.000000`.
+/// The integer part must be at least 9 digits (Unix epoch ≥ ~2001) to avoid
+/// false positives on small numbers. Must be followed by a space.
+/// Returns `(timestamp_slice, bytes_consumed)` or `None`.
+pub(crate) fn parse_unix_timestamp(s: &str) -> Option<(&str, usize)> {
+    if s.len() < 12 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    if !bytes[0].is_ascii_digit() {
+        return None;
+    }
+    let mut pos = 0;
+    while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+        pos += 1;
+    }
+    // Require at least 9 integer digits (avoids matching small numbers)
+    if pos < 9 {
+        return None;
+    }
+    // Require a dot
+    if pos >= bytes.len() || bytes[pos] != b'.' {
+        return None;
+    }
+    pos += 1;
+    // Require at least one decimal digit
+    if pos >= bytes.len() || !bytes[pos].is_ascii_digit() {
+        return None;
+    }
+    while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+        pos += 1;
+    }
+    // Must be followed by a space (separates timestamp from hostname)
+    if pos >= bytes.len() || bytes[pos] != b' ' {
+        return None;
+    }
+    Some((&s[..pos], pos))
+}
+
 pub(crate) fn normalize_level(token: &str) -> Option<&'static str> {
     match token.to_ascii_uppercase().as_str() {
         "TRACE" | "TRC" => Some("TRACE"),
@@ -340,6 +469,98 @@ mod tests {
     fn test_parse_datetime_iso_not_datetime() {
         // ISO timestamps have 'T' not ' ' at position 10
         assert!(parse_datetime_timestamp("2024-01-15T10:30:00 rest").is_none());
+    }
+
+    // ── BSD plain timestamp ───────────────────────────────────────────
+
+    #[test]
+    fn test_parse_bsd_plain_basic() {
+        let (ts, consumed) = parse_bsd_plain_timestamp("Jul 12 22:23:01 rest").unwrap();
+        assert_eq!(ts, "Jul 12 22:23:01");
+        assert_eq!(consumed, 15);
+    }
+
+    #[test]
+    fn test_parse_bsd_plain_single_digit_day() {
+        let (ts, _) = parse_bsd_plain_timestamp("Feb  5 10:15:30 rest").unwrap();
+        assert_eq!(ts, "Feb  5 10:15:30");
+    }
+
+    #[test]
+    fn test_parse_bsd_plain_rejects_with_dot() {
+        // short-precise has a dot after seconds — plain must not match
+        assert!(parse_bsd_plain_timestamp("Feb 22 10:15:30.123456 rest").is_none());
+    }
+
+    #[test]
+    fn test_parse_bsd_plain_rejects_invalid_month() {
+        assert!(parse_bsd_plain_timestamp("Xyz 12 22:23:01 rest").is_none());
+    }
+
+    #[test]
+    fn test_parse_bsd_plain_too_short() {
+        assert!(parse_bsd_plain_timestamp("Jul 12 22:2").is_none());
+    }
+
+    // ── Monotonic timestamp ───────────────────────────────────────────
+
+    #[test]
+    fn test_parse_monotonic_basic() {
+        let (ts, consumed) = parse_monotonic_timestamp("[     0.000000] rest").unwrap();
+        assert_eq!(ts, "[     0.000000]");
+        assert_eq!(consumed, 15);
+    }
+
+    #[test]
+    fn test_parse_monotonic_no_spaces() {
+        let (ts, consumed) = parse_monotonic_timestamp("[1234.567890] rest").unwrap();
+        assert_eq!(ts, "[1234.567890]");
+        assert_eq!(consumed, 13);
+    }
+
+    #[test]
+    fn test_parse_monotonic_rejects_no_bracket() {
+        assert!(parse_monotonic_timestamp("1234.567890 rest").is_none());
+    }
+
+    #[test]
+    fn test_parse_monotonic_rejects_no_dot() {
+        assert!(parse_monotonic_timestamp("[1234567890] rest").is_none());
+    }
+
+    #[test]
+    fn test_parse_monotonic_rejects_unclosed() {
+        assert!(parse_monotonic_timestamp("[1234.567890 rest").is_none());
+    }
+
+    // ── Unix epoch timestamp ──────────────────────────────────────────
+
+    #[test]
+    fn test_parse_unix_basic() {
+        let (ts, consumed) = parse_unix_timestamp("1436735381.000000 rest").unwrap();
+        assert_eq!(ts, "1436735381.000000");
+        assert_eq!(consumed, 17);
+    }
+
+    #[test]
+    fn test_parse_unix_rejects_short_integer() {
+        // Less than 9 digits → not a valid epoch
+        assert!(parse_unix_timestamp("12345678.000000 rest").is_none());
+    }
+
+    #[test]
+    fn test_parse_unix_rejects_no_dot() {
+        assert!(parse_unix_timestamp("1436735381 rest").is_none());
+    }
+
+    #[test]
+    fn test_parse_unix_rejects_no_space_after() {
+        assert!(parse_unix_timestamp("1436735381.000000x").is_none());
+    }
+
+    #[test]
+    fn test_parse_unix_requires_decimal() {
+        assert!(parse_unix_timestamp("1436735381. rest").is_none());
     }
 
     // ── normalize_level ───────────────────────────────────────────────

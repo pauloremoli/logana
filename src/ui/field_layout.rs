@@ -273,7 +273,9 @@ pub(crate) fn apply_field_layout(
         {
             cols.push(render_span(span, &excluded_keys, show_keys));
         }
-        for (key, value) in &p.extra_fields {
+        let mut sorted_extras: Vec<_> = p.extra_fields.iter().collect();
+        sorted_extras.sort_by_key(|(k, _)| *k);
+        for (key, value) in sorted_extras {
             if !hidden_fields.contains(*key) {
                 if show_keys {
                     cols.push(format!("{key}={value}"));

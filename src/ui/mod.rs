@@ -390,6 +390,9 @@ pub struct TabState {
     pub horizontal_scroll: usize,
     pub search: Search,
     pub command_error: Option<String>,
+    /// Transient notification shown in a dedicated bar in normal mode (auto-dismisses after 10s or on Esc).
+    pub notification: Option<String>,
+    pub notification_set_at: Option<std::time::Instant>,
     /// Set of log-level keys whose colour is disabled (e.g. `"trace"`, `"error"`).
     /// An empty set means all level colours are enabled.
     pub level_colors_disabled: HashSet<String>,
@@ -475,6 +478,14 @@ impl TabState {
         let sample: Vec<&[u8]> = (0..sample_limit).map(|i| file_reader.get_line(i)).collect();
         let detected_format = detect_format(&sample).map(Arc::from);
 
+        // Apply format-specific default hidden fields (e.g. journalctl JSON hides
+        // systemd-internal fields that are not visible in short output mode).
+        let default_hidden: HashSet<String> = detected_format
+            .as_deref()
+            .map(|fmt: &dyn LogFormatParser| fmt.default_hidden_fields(&sample))
+            .unwrap_or_default();
+        let fields_hidden_by_default = !default_hidden.is_empty();
+
         let mut tab = TabState {
             file_reader,
             log_manager,
@@ -490,6 +501,20 @@ impl TabState {
             horizontal_scroll: 0,
             search: Search::new(),
             command_error: None,
+            notification: if fields_hidden_by_default {
+                Some(
+                    "Some fields are hidden. Use 'select-fields' to choose fields \
+                     or 'show-all-fields' to show all."
+                        .to_string(),
+                )
+            } else {
+                None
+            },
+            notification_set_at: if fields_hidden_by_default {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            },
             level_colors_disabled: ["trace", "debug", "info", "notice"]
                 .iter()
                 .map(|s| s.to_string())
@@ -503,7 +528,7 @@ impl TabState {
             title,
             command_history: Vec::new(),
             watch_state: None,
-            hidden_fields: HashSet::new(),
+            hidden_fields: default_hidden,
             field_layout: FieldLayout::default(),
             keybindings: Arc::new(Keybindings::default()),
             detected_format,
@@ -533,9 +558,39 @@ impl TabState {
         tab
     }
 
+    /// Show a transient notification bar message (auto-dismisses after 10s or on Esc).
+    pub fn set_notification(&mut self, msg: impl Into<String>) {
+        self.notification = Some(msg.into());
+        self.notification_set_at = Some(std::time::Instant::now());
+    }
+
+    /// Clear the transient notification.
+    pub fn clear_notification(&mut self) {
+        self.notification = None;
+        self.notification_set_at = None;
+    }
+
     /// Recompute which file lines are visible under the current filters.
     pub fn refresh_visible(&mut self) {
         self.refresh_visible_inner();
+    }
+
+    /// Compute the visible-line set when no text/date/field filters are active.
+    /// When a structured format is detected, empty lines (e.g. SSE delimiters)
+    /// are excluded; otherwise all lines are visible.
+    fn compute_unfiltered_visible(&self) -> VisibleLines {
+        let n = self.file_reader.line_count();
+        if self.detected_format.is_none() || self.raw_mode {
+            return VisibleLines::All(n);
+        }
+        let vis: Vec<usize> = (0..n)
+            .filter(|&i| !self.file_reader.get_line(i).is_empty())
+            .collect();
+        if vis.len() == n {
+            VisibleLines::All(n)
+        } else {
+            VisibleLines::Filtered(vis)
+        }
     }
 
     /// Scan forward from `from` (exclusive) for the next visible ERROR/FATAL line.
@@ -613,7 +668,7 @@ impl TabState {
                 None
             };
             self.saved_filter_view = None;
-            self.visible_indices = VisibleLines::All(self.file_reader.line_count());
+            self.visible_indices = self.compute_unfiltered_visible();
             self.filter_manager_arc = Arc::new(FilterManager::empty());
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
@@ -719,6 +774,9 @@ impl TabState {
                         },
                         |(mut vis, mut tc, mut fc, mut dc), idx| {
                             let line = file_reader.get_line(idx);
+                            if parser.is_some() && line.is_empty() {
+                                return (vis, tc, fc, dc);
+                            }
                             let text_dec = fm.evaluate_and_count(line, &mut tc);
                             let can_skip = text_dec == FilterDecision::Exclude
                                 || (text_dec == FilterDecision::Neutral
@@ -1065,7 +1123,7 @@ impl TabState {
                 None
             };
             self.saved_filter_view = None;
-            self.visible_indices = VisibleLines::All(self.file_reader.line_count());
+            self.visible_indices = self.compute_unfiltered_visible();
             self.filter_manager_arc = Arc::new(FilterManager::empty());
             self.filter_styles = Vec::new();
             self.filter_date_styles = Vec::new();
@@ -1356,10 +1414,29 @@ impl TabState {
             self.show_marks_only || self.log_manager.get_filters().iter().any(|f| f.enabled);
 
         if !has_active_filters {
-            match &mut self.visible_indices {
-                VisibleLines::All(n) => *n = new_count,
-                VisibleLines::Filtered(_) => {
-                    self.visible_indices = VisibleLines::All(new_count);
+            let skip_empty = self.detected_format.is_some() && !self.raw_mode;
+            if skip_empty {
+                let new_vis: Vec<usize> = (old_line_count..new_count)
+                    .filter(|&i| !self.file_reader.get_line(i).is_empty())
+                    .collect();
+                match &mut self.visible_indices {
+                    VisibleLines::All(n) => {
+                        if new_vis.len() == new_count - old_line_count {
+                            *n = new_count;
+                        } else {
+                            let mut all: Vec<usize> = (0..*n).collect();
+                            all.extend(new_vis);
+                            self.visible_indices = VisibleLines::Filtered(all);
+                        }
+                    }
+                    VisibleLines::Filtered(v) => v.extend(new_vis),
+                }
+            } else {
+                match &mut self.visible_indices {
+                    VisibleLines::All(n) => *n = new_count,
+                    VisibleLines::Filtered(_) => {
+                        self.visible_indices = VisibleLines::All(new_count);
+                    }
                 }
             }
             return;
@@ -1399,6 +1476,9 @@ impl TabState {
 
         for i in old_line_count..new_count {
             let line = self.file_reader.get_line(i);
+            if parser.is_some() && line.is_empty() {
+                continue;
+            }
             let text_dec = self
                 .filter_manager_arc
                 .evaluate_and_count(line, &mut dummy_text_counts);
@@ -1628,12 +1708,31 @@ impl TabState {
     }
 
     /// Detect log format from the first lines of the file and store it.
+    /// Also applies format-specific default hidden fields when the tab has not
+    /// yet had any hidden fields configured (e.g. streaming stdin tabs that
+    /// start empty and detect their format once the first data arrives).
     #[inline]
     pub fn detect_and_apply_format(&mut self) {
         let limit = self.file_reader.line_count().min(200);
         if limit > 0 {
             let sample: Vec<&[u8]> = (0..limit).map(|j| self.file_reader.get_line(j)).collect();
-            self.detected_format = detect_format(&sample).map(Arc::from);
+            let fmt: Option<Arc<dyn LogFormatParser>> = detect_format(&sample).map(Arc::from);
+            // Apply default hidden fields only when the tab currently has none
+            // (first detection for a streaming source, or non-streaming source
+            // whose preview was too short for detection).
+            if self.hidden_fields.is_empty() {
+                if let Some(f) = &fmt {
+                    let defaults = f.default_hidden_fields(&sample);
+                    if !defaults.is_empty() {
+                        self.hidden_fields = defaults;
+                        self.invalidate_parse_cache();
+                        const FIELDS_HIDDEN_MSG: &str = "Some fields are hidden. Use 'select-fields' to choose fields \
+                             or 'show-all-fields' to show all.";
+                        self.set_notification(FIELDS_HIDDEN_MSG);
+                    }
+                }
+            }
+            self.detected_format = fmt;
         }
     }
 
@@ -1667,7 +1766,25 @@ impl TabState {
         self.show_keys = ctx.show_keys;
         self.raw_mode = ctx.raw_mode;
         self.sidebar_width = ctx.sidebar_width;
-        self.hidden_fields = ctx.hidden_fields.clone();
+        // Only restore hidden_fields from the saved context when it is non-empty.
+        // An empty set in the DB either means the context was saved before
+        // format-specific defaults were introduced, or the session was first
+        // saved with no customisation yet — either way, keep the defaults
+        // that TabState::new applied. Non-empty sets are the user's explicit
+        // field selection and always take precedence over defaults.
+        if !ctx.hidden_fields.is_empty() {
+            self.hidden_fields = ctx.hidden_fields.clone();
+        }
+        // Keep the "fields hidden" notice in sync with the current hidden_fields.
+        const FIELDS_HIDDEN_MSG: &str = "Some fields are hidden. Use 'select-fields' to choose fields \
+             or 'show-all-fields' to show all.";
+        if self.hidden_fields.is_empty() {
+            if self.notification.as_deref() == Some(FIELDS_HIDDEN_MSG) {
+                self.clear_notification();
+            }
+        } else {
+            self.set_notification(FIELDS_HIDDEN_MSG);
+        }
         self.field_layout.columns = ctx.field_layout_columns.clone();
         self.filtering_enabled = ctx.filtering_enabled;
         if !ctx.marked_lines.is_empty() {
