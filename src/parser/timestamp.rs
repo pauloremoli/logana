@@ -70,17 +70,18 @@ pub(crate) fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
         return None;
     }
     let after_time = time_start + 8;
-    if after_time >= s.len() || s.as_bytes()[after_time] != b'.' {
-        return None;
+    if after_time < s.len() && s.as_bytes()[after_time] == b'.' {
+        let mut end = after_time + 1;
+        while end < s.len() && s.as_bytes()[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end == after_time + 1 {
+            return None;
+        }
+        Some((&s[..end], end))
+    } else {
+        Some((&s[..after_time], after_time))
     }
-    let mut end = after_time + 1;
-    while end < s.len() && s.as_bytes()[end].is_ascii_digit() {
-        end += 1;
-    }
-    if end == after_time + 1 {
-        return None;
-    }
-    Some((&s[..end], end))
 }
 
 pub(crate) fn parse_full_timestamp(s: &str) -> Option<(&str, usize)> {
@@ -271,8 +272,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bsd_precise_no_dot_returns_none() {
-        assert!(parse_bsd_precise_timestamp("Feb 22 10:15:30 host").is_none());
+    fn test_parse_bsd_no_decimal_seconds() {
+        let (ts, consumed) = parse_bsd_precise_timestamp("Feb 22 10:15:30 host").unwrap();
+        assert_eq!(ts, "Feb 22 10:15:30");
+        assert_eq!(consumed, 15);
     }
 
     // ── Full timestamp ────────────────────────────────────────────────

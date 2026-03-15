@@ -455,6 +455,63 @@ mod tests {
         assert_eq!(parser.name(), "journalctl");
     }
 
+    // ── short default format (plain BSD timestamp, no decimal seconds) ─
+
+    #[test]
+    fn test_short_default_format() {
+        let line = b"Mar 15 10:00:00 hostname app[42]: something happened";
+        let parser = JournalctlParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("Mar 15 10:00:00"));
+        assert_eq!(parts.target, Some("app"));
+        assert_eq!(parts.message, Some("something happened"));
+        assert!(
+            parts
+                .extra_fields
+                .iter()
+                .any(|(k, v)| *k == "hostname" && *v == "hostname")
+        );
+        assert!(
+            parts
+                .extra_fields
+                .iter()
+                .any(|(k, v)| *k == "pid" && *v == "42")
+        );
+    }
+
+    #[test]
+    fn test_short_default_single_digit_day() {
+        let line = b"Mar  5 10:00:00 hostname app: msg";
+        let parser = JournalctlParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("Mar  5 10:00:00"));
+        assert_eq!(parts.target, Some("app"));
+        assert_eq!(parts.message, Some("msg"));
+    }
+
+    #[test]
+    fn test_collect_field_names_short_format() {
+        let parser = JournalctlParser;
+        let lines: Vec<&[u8]> = vec![b"Mar 15 10:00:00 myhost sshd[1234]: Accepted password"];
+        let names = parser.collect_field_names(&lines);
+        assert_eq!(names[0], "timestamp");
+        assert_eq!(names[1], "target");
+        assert!(names.contains(&"hostname".to_string()));
+        assert!(names.contains(&"pid".to_string()));
+        assert_eq!(*names.last().unwrap(), "message");
+    }
+
+    #[test]
+    fn test_detect_score_short_format() {
+        let parser = JournalctlParser;
+        let lines: Vec<&[u8]> = vec![
+            b"Mar 15 10:00:00 myhost sshd[1234]: Accepted password",
+            b"Mar 15 10:00:01 myhost sshd[1234]: Session opened",
+        ];
+        let score = parser.detect_score(&lines);
+        assert!((score - 1.0).abs() < 0.001);
+    }
+
     // ── rsyslog RSYSLOG_FileFormat (ISO 8601 with microseconds) ───────
 
     #[test]

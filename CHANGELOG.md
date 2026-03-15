@@ -8,6 +8,7 @@ All notable changes to logana will be documented in this file.
 ### Fixed
 - Fix issue with style priority between filters and value colors(e.g IP address).
 - Headless mode now rejects `--output` paths that point to the same file as the input, preventing data loss.
+- Fix parsing for Journalctl with short format (timestamp wihtout seconds)
 
 ### Changed
 - Performance improvements on file writing for headless mode and export/save commands, it now uses mmap/rayon to speed up the process.

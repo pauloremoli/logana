@@ -398,6 +398,9 @@ impl App {
             }
             let tail_mode = self.tabs[idx].tail_mode;
             self.tabs[idx].file_reader = FileReader::from_bytes(data);
+            if self.tabs[idx].detected_format.is_none() {
+                self.tabs[idx].detect_and_apply_format();
+            }
             self.tabs[idx].begin_filter_refresh();
 
             if tail_mode {
@@ -855,6 +858,45 @@ mod tests {
 
         assert_eq!(app.tabs[0].file_reader.line_count(), 2);
         assert_eq!(app.tabs[0].visible_indices.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_stdin_tab_detects_format_on_first_data() {
+        let mut app = make_app(&[]).await;
+        assert!(app.tabs[0].detected_format.is_none());
+
+        let journalctl_line = b"Mar 15 10:00:00 myhost sshd[1234]: Accepted password for user\n";
+        app.update_stdin_tab(journalctl_line.to_vec()).await;
+
+        assert!(app.tabs[0].detected_format.is_some());
+        assert_eq!(
+            app.tabs[0].detected_format.as_ref().unwrap().name(),
+            "journalctl"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_stdin_tab_does_not_redetect_after_format_known() {
+        let mut app = make_app(&[]).await;
+        app.update_stdin_tab(b"Mar 15 10:00:00 myhost sshd[1234]: first line\n".to_vec())
+            .await;
+        assert_eq!(
+            app.tabs[0].detected_format.as_ref().unwrap().name(),
+            "journalctl"
+        );
+
+        // Manually set a different format to verify it is NOT overwritten.
+        use crate::parser::SyslogParser;
+        use std::sync::Arc;
+        app.tabs[0].detected_format = Some(Arc::new(SyslogParser));
+
+        app.update_stdin_tab(b"Mar 15 10:00:01 myhost sshd[1234]: second line\n".to_vec())
+            .await;
+
+        assert_eq!(
+            app.tabs[0].detected_format.as_ref().unwrap().name(),
+            "syslog"
+        );
     }
 
     #[tokio::test]

@@ -285,6 +285,16 @@ mod tests {
     // ── Priority: specific parsers beat common-log ────────────────────
 
     #[test]
+    fn test_detect_format_selects_journalctl_over_syslog() {
+        let lines: Vec<&[u8]> = vec![
+            b"Mar 15 10:00:00 myhost sshd[1234]: Accepted password",
+            b"Mar 15 10:00:01 myhost sshd[1234]: Session opened",
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "journalctl");
+    }
+
+    #[test]
     fn test_journalctl_beats_common_log() {
         // Lines that journalctl parser can handle (valid hostname)
         let lines: Vec<&[u8]> = vec![

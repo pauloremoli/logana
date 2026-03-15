@@ -1874,14 +1874,21 @@ impl App {
                     let tail = self.tabs[i].tail_mode;
                     let raw = self.tabs[i].raw_mode;
                     let paused = self.tabs[i].paused;
-                    let unknown_fmt = !raw && self.tabs[i].detected_format.is_none();
+                    let fmt_label = if raw {
+                        String::new()
+                    } else {
+                        match &self.tabs[i].detected_format {
+                            Some(p) => format!(" [{}]", p.name()),
+                            None => " [unknown format]".to_string(),
+                        }
+                    };
                     format!(
                         " ({}){}{}{}{}  ",
                         num_visible,
                         if tail { " [TAIL]" } else { "" },
                         if raw { " [RAW]" } else { "" },
                         if paused { " [PAUSED]" } else { "" },
-                        if unknown_fmt { " [unknown format]" } else { "" },
+                        fmt_label,
                     )
                 }
                 _ => " ".to_string(),
