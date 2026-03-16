@@ -413,7 +413,7 @@ impl App {
             .collect();
         let content_lines = count_wrapped_lines(&status_text, inner_width);
         let status_height = if show_borders {
-            (content_lines + 2).clamp(3, 6) as u16
+            (content_lines + 1).clamp(2, 5) as u16
         } else {
             content_lines.clamp(1, 4) as u16
         };
@@ -448,9 +448,6 @@ impl App {
             None
         };
         if show_mode_bar {
-            if !show_borders {
-                constraints.push(Constraint::Length(1)); // visual gap above mode bar
-            }
             constraints.push(Constraint::Length(status_height)); // command list
         }
         let chunks = Layout::default()
@@ -578,7 +575,7 @@ impl App {
         if show_mode_bar {
             let status_block = if show_borders {
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
                     .border_style(Style::default().fg(self.theme.border))
             } else {
                 Block::default()
