@@ -238,7 +238,8 @@ All filter flags (`-i`, `-o`, `-t`, `-f`) work the same as in interactive mode.
 | `gg` / `G` | First / last line |
 | `Ctrl+d` / `Ctrl+u` | Half page down / up |
 | `PageDown` / `PageUp` | Full page down / up |
-| `h` / `l` | Scroll left / right |
+| `h` / `l` / `Left` / `Right` | Scroll left / right |
+| `0` / `$` | Jump to start / end of line |
 | `5j`, `10G` | Count prefix — repeat motion N times |
 | `e` / `E` | Next / previous ERROR or FATAL line |
 | `w` / `W` | Next / previous WARN line |

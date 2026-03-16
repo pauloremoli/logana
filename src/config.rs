@@ -237,10 +237,16 @@ fn default_scroll_up() -> KeyBindings {
     ])
 }
 fn default_scroll_left() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('h'), KeyModifiers::NONE)])
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('h'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Left, KeyModifiers::NONE),
+    ])
 }
 fn default_scroll_right() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('l'), KeyModifiers::NONE)])
+    KeyBindings(vec![
+        KeyBinding(KeyCode::Char('l'), KeyModifiers::NONE),
+        KeyBinding(KeyCode::Right, KeyModifiers::NONE),
+    ])
 }
 fn default_start_of_line() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('0'), KeyModifiers::NONE)])
@@ -2376,10 +2382,12 @@ mod tests {
             kb.scroll_left
                 .matches(KeyCode::Char('h'), KeyModifiers::NONE)
         );
+        assert!(kb.scroll_left.matches(KeyCode::Left, KeyModifiers::NONE));
         assert!(
             kb.scroll_right
                 .matches(KeyCode::Char('l'), KeyModifiers::NONE)
         );
+        assert!(kb.scroll_right.matches(KeyCode::Right, KeyModifiers::NONE));
         assert!(
             kb.command_mode
                 .matches(KeyCode::Char(':'), KeyModifiers::NONE)

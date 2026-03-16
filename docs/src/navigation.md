@@ -21,8 +21,10 @@ When line wrap is off, long lines can be scrolled horizontally:
 
 | Key | Action |
 |---|---|
-| `h` | Scroll left |
-| `l` | Scroll right |
+| `h` / `Left` | Scroll left |
+| `l` / `Right` | Scroll right |
+| `0` | Jump to start of line (reset horizontal scroll) |
+| `$` | Jump to end of line |
 
 ## Count Prefix
 

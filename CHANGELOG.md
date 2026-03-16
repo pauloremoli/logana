@@ -5,6 +5,12 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `Left`/`Right` arrow keys now work as alternatives to `h`/`l` for horizontal scrolling in normal mode.
+
+### Fixed
+- `$` in normal mode now leaves 4 columns of padding between the last character and the right edge of the viewport.
+
 ## [0.3.1] - 2026-03-16
 
 ### Fixed

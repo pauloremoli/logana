@@ -213,13 +213,10 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.end_of_line.matches(key, modifiers) {
-            if !tab.wrap
-                && tab.visible_width > 0
-                && let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset)
-            {
+            if let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) {
                 let text = tab.get_display_text(line_idx);
-                let line_width = unicode_width::UnicodeWidthStr::width(text.as_str());
-                tab.horizontal_scroll = line_width.saturating_sub(tab.visible_width);
+                let char_count = text.chars().count();
+                tab.scroll_char_cursor_into_view(char_count.saturating_sub(1), &text);
             }
             tab.g_key_pressed = false;
             self.count = None;
@@ -947,6 +944,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_left_arrow_decrements_horizontal_scroll_when_not_wrapped() {
+        let mut tab = make_tab(&["long line"]).await;
+        tab.wrap = false;
+        tab.horizontal_scroll = 5;
+        press(&mut tab, KeyCode::Left, KeyModifiers::NONE).await;
+        assert_eq!(tab.horizontal_scroll, 4);
+    }
+
+    #[tokio::test]
+    async fn test_right_arrow_increments_horizontal_scroll_when_not_wrapped() {
+        let mut tab = make_tab(&["long line"]).await;
+        tab.wrap = false;
+        press(&mut tab, KeyCode::Right, KeyModifiers::NONE).await;
+        assert_eq!(tab.horizontal_scroll, 1);
+    }
+
+    #[tokio::test]
+    async fn test_left_arrow_no_horizontal_scroll_when_wrapped() {
+        let mut tab = make_tab(&["long line"]).await;
+        tab.wrap = true;
+        tab.horizontal_scroll = 5;
+        press(&mut tab, KeyCode::Left, KeyModifiers::NONE).await;
+        assert_eq!(tab.horizontal_scroll, 5);
+    }
+
+    #[tokio::test]
+    async fn test_right_arrow_no_horizontal_scroll_when_wrapped() {
+        let mut tab = make_tab(&["long line"]).await;
+        tab.wrap = true;
+        press(&mut tab, KeyCode::Right, KeyModifiers::NONE).await;
+        assert_eq!(tab.horizontal_scroll, 0);
+    }
+
+    #[tokio::test]
     async fn test_zero_resets_horizontal_scroll_to_start() {
         let mut tab = make_tab(&["hello world"]).await;
         tab.wrap = false;
@@ -980,8 +1011,30 @@ mod tests {
         tab.visible_width = 5;
         tab.horizontal_scroll = 0;
         press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
-        // "hello world" is 11 cols wide; visible_width = 5 → scroll = 11 - 5 = 6
-        assert_eq!(tab.horizontal_scroll, 6);
+        // "hello world" is 11 chars; cursor at col 10, visible_width=5 → pad=min(3,2)=2 → scroll=13-5=8
+        assert_eq!(tab.horizontal_scroll, 8);
+    }
+
+    #[tokio::test]
+    async fn test_dollar_leaves_padding_when_viewport_large_enough() {
+        let mut tab = make_tab(&["hello world"]).await;
+        tab.wrap = false;
+        tab.visible_width = 10;
+        tab.horizontal_scroll = 0;
+        press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
+        // "hello world" is 11 chars; cursor at col 10, visible_width=10 → pad=min(3,4)=3 → scroll=14-10=4
+        assert_eq!(tab.horizontal_scroll, 4);
+        // last char (col 10) is at viewport position 10-4=6, with 3 empty cols on the right
+    }
+
+    #[tokio::test]
+    async fn test_dollar_no_scroll_when_line_fits_in_viewport() {
+        let mut tab = make_tab(&["hi"]).await;
+        tab.wrap = false;
+        tab.visible_width = 10;
+        tab.horizontal_scroll = 3;
+        press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
+        assert_eq!(tab.horizontal_scroll, 0);
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@ Press `v` in normal mode to enter character-level visual mode. The cursor is pla
 
 | Key | Action |
 |---|---|
-| `h` / `l` | Move left / right one character |
+| `h` / `l` / `Left` / `Right` | Move left / right one character |
 | `w` / `b` / `e` | Word start forward / backward / word end |
 | `W` / `B` / `E` | WORD (whitespace-delimited) variants |
 | `0` | Move to start of line |
