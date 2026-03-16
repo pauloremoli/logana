@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-03-16
+
 ### Fixed
 - Fix per-filter match counts missing in sidebar when filter is given as CLI parameter.
 - Fix flickering tab name due to connection retries.
