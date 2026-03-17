@@ -1596,6 +1596,10 @@ pub struct Config {
     pub wrap: Option<bool>,
     #[serde(default)]
     pub dlt_devices: Vec<DltDevice>,
+    /// Default port for the embedded MCP server. Used when `:enable-mcp` is invoked without
+    /// an explicit `--port` argument. When `None`, falls back to the built-in default (9876).
+    #[serde(default)]
+    pub mcp_port: Option<u16>,
 }
 
 impl Default for Config {
@@ -1612,6 +1616,7 @@ impl Default for Config {
             show_line_numbers: None,
             wrap: None,
             dlt_devices: vec![],
+            mcp_port: None,
         }
     }
 }
@@ -3015,5 +3020,18 @@ mod tests {
         assert!(kb.delete.matches(KeyCode::Char('d'), KeyModifiers::NONE));
         assert!(kb.next_field.matches(KeyCode::Tab, KeyModifiers::NONE));
         assert!(kb.prev_field.matches(KeyCode::BackTab, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_config_mcp_port_default_none() {
+        let config = Config::default();
+        assert!(config.mcp_port.is_none());
+    }
+
+    #[test]
+    fn test_config_mcp_port_from_json() {
+        let json = r#"{"mcp_port": 8765}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.mcp_port, Some(8765));
     }
 }

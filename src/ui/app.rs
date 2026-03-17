@@ -89,6 +89,14 @@ pub struct App {
     pub startup_warnings: Vec<String>,
     /// Configured DLT devices from config.json.
     pub dlt_devices: Vec<crate::config::DltDevice>,
+    /// Default MCP server port from config (used when `:enable-mcp` has no `--port`).
+    pub mcp_port: Option<u16>,
+    /// Shared snapshot of filtered lines, marks, and annotations exposed to the MCP server.
+    pub mcp_snapshot: std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpSnapshot>>,
+    /// Receiver for commands sent by the MCP server tools back to the TUI.
+    pub mcp_cmd_rx: Option<tokio::sync::mpsc::Receiver<crate::mcp::McpCommand>>,
+    /// Handle to the running MCP server, if one is active.
+    pub mcp_server_handle: Option<crate::mcp::McpServerHandle>,
 }
 
 impl std::fmt::Debug for App {
@@ -153,9 +161,9 @@ impl App {
 
         // Check for saved context only when we have real data (not a placeholder
         // that will be replaced by a background load started after App::new).
-        if let Some(source) = tab.log_manager.source_file() {
+        if let Some(source) = tab.log_manager.source_file().map(|s| s.to_string()) {
             if tab.file_reader.line_count() > 0 {
-                let source = source.to_string();
+                let source = source;
                 if let Ok(Some(ctx)) = db.load_file_context(&source).await {
                     match restore_file_policy {
                         RestoreSessionPolicy::Always => {
@@ -208,6 +216,12 @@ impl App {
             pending_session_restore,
             startup_warnings: vec![],
             dlt_devices: vec![],
+            mcp_port: None,
+            mcp_snapshot: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::mcp::McpSnapshot::default(),
+            )),
+            mcp_cmd_rx: None,
+            mcp_server_handle: None,
         }
     }
 
@@ -392,7 +406,10 @@ impl App {
                 tab.mode = next_mode;
                 self.dispatch_key_result(result, key.code, key.modifiers)
                     .await;
+                self.refresh_mcp_snapshot();
             }
+
+            self.poll_mcp_commands().await;
 
             if self.should_quit {
                 return Ok(());
@@ -519,6 +536,80 @@ impl App {
             }
             Err(e) => {
                 tab.command_error = Some(format!("Failed to copy: {}", e));
+            }
+        }
+    }
+
+    pub async fn start_mcp(&mut self, port: u16) -> std::io::Result<()> {
+        self.stop_mcp();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        self.refresh_mcp_snapshot();
+        let handle = crate::mcp::start_mcp_server(port, self.mcp_snapshot.clone(), tx).await?;
+        self.mcp_server_handle = Some(handle);
+        self.mcp_cmd_rx = Some(rx);
+        Ok(())
+    }
+
+    pub fn stop_mcp(&mut self) {
+        if let Some(handle) = self.mcp_server_handle.take() {
+            handle.cancel.cancel();
+        }
+        self.mcp_cmd_rx = None;
+    }
+
+    pub fn refresh_mcp_snapshot(&mut self) {
+        if self.mcp_server_handle.is_none() {
+            return;
+        }
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            let snapshot = crate::mcp::McpSnapshot {
+                marked_lines: crate::mcp::build_marked_lines(&tab.file_reader, &tab.log_manager),
+                annotations: crate::mcp::build_annotations(&tab.log_manager),
+            };
+            let arc = self.mcp_snapshot.clone();
+            tokio::spawn(async move {
+                *arc.write().await = snapshot;
+            });
+        }
+    }
+
+    pub async fn poll_mcp_commands(&mut self) {
+        if self.mcp_cmd_rx.is_none() {
+            return;
+        }
+        let mut cmds = Vec::new();
+        if let Some(rx) = &mut self.mcp_cmd_rx {
+            while let Ok(cmd) = rx.try_recv() {
+                cmds.push(cmd);
+            }
+        }
+        for cmd in cmds {
+            self.handle_mcp_command(cmd).await;
+        }
+    }
+
+    async fn handle_mcp_command(&mut self, cmd: crate::mcp::McpCommand) {
+        use crate::mcp::McpCommand;
+        if self.tabs.is_empty() {
+            return;
+        }
+        match cmd {
+            McpCommand::ToggleMark(idx) => {
+                self.tabs[self.active_tab].log_manager.toggle_mark(idx);
+                self.save_tab_context(&self.tabs[self.active_tab]).await;
+                self.refresh_mcp_snapshot();
+            }
+            McpCommand::AddAnnotation { text, line_indices } => {
+                self.tabs[self.active_tab]
+                    .log_manager
+                    .add_comment(text, line_indices);
+                self.save_tab_context(&self.tabs[self.active_tab]).await;
+                self.refresh_mcp_snapshot();
+            }
+            McpCommand::RemoveAnnotation(idx) => {
+                self.tabs[self.active_tab].log_manager.remove_comment(idx);
+                self.save_tab_context(&self.tabs[self.active_tab]).await;
+                self.refresh_mcp_snapshot();
             }
         }
     }

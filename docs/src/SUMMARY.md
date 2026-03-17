@@ -24,6 +24,7 @@
 - [Docker Logs](docker.md)
 - [DLT Streaming](dlt.md)
 - [Multi-Tab](multi-tab.md)
+- [MCP Server](mcp.md)
 
 # Reference
 

@@ -660,6 +660,26 @@ impl App {
                     Box::new(crate::mode::dlt_select_mode::DltSelectMode::new(devices));
                 return Ok(true);
             }
+            Some(Commands::EnableMcp { port }) => {
+                let p = self.mcp_port.unwrap_or(port);
+                match self.start_mcp(p).await {
+                    Ok(()) => {
+                        self.tabs[self.active_tab].notification =
+                            Some(format!("MCP server listening on port {p}"));
+                        self.tabs[self.active_tab].notification_set_at =
+                            Some(std::time::Instant::now());
+                    }
+                    Err(e) => {
+                        self.tabs[self.active_tab].command_error =
+                            Some(format!("Failed to start MCP server on port {p}: {e}"));
+                    }
+                }
+            }
+            Some(Commands::DisableMcp) => {
+                self.stop_mcp();
+                self.tabs[self.active_tab].notification = Some("MCP server stopped".to_string());
+                self.tabs[self.active_tab].notification_set_at = Some(std::time::Instant::now());
+            }
             None => {}
         }
         Ok(false)

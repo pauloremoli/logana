@@ -9,6 +9,7 @@ pub mod file_reader;
 pub mod filters;
 pub mod headless;
 pub mod log_manager;
+pub mod mcp;
 pub mod mode;
 pub mod parser;
 pub mod search;

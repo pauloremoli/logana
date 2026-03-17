@@ -161,6 +161,13 @@ pub enum Commands {
     Reset,
     /// Show configured DLT devices and connect to one
     Dlt,
+    /// Start the embedded MCP server on the given port
+    EnableMcp {
+        #[arg(long, default_value = "9876")]
+        port: u16,
+    },
+    /// Stop the embedded MCP server
+    DisableMcp,
 }
 
 #[derive(Debug)]
@@ -1228,5 +1235,35 @@ mod tests {
             completions.contains(&"show-field message".to_string()),
             "Expected 'show-field message' as fallback when no fields hidden, got: {completions:?}"
         );
+    }
+
+    #[test]
+    fn test_parse_enable_mcp_default_port() {
+        use crate::auto_complete::shell_split;
+        use clap::Parser;
+        let cmd = CommandLine::try_parse_from(shell_split("enable-mcp")).unwrap();
+        match cmd.command {
+            Some(Commands::EnableMcp { port }) => assert_eq!(port, 9876),
+            _ => panic!("expected EnableMcp"),
+        }
+    }
+
+    #[test]
+    fn test_parse_enable_mcp_custom_port() {
+        use crate::auto_complete::shell_split;
+        use clap::Parser;
+        let cmd = CommandLine::try_parse_from(shell_split("enable-mcp --port 8080")).unwrap();
+        match cmd.command {
+            Some(Commands::EnableMcp { port }) => assert_eq!(port, 8080),
+            _ => panic!("expected EnableMcp"),
+        }
+    }
+
+    #[test]
+    fn test_parse_disable_mcp() {
+        use crate::auto_complete::shell_split;
+        use clap::Parser;
+        let cmd = CommandLine::try_parse_from(shell_split("disable-mcp")).unwrap();
+        assert!(matches!(cmd.command, Some(Commands::DisableMcp)));
     }
 }

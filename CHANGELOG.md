@@ -7,8 +7,14 @@ All notable changes to logana will be documented in this file.
 
 ### Added
 - `Left`/`Right` arrow keys now work as alternatives to `h`/`l` for horizontal scrolling in normal mode.
+- Embedded MCP (Model Context Protocol) server, controllable via `:enable-mcp [--port N]` and `:disable-mcp` commands. Exposes marked lines, and annotations as MCP resources.
+- `--mcp [PORT]` CLI flag to start the MCP server automatically on launch (port defaults to 9876).
+
+### Changed
+- MCP server no longer exposes the `logana://filtered` resource (filtered lines can be very large).
 
 ### Fixed
+- MCP server bind errors are now reported to the user instead of silently failing.
 - `$` in normal mode now leaves 4 columns of padding between the last character and the right edge of the viewport.
 
 ## [0.3.1] - 2026-03-16

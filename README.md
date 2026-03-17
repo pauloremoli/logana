@@ -26,6 +26,7 @@ A fast terminal log viewer for files of any size — including multi-GB logs. Bu
 - **Annotations** — attach comments to log lines; export analysis to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
 - **Multi-tab** — open multiple files, Docker streams, or DLT daemon connections; each tab has independent filters and session state
+- **MCP server** — embedded Model Context Protocol server; expose marks and annotations to AI assistants and let them interact with your session
 - **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs.
 - **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 22 bundled themes
 
@@ -227,6 +228,36 @@ All filter flags (`-i`, `-o`, `-t`, `-f`) work the same as in interactive mode.
 
 > **Note:** `--output` must point to a different file than the input — logana rejects same-file paths to prevent data loss.
 
+
+## MCP Server
+
+logana embeds a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server. When active, AI assistants can read your marked lines and annotations and call tools to interact with the session.
+
+```sh
+# Start on launch (default port 9876)
+logana app.log --mcp
+
+# Start on a custom port
+logana app.log --mcp 8080
+```
+
+From inside the TUI:
+
+```
+:enable-mcp                   # start on default port 9876
+:enable-mcp --port 8080       # start on a custom port
+:disable-mcp                  # stop the server
+```
+
+The server listens at `http://localhost:<port>/mcp`. Resources: `logana://marks`, `logana://annotations`. Tools: `toggle_mark`, `add_annotation`, `remove_annotation`.
+
+Set a persistent default port in `~/.config/logana/config.json`:
+
+```json
+{ "mcp_port": 9876 }
+```
+
+---
 
 ## Key Reference
 

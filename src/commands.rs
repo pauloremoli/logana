@@ -175,6 +175,16 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "dlt",
         description: "Show configured DLT devices and connect to one",
     },
+    CommandInfo {
+        name: "enable-mcp",
+        usage: "enable-mcp [--port <port>]",
+        description: "Start the embedded MCP server (default port 9876). e.g. enable-mcp --port 8080",
+    },
+    CommandInfo {
+        name: "disable-mcp",
+        usage: "disable-mcp",
+        description: "Stop the embedded MCP server",
+    },
 ];
 
 /// Commands whose last argument is a file path and should receive path auto-completion.

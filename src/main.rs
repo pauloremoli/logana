@@ -72,6 +72,11 @@ struct Args {
     )]
     timestamp_filters: Vec<String>,
 
+    /// Enable the embedded MCP server on startup. Port defaults to 9876.
+    /// Use --mcp for the default port or --mcp <PORT> for a custom port.
+    #[arg(long, num_args = 0..=1, default_missing_value = "9876", value_name = "PORT")]
+    mcp: Option<u16>,
+
     /// Run without TUI, write matching lines to stdout or --output.
     #[arg(long)]
     headless: bool,
@@ -279,6 +284,7 @@ async fn main() -> Result<()> {
 
         app.preview_bytes = preview_bytes;
         app.dlt_devices = dlt_devices;
+        app.mcp_port = config.mcp_port;
         app.startup_warnings = keybinding_conflicts;
 
         // If a filter file was provided, load it into the initial tab's log manager
@@ -312,6 +318,15 @@ async fn main() -> Result<()> {
 
         // Suppress the previous-session restore prompt when any filters were provided.
         app.startup_filters = args.filters.is_some() || has_inline_filters;
+
+        // Start MCP server if requested via --mcp.
+        if let Some(port) = args.mcp {
+            let p = app.mcp_port.unwrap_or(port);
+            if let Err(e) = app.start_mcp(p).await {
+                app.startup_warnings
+                    .push(format!("Failed to start MCP server on port {p}: {e}"));
+            }
+        }
 
         // Build a visibility predicate for the single-pass optimisation when both
         // filters and a background file load are in play.
@@ -555,6 +570,26 @@ mod tests {
     fn test_args_help_flag() {
         let result = Args::try_parse_from(["logana", "--help"]);
         assert!(result.is_err());
+    }
+
+    // ── --mcp arg ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_args_mcp_absent() {
+        let args = Args::try_parse_from(["logana"]).unwrap();
+        assert!(args.mcp.is_none());
+    }
+
+    #[test]
+    fn test_args_mcp_flag_default_port() {
+        let args = Args::try_parse_from(["logana", "--mcp"]).unwrap();
+        assert_eq!(args.mcp, Some(9876));
+    }
+
+    #[test]
+    fn test_args_mcp_flag_custom_port() {
+        let args = Args::try_parse_from(["logana", "--mcp", "8080"]).unwrap();
+        assert_eq!(args.mcp, Some(8080));
     }
 
     // ── get_db_path ───────────────────────────────────────────────────

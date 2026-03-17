@@ -38,6 +38,13 @@ logana is structured around a strict separation between domain logic and the UI 
 
 **Headless** - A headless mode bypasses the TUI for scripted filter-and-export workflows.
 
+**MCP Server** — An optional embedded [Model Context Protocol](https://modelcontextprotocol.io/) server (`mcp/`) that exposes marks and annotations as MCP resources and accepts tool calls that mutate TUI state.
+- Implemented with the `rmcp` crate using the Streamable HTTP transport, served via `axum` at `/mcp`.
+- The server holds a shared `Arc<RwLock<McpSnapshot>>` that is refreshed from the active tab each render frame.
+- Tool calls (`toggle_mark`, `add_annotation`, `remove_annotation`) are sent over an `mpsc` channel and applied to the active tab by the event loop, keeping all mutable state on the TUI thread.
+- Started via the `--mcp [PORT]` CLI flag (default port 9876) or the `:enable-mcp` / `:disable-mcp` commands at runtime.
+- The default port can be set in the config file (`mcp_port`).
+
 ## Component Diagram
 
 ```mermaid
@@ -58,6 +65,20 @@ flowchart TD
     FileReader -->|streams from| Docker[Docker logs]
     Renderer -->|reads| Tab
     Parser -->|detects from| FileReader
+    App -->|snapshot| MCP[MCP Server]
+    MCP -->|McpCommand| App
+```
+
+## MCP Server
+
+```mermaid
+flowchart LR
+    Tab[Active Tab] -->|marks + annotations| Snapshot[McpSnapshot\nArc-RwLock]
+    Snapshot -->|read_resource| Client[MCP Client]
+    Client -->|tool call| Server[LoganaServer]
+    Server -->|McpCommand| Ch[mpsc channel]
+    Ch -->|poll each frame| App[App event loop]
+    App -->|mutate| Tab
 ```
 
 ## Headless Mode
@@ -144,3 +165,7 @@ flowchart TD
 | **dirs** | XDG data directory | Locates the platform-appropriate directory for the SQLite database without hardcoding paths |
 | **anyhow** | Error handling | Ergonomic error propagation with context in the top-level `main` |
 | **async-trait** | Async trait methods | Native `async fn` in traits (stable since 1.75) is not object-safe: each impl returns a differently-sized future, which a vtable cannot handle. The crate rewrites async methods to return `Pin<Box<dyn Future>>` — a fixed-size pointer — making the trait usable as `Box<dyn Mode>`. The same can be written by hand; the crate is purely a syntactic convenience |
+| **tokio-util** | Async utilities | Provides `CancellationToken` for cooperative shutdown of the MCP HTTP server |
+| **tempfile** | Temporary files | Creates named temporary files in tests for headless-mode and filter integration tests |
+| **rmcp** | MCP server | Implements the Model Context Protocol server side; provides the `tool` / `tool_router` macros, resource/tool dispatch, and the Streamable HTTP transport |
+| **axum** | HTTP server | Hosts the MCP Streamable HTTP service; used only as the transport layer for the MCP server |

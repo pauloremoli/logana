@@ -28,7 +28,10 @@ serde             = { version = "1.0",    default-features = false, features = [
 serde_json        = { version = "1.0",    default-features = false, features = ["std"] }
 serde_with        = { version = "3.8",    default-features = false, features = ["std", "macros"] }
 sqlx              = { version = "0.8",    default-features = false, features = ["runtime-tokio", "sqlite"] }
-tokio             = { version = "1",      default-features = false, features = ["rt-multi-thread", "macros", "io-std", "time", "process"] }
+tokio             = { version = "1",      default-features = false, features = ["rt-multi-thread", "macros", "io-std", "time", "process", "net"] }
+tokio-util        = { version = "0.7",    default-features = false, features = ["rt"] }
+rmcp              = { version = "1.2",    default-features = false, features = ["server", "transport-streamable-http-server", "macros"] }
+axum              = { version = "0.8",    default-features = false, features = ["http1", "tokio", "tower-log"] }
 async-trait       = "0.1"
 dirs              = "6.0.0"
 memmap2           = "0.9"
