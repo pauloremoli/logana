@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use super::timestamp::{
     is_level_keyword, normalize_level, parse_datetime_timestamp, parse_iso_timestamp,
+    parse_nano_timestamp,
 };
 use super::types::{DisplayParts, LogFormatParser, SpanInfo};
 
@@ -404,7 +405,9 @@ fn try_structlog(s: &str) -> Option<DisplayParts<'_>> {
 }
 
 fn try_generic(s: &str) -> Option<DisplayParts<'_>> {
-    let (timestamp, consumed) = parse_iso_timestamp(s).or_else(|| parse_datetime_timestamp(s))?;
+    let (timestamp, consumed) = parse_iso_timestamp(s)
+        .or_else(|| parse_datetime_timestamp(s))
+        .or_else(|| parse_nano_timestamp(s))?;
 
     let rest = s.get(consumed..)?.trim_start();
     if rest.is_empty() {
@@ -974,6 +977,27 @@ mod tests {
             vec![b"2024-07-24 10:00:00.123 [main] INFO com.example.App - started"];
         let names = parser.collect_field_names(&lines);
         assert!(names.contains(&"thread".to_string()));
+    }
+
+    // ── nano timestamp ───────────────────────────────────────────────
+
+    #[test]
+    fn test_nano_timestamp_level_target_message() {
+        let line = b"1700046000000000000 INFO  api-gateway server started on 0.0.0.0:8080";
+        let parser = CommonLogParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("1700046000000000000"));
+        assert_eq!(parts.level, Some("INFO"));
+        assert!(parts.message.is_some());
+    }
+
+    #[test]
+    fn test_nano_timestamp_with_service_and_host() {
+        let line = b"1700046001123000000 INFO  api-gateway prod-host-01 request received";
+        let parser = CommonLogParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("1700046001123000000"));
+        assert_eq!(parts.level, Some("INFO"));
     }
 
     // ── name ─────────────────────────────────────────────────────────

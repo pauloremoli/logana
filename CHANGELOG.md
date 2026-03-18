@@ -15,6 +15,7 @@ All notable changes to logana will be documented in this file.
 
 ### Fixed
 - MCP server bind errors are now reported to the user instead of silently failing.
+- Normalize all timestamps to UTC format.
 - `$` in normal mode now leaves 4 columns of padding between the last character and the right edge of the viewport.
 
 ## [0.3.1] - 2026-03-16

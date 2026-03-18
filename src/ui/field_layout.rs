@@ -151,7 +151,9 @@ pub(crate) fn get_col(p: &DisplayParts<'_>, name: &str, show_keys: bool) -> Opti
             }
             // Resolve all known aliases to their canonical DisplayParts slots.
             if crate::parser::TIMESTAMP_KEYS.contains(&n) {
-                return p.timestamp.map(|s| s.to_string());
+                return p.timestamp.map(|s| {
+                    crate::date_filter::canonical_timestamp(s).unwrap_or_else(|| s.to_string())
+                });
             }
             if crate::parser::LEVEL_KEYS.contains(&n) {
                 return p.level.map(|l| format!("{:<5}", l));
@@ -252,7 +254,9 @@ pub(crate) fn apply_field_layout(
             .any(|k| hidden_fields.contains(*k))
             && let Some(ts) = p.timestamp
         {
-            cols.push(ts.to_string());
+            cols.push(
+                crate::date_filter::canonical_timestamp(ts).unwrap_or_else(|| ts.to_string()),
+            );
         }
         if !crate::parser::LEVEL_KEYS
             .iter()
@@ -411,7 +415,39 @@ mod tests {
         let p = make_parts();
         assert_eq!(
             get_col(&p, "timestamp", false),
-            Some("2024-01-01T00:00:00Z".to_string())
+            Some("2024-01-01 00:00:00.000".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_col_timestamp_nano_epoch_converted() {
+        let p = DisplayParts {
+            timestamp: Some("1700046000000000000"),
+            level: Some("INFO"),
+            ..Default::default()
+        };
+        let col = get_col(&p, "timestamp", false).unwrap();
+        assert!(
+            !col.contains("1700046000000000000"),
+            "raw nanos should not appear"
+        );
+        assert!(col.starts_with("2023-11-15"), "should be canonical date");
+    }
+
+    #[test]
+    fn test_apply_field_layout_default_nano_epoch_converted() {
+        use crate::types::FieldLayout;
+        let p = DisplayParts {
+            timestamp: Some("1700046000000000000"),
+            level: Some("INFO"),
+            message: Some("server started"),
+            ..Default::default()
+        };
+        let hidden = HashSet::new();
+        let cols = apply_field_layout(&p, &FieldLayout { columns: None }, &hidden, false);
+        assert!(
+            cols[0].starts_with("2023-11-15"),
+            "timestamp col should be canonical"
         );
     }
 

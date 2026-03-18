@@ -195,7 +195,7 @@ fn parse_bsd_bound(
     };
 
     let canonical = format!(
-        "0000-{:02}-{:02} {:02}:{:02}:{:02}.000000",
+        "0000-{:02}-{:02} {:02}:{:02}:{:02}.000",
         month_num, day, h, m, sec
     );
     Ok((
@@ -253,7 +253,7 @@ fn parse_slash_month_day_bound(
     };
 
     let canonical = format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.000000",
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.000",
         year, month, day, h, m, sec
     );
     Ok((
@@ -302,7 +302,7 @@ fn parse_iso_bound(s: &str) -> Result<(DateBound, ComparisonMode, Granularity), 
     };
 
     let canonical = format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.000000",
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.000",
         year, month, day, h, m, sec
     );
     Ok((
@@ -474,11 +474,29 @@ pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
 /// `DisplayParts.timestamp`) into a canonical form for comparison.
 ///
 /// Returns `None` for dmesg-style boot-relative timestamps or unparseable input.
+pub(crate) fn canonical_timestamp(ts: &str) -> Option<String> {
+    normalize_log_timestamp(ts).map(|n| {
+        let c = n.canonical;
+        if c.starts_with("0000-") {
+            let year = time::OffsetDateTime::now_utc().year();
+            format!("{:04}{}", year, &c[4..])
+        } else {
+            c
+        }
+    })
+}
+
 fn normalize_log_timestamp(ts: &str) -> Option<NormalizedTimestamp> {
     let s = ts.trim();
     if s.is_empty() {
         return None;
     }
+
+    // Nanosecond Unix epoch: 19 all-digit chars (e.g. OTLP timeUnixNano)
+    if s.len() == 19 && s.bytes().all(|b| b.is_ascii_digit()) {
+        return normalize_nanos_ts(s);
+    }
+
     // Handle bracket-prefixed timestamps
     if s.starts_with('[') {
         // dmesg: [  seconds.usecs] — digits/spaces/dots only inside brackets
@@ -589,7 +607,7 @@ fn normalize_datetime_ts(s: &str) -> Option<NormalizedTimestamp> {
 }
 
 fn normalize_slash_ts(s: &str) -> Option<NormalizedTimestamp> {
-    // "2024/01/15 10:30:00" → "2024-01-15 10:30:00.000000"
+    // "2024/01/15 10:30:00" → "2024-01-15 10:30:00.000"
     let date = s[..10].replace('/', "-");
     let time_str = &s[11..];
     let (h, m, sec, frac) = parse_hms_frac(time_str)?;
@@ -644,6 +662,27 @@ fn normalize_bsd_ts(s: &str) -> Option<NormalizedTimestamp> {
     );
     Some(NormalizedTimestamp {
         time_of_day: h * 3600 + m * 60 + sec,
+        canonical,
+    })
+}
+
+fn normalize_nanos_ts(s: &str) -> Option<NormalizedTimestamp> {
+    let nanos: i128 = s.parse().ok()?;
+    let dt = time::OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()?;
+    let millis = (nanos.unsigned_abs() % 1_000_000_000) / 1_000_000;
+    let canonical = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        dt.year(),
+        dt.month() as u8,
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second(),
+        millis,
+    );
+    let tod = dt.hour() as u32 * 3600 + dt.minute() as u32 * 60 + dt.second() as u32;
+    Some(NormalizedTimestamp {
+        time_of_day: tod,
         canonical,
     })
 }
@@ -725,12 +764,12 @@ fn parse_hms_frac(s: &str) -> Option<(u32, u32, u32, String)> {
             .unwrap_or(s.len());
         frac = s[start..end].to_string();
     }
-    // Pad or truncate to 6 digits
-    while frac.len() < 6 {
+    // Pad or truncate to 3 digits (milliseconds)
+    while frac.len() < 3 {
         frac.push('0');
     }
-    if frac.len() > 6 {
-        frac.truncate(6);
+    if frac.len() > 3 {
+        frac.truncate(3);
     }
     Some((h, m, sec, frac))
 }
@@ -837,10 +876,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("Feb 21 01:00:00").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Second);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("0000-02-21 01:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("0000-02-21 01:00:00.000"));
     }
 
     #[test]
@@ -848,10 +884,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("Feb 21").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Day);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("0000-02-21 00:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("0000-02-21 00:00:00.000"));
     }
 
     #[test]
@@ -859,10 +892,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("Feb/21").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Day);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("0000-02-21 00:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("0000-02-21 00:00:00.000"));
     }
 
     #[test]
@@ -870,10 +900,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("Feb/21 09:00:00").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Second);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("0000-02-21 09:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("0000-02-21 09:00:00.000"));
     }
 
     #[test]
@@ -881,10 +908,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("Feb/21 09:00").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Minute);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("0000-02-21 09:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("0000-02-21 09:00:00.000"));
     }
 
     #[test]
@@ -892,10 +916,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("02/21").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Day);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("0000-02-21 00:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("0000-02-21 00:00:00.000"));
     }
 
     #[test]
@@ -903,10 +924,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("02/21/2024").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Day);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("2024-02-21 00:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("2024-02-21 00:00:00.000"));
     }
 
     #[test]
@@ -914,10 +932,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("02/21 09:00:30").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Second);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("0000-02-21 09:00:30.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("0000-02-21 09:00:30.000"));
     }
 
     #[test]
@@ -925,10 +940,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("02/21 09:00").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Minute);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("0000-02-21 09:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("0000-02-21 09:00:00.000"));
     }
 
     #[test]
@@ -936,10 +948,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("02/21/2024 09:00").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Minute);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("2024-02-21 09:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("2024-02-21 09:00:00.000"));
     }
 
     #[test]
@@ -947,10 +956,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("02-21").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Day);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("0000-02-21 00:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("0000-02-21 00:00:00.000"));
     }
 
     #[test]
@@ -958,10 +964,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("02-21-2024").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Day);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("2024-02-21 00:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("2024-02-21 00:00:00.000"));
     }
 
     #[test]
@@ -969,10 +972,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("02-21 09:00").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Minute);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("0000-02-21 09:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("0000-02-21 09:00:00.000"));
     }
 
     #[test]
@@ -985,10 +985,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("2024-02-22").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Day);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("2024-02-22 00:00:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("2024-02-22 00:00:00.000"));
     }
 
     #[test]
@@ -996,10 +993,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("2024-02-22T10:15:30").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Second);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("2024-02-22 10:15:30.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("2024-02-22 10:15:30.000"));
     }
 
     #[test]
@@ -1007,10 +1001,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("2024-02-22 10:15:30").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Second);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("2024-02-22 10:15:30.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("2024-02-22 10:15:30.000"));
     }
 
     #[test]
@@ -1018,10 +1009,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("2024-02-22 10:15").unwrap();
         assert_eq!(mode, ComparisonMode::FullDatetime);
         assert_eq!(gran, Granularity::Minute);
-        assert_eq!(
-            b.datetime_val.as_deref(),
-            Some("2024-02-22 10:15:00.000000")
-        );
+        assert_eq!(b.datetime_val.as_deref(), Some("2024-02-22 10:15:00.000"));
     }
 
     #[test]
@@ -1263,68 +1251,68 @@ mod tests {
     #[test]
     fn test_normalize_iso() {
         let n = normalize_log_timestamp("2024-02-22T10:15:30+0000").unwrap();
-        assert_eq!(n.canonical, "2024-02-22 10:15:30.000000");
+        assert_eq!(n.canonical, "2024-02-22 10:15:30.000");
         assert_eq!(n.time_of_day, 10 * 3600 + 15 * 60 + 30);
     }
 
     #[test]
     fn test_normalize_iso_with_frac() {
         let n = normalize_log_timestamp("2024-02-22T10:15:30.123456Z").unwrap();
-        assert_eq!(n.canonical, "2024-02-22 10:15:30.123456");
+        assert_eq!(n.canonical, "2024-02-22 10:15:30.123");
     }
 
     #[test]
     fn test_normalize_datetime() {
         let n = normalize_log_timestamp("2024-01-15 10:30:00.123").unwrap();
-        assert_eq!(n.canonical, "2024-01-15 10:30:00.123000");
+        assert_eq!(n.canonical, "2024-01-15 10:30:00.123");
     }
 
     #[test]
     fn test_normalize_datetime_comma_frac() {
         let n = normalize_log_timestamp("2024-01-15 10:30:00,456").unwrap();
-        assert_eq!(n.canonical, "2024-01-15 10:30:00.456000");
+        assert_eq!(n.canonical, "2024-01-15 10:30:00.456");
     }
 
     #[test]
     fn test_normalize_slash() {
         let n = normalize_log_timestamp("2024/01/15 10:30:00").unwrap();
-        assert_eq!(n.canonical, "2024-01-15 10:30:00.000000");
+        assert_eq!(n.canonical, "2024-01-15 10:30:00.000");
     }
 
     #[test]
     fn test_normalize_full_journalctl() {
         let n = normalize_log_timestamp("Mon 2024-02-22 10:15:30 UTC").unwrap();
-        assert_eq!(n.canonical, "2024-02-22 10:15:30.000000");
+        assert_eq!(n.canonical, "2024-02-22 10:15:30.000");
     }
 
     #[test]
     fn test_normalize_bsd() {
         let n = normalize_log_timestamp("Feb 22 10:15:30").unwrap();
-        assert_eq!(n.canonical, "0000-02-22 10:15:30.000000");
+        assert_eq!(n.canonical, "0000-02-22 10:15:30.000");
     }
 
     #[test]
     fn test_normalize_bsd_precise() {
         let n = normalize_log_timestamp("Feb 22 10:15:30.123456").unwrap();
-        assert_eq!(n.canonical, "0000-02-22 10:15:30.123456");
+        assert_eq!(n.canonical, "0000-02-22 10:15:30.123");
     }
 
     #[test]
     fn test_normalize_clf() {
         let n = normalize_log_timestamp("10/Oct/2000:13:55:36 -0700").unwrap();
-        assert_eq!(n.canonical, "2000-10-10 13:55:36.000000");
+        assert_eq!(n.canonical, "2000-10-10 13:55:36.000");
     }
 
     #[test]
     fn test_normalize_apache_error() {
         let n = normalize_log_timestamp("[Mon Jan 15 10:30:00.123456 2024]").unwrap();
-        assert_eq!(n.canonical, "2024-01-15 10:30:00.123456");
+        assert_eq!(n.canonical, "2024-01-15 10:30:00.123");
     }
 
     #[test]
     fn test_normalize_apache_error_no_frac() {
         let n = normalize_log_timestamp("[Fri Dec 31 23:59:59 2024]").unwrap();
-        assert_eq!(n.canonical, "2024-12-31 23:59:59.000000");
+        assert_eq!(n.canonical, "2024-12-31 23:59:59.000");
     }
 
     #[test]
@@ -1341,6 +1329,49 @@ mod tests {
     #[test]
     fn test_normalize_garbage_returns_none() {
         assert!(normalize_log_timestamp("not a timestamp").is_none());
+    }
+
+    #[test]
+    fn test_normalize_nanos_ts() {
+        let n = normalize_log_timestamp("1700046010234000000").unwrap();
+        assert_eq!(n.canonical, "2023-11-15 11:00:10.234");
+    }
+
+    #[test]
+    fn test_normalize_nanos_ts_zero_millis() {
+        let n = normalize_log_timestamp("1700046010000000000").unwrap();
+        assert_eq!(n.canonical, "2023-11-15 11:00:10.000");
+    }
+
+    #[test]
+    fn test_normalize_nanos_not_19_digits() {
+        // 18 digits → not treated as nano epoch
+        assert!(normalize_log_timestamp("170004601023400000").is_none());
+    }
+
+    #[test]
+    fn test_canonical_timestamp_nanos() {
+        let result = canonical_timestamp("1700046010234000000");
+        assert_eq!(result, Some("2023-11-15 11:00:10.234".to_string()));
+    }
+
+    #[test]
+    fn test_canonical_timestamp_iso() {
+        let result = canonical_timestamp("2024-02-22T10:15:30Z");
+        assert!(result.is_some());
+        assert!(result.unwrap().starts_with("2024-02-22 10:15:30."));
+    }
+
+    #[test]
+    fn test_canonical_timestamp_none() {
+        assert!(canonical_timestamp("not a ts").is_none());
+    }
+
+    #[test]
+    fn test_canonical_timestamp_bsd_uses_current_year() {
+        let result = canonical_timestamp("Feb 14 22:11:26").unwrap();
+        let current_year = time::OffsetDateTime::now_utc().year();
+        assert!(result.starts_with(&format!("{:04}-02-14 22:11:26.", current_year)));
     }
 
     // ── DateFilter::matches ────────────────────────────────────────────
@@ -1543,6 +1574,6 @@ mod tests {
     #[test]
     fn test_normalize_iso_no_tz() {
         let n = normalize_log_timestamp("2024-02-22T10:15:30").unwrap();
-        assert_eq!(n.canonical, "2024-02-22 10:15:30.000000");
+        assert_eq!(n.canonical, "2024-02-22 10:15:30.000");
     }
 }

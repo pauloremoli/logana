@@ -84,6 +84,22 @@ pub(crate) fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
     }
 }
 
+/// Matches a 19-digit all-digit nanosecond Unix epoch prefix (e.g. OTLP-style plain-text logs).
+/// Returns the matched slice and the consumed byte count.
+pub(crate) fn parse_nano_timestamp(s: &str) -> Option<(&str, usize)> {
+    if s.len() < 19 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    if !bytes[..19].iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if s.len() > 19 && bytes[19] != b' ' {
+        return None;
+    }
+    Some((&s[..19], 19))
+}
+
 pub(crate) fn parse_full_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 27 {
         return None;
@@ -608,5 +624,36 @@ mod tests {
         assert!(is_level_keyword("warn"));
         assert!(!is_level_keyword("myhost"));
         assert!(!is_level_keyword("sshd"));
+    }
+
+    // ── parse_nano_timestamp ──────────────────────────────────────────
+
+    #[test]
+    fn test_parse_nano_timestamp_basic() {
+        let (ts, consumed) = parse_nano_timestamp("1700046000000000000 INFO rest").unwrap();
+        assert_eq!(ts, "1700046000000000000");
+        assert_eq!(consumed, 19);
+    }
+
+    #[test]
+    fn test_parse_nano_timestamp_exact_19() {
+        let (ts, consumed) = parse_nano_timestamp("1700046000000000000").unwrap();
+        assert_eq!(ts, "1700046000000000000");
+        assert_eq!(consumed, 19);
+    }
+
+    #[test]
+    fn test_parse_nano_timestamp_rejects_18_digits() {
+        assert!(parse_nano_timestamp("170004600000000000 INFO rest").is_none());
+    }
+
+    #[test]
+    fn test_parse_nano_timestamp_rejects_non_digit() {
+        assert!(parse_nano_timestamp("17000460000000000X0 INFO rest").is_none());
+    }
+
+    #[test]
+    fn test_parse_nano_timestamp_rejects_20_digit_no_space() {
+        assert!(parse_nano_timestamp("17000460000000000001rest").is_none());
     }
 }

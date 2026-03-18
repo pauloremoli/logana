@@ -634,7 +634,7 @@ mod tests {
         };
         let output = render_export(&simple_template(), &data);
         // Should contain the parsed/formatted output, not raw JSON
-        assert!(output.contains("2024-01-01T00:00:00Z"));
+        assert!(output.contains("2024-01-01 00:00:00.000"));
         assert!(output.contains("INFO"));
         assert!(output.contains("hello"));
         // Should NOT contain raw JSON braces in the lines section

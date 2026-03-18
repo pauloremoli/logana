@@ -177,6 +177,19 @@ mod tests {
     // ── New format detection tests ────────────────────────────────────
 
     #[test]
+    fn test_detect_format_nano_timestamp_common_log() {
+        let lines: Vec<&[u8]> = vec![
+            b"1700046000000000000 INFO  api-gateway host.name=prod-host-01 server started on 0.0.0.0:8080",
+            b"1700046001123000000 INFO  api-gateway http.method=GET http.route=/api/users spanId=00f067aa0ba902b7 request received",
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "common-log");
+        let parts = parser.parse_line(lines[0]).unwrap();
+        assert_eq!(parts.timestamp, Some("1700046000000000000"));
+        assert_eq!(parts.level, Some("INFO"));
+    }
+
+    #[test]
     fn test_detect_format_logfmt() {
         let lines: Vec<&[u8]> = vec![
             b"time=2024-01-01T00:00:00Z level=info msg=\"request handled\" status=200",
