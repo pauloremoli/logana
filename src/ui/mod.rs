@@ -483,7 +483,7 @@ pub struct TabState {
     pub render_cache_gen: u64,
     /// Bumped when search results are delivered or cleared.
     pub search_result_gen: u64,
-    /// Cached content lines (result of evaluate_line + render_line + colorize_known_values,
+    /// Cached content lines (result of evaluate_line + render_line + collect_value_color_spans,
     /// before applying cursor/mark/visual style and line numbers).
     /// Key: line_idx → (render_cache_gen, search_result_gen, current_occ, Line<'static>).
     pub render_line_cache: HashMap<usize, (u64, u64, Option<usize>, Line<'static>)>,

@@ -1827,7 +1827,7 @@ mod tests {
         let initial_size = f.as_file().metadata().unwrap().len();
         let path = f.path().to_str().unwrap().to_string();
 
-        let mut rx = FileReader::spawn_file_watcher(path, initial_size).await;
+        let rx = FileReader::spawn_file_watcher(path, initial_size).await;
 
         // Append new data to the file
         f.seek(SeekFrom::End(0)).unwrap();
@@ -2237,7 +2237,7 @@ mod tests {
         let initial_size = f.as_file().metadata().unwrap().len();
         let path = f.path().to_str().unwrap().to_string();
 
-        let mut rx = FileReader::spawn_file_watcher(path.clone(), initial_size).await;
+        let rx = FileReader::spawn_file_watcher(path.clone(), initial_size).await;
 
         // Step 1: truncate to 0 bytes — the watcher detects this and resets
         // its internal offset to 0.

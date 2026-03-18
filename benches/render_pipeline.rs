@@ -4,7 +4,7 @@ use logana::filters::{FilterDecision, FilterManager, MatchCollector, build_filte
 use logana::parser::detect_format;
 use logana::theme::ValueColors;
 use logana::ui::VisibleLines;
-use logana::value_colors::colorize_known_values;
+use logana::value_colors::collect_value_color_spans;
 use ratatui::style::Style;
 
 fn json_log_bytes(lines: usize) -> Vec<u8> {
@@ -204,7 +204,8 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
         b.iter(|| {
             let collector = fm_empty.evaluate_line(black_box(line_bytes));
             let rendered = render_line(&collector, &styles);
-            black_box(colorize_known_values(rendered, &value_colors))
+            let text: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
+            black_box(collect_value_color_spans(&text, &value_colors))
         })
     });
 
@@ -216,7 +217,8 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
         b.iter(|| {
             let collector = fm_one.evaluate_line(black_box(line_bytes));
             let rendered = render_line(&collector, &styles);
-            black_box(colorize_known_values(rendered, &value_colors))
+            let text: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
+            black_box(collect_value_color_spans(&text, &value_colors))
         })
     });
 
@@ -234,7 +236,8 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
         b.iter(|| {
             let collector = fm_five.evaluate_line(black_box(line_bytes));
             let rendered = render_line(&collector, &styles);
-            black_box(colorize_known_values(rendered, &value_colors))
+            let text: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
+            black_box(collect_value_color_spans(&text, &value_colors))
         })
     });
 
@@ -245,12 +248,11 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
         let collector = fm_empty.evaluate_line(line_bytes);
         b.iter(|| render_line(black_box(&collector), &styles))
     });
-    group.bench_function("colorize_known_values_only", |b| {
+    group.bench_function("collect_value_color_spans_only", |b| {
         let collector = fm_empty.evaluate_line(line_bytes);
-        b.iter(|| {
-            let line = render_line(&collector, &styles);
-            black_box(colorize_known_values(line, &value_colors))
-        })
+        let rendered = render_line(&collector, &styles);
+        let text: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
+        b.iter(|| black_box(collect_value_color_spans(&text, &value_colors)))
     });
 
     group.finish();
