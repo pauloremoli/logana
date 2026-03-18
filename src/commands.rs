@@ -176,6 +176,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Show configured DLT devices and connect to one",
     },
     CommandInfo {
+        name: "otlp",
+        usage: "otlp [port]",
+        description: "Start an OTLP HTTP/JSON receiver on the given port (default 4318). Services send logs via POST /v1/logs. e.g. otlp 4318",
+    },
+    CommandInfo {
         name: "enable-mcp",
         usage: "enable-mcp [--port <port>]",
         description: "Start the embedded MCP server (default port 9876). e.g. enable-mcp --port 8080",

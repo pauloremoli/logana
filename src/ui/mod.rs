@@ -1,3 +1,9 @@
+//! UI state, rendering, and stream-source management.
+//!
+//! # Key types
+//! - [`App`] — top-level application state (tabs, DB, MCP).
+//! - [`TabState`] — per-tab state: file reader, filter manager, scroll position,
+//!   parse cache, search/filter handles, and streaming retry state.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -2102,6 +2108,16 @@ pub fn docker_connect_fn(container: String) -> ConnectFn {
         let c = container.clone();
         Box::pin(async move {
             FileReader::spawn_process_stream("docker", &["logs", "-f", &c])
+                .await
+                .map_err(|e| e.to_string())
+        })
+    })
+}
+
+pub fn otlp_connect_fn(port: u16) -> ConnectFn {
+    Arc::new(move || {
+        Box::pin(async move {
+            crate::otlp_receiver::spawn_otlp_http_receiver(port)
                 .await
                 .map_err(|e| e.to_string())
         })

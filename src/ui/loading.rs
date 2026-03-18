@@ -11,7 +11,8 @@ use crate::mode::normal_mode::NormalMode;
 
 use super::{
     App, ConnectFn, FileLoadState, LoadContext, StreamRetryState, TabState, VisibleLines,
-    dlt_connect_fn, docker_connect_fn, watch_state_from_connection, watch_state_from_file,
+    dlt_connect_fn, docker_connect_fn, otlp_connect_fn, watch_state_from_connection,
+    watch_state_from_file,
 };
 
 fn connect_fn_for_source(source: Option<&str>) -> Option<ConnectFn> {
@@ -24,6 +25,9 @@ fn connect_fn_for_source(source: Option<&str>) -> Option<ConnectFn> {
         Some(dlt_connect_fn(host, port))
     } else if let Some(name) = source.strip_prefix("docker:") {
         Some(docker_connect_fn(name.to_string()))
+    } else if let Some(port_str) = source.strip_prefix("otlp://") {
+        let port = port_str.parse::<u16>().unwrap_or(4318);
+        Some(otlp_connect_fn(port))
     } else {
         None
     }
@@ -180,6 +184,55 @@ impl App {
         self.tabs.push(tab);
     }
 
+    /// Open a new tab that listens for OTLP HTTP/JSON log exports on `port`.
+    pub(super) async fn open_otlp_stream(&mut self, port: u16) {
+        let source_label = format!("otlp://{port}");
+        let file_reader = FileReader::from_bytes(vec![]);
+        let log_manager = LogManager::new(self.db.clone(), Some(source_label.clone())).await;
+        let title = format!("otlp:{port}");
+
+        let mut tab = TabState::new(file_reader, log_manager, title);
+        self.apply_tab_defaults(&mut tab);
+
+        match crate::otlp_receiver::spawn_otlp_http_receiver(port).await {
+            Ok(conn) => {
+                tab.watch_state = Some(watch_state_from_connection(conn));
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                tab.command_error = Some(format!("OTLP receiver failed: {err_msg}"));
+                tab.stream_retry = Some(StreamRetryState::new(otlp_connect_fn(port), err_msg));
+            }
+        }
+
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    async fn restore_otlp_tab(&mut self, source: &str) {
+        let port = source
+            .strip_prefix("otlp://")
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(4318);
+        let file_reader = FileReader::from_bytes(vec![]);
+        let log_manager = LogManager::new(self.db.clone(), Some(source.to_string())).await;
+        let title = source.to_string();
+
+        let mut tab = TabState::new(file_reader, log_manager, title);
+        self.apply_tab_defaults(&mut tab);
+
+        tab.stream_retry = Some(StreamRetryState::new(
+            otlp_connect_fn(port),
+            "reconnecting…".to_string(),
+        ));
+
+        if let Ok(Some(ctx)) = self.db.load_file_context(source).await {
+            tab.apply_file_context(&ctx);
+        }
+
+        self.tabs.push(tab);
+    }
+
     /// Consume the session-restore queue, handling both docker tabs and file
     /// tabs.  Docker tabs are created immediately; file tabs are handed off
     /// to `begin_file_load` for background indexing.
@@ -214,6 +267,10 @@ impl App {
             }
             if next.starts_with("dlt://") {
                 self.restore_dlt_tab(&next).await;
+                continue;
+            }
+            if next.starts_with("otlp://") {
+                self.restore_otlp_tab(&next).await;
                 continue;
             }
             // Regular file — create a preview tab immediately, then load the full index in the background.
@@ -2579,5 +2636,37 @@ mod tests {
         assert_eq!(cached.line_count, 3);
         assert!(!cached.filter_fingerprint.is_empty());
         assert_eq!(cached.raw_mode, false);
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_watches_otlp_json_shows_lines() {
+        let otlp_lines = concat!(
+            r#"{"timeUnixNano":"1700046000000000000","severityNumber":9,"severityText":"INFO","body":{"stringValue":"hello from test"},"service.name":"my-svc"}"#,
+            "\n",
+            r#"{"timeUnixNano":"1700046001000000000","severityNumber":17,"severityText":"ERROR","body":{"stringValue":"something failed"},"service.name":"my-svc"}"#,
+            "\n",
+        );
+
+        let mut app = make_app(&[]).await;
+        let (tx, state) = make_watch_state(otlp_lines.as_bytes());
+        app.tabs[0].watch_state = Some(state);
+
+        tx.send(()).unwrap();
+        app.advance_file_watches();
+
+        let tab = &app.tabs[0];
+        assert!(
+            tab.visible_indices.len() > 0,
+            "OTLP lines should be visible"
+        );
+        assert!(
+            tab.detected_format.is_some(),
+            "OTLP format should be detected"
+        );
+        assert_eq!(
+            tab.detected_format.as_deref().map(|p| p.name()),
+            Some("otlp"),
+            "format should be OTLP not plain JSON"
+        );
     }
 }

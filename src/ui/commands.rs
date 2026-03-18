@@ -660,6 +660,10 @@ impl App {
                     Box::new(crate::mode::dlt_select_mode::DltSelectMode::new(devices));
                 return Ok(true);
             }
+            Some(Commands::Otlp { port }) => {
+                self.open_otlp_stream(port).await;
+                return Ok(true);
+            }
             Some(Commands::EnableMcp { port }) => {
                 let p = self.mcp_port.unwrap_or(port);
                 match self.start_mcp(p).await {

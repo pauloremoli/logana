@@ -218,6 +218,12 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
             | "InstrumentationScope"
             | "schemaUrl" => {}
 
+            _ if is_target_attr(f.key) => {
+                if target.is_none() && f.value_is_string {
+                    target = Some(f.value);
+                }
+            }
+
             _ => {
                 extra_fields.push((f.key, f.value));
             }
@@ -296,6 +302,19 @@ impl LogFormatParser for OtlpParser {
             return 0.0;
         }
         otlp_count as f64 / sample.len() as f64 * 1.5
+    }
+
+    fn default_hidden_fields(&self, _sample: &[&[u8]]) -> HashSet<String> {
+        [
+            "traceId",
+            "spanId",
+            "telemetry.sdk.language",
+            "telemetry.sdk.name",
+            "telemetry.sdk.version",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     }
 
     fn name(&self) -> &str {
@@ -594,5 +613,60 @@ mod tests {
     #[test]
     fn test_otlp_name() {
         assert_eq!(OtlpParser.name(), "otlp");
+    }
+
+    // ── top-level service.name → target ──────────────────────────────────────
+
+    #[test]
+    fn test_parse_otlp_json_top_level_service_name() {
+        let line = br#"{"timeUnixNano":"1","severityText":"INFO","body":{"stringValue":"hello"},"service.name":"my-svc","traceId":"abc"}"#;
+        let parser = OtlpParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.target, Some("my-svc"));
+        assert!(
+            !parts.extra_fields.iter().any(|&(k, _)| k == "service.name"),
+            "service.name must not appear in extra_fields"
+        );
+    }
+
+    #[test]
+    fn test_parse_otlp_json_attributes_wins_over_top_level() {
+        let line = br#"{"timeUnixNano":"1","severityText":"INFO","body":{"stringValue":"hello"},"attributes":[{"key":"service.name","value":{"stringValue":"from-attrs"}}],"service.name":"from-toplevel"}"#;
+        let parser = OtlpParser;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.target, Some("from-attrs"));
+        assert!(
+            !parts.extra_fields.iter().any(|&(k, _)| k == "service.name"),
+            "service.name must not appear in extra_fields"
+        );
+    }
+
+    #[test]
+    fn test_collect_field_names_no_duplicate_service_name() {
+        let parser = OtlpParser;
+        let lines: Vec<&[u8]> = vec![
+            br#"{"timeUnixNano":"1","severityText":"INFO","body":{"stringValue":"ok"},"service.name":"my-svc","http.method":"GET"}"#,
+        ];
+        let names = parser.collect_field_names(&lines);
+        assert_eq!(names[0], "timestamp");
+        assert_eq!(names[1], "level");
+        assert_eq!(names[2], "target");
+        assert!(
+            !names.contains(&"service.name".to_string()),
+            "service.name must not appear in field names"
+        );
+        assert_eq!(*names.last().unwrap(), "message");
+    }
+
+    // ── default_hidden_fields ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_otlp_default_hidden_fields() {
+        let hidden = OtlpParser.default_hidden_fields(&[]);
+        assert!(hidden.contains("traceId"));
+        assert!(hidden.contains("spanId"));
+        assert!(hidden.contains("telemetry.sdk.language"));
+        assert!(hidden.contains("telemetry.sdk.name"));
+        assert!(hidden.contains("telemetry.sdk.version"));
     }
 }

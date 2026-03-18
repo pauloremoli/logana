@@ -161,19 +161,17 @@ impl App {
 
         // Check for saved context only when we have real data (not a placeholder
         // that will be replaced by a background load started after App::new).
-        if let Some(source) = tab.log_manager.source_file().map(|s| s.to_string()) {
-            if tab.file_reader.line_count() > 0 {
-                let source = source;
-                if let Ok(Some(ctx)) = db.load_file_context(&source).await {
-                    match restore_file_policy {
-                        RestoreSessionPolicy::Always => {
-                            tab.apply_file_context(&ctx);
-                        }
-                        RestoreSessionPolicy::Never => {}
-                        RestoreSessionPolicy::Ask => {
-                            tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
-                        }
-                    }
+        if let Some(source) = tab.log_manager.source_file().map(|s| s.to_string())
+            && tab.file_reader.line_count() > 0
+            && let Ok(Some(ctx)) = db.load_file_context(&source).await
+        {
+            match restore_file_policy {
+                RestoreSessionPolicy::Always => {
+                    tab.apply_file_context(&ctx);
+                }
+                RestoreSessionPolicy::Never => {}
+                RestoreSessionPolicy::Ask => {
+                    tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
                 }
             }
         } else if no_source && no_data {

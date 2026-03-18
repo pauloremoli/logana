@@ -11,6 +11,7 @@ pub mod headless;
 pub mod log_manager;
 pub mod mcp;
 pub mod mode;
+pub mod otlp_receiver;
 pub mod parser;
 pub mod search;
 pub mod theme;

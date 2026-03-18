@@ -161,6 +161,11 @@ pub enum Commands {
     Reset,
     /// Show configured DLT devices and connect to one
     Dlt,
+    /// Start an OTLP HTTP/JSON receiver on the given port
+    Otlp {
+        #[arg(default_value = "4318")]
+        port: u16,
+    },
     /// Start the embedded MCP server on the given port
     EnableMcp {
         #[arg(long, default_value = "9876")]

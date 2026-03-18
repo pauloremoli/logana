@@ -6,10 +6,11 @@ Terminal-based log analysis tool built in Rust with a Ratatui TUI. Logs are read
 
 logana is structured around a strict separation between domain logic and the UI layer. The application is divided into five broad concerns:
 
-**File I/O & Ingestion** — `FileReader` memory-maps regular files and exposes O(1) random line access via a pre-built offset index. 
-- Stdin is handled separately by a background thread that accumulates bytes and publishes snapshots. 
-- Streaming sources (DLT TCP, Docker logs, file tailing) deliver chunks through a watch channel that the event loop appends each frame. 
+**File I/O & Ingestion** — `FileReader` memory-maps regular files and exposes O(1) random line access via a pre-built offset index.
+- Stdin is handled separately by a background thread that accumulates bytes and publishes snapshots.
+- Streaming sources (DLT TCP, Docker logs, file tailing, OTLP HTTP) deliver chunks through a watch channel that the event loop appends each frame.
 - Binary data formats like DLT are converted to newline-delimited text before entering the line-based pipeline.
+- The OTLP HTTP receiver (`FileReader::spawn_otlp_http_receiver`) listens on a local port (default 4318), accepts `POST /v1/logs` with both `application/json` and `application/x-protobuf` payloads (gzip-compressed variants supported), flattens each `LogRecord` into a newline-delimited JSON line, and feeds it through the existing `OtlpParser`.
 
 **Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, DLT, etc.). 
 - Parsers extract a normalised set of fields (timestamp, level, message, structured fields) that the rest of the system consumes uniformly regardless of the original format. 
@@ -29,6 +30,7 @@ logana is structured around a strict separation between domain logic and the UI 
 - **Comment** — annotate individual log lines
 - **Select Fields** — choose and reorder displayed fields
 - **DLT Select / Docker Select** — pick a streaming source to connect to
+- **OTLP** — `:otlp [port]` command opens a receiver tab (no interactive picker needed)
 - **UI / Keybindings Help** — settings and shortcut reference
 
 **UI & Rendering** — `ui/` owns the terminal handle and drives the Ratatui render loop. 
@@ -106,7 +108,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    Source[DLT daemon / Docker / file tail] -->|TCP / process / poll| BG[Background task]
+    Source[DLT daemon / Docker / file tail / OTLP HTTP] -->|TCP / process / poll / HTTP POST| BG[Background task]
     BG -->|chunks| WatchCh[watch channel]
     WatchCh -->|each frame| Append[FileReader.append]
     Append -->|incremental| Filter[Filter new lines]
@@ -169,3 +171,5 @@ flowchart TD
 | **tempfile** | Temporary files | Creates named temporary files in tests for headless-mode and filter integration tests |
 | **rmcp** | MCP server | Implements the Model Context Protocol server side; provides the `tool` / `tool_router` macros, resource/tool dispatch, and the Streamable HTTP transport |
 | **axum** | HTTP server | Hosts the MCP Streamable HTTP service; used only as the transport layer for the MCP server |
+| **opentelemetry-proto** | OTLP protobuf types | Pre-generated prost bindings for `ExportLogsServiceRequest` and related types; enables decoding binary protobuf OTLP payloads |
+| **prost** | Protobuf decoding | Runtime support for `Message::decode`; used to deserialise OTLP protobuf payloads in the HTTP receiver |

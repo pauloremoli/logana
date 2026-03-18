@@ -991,28 +991,14 @@ impl App {
                             // Use whole-token search for target and pid to avoid false matches
                             // when the value is a short string (e.g. pid "1" for systemd)
                             // that also appears inside the timestamp or other fields.
-                            let target_offset =
-                                target.as_deref().filter(|t| !t.is_empty()).and_then(|t| {
-                                    if show_keys {
-                                        // Column rendered as "target=<value>"; find the token
-                                        // then offset past "target=" to the value.
-                                        find_token_offset(&rendered, &format!("target={t}"))
-                                            .map(|pos| pos + "target=".len())
-                                    } else {
-                                        find_token_offset(&rendered, t)
-                                    }
-                                });
-                            let pid_offset =
-                                pid.as_deref().filter(|p| !p.is_empty()).and_then(|p| {
-                                    if show_keys {
-                                        // Column rendered as "pid=<value>"; find the token
-                                        // then offset past "pid=" to the value.
-                                        find_token_offset(&rendered, &format!("pid={p}"))
-                                            .map(|pos| pos + "pid=".len())
-                                    } else {
-                                        find_token_offset(&rendered, p)
-                                    }
-                                });
+                            let target_offset = target
+                                .as_deref()
+                                .filter(|t| !t.is_empty())
+                                .and_then(|t| find_token_offset(&rendered, t));
+                            let pid_offset = pid
+                                .as_deref()
+                                .filter(|p| !p.is_empty())
+                                .and_then(|p| find_token_offset(&rendered, p));
                             let timestamp_offset = timestamp
                                 .as_deref()
                                 .filter(|ts| !ts.is_empty())

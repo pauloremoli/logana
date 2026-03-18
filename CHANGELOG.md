@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- OTLP HTTP/JSON receiver: use `:otlp [port]` (default 4318) to open a tab that accepts `POST /v1/logs` from any OpenTelemetry SDK. Logs are parsed by the existing OTLP parser and support all filtering features. Session state is persisted and restored across restarts.
 - `Left`/`Right` arrow keys now work as alternatives to `h`/`l` for horizontal scrolling in normal mode.
 - Embedded MCP (Model Context Protocol) server, controllable via `:enable-mcp [--port N]` and `:disable-mcp` commands. Exposes marked lines, and annotations as MCP resources.
 - `--mcp [PORT]` CLI flag to start the MCP server automatically on launch (port defaults to 9876).
@@ -14,6 +15,10 @@ All notable changes to logana will be documented in this file.
 - MCP server no longer exposes the `logana://filtered` resource (filtered lines can be very large).
 
 ### Fixed
+- OTLP parser now correctly sets the process color for `service.name` when it arrives as a top-level field (as produced by the OTLP HTTP receiver).
+- `traceId`, `spanId`, and `telemetry.sdk.*` fields are now hidden by default in the OTLP parser; they can be shown via `:fields`.
+- OTLP receiver now supports protobuf-encoded payloads (`application/x-protobuf`), the default format for most OTel SDKs. Previously protobuf requests were rejected with 415.
+- OTLP receiver now supports gzip-encoded request bodies (`Content-Encoding: gzip`), which many OTel SDKs send by default. Previously gzip payloads were silently discarded.
 - MCP server bind errors are now reported to the user instead of silently failing.
 - Normalize all timestamps to UTC format.
 - `$` in normal mode now leaves 4 columns of padding between the last character and the right edge of the viewport.
