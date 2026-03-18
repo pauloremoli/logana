@@ -6,7 +6,8 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- OTLP HTTP/JSON receiver: use `:otlp [port]` (default 4318) to open a tab that accepts `POST /v1/logs` from any OpenTelemetry SDK. Logs are parsed by the existing OTLP parser and support all filtering features. Session state is persisted and restored across restarts.
+- OTLP gRPC receiver: `:otlp` now defaults to gRPC on port 4317, matching the OTel SDK default export protocol. Use `:otlp --http` for the previous HTTP/JSON transport on port 4318. Custom ports still work: `:otlp 4317`, `:otlp --http 4318`.
+- OTLP HTTP/JSON receiver: use `:otlp --http [port]` (default 4318) to open a tab that accepts `POST /v1/logs` from any OpenTelemetry SDK. Logs are parsed by the existing OTLP parser and support all filtering features. Session state is persisted and restored across restarts.
 - `Left`/`Right` arrow keys now work as alternatives to `h`/`l` for horizontal scrolling in normal mode.
 - Embedded MCP (Model Context Protocol) server, controllable via `:enable-mcp [--port N]` and `:disable-mcp` commands. Exposes marked lines, and annotations as MCP resources.
 - `--mcp [PORT]` CLI flag to start the MCP server automatically on launch (port defaults to 9876).

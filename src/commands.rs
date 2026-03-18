@@ -177,8 +177,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "otlp",
-        usage: "otlp [port]",
-        description: "Start an OTLP HTTP/JSON receiver on the given port (default 4318). Services send logs via POST /v1/logs. e.g. otlp 4318",
+        usage: "otlp [--http] [port]",
+        description: "Start an OTLP receiver. Default: gRPC on port 4317. Use --http for HTTP/JSON on port 4318. e.g. otlp, otlp 4317, otlp --http, otlp --http 4318",
     },
     CommandInfo {
         name: "enable-mcp",

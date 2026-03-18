@@ -161,10 +161,13 @@ pub enum Commands {
     Reset,
     /// Show configured DLT devices and connect to one
     Dlt,
-    /// Start an OTLP HTTP/JSON receiver on the given port
+    /// Start an OTLP receiver (gRPC by default on port 4317; use --http for HTTP on port 4318)
     Otlp {
-        #[arg(default_value = "4318")]
-        port: u16,
+        /// Use HTTP/JSON transport instead of gRPC
+        #[arg(long)]
+        http: bool,
+        /// Port to listen on (defaults to 4317 for gRPC, 4318 for --http)
+        port: Option<u16>,
     },
     /// Start the embedded MCP server on the given port
     EnableMcp {

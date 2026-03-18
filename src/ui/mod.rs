@@ -2124,6 +2124,16 @@ pub fn otlp_connect_fn(port: u16) -> ConnectFn {
     })
 }
 
+pub fn otlp_grpc_connect_fn(port: u16) -> ConnectFn {
+    Arc::new(move || {
+        Box::pin(async move {
+            crate::otlp_receiver::spawn_otlp_grpc_receiver(port)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    })
+}
+
 /// Construct a `FileWatchState` for a stream (docker/dlt/stdin) connection.
 /// The temp file holds all stream data and must stay alive until the tab is closed.
 pub fn watch_state_from_connection(conn: StreamConnection) -> FileWatchState {

@@ -660,8 +660,14 @@ impl App {
                     Box::new(crate::mode::dlt_select_mode::DltSelectMode::new(devices));
                 return Ok(true);
             }
-            Some(Commands::Otlp { port }) => {
-                self.open_otlp_stream(port).await;
+            Some(Commands::Otlp { http, port }) => {
+                if http {
+                    let port = port.unwrap_or(4318);
+                    self.open_otlp_stream(port).await;
+                } else {
+                    let port = port.unwrap_or(4317);
+                    self.open_otlp_grpc_stream(port).await;
+                }
                 return Ok(true);
             }
             Some(Commands::EnableMcp { port }) => {

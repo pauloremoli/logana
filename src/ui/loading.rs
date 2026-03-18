@@ -11,8 +11,8 @@ use crate::mode::normal_mode::NormalMode;
 
 use super::{
     App, ConnectFn, FileLoadState, LoadContext, StreamRetryState, TabState, VisibleLines,
-    dlt_connect_fn, docker_connect_fn, otlp_connect_fn, watch_state_from_connection,
-    watch_state_from_file,
+    dlt_connect_fn, docker_connect_fn, otlp_connect_fn, otlp_grpc_connect_fn,
+    watch_state_from_connection, watch_state_from_file,
 };
 
 fn connect_fn_for_source(source: Option<&str>) -> Option<ConnectFn> {
@@ -28,6 +28,9 @@ fn connect_fn_for_source(source: Option<&str>) -> Option<ConnectFn> {
     } else if let Some(port_str) = source.strip_prefix("otlp://") {
         let port = port_str.parse::<u16>().unwrap_or(4318);
         Some(otlp_connect_fn(port))
+    } else if let Some(port_str) = source.strip_prefix("otlp-grpc://") {
+        let port = port_str.parse::<u16>().unwrap_or(4317);
+        Some(otlp_grpc_connect_fn(port))
     } else {
         None
     }
@@ -233,6 +236,54 @@ impl App {
         self.tabs.push(tab);
     }
 
+    pub(super) async fn open_otlp_grpc_stream(&mut self, port: u16) {
+        let source_label = format!("otlp-grpc://{port}");
+        let file_reader = FileReader::from_bytes(vec![]);
+        let log_manager = LogManager::new(self.db.clone(), Some(source_label.clone())).await;
+        let title = format!("otlp-grpc:{port}");
+
+        let mut tab = TabState::new(file_reader, log_manager, title);
+        self.apply_tab_defaults(&mut tab);
+
+        match crate::otlp_receiver::spawn_otlp_grpc_receiver(port).await {
+            Ok(conn) => {
+                tab.watch_state = Some(watch_state_from_connection(conn));
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                tab.command_error = Some(format!("OTLP gRPC receiver failed: {err_msg}"));
+                tab.stream_retry = Some(StreamRetryState::new(otlp_grpc_connect_fn(port), err_msg));
+            }
+        }
+
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    async fn restore_otlp_grpc_tab(&mut self, source: &str) {
+        let port = source
+            .strip_prefix("otlp-grpc://")
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(4317);
+        let file_reader = FileReader::from_bytes(vec![]);
+        let log_manager = LogManager::new(self.db.clone(), Some(source.to_string())).await;
+        let title = source.to_string();
+
+        let mut tab = TabState::new(file_reader, log_manager, title);
+        self.apply_tab_defaults(&mut tab);
+
+        tab.stream_retry = Some(StreamRetryState::new(
+            otlp_grpc_connect_fn(port),
+            "reconnecting…".to_string(),
+        ));
+
+        if let Ok(Some(ctx)) = self.db.load_file_context(source).await {
+            tab.apply_file_context(&ctx);
+        }
+
+        self.tabs.push(tab);
+    }
+
     /// Consume the session-restore queue, handling both docker tabs and file
     /// tabs.  Docker tabs are created immediately; file tabs are handed off
     /// to `begin_file_load` for background indexing.
@@ -271,6 +322,10 @@ impl App {
             }
             if next.starts_with("otlp://") {
                 self.restore_otlp_tab(&next).await;
+                continue;
+            }
+            if next.starts_with("otlp-grpc://") {
+                self.restore_otlp_grpc_tab(&next).await;
                 continue;
             }
             // Regular file — create a preview tab immediately, then load the full index in the background.
@@ -2667,6 +2722,65 @@ mod tests {
             tab.detected_format.as_deref().map(|p| p.name()),
             Some("otlp"),
             "format should be OTLP not plain JSON"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_watches_otlp_grpc_shows_lines() {
+        use crate::otlp_receiver::spawn_otlp_grpc_receiver;
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::collector::logs::v1::logs_service_client::LogsServiceClient;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let (rx, tmp) = spawn_otlp_grpc_receiver(port).await.unwrap();
+
+        let mut app = make_app(&[]).await;
+        let state = super::watch_state_from_connection((rx, tmp));
+        app.tabs[0].watch_state = Some(state);
+
+        let endpoint = format!("http://127.0.0.1:{port}");
+        let mut client = LogsServiceClient::connect(endpoint).await.unwrap();
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("ui-grpc-svc".into())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_700_046_000_000_000_000,
+                        severity_number: 9,
+                        body: Some(AnyValue {
+                            value: Some(Value::StringValue("grpc ui test".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        client.export(request).await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        app.advance_file_watches();
+
+        let tab = &app.tabs[0];
+        assert!(
+            tab.visible_indices.len() > 0,
+            "gRPC lines should be visible"
         );
     }
 }

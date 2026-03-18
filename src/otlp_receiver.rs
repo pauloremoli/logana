@@ -183,11 +183,9 @@ fn any_value_to_plain(v: &opentelemetry_proto::tonic::common::v1::AnyValue) -> s
     }
 }
 
-pub(crate) fn otlp_protobuf_to_lines(data: &[u8]) -> Result<Vec<String>, prost::DecodeError> {
-    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
-    use prost::Message;
-
-    let request = ExportLogsServiceRequest::decode(data)?;
+pub(crate) fn otlp_export_request_to_lines(
+    request: &opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest,
+) -> Vec<String> {
     let mut lines = Vec::new();
 
     for resource_logs in &request.resource_logs {
@@ -276,7 +274,87 @@ pub(crate) fn otlp_protobuf_to_lines(data: &[u8]) -> Result<Vec<String>, prost::
         }
     }
 
-    Ok(lines)
+    lines
+}
+
+pub(crate) fn otlp_protobuf_to_lines(data: &[u8]) -> Result<Vec<String>, prost::DecodeError> {
+    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+    use prost::Message;
+
+    let request = ExportLogsServiceRequest::decode(data)?;
+    Ok(otlp_export_request_to_lines(&request))
+}
+
+struct OtlpGrpcHandler {
+    tx: std::sync::Arc<tokio::sync::watch::Sender<()>>,
+    temp_path: std::sync::Arc<std::path::PathBuf>,
+}
+
+#[tonic::async_trait]
+impl opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsService
+    for OtlpGrpcHandler
+{
+    async fn export(
+        &self,
+        request: tonic::Request<
+            opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest,
+        >,
+    ) -> Result<
+        tonic::Response<opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceResponse>,
+        tonic::Status,
+    > {
+        let lines = otlp_export_request_to_lines(&request.into_inner());
+        let mut out = Vec::<u8>::new();
+        for line in lines {
+            out.extend_from_slice(line.as_bytes());
+            out.push(b'\n');
+        }
+        if !out.is_empty() {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .append(true)
+                .open(self.temp_path.as_ref())
+            {
+                use std::io::Write as _;
+                let _ = f.write_all(&out);
+                let _ = f.flush();
+            }
+            let _ = self.tx.send(());
+        }
+        Ok(tonic::Response::new(
+            opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceResponse {
+                partial_success: None,
+            },
+        ))
+    }
+}
+
+pub async fn spawn_otlp_grpc_receiver(
+    port: u16,
+) -> std::io::Result<(tokio::sync::watch::Receiver<()>, tempfile::NamedTempFile)> {
+    use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsServiceServer;
+
+    let temp_file = tempfile::NamedTempFile::new()?;
+    let temp_path = std::sync::Arc::new(temp_file.path().to_owned());
+    let (tx, rx) = tokio::sync::watch::channel(());
+    let tx = std::sync::Arc::new(tx);
+
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::AddrInUse, e))?;
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    let handler = OtlpGrpcHandler { tx, temp_path };
+    let service = LogsServiceServer::new(handler);
+
+    tokio::spawn(async move {
+        let _ = tonic::transport::Server::builder()
+            .add_service(service)
+            .serve_with_incoming(incoming)
+            .await;
+    });
+
+    Ok((rx, temp_file))
 }
 
 #[cfg(test)]
@@ -685,5 +763,107 @@ mod tests {
             "decompressed content expected"
         );
         assert!(content.contains("gzip-svc"));
+    }
+
+    #[test]
+    fn test_otlp_export_request_to_lines_basic() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("grpc-svc".into())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_000_000_000,
+                        severity_number: 9,
+                        body: Some(AnyValue {
+                            value: Some(Value::StringValue("hello grpc".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let lines = otlp_export_request_to_lines(&request);
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(v["service.name"], "grpc-svc");
+        assert_eq!(v["timeUnixNano"], "1000000000");
+        assert_eq!(v["body"]["stringValue"], "hello grpc");
+    }
+
+    #[tokio::test]
+    async fn test_spawn_otlp_grpc_receiver_accepts_logs() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::collector::logs::v1::logs_service_client::LogsServiceClient;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let port = portpicker();
+        let (mut rx, tmp) = spawn_otlp_grpc_receiver(port).await.unwrap();
+
+        let endpoint = format!("http://127.0.0.1:{port}");
+        let mut client = LogsServiceClient::connect(endpoint).await.unwrap();
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("grpc-test-svc".into())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_000_000_000,
+                        severity_number: 9,
+                        body: Some(AnyValue {
+                            value: Some(Value::StringValue("hello from grpc".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        client.export(request).await.unwrap();
+
+        rx.changed().await.unwrap();
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(content.contains("hello from grpc"));
+        assert!(content.contains("grpc-test-svc"));
+    }
+
+    #[tokio::test]
+    async fn test_spawn_otlp_grpc_receiver_port_conflict() {
+        let port = portpicker();
+        let _listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .unwrap();
+        let result = spawn_otlp_grpc_receiver(port).await;
+        assert!(result.is_err());
+    }
+
+    fn portpicker() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
     }
 }
