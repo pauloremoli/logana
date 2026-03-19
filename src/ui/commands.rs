@@ -668,7 +668,7 @@ impl App {
                     Box::new(crate::mode::dlt_select_mode::DltSelectMode::new(devices));
                 return Ok(true);
             }
-            Some(Commands::Otlp { http, port }) => {
+            Some(Commands::Otel { http, port }) => {
                 if http {
                     let port = port.unwrap_or(4318);
                     self.open_otlp_stream(port).await;
@@ -1844,10 +1844,10 @@ mod tests {
         drop(listener);
         let mut app = make_app(&["line"]).await;
         let result = app
-            .run_command(&format!("otlp --http {}", port))
+            .run_command(&format!("otel --http {}", port))
             .await
             .unwrap();
-        assert!(result, "otlp command should set mode");
+        assert!(result, "otel command should set mode");
         assert_eq!(app.tabs.len(), 2);
     }
 
@@ -1857,8 +1857,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let mut app = make_app(&["line"]).await;
-        let result = app.run_command(&format!("otlp {}", port)).await.unwrap();
-        assert!(result, "otlp grpc command should set mode");
+        let result = app.run_command(&format!("otel {}", port)).await.unwrap();
+        assert!(result, "otel grpc command should set mode");
         assert_eq!(app.tabs.len(), 2);
     }
 
@@ -1995,7 +1995,7 @@ mod tests {
     #[tokio::test]
     async fn test_otlp_grpc_no_port_uses_default() {
         let mut app = make_app(&["line"]).await;
-        let result = app.run_command("otlp").await.unwrap();
+        let result = app.run_command("otel").await.unwrap();
         assert!(result);
         assert_eq!(app.tabs.len(), 2);
     }
@@ -2003,7 +2003,7 @@ mod tests {
     #[tokio::test]
     async fn test_otlp_http_no_port_uses_default() {
         let mut app = make_app(&["line"]).await;
-        let result = app.run_command("otlp --http").await.unwrap();
+        let result = app.run_command("otel --http").await.unwrap();
         assert!(result);
         assert_eq!(app.tabs.len(), 2);
     }

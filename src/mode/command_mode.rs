@@ -161,8 +161,8 @@ pub enum Commands {
     Reset,
     /// Show configured DLT devices and connect to one
     Dlt,
-    /// Start an OTLP receiver (gRPC by default on port 4317; use --http for HTTP on port 4318)
-    Otlp {
+    /// Start an OTel collector receiver (gRPC by default on port 4317; use --http for HTTP on port 4318)
+    Otel {
         /// Use HTTP/JSON transport instead of gRPC
         #[arg(long)]
         http: bool,

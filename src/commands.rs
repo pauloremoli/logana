@@ -176,9 +176,9 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Show configured DLT devices and connect to one",
     },
     CommandInfo {
-        name: "otlp",
-        usage: "otlp [--http] [port]",
-        description: "Start an OTLP receiver. Default: gRPC on port 4317. Use --http for HTTP/JSON on port 4318. e.g. otlp, otlp 4317, otlp --http, otlp --http 4318",
+        name: "otel",
+        usage: "otel [--http] [port]",
+        description: "Start an OTel collector receiver. Default: gRPC on port 4317. Use --http for HTTP/JSON on port 4318. e.g. otel, otel 4317, otel --http, otel --http 4318",
     },
     CommandInfo {
         name: "enable-mcp",

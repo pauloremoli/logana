@@ -8,7 +8,13 @@ These flags are passed when launching logana from the shell:
 |---|---|
 | `<file>` | File or directory to open. Omit to read from stdin. |
 | `-f`, `--filters <path>` | Preload a saved filter set (JSON). Filters are applied in a single pass during indexing and remain active for interactive use. |
-| `-t`, `--tail` | Start at the end of the file and enable tail mode. Combined with `--filters`, the last matching line is available immediately after loading. |
+| `-i`, `--include <args>` | Add an include filter. Accepts the same arguments as `:filter`. May be repeated. Examples: `-i "error"`, `-i "--field level=ERROR"` |
+| `-o`, `--exclude <args>` | Add an exclude filter. Accepts the same arguments as `:exclude`. May be repeated. Examples: `-o "debug"`, `-o "--field level=debug"` |
+| `-t`, `--timestamp <args>` | Add a date/time range filter. Accepts the same arguments as `:date-filter`. May be repeated. |
+| `--tail` | Start at the end of the file and enable tail mode. Combined with `--filters`, the last matching line is available immediately after loading. |
+| `--mcp [PORT]` | Start the embedded MCP server on launch. Port defaults to 9876. See [MCP Server](mcp.md). |
+| `--headless` | Run without TUI — apply filters and write matching lines to stdout or `--output`. |
+| `--output <path>` | Write headless output to a file instead of stdout. Requires `--headless`. |
 
 ## In-App Commands
 
@@ -52,6 +58,24 @@ See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filter
 | `:level-colors` | Open the level colors dialog — toggle coloring per level (TRACE, DEBUG, INFO, NOTICE, WARNING, ERROR, FATAL); INFO/TRACE/DEBUG/NOTICE are off by default |
 | `:value-colors` | Open the value colors dialog — toggle coloring for HTTP methods, status codes, IPs, UUIDs, and process/logger names |
 | `:set-theme <name>` | Switch the color theme |
+
+## OTel Collector
+
+| Command | Description |
+|---|---|
+| `:otel [port]` | Open an OTLP gRPC receiver tab (default port 4317) |
+| `:otel --http [port]` | Open an OTLP HTTP/JSON receiver tab (default port 4318) |
+
+See [OTel Collector](otel.md) for full details.
+
+## MCP Server
+
+| Command | Description |
+|---|---|
+| `:enable-mcp [--port N]` | Start the embedded MCP server (default port 9876) |
+| `:disable-mcp` | Stop the MCP server |
+
+See [MCP Server](mcp.md) for full details.
 
 ## Live Data
 

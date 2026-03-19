@@ -39,7 +39,7 @@ Verbose payloads are decoded (strings, integers, floats, booleans, raw data). No
 
 ### OpenTelemetry (OTLP)
 
-Two JSON-based OTel log formats are supported for file-based parsing. logana also accepts **live OTLP streams** over gRPC (`:otlp`, port 4317) and HTTP/JSON (`:otlp --http`, port 4318) — see [OTLP Streaming](otlp.md).
+Two JSON-based OTel log formats are supported for file-based parsing. logana also accepts **live OTLP streams** over gRPC (`:otel`, port 4317) and HTTP/JSON (`:otel --http`, port 4318) — see [OTel Collector](otel.md).
 
 **OTLP/JSON** (protobuf-JSON encoding — exported by collectors):
 ```json

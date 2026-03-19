@@ -25,8 +25,8 @@ A fast terminal log viewer for files of any size — including multi-GB logs. Bu
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
 - **Annotations** — attach comments to log lines; export analysis to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
-- **Live OTLP receiver** — receive OpenTelemetry logs in real time over gRPC or HTTP/JSON; compatible with any OTel SDK
-- **Multi-tab** — open multiple files, Docker streams, DLT daemon connections, or OTLP receivers; each tab has independent filters and session state
+- **Live OTel collector** — receive OpenTelemetry logs in real time over gRPC or HTTP/JSON; compatible with any OTel SDK
+- **Multi-tab** — open multiple files, Docker streams, DLT daemon connections, or OTel collector tabs; each tab has independent filters and session state
 - **MCP server** — embedded Model Context Protocol server; expose marks and annotations to AI assistants
 - **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs
 - **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 22 bundled themes
@@ -83,7 +83,7 @@ logana app.log --tail
 logana            # then type :docker
 
 # Receive OpenTelemetry logs over gRPC (port 4317)
-logana            # then type :otlp
+logana            # then type :otel
 
 # Add inline filters on the command line
 logana app.log -i error -o debug
@@ -105,6 +105,6 @@ Full documentation is available in the [`docs/`](docs/) directory:
 - [Filtering](docs/src/filtering/index.md)
 - [Annotations](docs/src/annotations.md)
 - [MCP Server](docs/src/mcp.md)
-- [OTLP Streaming](docs/src/otlp.md)
+- [OTel Collector](docs/src/otel.md)
 - [Log Formats](docs/src/log-formats.md)
 - [Architecture](ARCHITECTURE.md)
