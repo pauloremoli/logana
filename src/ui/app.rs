@@ -1403,4 +1403,657 @@ mod tests {
         // session policy not touched by the file-context key press
         assert!(session_setting.is_none());
     }
+
+    #[tokio::test]
+    async fn test_app_new_with_config_overrides() {
+        let (file_reader, log_manager) = make_tab(&["line"]).await;
+        let app = App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            Some(RestoreSessionPolicy::Always),
+            Some(RestoreSessionPolicy::Never),
+            Some(false),
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(true),
+        )
+        .await;
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
+        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Never);
+        assert!(!app.show_mode_bar);
+        assert!(app.show_borders_default);
+        assert!(!app.show_line_numbers);
+        assert!(!app.show_sidebar);
+        assert!(app.wrap);
+    }
+
+    #[tokio::test]
+    async fn test_app_new_settings_from_db() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        db.save_app_setting("restore_session", "always")
+            .await
+            .unwrap();
+        db.save_app_setting("restore_file_context", "never")
+            .await
+            .unwrap();
+        db.save_app_setting("show_mode_bar", "false").await.unwrap();
+        let fr = FileReader::from_bytes(vec![]);
+        let lm = LogManager::new(db, None).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
+        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Never);
+        assert!(!app.show_mode_bar);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_apply_value_colors() {
+        let mut app = make_app(&["line"]).await;
+        let gen_before = app.tabs[0].cache.render_gen;
+        let disabled: std::collections::HashSet<String> =
+            std::iter::once("http_get".to_string()).collect();
+        app.dispatch_key_result(
+            KeyResult::ApplyValueColors(disabled.clone()),
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert_eq!(app.theme.value_colors.disabled, disabled);
+        assert_ne!(app.tabs[0].cache.render_gen, gen_before);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_apply_level_colors() {
+        let mut app = make_app(&["line"]).await;
+        let disabled: std::collections::HashSet<String> =
+            std::iter::once("info".to_string()).collect();
+        app.dispatch_key_result(
+            KeyResult::ApplyLevelColors(disabled.clone()),
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert_eq!(app.tabs[0].display.level_colors_disabled, disabled);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_toggle_mode_bar() {
+        let mut app = make_app(&["line"]).await;
+        let initial = app.show_mode_bar;
+        app.dispatch_key_result(KeyResult::ToggleModeBar, KeyCode::Null, KeyModifiers::NONE)
+            .await;
+        assert_eq!(app.show_mode_bar, !initial);
+        for tab in &app.tabs {
+            assert_eq!(tab.display.show_mode_bar, !initial);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_open_files_nonexistent_sets_error() {
+        let mut app = make_app(&["line"]).await;
+        let paths = vec!["/nonexistent/missing.log".to_string()];
+        app.dispatch_key_result(
+            KeyResult::OpenFiles(paths),
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert!(app.tabs[app.active_tab].interaction.command_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_never_restore_session() {
+        let mut app = make_app(&["line"]).await;
+        app.dispatch_key_result(
+            KeyResult::NeverRestoreSession,
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Never);
+        let setting = app.db.load_app_setting("restore_session").await.unwrap();
+        assert_eq!(setting.as_deref(), Some("never"));
+    }
+
+    #[tokio::test]
+    async fn test_always_restore_session_via_key_event() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].interaction.mode = Box::new(crate::mode::app_mode::ConfirmRestoreSessionMode {
+            files: vec!["/nonexistent/file.log".to_string()],
+        });
+        app.handle_key_event_with_modifiers(KeyCode::Char('Y'), KeyModifiers::SHIFT)
+            .await;
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
+        let setting = app.db.load_app_setting("restore_session").await.unwrap();
+        assert_eq!(setting.as_deref(), Some("always"));
+    }
+
+    #[tokio::test]
+    async fn test_never_restore_session_via_key_event() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].interaction.mode = Box::new(crate::mode::app_mode::ConfirmRestoreSessionMode {
+            files: vec!["/nonexistent/file.log".to_string()],
+        });
+        app.handle_key_event_with_modifiers(KeyCode::Char('N'), KeyModifiers::SHIFT)
+            .await;
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Never);
+    }
+
+    #[tokio::test]
+    async fn test_close_tab_with_active_search_handle() {
+        use std::sync::atomic::Ordering;
+        let mut app = make_app(&["line1", "line2"]).await;
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let (_result_tx, result_rx) = tokio::sync::mpsc::channel(1);
+        let (_prog_tx, prog_rx) = tokio::sync::watch::channel(0.0_f64);
+        app.tabs[0].search.handle = Some(super::super::SearchHandle {
+            result_rx,
+            cancel: cancel_clone,
+            progress_rx: prog_rx,
+            pattern: "test".to_string(),
+            forward: true,
+            navigate: false,
+        });
+        app.close_tab().await;
+        assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn test_app_new_restore_policy_from_db_never() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        db.save_app_setting("restore_session", "never")
+            .await
+            .unwrap();
+        db.save_app_setting("restore_file_context", "ask")
+            .await
+            .unwrap();
+        let fr = FileReader::from_bytes(vec![]);
+        let lm = LogManager::new(db, None).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Never);
+        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Ask);
+    }
+
+    #[tokio::test]
+    async fn test_app_new_restore_policy_db_always() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        db.save_app_setting("restore_session", "always")
+            .await
+            .unwrap();
+        db.save_app_setting("restore_file_context", "always")
+            .await
+            .unwrap();
+        let fr = FileReader::from_bytes(vec![]);
+        let lm = LogManager::new(db, None).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
+        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Always);
+    }
+
+    #[tokio::test]
+    async fn test_app_new_restore_session_policy_default() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        db.save_app_setting("restore_session", "other_unknown")
+            .await
+            .unwrap();
+        let fr = FileReader::from_bytes(vec![]);
+        let lm = LogManager::new(db, None).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Ask);
+    }
+
+    #[tokio::test]
+    async fn test_app_new_bool_settings_from_db() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        db.save_app_setting("show_borders", "true").await.unwrap();
+        db.save_app_setting("show_line_numbers", "false")
+            .await
+            .unwrap();
+        db.save_app_setting("show_sidebar", "false").await.unwrap();
+        db.save_app_setting("wrap", "true").await.unwrap();
+        let fr = FileReader::from_bytes(vec![]);
+        let lm = LogManager::new(db, None).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(app.show_borders_default);
+        assert!(!app.show_line_numbers);
+        assert!(!app.show_sidebar);
+        assert!(app.wrap);
+    }
+
+    #[tokio::test]
+    async fn test_app_new_file_context_always_applies() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let ctx = crate::db::FileContext {
+            source_file: "/tmp/ctx_always.log".to_string(),
+            scroll_offset: 5,
+            search_query: String::new(),
+            level_colors_disabled: std::collections::HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: std::collections::HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: true,
+        };
+        db.save_file_context(&ctx).await.unwrap();
+        let data: Vec<u8> = b"line0\nline1\nline2\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db, Some("/tmp/ctx_always.log".to_string())).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            Some(RestoreSessionPolicy::Always),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(app.tab().scroll.scroll_offset, 5);
+    }
+
+    #[tokio::test]
+    async fn test_app_new_file_context_never_ignores() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let ctx = crate::db::FileContext {
+            source_file: "/tmp/ctx_never.log".to_string(),
+            scroll_offset: 7,
+            search_query: String::new(),
+            level_colors_disabled: std::collections::HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: std::collections::HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: true,
+        };
+        db.save_file_context(&ctx).await.unwrap();
+        let data: Vec<u8> = b"line0\nline1\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db, Some("/tmp/ctx_never.log".to_string())).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            Some(RestoreSessionPolicy::Never),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(app.tab().scroll.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_app_new_file_context_ask_sets_confirm_mode() {
+        use crate::mode::app_mode::ModeRenderState;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let ctx = crate::db::FileContext {
+            source_file: "/tmp/ctx_ask.log".to_string(),
+            scroll_offset: 3,
+            search_query: String::new(),
+            level_colors_disabled: std::collections::HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: std::collections::HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: true,
+        };
+        db.save_file_context(&ctx).await.unwrap();
+        let data: Vec<u8> = b"line0\nline1\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db, Some("/tmp/ctx_ask.log".to_string())).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            Some(RestoreSessionPolicy::Ask),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(
+            app.tab().interaction.mode.render_state(),
+            ModeRenderState::ConfirmRestore
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_app_new_session_restore_always_sets_pending() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        db.save_session(&["/tmp/a.log".to_string()]).await.unwrap();
+        let fr = FileReader::from_bytes(vec![]);
+        let lm = LogManager::new(db, None).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            Some(RestoreSessionPolicy::Always),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(app.pending_session_restore.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_app_new_session_restore_ask_sets_confirm_mode() {
+        use crate::mode::app_mode::ModeRenderState;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        db.save_session(&["/tmp/b.log".to_string()]).await.unwrap();
+        let fr = FileReader::from_bytes(vec![]);
+        let lm = LogManager::new(db, None).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            Some(RestoreSessionPolicy::Ask),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(
+            app.tab().interaction.mode.render_state(),
+            ModeRenderState::ConfirmRestoreSession { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_app_new_session_restore_never_no_pending() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        db.save_session(&["/tmp/c.log".to_string()]).await.unwrap();
+        let fr = FileReader::from_bytes(vec![]);
+        let lm = LogManager::new(db, None).await;
+        let app = App::new(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            Some(RestoreSessionPolicy::Never),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(app.pending_session_restore.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_close_tab_with_active_filter_handle() {
+        use std::sync::atomic::Ordering;
+        let mut app = make_app(&["line1", "line2"]).await;
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let (_tx, result_rx) = tokio::sync::mpsc::channel(1);
+        app.tabs[0].filter.handle = Some(super::super::FilterHandle {
+            result_rx,
+            cancel: cancel_clone,
+            displayed_progress: 0.0,
+            scroll_anchor: None,
+            received_first_chunk: false,
+            scan_fingerprint: vec![],
+            scan_line_count: 0,
+            scan_raw_mode: false,
+        });
+        app.close_tab().await;
+        assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_restore_session() {
+        let mut app = make_app(&["line"]).await;
+        app.dispatch_key_result(
+            KeyResult::RestoreSession(vec!["/nonexistent/file.log".to_string()]),
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_docker_attach() {
+        let mut app = make_app(&["line"]).await;
+        app.dispatch_key_result(
+            KeyResult::DockerAttach("container123".to_string(), "myapp".to_string()),
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert!(app.tabs.len() >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_dlt_attach() {
+        let mut app = make_app(&["line"]).await;
+        app.dispatch_key_result(
+            KeyResult::DltAttach("127.0.0.1".to_string(), 3490, "dlt-device".to_string()),
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert!(app.tabs.len() >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_always_restore_session() {
+        let mut app = make_app(&["line"]).await;
+        app.dispatch_key_result(
+            KeyResult::AlwaysRestoreSession(vec!["/nonexistent/file.log".to_string()]),
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
+        let setting = app.db.load_app_setting("restore_session").await.unwrap();
+        assert_eq!(setting.as_deref(), Some("always"));
+    }
+
+    #[tokio::test]
+    async fn test_stop_mcp_clears_handle() {
+        let mut app = make_app(&["line"]).await;
+        app.stop_mcp();
+        assert!(app.mcp_server_handle.is_none());
+        assert!(app.mcp_cmd_rx.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_mcp_snapshot_no_server_is_noop() {
+        let mut app = make_app(&["line"]).await;
+        assert!(app.mcp_server_handle.is_none());
+        app.refresh_mcp_snapshot();
+    }
+
+    #[tokio::test]
+    async fn test_poll_mcp_commands_no_receiver_is_noop() {
+        let mut app = make_app(&["line"]).await;
+        assert!(app.mcp_cmd_rx.is_none());
+        app.poll_mcp_commands().await;
+    }
+
+    #[tokio::test]
+    async fn test_poll_mcp_commands_with_empty_channel() {
+        let mut app = make_app(&["line"]).await;
+        let (_tx, rx) = tokio::sync::mpsc::channel::<crate::mcp::McpCommand>(8);
+        app.mcp_cmd_rx = Some(rx);
+        app.poll_mcp_commands().await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_mcp_command_toggle_mark() {
+        let mut app = make_app(&["line0", "line1"]).await;
+        assert!(!app.tabs[0].log_manager.is_marked(0));
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        app.mcp_cmd_rx = Some(rx);
+        tx.send(crate::mcp::McpCommand::ToggleMark(0))
+            .await
+            .unwrap();
+        app.poll_mcp_commands().await;
+        assert!(app.tabs[0].log_manager.is_marked(0));
+    }
+
+    #[tokio::test]
+    async fn test_handle_mcp_command_add_annotation() {
+        let mut app = make_app(&["line0", "line1"]).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        app.mcp_cmd_rx = Some(rx);
+        tx.send(crate::mcp::McpCommand::AddAnnotation {
+            text: "note".to_string(),
+            line_indices: vec![0],
+        })
+        .await
+        .unwrap();
+        app.poll_mcp_commands().await;
+        assert!(!app.tabs[0].log_manager.get_comments().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_mcp_command_remove_annotation() {
+        let mut app = make_app(&["line0", "line1"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_comment("test note".to_string(), vec![0]);
+        assert_eq!(app.tabs[0].log_manager.get_comments().len(), 1);
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        app.mcp_cmd_rx = Some(rx);
+        tx.send(crate::mcp::McpCommand::RemoveAnnotation(0))
+            .await
+            .unwrap();
+        app.poll_mcp_commands().await;
+        assert!(app.tabs[0].log_manager.get_comments().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_apply_tab_defaults() {
+        let mut app = make_app(&["line"]).await;
+        app.show_mode_bar = false;
+        app.show_borders_default = true;
+        app.show_line_numbers = false;
+        app.show_sidebar = false;
+        app.wrap = true;
+        let data: Vec<u8> = b"new\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut tab = super::super::TabState::new(fr, lm, "new".to_string());
+        app.apply_tab_defaults(&mut tab);
+        assert!(!tab.display.show_mode_bar);
+        assert!(tab.display.show_borders);
+        assert!(!tab.display.show_line_numbers);
+        assert!(!tab.display.show_sidebar);
+        assert!(tab.display.wrap);
+    }
+
+    #[tokio::test]
+    async fn test_startup_warnings_cleared_on_key_event() {
+        let mut app = make_app(&["line"]).await;
+        app.startup_warnings = vec!["warning 1".to_string(), "warning 2".to_string()];
+        app.handle_key_event(KeyCode::Char('j')).await;
+        assert!(app.startup_warnings.is_empty());
+    }
 }

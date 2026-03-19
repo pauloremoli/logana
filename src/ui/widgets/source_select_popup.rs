@@ -513,3 +513,312 @@ impl<'a> Widget for DltSelectPopup<'a> {
             .render(vsplit[2], buf);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Keybindings;
+    use crate::db::Database;
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::mode::docker_select_mode::DockerSelectMode;
+    use crate::theme::Theme;
+    use crate::types::DockerContainer;
+    use crate::ui::App;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::Arc;
+
+    async fn make_app(lines: &[&str]) -> App {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    fn make_terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_docker_select_basic() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let containers = vec![
+            DockerContainer {
+                id: "abc123".to_string(),
+                name: "web-app".to_string(),
+                image: "nginx:latest".to_string(),
+                status: "Up 2 hours".to_string(),
+            },
+            DockerContainer {
+                id: "def456".to_string(),
+                name: "db".to_string(),
+                image: "postgres:15".to_string(),
+                status: "Up 3 hours".to_string(),
+            },
+            DockerContainer {
+                id: "ghi789".to_string(),
+                name: "cache".to_string(),
+                image: "redis:7".to_string(),
+                status: "Up 1 hour".to_string(),
+            },
+        ];
+        app.tabs[0].interaction.mode = Box::new(DockerSelectMode::new(containers));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_docker_select_error() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].interaction.mode =
+            Box::new(DockerSelectMode::with_error("Docker not found".to_string()));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_docker_select_scrollbar() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let containers: Vec<DockerContainer> = (0..25)
+            .map(|i| DockerContainer {
+                id: format!("id_{}", i),
+                name: format!("container_{}", i),
+                image: format!("image_{}:latest", i),
+                status: format!("Up {} hours", i),
+            })
+            .collect();
+        app.tabs[0].interaction.mode = Box::new(DockerSelectMode::new(containers));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_docker_select_selected_not_first() {
+        let mut app = make_app(&["line one"]).await;
+        let containers = vec![
+            DockerContainer {
+                id: "a".to_string(),
+                name: "first".to_string(),
+                image: "img:1".to_string(),
+                status: "running".to_string(),
+            },
+            DockerContainer {
+                id: "b".to_string(),
+                name: "second".to_string(),
+                image: "img:2".to_string(),
+                status: "running".to_string(),
+            },
+        ];
+        let mut mode = DockerSelectMode::new(containers);
+        mode.selected = 1;
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_docker_select_long_names_truncated() {
+        let mut app = make_app(&["line one"]).await;
+        let containers = vec![DockerContainer {
+            id: "abc".to_string(),
+            name: "a".repeat(100),
+            image: "b".repeat(100),
+            status: "c".repeat(100),
+        }];
+        app.tabs[0].interaction.mode = Box::new(DockerSelectMode::new(containers));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_docker_select_scroll_past_viewport() {
+        let mut app = make_app(&["line one"]).await;
+        let containers: Vec<DockerContainer> = (0..30)
+            .map(|i| DockerContainer {
+                id: format!("id_{i}"),
+                name: format!("container_{i}"),
+                image: format!("img:{i}"),
+                status: "Up".to_string(),
+            })
+            .collect();
+        let mut mode = DockerSelectMode::new(containers);
+        mode.selected = 28;
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dlt_select_empty_devices() {
+        use crate::mode::dlt_select_mode::DltSelectMode;
+        let mut app = make_app(&["line one"]).await;
+        app.tabs[0].interaction.mode = Box::new(DltSelectMode::new(vec![]));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dlt_select_with_devices() {
+        use crate::config::DltDevice;
+        use crate::mode::dlt_select_mode::DltSelectMode;
+        let mut app = make_app(&["line one"]).await;
+        let devices = vec![
+            DltDevice {
+                name: "ecu1".to_string(),
+                host: "192.168.1.1".to_string(),
+                port: 3490,
+            },
+            DltDevice {
+                name: "ecu2".to_string(),
+                host: "192.168.1.2".to_string(),
+                port: 3491,
+            },
+        ];
+        app.tabs[0].interaction.mode = Box::new(DltSelectMode::new(devices));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dlt_select_error() {
+        use crate::mode::dlt_select_mode::DltSelectMode;
+        let mut app = make_app(&["line one"]).await;
+        let mut mode = DltSelectMode::new(vec![]);
+        mode.error = Some("Connection refused".to_string());
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dlt_select_add_device_form() {
+        use crate::mode::dlt_select_mode::{AddDeviceState, DltSelectMode};
+        let mut app = make_app(&["line one"]).await;
+        let mut mode = DltSelectMode::new(vec![]);
+        mode.adding = Some(AddDeviceState {
+            fields: [String::new(), String::new(), "3490".to_string()],
+            active_field: 0,
+            cursor: 0,
+        });
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dlt_select_scrollbar_many_devices() {
+        use crate::config::DltDevice;
+        use crate::mode::dlt_select_mode::DltSelectMode;
+        let mut app = make_app(&["line one"]).await;
+        let devices: Vec<DltDevice> = (0..30)
+            .map(|i| DltDevice {
+                name: format!("ecu{i}"),
+                host: "127.0.0.1".to_string(),
+                port: 3490 + i as u16,
+            })
+            .collect();
+        app.tabs[0].interaction.mode = Box::new(DltSelectMode::new(devices));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dlt_select_selected_not_first() {
+        use crate::config::DltDevice;
+        use crate::mode::dlt_select_mode::DltSelectMode;
+        let mut app = make_app(&["line one"]).await;
+        let devices = vec![
+            DltDevice {
+                name: "a".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: 3490,
+            },
+            DltDevice {
+                name: "b".to_string(),
+                host: "127.0.0.2".to_string(),
+                port: 3491,
+            },
+        ];
+        let mut mode = DltSelectMode::new(devices);
+        mode.selected = 1;
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dlt_select_add_selected() {
+        use crate::config::DltDevice;
+        use crate::mode::dlt_select_mode::DltSelectMode;
+        let mut app = make_app(&["line one"]).await;
+        let devices = vec![DltDevice {
+            name: "dev1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 3490,
+        }];
+        let mut mode = DltSelectMode::new(devices);
+        mode.selected = 1;
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dlt_select_add_form_with_error() {
+        use crate::mode::dlt_select_mode::{AddDeviceState, DltSelectMode};
+        let mut app = make_app(&["line one"]).await;
+        let mut mode = DltSelectMode::new(vec![]);
+        mode.adding = Some(AddDeviceState {
+            fields: [String::new(), String::new(), "3490".to_string()],
+            active_field: 0,
+            cursor: 0,
+        });
+        mode.error = Some("Port must be a number".to_string());
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dlt_select_add_form_second_field_active() {
+        use crate::mode::dlt_select_mode::{AddDeviceState, DltSelectMode};
+        let mut app = make_app(&["line one"]).await;
+        let mut mode = DltSelectMode::new(vec![]);
+        mode.adding = Some(AddDeviceState {
+            fields: ["mydevice".to_string(), String::new(), "3490".to_string()],
+            active_field: 1,
+            cursor: 0,
+        });
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dlt_select_long_host_truncated() {
+        use crate::config::DltDevice;
+        use crate::mode::dlt_select_mode::DltSelectMode;
+        let mut app = make_app(&["line one"]).await;
+        let devices = vec![DltDevice {
+            name: "a".repeat(60),
+            host: "b".repeat(60),
+            port: 9999,
+        }];
+        app.tabs[0].interaction.mode = Box::new(DltSelectMode::new(devices));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+}

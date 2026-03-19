@@ -25,10 +25,10 @@ A fast terminal log viewer for files of any size — including multi-GB logs. Bu
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
 - **Annotations** — attach comments to log lines; export analysis to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
-- **Live OTLP receiver** — receive OpenTelemetry logs in real time over gRPC (`:otlp`, port 4317) or HTTP/JSON (`:otlp --http`, port 4318); compatible with any OTel SDK
+- **Live OTLP receiver** — receive OpenTelemetry logs in real time over gRPC or HTTP/JSON; compatible with any OTel SDK
 - **Multi-tab** — open multiple files, Docker streams, DLT daemon connections, or OTLP receivers; each tab has independent filters and session state
-- **MCP server** — embedded Model Context Protocol server; expose marks and annotations to AI assistants and let them interact with your session
-- **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs.
+- **MCP server** — embedded Model Context Protocol server; expose marks and annotations to AI assistants
+- **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs
 - **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 22 bundled themes
 
 ---
@@ -56,16 +56,10 @@ brew tap pauloremoli/logana
 brew install logana
 ```
 
-### Cargo (crates.io)
+### Cargo
 
 ```sh
 cargo install logana
-```
-
-### Cargo (from source)
-
-```sh
-cargo install --git https://github.com/pauloremoli/logana
 ```
 
 ---
@@ -81,382 +75,36 @@ logana /var/log/
 
 # Pipe from stdin
 journalctl -f | logana
-tail -f app.log | logana
 
-# Start at the end of a file and follow new lines
+# Start at the end and follow new lines
 logana app.log --tail
 
 # Stream a Docker container
 logana            # then type :docker
 
-# Stream from a DLT daemon
-logana            # then type :dlt
-
-# Open a DLT binary file
-logana trace.dlt
-
-# Receive OpenTelemetry logs over gRPC (port 4317 — matches OTel SDK defaults)
+# Receive OpenTelemetry logs over gRPC (port 4317)
 logana            # then type :otlp
-# Or use HTTP/JSON on port 4318
-logana            # then type :otlp --http
 
 # Add inline filters on the command line
 logana app.log -i error -o debug
 logana app.log -i "--field level=ERROR" -t "> 2024-02-21"
-
-# Load saved filters from a file
-logana app.log -f my-filters.json
 
 # Headless — filter without the TUI, output to stdout or a file
 logana app.log --headless -i error -o debug
 logana app.log --headless -i error --output filtered.log
 ```
 
-## Supported Log Formats
-
-Detected automatically on open — no flags or config required:
-
-| Format | Examples |
-|---|---|
-| JSON | tracing-subscriber JSON, bunyan, pino, any structured JSON logger |
-| Syslog | RFC 3164 (BSD), RFC 5424 |
-| OpenTelemetry | OTLP/JSON, OTel SDK JSON |
-| DLT | AUTOSAR binary (storage, wire, simplified) and `dlt-convert -a` text |
-| Journalctl | short, short-iso, short-precise, short-full, short-monotonic, short-unix, json-sse, json-seq |
-| Common / Combined Log | Apache access, nginx access |
-| Logfmt | Go `slog`, Heroku, Grafana Loki |
-| Common log family | env_logger, tracing-subscriber fmt (with/without spans), logback, log4j2, Spring Boot, Python logging, loguru, structlog |
-
 ---
 
----
-
-## Filtering
-
-Filters are layered — include patterns narrow the view, exclude patterns hide matching lines. Both support literal strings (fast Aho-Corasick) and regular expressions.
-
-| Action | Key / Command |
-|---|---|
-| Add include filter | `i` or `:filter <pattern>` |
-| Add exclude filter | `o` or `:exclude <pattern>` |
-| Open filter manager | `f` |
-| Toggle filtering on/off | `F` |
-| Add date range filter | `t` in filter manager, or `:date-filter <expr>` |
-| Add field-scoped filter | `:filter --field <key>=<value>` |
-| Add field-scoped exclude | `:exclude --field <key>=<value>` |
-
-**Date filter syntax:**
-```
-:date-filter 01:00:00 .. 02:00:00
-:date-filter > 2024-02-21T10:00:00
-:date-filter Feb 21 .. Feb 22
-```
-
-**Field filter syntax:**
-```
-:filter --field level=error
-:filter --field component=auth
-:exclude --field level=debug
-```
-
-Field filters match against parsed structured fields rather than raw line text. Aliases: `level`, `timestamp`, `target`, `message`. 
-
-Filters are persisted to SQLite and restored the next time you open the same file.
-
-**CLI flags:** Add filters before the TUI opens using `-i` (include), `-o` (exclude), and `-t` (timestamp). Each flag accepts the same argument string as the corresponding TUI command and can be repeated. Use `-f` to load a saved filter file:
-
-```sh
-logana app.log -i error -o debug
-logana app.log -i "--field level=ERROR"
-logana app.log -i "--bg Red error" -t "> 2024-02-21"
-logana app.log -f my-filters.json
-```
-
----
-
-## Search
-
-| Action | Key |
-|---|---|
-| Search forward | `/` |
-| Search backward | `?` |
-| Next match | `n` |
-| Previous match | `N` |
-
-Search operates on visible lines only (respects active filters). Matches are highlighted inline.
-
----
-
-## Structured Field View
-
-When a structured format is detected (JSON, logfmt, syslog, etc.), logana parses each line into columns: timestamp, level, target, and extra fields. Use `:select-fields` to show, hide, and reorder columns interactively.
-
-```sh
-:hide-field span                    # hide a field by name
-:hide-field 0                       # hide the first visible field (0-based index)
-:show-field span                    # show a previously hidden field by name
-:show-all-fields                    # reset — show all fields
-:select-fields                      # interactive picker
-```
-
-Tab completion is available for both `:hide-field` and `:show-field`: typing the command followed by a space shows all known field names as suggestions. `:hide-field` indexes into the currently visible (non-hidden) fields; `:show-field` accepts names only.
-
----
-
-## Annotations
-
-Select lines with `V` (visual mode), then press `c` to attach a multiline comment. You can also press `c` in normal mode to comment the current line directly. Annotated lines show a `◆` marker in the gutter. Press `r` on an annotated line to edit its comment. Export everything to a report:
-
-```sh
-:export report.md                   # Markdown (default)
-:export report.md -t jira           # Jira wiki markup
-:export report.md -t <template>     # custom template
-```
-
----
-
-## Headless Mode
-
-Run the full filter pipeline without launching the TUI. Useful for scripting, CI, or extracting filtered output:
-
-```sh
-# Print matching lines to stdout
-logana app.log --headless -i error -o debug
-
-# Write to a file
-logana app.log --headless -i error --output filtered.log
-
-# Combine with other flags
-logana app.log --headless -i "--field level=ERROR" -t "> 2024-02-21" --output out.log
-```
-
-All filter flags (`-i`, `-o`, `-t`, `-f`) work the same as in interactive mode.
-
-> **Note:** `--output` must point to a different file than the input — logana rejects same-file paths to prevent data loss.
-
-
-## MCP Server
-
-logana embeds a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server. When active, AI assistants can read your marked lines and annotations and call tools to interact with the session.
-
-```sh
-# Start on launch (default port 9876)
-logana app.log --mcp
-
-# Start on a custom port
-logana app.log --mcp 8080
-```
-
-From inside the TUI:
-
-```
-:enable-mcp                   # start on default port 9876
-:enable-mcp --port 8080       # start on a custom port
-:disable-mcp                  # stop the server
-```
-
-The server listens at `http://localhost:<port>/mcp`. Resources: `logana://marks`, `logana://annotations`. Tools: `toggle_mark`, `add_annotation`, `remove_annotation`.
-
-Set a persistent default port in `~/.config/logana/config.json`:
-
-```json
-{ "mcp_port": 9876 }
-```
-
----
-
-## OTLP Streaming
-
-logana embeds an OpenTelemetry log receiver. Point your OTel SDK directly at logana and see structured logs in real time.
-
-```
-:otlp              # gRPC on port 4317 (default — matches OTel SDK defaults)
-:otlp --http       # HTTP/JSON on port 4318
-:otlp 9000         # gRPC on a custom port
-```
-
-The gRPC receiver runs in plaintext mode. Set `OTEL_EXPORTER_OTLP_INSECURE=true` (or use `http://localhost:4317` as the endpoint URL) so your SDK skips TLS negotiation.
-
-
-## Key Reference
-
-### Navigation
-
-| Key | Action |
-|---|---|
-| `j` / `k` | Scroll down / up |
-| `gg` / `G` | First / last line |
-| `Ctrl+d` / `Ctrl+u` | Half page down / up |
-| `PageDown` / `PageUp` | Full page down / up |
-| `h` / `l` / `Left` / `Right` | Scroll left / right |
-| `0` / `$` | Jump to start / end of line |
-| `5j`, `10G` | Count prefix — repeat motion N times |
-| `e` / `E` | Next / previous ERROR or FATAL line |
-| `w` / `W` | Next / previous WARN line |
-
-### Normal Mode
-
-| Key | Action |
-|---|---|
-| `i` | Add include filter |
-| `o` | Add exclude filter |
-| `f` | Open filter manager |
-| `F` | Toggle filtering on/off |
-| `/` / `?` | Search forward / backward |
-| `n` / `N` | Next / previous match |
-| `e` / `E` | Next / previous ERROR or FATAL line |
-| `w` / `W` | Next / previous WARN line |
-| `m` | Mark / unmark current line |
-| `M` | Toggle marks-only view |
-| `c` | Comment current line |
-| `r` | Edit existing comment on current line |
-| `d` | Delete comment on current line |
-| `v` | Enter visual character mode |
-| `V` | Enter visual line mode |
-| `u` | UI options |
-| `F1` | Keybindings help |
-| `:` | Open command mode |
-| `q` | Quit |
-
-### Visual Line Mode
-
-| Key | Action |
-|---|---|
-| `j` / `k` | Extend selection down / up |
-| `c` | Attach comment to selection |
-| `y` | Yank (copy) lines to clipboard |
-| `Esc` | Cancel |
-
-### Visual Character Mode
-
-| Key | Action |
-|---|---|
-| `h` / `l` | Extend selection left / right |
-| `y` | Yank (copy) selection to clipboard |
-| `Esc` | Cancel |
-
-### Filter Manager (`f`)
-
-| Key | Action |
-|---|---|
-| `Space` | Toggle filter on/off |
-| `e` | Edit pattern |
-| `d` | Delete filter |
-| `c` | Set highlight color |
-| `t` | Add date filter |
-| `J` / `K` | Move filter down / up |
-| `A` | Toggle all on/off |
-| `C` | Clear all filters |
-| `Esc` | Exit |
-
-### Multi-tab
-
-| Key | Action |
-|---|---|
-| `Tab` / `Shift+Tab` | Next / previous tab |
-| `Ctrl+t` | Open new tab |
-| `Ctrl+w` | Close current tab |
-
-### UI Toggles (`u`)
-
-| Key | Action |
-|---|---|
-| `s` | Sidebar |
-| `b` | Mode bar |
-| `B` | Borders |
-| `w` | Line wrap |
-
----
-
-## Configuration
-
-Config file: `~/.config/logana/config.json`
-
-```json
-{
-  "theme": "dracula",
-  "show_mode_bar": true,
-  "show_borders": true,
-  "show_sidebar": true,
-  "show_line_numbers": true,
-  "wrap": false,
-  "preview_bytes": 16777216,
-  "restore_session": "ask",
-  "restore_file_context": "ask",
-  "dlt_devices": [
-    { "name": "my-ecu", "host": "192.168.1.100", "port": 3490 }
-  ],
-  "keybindings": {
-    "navigation": {
-      "scroll_down": ["j", "Down"],
-      "scroll_up": ["k", "Up"],
-      "half_page_down": "Ctrl+d",
-      "half_page_up": "Ctrl+u"
-    },
-    "global": {
-      "quit": "q"
-    }
-  }
-}
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `theme` | `"github-dark"` | Color theme name |
-| `show_mode_bar` | `true` | Show the mode/status bar at the bottom |
-| `show_borders` | `true` | Show panel borders |
-| `show_sidebar` | `true` | Show the filter sidebar |
-| `show_line_numbers` | `true` | Show line number gutter |
-| `wrap` | `false` | Wrap long lines |
-| `preview_bytes` | `16777216` | Bytes read for instant preview while the full index builds in the background (16 MiB) |
-| `restore_session` | `"ask"` | Whether to reopen the tabs that were open when you last quit (`"ask"`, `"always"`, `"never"`) |
-| `restore_file_context` | `"ask"` | Whether to restore per-file state (scroll position, marks, search query) when reopening a previously visited file (`"ask"`, `"always"`, `"never"`) |
-| `dlt_devices` | `[]` | Pre-configured DLT daemon connections shown in the `:dlt` picker; each entry requires `name` and `host`, and accepts an optional `port` (default `3490`) |
-
-Both options accept:
-- `"ask"` — prompt on every open (default)
-- `"always"` — restore silently without asking
-- `"never"` — always start fresh without asking
-
-You can also set these preferences interactively: when the restore prompt appears, press `Y` (always) or `N` (never) instead of `y`/`n` to save the choice permanently.
-
-All keybindings have sensible defaults — the config file is entirely optional. Each action supports a single key or an array of alternatives.
-
----
-
-## Themes
-
-22 themes are bundled:
-
-**Dark:** `atomic`, `catppuccin-mocha`, `catppuccin-macchiato`, `dracula`, `everforest-dark`, `github-dark`, `github-dark-dimmed`, `gruvbox-dark`, `jandedobbeleer`, `kanagawa`, `monokai`, `nord`, `onedark`, `paradox`, `rose-pine`, `solarized`, `tokyonight`
-
-**Light:** `catppuccin-latte`, `everforest-light`, `github-light`, `onelight`, `rose-pine-dawn`
-
-```sh
-:set-theme nord
-```
-
-Place custom themes (JSON) in `~/.config/logana/themes/`. Colors accept hex (`"#RRGGBB"`) or RGB arrays (`[r, g, b]`).
-
----
-
-## Data Locations
-
-| Path | Contents |
-|---|---|
-| `~/.local/share/logana/logana.db` | Filters, session state, file contexts |
-| `~/.config/logana/config.json` | Keybindings, theme, UI defaults, restore policy |
-| `~/.config/logana/themes/` | Custom themes |
-| `~/.config/logana/templates/` | Custom export templates |
-
----
-
-## Performance
-
-- **Zero-copy reads** — memory-mapped files let the OS page in only what's accessed, keeping RAM usage flat regardless of file size.
-- **SIMD-accelerated scanning** — line indexing uses CPU vector instructions to find new lines.
-- **Background filtering** — filter scans run across all CPU cores without blocking the UI.
-
-For a deeper look at design decisions, see [ARCHITECTURE.md](ARCHITECTURE.md).
-
----
+## Documentation
+
+Full documentation is available in the [`docs/`](docs/) directory:
+
+- [Keybindings](docs/src/configuration/keybindings.md)
+- [Configuration](docs/src/configuration/index.md)
+- [Filtering](docs/src/filtering/index.md)
+- [Annotations](docs/src/annotations.md)
+- [MCP Server](docs/src/mcp.md)
+- [OTLP Streaming](docs/src/otlp.md)
+- [Log Formats](docs/src/log-formats.md)
+- [Architecture](ARCHITECTURE.md)

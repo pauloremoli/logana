@@ -3,7 +3,6 @@ mod commands;
 pub(crate) mod field_layout;
 mod loading;
 mod render;
-mod render_popups;
 mod tab_state;
 pub(crate) mod widgets;
 

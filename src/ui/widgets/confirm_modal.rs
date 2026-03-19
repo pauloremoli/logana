@@ -239,3 +239,275 @@ impl<'a> Widget for ConfirmOpenDirModal<'a> {
             .render(modal_area, buf);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Keybindings;
+    use crate::db::{Database, FileContext};
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode};
+    use crate::theme::Theme;
+    use crate::ui::App;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::Arc;
+
+    async fn make_app(lines: &[&str]) -> App {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    fn make_terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_confirm_restore_modal() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let context = FileContext {
+            source_file: "/tmp/test.log".to_string(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            level_colors_disabled: std::collections::HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: std::collections::HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: true,
+        };
+        app.tabs[0].interaction.mode = Box::new(ConfirmRestoreMode { context });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_confirm_restore_session() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].interaction.mode = Box::new(ConfirmRestoreSessionMode {
+            files: vec!["file1.log".to_string(), "file2.log".to_string()],
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[test]
+    fn test_confirm_restore_modal_renders() {
+        use super::{ConfirmRestoreModal, Theme};
+        use crate::config::Keybindings;
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let modal = ConfirmRestoreModal {
+            theme: &theme,
+            keybindings: &kb,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| f.render_widget(modal, f.area())).unwrap();
+    }
+
+    #[test]
+    fn test_confirm_restore_session_modal_no_files() {
+        use super::ConfirmRestoreSessionModal;
+        use crate::config::Keybindings;
+        use crate::theme::Theme;
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let modal = ConfirmRestoreSessionModal {
+            theme: &theme,
+            keybindings: &kb,
+            files: &[],
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| f.render_widget(modal, f.area())).unwrap();
+    }
+
+    #[test]
+    fn test_confirm_restore_session_modal_many_files() {
+        use super::ConfirmRestoreSessionModal;
+        use crate::config::Keybindings;
+        use crate::theme::Theme;
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let files: Vec<String> = (0..10)
+            .map(|i| format!("/home/user/logs/file{i}.log"))
+            .collect();
+        let modal = ConfirmRestoreSessionModal {
+            theme: &theme,
+            keybindings: &kb,
+            files: &files,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| f.render_widget(modal, f.area())).unwrap();
+    }
+
+    #[test]
+    fn test_confirm_open_dir_modal_one_file() {
+        use super::ConfirmOpenDirModal;
+        use crate::config::Keybindings;
+        use crate::theme::Theme;
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let files = vec!["/tmp/app.log".to_string()];
+        let modal = ConfirmOpenDirModal {
+            theme: &theme,
+            keybindings: &kb,
+            files: &files,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| f.render_widget(modal, f.area())).unwrap();
+    }
+
+    #[test]
+    fn test_confirm_open_dir_modal_many_files_truncated() {
+        use super::ConfirmOpenDirModal;
+        use crate::config::Keybindings;
+        use crate::theme::Theme;
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let files: Vec<String> = (0..15).map(|i| format!("/tmp/file{i}.log")).collect();
+        let modal = ConfirmOpenDirModal {
+            theme: &theme,
+            keybindings: &kb,
+            files: &files,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| f.render_widget(modal, f.area())).unwrap();
+    }
+
+    #[test]
+    fn test_confirm_open_dir_modal_plural_title() {
+        use super::ConfirmOpenDirModal;
+        use crate::config::Keybindings;
+        use crate::theme::Theme;
+        use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, prelude::Widget};
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let files = vec!["/tmp/a.log".to_string(), "/tmp/b.log".to_string()];
+        let modal = ConfirmOpenDirModal {
+            theme: &theme,
+            keybindings: &kb,
+            files: &files,
+        };
+        let area = ratatui::prelude::Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        modal.render(area, &mut buf);
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("2 files"));
+    }
+
+    #[test]
+    fn test_confirm_open_dir_modal_singular_title() {
+        use super::ConfirmOpenDirModal;
+        use crate::config::Keybindings;
+        use crate::theme::Theme;
+        use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, prelude::Widget};
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let files = vec!["/tmp/a.log".to_string()];
+        let modal = ConfirmOpenDirModal {
+            theme: &theme,
+            keybindings: &kb,
+            files: &files,
+        };
+        let area = ratatui::prelude::Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        modal.render(area, &mut buf);
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("1 file"));
+    }
+
+    #[test]
+    fn test_confirm_restore_modal_renders_to_buffer() {
+        use super::ConfirmRestoreModal;
+        use ratatui::{buffer::Buffer, prelude::Widget};
+        let theme = crate::theme::Theme::default();
+        let kb = crate::config::Keybindings::default();
+        let modal = ConfirmRestoreModal {
+            theme: &theme,
+            keybindings: &kb,
+        };
+        let area = ratatui::prelude::Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        modal.render(area, &mut buf);
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("Restore"));
+    }
+
+    #[test]
+    fn test_confirm_restore_session_modal_renders_with_files() {
+        use super::ConfirmRestoreSessionModal;
+        use ratatui::{buffer::Buffer, prelude::Widget};
+        let theme = crate::theme::Theme::default();
+        let kb = crate::config::Keybindings::default();
+        let files = vec![
+            "/home/user/app.log".to_string(),
+            "/home/user/server.log".to_string(),
+        ];
+        let modal = ConfirmRestoreSessionModal {
+            theme: &theme,
+            keybindings: &kb,
+            files: &files,
+        };
+        let area = ratatui::prelude::Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        modal.render(area, &mut buf);
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("app.log"));
+    }
+
+    #[test]
+    fn test_confirm_open_dir_modal_exactly_ten_files() {
+        use super::ConfirmOpenDirModal;
+        use ratatui::{buffer::Buffer, prelude::Widget};
+        let theme = crate::theme::Theme::default();
+        let kb = crate::config::Keybindings::default();
+        let files: Vec<String> = (0..10).map(|i| format!("/tmp/file{i}.log")).collect();
+        let modal = ConfirmOpenDirModal {
+            theme: &theme,
+            keybindings: &kb,
+            files: &files,
+        };
+        let area = ratatui::prelude::Rect::new(0, 0, 80, 30);
+        let mut buf = Buffer::empty(area);
+        modal.render(area, &mut buf);
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("10 files"));
+    }
+
+    #[tokio::test]
+    async fn test_confirm_open_dir_mode_render() {
+        use crate::mode::app_mode::ConfirmOpenDirMode;
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].interaction.mode = Box::new(ConfirmOpenDirMode {
+            dir: "/tmp/logs".to_string(),
+            files: vec!["a.log".to_string(), "b.log".to_string()],
+        });
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+}

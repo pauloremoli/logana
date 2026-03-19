@@ -154,3 +154,69 @@ impl<'a> Widget for KeybindingsHelpPopup<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Keybindings;
+    use crate::db::Database;
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::mode::keybindings_help_mode::KeybindingsHelpMode;
+    use crate::theme::Theme;
+    use crate::ui::App;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::Arc;
+
+    async fn make_app(lines: &[&str]) -> App {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    fn make_terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_keybindings_help_basic() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].interaction.mode = Box::new(KeybindingsHelpMode::new());
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_keybindings_help_with_search() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let mut mode = KeybindingsHelpMode::new();
+        mode.search = "scroll".to_string();
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_keybindings_help_scroll() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let mut mode = KeybindingsHelpMode::new();
+        mode.scroll = 5;
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+}

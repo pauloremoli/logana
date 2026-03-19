@@ -319,4 +319,224 @@ mod tests {
     fn test_file_display_name_just_filename() {
         assert_eq!(file_display_name("file.txt"), "file.txt");
     }
+
+    #[test]
+    fn test_file_display_name_no_separator() {
+        assert_eq!(file_display_name("nodirfile"), "nodirfile");
+    }
+
+    #[test]
+    fn test_command_bar_renders_color_items() {
+        let theme = Theme::default();
+        let bar = CommandBar {
+            input_text: "filter --fg ",
+            cursor_pos: 12,
+            completion: CompletionSource::ColorItems(vec!["red".to_string(), "blue".to_string()]),
+            theme: &theme,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
+        terminal.draw(|f| f.render_widget(bar, f.area())).unwrap();
+    }
+
+    #[test]
+    fn test_command_bar_renders_file_items() {
+        let theme = Theme::default();
+        let bar = CommandBar {
+            input_text: "open /tmp/",
+            cursor_pos: 10,
+            completion: CompletionSource::FileItems(vec![
+                "/tmp/file.log".to_string(),
+                "/tmp/logs/".to_string(),
+            ]),
+            theme: &theme,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
+        terminal.draw(|f| f.render_widget(bar, f.area())).unwrap();
+    }
+
+    #[test]
+    fn test_command_bar_renders_empty_items() {
+        let theme = Theme::default();
+        let bar = CommandBar {
+            input_text: "unknowncmd",
+            cursor_pos: 10,
+            completion: CompletionSource::Items(vec![]),
+            theme: &theme,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
+        terminal.draw(|f| f.render_widget(bar, f.area())).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_error() {
+        use crate::config::Keybindings;
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        tab.interaction.command_error = Some("err".to_string());
+        let result = resolve_completions(&mut tab, "filter", None);
+        assert!(matches!(result, CompletionSource::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_field_name() {
+        use crate::config::Keybindings;
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let data = br#"{"level":"INFO","msg":"hello"}"#.to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "@field:le", None);
+        assert!(matches!(result, CompletionSource::Items(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_flag() {
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "filter pattern --f", None);
+        assert!(matches!(result, CompletionSource::Items(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_color() {
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "filter pattern --fg red", None);
+        assert!(matches!(result, CompletionSource::ColorItems(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_file_path() {
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "open /tmp/", None);
+        assert!(matches!(result, CompletionSource::FileItems(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_set_theme() {
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "set-theme dar", None);
+        assert!(matches!(result, CompletionSource::Items(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_hide_field() {
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let data = br#"{"level":"INFO","msg":"hello"}"#.to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "hide-field le", None);
+        assert!(matches!(result, CompletionSource::Items(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_show_field_with_hidden() {
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let data = br#"{"level":"INFO","msg":"hello"}"#.to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        tab.display.hidden_fields.insert("level".to_string());
+        let result = resolve_completions(&mut tab, "show-field le", None);
+        assert!(matches!(result, CompletionSource::Items(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_show_field_no_hidden() {
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let data = br#"{"level":"INFO","msg":"hello"}"#.to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "show-field le", None);
+        assert!(matches!(result, CompletionSource::Items(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_command_help() {
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "filter", None);
+        assert!(matches!(result, CompletionSource::CommandHelp(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_fallback_items() {
+        use crate::db::Database;
+        use crate::file_reader::FileReader;
+        use crate::log_manager::LogManager;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "fi", None);
+        assert!(matches!(result, CompletionSource::Items(_)));
+    }
 }

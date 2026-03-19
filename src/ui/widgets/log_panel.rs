@@ -927,3 +927,476 @@ impl<'a> Widget for LogPanel<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Keybindings;
+    use crate::db::Database;
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::theme::Theme;
+    use crate::ui::App;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::Arc;
+
+    async fn make_app(lines: &[&str]) -> App {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    fn make_terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_basic_render() {
+        let mut app = make_app(&["INFO line one", "WARN line two", "ERROR line three"]).await;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("INFO"));
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_empty_file() {
+        let mut app = make_app(&[]).await;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_with_borders() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].display.show_borders = true;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_without_line_numbers() {
+        let mut app = make_app(&["INFO hello", "DEBUG world"]).await;
+        app.tabs[0].display.show_line_numbers = false;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_with_wrap() {
+        let long_line = "A".repeat(200);
+        let mut app = make_app(&[&long_line]).await;
+        app.tabs[0].display.wrap = true;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_with_horizontal_scroll() {
+        let long_line = "A".repeat(200);
+        let mut app = make_app(&[&long_line]).await;
+        app.tabs[0].scroll.horizontal_scroll = 10;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_json_structured_lines() {
+        let mut app = make_app(&[
+            r#"{"level":"INFO","msg":"hello world","target":"myapp"}"#,
+            r#"{"level":"ERROR","msg":"something failed"}"#,
+        ])
+        .await;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_with_mark() {
+        let mut app = make_app(&["line one", "line two", "line three"]).await;
+        app.tabs[0].log_manager.toggle_mark(0);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_scroll_offset_mid() {
+        let lines: Vec<&str> = (0..30).map(|_| "line content here").collect();
+        let mut app = make_app(&lines).await;
+        app.tabs[0].scroll.scroll_offset = 15;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_raw_mode() {
+        let mut app = make_app(&[
+            r#"{"level":"INFO","msg":"hello"}"#,
+            r#"{"level":"WARN","msg":"warning"}"#,
+        ])
+        .await;
+        app.tabs[0].display.raw_mode = true;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[test]
+    fn test_prepend_line_number_basic() {
+        let line = Line::from("hello");
+        let result = prepend_line_number(
+            line,
+            0,
+            3,
+            false,
+            Color::Yellow,
+            Color::Gray,
+            Style::default(),
+        );
+        let combined: String = result.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(combined.contains("hello"));
+        assert!(combined.contains("1"));
+    }
+
+    #[test]
+    fn test_prepend_line_number_annotated() {
+        let line = Line::from("annotated");
+        let result = prepend_line_number(
+            line,
+            4,
+            2,
+            true,
+            Color::Yellow,
+            Color::Gray,
+            Style::default(),
+        );
+        let bar_span = &result.spans[0];
+        assert_eq!(bar_span.content, "\u{2502}");
+    }
+
+    #[test]
+    fn test_build_comment_banner_single_line() {
+        let lines = build_comment_banner_lines(
+            "my comment",
+            60,
+            70,
+            Style::default(),
+            Style::default(),
+            Style::default(),
+        );
+        assert_eq!(lines.len(), 1);
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("my comment"));
+    }
+
+    #[test]
+    fn test_build_comment_banner_multi_line() {
+        let lines = build_comment_banner_lines(
+            "first\nsecond",
+            60,
+            70,
+            Style::default(),
+            Style::default(),
+            Style::default(),
+        );
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn test_stable_hash_deterministic() {
+        assert_eq!(stable_hash("hello"), stable_hash("hello"));
+        assert_ne!(stable_hash("hello"), stable_hash("world"));
+    }
+
+    #[test]
+    fn test_find_token_offset_found() {
+        assert_eq!(find_token_offset("hello world foo", "world"), Some(6));
+    }
+
+    #[test]
+    fn test_find_token_offset_not_found() {
+        assert_eq!(find_token_offset("helloworld", "world"), None);
+    }
+
+    #[test]
+    fn test_find_token_offset_empty_needle() {
+        assert_eq!(find_token_offset("hello world", ""), None);
+    }
+
+    #[test]
+    fn test_find_token_offset_at_start() {
+        assert_eq!(find_token_offset("foo bar", "foo"), Some(0));
+    }
+
+    #[test]
+    fn test_find_token_offset_at_end() {
+        assert_eq!(find_token_offset("foo bar", "bar"), Some(4));
+    }
+
+    #[test]
+    fn test_log_panel_widget_no_borders_no_title() {
+        let data = LogPanelData {
+            log_lines: vec![Line::from("hello")],
+            num_visible: 1,
+            visible_height: 10,
+            start: 0,
+            horizontal_scroll: 0,
+            logs_title: String::new(),
+            show_borders: false,
+            show_tab_bar: false,
+            wrap: false,
+            theme_border: Color::Gray,
+            theme_border_title: Color::White,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal
+            .draw(|f| f.render_widget(LogPanel { data: &data }, f.area()))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_log_panel_widget_borders_with_tab_bar() {
+        let data = LogPanelData {
+            log_lines: vec![Line::from("content")],
+            num_visible: 5,
+            visible_height: 4,
+            start: 1,
+            horizontal_scroll: 0,
+            logs_title: String::new(),
+            show_borders: true,
+            show_tab_bar: true,
+            wrap: false,
+            theme_border: Color::Gray,
+            theme_border_title: Color::White,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal
+            .draw(|f| f.render_widget(LogPanel { data: &data }, f.area()))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_log_panel_widget_with_title_no_borders() {
+        let data = LogPanelData {
+            log_lines: vec![],
+            num_visible: 0,
+            visible_height: 10,
+            start: 0,
+            horizontal_scroll: 0,
+            logs_title: "myfile.log (0)".to_string(),
+            show_borders: false,
+            show_tab_bar: false,
+            wrap: true,
+            theme_border: Color::Gray,
+            theme_border_title: Color::White,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal
+            .draw(|f| f.render_widget(LogPanel { data: &data }, f.area()))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_log_panel_widget_borders_with_title() {
+        let data = LogPanelData {
+            log_lines: vec![Line::from("line a"), Line::from("line b")],
+            num_visible: 10,
+            visible_height: 5,
+            start: 2,
+            horizontal_scroll: 5,
+            logs_title: "app.log (10)".to_string(),
+            show_borders: true,
+            show_tab_bar: false,
+            wrap: false,
+            theme_border: Color::Gray,
+            theme_border_title: Color::Cyan,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal
+            .draw(|f| f.render_widget(LogPanel { data: &data }, f.area()))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_with_comment_banner() {
+        let mut app = make_app(&["line one", "line two", "line three"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_comment("my annotation".to_string(), vec![0]);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[test]
+    fn test_prepare_comment_maps_empty() {
+        let comments: Vec<(Vec<usize>, String)> = vec![];
+        let visible = crate::ui::VisibleLines::default();
+        let (banner_at, vis_comment_map) = prepare_comment_maps(&comments, &visible, 0, 0);
+        assert!(banner_at.is_empty());
+        assert!(vis_comment_map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_visual_selection() {
+        let mut app = make_app(&["line one", "line two", "line three"]).await;
+        app.tabs[0].scroll.scroll_offset = 1;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_with_wrap_and_long_json() {
+        let long_msg = "x".repeat(100);
+        let line = format!(
+            r#"{{"level":"INFO","msg":"{}","target":"myapp"}}"#,
+            long_msg
+        );
+        let mut app = make_app(&[&line]).await;
+        app.tabs[0].display.wrap = true;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_raw_mode_no_format() {
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#, "plain line"]).await;
+        app.tabs[0].display.raw_mode = true;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_all_level_colors_disabled() {
+        let mut app = make_app(&[
+            "TRACE low",
+            "DEBUG detail",
+            "INFO info",
+            "NOTICE note",
+            "WARNING caution",
+            "ERROR bad",
+            "FATAL critical",
+        ])
+        .await;
+        for level in &[
+            "trace", "debug", "info", "notice", "warning", "error", "fatal",
+        ] {
+            app.tabs[0]
+                .display
+                .level_colors_disabled
+                .insert(level.to_string());
+        }
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_with_many_lines_scroll_offset() {
+        let lines: Vec<String> = (0..50).map(|i| format!("line {}", i)).collect();
+        let lines_ref: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let mut app = make_app(&lines_ref).await;
+        app.tabs[0].scroll.scroll_offset = 40;
+        app.tabs[0].scroll.viewport_offset = 38;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_show_tab_bar_suppresses_title() {
+        let mut app = make_app(&["line one"]).await;
+        app.tabs[0].log_manager =
+            crate::log_manager::LogManager::new(app.db.clone(), Some("test.log".to_string())).await;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_comment_banner_with_line_numbers() {
+        let mut app = make_app(&["line one", "line two", "line three"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_comment("note\ncontinuation".to_string(), vec![1]);
+        app.tabs[0].display.show_line_numbers = true;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_json_with_hidden_fields() {
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello","target":"app"}"#]).await;
+        app.tabs[0]
+            .display
+            .hidden_fields
+            .insert("level".to_string());
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_tail_mode_label() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].stream.tail_mode = true;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_paused_label() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].stream.paused = true;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[test]
+    fn test_find_token_offset_partial_match() {
+        assert_eq!(find_token_offset("helloworld foo", "world"), None);
+        assert_eq!(find_token_offset("world hello", "world"), Some(0));
+    }
+
+    #[test]
+    fn test_prepare_comment_maps_with_comments() {
+        let comments = vec![(vec![1usize, 2usize], "note".to_string())];
+        let visible = crate::ui::VisibleLines::Filtered(vec![0, 1, 2]);
+        let (banner_at, vis_comment_map) = prepare_comment_maps(&comments, &visible, 0, 3);
+        assert!(banner_at.contains_key(&1));
+        assert!(vis_comment_map.contains_key(&1));
+        assert!(vis_comment_map.contains_key(&2));
+        assert!(!banner_at.contains_key(&2));
+    }
+
+    #[test]
+    fn test_log_panel_widget_wrap_mode() {
+        let data = LogPanelData {
+            log_lines: vec![Line::from("a very long line that wraps")],
+            num_visible: 1,
+            visible_height: 5,
+            start: 0,
+            horizontal_scroll: 0,
+            logs_title: String::new(),
+            show_borders: false,
+            show_tab_bar: false,
+            wrap: true,
+            theme_border: Color::Gray,
+            theme_border_title: Color::White,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        terminal
+            .draw(|f| f.render_widget(LogPanel { data: &data }, f.area()))
+            .unwrap();
+    }
+}

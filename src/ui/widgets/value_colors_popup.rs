@@ -274,3 +274,150 @@ impl<'a> Widget for ValueColorsPopup<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Keybindings;
+    use crate::db::Database;
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::mode::value_colors_mode::{ValueColorEntry, ValueColorGroup, ValueColorsMode};
+    use crate::theme::Theme;
+    use crate::ui::App;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    async fn make_app(lines: &[&str]) -> App {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    fn make_terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_value_colors_basic() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let groups = vec![ValueColorGroup {
+            label: "HTTP Methods".to_string(),
+            children: vec![
+                ValueColorEntry {
+                    key: "http_get".to_string(),
+                    label: "GET".to_string(),
+                    color: ratatui::style::Color::Green,
+                    enabled: true,
+                },
+                ValueColorEntry {
+                    key: "http_post".to_string(),
+                    label: "POST".to_string(),
+                    color: ratatui::style::Color::Yellow,
+                    enabled: true,
+                },
+            ],
+        }];
+        let mode = ValueColorsMode::new(groups, HashSet::new());
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_value_colors_with_search() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let groups = vec![ValueColorGroup {
+            label: "HTTP Methods".to_string(),
+            children: vec![
+                ValueColorEntry {
+                    key: "http_get".to_string(),
+                    label: "GET".to_string(),
+                    color: ratatui::style::Color::Green,
+                    enabled: true,
+                },
+                ValueColorEntry {
+                    key: "http_post".to_string(),
+                    label: "POST".to_string(),
+                    color: ratatui::style::Color::Yellow,
+                    enabled: true,
+                },
+            ],
+        }];
+        let mut mode = ValueColorsMode::new(groups, HashSet::new());
+        mode.search = "http".to_string();
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_value_colors_partial_enabled() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let groups = vec![ValueColorGroup {
+            label: "Status Codes".to_string(),
+            children: vec![
+                ValueColorEntry {
+                    key: "status_2xx".to_string(),
+                    label: "2xx".to_string(),
+                    color: ratatui::style::Color::Green,
+                    enabled: true,
+                },
+                ValueColorEntry {
+                    key: "status_4xx".to_string(),
+                    label: "4xx".to_string(),
+                    color: ratatui::style::Color::Red,
+                    enabled: false,
+                },
+                ValueColorEntry {
+                    key: "status_5xx".to_string(),
+                    label: "5xx".to_string(),
+                    color: ratatui::style::Color::Magenta,
+                    enabled: true,
+                },
+            ],
+        }];
+        let mut disabled = HashSet::new();
+        disabled.insert("status_4xx".to_string());
+        let mode = ValueColorsMode::new(groups, disabled);
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_value_colors_scrollbar() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let children: Vec<ValueColorEntry> = (0..30)
+            .map(|i| ValueColorEntry {
+                key: format!("key_{}", i),
+                label: format!("Entry {}", i),
+                color: ratatui::style::Color::Cyan,
+                enabled: true,
+            })
+            .collect();
+        let groups = vec![ValueColorGroup {
+            label: "Many Entries".to_string(),
+            children,
+        }];
+        let mode = ValueColorsMode::new(groups, HashSet::new());
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+}

@@ -1,17 +1,77 @@
 use ratatui::{
     Frame,
     prelude::*,
-    widgets::{Block, Borders, Padding, Paragraph, Wrap},
+    widgets::{Block, Paragraph},
 };
 
 use crate::mode::app_mode::ModeRenderState;
 
 use super::field_layout::count_wrapped_lines;
 use super::widgets::{
-    CommandBar, CompletionSource, InputBar, LogPanel, Sidebar, TabBar, TabBarEntry,
+    CommandBar, CompletionSource, InputBar, LogPanel, ModeBar, Sidebar, TabBar, TabBarEntry,
     file_display_name, prepare_log_panel, resolve_completions,
 };
 use super::{App, LoadContext};
+
+type DltSelectData = Option<(
+    Vec<crate::config::DltDevice>,
+    usize,
+    Option<String>,
+    Option<crate::mode::dlt_select_mode::AddDeviceRenderState>,
+)>;
+
+type ValueColorsData = Option<(
+    Vec<crate::mode::value_colors_mode::ValueColorGroup>,
+    String,
+    usize,
+    &'static str,
+)>;
+
+struct UiRenderState {
+    has_input_bar: bool,
+    command_input: Option<(String, usize)>,
+    completion_index: Option<usize>,
+    completion_query: Option<String>,
+    search_input: Option<(String, bool, bool)>,
+    is_confirm_restore: bool,
+    session_files: Option<Vec<String>>,
+    selected_filter_idx: usize,
+    visual_anchor: Option<usize>,
+    visual_char_selection: Option<(usize, usize)>,
+    comment_popup: Option<(Vec<String>, usize, usize, usize)>,
+    help_state: Option<(usize, String)>,
+    select_fields_state: Option<(Vec<(String, bool)>, usize)>,
+    docker_select: Option<(Vec<crate::types::DockerContainer>, usize, Option<String>)>,
+    dlt_select: DltSelectData,
+    value_colors_state: ValueColorsData,
+    confirm_open_dir: Option<(String, Vec<String>)>,
+    notification: Option<String>,
+    has_notification: bool,
+    has_warnings: bool,
+    warnings_height: u16,
+    show_mode_bar: bool,
+    status_line: Line<'static>,
+    keybindings: std::sync::Arc<crate::config::Keybindings>,
+}
+
+fn compute_inner_width(total_width: u16, show_borders: bool) -> usize {
+    let border_width = if show_borders { 2 } else { 1 };
+    (total_width as usize).saturating_sub(border_width)
+}
+
+fn compute_status_height(status_line: &Line, inner_width: usize, show_borders: bool) -> u16 {
+    let status_text: String = status_line
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    let content_lines = count_wrapped_lines(&status_text, inner_width);
+    if show_borders {
+        (content_lines + 1).clamp(2, 5) as u16
+    } else {
+        content_lines.clamp(1, 4) as u16
+    }
+}
 
 impl App {
     pub(super) fn ui(&mut self, frame: &mut Frame) {
@@ -19,11 +79,61 @@ impl App {
         frame.render_widget(Block::default().bg(self.theme.root_bg), size);
 
         let show_tab_bar = !self.tabs.is_empty();
-
-        // Extract mode-derived state up front via a single render_state() call,
-        // avoiding holding a borrow over the rest of rendering.
         let render_state = self.tabs[self.active_tab].interaction.mode.render_state();
+        let show_borders = self.tabs[self.active_tab].display.show_borders;
+        let mode_name = if !self.show_mode_bar {
+            Some(render_state.mode_name())
+        } else {
+            None
+        };
 
+        let state = self.extract_ui_render_state(&render_state);
+
+        let inner_width = compute_inner_width(size.width, show_borders);
+        let status_height = compute_status_height(&state.status_line, inner_width, show_borders);
+        let hint_height = self.compute_hint_height(
+            &state.command_input,
+            state.completion_query.as_deref(),
+            inner_width,
+            state.completion_index,
+        );
+
+        let (constraints, notification_chunk_idx, warnings_chunk_idx) =
+            self.build_layout_constraints(&state, show_tab_bar, hint_height, status_height);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(size);
+
+        let mut chunk_idx = 0;
+
+        if show_tab_bar {
+            self.render_tab_bar_widget(frame, chunks[chunk_idx], show_borders, mode_name, &state);
+            chunk_idx += 1;
+        }
+
+        let main_chunk = chunks[chunk_idx];
+        chunk_idx += 1;
+
+        let (logs_area, sidebar_area) =
+            self.compute_main_areas(main_chunk, show_tab_bar, show_borders);
+        self.render_log_panel(frame, logs_area, show_tab_bar, mode_name, &state);
+        if let Some(sa) = sidebar_area {
+            self.render_sidebar(frame, sa, show_borders, state.selected_filter_idx);
+        }
+
+        self.render_command_bar_widget(frame, &chunks, chunk_idx, &state);
+        self.render_input_bar_widget(frame, &chunks, chunk_idx, &state);
+
+        self.render_notification(frame, &chunks, notification_chunk_idx, &state);
+        self.render_warnings(frame, &chunks, warnings_chunk_idx);
+        self.render_mode_bar_widget(frame, &chunks, show_borders, &state);
+
+        let frame_area = frame.area();
+        self.render_overlay_popups(frame, frame_area, &state);
+    }
+
+    fn extract_ui_render_state(&mut self, render_state: &ModeRenderState) -> UiRenderState {
         let persistent_pattern: Option<String> = if matches!(render_state, ModeRenderState::Normal)
         {
             self.tabs[self.active_tab]
@@ -38,40 +148,33 @@ impl App {
             render_state,
             ModeRenderState::Command { .. } | ModeRenderState::Search { .. }
         ) || persistent_pattern.is_some();
-        let command_input: Option<(String, usize)> = match &render_state {
+        let command_input: Option<(String, usize)> = match render_state {
             ModeRenderState::Command { input, cursor, .. } => Some((input.clone(), *cursor)),
             _ => None,
         };
-        let completion_index: Option<usize> = match &render_state {
+        let completion_index: Option<usize> = match render_state {
             ModeRenderState::Command {
                 completion_index, ..
             } => *completion_index,
             _ => None,
         };
-        // When a completion session is active, suggestions are computed from the original query
-        // (what the user typed before Tab cycling), not from the currently displayed completion.
-        let completion_query: Option<String> = match &render_state {
+        let completion_query: Option<String> = match render_state {
             ModeRenderState::Command {
                 completion_query, ..
             } => completion_query.clone(),
             _ => None,
         };
-        // (query, forward, is_active): is_active=true while typing (shows cursor + count),
-        // false when persistent after execution (shows "match X / N").
-        let search_input: Option<(String, bool, bool)> = match &render_state {
+        let search_input: Option<(String, bool, bool)> = match render_state {
             ModeRenderState::Search { query, forward } => Some((query.clone(), *forward, true)),
             _ => persistent_pattern.map(|p| (p, true, false)),
         };
         let is_confirm_restore = matches!(render_state, ModeRenderState::ConfirmRestore);
-        let session_files: Option<Vec<String>> = match &render_state {
+        let session_files: Option<Vec<String>> = match render_state {
             ModeRenderState::ConfirmRestoreSession { files } => Some(files.clone()),
             _ => None,
         };
-        let selected_filter_idx = match &render_state {
+        let selected_filter_idx = match render_state {
             ModeRenderState::FilterManagement { selected_index } => *selected_index,
-            // When CommandMode is entered from the filter menu (set-color, filter-edit),
-            // filter_context holds the originating filter index — use it so the sidebar
-            // keeps the correct filter highlighted throughout the command.
             _ => self.tabs[self.active_tab]
                 .filter
                 .filter_context
@@ -85,11 +188,11 @@ impl App {
         let show_mode_bar = self.show_mode_bar;
         let has_warnings = !self.startup_warnings.is_empty();
         let warnings_height = self.startup_warnings.len().min(10) as u16;
-        let visual_anchor: Option<usize> = match &render_state {
+        let visual_anchor: Option<usize> = match render_state {
             ModeRenderState::VisualLine { anchor } => Some(*anchor),
             _ => None,
         };
-        let visual_char_selection: Option<(usize, usize)> = match &render_state {
+        let visual_char_selection: Option<(usize, usize)> = match render_state {
             ModeRenderState::Visual {
                 anchor_col,
                 cursor_col,
@@ -102,7 +205,7 @@ impl App {
             }
             _ => None,
         };
-        let comment_popup: Option<(Vec<String>, usize, usize, usize)> = match &render_state {
+        let comment_popup: Option<(Vec<String>, usize, usize, usize)> = match render_state {
             ModeRenderState::Comment {
                 lines,
                 cursor_row,
@@ -111,16 +214,16 @@ impl App {
             } => Some((lines.clone(), *cursor_row, *cursor_col, *line_count)),
             _ => None,
         };
-        let help_state: Option<(usize, String)> = match &render_state {
+        let help_state: Option<(usize, String)> = match render_state {
             ModeRenderState::KeybindingsHelp { scroll, search } => Some((*scroll, search.clone())),
             _ => None,
         };
-        let select_fields_state: Option<(Vec<(String, bool)>, usize)> = match &render_state {
+        let select_fields_state: Option<(Vec<(String, bool)>, usize)> = match render_state {
             ModeRenderState::SelectFields { fields, selected } => Some((fields.clone(), *selected)),
             _ => None,
         };
         let docker_select: Option<(Vec<crate::types::DockerContainer>, usize, Option<String>)> =
-            match &render_state {
+            match render_state {
                 ModeRenderState::DockerSelect {
                     containers,
                     selected,
@@ -128,13 +231,7 @@ impl App {
                 } => Some((containers.clone(), *selected, error.clone())),
                 _ => None,
             };
-        #[allow(clippy::type_complexity)]
-        let dlt_select: Option<(
-            Vec<crate::config::DltDevice>,
-            usize,
-            Option<String>,
-            Option<crate::mode::dlt_select_mode::AddDeviceRenderState>,
-        )> = match &render_state {
+        let dlt_select: DltSelectData = match render_state {
             ModeRenderState::DltSelect {
                 devices,
                 selected,
@@ -143,12 +240,7 @@ impl App {
             } => Some((devices.clone(), *selected, error.clone(), adding.clone())),
             _ => None,
         };
-        let value_colors_state: Option<(
-            Vec<crate::mode::value_colors_mode::ValueColorGroup>,
-            String,
-            usize,
-            &'static str,
-        )> = match &render_state {
+        let value_colors_state: ValueColorsData = match render_state {
             ModeRenderState::ValueColors {
                 groups,
                 search,
@@ -161,195 +253,208 @@ impl App {
             } => Some((groups.clone(), search.clone(), *selected, "Level Colors")),
             _ => None,
         };
-        let confirm_open_dir: Option<(String, Vec<String>)> = match &render_state {
+        let confirm_open_dir: Option<(String, Vec<String>)> = match render_state {
             ModeRenderState::ConfirmOpenDir { dir, files } => Some((dir.clone(), files.clone())),
             _ => None,
         };
 
-        let show_borders = self.tabs[self.active_tab].display.show_borders;
-        // Auto-dismiss the notification after 10 seconds.
         if let Some(set_at) = self.tabs[self.active_tab].interaction.notification_set_at
             && set_at.elapsed() > std::time::Duration::from_secs(10)
         {
             self.tabs[self.active_tab].clear_notification();
         }
         let notification = self.tabs[self.active_tab].interaction.notification.clone();
-        // Show the notification row when there is a message and the command bar
-        // is not already open (where it would appear in the hint area instead).
         let has_notification = notification.is_some() && !has_input_bar;
 
-        // Compute how many rows the mode bar needs so wrapped text is fully visible.
-        // When borders are on they consume 1 col on each side (2 total); when off we
-        // still reserve 1 col on the left for visual padding.
-        let border_width = if show_borders { 2 } else { 1 };
-        let inner_width = (size.width as usize).saturating_sub(border_width);
-        let status_text: String = status_line
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        let content_lines = count_wrapped_lines(&status_text, inner_width);
-        let status_height = if show_borders {
-            (content_lines + 1).clamp(2, 5) as u16
-        } else {
-            content_lines.clamp(1, 4) as u16
-        };
+        UiRenderState {
+            has_input_bar,
+            command_input,
+            completion_index,
+            completion_query,
+            search_input,
+            is_confirm_restore,
+            session_files,
+            selected_filter_idx,
+            visual_anchor,
+            visual_char_selection,
+            comment_popup,
+            help_state,
+            select_fields_state,
+            docker_select,
+            dlt_select,
+            value_colors_state,
+            confirm_open_dir,
+            notification,
+            has_notification,
+            has_warnings,
+            warnings_height,
+            show_mode_bar,
+            status_line,
+            keybindings,
+        }
+    }
 
+    fn build_layout_constraints(
+        &mut self,
+        state: &UiRenderState,
+        show_tab_bar: bool,
+        hint_height: u16,
+        status_height: u16,
+    ) -> (Vec<Constraint>, Option<usize>, Option<usize>) {
         let mut constraints = vec![];
         if show_tab_bar {
-            constraints.push(Constraint::Length(1)); // Tab bar
+            constraints.push(Constraint::Length(1));
         }
-        constraints.push(Constraint::Min(1)); // Main content
-        if has_input_bar {
-            constraints.push(Constraint::Length(1)); // input line
-            let hint_height = self.compute_hint_height(
-                &command_input,
-                completion_query.as_deref(),
-                inner_width,
-                completion_index,
-            );
-            constraints.push(Constraint::Length(hint_height)); // hint line(s)
+        constraints.push(Constraint::Min(1));
+        if state.has_input_bar {
+            constraints.push(Constraint::Length(1));
+            constraints.push(Constraint::Length(hint_height));
         }
-        let notification_chunk_idx = if has_notification {
+        let notification_chunk_idx = if state.has_notification {
             let idx = constraints.len();
-            constraints.push(Constraint::Length(1)); // notification bar
+            constraints.push(Constraint::Length(1));
             Some(idx)
         } else {
             None
         };
-        let warnings_chunk_idx = if has_warnings {
+        let warnings_chunk_idx = if state.has_warnings {
             let idx = constraints.len();
-            constraints.push(Constraint::Length(warnings_height)); // warnings bar
+            constraints.push(Constraint::Length(state.warnings_height));
             Some(idx)
         } else {
             None
         };
-        if show_mode_bar {
-            constraints.push(Constraint::Length(status_height)); // command list
+        if state.show_mode_bar {
+            constraints.push(Constraint::Length(status_height));
         }
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(constraints)
-            .split(size);
+        (constraints, notification_chunk_idx, warnings_chunk_idx)
+    }
 
-        let mut chunk_idx = 0;
-
-        let mode_name_for_title = if !show_mode_bar {
-            Some(render_state.mode_name())
-        } else {
-            None
-        };
-
-        if show_tab_bar {
-            let tab_bar_area = chunks[chunk_idx];
-            chunk_idx += 1;
-
-            let loading_info: Option<(usize, usize)> = self.file_load_state.as_ref().map(|s| {
-                let pct = (*s.progress_rx.borrow() * 100.0) as usize;
-                let tab_idx = match &s.on_complete {
-                    LoadContext::ReplaceInitialTab => 0,
-                    LoadContext::ReplaceTab { tab_idx } => *tab_idx,
-                    LoadContext::SessionRestoreTab { tab_idx, .. } => *tab_idx,
-                };
-                (tab_idx, pct)
-            });
-            let filtering_tabs: Vec<(usize, usize)> = self
-                .tabs
-                .iter()
-                .enumerate()
-                .filter_map(|(i, t)| {
-                    t.filter.handle.as_ref().map(|h| {
-                        let pct = (h.displayed_progress * 100.0) as usize;
-                        (i, pct)
-                    })
-                })
-                .collect();
-            let tab_entries: Vec<TabBarEntry<'_>> = self
-                .tabs
-                .iter()
-                .map(|t| {
-                    let format_name = if t.display.raw_mode {
-                        None
-                    } else {
-                        t.display.format.as_ref().map(|p| p.name().to_string())
-                    };
-                    TabBarEntry {
-                        title: &t.title,
-                        format_name,
-                        num_visible: t.filter.visible_indices.len(),
-                        tail_mode: t.stream.tail_mode,
-                        raw_mode: t.display.raw_mode,
-                        paused: t.stream.paused,
-                        retry_attempt: t
-                            .stream
-                            .retry
-                            .as_ref()
-                            .filter(|r| !r.connected)
-                            .map(|r| r.attempt),
-                        has_lines: t.file_reader.line_count() > 0,
-                    }
-                })
-                .collect();
-            frame.render_widget(
-                TabBar {
-                    tabs: tab_entries,
-                    active_tab: self.active_tab,
-                    loading_info,
-                    filtering_tabs,
-                    show_borders,
-                    mode_name: mode_name_for_title,
-                    theme: &self.theme,
-                },
-                tab_bar_area,
-            );
-        }
-
-        let main_chunk = chunks[chunk_idx];
-        chunk_idx += 1;
-
+    fn compute_main_areas(
+        &self,
+        main_chunk: Rect,
+        show_tab_bar: bool,
+        show_borders: bool,
+    ) -> (Rect, Option<Rect>) {
         let tab = &self.tabs[self.active_tab];
-
         let sidebar_width = tab.display.sidebar_width;
-        let (logs_area, sidebar_area) = if tab.display.show_sidebar {
-            if show_borders {
-                let horizontal = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
-                    .split(main_chunk);
-                let raw_sidebar = horizontal[1];
-                let sidebar = if show_tab_bar {
-                    Rect {
-                        y: raw_sidebar.y.saturating_sub(1),
-                        height: raw_sidebar.height + 1,
-                        ..raw_sidebar
-                    }
-                } else {
-                    raw_sidebar
-                };
-                (horizontal[0], Some(sidebar))
+        if !tab.display.show_sidebar {
+            return (main_chunk, None);
+        }
+        if show_borders {
+            let horizontal = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
+                .split(main_chunk);
+            let raw_sidebar = horizontal[1];
+            let sidebar = if show_tab_bar {
+                Rect {
+                    y: raw_sidebar.y.saturating_sub(1),
+                    height: raw_sidebar.height + 1,
+                    ..raw_sidebar
+                }
             } else {
-                let horizontal = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([
-                        Constraint::Min(1),
-                        Constraint::Length(1),
-                        Constraint::Length(sidebar_width),
-                    ])
-                    .split(main_chunk);
-                (horizontal[0], Some(horizontal[2]))
-            }
+                raw_sidebar
+            };
+            (horizontal[0], Some(sidebar))
         } else {
-            (main_chunk, None)
-        };
+            let horizontal = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                    Constraint::Length(sidebar_width),
+                ])
+                .split(main_chunk);
+            (horizontal[0], Some(horizontal[2]))
+        }
+    }
 
+    fn render_tab_bar_widget(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        show_borders: bool,
+        mode_name: Option<&str>,
+        state: &UiRenderState,
+    ) {
+        let loading_info: Option<(usize, usize)> = self.file_load_state.as_ref().map(|s| {
+            let pct = (*s.progress_rx.borrow() * 100.0) as usize;
+            let tab_idx = match &s.on_complete {
+                LoadContext::ReplaceInitialTab => 0,
+                LoadContext::ReplaceTab { tab_idx } => *tab_idx,
+                LoadContext::SessionRestoreTab { tab_idx, .. } => *tab_idx,
+            };
+            (tab_idx, pct)
+        });
+        let filtering_tabs: Vec<(usize, usize)> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| {
+                t.filter.handle.as_ref().map(|h| {
+                    let pct = (h.displayed_progress * 100.0) as usize;
+                    (i, pct)
+                })
+            })
+            .collect();
+        let tab_entries: Vec<TabBarEntry<'_>> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let format_name = if t.display.raw_mode {
+                    None
+                } else {
+                    t.display.format.as_ref().map(|p| p.name().to_string())
+                };
+                TabBarEntry {
+                    title: &t.title,
+                    format_name,
+                    num_visible: t.filter.visible_indices.len(),
+                    tail_mode: t.stream.tail_mode,
+                    raw_mode: t.display.raw_mode,
+                    paused: t.stream.paused,
+                    retry_attempt: t
+                        .stream
+                        .retry
+                        .as_ref()
+                        .filter(|r| !r.connected)
+                        .map(|r| r.attempt),
+                    has_lines: t.file_reader.line_count() > 0,
+                }
+            })
+            .collect();
+        frame.render_widget(
+            TabBar {
+                tabs: tab_entries,
+                active_tab: self.active_tab,
+                loading_info,
+                filtering_tabs,
+                show_borders,
+                mode_name,
+                theme: &self.theme,
+            },
+            area,
+        );
+        let _ = state;
+    }
+
+    fn render_log_panel(
+        &mut self,
+        frame: &mut Frame,
+        logs_area: Rect,
+        show_tab_bar: bool,
+        mode_name: Option<&str>,
+        state: &UiRenderState,
+    ) {
         let log_panel_data = prepare_log_panel(
             &mut self.tabs[self.active_tab],
             logs_area,
-            visual_anchor,
-            visual_char_selection,
-            mode_name_for_title,
+            state.visual_anchor,
+            state.visual_char_selection,
+            mode_name,
             show_tab_bar,
-            has_input_bar,
+            state.has_input_bar,
             &self.theme,
         );
         frame.render_widget(
@@ -358,37 +463,54 @@ impl App {
             },
             logs_area,
         );
+    }
 
-        if let Some(sidebar_area) = sidebar_area {
-            let tab = &self.tabs[self.active_tab];
-            let filters = tab.log_manager.get_filters();
-            let match_counts = tab.filter.match_counts.clone();
-            let filter_progress: Option<usize> = tab
-                .filter
-                .handle
-                .as_ref()
-                .map(|h| (h.displayed_progress * 100.0) as usize);
-            frame.render_widget(
-                Sidebar {
-                    filters,
-                    match_counts: &match_counts,
-                    selected_filter_idx,
-                    filter_enabled: tab.filter.enabled,
-                    show_marks_only: tab.filter.show_marks_only,
-                    filter_progress,
-                    show_borders,
-                    theme: &self.theme,
-                },
-                sidebar_area,
-            );
-        }
+    fn render_sidebar(
+        &self,
+        frame: &mut Frame,
+        sidebar_area: Rect,
+        show_borders: bool,
+        selected_filter_idx: usize,
+    ) {
+        let tab = &self.tabs[self.active_tab];
+        let filters = tab.log_manager.get_filters();
+        let match_counts = tab.filter.match_counts.clone();
+        let filter_progress: Option<usize> = tab
+            .filter
+            .handle
+            .as_ref()
+            .map(|h| (h.displayed_progress * 100.0) as usize);
+        frame.render_widget(
+            Sidebar {
+                filters,
+                match_counts: &match_counts,
+                selected_filter_idx,
+                filter_enabled: tab.filter.enabled,
+                show_marks_only: tab.filter.show_marks_only,
+                filter_progress,
+                show_borders,
+                theme: &self.theme,
+            },
+            sidebar_area,
+        );
+    }
 
-        if let Some((input_text, cursor_pos)) = command_input {
-            let query_text = completion_query.as_deref().unwrap_or(input_text.as_str());
+    fn render_command_bar_widget(
+        &mut self,
+        frame: &mut Frame,
+        chunks: &[Rect],
+        chunk_idx: usize,
+        state: &UiRenderState,
+    ) {
+        if let Some((input_text, cursor_pos)) = state.command_input.clone() {
+            let query_text = state
+                .completion_query
+                .as_deref()
+                .unwrap_or(input_text.as_str());
             let completion = resolve_completions(
                 &mut self.tabs[self.active_tab],
                 query_text,
-                completion_index,
+                state.completion_index,
             );
             let input_area = chunks[chunk_idx];
             let hint_area = chunks[chunk_idx + 1];
@@ -407,8 +529,16 @@ impl App {
             };
             frame.render_widget(cmd_bar, combined);
         }
+    }
 
-        if let Some((input_str, forward, is_active)) = search_input {
+    fn render_input_bar_widget(
+        &mut self,
+        frame: &mut Frame,
+        chunks: &[Rect],
+        chunk_idx: usize,
+        state: &UiRenderState,
+    ) {
+        if let Some((input_str, forward, is_active)) = state.search_input.clone() {
             let input_area = chunks[chunk_idx];
             let hint_area = chunks[chunk_idx + 1];
             let total = self.tabs[self.active_tab]
@@ -442,9 +572,17 @@ impl App {
             };
             frame.render_widget(bar, combined);
         }
+    }
 
+    fn render_notification(
+        &self,
+        frame: &mut Frame,
+        chunks: &[Rect],
+        notification_chunk_idx: Option<usize>,
+        state: &UiRenderState,
+    ) {
         if let Some(idx) = notification_chunk_idx
-            && let Some(msg) = &notification
+            && let Some(msg) = &state.notification
         {
             let notification_area = chunks[idx];
             frame.render_widget(
@@ -456,7 +594,14 @@ impl App {
                 notification_area,
             );
         }
+    }
 
+    fn render_warnings(
+        &self,
+        frame: &mut Frame,
+        chunks: &[Rect],
+        warnings_chunk_idx: Option<usize>,
+    ) {
         if let Some(idx) = warnings_chunk_idx {
             let warnings_area = chunks[idx];
             let lines: Vec<Line> = self
@@ -475,29 +620,31 @@ impl App {
                 warnings_area,
             );
         }
+    }
 
-        if show_mode_bar {
-            let status_block = if show_borders {
-                Block::default()
-                    .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
-                    .border_style(Style::default().fg(self.theme.border))
-            } else {
-                Block::default()
-                    .borders(Borders::NONE)
-                    .padding(Padding::new(1, 0, 0, 0))
-            };
-            let command_list = Paragraph::new(status_line)
-                .block(status_block)
-                .wrap(Wrap { trim: true })
-                .style(Style::default().bg(self.theme.root_bg));
-            if let Some(&status_area) = chunks.last() {
-                frame.render_widget(command_list, status_area);
-            }
+    fn render_mode_bar_widget(
+        &self,
+        frame: &mut Frame,
+        chunks: &[Rect],
+        show_borders: bool,
+        state: &UiRenderState,
+    ) {
+        if state.show_mode_bar
+            && let Some(&status_area) = chunks.last()
+        {
+            frame.render_widget(
+                ModeBar {
+                    content: state.status_line.clone(),
+                    show_borders,
+                    theme: &self.theme,
+                },
+                status_area,
+            );
         }
+    }
 
-        let frame_area = frame.area();
-
-        if is_confirm_restore {
+    fn render_overlay_popups(&self, frame: &mut Frame, frame_area: Rect, state: &UiRenderState) {
+        if state.is_confirm_restore {
             frame.render_widget(
                 super::widgets::ConfirmRestoreModal {
                     theme: &self.theme,
@@ -507,36 +654,36 @@ impl App {
             );
         }
 
-        if let Some(files) = session_files {
+        if let Some(files) = &state.session_files {
             frame.render_widget(
                 super::widgets::ConfirmRestoreSessionModal {
                     theme: &self.theme,
                     keybindings: &self.keybindings,
-                    files: &files,
+                    files,
                 },
                 frame_area,
             );
         }
 
-        if let Some((_dir, files)) = confirm_open_dir {
+        if let Some((_dir, files)) = &state.confirm_open_dir {
             frame.render_widget(
                 super::widgets::ConfirmOpenDirModal {
                     theme: &self.theme,
                     keybindings: &self.keybindings,
-                    files: &files,
+                    files,
                 },
                 frame_area,
             );
         }
 
-        if let Some((lines, cursor_row, cursor_col, line_count)) = comment_popup {
+        if let Some((lines, cursor_row, cursor_col, line_count)) = &state.comment_popup {
             let popup = super::widgets::CommentPopup {
                 theme: &self.theme,
                 keybindings: &self.tabs[self.active_tab].interaction.keybindings,
-                lines: &lines,
-                cursor_row,
-                cursor_col,
-                line_count,
+                lines,
+                cursor_row: *cursor_row,
+                cursor_col: *cursor_col,
+                line_count: *line_count,
             };
             if let Some((cx, cy)) = popup.cursor_position(frame_area) {
                 frame.set_cursor_position((cx, cy));
@@ -544,38 +691,38 @@ impl App {
             frame.render_widget(popup, frame_area);
         }
 
-        if let Some((fields, selected)) = select_fields_state {
+        if let Some((fields, selected)) = &state.select_fields_state {
             frame.render_widget(
                 super::widgets::SelectFieldsPopup {
                     theme: &self.theme,
                     keybindings: &self.keybindings,
-                    fields: &fields,
-                    selected,
+                    fields,
+                    selected: *selected,
                 },
                 frame_area,
             );
         }
 
-        if let Some((containers, selected, error)) = docker_select {
+        if let Some((containers, selected, error)) = &state.docker_select {
             frame.render_widget(
                 super::widgets::DockerSelectPopup {
                     theme: &self.theme,
                     keybindings: &self.keybindings,
-                    containers: &containers,
-                    selected,
+                    containers,
+                    selected: *selected,
                     error: error.as_deref(),
                 },
                 frame_area,
             );
         }
 
-        if let Some((devices, selected, error, adding)) = dlt_select {
+        if let Some((devices, selected, error, adding)) = &state.dlt_select {
             frame.render_widget(
                 super::widgets::DltSelectPopup {
                     theme: &self.theme,
                     keybindings: &self.keybindings,
-                    devices: &devices,
-                    selected,
+                    devices,
+                    selected: *selected,
                     error: error.as_deref(),
                     adding: adding.as_ref(),
                 },
@@ -583,27 +730,27 @@ impl App {
             );
         }
 
-        if let Some((groups, search, selected, title)) = value_colors_state {
+        if let Some((groups, search, selected, title)) = &state.value_colors_state {
             frame.render_widget(
                 super::widgets::ValueColorsPopup {
                     theme: &self.theme,
                     keybindings: &self.keybindings,
-                    groups: &groups,
-                    search: &search,
-                    selected,
+                    groups,
+                    search,
+                    selected: *selected,
                     title,
                 },
                 frame_area,
             );
         }
 
-        if let Some((scroll, search)) = help_state {
+        if let Some((scroll, search)) = &state.help_state {
             frame.render_widget(
                 super::widgets::KeybindingsHelpPopup {
                     theme: &self.theme,
-                    keybindings: &keybindings,
-                    scroll,
-                    search: &search,
+                    keybindings: &state.keybindings,
+                    scroll: *scroll,
+                    search,
                 },
                 frame_area,
             );
@@ -646,8 +793,6 @@ impl App {
     }
 }
 
-/// djb2-style hash for stable per-process color assignment.
-/// Returns `(bar, pct)` for a progress fraction in `0.0..=1.0`.
 fn progress_bar_str(progress: f64) -> (String, usize) {
     const BAR_WIDTH: usize = 20;
     let filled = ((progress * BAR_WIDTH as f64) as usize).min(BAR_WIDTH);
@@ -658,38 +803,6 @@ fn progress_bar_str(progress: f64) -> (String, usize) {
     );
     let pct = (progress * 100.0) as usize;
     (bar, pct)
-}
-
-#[allow(dead_code)]
-fn stable_hash(s: &str) -> usize {
-    s.bytes().fold(5381usize, |acc, b| {
-        acc.wrapping_mul(33).wrapping_add(b as usize)
-    })
-}
-
-#[allow(dead_code)]
-fn find_token_offset(haystack: &str, needle: &str) -> Option<usize> {
-    if needle.is_empty() {
-        return None;
-    }
-    let hb = haystack.as_bytes();
-    let nb = needle.len();
-    let mut start = 0;
-    while start + nb <= hb.len() {
-        match haystack[start..].find(needle) {
-            None => break,
-            Some(rel) => {
-                let abs = start + rel;
-                let before_ok = abs == 0 || hb[abs - 1] == b' ';
-                let after_ok = abs + nb == hb.len() || hb[abs + nb] == b' ';
-                if before_ok && after_ok {
-                    return Some(abs);
-                }
-                start = abs + 1;
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -1118,10 +1231,8 @@ mod tests {
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         let mut terminal = make_terminal();
-        // _progress_tx is kept alive until after draw
         terminal.draw(|f| app.ui(f)).unwrap();
 
-        // Tab bar (row 0) should show the tab title with progress percentage.
         let tab_row = row_content(terminal.backend().buffer(), 0);
         assert!(
             tab_row.contains("50%"),
@@ -1263,41 +1374,29 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_find_token_offset_simple() {
-        // Standalone token at the start
         assert_eq!(find_token_offset("abc def ghi", "abc"), Some(0));
-        // Standalone token in the middle
         assert_eq!(find_token_offset("abc def ghi", "def"), Some(4));
-        // Standalone token at the end
         assert_eq!(find_token_offset("abc def ghi", "ghi"), Some(8));
     }
 
     #[test]
     fn test_find_token_offset_short_value_not_matched_inside_longer_token() {
-        // "1" appears inside "2024-01-..." but must not be matched there.
         let rendered = "2024-01-15T10:00:00Z INFO  systemd myhost 1 daemon Started.";
-        // Should skip the "1" inside the timestamp and find the standalone "1".
         let pos = find_token_offset(rendered, "1").unwrap();
         let token = &rendered[pos..pos + 1];
         assert_eq!(token, "1");
-        // The character before must be a space.
         assert_eq!(rendered.as_bytes()[pos - 1], b' ');
-        // The character after must be a space.
         assert_eq!(rendered.as_bytes()[pos + 1], b' ');
     }
 
     #[test]
     fn test_find_token_offset_systemd_pid1_in_syslog_rfc5424() {
-        // Reproduces the reported bug: syslog RFC 5424 line with PID=1 (systemd).
-        // Before the fix, rendered.find("1") matched the "1" in "2024-01-…".
         let rendered =
             "2024-01-15T10:30:00.000000+01:00 INFO  systemd myhost 1 local3 Started network.";
         let pid_pos = find_token_offset(rendered, "1").unwrap();
-        // Must point to the standalone "1" (PID), not into the timestamp.
         assert_eq!(&rendered[pid_pos..pid_pos + 1], "1");
-        // The characters around must be spaces.
         assert!(pid_pos > 0 && rendered.as_bytes()[pid_pos - 1] == b' ');
         assert!(pid_pos + 1 < rendered.len() && rendered.as_bytes()[pid_pos + 1] == b' ');
-        // The standalone "1" must appear AFTER the timestamp ends.
         let ts_end = "2024-01-15T10:30:00.000000+01:00".len();
         assert!(
             pid_pos > ts_end,
@@ -1317,22 +1416,48 @@ mod tests {
 
     #[test]
     fn test_find_token_offset_only_substring_not_token() {
-        // "lo" is only a substring of "hello", not a standalone token.
         assert_eq!(find_token_offset("hello world", "lo"), None);
     }
 
     #[test]
     fn test_find_token_offset_single_token_haystack() {
-        // Entire haystack is the needle.
         assert_eq!(find_token_offset("only", "only"), Some(0));
     }
 
     #[test]
     fn test_find_token_offset_bsd_timestamp_with_spaces() {
-        // BSD timestamp "Mar  8 10:30:00" contains internal spaces but is itself
-        // a complete token (bounded by start-of-string and a space).
         let rendered = "Mar  8 10:30:00 INFO  systemd";
         assert_eq!(find_token_offset(rendered, "Mar  8 10:30:00"), Some(0));
+    }
+
+    fn stable_hash(s: &str) -> usize {
+        s.bytes().fold(5381usize, |acc, b| {
+            acc.wrapping_mul(33).wrapping_add(b as usize)
+        })
+    }
+
+    fn find_token_offset(haystack: &str, needle: &str) -> Option<usize> {
+        if needle.is_empty() {
+            return None;
+        }
+        let hb = haystack.as_bytes();
+        let nb = needle.len();
+        let mut start = 0;
+        while start + nb <= hb.len() {
+            match haystack[start..].find(needle) {
+                None => break,
+                Some(rel) => {
+                    let abs = start + rel;
+                    let before_ok = abs == 0 || hb[abs - 1] == b' ';
+                    let after_ok = abs + nb == hb.len() || hb[abs + nb] == b' ';
+                    if before_ok && after_ok {
+                        return Some(abs);
+                    }
+                    start = abs + 1;
+                }
+            }
+        }
+        None
     }
 
     // -----------------------------------------------------------------------
@@ -1380,7 +1505,7 @@ mod tests {
             });
         }
 
-        let terminal = make_terminal(); // 80×24
+        let terminal = make_terminal();
         (app, terminal)
     }
 
@@ -1389,7 +1514,6 @@ mod tests {
         let (mut app, mut terminal) = make_app_with_search(Some(0.5)).await;
         terminal.draw(|f| app.ui(f)).unwrap();
 
-        // With no mode bar the hint row is at y=23 (rows 22=input, 23=hint).
         let hint_row = row_content(terminal.backend().buffer(), 23);
         assert!(
             hint_row.contains('\u{2588}'),
@@ -1411,56 +1535,42 @@ mod tests {
         );
     }
 
-    // Before the fix, toggling a filter that reduces num_visible left viewport_offset
-    // pointing near the old end, causing the cursor to sit at the top of the viewport
-    // with blank rows below even though more visible lines existed above.
     #[tokio::test]
     async fn test_ui_viewport_fills_backward_after_filter_toggle() {
-        // 50 lines, terminal height 24 → visible_height = 23 (1 row for title).
         let lines: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
         let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
         let mut app = make_app(&line_refs).await;
 
-        // Simulate state after scrolling to the end of 50 lines.
         app.tabs[0].scroll.scroll_offset = 49;
         app.tabs[0].scroll.viewport_offset = 49;
 
-        // Add a filter that keeps only lines 0..30 (those containing a single digit
-        // or two-digit number < 30).
         app.execute_command_str("include-filter line [012][0-9]$".to_string())
             .await;
-        // After the filter, visible = 30 lines; scroll_offset clamped to 29 by render.
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
 
-        // viewport_offset must have been pulled back so the full visible_height is used.
-        // With 30 visible lines and visible_height=23, the latest valid start is 30-23=7.
         let vp = app.tabs[0].scroll.viewport_offset;
         let visible = app.tabs[0].filter.visible_indices.len();
-        let visible_height = 23; // 24-row terminal minus 1 title row (no borders)
+        let visible_height = 23;
         assert!(
             vp + visible_height >= visible,
             "viewport_offset {vp} leaves blank rows: {visible} visible lines, height {visible_height}"
         );
     }
 
-    // When the search or command input bar is visible the viewport must reserve
-    // an extra row so the cursor cannot hide behind the bar.
     #[tokio::test]
     async fn test_visible_height_reduced_when_input_bar_visible() {
         let lines: Vec<String> = (0..10).map(|i| format!("line {i}")).collect();
         let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
 
-        // Without input bar.
         let mut app_no_bar = make_app(&line_refs).await;
         app_no_bar.show_mode_bar = false;
         app_no_bar.tabs[0].display.show_mode_bar = false;
-        let mut terminal = make_terminal(); // 80×24
+        let mut terminal = make_terminal();
         terminal.draw(|f| app_no_bar.ui(f)).unwrap();
         let height_without_bar = app_no_bar.tabs[0].scroll.visible_height;
 
-        // With search input bar active.
         let mut app_with_bar = make_app(&line_refs).await;
         app_with_bar.show_mode_bar = false;
         app_with_bar.tabs[0].display.show_mode_bar = false;
@@ -1481,10 +1591,8 @@ mod tests {
 
     // ── Tab bar mode label ─────────────────────────────────────────────────
 
-    /// Build an app with a second tab so the tab bar is rendered.
     async fn make_two_tab_app() -> App {
         let mut app = make_app(&["line 0", "line 1"]).await;
-        // Clone the first tab as a second tab so `has_multiple_tabs` is true.
         let db = app.db.clone();
         let log_manager = LogManager::new(db, None).await;
         let tab2 = crate::ui::TabState::new(
@@ -1506,7 +1614,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // Row 0 is the tab bar. The active tab (tab 0) should show [NORMAL].
         let tab_row = row_content(&buf, 0);
         assert!(
             tab_row.contains("[NORMAL]"),
@@ -1566,7 +1673,6 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
 
         let tab_row = row_content(&buf, 0);
-        // "other" is the second (inactive) tab title — it must not carry [NORMAL].
         let other_pos = tab_row.find("other").expect("second tab title not found");
         let prefix = &tab_row[..other_pos];
         assert!(
@@ -1588,8 +1694,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // Find the '[' of "[NORMAL]" on row 0 and verify fg matches the mode bar
-        // style (text_highlight_fg on root_bg — no tab-highlight background).
         let tab_row = row_content(&buf, 0);
         let bracket_col = tab_row
             .find('[')
@@ -1618,7 +1722,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // Row 0 is the tab bar embedded in the top border (┌ … ┐).
         let tab_bar_row = row_content(&buf, 0);
         assert!(
             tab_bar_row.contains('┌') && tab_bar_row.contains('┐'),
@@ -1626,8 +1729,6 @@ mod tests {
             tab_bar_row,
         );
 
-        // Row 1 is the first content row (│ … │); the panel has no separate
-        // title line — status info lives exclusively in the tab bar.
         let content_row = row_content(&buf, 1);
         assert!(
             !content_row.contains("myfile.log"),
@@ -1652,8 +1753,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // Row 0 is the tab bar merged with the top border (┌ … ┐).
-        // The active tab should show a line count "(N)" inside the border.
         let tab_row = row_content(&buf, 0);
         assert!(
             tab_row.contains('┌') && tab_row.contains('┐'),
@@ -1770,7 +1869,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // Single tab → no tab bar, row 0 is the top border of the logs panel.
         let border_row = row_content(&buf, 0);
         assert!(
             border_row.contains("uniquename.log"),
@@ -1790,17 +1888,12 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // Row 0 is the tab bar merged with the top border.
-        // When the sidebar is visible its "Filters" title must appear on that
-        // same row — not one row below.
         let row0 = row_content(&buf, 0);
         assert!(
             row0.contains("Filters"),
             "sidebar title should appear on row 0 (same as tab bar), got: {:?}",
             row0,
         );
-        // Row 1 must NOT start with the sidebar title (it would if the sidebar
-        // top border were misaligned one row down).
         let row1 = row_content(&buf, 1);
         assert!(
             !row1.contains("Filters"),
@@ -1818,7 +1911,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // Row 0 is the tab bar. Find the column of the inactive tab title ("other").
         let tab_row = row_content(&buf, 0);
         let other_col = tab_row.find("other").expect("inactive tab title not found") as u16;
         let cell = buf.cell((other_col, 0)).expect("cell out of bounds");
@@ -1831,9 +1923,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_whole_line_filter_fg_suppresses_value_colors_on_covered_spans() {
-        // A whole-line filter (match_only=false) has priority 500, value colors priority 0.
-        // The sweep-line compose picks the higher-priority filter fg, so value colors
-        // must not be applied to any part of the line.
         use crate::types::FilterType;
 
         let mut app = make_app(&["log GET /api"]).await;
@@ -1890,8 +1979,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_value_colors_apply_to_unfiltered_parts_of_filter_colored_line() {
-        // A match-only filter colors "log" but leaves "GET" unstyled.
-        // Value colors must still apply to the unstyled "GET" span.
         use crate::types::FilterType;
 
         let mut app = make_app(&["log GET /api"]).await;
@@ -1904,7 +1991,7 @@ mod tests {
                 FilterType::Include,
                 Some("[255,0,0]"),
                 None,
-                true, // match_only=true: only "log" is colored, "GET" stays unstyled
+                true,
             )
             .await;
         app.tabs[0].refresh_visible();
@@ -1967,11 +2054,9 @@ mod tests {
         let mut app = make_app(&["log from 5.120.204.67 done"]).await;
         let ip_color = app.theme.value_colors.ip_address;
 
-        // First render WITHOUT filter — populates render cache with value colors.
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
 
-        // Add filter the same way the command handler does.
         app.tabs[0]
             .log_manager
             .add_filter_with_color(
@@ -1984,7 +2069,6 @@ mod tests {
             .await;
         app.tabs[0].begin_filter_refresh();
 
-        // Re-render — cache should be invalidated, filter fg must win.
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
@@ -2006,11 +2090,9 @@ mod tests {
         let mut app = make_app(&["log from 5.120.204.67 done"]).await;
         let ip_color = app.theme.value_colors.ip_address;
 
-        // First render WITHOUT filter — populates render cache with value colors.
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
 
-        // Add filter and then go through the incremental include path.
         app.tabs[0]
             .log_manager
             .add_filter_with_color(
@@ -2089,8 +2171,6 @@ mod tests {
         }
     }
 
-    // When startup_warnings is non-empty a warnings bar must be rendered above
-    // the mode bar and display all warning messages.
     #[tokio::test]
     async fn test_startup_warnings_shown_above_mode_bar() {
         let mut app = make_app(&["line 0"]).await;
@@ -2100,7 +2180,7 @@ mod tests {
             "keybinding conflict: k".to_string(),
         ];
 
-        let mut terminal = make_terminal(); // 80×24
+        let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
@@ -2119,15 +2199,13 @@ mod tests {
         );
     }
 
-    // More than 10 warnings must be capped at 10 rows.
     #[tokio::test]
     async fn test_startup_warnings_capped_at_10_rows() {
         let mut app = make_app(&["line 0"]).await;
         app.startup_warnings = (0..15).map(|i| format!("conflict {i}")).collect();
 
-        let mut terminal = make_terminal(); // 80×24
+        let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
-        // Just verify it renders without panicking and shows the first warning.
         let buf = terminal.backend().buffer().clone();
         let content: String = (0..buf.area.height)
             .map(|y| row_content(&buf, y))
@@ -2143,7 +2221,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // Row 0 is the top border; row 1 is the first content row (cursor at scroll=0).
         let cursor_row = 1u16;
         let has_bold = (0..buf.area.width).any(|x| {
             buf.cell((x, cursor_row))
@@ -2160,7 +2237,6 @@ mod tests {
         );
     }
 
-    // After a keypress startup_warnings must be cleared.
     #[tokio::test]
     async fn test_startup_warnings_cleared_on_keypress() {
         let mut app = make_app(&["line 0"]).await;

@@ -102,8 +102,11 @@ Popup rendering is implemented as ratatui `Widget` types in `src/ui/widgets/`:
 - `DockerSelectPopup` / `DltSelectPopup` — streaming source selection (DLT includes an add-device form)
 - `ValueColorsPopup` — value/level colour toggle list with fuzzy search
 - `KeybindingsHelpPopup` — keybindings reference with search filtering
+- `ModeBar` — status/keybindings bar rendered at the bottom of the screen
 
 Each widget borrows `&Theme` and `&Keybindings` plus the mode-specific data cloned in `App::ui()`. `App::ui()` constructs the widget and calls `frame.render_widget(popup, frame.area())`.
+
+`App::ui()` is decomposed into focused helper methods (`extract_ui_render_state`, `build_layout_constraints`, `compute_main_areas`, `render_tab_bar_widget`, `render_log_panel_and_sidebar`, `render_command_bar_widget`, `render_input_bar_widget`, `render_notification`, `render_warnings`, `render_mode_bar_widget`, `render_overlay_popups`), each kept under 50 lines. The top-level `ui()` method is a thin coordinator that calls these helpers in order.
 
 ## MCP Server
 

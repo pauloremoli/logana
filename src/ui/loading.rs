@@ -1003,7 +1003,7 @@ mod tests {
     use crate::log_manager::LogManager;
     use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
-    use crate::ui::{FileWatchState, StdinLoadState, VisibleLines};
+    use crate::ui::{FileWatchState, SearchHandle, StdinLoadState, VisibleLines};
     use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -2759,6 +2759,220 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_continue_session_restore_docker_source() {
+        let mut app = make_app(&[]).await;
+        let mut queue = VecDeque::new();
+        queue.push_back("docker:mycontainer".to_string());
+        app.continue_session_restore(queue, 1, 0).await;
+        let tab_idx = app.tabs.len() - 1;
+        assert!(app.tabs[tab_idx].title.contains("docker:mycontainer"));
+        assert!(app.tabs[tab_idx].stream.retry.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_continue_session_restore_dlt_source() {
+        let mut app = make_app(&[]).await;
+        let mut queue = VecDeque::new();
+        queue.push_back("dlt://192.168.1.1:3490".to_string());
+        app.continue_session_restore(queue, 1, 0).await;
+        let tab_idx = app.tabs.len() - 1;
+        assert!(app.tabs[tab_idx].stream.retry.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_continue_session_restore_otlp_source() {
+        let mut app = make_app(&[]).await;
+        let mut queue = VecDeque::new();
+        queue.push_back("otlp://4318".to_string());
+        app.continue_session_restore(queue, 1, 0).await;
+        let tab_idx = app.tabs.len() - 1;
+        assert!(app.tabs[tab_idx].stream.retry.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_continue_session_restore_otlp_grpc_source() {
+        let mut app = make_app(&[]).await;
+        let mut queue = VecDeque::new();
+        queue.push_back("otlp-grpc://4317".to_string());
+        app.continue_session_restore(queue, 1, 0).await;
+        let tab_idx = app.tabs.len() - 1;
+        assert!(app.tabs[tab_idx].stream.retry.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_restore_otlp_tab_sets_retry() {
+        let mut app = make_app(&["line"]).await;
+        app.restore_otlp_tab("otlp://4318").await;
+        let tab_idx = app.tabs.len() - 1;
+        assert!(app.tabs[tab_idx].stream.retry.is_some());
+        assert!(app.tabs[tab_idx].stream.watch.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_restore_otlp_grpc_tab_sets_retry() {
+        let mut app = make_app(&["line"]).await;
+        app.restore_otlp_grpc_tab("otlp-grpc://4317").await;
+        let tab_idx = app.tabs.len() - 1;
+        assert!(app.tabs[tab_idx].stream.retry.is_some());
+        assert!(app.tabs[tab_idx].stream.watch.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_open_dlt_stream_error_sets_retry() {
+        let mut app = make_app(&["line"]).await;
+        app.open_dlt_stream("192.0.2.1".to_string(), 9999, "test-device".to_string())
+            .await;
+        let tab_idx = app.tabs.len() - 1;
+        assert!(
+            app.tabs[tab_idx].stream.retry.is_some() || app.tabs[tab_idx].stream.watch.is_some(),
+            "tab should have retry or watch state"
+        );
+        assert!(app.tabs[tab_idx].title.contains("dlt:test-device"));
+    }
+
+    #[tokio::test]
+    async fn test_advance_search_no_handle_is_noop() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].search.handle = None;
+        app.advance_search();
+        assert!(app.tabs[0].search.handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_advance_search_accumulates_results() {
+        use crate::types::SearchResult;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        let mut app = make_app(&["hello", "world", "hello again"]).await;
+
+        let (result_tx, result_rx) = tokio::sync::mpsc::channel::<Vec<SearchResult>>(16);
+        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(0.5_f64);
+
+        let results = vec![SearchResult {
+            line_idx: 0,
+            matches: vec![],
+        }];
+        result_tx.try_send(results).unwrap();
+
+        app.tabs[0].search.handle = Some(SearchHandle {
+            result_rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress_rx,
+            pattern: "hello".to_string(),
+            forward: true,
+            navigate: false,
+        });
+
+        app.advance_search();
+
+        assert_eq!(app.tabs[0].search.query.get_results().len(), 1);
+        assert!(app.tabs[0].search.handle.is_some(), "channel still open");
+    }
+
+    #[tokio::test]
+    async fn test_advance_search_done_clears_handle() {
+        use crate::types::SearchResult;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        let mut app = make_app(&["hello", "world"]).await;
+
+        let (result_tx, result_rx) = tokio::sync::mpsc::channel::<Vec<SearchResult>>(16);
+        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
+
+        drop(result_tx);
+
+        app.tabs[0].search.handle = Some(SearchHandle {
+            result_rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress_rx,
+            pattern: "hello".to_string(),
+            forward: true,
+            navigate: false,
+        });
+
+        app.advance_search();
+
+        assert!(
+            app.tabs[0].search.handle.is_none(),
+            "handle should be cleared when sender drops"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_advance_search_navigate_scrolls_to_match() {
+        use crate::types::SearchResult;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        let mut app = make_app(&["no match", "hello match", "no match"]).await;
+        app.tabs[0].filter.visible_indices =
+            VisibleLines::All(app.tabs[0].file_reader.line_count());
+        app.tabs[0].scroll.scroll_offset = 0;
+
+        let (result_tx, result_rx) = tokio::sync::mpsc::channel::<Vec<SearchResult>>(16);
+        let (_progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
+
+        result_tx
+            .try_send(vec![SearchResult {
+                line_idx: 1,
+                matches: vec![],
+            }])
+            .unwrap();
+        drop(result_tx);
+
+        app.tabs[0].search.handle = Some(SearchHandle {
+            result_rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress_rx,
+            pattern: "hello".to_string(),
+            forward: true,
+            navigate: true,
+        });
+
+        app.advance_search();
+
+        assert!(app.tabs[0].search.handle.is_none());
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_connect_fn_for_source_none() {
+        assert!(connect_fn_for_source(None).is_none());
+    }
+
+    #[test]
+    fn test_connect_fn_for_source_dlt_with_port() {
+        assert!(connect_fn_for_source(Some("dlt://192.168.1.1:3490")).is_some());
+    }
+
+    #[test]
+    fn test_connect_fn_for_source_dlt_no_port() {
+        assert!(connect_fn_for_source(Some("dlt://192.168.1.1")).is_some());
+    }
+
+    #[test]
+    fn test_connect_fn_for_source_docker() {
+        assert!(connect_fn_for_source(Some("docker:mycontainer")).is_some());
+    }
+
+    #[test]
+    fn test_connect_fn_for_source_otlp() {
+        assert!(connect_fn_for_source(Some("otlp://4318")).is_some());
+    }
+
+    #[test]
+    fn test_connect_fn_for_source_otlp_grpc() {
+        assert!(connect_fn_for_source(Some("otlp-grpc://4317")).is_some());
+    }
+
+    #[test]
+    fn test_connect_fn_for_source_unknown_returns_none() {
+        assert!(connect_fn_for_source(Some("/var/log/app.log")).is_none());
+    }
+
+    #[tokio::test]
     async fn test_advance_file_watches_otlp_grpc_shows_lines() {
         use crate::otlp_receiver::spawn_otlp_grpc_receiver;
         use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
@@ -2815,5 +3029,158 @@ mod tests {
             tab.filter.visible_indices.len() > 0,
             "gRPC lines should be visible"
         );
+    }
+
+    #[tokio::test]
+    async fn test_open_file_restore_policy_always_applies_context() {
+        use crate::config::RestoreSessionPolicy;
+        use crate::db::{FileContext, FileContextStore};
+        use std::collections::HashSet;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"line1\nline2\nline3\n").unwrap();
+        let abs_path = std::fs::canonicalize(tmp.path())
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let mut app = make_app(&[]).await;
+        app.restore_file_policy = RestoreSessionPolicy::Always;
+
+        let ctx = FileContext {
+            source_file: abs_path.clone(),
+            scroll_offset: 2,
+            search_query: String::new(),
+            level_colors_disabled: HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![1],
+            file_hash: None,
+            comments: vec![],
+            show_keys: true,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: true,
+        };
+        app.db.save_file_context(&ctx).await.unwrap();
+
+        app.open_file(&abs_path).await.unwrap();
+        let tab_idx = app.tabs.len() - 1;
+        assert!(app.tabs[tab_idx].display.show_keys);
+    }
+
+    #[tokio::test]
+    async fn test_open_file_restore_policy_never_ignores_context() {
+        use crate::config::RestoreSessionPolicy;
+        use crate::db::{FileContext, FileContextStore};
+        use std::collections::HashSet;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"line1\nline2\n").unwrap();
+        let abs_path = std::fs::canonicalize(tmp.path())
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let mut app = make_app(&[]).await;
+        app.restore_file_policy = RestoreSessionPolicy::Never;
+
+        let ctx = FileContext {
+            source_file: abs_path.clone(),
+            scroll_offset: 1,
+            search_query: String::new(),
+            level_colors_disabled: HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: true,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: true,
+        };
+        app.db.save_file_context(&ctx).await.unwrap();
+
+        app.open_file(&abs_path).await.unwrap();
+        let tab_idx = app.tabs.len() - 1;
+        assert!(!app.tabs[tab_idx].display.show_keys);
+    }
+
+    #[tokio::test]
+    async fn test_open_file_restore_policy_ask_shows_confirm_mode() {
+        use crate::config::RestoreSessionPolicy;
+        use crate::db::{FileContext, FileContextStore};
+        use crate::mode::app_mode::ModeRenderState;
+        use std::collections::HashSet;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"line1\nline2\n").unwrap();
+        let abs_path = std::fs::canonicalize(tmp.path())
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let mut app = make_app(&[]).await;
+        app.restore_file_policy = RestoreSessionPolicy::Ask;
+
+        let ctx = FileContext {
+            source_file: abs_path.clone(),
+            scroll_offset: 0,
+            search_query: String::new(),
+            level_colors_disabled: HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![],
+            file_hash: None,
+            comments: vec![],
+            show_keys: false,
+            raw_mode: false,
+            sidebar_width: 30,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: true,
+        };
+        app.db.save_file_context(&ctx).await.unwrap();
+
+        app.open_file(&abs_path).await.unwrap();
+        let tab_idx = app.tabs.len() - 1;
+        assert!(matches!(
+            app.tabs[tab_idx].interaction.mode.render_state(),
+            ModeRenderState::ConfirmRestore
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_open_otlp_stream_opens_tab() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let mut app = make_app(&["line"]).await;
+        app.open_otlp_stream(port).await;
+        assert_eq!(app.tabs.len(), 2);
+        let tab_idx = app.tabs.len() - 1;
+        assert!(
+            app.tabs[tab_idx].stream.watch.is_some() || app.tabs[tab_idx].stream.retry.is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_skip_or_fail_load_replace_tab() {
+        let mut app = make_app(&["existing"]).await;
+        let fr = FileReader::from_bytes(vec![]);
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let tab = TabState::new(fr, lm, "preview".to_string());
+        app.tabs.push(tab);
+        assert_eq!(app.tabs.len(), 2);
+
+        app.skip_or_fail_load(LoadContext::ReplaceTab { tab_idx: 1 })
+            .await;
+        assert_eq!(app.tabs.len(), 1);
     }
 }

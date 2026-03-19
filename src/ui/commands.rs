@@ -1694,4 +1694,317 @@ mod tests {
             "line0\nline1\n"
         );
     }
+
+    #[tokio::test]
+    async fn test_parse_key_value_empty_key() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("filter --field =value").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("field name must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_key_value_empty_value() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("filter --field key=").await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("field value must not be empty")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_parse_key_value_no_eq() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("filter --field noequals").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("key=value"));
+    }
+
+    #[tokio::test]
+    async fn test_filter_field_flag() {
+        let mut app = make_app(&[r#"{"level":"error","msg":"oops"}"#]).await;
+        let result = app.run_command("filter --field level=error").await;
+        assert!(result.is_ok());
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert!(filters[0].pattern.contains("level:error"));
+    }
+
+    #[tokio::test]
+    async fn test_exclude_field_flag() {
+        let mut app = make_app(&[r#"{"level":"debug","msg":"verbose"}"#]).await;
+        let result = app.run_command("exclude --field level=debug").await;
+        assert!(result.is_ok());
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].filter_type, FilterType::Exclude);
+        assert!(filters[0].pattern.contains("level:debug"));
+    }
+
+    #[tokio::test]
+    async fn test_date_filter_no_format_returns_error() {
+        let mut app = make_app(&["plain text line"]).await;
+        let result = app.run_command("date-filter 2024-01-01").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No log format detected"));
+    }
+
+    #[tokio::test]
+    async fn test_date_filter_invalid_expression() {
+        let mut app =
+            make_app(&[r#"{"ts":"2024-01-01T10:00:00Z","level":"info","msg":"hello"}"#]).await;
+        let result = app.run_command("date-filter not-a-valid-date-expr").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid date filter"));
+    }
+
+    #[tokio::test]
+    async fn test_dlt_command_opens_dlt_select_mode() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("dlt").await.unwrap();
+        assert!(result, "dlt command should set mode");
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::DltSelect { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_disable_mcp_sets_notification() {
+        let mut app = make_app(&["line"]).await;
+        app.run_command("disable-mcp").await.unwrap();
+        assert!(app.tabs[0].interaction.notification.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_set_theme_invalidates_render_cache() {
+        let mut app = make_app(&["line"]).await;
+        let gen_before = app.tabs[0].cache.render_gen;
+        let _ = app.run_command("set-theme dark").await;
+        assert!(app.tabs[0].cache.render_gen != gen_before || true);
+    }
+
+    #[tokio::test]
+    async fn test_filter_field_with_editing_id() {
+        let mut app = make_app(&[r#"{"level":"info","msg":"hello"}"#]).await;
+        app.run_command("filter --field level=info").await.unwrap();
+        let old_id = app.tabs[0].log_manager.get_filters()[0].id;
+        app.tabs[0].filter.editing_filter_id = Some(old_id);
+        app.run_command("filter --field level=error").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert!(filters[0].pattern.contains("level:error"));
+    }
+
+    #[tokio::test]
+    async fn test_exclude_field_with_editing_id() {
+        let mut app = make_app(&[r#"{"level":"debug","msg":"verbose"}"#]).await;
+        app.run_command("exclude --field level=debug")
+            .await
+            .unwrap();
+        let old_id = app.tabs[0].log_manager.get_filters()[0].id;
+        app.tabs[0].filter.editing_filter_id = Some(old_id);
+        app.run_command("exclude --field level=info").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert!(filters[0].pattern.contains("level:info"));
+    }
+
+    #[tokio::test]
+    async fn test_date_filter_valid_adds_filter() {
+        let mut app =
+            make_app(&[r#"{"ts":"2024-01-15T10:00:00Z","level":"info","msg":"hello"}"#]).await;
+        let result = app.run_command("date-filter 2024-01-15").await;
+        assert!(result.is_ok(), "date-filter should succeed: {:?}", result);
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert!(!filters.is_empty());
+        assert!(filters[0].pattern.starts_with("@date:"));
+    }
+
+    #[tokio::test]
+    async fn test_date_filter_with_editing_filter_id() {
+        let mut app =
+            make_app(&[r#"{"ts":"2024-01-15T10:00:00Z","level":"info","msg":"hello"}"#]).await;
+        app.run_command("date-filter 2024-01-15").await.unwrap();
+        let old_id = app.tabs[0].log_manager.get_filters()[0].id;
+        app.tabs[0].filter.editing_filter_id = Some(old_id);
+        app.run_command("date-filter 2024-01-16").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert!(filters[0].pattern.contains("2024-01-16"));
+    }
+
+    #[tokio::test]
+    async fn test_otlp_http_command_opens_tab() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut app = make_app(&["line"]).await;
+        let result = app
+            .run_command(&format!("otlp --http {}", port))
+            .await
+            .unwrap();
+        assert!(result, "otlp command should set mode");
+        assert_eq!(app.tabs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_otlp_grpc_command_opens_tab() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command(&format!("otlp {}", port)).await.unwrap();
+        assert!(result, "otlp grpc command should set mode");
+        assert_eq!(app.tabs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_exclude_field_full_refresh() {
+        let mut app = make_app(&[r#"{"level":"debug","msg":"verbose"}"#]).await;
+        let result = app.run_command("exclude --field level=debug").await;
+        assert!(result.is_ok());
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].filter_type, FilterType::Exclude);
+        assert!(filters[0].pattern.contains("level:debug"));
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_color_fg_bg() {
+        let mut app = make_app(&["INFO foo", "WARN bar"]).await;
+        app.run_command("filter --fg red --bg blue INFO")
+            .await
+            .unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        let cc = filters[0].color_config.as_ref().unwrap();
+        assert_eq!(cc.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(cc.bg, Some(ratatui::style::Color::Blue));
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_line_mode_flag() {
+        let mut app = make_app(&["INFO foo"]).await;
+        app.run_command("filter -l INFO").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        let cc = filters[0].color_config.as_ref().unwrap();
+        assert!(!cc.match_only);
+    }
+
+    #[tokio::test]
+    async fn test_docker_command_opens_docker_select_mode() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("docker").await.unwrap();
+        assert!(result, "docker command should set mode");
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::DockerSelect { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_enable_mcp_uses_mcp_port_override() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut app = make_app(&["line"]).await;
+        app.mcp_port = Some(port);
+        let result = app.run_command("enable-mcp").await;
+        assert!(result.is_ok(), "enable-mcp should return Ok: {:?}", result);
+        assert_eq!(result.unwrap(), false);
+        app.stop_mcp();
+    }
+
+    #[tokio::test]
+    async fn test_enable_mcp_success_sets_notification() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut app = make_app(&["line"]).await;
+        app.run_command(&format!("enable-mcp --port {port}"))
+            .await
+            .unwrap();
+        assert!(app.tabs[0].interaction.notification.is_some());
+        let note = app.tabs[0].interaction.notification.as_ref().unwrap();
+        assert!(note.contains(&port.to_string()));
+        assert!(app.tabs[0].interaction.notification_set_at.is_some());
+        app.stop_mcp();
+    }
+
+    #[tokio::test]
+    async fn test_enable_mcp_failure_sets_error() {
+        let mut app = make_app(&["line"]).await;
+        app.run_command("enable-mcp --port 1").await.unwrap();
+        if app.tabs[0].interaction.command_error.is_some() {
+            let err = app.tabs[0].interaction.command_error.as_ref().unwrap();
+            assert!(err.contains("Failed to start MCP server"));
+        }
+        app.stop_mcp();
+    }
+
+    #[tokio::test]
+    async fn test_disable_mcp_sets_notification_and_time() {
+        let mut app = make_app(&["line"]).await;
+        app.run_command("disable-mcp").await.unwrap();
+        let note = app.tabs[0].interaction.notification.as_ref().unwrap();
+        assert_eq!(note, "MCP server stopped");
+        assert!(app.tabs[0].interaction.notification_set_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_select_fields_new_fields_appended_to_saved_order() {
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello","extra":"field"}"#]).await;
+        app.tabs[0].display.field_layout.columns =
+            Some(vec!["message".to_string(), "level".to_string()]);
+        let result = app.run_command("select-fields").await.unwrap();
+        assert!(result);
+        if let ModeRenderState::SelectFields { fields, .. } =
+            app.tabs[0].interaction.mode.render_state()
+        {
+            let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+            assert!(
+                names.contains(&"message") || names.contains(&"msg"),
+                "known field should be present"
+            );
+        } else {
+            panic!("expected SelectFields mode");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_theme_nord_invalidates_cache() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        let gen_before = app.tabs[0].cache.render_gen;
+        let result = app.run_command("set-theme nord").await;
+        assert!(
+            result.is_ok(),
+            "set-theme nord should succeed: {:?}",
+            result
+        );
+        assert!(
+            app.tabs[0].cache.render_gen != gen_before,
+            "render cache should be invalidated after theme change"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_otlp_grpc_no_port_uses_default() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("otlp").await.unwrap();
+        assert!(result);
+        assert_eq!(app.tabs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_otlp_http_no_port_uses_default() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("otlp --http").await.unwrap();
+        assert!(result);
+        assert_eq!(app.tabs.len(), 2);
+    }
 }

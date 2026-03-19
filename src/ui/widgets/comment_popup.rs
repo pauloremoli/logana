@@ -119,3 +119,71 @@ impl<'a> Widget for CommentPopup<'a> {
             .render(chunks[2], buf);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Keybindings;
+    use crate::db::Database;
+    use crate::file_reader::FileReader;
+    use crate::log_manager::LogManager;
+    use crate::mode::comment_mode::CommentMode;
+    use crate::theme::Theme;
+    use crate::ui::App;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::Arc;
+
+    async fn make_app(lines: &[&str]) -> App {
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::new(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    fn make_terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_comment_popup_basic() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].interaction.mode = Box::new(CommentMode::new(vec![0, 1]));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_comment_popup_multiline() {
+        let mut app = make_app(&["line one", "line two", "line three"]).await;
+        let mut mode = CommentMode::new(vec![0, 1]);
+        mode.lines = vec!["line 1".to_string(), "line 2".to_string()];
+        mode.cursor_row = 1;
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_comment_popup_cursor_boundary() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        let mut mode = CommentMode::new(vec![0]);
+        mode.lines = vec!["short".to_string()];
+        mode.cursor_col = 100;
+        app.tabs[0].interaction.mode = Box::new(mode);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+    }
+}
