@@ -36,7 +36,7 @@ impl Mode for VisualLineMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings;
+        let kb = &tab.interaction.keybindings;
 
         // ── Digit accumulation for count prefix ─────────────────────────
         if let KeyCode::Char(c @ '1'..='9') = key
@@ -61,63 +61,75 @@ impl Mode for VisualLineMode {
 
         if kb.navigation.scroll_down.matches(key, modifiers) {
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_add(count);
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab.scroll.scroll_offset.saturating_add(count);
+            tab.interaction.g_key_pressed = false;
         } else if kb.navigation.scroll_up.matches(key, modifiers) {
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_sub(count);
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab.scroll.scroll_offset.saturating_sub(count);
+            tab.interaction.g_key_pressed = false;
         } else if kb.navigation.half_page_down.matches(key, modifiers) {
-            let half = (tab.visible_height / 2).max(1);
+            let half = (tab.scroll.visible_height / 2).max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_add(half.saturating_mul(count));
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab
+                .scroll
+                .scroll_offset
+                .saturating_add(half.saturating_mul(count));
+            tab.interaction.g_key_pressed = false;
         } else if kb.navigation.half_page_up.matches(key, modifiers) {
-            let half = (tab.visible_height / 2).max(1);
+            let half = (tab.scroll.visible_height / 2).max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_sub(half.saturating_mul(count));
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab
+                .scroll
+                .scroll_offset
+                .saturating_sub(half.saturating_mul(count));
+            tab.interaction.g_key_pressed = false;
         } else if kb.navigation.page_down.matches(key, modifiers) {
-            let page = tab.visible_height.max(1);
+            let page = tab.scroll.visible_height.max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_add(page.saturating_mul(count));
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab
+                .scroll
+                .scroll_offset
+                .saturating_add(page.saturating_mul(count));
+            tab.interaction.g_key_pressed = false;
         } else if kb.navigation.page_up.matches(key, modifiers) {
-            let page = tab.visible_height.max(1);
+            let page = tab.scroll.visible_height.max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_sub(page.saturating_mul(count));
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab
+                .scroll
+                .scroll_offset
+                .saturating_sub(page.saturating_mul(count));
+            tab.interaction.g_key_pressed = false;
         } else if kb.normal.go_to_bottom.matches(key, modifiers) {
             if let Some(count) = self.count.take() {
                 let _ = tab.goto_line(count);
             } else {
-                let n = tab.visible_indices.len();
+                let n = tab.filter.visible_indices.len();
                 if n > 0 {
-                    tab.scroll_offset = n - 1;
+                    tab.scroll.scroll_offset = n - 1;
                 }
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
         } else if kb.normal.go_to_top_chord.matches(key, modifiers) {
-            if tab.g_key_pressed {
+            if tab.interaction.g_key_pressed {
                 if let Some(count) = self.count.take() {
                     let _ = tab.goto_line(count);
                 } else {
-                    tab.scroll_offset = 0;
+                    tab.scroll.scroll_offset = 0;
                 }
-                tab.g_key_pressed = false;
+                tab.interaction.g_key_pressed = false;
             } else {
-                tab.g_key_pressed = true;
+                tab.interaction.g_key_pressed = true;
             }
         } else if kb.visual_line.comment.matches(key, modifiers) {
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             // Comment the selected range
-            if tab.visible_indices.is_empty() {
+            if tab.filter.visible_indices.is_empty() {
                 return (Box::new(NormalMode::default()), KeyResult::Handled);
             }
-            let max_idx = tab.visible_indices.len() - 1;
-            let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
-            let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
-            let line_indices = tab.visible_indices.slice_to_vec(lo, hi);
+            let max_idx = tab.filter.visible_indices.len() - 1;
+            let lo = self.anchor.min(tab.scroll.scroll_offset).min(max_idx);
+            let hi = self.anchor.max(tab.scroll.scroll_offset).min(max_idx);
+            let line_indices = tab.filter.visible_indices.slice_to_vec(lo, hi);
             if !line_indices.is_empty() {
                 return (Box::new(CommentMode::new(line_indices)), KeyResult::Handled);
             }
@@ -125,11 +137,11 @@ impl Mode for VisualLineMode {
         } else if kb.visual_line.mark.matches(key, modifiers) {
             // Mark/unmark all selected lines as a group.
             // If every selected line is already marked → unmark all; otherwise → mark all.
-            if !tab.visible_indices.is_empty() {
-                let max_idx = tab.visible_indices.len() - 1;
-                let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
-                let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
-                let line_indices = tab.visible_indices.slice_to_vec(lo, hi);
+            if !tab.filter.visible_indices.is_empty() {
+                let max_idx = tab.filter.visible_indices.len() - 1;
+                let lo = self.anchor.min(tab.scroll.scroll_offset).min(max_idx);
+                let hi = self.anchor.max(tab.scroll.scroll_offset).min(max_idx);
+                let line_indices = tab.filter.visible_indices.slice_to_vec(lo, hi);
                 let all_marked = line_indices.iter().all(|&i| tab.log_manager.is_marked(i));
                 if all_marked {
                     for idx in &line_indices {
@@ -146,30 +158,30 @@ impl Mode for VisualLineMode {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         } else if kb.visual_line.yank.matches(key, modifiers) {
             // Yank (copy) selected lines to clipboard
-            if tab.visible_indices.is_empty() {
-                tab.command_error = Some("No lines to copy".to_string());
+            if tab.filter.visible_indices.is_empty() {
+                tab.interaction.command_error = Some("No lines to copy".to_string());
                 return (Box::new(NormalMode::default()), KeyResult::Handled);
             }
-            let max_idx = tab.visible_indices.len() - 1;
-            let lo = self.anchor.min(tab.scroll_offset).min(max_idx);
-            let hi = self.anchor.max(tab.scroll_offset).min(max_idx);
-            let line_indices = tab.visible_indices.slice_to_vec(lo, hi);
+            let max_idx = tab.filter.visible_indices.len() - 1;
+            let lo = self.anchor.min(tab.scroll.scroll_offset).min(max_idx);
+            let hi = self.anchor.max(tab.scroll.scroll_offset).min(max_idx);
+            let line_indices = tab.filter.visible_indices.slice_to_vec(lo, hi);
             let text: String = line_indices
                 .iter()
                 .map(|&idx| {
                     let bytes = tab.file_reader.get_line(idx);
-                    if tab.raw_mode {
+                    if tab.display.raw_mode {
                         None
                     } else {
-                        tab.detected_format.as_ref()
+                        tab.display.format.as_ref()
                     }
                     .and_then(|parser| parser.parse_line(bytes))
                     .map(|parts| {
                         apply_field_layout(
                             &parts,
-                            &tab.field_layout,
-                            &tab.hidden_fields,
-                            tab.show_keys,
+                            &tab.display.field_layout,
+                            &tab.display.hidden_fields,
+                            tab.display.show_keys,
                         )
                         .join(" ")
                     })
@@ -182,7 +194,7 @@ impl Mode for VisualLineMode {
                 KeyResult::CopyToClipboard(text),
             );
         } else if kb.visual_line.search.matches(key, modifiers) {
-            let text = regex::escape(&lo_line_text(tab, self.anchor, tab.scroll_offset));
+            let text = regex::escape(&lo_line_text(tab, self.anchor, tab.scroll.scroll_offset));
             return (
                 Box::new(SearchMode {
                     input: text,
@@ -246,19 +258,24 @@ impl Mode for VisualLineMode {
 
 /// Returns the displayed text of the lo line of the visual selection.
 fn lo_line_text(tab: &TabState, anchor: usize, scroll_offset: usize) -> String {
-    if tab.visible_indices.is_empty() {
+    if tab.filter.visible_indices.is_empty() {
         return String::new();
     }
-    let max_idx = tab.visible_indices.len() - 1;
+    let max_idx = tab.filter.visible_indices.len() - 1;
     let lo = anchor.min(scroll_offset).min(max_idx);
-    let idx = tab.visible_indices.get(lo);
+    let idx = tab.filter.visible_indices.get(lo);
     let bytes = tab.file_reader.get_line(idx);
-    if !tab.raw_mode
-        && let Some(parser) = tab.detected_format.as_ref()
+    if !tab.display.raw_mode
+        && let Some(parser) = tab.display.format.as_ref()
         && let Some(parts) = parser.parse_line(bytes)
     {
-        return apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields, tab.show_keys)
-            .join(" ");
+        return apply_field_layout(
+            &parts,
+            &tab.display.field_layout,
+            &tab.display.hidden_fields,
+            tab.display.show_keys,
+        )
+        .join(" ");
     }
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -294,13 +311,13 @@ mod tests {
     #[tokio::test]
     async fn test_j_moves_cursor_down() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
         };
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
-        assert_eq!(tab.scroll_offset, 1);
+        assert_eq!(tab.scroll.scroll_offset, 1);
         assert!(matches!(
             mode2.render_state(),
             ModeRenderState::VisualLine { .. }
@@ -310,25 +327,25 @@ mod tests {
     #[tokio::test]
     async fn test_k_moves_cursor_up() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
-        tab.scroll_offset = 2;
+        tab.scroll.scroll_offset = 2;
         let mode = VisualLineMode {
             anchor: 2,
             count: None,
         };
         let (_, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
-        assert_eq!(tab.scroll_offset, 1);
+        assert_eq!(tab.scroll.scroll_offset, 1);
     }
 
     #[tokio::test]
     async fn test_k_saturates_at_zero() {
         let mut tab = make_tab(&["a"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
         };
         let _ = press(mode, &mut tab, KeyCode::Char('k')).await;
-        assert_eq!(tab.scroll_offset, 0);
+        assert_eq!(tab.scroll.scroll_offset, 0);
     }
 
     #[tokio::test]
@@ -350,7 +367,7 @@ mod tests {
     #[tokio::test]
     async fn test_c_opens_comment_mode_with_selected_lines() {
         let mut tab = make_tab(&["a", "b", "c", "d"]).await;
-        tab.scroll_offset = 3; // cursor at line index 3
+        tab.scroll.scroll_offset = 3; // cursor at line index 3
         let mode = VisualLineMode {
             anchor: 1,
             count: None,
@@ -369,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn test_c_with_anchor_above_cursor() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 2,
             count: None,
@@ -421,7 +438,7 @@ mod tests {
     #[tokio::test]
     async fn test_y_yanks_and_returns_normal() {
         let mut tab = make_tab(&["line one", "line two", "line three"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 2,
             count: None,
@@ -448,10 +465,10 @@ mod tests {
         .await;
         // Ensure the parser was detected.
         assert!(
-            tab.detected_format.is_some(),
+            tab.display.format.is_some(),
             "expected a format parser to be detected"
         );
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 1,
             count: None,
@@ -471,7 +488,7 @@ mod tests {
     #[tokio::test]
     async fn test_m_marks_all_selected_lines() {
         let mut tab = make_tab(&["a", "b", "c", "d"]).await;
-        tab.scroll_offset = 3;
+        tab.scroll.scroll_offset = 3;
         let mode = VisualLineMode {
             anchor: 1,
             count: None,
@@ -492,7 +509,7 @@ mod tests {
         tab.log_manager.toggle_mark(0);
         tab.log_manager.toggle_mark(1);
         tab.log_manager.toggle_mark(2);
-        tab.scroll_offset = 2;
+        tab.scroll.scroll_offset = 2;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
@@ -508,7 +525,7 @@ mod tests {
     async fn test_m_marks_all_when_partially_marked() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
         tab.log_manager.toggle_mark(0); // only first is marked
-        tab.scroll_offset = 2;
+        tab.scroll.scroll_offset = 2;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
@@ -525,9 +542,9 @@ mod tests {
         let mut tab =
             make_tab(&[r#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","message":"hello"}"#])
                 .await;
-        assert!(tab.detected_format.is_some());
-        tab.raw_mode = true;
-        tab.scroll_offset = 0;
+        assert!(tab.display.format.is_some());
+        tab.display.raw_mode = true;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
@@ -546,14 +563,17 @@ mod tests {
     #[tokio::test]
     async fn test_y_empty_visible_indices_returns_normal() {
         let mut tab = make_tab(&[]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
         };
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('y')).await;
         assert!(matches!(mode2.render_state(), ModeRenderState::Normal));
-        assert_eq!(tab.command_error.as_deref(), Some("No lines to copy"));
+        assert_eq!(
+            tab.interaction.command_error.as_deref(),
+            Some("No lines to copy")
+        );
     }
 
     // ── Count prefix tests ───────────────────────────────────────────────
@@ -562,7 +582,7 @@ mod tests {
     async fn test_visual_count_5j_moves_down_5() {
         let lines: Vec<&str> = (0..20).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 0,
             count: Some(5),
@@ -570,14 +590,14 @@ mod tests {
         let (_, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
             .await;
-        assert_eq!(tab.scroll_offset, 5);
+        assert_eq!(tab.scroll.scroll_offset, 5);
     }
 
     #[tokio::test]
     async fn test_visual_count_3k_moves_up_3() {
         let lines: Vec<&str> = (0..20).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.scroll_offset = 10;
+        tab.scroll.scroll_offset = 10;
         let mode = VisualLineMode {
             anchor: 10,
             count: Some(3),
@@ -585,14 +605,14 @@ mod tests {
         let (_, _) = Box::new(mode)
             .handle_key(&mut tab, KeyCode::Char('k'), KeyModifiers::NONE)
             .await;
-        assert_eq!(tab.scroll_offset, 7);
+        assert_eq!(tab.scroll.scroll_offset, 7);
     }
 
     #[tokio::test]
     async fn test_visual_digit_accumulation() {
         let lines: Vec<&str> = (0..200).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
@@ -607,13 +627,13 @@ mod tests {
         let _ = mode
             .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
             .await;
-        assert_eq!(tab.scroll_offset, 15);
+        assert_eq!(tab.scroll.scroll_offset, 15);
     }
 
     #[tokio::test]
     async fn test_slash_enters_search_with_lo_line_text() {
         let mut tab = make_tab(&["foo", "bar"]).await;
-        tab.scroll_offset = 1;
+        tab.scroll.scroll_offset = 1;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
@@ -631,7 +651,7 @@ mod tests {
     #[tokio::test]
     async fn test_slash_escapes_regex_metacharacters_in_search() {
         let mut tab = make_tab(&["GET /api/v2?limit=10"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
@@ -665,36 +685,36 @@ mod tests {
     async fn test_ctrl_d_moves_half_page_down() {
         let lines: Vec<&str> = (0..40).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.scroll_offset = 0;
-        tab.visible_height = 20;
+        tab.scroll.scroll_offset = 0;
+        tab.scroll.visible_height = 20;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
         };
         let _ = press_ctrl(mode, &mut tab, 'd').await;
-        assert_eq!(tab.scroll_offset, 10); // half of 20
+        assert_eq!(tab.scroll.scroll_offset, 10); // half of 20
     }
 
     #[tokio::test]
     async fn test_ctrl_u_moves_half_page_up() {
         let lines: Vec<&str> = (0..40).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.scroll_offset = 20;
-        tab.visible_height = 20;
+        tab.scroll.scroll_offset = 20;
+        tab.scroll.visible_height = 20;
         let mode = VisualLineMode {
             anchor: 20,
             count: None,
         };
         let _ = press_ctrl(mode, &mut tab, 'u').await;
-        assert_eq!(tab.scroll_offset, 10);
+        assert_eq!(tab.scroll.scroll_offset, 10);
     }
 
     #[tokio::test]
     async fn test_page_down_moves_full_page() {
         let lines: Vec<&str> = (0..60).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.scroll_offset = 0;
-        tab.visible_height = 20;
+        tab.scroll.scroll_offset = 0;
+        tab.scroll.visible_height = 20;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
@@ -702,15 +722,15 @@ mod tests {
         let _ = Box::new(mode)
             .handle_key(&mut tab, KeyCode::PageDown, KeyModifiers::NONE)
             .await;
-        assert_eq!(tab.scroll_offset, 20);
+        assert_eq!(tab.scroll.scroll_offset, 20);
     }
 
     #[tokio::test]
     async fn test_page_up_moves_full_page() {
         let lines: Vec<&str> = (0..60).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.scroll_offset = 20;
-        tab.visible_height = 20;
+        tab.scroll.scroll_offset = 20;
+        tab.scroll.visible_height = 20;
         let mode = VisualLineMode {
             anchor: 20,
             count: None,
@@ -718,55 +738,55 @@ mod tests {
         let _ = Box::new(mode)
             .handle_key(&mut tab, KeyCode::PageUp, KeyModifiers::NONE)
             .await;
-        assert_eq!(tab.scroll_offset, 0);
+        assert_eq!(tab.scroll.scroll_offset, 0);
     }
 
     #[tokio::test]
     async fn test_g_goes_to_last_line() {
         let lines: Vec<&str> = (0..10).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
         };
         let _ = press(mode, &mut tab, KeyCode::Char('G')).await;
-        assert_eq!(tab.scroll_offset, 9);
+        assert_eq!(tab.scroll.scroll_offset, 9);
     }
 
     #[tokio::test]
     async fn test_gg_goes_to_first_line() {
         let lines: Vec<&str> = (0..10).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.scroll_offset = 9;
+        tab.scroll.scroll_offset = 9;
         let mode = VisualLineMode {
             anchor: 9,
             count: None,
         };
         // First 'g' sets the flag
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('g')).await;
-        assert!(tab.g_key_pressed);
-        assert_eq!(tab.scroll_offset, 9); // not moved yet
+        assert!(tab.interaction.g_key_pressed);
+        assert_eq!(tab.scroll.scroll_offset, 9); // not moved yet
         // Second 'g' jumps to top
         let _ = mode2
             .handle_key(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE)
             .await;
-        assert_eq!(tab.scroll_offset, 0);
-        assert!(!tab.g_key_pressed);
+        assert_eq!(tab.scroll.scroll_offset, 0);
+        assert!(!tab.interaction.g_key_pressed);
     }
 
     #[tokio::test]
     async fn test_j_resets_g_key_pressed() {
         let lines: Vec<&str> = (0..10).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.g_key_pressed = true;
-        tab.scroll_offset = 0;
+        tab.interaction.g_key_pressed = true;
+        tab.scroll.scroll_offset = 0;
         let mode = VisualLineMode {
             anchor: 0,
             count: None,
         };
         let _ = press(mode, &mut tab, KeyCode::Char('j')).await;
-        assert!(!tab.g_key_pressed);
+        assert!(!tab.interaction.g_key_pressed);
     }
 
     #[tokio::test]

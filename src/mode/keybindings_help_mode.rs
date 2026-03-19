@@ -613,7 +613,7 @@ impl Mode for KeybindingsHelpMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = tab.keybindings.clone();
+        let kb = tab.interaction.keybindings.clone();
 
         // Close: configured close key clears search first, then exits.
         if kb.help.close.matches(key, modifiers) {

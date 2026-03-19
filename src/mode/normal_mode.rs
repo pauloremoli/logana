@@ -34,7 +34,7 @@ impl Mode for NormalMode {
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
         // Clone the Arc so we can mutate `tab` freely in each branch.
-        let kb = tab.keybindings.clone();
+        let kb = tab.interaction.keybindings.clone();
 
         // ── Digit accumulation for count prefix ─────────────────────────────
         // Digits 1-9 start a count; 0 appends when count is already active.
@@ -80,41 +80,53 @@ impl Mode for NormalMode {
         // ── Count-aware motions ─────────────────────────────────────────────
 
         if kb.navigation.half_page_down.matches(key, modifiers) {
-            let half = (tab.visible_height / 2).max(1);
+            let half = (tab.scroll.visible_height / 2).max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_add(half.saturating_mul(count));
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab
+                .scroll
+                .scroll_offset
+                .saturating_add(half.saturating_mul(count));
+            tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
 
         if kb.navigation.half_page_up.matches(key, modifiers) {
-            let half = (tab.visible_height / 2).max(1);
+            let half = (tab.scroll.visible_height / 2).max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_sub(half.saturating_mul(count));
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab
+                .scroll
+                .scroll_offset
+                .saturating_sub(half.saturating_mul(count));
+            tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
 
         if kb.navigation.page_down.matches(key, modifiers) {
-            let page = tab.visible_height.max(1);
+            let page = tab.scroll.visible_height.max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_add(page.saturating_mul(count));
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab
+                .scroll
+                .scroll_offset
+                .saturating_add(page.saturating_mul(count));
+            tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
 
         if kb.navigation.page_up.matches(key, modifiers) {
-            let page = tab.visible_height.max(1);
+            let page = tab.scroll.visible_height.max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_sub(page.saturating_mul(count));
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab
+                .scroll
+                .scroll_offset
+                .saturating_sub(page.saturating_mul(count));
+            tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.command_mode.matches(key, modifiers) {
-            let history = tab.command_history.clone();
-            tab.g_key_pressed = false;
-            tab.command_error = None;
+            let history = tab.interaction.command_history.clone();
+            tab.interaction.g_key_pressed = false;
+            tab.interaction.command_error = None;
             self.count = None;
             return (
                 Box::new(CommandMode::with_history(String::new(), 0, history)),
@@ -123,7 +135,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.filter_mode.matches(key, modifiers) {
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (
                 Box::new(FilterManagementMode {
@@ -134,17 +146,17 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.toggle_filtering.matches(key, modifiers) {
-            tab.filtering_enabled = !tab.filtering_enabled;
+            tab.filter.enabled = !tab.filter.enabled;
             tab.begin_filter_refresh();
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.filter_include.matches(key, modifiers) {
-            let history = tab.command_history.clone();
-            tab.g_key_pressed = false;
-            tab.command_error = None;
+            let history = tab.interaction.command_history.clone();
+            tab.interaction.g_key_pressed = false;
+            tab.interaction.command_error = None;
             self.count = None;
             return (
                 Box::new(CommandMode::with_history("filter ".to_string(), 7, history)),
@@ -153,9 +165,9 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.filter_exclude.matches(key, modifiers) {
-            let history = tab.command_history.clone();
-            tab.g_key_pressed = false;
-            tab.command_error = None;
+            let history = tab.interaction.command_history.clone();
+            tab.interaction.g_key_pressed = false;
+            tab.interaction.command_error = None;
             self.count = None;
             return (
                 Box::new(CommandMode::with_history(
@@ -168,57 +180,57 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.enter_ui_mode.matches(key, modifiers) {
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (Box::new(UiMode::from_tab(tab)), KeyResult::Handled);
         }
 
         if kb.navigation.scroll_down.matches(key, modifiers) {
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_add(count);
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab.scroll.scroll_offset.saturating_add(count);
+            tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
 
         if kb.navigation.scroll_up.matches(key, modifiers) {
             let count = self.count.take().unwrap_or(1);
-            tab.scroll_offset = tab.scroll_offset.saturating_sub(count);
-            tab.g_key_pressed = false;
+            tab.scroll.scroll_offset = tab.scroll.scroll_offset.saturating_sub(count);
+            tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.scroll_left.matches(key, modifiers) {
-            if !tab.wrap {
-                tab.horizontal_scroll = tab.horizontal_scroll.saturating_sub(1);
+            if !tab.display.wrap {
+                tab.scroll.horizontal_scroll = tab.scroll.horizontal_scroll.saturating_sub(1);
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.scroll_right.matches(key, modifiers) {
-            if !tab.wrap {
-                tab.horizontal_scroll = tab.horizontal_scroll.saturating_add(1);
+            if !tab.display.wrap {
+                tab.scroll.horizontal_scroll = tab.scroll.horizontal_scroll.saturating_add(1);
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.start_of_line.matches(key, modifiers) {
-            tab.horizontal_scroll = 0;
-            tab.g_key_pressed = false;
+            tab.scroll.horizontal_scroll = 0;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.end_of_line.matches(key, modifiers) {
-            if let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) {
+            if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
                 let text = tab.get_display_text(line_idx);
                 let char_count = text.chars().count();
                 tab.scroll_char_cursor_into_view(char_count.saturating_sub(1), &text);
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
@@ -228,66 +240,74 @@ impl Mode for NormalMode {
             if let Some(count) = self.count.take() {
                 let _ = tab.goto_line(count);
             } else {
-                let n = tab.visible_indices.len();
+                let n = tab.filter.visible_indices.len();
                 if n > 0 {
-                    tab.scroll_offset = n - 1;
+                    tab.scroll.scroll_offset = n - 1;
                 }
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
 
         // gg chord: first press sets the flag; second press jumps to top.
         if kb.normal.go_to_top_chord.matches(key, modifiers) {
-            if tab.g_key_pressed {
+            if tab.interaction.g_key_pressed {
                 // With a count, `{count}gg` jumps to that line number.
                 if let Some(count) = self.count.take() {
                     let _ = tab.goto_line(count);
                 } else {
-                    tab.scroll_offset = 0;
+                    tab.scroll.scroll_offset = 0;
                 }
-                tab.g_key_pressed = false;
+                tab.interaction.g_key_pressed = false;
             } else {
-                tab.g_key_pressed = true;
+                tab.interaction.g_key_pressed = true;
             }
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.mark_line.matches(key, modifiers) {
-            if let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) {
+            if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
                 tab.log_manager.toggle_mark(line_idx);
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.toggle_marks_only.matches(key, modifiers) {
-            tab.show_marks_only = !tab.show_marks_only;
+            tab.filter.show_marks_only = !tab.filter.show_marks_only;
             tab.begin_filter_refresh();
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.yank_line.matches(key, modifiers) {
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
-            if tab.visible_indices.is_empty() {
-                tab.command_error = Some("No visible lines".to_string());
+            if tab.filter.visible_indices.is_empty() {
+                tab.interaction.command_error = Some("No visible lines".to_string());
                 return (self, KeyResult::Handled);
             }
-            let idx = tab
-                .visible_indices
-                .get(tab.scroll_offset.min(tab.visible_indices.len() - 1));
+            let idx = tab.filter.visible_indices.get(
+                tab.scroll
+                    .scroll_offset
+                    .min(tab.filter.visible_indices.len() - 1),
+            );
             let bytes = tab.file_reader.get_line(idx);
             let text = tab
-                .detected_format
+                .display
+                .format
                 .as_ref()
                 .and_then(|parser| parser.parse_line(bytes))
                 .map(|parts| {
-                    apply_field_layout(&parts, &tab.field_layout, &tab.hidden_fields, tab.show_keys)
-                        .join(" ")
+                    apply_field_layout(
+                        &parts,
+                        &tab.display.field_layout,
+                        &tab.display.hidden_fields,
+                        tab.display.show_keys,
+                    )
+                    .join(" ")
                 })
                 .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned());
             return (self, KeyResult::CopyToClipboard(text));
@@ -295,25 +315,26 @@ impl Mode for NormalMode {
 
         if kb.normal.yank_marked.matches(key, modifiers) {
             let marked = tab.log_manager.get_marked_indices();
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             if marked.is_empty() {
-                tab.command_error = Some("No marked lines".to_string());
+                tab.interaction.command_error = Some("No marked lines".to_string());
                 return (self, KeyResult::Handled);
             }
             let text: String = marked
                 .iter()
                 .map(|&idx| {
                     let bytes = tab.file_reader.get_line(idx);
-                    tab.detected_format
+                    tab.display
+                        .format
                         .as_ref()
                         .and_then(|parser| parser.parse_line(bytes))
                         .map(|parts| {
                             apply_field_layout(
                                 &parts,
-                                &tab.field_layout,
-                                &tab.hidden_fields,
-                                tab.show_keys,
+                                &tab.display.field_layout,
+                                &tab.display.hidden_fields,
+                                tab.display.show_keys,
                             )
                             .join(" ")
                         })
@@ -325,8 +346,8 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.visual_mode.matches(key, modifiers) {
-            let anchor = tab.scroll_offset;
-            tab.g_key_pressed = false;
+            let anchor = tab.scroll.scroll_offset;
+            tab.interaction.g_key_pressed = false;
             return (
                 Box::new(VisualLineMode {
                     anchor,
@@ -339,7 +360,7 @@ impl Mode for NormalMode {
         if kb.normal.visual_char.matches(key, modifiers) {
             let line_text = display_line_text(tab);
             let cursor_col = search_match_char_offset(tab, &line_text);
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             tab.cancel_search();
             let mut mode = VisualMode::new(line_text);
@@ -348,7 +369,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.search_forward.matches(key, modifiers) {
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (
                 Box::new(SearchMode {
@@ -360,7 +381,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.search_backward.matches(key, modifiers) {
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (
                 Box::new(SearchMode {
@@ -373,52 +394,52 @@ impl Mode for NormalMode {
 
         if kb.normal.next_match.matches(key, modifiers) {
             // `n` continues in the original search direction (vim semantics).
-            if tab.search.go_next().is_some() {
+            if tab.search.query.go_next().is_some() {
                 tab.scroll_to_current_search_match();
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.prev_match.matches(key, modifiers) {
             // `N` reverses the original search direction (vim semantics).
-            if tab.search.go_prev().is_some() {
+            if tab.search.query.go_prev().is_some() {
                 tab.scroll_to_current_search_match();
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.clear_search.matches(key, modifiers)
-            && (tab.search.get_pattern().is_some() || tab.notification.is_some())
+            && (tab.search.query.get_pattern().is_some() || tab.interaction.notification.is_some())
         {
             tab.cancel_search();
             tab.clear_notification();
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.clear_all.matches(key, modifiers) {
             tab.log_manager.clear_all_marks_and_comments();
-            tab.command_error = Some("Cleared all marks and comments".to_string());
+            tab.interaction.command_error = Some("Cleared all marks and comments".to_string());
             tab.begin_filter_refresh();
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.edit_comment.matches(key, modifiers) {
-            if let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) {
+            if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
                 let comments = tab.log_manager.get_comments();
                 if let Some(idx) = comments
                     .iter()
                     .position(|c| c.line_indices.contains(&line_idx))
                 {
                     let c = &comments[idx];
-                    tab.g_key_pressed = false;
+                    tab.interaction.g_key_pressed = false;
                     self.count = None;
                     return (
                         Box::new(CommentMode::edit(
@@ -429,15 +450,15 @@ impl Mode for NormalMode {
                         KeyResult::Handled,
                     );
                 }
-                tab.command_error = Some("No comment on this line".to_string());
+                tab.interaction.command_error = Some("No comment on this line".to_string());
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.delete_comment.matches(key, modifiers) {
-            if let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) {
+            if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
                 let comments = tab.log_manager.get_comments();
                 if let Some(idx) = comments
                     .iter()
@@ -445,21 +466,21 @@ impl Mode for NormalMode {
                 {
                     tab.log_manager.remove_comment(idx);
                     tab.begin_filter_refresh();
-                    tab.g_key_pressed = false;
+                    tab.interaction.g_key_pressed = false;
                     self.count = None;
                     return (self, KeyResult::Handled);
                 }
-                tab.command_error = Some("No comment on this line".to_string());
+                tab.interaction.command_error = Some("No comment on this line".to_string());
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.comment_line.matches(key, modifiers) {
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
-            if let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) {
+            if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
                 return (
                     Box::new(CommentMode::new(vec![line_idx])),
                     KeyResult::Handled,
@@ -469,57 +490,57 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.next_error.matches(key, modifiers) {
-            if let Some(pos) = tab.next_error_position(tab.scroll_offset) {
-                tab.scroll_offset = pos;
+            if let Some(pos) = tab.next_error_position(tab.scroll.scroll_offset) {
+                tab.scroll.scroll_offset = pos;
             } else {
-                tab.command_error = Some("No more errors".to_string());
+                tab.interaction.command_error = Some("No more errors".to_string());
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.prev_error.matches(key, modifiers) {
-            if let Some(pos) = tab.prev_error_position(tab.scroll_offset) {
-                tab.scroll_offset = pos;
+            if let Some(pos) = tab.prev_error_position(tab.scroll.scroll_offset) {
+                tab.scroll.scroll_offset = pos;
             } else {
-                tab.command_error = Some("No previous error".to_string());
+                tab.interaction.command_error = Some("No previous error".to_string());
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.next_warning.matches(key, modifiers) {
-            if let Some(pos) = tab.next_warning_position(tab.scroll_offset) {
-                tab.scroll_offset = pos;
+            if let Some(pos) = tab.next_warning_position(tab.scroll.scroll_offset) {
+                tab.scroll.scroll_offset = pos;
             } else {
-                tab.command_error = Some("No more warnings".to_string());
+                tab.interaction.command_error = Some("No more warnings".to_string());
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.prev_warning.matches(key, modifiers) {
-            if let Some(pos) = tab.prev_warning_position(tab.scroll_offset) {
-                tab.scroll_offset = pos;
+            if let Some(pos) = tab.prev_warning_position(tab.scroll.scroll_offset) {
+                tab.scroll.scroll_offset = pos;
             } else {
-                tab.command_error = Some("No previous warning".to_string());
+                tab.interaction.command_error = Some("No previous warning".to_string());
             }
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (self, KeyResult::Handled);
         }
 
         if kb.normal.show_keybindings.matches(key, modifiers) {
-            tab.g_key_pressed = false;
+            tab.interaction.g_key_pressed = false;
             self.count = None;
             return (Box::new(KeybindingsHelpMode::new()), KeyResult::Handled);
         }
 
         // Unrecognised key — consume it, reset the gg-chord state and count.
-        tab.g_key_pressed = false;
+        tab.interaction.g_key_pressed = false;
         self.count = None;
         (self, KeyResult::Handled)
     }
@@ -590,13 +611,13 @@ impl Mode for NormalMode {
 }
 
 fn search_match_char_offset(tab: &TabState, line_text: &str) -> usize {
-    let Some(line_idx) = tab.visible_indices.get_opt(tab.scroll_offset) else {
+    let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) else {
         return 0;
     };
-    let Some(occ_idx) = tab.search.get_current_occurrence_for_line(line_idx) else {
+    let Some(occ_idx) = tab.search.query.get_current_occurrence_for_line(line_idx) else {
         return 0;
     };
-    let Some(re) = tab.search.get_compiled_pattern() else {
+    let Some(re) = tab.search.query.get_compiled_pattern() else {
         return 0;
     };
     let Some(m) = re.find_iter(line_text).nth(occ_idx) else {
@@ -636,87 +657,87 @@ mod tests {
     async fn test_j_increments_scroll_offset() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
         press(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 1);
+        assert_eq!(tab.scroll.scroll_offset, 1);
     }
 
     #[tokio::test]
     async fn test_down_increments_scroll_offset() {
         let mut tab = make_tab(&["a", "b"]).await;
         press(&mut tab, KeyCode::Down, KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 1);
+        assert_eq!(tab.scroll.scroll_offset, 1);
     }
 
     #[tokio::test]
     async fn test_k_saturates_at_zero() {
         let mut tab = make_tab(&["a"]).await;
         press(&mut tab, KeyCode::Char('k'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 0);
+        assert_eq!(tab.scroll.scroll_offset, 0);
     }
 
     #[tokio::test]
     async fn test_up_saturates_at_zero() {
         let mut tab = make_tab(&["a"]).await;
         press(&mut tab, KeyCode::Up, KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 0);
+        assert_eq!(tab.scroll.scroll_offset, 0);
     }
 
     #[tokio::test]
     async fn test_capital_g_jumps_to_last_visible_line() {
         let mut tab = make_tab(&["a", "b", "c", "d", "e"]).await;
         press(&mut tab, KeyCode::Char('G'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 4);
+        assert_eq!(tab.scroll.scroll_offset, 4);
     }
 
     #[tokio::test]
     async fn test_capital_g_on_empty_does_not_panic() {
         let mut tab = make_tab(&[]).await;
         press(&mut tab, KeyCode::Char('G'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 0);
+        assert_eq!(tab.scroll.scroll_offset, 0);
     }
 
     #[tokio::test]
     async fn test_gg_jumps_to_top() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
-        tab.scroll_offset = 2;
+        tab.scroll.scroll_offset = 2;
         press(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE).await;
-        assert!(tab.g_key_pressed);
-        assert_eq!(tab.scroll_offset, 2);
+        assert!(tab.interaction.g_key_pressed);
+        assert_eq!(tab.scroll.scroll_offset, 2);
         press(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 0);
-        assert!(!tab.g_key_pressed);
+        assert_eq!(tab.scroll.scroll_offset, 0);
+        assert!(!tab.interaction.g_key_pressed);
     }
 
     #[tokio::test]
     async fn test_ctrl_d_half_page_down() {
         let mut tab = make_tab(&["a", "b", "c", "d", "e", "f"]).await;
-        tab.visible_height = 4;
+        tab.scroll.visible_height = 4;
         press(&mut tab, KeyCode::Char('d'), KeyModifiers::CONTROL).await;
-        assert_eq!(tab.scroll_offset, 2);
+        assert_eq!(tab.scroll.scroll_offset, 2);
     }
 
     #[tokio::test]
     async fn test_ctrl_u_half_page_up() {
         let mut tab = make_tab(&["a", "b", "c", "d"]).await;
-        tab.visible_height = 4;
-        tab.scroll_offset = 3;
+        tab.scroll.visible_height = 4;
+        tab.scroll.scroll_offset = 3;
         press(&mut tab, KeyCode::Char('u'), KeyModifiers::CONTROL).await;
-        assert_eq!(tab.scroll_offset, 1);
+        assert_eq!(tab.scroll.scroll_offset, 1);
     }
 
     #[tokio::test]
     async fn test_page_down() {
         let mut tab = make_tab(&["a", "b", "c", "d", "e"]).await;
-        tab.visible_height = 3;
+        tab.scroll.visible_height = 3;
         press(&mut tab, KeyCode::PageDown, KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 3);
+        assert_eq!(tab.scroll.scroll_offset, 3);
     }
 
     #[tokio::test]
     async fn test_page_up_saturates_at_zero() {
         let mut tab = make_tab(&["a"]).await;
-        tab.visible_height = 5;
+        tab.scroll.visible_height = 5;
         press(&mut tab, KeyCode::PageUp, KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 0);
+        assert_eq!(tab.scroll.scroll_offset, 0);
     }
 
     #[tokio::test]
@@ -748,17 +769,17 @@ mod tests {
     #[tokio::test]
     async fn test_command_error_cleared_on_filter_include_shortcut() {
         let mut tab = make_tab(&["line"]).await;
-        tab.command_error = Some("previous error".to_string());
+        tab.interaction.command_error = Some("previous error".to_string());
         press(&mut tab, KeyCode::Char('i'), KeyModifiers::NONE).await;
-        assert!(tab.command_error.is_none());
+        assert!(tab.interaction.command_error.is_none());
     }
 
     #[tokio::test]
     async fn test_command_error_cleared_on_colon() {
         let mut tab = make_tab(&["line"]).await;
-        tab.command_error = Some("previous error".to_string());
+        tab.interaction.command_error = Some("previous error".to_string());
         press(&mut tab, KeyCode::Char(':'), KeyModifiers::NONE).await;
-        assert!(tab.command_error.is_none());
+        assert!(tab.interaction.command_error.is_none());
     }
 
     #[tokio::test]
@@ -822,56 +843,58 @@ mod tests {
     #[tokio::test]
     async fn test_esc_clears_active_search() {
         let mut tab = make_tab(&["error line", "info line"]).await;
-        tab.visible_indices = VisibleLines::Filtered(vec![0, 1]);
-        let visible = tab.visible_indices.clone();
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0, 1]);
+        let visible = tab.filter.visible_indices.clone();
         let texts = tab.collect_display_texts(visible.iter());
         tab.search
+            .query
             .search("error", visible.iter(), |li| texts.get(&li).cloned())
             .unwrap();
-        assert!(tab.search.get_pattern().is_some());
+        assert!(tab.search.query.get_pattern().is_some());
         let (_, result) = press(&mut tab, KeyCode::Esc, KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert!(tab.search.get_pattern().is_none());
-        assert!(tab.search.get_results().is_empty());
+        assert!(tab.search.query.get_pattern().is_none());
+        assert!(tab.search.query.get_results().is_empty());
     }
 
     #[tokio::test]
     async fn test_entering_visual_char_clears_search() {
         let mut tab = make_tab(&["error line", "info line"]).await;
-        tab.visible_indices = VisibleLines::Filtered(vec![0, 1]);
-        let visible = tab.visible_indices.clone();
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0, 1]);
+        let visible = tab.filter.visible_indices.clone();
         let texts = tab.collect_display_texts(visible.iter());
         tab.search
+            .query
             .search("error", visible.iter(), |li| texts.get(&li).cloned())
             .unwrap();
-        assert!(tab.search.get_pattern().is_some());
+        assert!(tab.search.query.get_pattern().is_some());
 
         press(&mut tab, KeyCode::Char('v'), KeyModifiers::NONE).await;
 
-        assert!(tab.search.get_pattern().is_none());
-        assert!(tab.search.get_results().is_empty());
+        assert!(tab.search.query.get_pattern().is_none());
+        assert!(tab.search.query.get_results().is_empty());
     }
 
     #[tokio::test]
     async fn test_esc_clears_inflight_search_handle() {
         let mut tab = make_tab(&["error line", "info line"]).await;
-        tab.visible_indices = VisibleLines::Filtered(vec![0, 1]);
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0, 1]);
         tab.begin_search("error", true, true);
-        assert!(tab.search_handle.is_some());
-        assert!(tab.search.get_pattern().is_some());
+        assert!(tab.search.handle.is_some());
+        assert!(tab.search.query.get_pattern().is_some());
         press(&mut tab, KeyCode::Esc, KeyModifiers::NONE).await;
-        assert!(tab.search_handle.is_none());
-        assert!(tab.search.get_pattern().is_none());
+        assert!(tab.search.handle.is_none());
+        assert!(tab.search.query.get_pattern().is_none());
     }
 
     #[tokio::test]
     async fn test_esc_without_active_search_does_nothing() {
         let mut tab = make_tab(&["line"]).await;
-        assert!(tab.search.get_pattern().is_none());
+        assert!(tab.search.query.get_pattern().is_none());
         let (_, result) = press(&mut tab, KeyCode::Esc, KeyModifiers::NONE).await;
         // NormalMode consumes all unrecognised keys; no search to clear
         assert!(matches!(result, KeyResult::Handled));
-        assert!(tab.search.get_pattern().is_none());
+        assert!(tab.search.query.get_pattern().is_none());
     }
 
     #[tokio::test]
@@ -912,85 +935,85 @@ mod tests {
     #[tokio::test]
     async fn test_h_decrements_horizontal_scroll_when_not_wrapped() {
         let mut tab = make_tab(&["long line"]).await;
-        tab.wrap = false;
-        tab.horizontal_scroll = 5;
+        tab.display.wrap = false;
+        tab.scroll.horizontal_scroll = 5;
         press(&mut tab, KeyCode::Char('h'), KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 4);
+        assert_eq!(tab.scroll.horizontal_scroll, 4);
     }
 
     #[tokio::test]
     async fn test_l_increments_horizontal_scroll_when_not_wrapped() {
         let mut tab = make_tab(&["long line"]).await;
-        tab.wrap = false;
+        tab.display.wrap = false;
         press(&mut tab, KeyCode::Char('l'), KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 1);
+        assert_eq!(tab.scroll.horizontal_scroll, 1);
     }
 
     #[tokio::test]
     async fn test_h_no_horizontal_scroll_when_wrapped() {
         let mut tab = make_tab(&["long line"]).await;
-        tab.wrap = true;
-        tab.horizontal_scroll = 5;
+        tab.display.wrap = true;
+        tab.scroll.horizontal_scroll = 5;
         press(&mut tab, KeyCode::Char('h'), KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 5);
+        assert_eq!(tab.scroll.horizontal_scroll, 5);
     }
 
     #[tokio::test]
     async fn test_l_no_horizontal_scroll_when_wrapped() {
         let mut tab = make_tab(&["long line"]).await;
-        tab.wrap = true;
+        tab.display.wrap = true;
         press(&mut tab, KeyCode::Char('l'), KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 0);
+        assert_eq!(tab.scroll.horizontal_scroll, 0);
     }
 
     #[tokio::test]
     async fn test_left_arrow_decrements_horizontal_scroll_when_not_wrapped() {
         let mut tab = make_tab(&["long line"]).await;
-        tab.wrap = false;
-        tab.horizontal_scroll = 5;
+        tab.display.wrap = false;
+        tab.scroll.horizontal_scroll = 5;
         press(&mut tab, KeyCode::Left, KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 4);
+        assert_eq!(tab.scroll.horizontal_scroll, 4);
     }
 
     #[tokio::test]
     async fn test_right_arrow_increments_horizontal_scroll_when_not_wrapped() {
         let mut tab = make_tab(&["long line"]).await;
-        tab.wrap = false;
+        tab.display.wrap = false;
         press(&mut tab, KeyCode::Right, KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 1);
+        assert_eq!(tab.scroll.horizontal_scroll, 1);
     }
 
     #[tokio::test]
     async fn test_left_arrow_no_horizontal_scroll_when_wrapped() {
         let mut tab = make_tab(&["long line"]).await;
-        tab.wrap = true;
-        tab.horizontal_scroll = 5;
+        tab.display.wrap = true;
+        tab.scroll.horizontal_scroll = 5;
         press(&mut tab, KeyCode::Left, KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 5);
+        assert_eq!(tab.scroll.horizontal_scroll, 5);
     }
 
     #[tokio::test]
     async fn test_right_arrow_no_horizontal_scroll_when_wrapped() {
         let mut tab = make_tab(&["long line"]).await;
-        tab.wrap = true;
+        tab.display.wrap = true;
         press(&mut tab, KeyCode::Right, KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 0);
+        assert_eq!(tab.scroll.horizontal_scroll, 0);
     }
 
     #[tokio::test]
     async fn test_zero_resets_horizontal_scroll_to_start() {
         let mut tab = make_tab(&["hello world"]).await;
-        tab.wrap = false;
-        tab.horizontal_scroll = 7;
+        tab.display.wrap = false;
+        tab.scroll.horizontal_scroll = 7;
         press(&mut tab, KeyCode::Char('0'), KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 0);
+        assert_eq!(tab.scroll.horizontal_scroll, 0);
     }
 
     #[tokio::test]
     async fn test_zero_as_count_suffix_does_not_reset_scroll() {
         let mut tab = make_tab(&["hello world"]).await;
-        tab.wrap = false;
-        tab.horizontal_scroll = 7;
+        tab.display.wrap = false;
+        tab.scroll.horizontal_scroll = 7;
         // Prime a count of 1, then press 0 — should build count 10, not reset scroll.
         // We must carry the mode instance between key presses to preserve the count state.
         let (mode, _) = Box::new(NormalMode::default())
@@ -999,7 +1022,7 @@ mod tests {
         mode.handle_key(&mut tab, KeyCode::Char('0'), KeyModifiers::NONE)
             .await;
         assert_eq!(
-            tab.horizontal_scroll, 7,
+            tab.scroll.horizontal_scroll, 7,
             "scroll must not change while building a count"
         );
     }
@@ -1007,60 +1030,60 @@ mod tests {
     #[tokio::test]
     async fn test_dollar_scrolls_to_end_of_line() {
         let mut tab = make_tab(&["hello world"]).await;
-        tab.wrap = false;
-        tab.visible_width = 5;
-        tab.horizontal_scroll = 0;
+        tab.display.wrap = false;
+        tab.scroll.visible_width = 5;
+        tab.scroll.horizontal_scroll = 0;
         press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
         // "hello world" is 11 chars; cursor at col 10, visible_width=5 → pad=min(3,2)=2 → scroll=13-5=8
-        assert_eq!(tab.horizontal_scroll, 8);
+        assert_eq!(tab.scroll.horizontal_scroll, 8);
     }
 
     #[tokio::test]
     async fn test_dollar_leaves_padding_when_viewport_large_enough() {
         let mut tab = make_tab(&["hello world"]).await;
-        tab.wrap = false;
-        tab.visible_width = 10;
-        tab.horizontal_scroll = 0;
+        tab.display.wrap = false;
+        tab.scroll.visible_width = 10;
+        tab.scroll.horizontal_scroll = 0;
         press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
         // "hello world" is 11 chars; cursor at col 10, visible_width=10 → pad=min(3,4)=3 → scroll=14-10=4
-        assert_eq!(tab.horizontal_scroll, 4);
+        assert_eq!(tab.scroll.horizontal_scroll, 4);
         // last char (col 10) is at viewport position 10-4=6, with 3 empty cols on the right
     }
 
     #[tokio::test]
     async fn test_dollar_no_scroll_when_line_fits_in_viewport() {
         let mut tab = make_tab(&["hi"]).await;
-        tab.wrap = false;
-        tab.visible_width = 10;
-        tab.horizontal_scroll = 3;
+        tab.display.wrap = false;
+        tab.scroll.visible_width = 10;
+        tab.scroll.horizontal_scroll = 3;
         press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 0);
+        assert_eq!(tab.scroll.horizontal_scroll, 0);
     }
 
     #[tokio::test]
     async fn test_dollar_no_scroll_when_wrapped() {
         let mut tab = make_tab(&["hello world"]).await;
-        tab.wrap = true;
-        tab.visible_width = 5;
-        tab.horizontal_scroll = 0;
+        tab.display.wrap = true;
+        tab.scroll.visible_width = 5;
+        tab.scroll.horizontal_scroll = 0;
         press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 0);
+        assert_eq!(tab.scroll.horizontal_scroll, 0);
     }
 
     #[tokio::test]
     async fn test_dollar_no_scroll_when_visible_width_unknown() {
         let mut tab = make_tab(&["hello world"]).await;
-        tab.wrap = false;
-        tab.visible_width = 0;
-        tab.horizontal_scroll = 0;
+        tab.display.wrap = false;
+        tab.scroll.visible_width = 0;
+        tab.scroll.horizontal_scroll = 0;
         press(&mut tab, KeyCode::Char('$'), KeyModifiers::NONE).await;
-        assert_eq!(tab.horizontal_scroll, 0);
+        assert_eq!(tab.scroll.horizontal_scroll, 0);
     }
 
     #[tokio::test]
     async fn test_m_marks_current_line() {
         let mut tab = make_tab(&["line0", "line1"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('m'), KeyModifiers::NONE).await;
         assert!(tab.log_manager.get_marked_indices().contains(&0));
     }
@@ -1068,7 +1091,7 @@ mod tests {
     #[tokio::test]
     async fn test_m_unmarks_already_marked_line() {
         let mut tab = make_tab(&["line0"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('m'), KeyModifiers::NONE).await;
         press(&mut tab, KeyCode::Char('m'), KeyModifiers::NONE).await;
         assert!(!tab.log_manager.get_marked_indices().contains(&0));
@@ -1078,19 +1101,19 @@ mod tests {
     async fn test_g_key_resets_on_non_g_press() {
         let mut tab = make_tab(&["a"]).await;
         press(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE).await;
-        assert!(tab.g_key_pressed);
+        assert!(tab.interaction.g_key_pressed);
         press(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE).await;
-        assert!(!tab.g_key_pressed);
+        assert!(!tab.interaction.g_key_pressed);
     }
 
     #[tokio::test]
     async fn test_capital_f_toggles_filtering_enabled() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
-        assert!(tab.filtering_enabled);
+        assert!(tab.filter.enabled);
         press(&mut tab, KeyCode::Char('F'), KeyModifiers::NONE).await;
-        assert!(!tab.filtering_enabled);
+        assert!(!tab.filter.enabled);
         press(&mut tab, KeyCode::Char('F'), KeyModifiers::NONE).await;
-        assert!(tab.filtering_enabled);
+        assert!(tab.filter.enabled);
     }
 
     #[tokio::test]
@@ -1107,21 +1130,21 @@ mod tests {
             .await;
         tab.refresh_visible();
         // With filtering on, only "error" line is visible
-        assert_eq!(tab.visible_indices.len(), 1);
+        assert_eq!(tab.filter.visible_indices.len(), 1);
 
         press(&mut tab, KeyCode::Char('F'), KeyModifiers::NONE).await;
         // With filtering off, all 3 lines are visible
-        assert_eq!(tab.visible_indices.len(), 3);
+        assert_eq!(tab.filter.visible_indices.len(), 3);
     }
 
     #[tokio::test]
     async fn test_capital_m_toggles_marks_only() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
-        assert!(!tab.show_marks_only);
+        assert!(!tab.filter.show_marks_only);
         press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
-        assert!(tab.show_marks_only);
+        assert!(tab.filter.show_marks_only);
         press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
-        assert!(!tab.show_marks_only);
+        assert!(!tab.filter.show_marks_only);
     }
 
     #[tokio::test]
@@ -1133,7 +1156,10 @@ mod tests {
 
         press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
 
-        assert_eq!(tab.visible_indices, VisibleLines::Filtered(vec![0, 2]));
+        assert_eq!(
+            tab.filter.visible_indices,
+            VisibleLines::Filtered(vec![0, 2])
+        );
     }
 
     #[tokio::test]
@@ -1141,23 +1167,23 @@ mod tests {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
         tab.log_manager.toggle_mark(1);
         press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
-        assert_eq!(tab.visible_indices.len(), 1);
+        assert_eq!(tab.filter.visible_indices.len(), 1);
 
         press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
-        assert_eq!(tab.visible_indices.len(), 3);
+        assert_eq!(tab.filter.visible_indices.len(), 3);
     }
 
     #[tokio::test]
     async fn test_marks_only_empty_when_no_marks() {
         let mut tab = make_tab(&["a", "b"]).await;
         press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
-        assert!(tab.visible_indices.is_empty());
+        assert!(tab.filter.visible_indices.is_empty());
     }
 
     #[tokio::test]
     async fn test_y_yanks_current_line() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
-        tab.scroll_offset = 1;
+        tab.scroll.scroll_offset = 1;
         let (_, result) = press(&mut tab, KeyCode::Char('y'), KeyModifiers::NONE).await;
         match result {
             KeyResult::CopyToClipboard(text) => {
@@ -1172,7 +1198,10 @@ mod tests {
         let mut tab = make_tab(&[]).await;
         let (_, result) = press(&mut tab, KeyCode::Char('y'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert_eq!(tab.command_error.as_deref(), Some("No visible lines"));
+        assert_eq!(
+            tab.interaction.command_error.as_deref(),
+            Some("No visible lines")
+        );
     }
 
     #[tokio::test]
@@ -1194,7 +1223,10 @@ mod tests {
         let mut tab = make_tab(&["line0", "line1"]).await;
         let (_, result) = press(&mut tab, KeyCode::Char('Y'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
-        assert_eq!(tab.command_error.as_deref(), Some("No marked lines"));
+        assert_eq!(
+            tab.interaction.command_error.as_deref(),
+            Some("No marked lines")
+        );
     }
 
     #[test]
@@ -1230,17 +1262,17 @@ mod tests {
         let mut tab = make_tab(&lines).await;
         let mode = NormalMode { count: Some(5) };
         press_mode(mode, &mut tab, KeyCode::Char('j'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 5);
+        assert_eq!(tab.scroll.scroll_offset, 5);
     }
 
     #[tokio::test]
     async fn test_count_3k_moves_up_3() {
         let lines: Vec<&str> = (0..20).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.scroll_offset = 10;
+        tab.scroll.scroll_offset = 10;
         let mode = NormalMode { count: Some(3) };
         press_mode(mode, &mut tab, KeyCode::Char('k'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 7);
+        assert_eq!(tab.scroll.scroll_offset, 7);
     }
 
     #[tokio::test]
@@ -1271,7 +1303,7 @@ mod tests {
         let _ = mode
             .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
             .await;
-        assert_eq!(tab.scroll_offset, 10);
+        assert_eq!(tab.scroll.scroll_offset, 10);
     }
 
     #[tokio::test]
@@ -1281,7 +1313,7 @@ mod tests {
         // 5G should go to line 5 (0-based index 4)
         let mode = NormalMode { count: Some(5) };
         press_mode(mode, &mut tab, KeyCode::Char('G'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 4);
+        assert_eq!(tab.scroll.scroll_offset, 4);
     }
 
     #[tokio::test]
@@ -1297,7 +1329,7 @@ mod tests {
         let _ = returned_mode
             .handle_key(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE)
             .await;
-        assert_eq!(tab.scroll_offset, 4);
+        assert_eq!(tab.scroll.scroll_offset, 4);
     }
 
     #[tokio::test]
@@ -1319,44 +1351,44 @@ mod tests {
     async fn test_count_half_page_down() {
         let lines: Vec<&str> = (0..100).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.visible_height = 10;
+        tab.scroll.visible_height = 10;
         let mode = NormalMode { count: Some(3) };
         press_mode(mode, &mut tab, KeyCode::Char('d'), KeyModifiers::CONTROL).await;
         // 3 × (10/2) = 15
-        assert_eq!(tab.scroll_offset, 15);
+        assert_eq!(tab.scroll.scroll_offset, 15);
     }
 
     #[tokio::test]
     async fn test_count_half_page_up() {
         let lines: Vec<&str> = (0..100).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.visible_height = 10;
-        tab.scroll_offset = 50;
+        tab.scroll.visible_height = 10;
+        tab.scroll.scroll_offset = 50;
         let mode = NormalMode { count: Some(2) };
         press_mode(mode, &mut tab, KeyCode::Char('u'), KeyModifiers::CONTROL).await;
         // 50 - 2 × (10/2) = 40
-        assert_eq!(tab.scroll_offset, 40);
+        assert_eq!(tab.scroll.scroll_offset, 40);
     }
 
     #[tokio::test]
     async fn test_count_page_down() {
         let lines: Vec<&str> = (0..100).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.visible_height = 10;
+        tab.scroll.visible_height = 10;
         let mode = NormalMode { count: Some(2) };
         press_mode(mode, &mut tab, KeyCode::PageDown, KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 20);
+        assert_eq!(tab.scroll.scroll_offset, 20);
     }
 
     #[tokio::test]
     async fn test_count_page_up() {
         let lines: Vec<&str> = (0..100).map(|_| "line").collect();
         let mut tab = make_tab(&lines).await;
-        tab.visible_height = 10;
-        tab.scroll_offset = 50;
+        tab.scroll.visible_height = 10;
+        tab.scroll.scroll_offset = 50;
         let mode = NormalMode { count: Some(3) };
         press_mode(mode, &mut tab, KeyCode::PageUp, KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 20);
+        assert_eq!(tab.scroll.scroll_offset, 20);
     }
 
     // ── Clear all marks and comments ────────────────────────────────
@@ -1374,7 +1406,7 @@ mod tests {
         assert!(tab.log_manager.get_marked_indices().is_empty());
         assert!(tab.log_manager.get_comments().is_empty());
         assert_eq!(
-            tab.command_error.as_deref(),
+            tab.interaction.command_error.as_deref(),
             Some("Cleared all marks and comments")
         );
     }
@@ -1385,7 +1417,7 @@ mod tests {
     async fn test_r_on_commented_line_opens_edit_mode() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
         tab.log_manager.add_comment("my comment".into(), vec![0]);
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
 
         let (mode, result) = press(&mut tab, KeyCode::Char('r'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
@@ -1400,13 +1432,13 @@ mod tests {
     #[tokio::test]
     async fn test_r_on_non_commented_line_shows_error() {
         let mut tab = make_tab(&["line0", "line1"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
 
         let (mode, result) = press(&mut tab, KeyCode::Char('r'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(matches!(mode.render_state(), ModeRenderState::Normal));
         assert_eq!(
-            tab.command_error.as_deref(),
+            tab.interaction.command_error.as_deref(),
             Some("No comment on this line")
         );
     }
@@ -1418,7 +1450,7 @@ mod tests {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
         tab.log_manager.add_comment("to delete".into(), vec![0]);
         tab.log_manager.add_comment("keep".into(), vec![2]);
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
 
         let (mode, result) = press(&mut tab, KeyCode::Char('d'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
@@ -1431,12 +1463,12 @@ mod tests {
     #[tokio::test]
     async fn test_d_on_non_commented_line_shows_error() {
         let mut tab = make_tab(&["line0", "line1"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
 
         let (_mode, result) = press(&mut tab, KeyCode::Char('d'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
         assert_eq!(
-            tab.command_error.as_deref(),
+            tab.interaction.command_error.as_deref(),
             Some("No comment on this line")
         );
         assert!(tab.log_manager.get_comments().is_empty());
@@ -1460,7 +1492,7 @@ mod tests {
     #[tokio::test]
     async fn test_c_opens_comment_mode_for_current_line() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
-        tab.scroll_offset = 1;
+        tab.scroll.scroll_offset = 1;
         let (mode, result) = press(&mut tab, KeyCode::Char('c'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
         match mode.render_state() {
@@ -1477,66 +1509,78 @@ mod tests {
     async fn test_e_navigates_to_next_error() {
         let mut tab =
             make_tab(&["INFO normal line", "ERROR something failed", "INFO another"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 1);
+        assert_eq!(tab.scroll.scroll_offset, 1);
     }
 
     #[tokio::test]
     async fn test_capital_e_navigates_to_prev_error() {
         let mut tab = make_tab(&["ERROR first error", "INFO normal line", "INFO another"]).await;
-        tab.scroll_offset = 2;
+        tab.scroll.scroll_offset = 2;
         press(&mut tab, KeyCode::Char('E'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 0);
+        assert_eq!(tab.scroll.scroll_offset, 0);
     }
 
     #[tokio::test]
     async fn test_e_at_last_error_sets_command_error() {
         let mut tab = make_tab(&["ERROR only error", "INFO line"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
-        assert_eq!(tab.command_error.as_deref(), Some("No more errors"));
+        assert_eq!(
+            tab.interaction.command_error.as_deref(),
+            Some("No more errors")
+        );
     }
 
     #[tokio::test]
     async fn test_capital_e_at_first_error_sets_command_error() {
         let mut tab = make_tab(&["INFO line", "ERROR only error"]).await;
-        tab.scroll_offset = 1;
+        tab.scroll.scroll_offset = 1;
         press(&mut tab, KeyCode::Char('E'), KeyModifiers::NONE).await;
-        assert_eq!(tab.command_error.as_deref(), Some("No previous error"));
+        assert_eq!(
+            tab.interaction.command_error.as_deref(),
+            Some("No previous error")
+        );
     }
 
     #[tokio::test]
     async fn test_w_navigates_to_next_warning() {
         let mut tab =
             make_tab(&["INFO normal line", "WARN disk nearly full", "INFO another"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 1);
+        assert_eq!(tab.scroll.scroll_offset, 1);
     }
 
     #[tokio::test]
     async fn test_capital_w_navigates_to_prev_warning() {
         let mut tab = make_tab(&["WARN first warning", "INFO normal line", "INFO another"]).await;
-        tab.scroll_offset = 2;
+        tab.scroll.scroll_offset = 2;
         press(&mut tab, KeyCode::Char('W'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 0);
+        assert_eq!(tab.scroll.scroll_offset, 0);
     }
 
     #[tokio::test]
     async fn test_w_no_warnings_sets_command_error() {
         let mut tab = make_tab(&["INFO only", "DEBUG line"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
-        assert_eq!(tab.command_error.as_deref(), Some("No more warnings"));
+        assert_eq!(
+            tab.interaction.command_error.as_deref(),
+            Some("No more warnings")
+        );
     }
 
     #[tokio::test]
     async fn test_capital_w_no_prev_warning_sets_command_error() {
         let mut tab = make_tab(&["INFO line", "WARN only warning"]).await;
-        tab.scroll_offset = 1;
+        tab.scroll.scroll_offset = 1;
         press(&mut tab, KeyCode::Char('W'), KeyModifiers::NONE).await;
-        assert_eq!(tab.command_error.as_deref(), Some("No previous warning"));
+        assert_eq!(
+            tab.interaction.command_error.as_deref(),
+            Some("No previous warning")
+        );
     }
 
     #[tokio::test]
@@ -1548,16 +1592,16 @@ mod tests {
             "ERROR error here",
         ])
         .await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 3);
+        assert_eq!(tab.scroll.scroll_offset, 3);
     }
 
     #[tokio::test]
     async fn test_e_navigates_to_fatal_level() {
         let mut tab = make_tab(&["INFO line", "FATAL crash"]).await;
-        tab.scroll_offset = 0;
+        tab.scroll.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE).await;
-        assert_eq!(tab.scroll_offset, 1);
+        assert_eq!(tab.scroll.scroll_offset, 1);
     }
 }

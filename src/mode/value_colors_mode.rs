@@ -153,7 +153,7 @@ impl Mode for ValueColorsMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings;
+        let kb = &tab.interaction.keybindings;
 
         // Cancel: clear search first, then cancel.
         if kb.value_colors.cancel.matches(key, modifiers) {

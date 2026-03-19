@@ -358,7 +358,7 @@ async fn main() -> Result<()> {
             && std::path::Path::new(path).is_dir()
         {
             let files = list_dir_files(path);
-            app.tabs[0].mode = Box::new(ConfirmOpenDirMode {
+            app.tabs[0].interaction.mode = Box::new(ConfirmOpenDirMode {
                 dir: path.clone(),
                 files,
             });

@@ -13,6 +13,7 @@ All notable changes to logana will be documented in this file.
 - `--mcp [PORT]` CLI flag to start the MCP server automatically on launch (port defaults to 9876).
 
 ### Changed
+- `TabState` decomposed into focused sub-structs (`ScrollState`, `FilterState`, `SearchState`, `CacheState`, `StreamState`, `DisplayConfig`, `InteractionState`) in `src/ui/tab_state/`.
 - MCP server no longer exposes the `logana://filtered` resource (filtered lines can be very large).
 - Parser layer refactored
 - Field names unified, now it's always the same name regardless of source format.

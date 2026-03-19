@@ -45,7 +45,7 @@ impl Mode for DockerSelectMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings;
+        let kb = &tab.interaction.keybindings;
         if kb.navigation.scroll_down.matches(key, modifiers) {
             if !self.containers.is_empty() {
                 self.selected = (self.selected + 1).min(self.containers.len() - 1);

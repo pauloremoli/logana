@@ -63,7 +63,7 @@ impl DltSelectMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings;
+        let kb = &tab.interaction.keybindings;
 
         if kb.navigation.scroll_down.matches(key, modifiers) {
             let max = self.total_entries().saturating_sub(1);
@@ -108,7 +108,7 @@ impl DltSelectMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings;
+        let kb = &tab.interaction.keybindings;
         let adding = self.adding.as_mut().unwrap();
 
         if kb.dlt_select.confirm.matches(key, modifiers) {

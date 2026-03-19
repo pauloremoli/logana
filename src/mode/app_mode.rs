@@ -194,7 +194,7 @@ impl Mode for ConfirmRestoreMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings.confirm;
+        let kb = &tab.interaction.keybindings.confirm;
         if kb.yes.matches(key, modifiers) {
             tab.apply_file_context(&self.context);
             (Box::new(NormalMode::default()), KeyResult::Handled)
@@ -259,7 +259,7 @@ impl Mode for ConfirmRestoreSessionMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings.confirm;
+        let kb = &tab.interaction.keybindings.confirm;
         if kb.yes.matches(key, modifiers) {
             (
                 Box::new(NormalMode::default()),
@@ -325,7 +325,7 @@ impl Mode for ConfirmOpenDirMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings.confirm;
+        let kb = &tab.interaction.keybindings.confirm;
         if kb.yes.matches(key, modifiers) {
             (
                 Box::new(NormalMode::default()),
@@ -446,9 +446,9 @@ mod tests {
             ModeRenderState::ConfirmRestore
         ));
         // Context should have been applied
-        assert_eq!(tab.scroll_offset, 5);
-        assert!(!tab.level_colors_disabled.is_empty());
-        assert_eq!(tab.horizontal_scroll, 3);
+        assert_eq!(tab.scroll.scroll_offset, 5);
+        assert!(!tab.display.level_colors_disabled.is_empty());
+        assert_eq!(tab.scroll.horizontal_scroll, 3);
     }
 
     #[tokio::test]

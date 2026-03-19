@@ -28,7 +28,7 @@ impl Mode for FilterManagementMode {
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
         // Clone the Arc so we can mutate `tab` freely below.
-        let kb = tab.keybindings.clone();
+        let kb = tab.interaction.keybindings.clone();
 
         // Tab / Shift+Tab always pass through to the global handler.
         if kb.global.next_tab.matches(key, modifiers) || kb.global.prev_tab.matches(key, modifiers)
@@ -163,8 +163,8 @@ impl Mode for FilterManagementMode {
                 )
             });
             if let Some((id, ft, cc, pattern)) = filter_info {
-                tab.editing_filter_id = Some(id);
-                tab.filter_context = Some(selected);
+                tab.filter.editing_filter_id = Some(id);
+                tab.filter.filter_context = Some(selected);
                 let cmd = if let Some(expr) = pattern.strip_prefix(crate::date_filter::DATE_PREFIX)
                 {
                     let mut c = String::from("date-filter");
@@ -235,8 +235,8 @@ impl Mode for FilterManagementMode {
                     c
                 };
                 let len = cmd.len();
-                let history = tab.command_history.clone();
-                tab.command_error = None;
+                let history = tab.interaction.command_history.clone();
+                tab.interaction.command_error = None;
                 return (
                     Box::new(CommandMode::with_history(cmd, len, history)),
                     KeyResult::Handled,
@@ -256,7 +256,7 @@ impl Mode for FilterManagementMode {
                 .get_filters()
                 .get(selected)
                 .and_then(|f| f.color_config.clone());
-            tab.filter_context = Some(selected);
+            tab.filter.filter_context = Some(selected);
             let mut cmd = String::from("set-color");
             if let Some(cfg) = color_config {
                 if let Some(fg) = cfg.fg {
@@ -270,8 +270,8 @@ impl Mode for FilterManagementMode {
                 }
             }
             let len = cmd.len();
-            let history = tab.command_history.clone();
-            tab.command_error = None;
+            let history = tab.interaction.command_history.clone();
+            tab.interaction.command_error = None;
             return (
                 Box::new(CommandMode::with_history(cmd, len, history)),
                 KeyResult::Handled,
@@ -279,7 +279,7 @@ impl Mode for FilterManagementMode {
         }
 
         if kb.normal.toggle_filtering.matches(key, modifiers) {
-            tab.filtering_enabled = !tab.filtering_enabled;
+            tab.filter.enabled = !tab.filter.enabled;
             tab.begin_filter_refresh();
             return (
                 Box::new(FilterManagementMode {
@@ -317,8 +317,8 @@ impl Mode for FilterManagementMode {
         }
 
         if kb.filter.add_include_filter.matches(key, modifiers) {
-            let history = tab.command_history.clone();
-            tab.command_error = None;
+            let history = tab.interaction.command_history.clone();
+            tab.interaction.command_error = None;
             return (
                 Box::new(CommandMode::with_history("filter ".to_string(), 7, history)),
                 KeyResult::Handled,
@@ -326,8 +326,8 @@ impl Mode for FilterManagementMode {
         }
 
         if kb.filter.add_exclude_filter.matches(key, modifiers) {
-            let history = tab.command_history.clone();
-            tab.command_error = None;
+            let history = tab.interaction.command_history.clone();
+            tab.interaction.command_error = None;
             return (
                 Box::new(CommandMode::with_history(
                     "exclude ".to_string(),
@@ -339,8 +339,8 @@ impl Mode for FilterManagementMode {
         }
 
         if kb.filter.add_date_filter.matches(key, modifiers) {
-            let history = tab.command_history.clone();
-            tab.command_error = None;
+            let history = tab.interaction.command_history.clone();
+            tab.interaction.command_error = None;
             return (
                 Box::new(CommandMode::with_history(
                     "date-filter ".to_string(),
@@ -352,7 +352,7 @@ impl Mode for FilterManagementMode {
         }
 
         if kb.filter.sidebar_grow.matches(key, modifiers) {
-            tab.sidebar_width = tab.sidebar_width.saturating_add(2);
+            tab.display.sidebar_width = tab.display.sidebar_width.saturating_add(2);
             return (
                 Box::new(FilterManagementMode {
                     selected_filter_index: selected,
@@ -362,7 +362,7 @@ impl Mode for FilterManagementMode {
         }
 
         if kb.filter.sidebar_shrink.matches(key, modifiers) {
-            tab.sidebar_width = tab.sidebar_width.saturating_sub(2).max(10);
+            tab.display.sidebar_width = tab.display.sidebar_width.saturating_sub(2).max(10);
             return (
                 Box::new(FilterManagementMode {
                     selected_filter_index: selected,
@@ -497,7 +497,7 @@ impl Mode for FilterEditMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = tab.keybindings.clone();
+        let kb = tab.interaction.keybindings.clone();
 
         if kb.global.next_tab.matches(key, modifiers) || kb.global.prev_tab.matches(key, modifiers)
         {
@@ -774,11 +774,11 @@ mod tests {
     #[tokio::test]
     async fn test_capital_f_toggles_filtering_enabled() {
         let mut tab = make_tab(&["a", "b"]).await;
-        assert!(tab.filtering_enabled);
+        assert!(tab.filter.enabled);
         press(filter_mode(0), &mut tab, KeyCode::Char('F')).await;
-        assert!(!tab.filtering_enabled);
+        assert!(!tab.filter.enabled);
         press(filter_mode(0), &mut tab, KeyCode::Char('F')).await;
-        assert!(tab.filtering_enabled);
+        assert!(tab.filter.enabled);
     }
 
     #[tokio::test]
@@ -862,25 +862,25 @@ mod tests {
     #[tokio::test]
     async fn test_command_error_cleared_on_filter_include_shortcut() {
         let mut tab = make_tab(&["line"]).await;
-        tab.command_error = Some("previous error".to_string());
+        tab.interaction.command_error = Some("previous error".to_string());
         press(filter_mode(0), &mut tab, KeyCode::Char('i')).await;
-        assert!(tab.command_error.is_none());
+        assert!(tab.interaction.command_error.is_none());
     }
 
     #[tokio::test]
     async fn test_command_error_cleared_on_filter_exclude_shortcut() {
         let mut tab = make_tab(&["line"]).await;
-        tab.command_error = Some("previous error".to_string());
+        tab.interaction.command_error = Some("previous error".to_string());
         press(filter_mode(0), &mut tab, KeyCode::Char('o')).await;
-        assert!(tab.command_error.is_none());
+        assert!(tab.interaction.command_error.is_none());
     }
 
     #[tokio::test]
     async fn test_command_error_cleared_on_date_filter_shortcut() {
         let mut tab = make_tab(&["line"]).await;
-        tab.command_error = Some("previous error".to_string());
+        tab.interaction.command_error = Some("previous error".to_string());
         press(filter_mode(0), &mut tab, KeyCode::Char('t')).await;
-        assert!(tab.command_error.is_none());
+        assert!(tab.interaction.command_error.is_none());
     }
 
     #[tokio::test]
@@ -965,9 +965,9 @@ mod tests {
     async fn test_command_error_cleared_on_edit_filter() {
         let mut tab = make_tab(&["line"]).await;
         add_filter(&mut tab, "error", FilterType::Include).await;
-        tab.command_error = Some("previous error".to_string());
+        tab.interaction.command_error = Some("previous error".to_string());
         press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        assert!(tab.command_error.is_none());
+        assert!(tab.interaction.command_error.is_none());
     }
 
     #[tokio::test]
@@ -1119,25 +1119,25 @@ mod tests {
     #[tokio::test]
     async fn test_greater_than_grows_sidebar() {
         let mut tab = make_tab(&["line"]).await;
-        let initial = tab.sidebar_width;
+        let initial = tab.display.sidebar_width;
         press(filter_mode(0), &mut tab, KeyCode::Char('>')).await;
-        assert_eq!(tab.sidebar_width, initial + 2);
+        assert_eq!(tab.display.sidebar_width, initial + 2);
     }
 
     #[tokio::test]
     async fn test_less_than_shrinks_sidebar() {
         let mut tab = make_tab(&["line"]).await;
-        tab.sidebar_width = 20;
+        tab.display.sidebar_width = 20;
         press(filter_mode(0), &mut tab, KeyCode::Char('<')).await;
-        assert_eq!(tab.sidebar_width, 18);
+        assert_eq!(tab.display.sidebar_width, 18);
     }
 
     #[tokio::test]
     async fn test_shrink_does_not_go_below_minimum() {
         let mut tab = make_tab(&["line"]).await;
-        tab.sidebar_width = 10;
+        tab.display.sidebar_width = 10;
         press(filter_mode(0), &mut tab, KeyCode::Char('<')).await;
-        assert_eq!(tab.sidebar_width, 10);
+        assert_eq!(tab.display.sidebar_width, 10);
     }
 
     #[tokio::test]

@@ -72,7 +72,7 @@ impl App {
                 }
                 RestoreSessionPolicy::Never => {}
                 RestoreSessionPolicy::Ask => {
-                    tab.mode = Box::new(ConfirmRestoreMode { context: ctx });
+                    tab.interaction.mode = Box::new(ConfirmRestoreMode { context: ctx });
                 }
             }
         }
@@ -98,12 +98,12 @@ impl App {
 
         match FileReader::spawn_process_stream("docker", &["logs", "-f", &container_id]).await {
             Ok(conn) => {
-                tab.watch_state = Some(watch_state_from_connection(conn));
+                tab.stream.watch = Some(watch_state_from_connection(conn));
             }
             Err(e) => {
                 let err_msg = e.to_string();
-                tab.command_error = Some(format!("Docker attach failed: {}", err_msg));
-                tab.stream_retry = Some(StreamRetryState::new(
+                tab.interaction.command_error = Some(format!("Docker attach failed: {}", err_msg));
+                tab.stream.retry = Some(StreamRetryState::new(
                     docker_connect_fn(container_id),
                     err_msg,
                 ));
@@ -125,12 +125,12 @@ impl App {
 
         match FileReader::spawn_dlt_tcp_stream(host.clone(), port).await {
             Ok(conn) => {
-                tab.watch_state = Some(watch_state_from_connection(conn));
+                tab.stream.watch = Some(watch_state_from_connection(conn));
             }
             Err(e) => {
                 let err_msg = e.to_string();
-                tab.command_error = Some(format!("DLT connection failed: {}", err_msg));
-                tab.stream_retry = Some(StreamRetryState::new(dlt_connect_fn(host, port), err_msg));
+                tab.interaction.command_error = Some(format!("DLT connection failed: {}", err_msg));
+                tab.stream.retry = Some(StreamRetryState::new(dlt_connect_fn(host, port), err_msg));
             }
         }
 
@@ -151,7 +151,7 @@ impl App {
         let mut tab = TabState::new(file_reader, log_manager, title);
         self.apply_tab_defaults(&mut tab);
 
-        tab.stream_retry = Some(StreamRetryState::new(
+        tab.stream.retry = Some(StreamRetryState::new(
             dlt_connect_fn(host, port),
             "reconnecting…".to_string(),
         ));
@@ -175,7 +175,7 @@ impl App {
         let mut tab = TabState::new(file_reader, log_manager, title);
         self.apply_tab_defaults(&mut tab);
 
-        tab.stream_retry = Some(StreamRetryState::new(
+        tab.stream.retry = Some(StreamRetryState::new(
             docker_connect_fn(name.to_string()),
             "reconnecting…".to_string(),
         ));
@@ -199,12 +199,12 @@ impl App {
 
         match crate::otlp_receiver::spawn_otlp_http_receiver(port).await {
             Ok(conn) => {
-                tab.watch_state = Some(watch_state_from_connection(conn));
+                tab.stream.watch = Some(watch_state_from_connection(conn));
             }
             Err(e) => {
                 let err_msg = e.to_string();
-                tab.command_error = Some(format!("OTLP receiver failed: {err_msg}"));
-                tab.stream_retry = Some(StreamRetryState::new(otlp_connect_fn(port), err_msg));
+                tab.interaction.command_error = Some(format!("OTLP receiver failed: {err_msg}"));
+                tab.stream.retry = Some(StreamRetryState::new(otlp_connect_fn(port), err_msg));
             }
         }
 
@@ -224,7 +224,7 @@ impl App {
         let mut tab = TabState::new(file_reader, log_manager, title);
         self.apply_tab_defaults(&mut tab);
 
-        tab.stream_retry = Some(StreamRetryState::new(
+        tab.stream.retry = Some(StreamRetryState::new(
             otlp_connect_fn(port),
             "reconnecting…".to_string(),
         ));
@@ -247,12 +247,13 @@ impl App {
 
         match crate::otlp_receiver::spawn_otlp_grpc_receiver(port).await {
             Ok(conn) => {
-                tab.watch_state = Some(watch_state_from_connection(conn));
+                tab.stream.watch = Some(watch_state_from_connection(conn));
             }
             Err(e) => {
                 let err_msg = e.to_string();
-                tab.command_error = Some(format!("OTLP gRPC receiver failed: {err_msg}"));
-                tab.stream_retry = Some(StreamRetryState::new(otlp_grpc_connect_fn(port), err_msg));
+                tab.interaction.command_error =
+                    Some(format!("OTLP gRPC receiver failed: {err_msg}"));
+                tab.stream.retry = Some(StreamRetryState::new(otlp_grpc_connect_fn(port), err_msg));
             }
         }
 
@@ -272,7 +273,7 @@ impl App {
         let mut tab = TabState::new(file_reader, log_manager, title);
         self.apply_tab_defaults(&mut tab);
 
-        tab.stream_retry = Some(StreamRetryState::new(
+        tab.stream.retry = Some(StreamRetryState::new(
             otlp_grpc_connect_fn(port),
             "reconnecting…".to_string(),
         ));
@@ -417,18 +418,18 @@ impl App {
                         let visible: Vec<usize> = (0..self.tabs[0].file_reader.line_count())
                             .filter(|&i| pred.is_visible(self.tabs[0].file_reader.get_line(i)))
                             .collect();
-                        self.tabs[0].visible_indices = VisibleLines::Filtered(visible);
+                        self.tabs[0].filter.visible_indices = VisibleLines::Filtered(visible);
                         self.tabs[0].rebuild_filter_manager_cache();
                         self.tabs[0].invalidate_parse_cache();
                     } else {
                         self.tabs[0].begin_filter_refresh();
                     }
-                    if tail && self.tabs[0].filter_handle.is_none() {
+                    if tail && self.tabs[0].filter.handle.is_none() {
                         // Fast path completed synchronously: jump to the last visible line.
                         // Slow path: advance_filter_computation clamps scroll_offset to
                         // visible_len-1 when the background scan finishes, landing at the tail.
-                        self.tabs[0].scroll_offset =
-                            self.tabs[0].visible_indices.len().saturating_sub(1);
+                        self.tabs[0].scroll.scroll_offset =
+                            self.tabs[0].filter.visible_indices.len().saturating_sub(1);
                     }
                     // Non-tail: stay at line 0; user sees the top of the file immediately.
                 }
@@ -504,11 +505,11 @@ impl App {
             .iter()
             .position(|t| t.log_manager.source_file().is_none())
         {
-            if self.tabs[idx].paused {
+            if self.tabs[idx].stream.paused {
                 return;
             }
             let old_count = self.tabs[idx].file_reader.line_count();
-            let tail_mode = self.tabs[idx].tail_mode;
+            let tail_mode = self.tabs[idx].stream.tail_mode;
             let incremental = self.tabs[idx]
                 .file_reader
                 .try_extend_from_mmap(path_str)
@@ -522,7 +523,7 @@ impl App {
             if self.tabs[idx].file_reader.line_count() == 0 {
                 return;
             }
-            if self.tabs[idx].detected_format.is_none() {
+            if self.tabs[idx].display.format.is_none() {
                 self.tabs[idx].detect_and_apply_format();
             }
             if incremental {
@@ -531,8 +532,8 @@ impl App {
                 self.tabs[idx].begin_filter_refresh();
             }
             if tail_mode {
-                let new_count = self.tabs[idx].visible_indices.len();
-                self.tabs[idx].scroll_offset = new_count.saturating_sub(1);
+                let new_count = self.tabs[idx].filter.visible_indices.len();
+                self.tabs[idx].scroll.scroll_offset = new_count.saturating_sub(1);
             }
         } else {
             // Placeholder was removed by session restore — push a new stdin tab.
@@ -541,7 +542,7 @@ impl App {
                     let log_manager = LogManager::new(self.db.clone(), None).await;
                     let mut tab = TabState::new(file_reader, log_manager, "stdin".to_string());
                     self.apply_tab_defaults(&mut tab);
-                    tab.scroll_offset = tab.visible_indices.len().saturating_sub(1);
+                    tab.scroll.scroll_offset = tab.filter.visible_indices.len().saturating_sub(1);
                     self.tabs.push(tab);
                 }
                 _ => {}
@@ -586,7 +587,7 @@ impl App {
                 self.tabs[0].detect_and_apply_format();
                 let had_precomputed = result.precomputed_visible.is_some();
                 if let Some(visible) = result.precomputed_visible {
-                    self.tabs[0].visible_indices = VisibleLines::Filtered(visible);
+                    self.tabs[0].filter.visible_indices = VisibleLines::Filtered(visible);
                 }
                 if !self.startup_filters
                     && let Ok(Some(ctx)) = self.db.load_file_context(&path).await
@@ -597,7 +598,8 @@ impl App {
                         }
                         RestoreSessionPolicy::Never => {}
                         RestoreSessionPolicy::Ask => {
-                            self.tabs[0].mode = Box::new(ConfirmRestoreMode { context: ctx });
+                            self.tabs[0].interaction.mode =
+                                Box::new(ConfirmRestoreMode { context: ctx });
                         }
                     }
                 }
@@ -606,22 +608,27 @@ impl App {
                     self.tabs[0].invalidate_parse_cache();
                     if let Some(text_counts) = result.precomputed_text_counts {
                         let all_filter_defs = self.tabs[0].log_manager.get_filters().to_vec();
-                        self.tabs[0].filter_match_counts =
-                            super::merge_filter_counts(&all_filter_defs, &text_counts, &[], &[]);
+                        self.tabs[0].filter.match_counts =
+                            crate::ui::tab_state::merge_filter_counts(
+                                &all_filter_defs,
+                                &text_counts,
+                                &[],
+                                &[],
+                            );
                     } else {
-                        self.tabs[0].filter_match_counts = Vec::new();
+                        self.tabs[0].filter.match_counts = Vec::new();
                     }
                 } else {
                     self.tabs[0].begin_filter_refresh();
                 }
                 // Apply startup tail: jump to the last visible line and enable tail mode.
                 if self.startup_tail {
-                    self.tabs[0].tail_mode = true;
-                    self.tabs[0].scroll_offset =
-                        self.tabs[0].visible_indices.len().saturating_sub(1);
+                    self.tabs[0].stream.tail_mode = true;
+                    self.tabs[0].scroll.scroll_offset =
+                        self.tabs[0].filter.visible_indices.len().saturating_sub(1);
                 }
                 let rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
-                self.tabs[0].watch_state = Some(watch_state_from_file(rx, path));
+                self.tabs[0].stream.watch = Some(watch_state_from_file(rx, path));
             }
             LoadContext::ReplaceTab { tab_idx } => {
                 if tab_idx >= self.tabs.len() {
@@ -631,7 +638,7 @@ impl App {
                 self.tabs[tab_idx].detect_and_apply_format();
                 self.tabs[tab_idx].begin_filter_refresh();
                 let rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
-                self.tabs[tab_idx].watch_state = Some(watch_state_from_file(rx, path));
+                self.tabs[tab_idx].stream.watch = Some(watch_state_from_file(rx, path));
             }
             LoadContext::SessionRestoreTab {
                 tab_idx,
@@ -651,7 +658,7 @@ impl App {
                 }
                 self.tabs[tab_idx].begin_filter_refresh();
                 let rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
-                self.tabs[tab_idx].watch_state = Some(watch_state_from_file(rx, path));
+                self.tabs[tab_idx].stream.watch = Some(watch_state_from_file(rx, path));
 
                 self.continue_session_restore(remaining, total, initial_tab_idx)
                     .await;
@@ -666,29 +673,32 @@ impl App {
     pub(super) fn advance_file_watches(&mut self) {
         for i in 0..self.tabs.len() {
             let status = self.tabs[i]
-                .watch_state
+                .stream
+                .watch
                 .as_mut()
                 .map(|ws| ws.snapshot_rx.has_changed());
 
             match status {
                 Some(Ok(true)) => {
                     let _ = self.tabs[i]
-                        .watch_state
+                        .stream
+                        .watch
                         .as_mut()
                         .unwrap()
                         .snapshot_rx
                         .borrow_and_update();
-                    if self.tabs[i].paused {
+                    if self.tabs[i].stream.paused {
                         continue;
                     }
                     let reader_path = self.tabs[i]
-                        .watch_state
+                        .stream
+                        .watch
                         .as_ref()
                         .unwrap()
                         .reader_path
                         .clone();
                     let path_str = reader_path.to_str().unwrap_or_default();
-                    let tail_mode = self.tabs[i].tail_mode;
+                    let tail_mode = self.tabs[i].stream.tail_mode;
                     let old_line_count = self.tabs[i].file_reader.line_count();
                     let incremental = self.tabs[i]
                         .file_reader
@@ -700,7 +710,7 @@ impl App {
                             Err(_) => continue,
                         }
                     }
-                    if self.tabs[i].detected_format.is_none()
+                    if self.tabs[i].display.format.is_none()
                         && self.tabs[i].file_reader.line_count() > 0
                     {
                         self.tabs[i].detect_and_apply_format();
@@ -711,14 +721,15 @@ impl App {
                         self.tabs[i].begin_filter_refresh();
                     }
                     if tail_mode {
-                        let new_count = self.tabs[i].visible_indices.len();
-                        self.tabs[i].scroll_offset = new_count.saturating_sub(1);
+                        let new_count = self.tabs[i].filter.visible_indices.len();
+                        self.tabs[i].scroll.scroll_offset = new_count.saturating_sub(1);
                     }
                 }
                 Some(Err(_)) => {
-                    self.tabs[i].watch_state = None;
-                    self.tabs[i].command_error = Some("Disconnected: connection lost".to_string());
-                    if let Some(retry) = &mut self.tabs[i].stream_retry {
+                    self.tabs[i].stream.watch = None;
+                    self.tabs[i].interaction.command_error =
+                        Some("Disconnected: connection lost".to_string());
+                    if let Some(retry) = &mut self.tabs[i].stream.retry {
                         // Reuse the existing retry state to preserve the backoff counter.
                         retry.connected = false;
                         retry.last_error = "connection lost".to_string();
@@ -726,7 +737,7 @@ impl App {
                     } else if let Some(connect_fn) =
                         connect_fn_for_source(self.tabs[i].log_manager.source_file())
                     {
-                        self.tabs[i].stream_retry = Some(StreamRetryState::new(
+                        self.tabs[i].stream.retry = Some(StreamRetryState::new(
                             connect_fn,
                             "connection lost".to_string(),
                         ));
@@ -740,7 +751,7 @@ impl App {
     /// Poll DLT retry channels for reconnection results.
     pub(super) fn advance_stream_retries(&mut self) {
         for tab in &mut self.tabs {
-            let retry = match &mut tab.stream_retry {
+            let retry = match &mut tab.stream.retry {
                 Some(r) => r,
                 None => continue,
             };
@@ -751,23 +762,23 @@ impl App {
             match rx.try_recv() {
                 Ok(Ok(conn)) => {
                     tab.file_reader = crate::file_reader::FileReader::from_bytes(vec![]);
-                    tab.detected_format = None;
-                    tab.visible_indices = crate::ui::VisibleLines::default();
-                    tab.filter_handle = None;
-                    tab.scroll_offset = 0;
-                    tab.watch_state = Some(watch_state_from_connection(conn));
-                    tab.command_error = None;
+                    tab.display.format = None;
+                    tab.filter.visible_indices = crate::ui::VisibleLines::default();
+                    tab.filter.handle = None;
+                    tab.scroll.scroll_offset = 0;
+                    tab.stream.watch = Some(watch_state_from_connection(conn));
+                    tab.interaction.command_error = None;
                     // Keep stream_retry alive so the attempt counter is preserved
                     // across reconnect cycles; clear the pending rx and mark as connected
                     // so the [RETRY #N] label is suppressed.
-                    if let Some(retry) = &mut tab.stream_retry {
+                    if let Some(retry) = &mut tab.stream.retry {
                         retry.connected = true;
                         retry.retry_rx = None;
                     }
                 }
                 Ok(Err(e)) => {
                     retry.last_error = e.clone();
-                    tab.command_error = Some(format!(
+                    tab.interaction.command_error = Some(format!(
                         "Connection failed (retry #{}): {}",
                         retry.attempt, e
                     ));
@@ -781,13 +792,13 @@ impl App {
     /// Poll each tab's in-flight background search for completion.
     ///
     /// Called every frame from the event loop (non-blocking: `try_recv`).
-    /// On completion, results are written into `tab.search` and the view
+    /// On completion, results are written into `tab.search.query` and the view
     /// is scrolled to the first match when `navigate` was set.
     pub(super) fn advance_search(&mut self) {
         use tokio::sync::mpsc::error::TryRecvError;
 
         for tab in &mut self.tabs {
-            let Some(ref mut h) = tab.search_handle else {
+            let Some(ref mut h) = tab.search.handle else {
                 continue;
             };
             let forward = h.forward;
@@ -797,8 +808,8 @@ impl App {
             loop {
                 match h.result_rx.try_recv() {
                     Ok(batch) => {
-                        tab.search.extend_results(batch);
-                        tab.search_result_gen = tab.search_result_gen.wrapping_add(1);
+                        tab.search.query.extend_results(batch);
+                        tab.cache.search_result_gen = tab.cache.search_result_gen.wrapping_add(1);
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
@@ -809,17 +820,21 @@ impl App {
             }
 
             if done {
-                tab.search_handle = None;
+                tab.search.handle = None;
 
-                if navigate && !tab.search.get_results().is_empty() {
-                    let current_line_idx =
-                        tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
+                if navigate && !tab.search.query.get_results().is_empty() {
+                    let current_line_idx = tab
+                        .filter
+                        .visible_indices
+                        .get_opt(tab.scroll.scroll_offset)
+                        .unwrap_or(0);
                     tab.search
+                        .query
                         .set_position_for_search(current_line_idx, forward);
                     if forward {
-                        tab.search.next_match();
+                        tab.search.query.next_match();
                     } else {
-                        tab.search.previous_match();
+                        tab.search.query.previous_match();
                     }
                     tab.scroll_to_current_search_match();
                 }
@@ -835,13 +850,13 @@ impl App {
     pub(super) fn advance_filter_computation(&mut self) {
         use tokio::sync::mpsc::error::TryRecvError;
         for tab in &mut self.tabs {
-            if tab.filter_handle.is_none() {
+            if tab.filter.handle.is_none() {
                 continue;
             }
 
             // Phase 1: drain available chunks into a local buffer (limits borrow scope).
             let (chunks, done) = {
-                let h = tab.filter_handle.as_mut().unwrap();
+                let h = tab.filter.handle.as_mut().unwrap();
                 let mut chunks = Vec::new();
                 let mut done = false;
                 loop {
@@ -868,62 +883,68 @@ impl App {
                 continue;
             }
 
-            let already_had_first = tab.filter_handle.as_ref().unwrap().received_first_chunk;
-            let scroll_anchor = tab.filter_handle.as_ref().unwrap().scroll_anchor;
+            let already_had_first = tab.filter.handle.as_ref().unwrap().received_first_chunk;
+            let scroll_anchor = tab.filter.handle.as_ref().unwrap().scroll_anchor;
 
             if !chunks.is_empty() {
-                tab.filter_handle.as_mut().unwrap().received_first_chunk = true;
+                tab.filter.handle.as_mut().unwrap().received_first_chunk = true;
             }
 
             // Phase 2: apply chunks to visible_indices.
             let mut should_replace = !already_had_first;
             for chunk in chunks {
                 let is_last = chunk.is_last;
-                if let Some(h) = tab.filter_handle.as_mut() {
+                if let Some(h) = tab.filter.handle.as_mut() {
                     h.displayed_progress = chunk.progress;
                 }
                 if should_replace {
-                    tab.visible_indices = VisibleLines::Filtered(chunk.visible);
+                    tab.filter.visible_indices = VisibleLines::Filtered(chunk.visible);
                     should_replace = false;
-                } else if let VisibleLines::Filtered(ref mut v) = tab.visible_indices {
+                } else if let VisibleLines::Filtered(ref mut v) = tab.filter.visible_indices {
                     v.extend(chunk.visible);
                 }
                 if let Some(counts) = chunk.filter_match_counts {
-                    tab.filter_match_counts = counts;
+                    tab.filter.match_counts = counts;
                 }
                 if is_last {
                     if let Some(idx) = scroll_anchor
-                        && let Some(pos) = tab.visible_indices.position_of(idx)
+                        && let Some(pos) = tab.filter.visible_indices.position_of(idx)
                     {
-                        tab.scroll_offset = pos;
-                    } else if tab.visible_indices.is_empty() {
-                        tab.scroll_offset = 0;
+                        tab.scroll.scroll_offset = pos;
+                    } else if tab.filter.visible_indices.is_empty() {
+                        tab.scroll.scroll_offset = 0;
                     } else {
-                        tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
+                        tab.scroll.scroll_offset = tab
+                            .scroll
+                            .scroll_offset
+                            .min(tab.filter.visible_indices.len() - 1);
                     }
-                } else if tab.visible_indices.is_empty() {
-                    tab.scroll_offset = 0;
+                } else if tab.filter.visible_indices.is_empty() {
+                    tab.scroll.scroll_offset = 0;
                 } else {
-                    tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
+                    tab.scroll.scroll_offset = tab
+                        .scroll
+                        .scroll_offset
+                        .min(tab.filter.visible_indices.len() - 1);
                 }
             }
             if done {
-                if let Some(h) = &tab.filter_handle {
-                    tab.cached_scan_result = Some(super::CachedScanResult {
+                if let Some(h) = &tab.filter.handle {
+                    tab.filter.cached_scan = Some(super::CachedScanResult {
                         filter_fingerprint: h.scan_fingerprint.clone(),
                         line_count: h.scan_line_count,
                         raw_mode: h.scan_raw_mode,
                         view: (
-                            tab.visible_indices.clone(),
-                            tab.filter_manager_arc.clone(),
-                            tab.filter_styles.clone(),
-                            tab.filter_date_styles.clone(),
-                            tab.filter_field_styles.clone(),
+                            tab.filter.visible_indices.clone(),
+                            tab.filter.manager.clone(),
+                            tab.filter.text_styles.clone(),
+                            tab.filter.date_styles.clone(),
+                            tab.filter.field_styles.clone(),
                         ),
-                        match_counts: tab.filter_match_counts.clone(),
+                        match_counts: tab.filter.match_counts.clone(),
                     });
                 }
-                tab.filter_handle = None;
+                tab.filter.handle = None;
             }
         }
     }
@@ -967,7 +988,7 @@ impl App {
         let total = files.len();
         let queue: VecDeque<String> = files.into_iter().collect();
         let initial_tab_idx = self.active_tab;
-        self.tabs[self.active_tab].mode = Box::new(NormalMode::default());
+        self.tabs[self.active_tab].interaction.mode = Box::new(NormalMode::default());
         self.continue_session_restore(queue, total, initial_tab_idx)
             .await;
     }
@@ -1061,21 +1082,21 @@ mod tests {
         app.update_stdin_tab(f.path()).await;
 
         assert_eq!(app.tabs[0].file_reader.line_count(), 2);
-        assert_eq!(app.tabs[0].visible_indices.len(), 2);
+        assert_eq!(app.tabs[0].filter.visible_indices.len(), 2);
     }
 
     #[tokio::test]
     async fn test_update_stdin_tab_detects_format_on_first_data() {
         let mut app = make_app(&[]).await;
-        assert!(app.tabs[0].detected_format.is_none());
+        assert!(app.tabs[0].display.format.is_none());
 
         let journalctl_line = b"Mar 15 10:00:00 myhost sshd[1234]: Accepted password for user\n";
         let f = make_stdin_file(journalctl_line);
         app.update_stdin_tab(f.path()).await;
 
-        assert!(app.tabs[0].detected_format.is_some());
+        assert!(app.tabs[0].display.format.is_some());
         assert_eq!(
-            app.tabs[0].detected_format.as_ref().unwrap().name(),
+            app.tabs[0].display.format.as_ref().unwrap().name(),
             "journalctl"
         );
     }
@@ -1086,20 +1107,20 @@ mod tests {
         let f1 = make_stdin_file(b"Mar 15 10:00:00 myhost sshd[1234]: first line\n");
         app.update_stdin_tab(f1.path()).await;
         assert_eq!(
-            app.tabs[0].detected_format.as_ref().unwrap().name(),
+            app.tabs[0].display.format.as_ref().unwrap().name(),
             "journalctl"
         );
 
         // Manually set a different format to verify it is NOT overwritten.
         use crate::parser::SyslogParser;
         use std::sync::Arc;
-        app.tabs[0].detected_format = Some(Arc::new(SyslogParser));
+        app.tabs[0].display.format = Some(Arc::new(SyslogParser));
 
         let f2 = make_stdin_file(b"Mar 15 10:00:00 myhost sshd[1234]: first line\nMar 15 10:00:01 myhost sshd[1234]: second line\n");
         app.update_stdin_tab(f2.path()).await;
 
         assert_eq!(
-            app.tabs[0].detected_format.as_ref().unwrap().name(),
+            app.tabs[0].display.format.as_ref().unwrap().name(),
             "syslog"
         );
     }
@@ -1107,29 +1128,29 @@ mod tests {
     #[tokio::test]
     async fn test_update_stdin_tab_tail_mode_scrolls_to_last() {
         let mut app = make_app(&["first", "second"]).await;
-        app.tabs[0].tail_mode = true;
-        app.tabs[0].scroll_offset = 0;
+        app.tabs[0].stream.tail_mode = true;
+        app.tabs[0].scroll.scroll_offset = 0;
 
         let f = make_stdin_file(b"first\nsecond\nthird\nfourth\n");
         app.update_stdin_tab(f.path()).await;
 
         // With tail_mode on, scroll_offset should be at the new last line.
-        let new_last = app.tabs[0].visible_indices.len().saturating_sub(1);
-        assert_eq!(app.tabs[0].scroll_offset, new_last);
+        let new_last = app.tabs[0].filter.visible_indices.len().saturating_sub(1);
+        assert_eq!(app.tabs[0].scroll.scroll_offset, new_last);
         assert!(new_last > 0);
     }
 
     #[tokio::test]
     async fn test_update_stdin_tab_no_tail_no_scroll() {
         let mut app = make_app(&["first", "second"]).await;
-        app.tabs[0].tail_mode = false;
-        app.tabs[0].scroll_offset = 0;
+        app.tabs[0].stream.tail_mode = false;
+        app.tabs[0].scroll.scroll_offset = 0;
 
         let f = make_stdin_file(b"first\nsecond\nthird\nfourth\n");
         app.update_stdin_tab(f.path()).await;
 
         // With tail_mode off, scroll_offset should stay where it was.
-        assert_eq!(app.tabs[0].scroll_offset, 0);
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
     }
 
     #[tokio::test]
@@ -1165,7 +1186,7 @@ mod tests {
     #[tokio::test]
     async fn test_advance_file_watches_no_watchers() {
         let mut app = make_app(&["line1", "line2"]).await;
-        assert!(app.tabs[0].watch_state.is_none());
+        assert!(app.tabs[0].stream.watch.is_none());
         // Should not panic.
         app.advance_file_watches();
     }
@@ -1177,7 +1198,7 @@ mod tests {
         let original_count = app.tabs[0].file_reader.line_count();
 
         let (tx, state) = make_watch_state(b"new line\n");
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
         app.advance_file_watches();
@@ -1195,18 +1216,18 @@ mod tests {
     async fn test_file_stream_tail_on_always_scrolls_to_last() {
         // Stream tab starts empty; all 6 lines come through the watch state.
         let mut app = make_app(&[]).await;
-        app.tabs[0].tail_mode = true;
-        app.tabs[0].scroll_offset = 0;
+        app.tabs[0].stream.tail_mode = true;
+        app.tabs[0].scroll.scroll_offset = 0;
 
         let (tx, state) = make_watch_state(b"line1\nline2\nline3\nline4\nline5\nline6\n");
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
         app.advance_file_watches();
 
-        let last = app.tabs[0].visible_indices.len().saturating_sub(1);
+        let last = app.tabs[0].filter.visible_indices.len().saturating_sub(1);
         assert_eq!(
-            app.tabs[0].scroll_offset, last,
+            app.tabs[0].scroll.scroll_offset, last,
             "tail_mode on: scroll should track the last line"
         );
         assert_eq!(app.tabs[0].file_reader.line_count(), 6);
@@ -1217,26 +1238,26 @@ mod tests {
         // Same setup but tail_mode is off — scroll must not move.
         // Stream tab starts empty; all 6 lines come through the watch state.
         let mut app = make_app(&[]).await;
-        app.tabs[0].tail_mode = false;
-        app.tabs[0].scroll_offset = 0;
+        app.tabs[0].stream.tail_mode = false;
+        app.tabs[0].scroll.scroll_offset = 0;
 
         // First delivery: 3 lines so user has a position to stay at.
         let (tx, state) = make_watch_state(b"line1\nline2\nline3\n");
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
         tx.send(()).unwrap();
         app.advance_file_watches();
-        app.tabs[0].scroll_offset = 1; // user moves to middle
+        app.tabs[0].scroll.scroll_offset = 1; // user moves to middle
 
         // Second delivery: 3 more lines.
         append_to_watch_file(
-            app.tabs[0].watch_state.as_ref().unwrap(),
+            app.tabs[0].stream.watch.as_ref().unwrap(),
             b"line4\nline5\nline6\n",
         );
         tx.send(()).unwrap();
         app.advance_file_watches();
 
         assert_eq!(
-            app.tabs[0].scroll_offset, 1,
+            app.tabs[0].scroll.scroll_offset, 1,
             "tail_mode off: scroll should stay where the user left it"
         );
         assert_eq!(app.tabs[0].file_reader.line_count(), 6);
@@ -1246,18 +1267,18 @@ mod tests {
     async fn test_file_stream_multiple_batches_tail_on() {
         // New lines arrive in multiple watch batches; tail_mode keeps up.
         let mut app = make_app(&[]).await;
-        app.tabs[0].tail_mode = true;
+        app.tabs[0].stream.tail_mode = true;
 
         let (tx, state) = make_watch_state(b"");
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         for batch in &[b"a\nb\nc\n".as_ref(), b"d\ne\n".as_ref(), b"f\n".as_ref()] {
-            append_to_watch_file(app.tabs[0].watch_state.as_ref().unwrap(), batch);
+            append_to_watch_file(app.tabs[0].stream.watch.as_ref().unwrap(), batch);
             tx.send(()).unwrap();
             app.advance_file_watches();
-            let last = app.tabs[0].visible_indices.len().saturating_sub(1);
+            let last = app.tabs[0].filter.visible_indices.len().saturating_sub(1);
             assert_eq!(
-                app.tabs[0].scroll_offset, last,
+                app.tabs[0].scroll.scroll_offset, last,
                 "after each batch, scroll should be at last line"
             );
         }
@@ -1279,12 +1300,12 @@ mod tests {
         // open_file adds a new tab (index 1).
         let tab_idx = app.tabs.len() - 1;
         app.active_tab = tab_idx;
-        app.tabs[tab_idx].tail_mode = true;
-        app.tabs[tab_idx].scroll_offset = 0; // scroll to top
+        app.tabs[tab_idx].stream.tail_mode = true;
+        app.tabs[tab_idx].scroll.scroll_offset = 0; // scroll to top
 
         // Replace the real watcher with a manual channel watching the original file.
         let (tx, rx) = tokio::sync::watch::channel(());
-        app.tabs[tab_idx].watch_state = Some(super::watch_state_from_file(rx, path.clone()));
+        app.tabs[tab_idx].stream.watch = Some(super::watch_state_from_file(rx, path.clone()));
 
         // Append new lines to the original file, then notify.
         use std::io::Write as _;
@@ -1298,9 +1319,13 @@ mod tests {
         tx.send(()).unwrap();
         app.advance_file_watches();
 
-        let last = app.tabs[tab_idx].visible_indices.len().saturating_sub(1);
+        let last = app.tabs[tab_idx]
+            .filter
+            .visible_indices
+            .len()
+            .saturating_sub(1);
         assert_eq!(
-            app.tabs[tab_idx].scroll_offset, last,
+            app.tabs[tab_idx].scroll.scroll_offset, last,
             "tail_mode on + real file: scroll must reach the last visible line"
         );
         assert!(
@@ -1332,28 +1357,31 @@ mod tests {
         )
         .await;
 
-        app.tabs[0].tail_mode = false;
-        app.tabs[0].scroll_offset = 0;
+        app.tabs[0].stream.tail_mode = false;
+        app.tabs[0].scroll.scroll_offset = 0;
 
         let (tx, state) = make_watch_state(b"");
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         // First batch with tail off — scroll stays.
-        append_to_watch_file(app.tabs[0].watch_state.as_ref().unwrap(), b"l4\nl5\n");
+        append_to_watch_file(app.tabs[0].stream.watch.as_ref().unwrap(), b"l4\nl5\n");
         tx.send(()).unwrap();
         app.advance_file_watches();
-        assert_eq!(app.tabs[0].scroll_offset, 0, "tail off: should not scroll");
+        assert_eq!(
+            app.tabs[0].scroll.scroll_offset, 0,
+            "tail off: should not scroll"
+        );
 
         // Enable tail (like the user runs :tail).
-        app.tabs[0].tail_mode = true;
+        app.tabs[0].stream.tail_mode = true;
 
         // Second batch — now scroll should follow.
-        append_to_watch_file(app.tabs[0].watch_state.as_ref().unwrap(), b"l6\nl7\n");
+        append_to_watch_file(app.tabs[0].stream.watch.as_ref().unwrap(), b"l6\nl7\n");
         tx.send(()).unwrap();
         app.advance_file_watches();
-        let last = app.tabs[0].visible_indices.len().saturating_sub(1);
+        let last = app.tabs[0].filter.visible_indices.len().saturating_sub(1);
         assert_eq!(
-            app.tabs[0].scroll_offset, last,
+            app.tabs[0].scroll.scroll_offset, last,
             "tail on: should scroll to last after enable"
         );
     }
@@ -1361,17 +1389,17 @@ mod tests {
     #[tokio::test]
     async fn test_advance_file_watches_paused_skips_update() {
         let mut app = make_app(&["old line"]).await;
-        app.tabs[0].paused = true;
-        let initial_count = app.tabs[0].visible_indices.len();
+        app.tabs[0].stream.paused = true;
+        let initial_count = app.tabs[0].filter.visible_indices.len();
 
         let (tx, state) = make_watch_state(b"new line\n");
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
         app.advance_file_watches();
 
         // Paused: no new lines should have been appended.
-        assert_eq!(app.tabs[0].visible_indices.len(), initial_count);
+        assert_eq!(app.tabs[0].filter.visible_indices.len(), initial_count);
         drop(tx);
     }
 
@@ -1380,7 +1408,7 @@ mod tests {
         let mut app = make_app(&[]).await;
 
         let (tx, state) = make_watch_state(b"new line\n");
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
         app.advance_file_watches();
@@ -1395,40 +1423,40 @@ mod tests {
         let mut app = make_app(&["old"]).await;
         // Make tab[0] behave as the stdin placeholder (no source_file).
         assert!(app.tabs[0].log_manager.source_file().is_none());
-        let initial_count = app.tabs[0].visible_indices.len();
+        let initial_count = app.tabs[0].filter.visible_indices.len();
 
-        app.tabs[0].paused = true;
+        app.tabs[0].stream.paused = true;
         let f = make_stdin_file(b"new line\nmore data\n");
         app.update_stdin_tab(f.path()).await;
 
-        assert_eq!(app.tabs[0].visible_indices.len(), initial_count);
+        assert_eq!(app.tabs[0].filter.visible_indices.len(), initial_count);
     }
 
     #[tokio::test]
     async fn test_advance_file_watches_sender_dropped() {
         let mut app = make_app(&["line"]).await;
         let (tx, state) = make_watch_state(b"");
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         drop(tx);
         app.advance_file_watches();
 
-        assert!(app.tabs[0].watch_state.is_none());
+        assert!(app.tabs[0].stream.watch.is_none());
     }
 
     #[tokio::test]
     async fn test_advance_file_watches_format_redetection() {
         let mut app = make_app(&[]).await;
-        assert!(app.tabs[0].detected_format.is_none());
+        assert!(app.tabs[0].display.format.is_none());
 
         let json_data = b"{\"level\":\"INFO\",\"msg\":\"hello\"}\n";
         let (tx, state) = make_watch_state(json_data);
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
         app.advance_file_watches();
 
-        assert!(app.tabs[0].detected_format.is_some());
+        assert!(app.tabs[0].display.format.is_some());
     }
 
     #[tokio::test]
@@ -1471,7 +1499,7 @@ mod tests {
 
         // Mode should be unchanged (still NormalMode from make_app).
         assert!(matches!(
-            app.tabs[0].mode.render_state(),
+            app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::Normal
         ));
     }
@@ -1485,7 +1513,7 @@ mod tests {
         // Verify the empty-vec early return path.
         app.restore_session(vec![]).await;
         assert!(matches!(
-            app.tabs[0].mode.render_state(),
+            app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::Normal
         ));
 
@@ -1495,7 +1523,7 @@ mod tests {
         app.restore_session(vec!["/nonexistent/file.log".to_string()])
             .await;
         assert!(matches!(
-            app.tabs[0].mode.render_state(),
+            app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::Normal
         ));
     }
@@ -1637,7 +1665,7 @@ mod tests {
 
         assert!(
             !matches!(
-                app.tabs[0].mode.render_state(),
+                app.tabs[0].interaction.mode.render_state(),
                 ModeRenderState::ConfirmRestore
             ),
             "restore prompt must not appear when --filters was given"
@@ -1691,7 +1719,7 @@ mod tests {
     async fn test_advance_file_load_redetects_format() {
         let mut app = make_app(&[]).await;
         // Initial tab has no detected format (empty placeholder).
-        assert!(app.tabs[0].detected_format.is_none());
+        assert!(app.tabs[0].display.format.is_none());
 
         let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -1720,7 +1748,7 @@ mod tests {
 
         assert!(app.file_load_state.is_none());
         assert!(
-            app.tabs[0].detected_format.is_some(),
+            app.tabs[0].display.format.is_some(),
             "Format should be re-detected after ReplaceInitialTab load"
         );
     }
@@ -1751,11 +1779,11 @@ mod tests {
         app.advance_file_load().await;
 
         assert!(
-            app.tabs[0].filter_handle.is_none(),
+            app.tabs[0].filter.handle.is_none(),
             "no background filter scan should be started when precomputed_visible was set"
         );
         assert_eq!(
-            app.tabs[0].visible_indices.len(),
+            app.tabs[0].filter.visible_indices.len(),
             2,
             "visible_indices should reflect the precomputed result"
         );
@@ -1802,12 +1830,12 @@ mod tests {
         app.advance_file_load().await;
 
         assert!(
-            app.tabs[0].filter_handle.is_none(),
+            app.tabs[0].filter.handle.is_none(),
             "no background filter scan when precomputed"
         );
-        assert_eq!(app.tabs[0].visible_indices.len(), 2);
+        assert_eq!(app.tabs[0].filter.visible_indices.len(), 2);
         assert!(
-            !app.tabs[0].filter_styles.is_empty(),
+            !app.tabs[0].filter.text_styles.is_empty(),
             "filter_styles must be populated after precomputed load so highlighting works"
         );
     }
@@ -1838,7 +1866,7 @@ mod tests {
         app.advance_file_load().await;
 
         assert!(
-            app.tabs[0].filter_handle.is_none(),
+            app.tabs[0].filter.handle.is_none(),
             "no background scan when there are no active filters"
         );
         assert_eq!(app.tabs[0].file_reader.line_count(), 2);
@@ -1882,7 +1910,7 @@ mod tests {
         app.restore_session(files).await;
         // Mode should be NormalMode after restore attempt.
         assert!(matches!(
-            app.tabs[0].mode.render_state(),
+            app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::Normal
         ));
     }
@@ -1988,7 +2016,7 @@ mod tests {
             "placeholder should be replaced by preview tab"
         );
         assert!(
-            app.tabs[0].show_keys,
+            app.tabs[0].display.show_keys,
             "show_keys=true from context should be applied"
         );
         assert_eq!(
@@ -2018,7 +2046,7 @@ mod tests {
 
         // Preview should be filtered: only lines starting with "match".
         assert!(
-            matches!(&app.tabs[0].visible_indices, VisibleLines::Filtered(v) if v.len() == 2),
+            matches!(&app.tabs[0].filter.visible_indices, VisibleLines::Filtered(v) if v.len() == 2),
             "filtered preview should contain only matching lines"
         );
     }
@@ -2028,7 +2056,7 @@ mod tests {
         let mut app = make_app(&[]).await;
         let f = make_stdin_file(b"ERROR bad\nINFO ok\nWARN maybe\n");
         app.update_stdin_tab(f.path()).await;
-        assert_eq!(app.tabs[0].visible_indices.len(), 3);
+        assert_eq!(app.tabs[0].filter.visible_indices.len(), 3);
         assert_eq!(app.tabs[0].next_error_position(0), None);
         assert_eq!(app.tabs[0].prev_error_position(1), Some(0));
         assert_eq!(app.tabs[0].next_warning_position(0), Some(2));
@@ -2039,7 +2067,7 @@ mod tests {
         let mut app = make_app(&[]).await;
 
         let (tx, state) = make_watch_state(b"INFO start\nERROR bad\nWARN careful\n");
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
         app.advance_file_watches();
@@ -2084,14 +2112,14 @@ mod tests {
             is_last: false,
             progress: 0.5,
         }]);
-        app.tabs[0].filter_handle = Some(handle);
+        app.tabs[0].filter.handle = Some(handle);
         app.advance_filter_computation();
         assert_eq!(
-            app.tabs[0].visible_indices,
+            app.tabs[0].filter.visible_indices,
             VisibleLines::Filtered(vec![0, 2])
         );
         assert!(
-            app.tabs[0].filter_handle.is_some(),
+            app.tabs[0].filter.handle.is_some(),
             "handle should remain while not last"
         );
     }
@@ -2113,15 +2141,15 @@ mod tests {
                 progress: 1.0,
             },
         ]);
-        app.tabs[0].filter_handle = Some(handle);
+        app.tabs[0].filter.handle = Some(handle);
         app.advance_filter_computation();
         assert_eq!(
-            app.tabs[0].visible_indices,
+            app.tabs[0].filter.visible_indices,
             VisibleLines::Filtered(vec![0, 1, 2, 3])
         );
-        assert_eq!(app.tabs[0].filter_match_counts, vec![4]);
+        assert_eq!(app.tabs[0].filter.match_counts, vec![4]);
         assert!(
-            app.tabs[0].filter_handle.is_none(),
+            app.tabs[0].filter.handle.is_none(),
             "handle should be cleared after last chunk"
         );
     }
@@ -2129,17 +2157,18 @@ mod tests {
     #[tokio::test]
     async fn test_advance_filter_computation_scroll_clamped_on_intermediate() {
         let mut app = make_app(&["a", "b", "c"]).await;
-        app.tabs[0].scroll_offset = 100;
+        app.tabs[0].scroll.scroll_offset = 100;
         let (handle, _tx) = make_filter_handle_with_chunks(vec![super::super::FilterChunk {
             visible: vec![0],
             filter_match_counts: None,
             is_last: false,
             progress: 0.3,
         }]);
-        app.tabs[0].filter_handle = Some(handle);
+        app.tabs[0].filter.handle = Some(handle);
         app.advance_filter_computation();
         assert!(
-            app.tabs[0].scroll_offset <= app.tabs[0].visible_indices.len().saturating_sub(1),
+            app.tabs[0].scroll.scroll_offset
+                <= app.tabs[0].filter.visible_indices.len().saturating_sub(1),
             "scroll_offset should be clamped to visible length on intermediate chunk"
         );
     }
@@ -2162,10 +2191,10 @@ mod tests {
             },
         ]);
         handle.scroll_anchor = Some(3);
-        app.tabs[0].filter_handle = Some(handle);
+        app.tabs[0].filter.handle = Some(handle);
         app.advance_filter_computation();
         // Line index 3 is at position 3 in the combined visible vec [0,1,2,3].
-        assert_eq!(app.tabs[0].scroll_offset, 3);
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 3);
     }
 
     #[tokio::test]
@@ -2185,10 +2214,10 @@ mod tests {
             scan_line_count: 0,
             scan_raw_mode: false,
         };
-        app.tabs[0].filter_handle = Some(handle);
+        app.tabs[0].filter.handle = Some(handle);
         app.advance_filter_computation();
         assert!(
-            app.tabs[0].filter_handle.is_none(),
+            app.tabs[0].filter.handle.is_none(),
             "handle should be cleared when sender is dropped"
         );
     }
@@ -2249,11 +2278,11 @@ mod tests {
         app.advance_file_load().await;
 
         assert!(
-            app.tabs[0].filter_handle.is_none(),
+            app.tabs[0].filter.handle.is_none(),
             "filter_handle must be None when filtering_enabled=false was restored"
         );
         assert!(
-            matches!(app.tabs[0].visible_indices, VisibleLines::All(_)),
+            matches!(app.tabs[0].filter.visible_indices, VisibleLines::All(_)),
             "visible_indices must be All when filtering is disabled"
         );
     }
@@ -2274,30 +2303,31 @@ mod tests {
         let (result_tx, result_rx) = tokio::sync::mpsc::channel(1);
         result_tx.send(Ok(conn)).await.unwrap();
 
-        app.tabs[0].stream_retry = Some(StreamRetryState {
+        app.tabs[0].stream.retry = Some(StreamRetryState {
             attempt: 3,
             last_error: "connection refused".to_string(),
             retry_rx: Some(result_rx),
             connected: false,
             connect: make_dummy_connect_fn(),
         });
-        app.tabs[0].command_error = Some("connection failed".to_string());
+        app.tabs[0].interaction.command_error = Some("connection failed".to_string());
 
         app.advance_stream_retries();
 
         let retry = app.tabs[0]
-            .stream_retry
+            .stream
+            .retry
             .as_ref()
             .expect("retry state should be kept");
         assert!(retry.connected, "retry should be marked connected");
         assert!(retry.retry_rx.is_none(), "pending rx should be cleared");
         assert_eq!(retry.attempt, 3, "attempt count should be preserved");
         assert!(
-            app.tabs[0].command_error.is_none(),
+            app.tabs[0].interaction.command_error.is_none(),
             "error should be cleared"
         );
         assert!(
-            app.tabs[0].watch_state.is_some(),
+            app.tabs[0].stream.watch.is_some(),
             "watch_state should be set"
         );
         assert_eq!(
@@ -2306,14 +2336,15 @@ mod tests {
             "file_reader should be reset to empty on reconnect"
         );
         assert!(
-            app.tabs[0].detected_format.is_none(),
+            app.tabs[0].display.format.is_none(),
             "detected_format should be reset on reconnect"
         );
 
         tx.send(()).unwrap();
         assert!(
             app.tabs[0]
-                .watch_state
+                .stream
+                .watch
                 .as_mut()
                 .unwrap()
                 .snapshot_rx
@@ -2332,7 +2363,7 @@ mod tests {
             .await
             .unwrap();
 
-        app.tabs[0].stream_retry = Some(StreamRetryState {
+        app.tabs[0].stream.retry = Some(StreamRetryState {
             attempt: 1,
             last_error: "old error".to_string(),
             retry_rx: Some(result_rx),
@@ -2342,12 +2373,13 @@ mod tests {
 
         app.advance_stream_retries();
 
-        let retry = app.tabs[0].stream_retry.as_ref().unwrap();
+        let retry = app.tabs[0].stream.retry.as_ref().unwrap();
         assert_eq!(retry.attempt, 2, "attempt should be incremented");
         assert_eq!(retry.last_error, "connection refused");
         assert!(retry.retry_rx.is_some(), "new retry should be scheduled");
         assert!(
             app.tabs[0]
+                .interaction
                 .command_error
                 .as_ref()
                 .unwrap()
@@ -2361,7 +2393,7 @@ mod tests {
 
         let (_result_tx, result_rx) = tokio::sync::mpsc::channel::<Result<_, String>>(1);
 
-        app.tabs[0].stream_retry = Some(StreamRetryState {
+        app.tabs[0].stream.retry = Some(StreamRetryState {
             attempt: 1,
             last_error: "waiting".to_string(),
             retry_rx: Some(result_rx),
@@ -2371,7 +2403,7 @@ mod tests {
 
         app.advance_stream_retries();
 
-        let retry = app.tabs[0].stream_retry.as_ref().unwrap();
+        let retry = app.tabs[0].stream.retry.as_ref().unwrap();
         assert_eq!(retry.attempt, 1, "attempt should not change while pending");
     }
 
@@ -2385,7 +2417,7 @@ mod tests {
         let mut tab = TabState::new(file_reader, log_manager, "dlt:test".to_string());
 
         let (tx, state) = make_watch_state(b"");
-        tab.watch_state = Some(state);
+        tab.stream.watch = Some(state);
         drop(tx);
 
         app.tabs.push(tab);
@@ -2393,10 +2425,10 @@ mod tests {
 
         app.advance_file_watches();
 
-        assert!(app.tabs[tab_idx].watch_state.is_none());
-        assert!(app.tabs[tab_idx].stream_retry.is_some());
-        assert_eq!(app.tabs[tab_idx].stream_retry.as_ref().unwrap().attempt, 1);
-        assert!(app.tabs[tab_idx].command_error.is_some());
+        assert!(app.tabs[tab_idx].stream.watch.is_none());
+        assert!(app.tabs[tab_idx].stream.retry.is_some());
+        assert_eq!(app.tabs[tab_idx].stream.retry.as_ref().unwrap().attempt, 1);
+        assert!(app.tabs[tab_idx].interaction.command_error.is_some());
     }
 
     #[tokio::test]
@@ -2409,7 +2441,7 @@ mod tests {
         let mut tab = TabState::new(file_reader, log_manager, "docker:mycontainer".to_string());
 
         let (tx, state) = make_watch_state(b"");
-        tab.watch_state = Some(state);
+        tab.stream.watch = Some(state);
         drop(tx);
 
         app.tabs.push(tab);
@@ -2417,10 +2449,10 @@ mod tests {
 
         app.advance_file_watches();
 
-        assert!(app.tabs[tab_idx].watch_state.is_none());
-        assert!(app.tabs[tab_idx].stream_retry.is_some());
-        assert_eq!(app.tabs[tab_idx].stream_retry.as_ref().unwrap().attempt, 1);
-        assert!(app.tabs[tab_idx].command_error.is_some());
+        assert!(app.tabs[tab_idx].stream.watch.is_none());
+        assert!(app.tabs[tab_idx].stream.retry.is_some());
+        assert_eq!(app.tabs[tab_idx].stream.retry.as_ref().unwrap().attempt, 1);
+        assert!(app.tabs[tab_idx].interaction.command_error.is_some());
     }
 
     #[tokio::test]
@@ -2436,8 +2468,8 @@ mod tests {
 
         // Simulate the state after retry #3 succeeded: connected=true, attempt=3.
         let (tx, state) = make_watch_state(b"");
-        tab.watch_state = Some(state);
-        tab.stream_retry = Some(StreamRetryState {
+        tab.stream.watch = Some(state);
+        tab.stream.retry = Some(StreamRetryState {
             attempt: 3,
             last_error: String::new(),
             retry_rx: None,
@@ -2451,7 +2483,7 @@ mod tests {
 
         app.advance_file_watches();
 
-        let retry = app.tabs[tab_idx].stream_retry.as_ref().unwrap();
+        let retry = app.tabs[tab_idx].stream.retry.as_ref().unwrap();
         assert!(!retry.connected, "should be back in retry mode");
         assert_eq!(
             retry.attempt, 4,
@@ -2466,11 +2498,11 @@ mod tests {
 
         let tab_idx = app.tabs.len() - 1;
         assert!(
-            app.tabs[tab_idx].stream_retry.is_some(),
+            app.tabs[tab_idx].stream.retry.is_some(),
             "stream_retry should be set immediately without blocking"
         );
-        assert_eq!(app.tabs[tab_idx].stream_retry.as_ref().unwrap().attempt, 1);
-        assert!(app.tabs[tab_idx].watch_state.is_none());
+        assert_eq!(app.tabs[tab_idx].stream.retry.as_ref().unwrap().attempt, 1);
+        assert!(app.tabs[tab_idx].stream.watch.is_none());
     }
 
     #[tokio::test]
@@ -2480,11 +2512,11 @@ mod tests {
 
         let tab_idx = app.tabs.len() - 1;
         assert!(
-            app.tabs[tab_idx].stream_retry.is_some(),
+            app.tabs[tab_idx].stream.retry.is_some(),
             "stream_retry should be set immediately without blocking"
         );
-        assert_eq!(app.tabs[tab_idx].stream_retry.as_ref().unwrap().attempt, 1);
-        assert!(app.tabs[tab_idx].watch_state.is_none());
+        assert_eq!(app.tabs[tab_idx].stream.retry.as_ref().unwrap().attempt, 1);
+        assert!(app.tabs[tab_idx].stream.watch.is_none());
     }
 
     // ── Journalctl JSON default hidden fields ─────────────────────────────────
@@ -2493,7 +2525,7 @@ mod tests {
     async fn test_journalctl_json_hidden_fields_applied_on_stdin() {
         // Simulate `journalctl --user -o json | logana`
         let mut app = make_app(&[]).await;
-        assert!(app.tabs[0].hidden_fields.is_empty());
+        assert!(app.tabs[0].display.hidden_fields.is_empty());
 
         let jctl_line = b"{\"__CURSOR\":\"s=abc\",\"__REALTIME_TIMESTAMP\":\"1699999999000000\",\"_BOOT_ID\":\"abc\",\"PRIORITY\":\"6\",\"_HOSTNAME\":\"myhost\",\"SYSLOG_IDENTIFIER\":\"sshd\",\"_PID\":\"1234\",\"_TRANSPORT\":\"journal\",\"MESSAGE\":\"Accepted password\"}\n";
         let mut data = Vec::new();
@@ -2505,15 +2537,15 @@ mod tests {
         app.update_stdin_tab(f.path()).await;
 
         assert!(
-            !app.tabs[0].hidden_fields.is_empty(),
+            !app.tabs[0].display.hidden_fields.is_empty(),
             "hidden_fields should be non-empty for journalctl JSON stdin"
         );
         assert!(
-            app.tabs[0].hidden_fields.contains("__CURSOR"),
+            app.tabs[0].display.hidden_fields.contains("__CURSOR"),
             "expected __CURSOR to be hidden"
         );
         assert!(
-            !app.tabs[0].hidden_fields.contains("MESSAGE"),
+            !app.tabs[0].display.hidden_fields.contains("MESSAGE"),
             "MESSAGE should remain visible"
         );
     }
@@ -2523,7 +2555,7 @@ mod tests {
         // Simulate startup: empty initial tab, then full journalctl JSON loaded
         // via ReplaceInitialTab (the normal file-open path).
         let mut app = make_app(&[]).await;
-        assert!(app.tabs[0].hidden_fields.is_empty());
+        assert!(app.tabs[0].display.hidden_fields.is_empty());
 
         let jctl_line = br#"{"__CURSOR":"s=abc","__REALTIME_TIMESTAMP":"1699999999000000","__MONOTONIC_TIMESTAMP":"123","_BOOT_ID":"abc","PRIORITY":"6","_HOSTNAME":"myhost","SYSLOG_IDENTIFIER":"sshd","_PID":"1234","_UID":"1000","_COMM":"sshd","_TRANSPORT":"journal","MESSAGE":"Accepted password"}"#;
         let mut data = Vec::new();
@@ -2554,23 +2586,23 @@ mod tests {
         app.advance_file_load().await;
 
         assert!(
-            !app.tabs[0].hidden_fields.is_empty(),
+            !app.tabs[0].display.hidden_fields.is_empty(),
             "hidden_fields should be non-empty for journalctl JSON"
         );
         assert!(
-            app.tabs[0].hidden_fields.contains("__CURSOR"),
+            app.tabs[0].display.hidden_fields.contains("__CURSOR"),
             "expected __CURSOR to be hidden"
         );
         assert!(
-            app.tabs[0].hidden_fields.contains("_TRANSPORT"),
+            app.tabs[0].display.hidden_fields.contains("_TRANSPORT"),
             "expected _TRANSPORT to be hidden"
         );
         assert!(
-            !app.tabs[0].hidden_fields.contains("MESSAGE"),
+            !app.tabs[0].display.hidden_fields.contains("MESSAGE"),
             "MESSAGE should remain visible"
         );
         assert!(
-            !app.tabs[0].hidden_fields.contains("_HOSTNAME"),
+            !app.tabs[0].display.hidden_fields.contains("_HOSTNAME"),
             "_HOSTNAME should remain visible"
         );
     }
@@ -2590,15 +2622,15 @@ mod tests {
         let tab_idx = app.tabs.len() - 1;
 
         assert!(
-            !app.tabs[tab_idx].hidden_fields.is_empty(),
+            !app.tabs[tab_idx].display.hidden_fields.is_empty(),
             "hidden_fields should be non-empty for journalctl JSON file"
         );
         assert!(
-            app.tabs[tab_idx].hidden_fields.contains("__CURSOR"),
+            app.tabs[tab_idx].display.hidden_fields.contains("__CURSOR"),
             "expected __CURSOR to be hidden"
         );
         assert!(
-            !app.tabs[tab_idx].hidden_fields.contains("MESSAGE"),
+            !app.tabs[tab_idx].display.hidden_fields.contains("MESSAGE"),
             "MESSAGE should remain visible"
         );
     }
@@ -2624,10 +2656,10 @@ mod tests {
 
         // After begin_file_load, preview has been loaded and detect_and_apply_format called.
         assert!(
-            !app.tabs[0].hidden_fields.is_empty(),
+            !app.tabs[0].display.hidden_fields.is_empty(),
             "hidden_fields should be set from preview"
         );
-        assert!(app.tabs[0].hidden_fields.contains("__CURSOR"));
+        assert!(app.tabs[0].display.hidden_fields.contains("__CURSOR"));
 
         // Poll until the background full-file load completes.
         for _ in 0..100 {
@@ -2641,11 +2673,11 @@ mod tests {
 
         // After full load, hidden_fields must still be set.
         assert!(
-            !app.tabs[0].hidden_fields.is_empty(),
+            !app.tabs[0].display.hidden_fields.is_empty(),
             "hidden_fields should survive the full load"
         );
-        assert!(app.tabs[0].hidden_fields.contains("__CURSOR"));
-        assert!(!app.tabs[0].hidden_fields.contains("MESSAGE"));
+        assert!(app.tabs[0].display.hidden_fields.contains("__CURSOR"));
+        assert!(!app.tabs[0].display.hidden_fields.contains("MESSAGE"));
 
         // The rendered text must NOT contain hidden field names.
         let text = app.tabs[0].get_display_text(0);
@@ -2673,19 +2705,20 @@ mod tests {
             .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
             .await;
         app.tabs[0].begin_filter_refresh();
-        assert!(app.tabs[0].filter_handle.is_some());
+        assert!(app.tabs[0].filter.handle.is_some());
 
         // Drain until completion via advance_filter_computation.
         loop {
             app.advance_filter_computation();
-            if app.tabs[0].filter_handle.is_none() {
+            if app.tabs[0].filter.handle.is_none() {
                 break;
             }
             tokio::task::yield_now().await;
         }
 
         let cached = app.tabs[0]
-            .cached_scan_result
+            .filter
+            .cached_scan
             .as_ref()
             .expect("cached_scan_result must be set after scan completes");
         assert_eq!(cached.line_count, 3);
@@ -2704,22 +2737,22 @@ mod tests {
 
         let mut app = make_app(&[]).await;
         let (tx, state) = make_watch_state(otlp_lines.as_bytes());
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
         app.advance_file_watches();
 
         let tab = &app.tabs[0];
         assert!(
-            tab.visible_indices.len() > 0,
+            tab.filter.visible_indices.len() > 0,
             "OTLP lines should be visible"
         );
         assert!(
-            tab.detected_format.is_some(),
+            tab.display.format.is_some(),
             "OTLP format should be detected"
         );
         assert_eq!(
-            tab.detected_format.as_deref().map(|p| p.name()),
+            tab.display.format.as_deref().map(|p| p.name()),
             Some("otlp"),
             "format should be OTLP not plain JSON"
         );
@@ -2742,7 +2775,7 @@ mod tests {
 
         let mut app = make_app(&[]).await;
         let state = super::watch_state_from_connection((rx, tmp));
-        app.tabs[0].watch_state = Some(state);
+        app.tabs[0].stream.watch = Some(state);
 
         let endpoint = format!("http://127.0.0.1:{port}");
         let mut client = LogsServiceClient::connect(endpoint).await.unwrap();
@@ -2779,7 +2812,7 @@ mod tests {
 
         let tab = &app.tabs[0];
         assert!(
-            tab.visible_indices.len() > 0,
+            tab.filter.visible_indices.len() > 0,
             "gRPC lines should be visible"
         );
     }

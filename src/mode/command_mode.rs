@@ -338,10 +338,10 @@ impl CommandMode {
 
         // show-field: complete with currently hidden fields (or all if none hidden)
         if let Some(partial) = Self::arg_partial(input, "show-field") {
-            let candidates: Vec<String> = if tab.hidden_fields.is_empty() {
+            let candidates: Vec<String> = if tab.display.hidden_fields.is_empty() {
                 tab.build_field_index().names
             } else {
-                let mut v: Vec<String> = tab.hidden_fields.iter().cloned().collect();
+                let mut v: Vec<String> = tab.display.hidden_fields.iter().cloned().collect();
                 v.sort();
                 v
             };
@@ -384,7 +384,7 @@ impl Mode for CommandMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = tab.keybindings.command.clone();
+        let kb = tab.interaction.keybindings.command.clone();
         if kb.confirm.matches(key, modifiers) {
             let cmd = self.input.trim().to_string();
             return (
@@ -393,8 +393,8 @@ impl Mode for CommandMode {
             );
         }
         if kb.cancel.matches(key, modifiers) {
-            tab.editing_filter_id = None;
-            if let Some(idx) = tab.filter_context.take() {
+            tab.filter.editing_filter_id = None;
+            if let Some(idx) = tab.filter.filter_context.take() {
                 return (
                     Box::new(FilterManagementMode {
                         selected_filter_index: idx,
@@ -430,7 +430,7 @@ impl Mode for CommandMode {
                 }
                 self.input.insert(self.cursor, c);
                 self.cursor += 1;
-                tab.command_error = None;
+                tab.interaction.command_error = None;
                 self.history_index = None;
             }
             KeyCode::Left => {
@@ -657,12 +657,12 @@ mod tests {
     #[tokio::test]
     async fn test_esc_with_filter_context_returns_filter_management_mode() {
         let mut tab = make_tab().await;
-        tab.filter_context = Some(2);
+        tab.filter.filter_context = Some(2);
         let mode = CommandMode::with_history("set-color --fg Red".to_string(), 18, vec![]);
         let (mode2, result) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
         // filter_context consumed
-        assert!(tab.filter_context.is_none());
+        assert!(tab.filter.filter_context.is_none());
         // returned to filter management mode, not normal mode
         assert!(matches!(
             mode2.render_state(),
@@ -1217,7 +1217,7 @@ mod tests {
     #[tokio::test]
     async fn test_show_field_autocomplete_suggests_hidden_only() {
         let mut tab = make_json_tab().await;
-        tab.hidden_fields.insert("level".to_string());
+        tab.display.hidden_fields.insert("level".to_string());
         let mode = CommandMode::with_history("show-field ".to_string(), 11, vec![]);
         let completions = mode.compute_completions(&tab);
         assert!(

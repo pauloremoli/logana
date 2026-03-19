@@ -58,12 +58,19 @@ flowchart TD
     CLI[CLI / main.rs] -->|creates| App[App]
     App -->|owns| Tab[TabState ×N]
     App -->|renders via| Renderer[Renderer]
-    Tab -->|owns| Mode[Mode]
+    Tab -->|owns| Scroll[ScrollState]
+    Tab -->|owns| Filter[FilterState]
+    Tab -->|owns| Search[SearchState]
+    Tab -->|owns| Cache[CacheState]
+    Tab -->|owns| Stream[StreamState]
+    Tab -->|owns| Display[DisplayConfig]
+    Tab -->|owns| Interaction[InteractionState]
     Tab -->|owns| FileReader[FileReader]
     Tab -->|owns| LogManager[LogManager]
-    Tab -->|owns| FM[FilterManager]
-    Tab -->|owns| Parser[LogFormatParser]
-    Tab -->|owns| Retry[StreamRetryState]
+    Filter -->|holds| FM[FilterManager]
+    Display -->|holds| Parser[LogFormatParser]
+    Stream -->|holds| Retry[StreamRetryState]
+    Interaction -->|holds| Mode[Mode]
     LogManager -->|queries| DB[(SQLite DB)]
     LogManager -->|builds| FM
     FileReader -->|reads| Files[(Log files / stdin)]
@@ -74,6 +81,17 @@ flowchart TD
     App -->|snapshot| MCP[MCP Server]
     MCP -->|McpCommand| App
 ```
+
+`TabState` is decomposed into focused sub-structs in `src/ui/tab_state/`:
+- `ScrollState` — scroll/viewport offsets and dimensions
+- `FilterState` — filter visibility, styles, handle, and `FilterManager`
+- `SearchState` — current search query and async handle
+- `CacheState` — parsed-line and render-line caches keyed by generation
+- `StreamState` — file-watch state, tail mode, retry state
+- `DisplayConfig` — display flags, format parser, hidden fields, field layout
+- `InteractionState` — active mode, keybindings, notifications, command history
+
+All `impl TabState` methods remain on `TabState` to avoid cross-cutting borrow complexity.
 
 ## MCP Server
 

@@ -28,11 +28,11 @@ impl Mode for SearchMode {
         if matches!(key, KeyCode::Tab | KeyCode::BackTab) {
             return (self, KeyResult::Ignored);
         }
-        let kb = tab.keybindings.search.clone();
+        let kb = tab.interaction.keybindings.search.clone();
         if kb.confirm.matches(key, modifiers) {
             // If a search for this exact pattern is already in flight, just
             // flip navigate=true so advance_search() scrolls on completion.
-            if let Some(ref mut h) = tab.search_handle
+            if let Some(ref mut h) = tab.search.handle
                 && h.pattern == self.input
             {
                 h.navigate = true;
@@ -41,18 +41,23 @@ impl Mode for SearchMode {
             // If results for this pattern are already complete, navigate now.
             let pattern_matches = tab
                 .search
+                .query
                 .get_pattern()
                 .map(|p| p == self.input.as_str())
                 .unwrap_or(false);
-            if tab.search_handle.is_none() && pattern_matches {
+            if tab.search.handle.is_none() && pattern_matches {
                 let forward = self.forward;
-                let current = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
-                tab.search.set_forward(forward);
-                tab.search.set_position_for_search(current, forward);
+                let current = tab
+                    .filter
+                    .visible_indices
+                    .get_opt(tab.scroll.scroll_offset)
+                    .unwrap_or(0);
+                tab.search.query.set_forward(forward);
+                tab.search.query.set_position_for_search(current, forward);
                 if forward {
-                    tab.search.next_match();
+                    tab.search.query.next_match();
                 } else {
-                    tab.search.previous_match();
+                    tab.search.query.previous_match();
                 }
                 tab.scroll_to_current_search_match();
                 return (Box::new(NormalMode::default()), KeyResult::Handled);
@@ -123,19 +128,23 @@ mod tests {
 
     /// Wait for any in-flight background search to complete and apply results.
     async fn drain_search(tab: &mut TabState) {
-        if let Some(mut h) = tab.search_handle.take() {
+        if let Some(mut h) = tab.search.handle.take() {
             let forward = h.forward;
             let navigate = h.navigate;
             while let Some(batch) = h.result_rx.recv().await {
-                tab.search.extend_results(batch);
+                tab.search.query.extend_results(batch);
             }
-            if navigate && !tab.search.get_results().is_empty() {
-                let current = tab.visible_indices.get_opt(tab.scroll_offset).unwrap_or(0);
-                tab.search.set_position_for_search(current, forward);
+            if navigate && !tab.search.query.get_results().is_empty() {
+                let current = tab
+                    .filter
+                    .visible_indices
+                    .get_opt(tab.scroll.scroll_offset)
+                    .unwrap_or(0);
+                tab.search.query.set_position_for_search(current, forward);
                 if forward {
-                    tab.search.next_match();
+                    tab.search.query.next_match();
                 } else {
-                    tab.search.previous_match();
+                    tab.search.query.previous_match();
                 }
                 tab.scroll_to_current_search_match();
             }
@@ -212,22 +221,23 @@ mod tests {
     #[tokio::test]
     async fn test_esc_returns_normal_mode_and_clears_search() {
         let mut tab = make_tab(&["error line"]).await;
-        tab.visible_indices = VisibleLines::Filtered(vec![0]);
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0]);
         // Simulate incremental search having run
-        let visible = tab.visible_indices.clone();
+        let visible = tab.filter.visible_indices.clone();
         let texts = tab.collect_display_texts(visible.iter());
         tab.search
+            .query
             .search("error", visible.iter(), |li| texts.get(&li).cloned())
             .unwrap();
-        assert!(tab.search.get_pattern().is_some());
+        assert!(tab.search.query.get_pattern().is_some());
         let (mode2, result) = press(forward_mode("error"), &mut tab, KeyCode::Esc).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(!matches!(
             mode2.render_state(),
             ModeRenderState::Search { .. }
         ));
-        assert!(tab.search.get_pattern().is_none());
-        assert!(tab.search.get_results().is_empty());
+        assert!(tab.search.query.get_pattern().is_none());
+        assert!(tab.search.query.get_results().is_empty());
     }
 
     #[tokio::test]
@@ -274,10 +284,10 @@ mod tests {
     #[tokio::test]
     async fn test_enter_scrolls_to_matching_line() {
         let mut tab = make_tab(&["line0", "line1", "error here", "line3"]).await;
-        tab.visible_height = 10;
+        tab.scroll.visible_height = 10;
         press(forward_mode("error"), &mut tab, KeyCode::Enter).await;
         drain_search(&mut tab).await;
-        assert_eq!(tab.scroll_offset, 2);
+        assert_eq!(tab.scroll.scroll_offset, 2);
     }
 
     #[test]
@@ -308,30 +318,30 @@ mod tests {
     async fn test_typing_char_updates_search_results() {
         // Use plain text lines that won't trigger the structured-log format parser.
         let mut tab = make_tab(&["needle in haystack", "nothing here", "needle again"]).await;
-        tab.visible_indices = VisibleLines::Filtered(vec![0, 1, 2]);
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0, 1, 2]);
         press(forward_mode("needl"), &mut tab, KeyCode::Char('e')).await;
         drain_search(&mut tab).await;
-        assert_eq!(tab.search.get_results().len(), 2);
+        assert_eq!(tab.search.query.get_results().len(), 2);
     }
 
     #[tokio::test]
     async fn test_backspace_updates_search_results() {
         // Use plain text lines that won't trigger the structured-log format parser.
         let mut tab = make_tab(&["needle in haystack", "nothing here", "needle again"]).await;
-        tab.visible_indices = VisibleLines::Filtered(vec![0, 1, 2]);
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0, 1, 2]);
         // Start with "needles" (no match), backspace to "needle" (2 matches)
         press(forward_mode("needles"), &mut tab, KeyCode::Backspace).await;
         drain_search(&mut tab).await;
-        assert_eq!(tab.search.get_results().len(), 2);
+        assert_eq!(tab.search.query.get_results().len(), 2);
     }
 
     #[tokio::test]
     async fn test_backspace_to_empty_clears_results() {
         let mut tab = make_tab(&["error: disk full"]).await;
-        tab.visible_indices = VisibleLines::Filtered(vec![0]);
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0]);
         press(forward_mode("e"), &mut tab, KeyCode::Backspace).await;
-        assert!(tab.search.get_results().is_empty());
-        assert!(tab.search.get_pattern().is_none());
+        assert!(tab.search.query.get_results().is_empty());
+        assert!(tab.search.query.get_pattern().is_none());
     }
 
     #[test]

@@ -49,23 +49,23 @@ impl Mode for SelectFieldsMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.keybindings;
+        let kb = &tab.interaction.keybindings;
         if kb.select_fields.apply.matches(key, modifiers) {
             let all_ordered: Vec<String> = self.fields.iter().map(|(n, _)| n.clone()).collect();
-            tab.field_layout.columns = Some(all_ordered);
+            tab.display.field_layout.columns = Some(all_ordered);
             for (name, enabled) in &self.fields {
                 if *enabled {
-                    tab.hidden_fields.remove(name.as_str());
+                    tab.display.hidden_fields.remove(name.as_str());
                 } else {
-                    tab.hidden_fields.insert(name.clone());
+                    tab.display.hidden_fields.insert(name.clone());
                 }
             }
             tab.invalidate_parse_cache();
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
         if kb.select_fields.cancel.matches(key, modifiers) {
-            tab.field_layout = std::mem::take(&mut self.original_layout);
-            tab.hidden_fields = std::mem::take(&mut self.original_hidden_fields);
+            tab.display.field_layout = std::mem::take(&mut self.original_layout);
+            tab.display.hidden_fields = std::mem::take(&mut self.original_hidden_fields);
             tab.invalidate_parse_cache();
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
@@ -288,16 +288,16 @@ mod tests {
             ModeRenderState::SelectFields { .. }
         )); // transitioned to NormalMode
         assert_eq!(
-            tab.field_layout.columns,
+            tab.display.field_layout.columns,
             Some(vec![
                 "timestamp".to_string(),
                 "level".to_string(),
                 "message".to_string()
             ])
         );
-        assert!(tab.hidden_fields.contains("level"));
-        assert!(!tab.hidden_fields.contains("timestamp"));
-        assert!(!tab.hidden_fields.contains("message"));
+        assert!(tab.display.hidden_fields.contains("level"));
+        assert!(!tab.display.hidden_fields.contains("timestamp"));
+        assert!(!tab.display.hidden_fields.contains("message"));
     }
 
     #[tokio::test]
@@ -307,10 +307,10 @@ mod tests {
         let mode = SelectFieldsMode::new(fields, FieldLayout::default(), HashSet::new());
         let (_, _) = press(mode, &mut tab, KeyCode::Enter).await;
         assert_eq!(
-            tab.field_layout.columns,
+            tab.display.field_layout.columns,
             Some(vec!["timestamp".to_string(), "level".to_string()])
         );
-        assert!(tab.hidden_fields.is_empty());
+        assert!(tab.display.hidden_fields.is_empty());
     }
 
     #[tokio::test]
@@ -324,15 +324,15 @@ mod tests {
         let mode =
             SelectFieldsMode::new(sample_fields(), original.clone(), original_hidden.clone());
         // Modify tab state to verify cancel restores both
-        tab.field_layout.columns = Some(vec!["message".to_string()]);
-        tab.hidden_fields.insert("level".to_string());
+        tab.display.field_layout.columns = Some(vec!["message".to_string()]);
+        tab.display.hidden_fields.insert("level".to_string());
         let (mode2, _) = press(mode, &mut tab, KeyCode::Esc).await;
         assert!(!matches!(
             mode2.render_state(),
             ModeRenderState::SelectFields { .. }
         )); // NormalMode
-        assert_eq!(tab.field_layout.columns, original.columns);
-        assert_eq!(tab.hidden_fields, original_hidden);
+        assert_eq!(tab.display.field_layout.columns, original.columns);
+        assert_eq!(tab.display.hidden_fields, original_hidden);
     }
 
     #[tokio::test]
@@ -443,15 +443,15 @@ mod tests {
         let mode = SelectFieldsMode::new(fields, FieldLayout::default(), HashSet::new());
         let (_, _) = press(mode, &mut tab, KeyCode::Enter).await;
         assert_eq!(
-            tab.field_layout.columns,
+            tab.display.field_layout.columns,
             Some(vec![
                 "level".to_string(),
                 "timestamp".to_string(),
                 "message".to_string()
             ])
         );
-        assert!(tab.hidden_fields.contains("message"));
-        assert!(!tab.hidden_fields.contains("level"));
+        assert!(tab.display.hidden_fields.contains("message"));
+        assert!(!tab.display.hidden_fields.contains("level"));
     }
 
     #[tokio::test]

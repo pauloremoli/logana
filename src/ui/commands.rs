@@ -33,7 +33,7 @@ fn resolve_hide_field_arg(tab: &mut crate::ui::TabState, arg: &str) -> Result<St
         let visible: Vec<String> = tab
             .collect_field_names()
             .into_iter()
-            .filter(|n| !tab.hidden_fields.contains(n.as_str()))
+            .filter(|n| !tab.display.hidden_fields.contains(n.as_str()))
             .collect();
         visible
             .into_iter()
@@ -78,11 +78,15 @@ impl App {
                 // Safe when: not editing, filtering enabled, not marks-only, and no
                 // pre-existing enabled include filters (current visible == all minus excludes).
                 // Field filters always require a full refresh.
-                let can_incremental =
-                    !field && self.tabs[self.active_tab].editing_filter_id.is_none() && {
+                let can_incremental = !field
+                    && self.tabs[self.active_tab]
+                        .filter
+                        .editing_filter_id
+                        .is_none()
+                    && {
                         let tab = &self.tabs[self.active_tab];
-                        tab.filtering_enabled
-                            && !tab.show_marks_only
+                        tab.filter.enabled
+                            && !tab.filter.show_marks_only
                             && !tab.log_manager.get_filters().iter().any(|f| {
                                 f.enabled
                                     && f.filter_type == FilterType::Include
@@ -91,7 +95,7 @@ impl App {
                             })
                     };
 
-                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
+                if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
                     self.tabs[self.active_tab]
                         .log_manager
                         .update_filter(
@@ -114,7 +118,7 @@ impl App {
                             !line_mode,
                         )
                         .await;
-                    self.tabs[self.active_tab].scroll_offset = 0;
+                    self.tabs[self.active_tab].scroll.scroll_offset = 0;
                     // Incremental include — only re-check visible lines instead of
                     // scanning the entire file again via refresh_visible/compute_visible.
                     if was_new && can_incremental {
@@ -124,7 +128,7 @@ impl App {
                     }
                     return Ok(false);
                 }
-                self.tabs[self.active_tab].scroll_offset = 0;
+                self.tabs[self.active_tab].scroll.scroll_offset = 0;
                 self.tabs[self.active_tab].begin_filter_refresh();
             }
             Some(Commands::Exclude { pattern, field }) => {
@@ -136,7 +140,7 @@ impl App {
                     pattern.clone()
                 };
 
-                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
+                if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
                     self.tabs[self.active_tab]
                         .log_manager
                         .update_filter(
@@ -148,7 +152,7 @@ impl App {
                             true,
                         )
                         .await;
-                    self.tabs[self.active_tab].scroll_offset = 0;
+                    self.tabs[self.active_tab].scroll.scroll_offset = 0;
                     self.tabs[self.active_tab].begin_filter_refresh();
                 } else {
                     let was_new = self.tabs[self.active_tab]
@@ -161,7 +165,7 @@ impl App {
                             true,
                         )
                         .await;
-                    self.tabs[self.active_tab].scroll_offset = 0;
+                    self.tabs[self.active_tab].scroll.scroll_offset = 0;
                     if was_new {
                         if field {
                             // Field filters require a full refresh.
@@ -175,7 +179,10 @@ impl App {
                 }
             }
             Some(Commands::SetColor { fg, bg, line_mode }) => {
-                let selected_filter_index = self.tabs[self.active_tab].filter_context.unwrap_or(0);
+                let selected_filter_index = self.tabs[self.active_tab]
+                    .filter
+                    .filter_context
+                    .unwrap_or(0);
                 let filters = self.tabs[self.active_tab].log_manager.get_filters();
                 if let Some(filter) = filters.get(selected_filter_index)
                     && filter.filter_type == FilterType::Include
@@ -243,7 +250,7 @@ impl App {
                 let file = std::fs::File::create(&expanded)
                     .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
                 let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
-                for file_idx in tab.visible_indices.iter() {
+                for file_idx in tab.filter.visible_indices.iter() {
                     writer
                         .write_all(tab.file_reader.get_line(file_idx))
                         .and_then(|_| writer.write_all(b"\n"))
@@ -272,14 +279,14 @@ impl App {
                     comments: tab.log_manager.get_comments(),
                     marked_indices: tab.log_manager.get_marked_indices(),
                     file_reader: &tab.file_reader,
-                    parser: if tab.raw_mode {
+                    parser: if tab.display.raw_mode {
                         None
                     } else {
-                        tab.detected_format.as_deref()
+                        tab.display.format.as_deref()
                     },
-                    field_layout: &tab.field_layout,
-                    hidden_fields: &tab.hidden_fields,
-                    show_keys: tab.show_keys,
+                    field_layout: &tab.display.field_layout,
+                    hidden_fields: &tab.display.hidden_fields,
+                    show_keys: tab.display.show_keys,
                 };
                 let output = crate::export::render_export(&tpl, &data);
                 let file =
@@ -309,17 +316,17 @@ impl App {
                 }
             }
             Some(Commands::Wrap) => {
-                self.tabs[self.active_tab].wrap = !self.tabs[self.active_tab].wrap;
+                self.tabs[self.active_tab].display.wrap = !self.tabs[self.active_tab].display.wrap;
             }
             Some(Commands::LineNumbers) => {
-                self.tabs[self.active_tab].show_line_numbers =
-                    !self.tabs[self.active_tab].show_line_numbers;
+                self.tabs[self.active_tab].display.show_line_numbers =
+                    !self.tabs[self.active_tab].display.show_line_numbers;
             }
             Some(Commands::LevelColors) => {
                 use crate::mode::value_colors_mode::{
                     ValueColorEntry, ValueColorGroup as VCGroup, ValueColorsMode,
                 };
-                let disabled = &self.tabs[self.active_tab].level_colors_disabled;
+                let disabled = &self.tabs[self.active_tab].display.level_colors_disabled;
                 let levels: Vec<(&str, &str, ratatui::style::Color)> = vec![
                     ("trace", "TRACE", self.theme.trace_fg),
                     ("debug", "DEBUG", self.theme.debug_fg),
@@ -342,7 +349,7 @@ impl App {
                         .collect(),
                 }];
                 let original_disabled = disabled.clone();
-                self.tabs[self.active_tab].mode =
+                self.tabs[self.active_tab].interaction.mode =
                     Box::new(ValueColorsMode::new_level_colors(groups, original_disabled));
                 return Ok(true);
             }
@@ -351,8 +358,8 @@ impl App {
                 self.theme = Theme::from_file(&theme_filename)
                     .map_err(|e| format!("Failed to load theme '{}': {}", theme_name, e))?;
                 for tab in &mut self.tabs {
-                    tab.render_cache_gen = tab.render_cache_gen.wrapping_add(1);
-                    tab.render_line_cache.clear();
+                    tab.cache.render_gen = tab.cache.render_gen.wrapping_add(1);
+                    tab.cache.render_line.clear();
                 }
             }
             Some(Commands::Open { path }) => {
@@ -362,7 +369,7 @@ impl App {
                     if files.is_empty() {
                         return Err(format!("'{}' contains no files.", path));
                     }
-                    self.tabs[self.active_tab].mode =
+                    self.tabs[self.active_tab].interaction.mode =
                         Box::new(crate::mode::app_mode::ConfirmOpenDirMode { dir: path, files });
                     return Ok(true);
                 }
@@ -397,23 +404,23 @@ impl App {
             }
             Some(Commands::Filtering) => {
                 let tab = &mut self.tabs[self.active_tab];
-                tab.filtering_enabled = !tab.filtering_enabled;
+                tab.filter.enabled = !tab.filter.enabled;
                 tab.begin_filter_refresh();
             }
             Some(Commands::HideField { field }) => {
                 let resolved = resolve_hide_field_arg(&mut self.tabs[self.active_tab], &field)?;
                 let tab = &mut self.tabs[self.active_tab];
-                tab.hidden_fields.insert(resolved);
+                tab.display.hidden_fields.insert(resolved);
                 tab.invalidate_parse_cache();
             }
             Some(Commands::ShowField { field }) => {
                 let tab = &mut self.tabs[self.active_tab];
-                tab.hidden_fields.remove(&field);
+                tab.display.hidden_fields.remove(&field);
                 tab.invalidate_parse_cache();
             }
             Some(Commands::ShowAllFields) => {
                 let tab = &mut self.tabs[self.active_tab];
-                tab.hidden_fields.clear();
+                tab.display.hidden_fields.clear();
                 tab.invalidate_parse_cache();
             }
             Some(Commands::SelectFields) => {
@@ -422,7 +429,7 @@ impl App {
                 if all_names.is_empty() {
                     return Err("No structured fields found in visible lines".to_string());
                 }
-                let saved_order = &tab.field_layout.columns;
+                let saved_order = &tab.display.field_layout.columns;
                 // Restore the previous full ordering if available, then append
                 // any newly-discovered fields. Visibility comes from hidden_fields.
                 let fields: Vec<(String, bool)> = match saved_order {
@@ -430,14 +437,14 @@ impl App {
                         let mut ordered: Vec<(String, bool)> = order
                             .iter()
                             .filter(|n| all_names.contains(n))
-                            .map(|n| (n.clone(), !tab.hidden_fields.contains(n.as_str())))
+                            .map(|n| (n.clone(), !tab.display.hidden_fields.contains(n.as_str())))
                             .collect();
                         // Append fields not yet in the saved order.
                         for name in &all_names {
                             if !order.contains(name) {
                                 ordered.push((
                                     name.clone(),
-                                    !tab.hidden_fields.contains(name.as_str()),
+                                    !tab.display.hidden_fields.contains(name.as_str()),
                                 ));
                             }
                         }
@@ -446,18 +453,19 @@ impl App {
                     None => all_names
                         .into_iter()
                         .map(|n| {
-                            let enabled = !tab.hidden_fields.contains(n.as_str());
+                            let enabled = !tab.display.hidden_fields.contains(n.as_str());
                             (n, enabled)
                         })
                         .collect(),
                 };
-                let original_layout = tab.field_layout.clone();
-                let original_hidden_fields = tab.hidden_fields.clone();
-                tab.mode = Box::new(crate::mode::select_fields_mode::SelectFieldsMode::new(
-                    fields,
-                    original_layout,
-                    original_hidden_fields,
-                ));
+                let original_layout = tab.display.field_layout.clone();
+                let original_hidden_fields = tab.display.hidden_fields.clone();
+                tab.interaction.mode =
+                    Box::new(crate::mode::select_fields_mode::SelectFieldsMode::new(
+                        fields,
+                        original_layout,
+                        original_hidden_fields,
+                    ));
                 return Ok(true);
             }
             Some(Commands::Docker) => {
@@ -489,13 +497,13 @@ impl App {
                             })
                             .collect();
                         if containers.is_empty() {
-                            self.tabs[self.active_tab].mode = Box::new(
+                            self.tabs[self.active_tab].interaction.mode = Box::new(
                                 crate::mode::docker_select_mode::DockerSelectMode::with_error(
                                     "No running containers found".to_string(),
                                 ),
                             );
                         } else {
-                            self.tabs[self.active_tab].mode = Box::new(
+                            self.tabs[self.active_tab].interaction.mode = Box::new(
                                 crate::mode::docker_select_mode::DockerSelectMode::new(containers),
                             );
                         }
@@ -503,7 +511,7 @@ impl App {
                     }
                     Ok(out) => {
                         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                        self.tabs[self.active_tab].mode = Box::new(
+                        self.tabs[self.active_tab].interaction.mode = Box::new(
                             crate::mode::docker_select_mode::DockerSelectMode::with_error(
                                 if stderr.is_empty() {
                                     "docker ps failed".to_string()
@@ -515,7 +523,7 @@ impl App {
                         return Ok(true);
                     }
                     Err(e) => {
-                        self.tabs[self.active_tab].mode = Box::new(
+                        self.tabs[self.active_tab].interaction.mode = Box::new(
                             crate::mode::docker_select_mode::DockerSelectMode::with_error(format!(
                                 "Failed to run docker: {}",
                                 e
@@ -549,7 +557,7 @@ impl App {
                     })
                     .collect();
                 let original_disabled = disabled.clone();
-                self.tabs[self.active_tab].mode = Box::new(
+                self.tabs[self.active_tab].interaction.mode = Box::new(
                     crate::mode::value_colors_mode::ValueColorsMode::new(groups, original_disabled),
                 );
                 return Ok(true);
@@ -561,7 +569,7 @@ impl App {
                 line_mode,
             }) => {
                 let tab = &self.tabs[self.active_tab];
-                if tab.detected_format.is_none() {
+                if tab.display.format.is_none() {
                     return Err(
                         "No log format detected — date filter requires structured timestamps"
                             .to_string(),
@@ -572,7 +580,7 @@ impl App {
                 crate::date_filter::parse_date_filter(&expression)
                     .map_err(|e| format!("Invalid date filter: {}", e))?;
                 let pattern = format!("{}{}", crate::date_filter::DATE_PREFIX, expression);
-                if let Some(old_id) = self.tabs[self.active_tab].editing_filter_id.take() {
+                if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
                     self.tabs[self.active_tab]
                         .log_manager
                         .update_filter(
@@ -600,36 +608,36 @@ impl App {
             }
             Some(Commands::Tail) => {
                 let tab = &mut self.tabs[self.active_tab];
-                tab.tail_mode = !tab.tail_mode;
-                if tab.tail_mode {
-                    let new_count = tab.visible_indices.len();
-                    tab.scroll_offset = new_count.saturating_sub(1);
+                tab.stream.tail_mode = !tab.stream.tail_mode;
+                if tab.stream.tail_mode {
+                    let new_count = tab.filter.visible_indices.len();
+                    tab.scroll.scroll_offset = new_count.saturating_sub(1);
                 }
             }
             Some(Commands::ShowKeys) => {
                 let tab = &mut self.tabs[self.active_tab];
-                tab.show_keys = true;
+                tab.display.show_keys = true;
                 tab.invalidate_parse_cache();
             }
             Some(Commands::HideKeys) => {
                 let tab = &mut self.tabs[self.active_tab];
-                tab.show_keys = false;
+                tab.display.show_keys = false;
                 tab.invalidate_parse_cache();
             }
             Some(Commands::Raw) => {
                 let tab = &mut self.tabs[self.active_tab];
-                tab.raw_mode = !tab.raw_mode;
+                tab.display.raw_mode = !tab.display.raw_mode;
                 tab.invalidate_parse_cache();
             }
             Some(Commands::Stop) => {
                 self.stdin_load_state = None;
-                self.tabs[self.active_tab].watch_state = None;
+                self.tabs[self.active_tab].stream.watch = None;
             }
             Some(Commands::Pause) => {
-                self.tabs[self.active_tab].paused = true;
+                self.tabs[self.active_tab].stream.paused = true;
             }
             Some(Commands::Resume) => {
-                self.tabs[self.active_tab].paused = false;
+                self.tabs[self.active_tab].stream.paused = false;
             }
             Some(Commands::Reset) => {
                 self.db
@@ -646,17 +654,17 @@ impl App {
                 self.restore_file_policy = crate::config::RestoreSessionPolicy::Ask;
 
                 for tab in &mut self.tabs {
-                    tab.show_mode_bar = true;
-                    tab.show_borders = false;
-                    tab.show_line_numbers = true;
-                    tab.show_sidebar = true;
-                    tab.wrap = false;
+                    tab.display.show_mode_bar = true;
+                    tab.display.show_borders = false;
+                    tab.display.show_line_numbers = true;
+                    tab.display.show_sidebar = true;
+                    tab.display.wrap = false;
                     tab.reset_tab_state();
                 }
             }
             Some(Commands::Dlt) => {
                 let devices = self.dlt_devices.clone();
-                self.tabs[self.active_tab].mode =
+                self.tabs[self.active_tab].interaction.mode =
                     Box::new(crate::mode::dlt_select_mode::DltSelectMode::new(devices));
                 return Ok(true);
             }
@@ -674,21 +682,23 @@ impl App {
                 let p = self.mcp_port.unwrap_or(port);
                 match self.start_mcp(p).await {
                     Ok(()) => {
-                        self.tabs[self.active_tab].notification =
+                        self.tabs[self.active_tab].interaction.notification =
                             Some(format!("MCP server listening on port {p}"));
-                        self.tabs[self.active_tab].notification_set_at =
+                        self.tabs[self.active_tab].interaction.notification_set_at =
                             Some(std::time::Instant::now());
                     }
                     Err(e) => {
-                        self.tabs[self.active_tab].command_error =
+                        self.tabs[self.active_tab].interaction.command_error =
                             Some(format!("Failed to start MCP server on port {p}: {e}"));
                     }
                 }
             }
             Some(Commands::DisableMcp) => {
                 self.stop_mcp();
-                self.tabs[self.active_tab].notification = Some("MCP server stopped".to_string());
-                self.tabs[self.active_tab].notification_set_at = Some(std::time::Instant::now());
+                self.tabs[self.active_tab].interaction.notification =
+                    Some("MCP server stopped".to_string());
+                self.tabs[self.active_tab].interaction.notification_set_at =
+                    Some(std::time::Instant::now());
             }
             None => {}
         }
@@ -711,7 +721,7 @@ mod tests {
 
     async fn await_filter_computations(app: &mut App) {
         for tab in &mut app.tabs {
-            if let Some(mut h) = tab.filter_handle.take() {
+            if let Some(mut h) = tab.filter.handle.take() {
                 let mut all_visible = Vec::new();
                 let mut final_counts = None;
                 while let Some(chunk) = h.result_rx.recv().await {
@@ -721,14 +731,17 @@ mod tests {
                         break;
                     }
                 }
-                tab.visible_indices = VisibleLines::Filtered(all_visible);
+                tab.filter.visible_indices = VisibleLines::Filtered(all_visible);
                 if let Some(counts) = final_counts {
-                    tab.filter_match_counts = counts;
+                    tab.filter.match_counts = counts;
                 }
-                if tab.visible_indices.is_empty() {
-                    tab.scroll_offset = 0;
+                if tab.filter.visible_indices.is_empty() {
+                    tab.scroll.scroll_offset = 0;
                 } else {
-                    tab.scroll_offset = tab.scroll_offset.min(tab.visible_indices.len() - 1);
+                    tab.scroll.scroll_offset = tab
+                        .scroll
+                        .scroll_offset
+                        .min(tab.filter.visible_indices.len() - 1);
                 }
             }
         }
@@ -758,27 +771,27 @@ mod tests {
     #[tokio::test]
     async fn test_tail_command_toggles_on() {
         let mut app = make_app(&["line1", "line2", "line3"]).await;
-        assert!(!app.tab().tail_mode);
+        assert!(!app.tab().stream.tail_mode);
         app.run_command("tail").await.unwrap();
-        assert!(app.tab().tail_mode);
+        assert!(app.tab().stream.tail_mode);
     }
 
     #[tokio::test]
     async fn test_tail_command_toggles_off() {
         let mut app = make_app(&["line1", "line2"]).await;
         app.run_command("tail").await.unwrap();
-        assert!(app.tab().tail_mode);
+        assert!(app.tab().stream.tail_mode);
         app.run_command("tail").await.unwrap();
-        assert!(!app.tab().tail_mode);
+        assert!(!app.tab().stream.tail_mode);
     }
 
     #[tokio::test]
     async fn test_tail_on_jumps_to_last_line() {
         let mut app = make_app(&["l1", "l2", "l3", "l4", "l5"]).await;
-        app.tabs[0].scroll_offset = 0;
+        app.tabs[0].scroll.scroll_offset = 0;
         app.run_command("tail").await.unwrap();
         // Enabling tail should immediately jump to the last visible line.
-        assert_eq!(app.tab().scroll_offset, 4);
+        assert_eq!(app.tab().scroll.scroll_offset, 4);
     }
 
     #[tokio::test]
@@ -786,21 +799,21 @@ mod tests {
         let mut app = make_app(&["l1", "l2", "l3", "l4", "l5"]).await;
         // Enable then disable tail; the disabling should not move the cursor.
         app.run_command("tail").await.unwrap();
-        assert_eq!(app.tab().scroll_offset, 4);
-        app.tabs[0].scroll_offset = 2;
+        assert_eq!(app.tab().scroll.scroll_offset, 4);
+        app.tabs[0].scroll.scroll_offset = 2;
         app.run_command("tail").await.unwrap();
-        assert!(!app.tab().tail_mode);
-        assert_eq!(app.tab().scroll_offset, 2);
+        assert!(!app.tab().stream.tail_mode);
+        assert_eq!(app.tab().scroll.scroll_offset, 2);
     }
 
     #[tokio::test]
     async fn test_line_numbers_toggle() {
         let mut app = make_app(&["line1", "line2"]).await;
-        assert!(app.tab().show_line_numbers);
+        assert!(app.tab().display.show_line_numbers);
         app.run_command("line-numbers").await.unwrap();
-        assert!(!app.tab().show_line_numbers);
+        assert!(!app.tab().display.show_line_numbers);
         app.run_command("line-numbers").await.unwrap();
-        assert!(app.tab().show_line_numbers);
+        assert!(app.tab().display.show_line_numbers);
     }
 
     #[tokio::test]
@@ -811,11 +824,11 @@ mod tests {
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
-        assert_eq!(app.tabs[0].level_colors_disabled, default_disabled);
+        assert_eq!(app.tabs[0].display.level_colors_disabled, default_disabled);
         let result = app.run_command("level-colors").await.unwrap();
         assert!(result);
         assert!(matches!(
-            app.tabs[0].mode.render_state(),
+            app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::LevelColors { .. }
         ));
     }
@@ -836,7 +849,7 @@ mod tests {
         let file_reader2 = FileReader::from_bytes(data2);
         let log_manager2 = LogManager::new(app.db.clone(), None).await;
         let mut tab2 = crate::ui::TabState::new(file_reader2, log_manager2, "tab2".to_string());
-        tab2.keybindings = app.keybindings.clone();
+        tab2.interaction.keybindings = app.keybindings.clone();
         app.tabs.push(tab2);
         assert_eq!(app.tabs.len(), 2);
 
@@ -906,7 +919,7 @@ mod tests {
         let result = app.run_command("select-fields").await.unwrap();
         assert!(result, "select-fields should return true (mode was set)");
         assert!(matches!(
-            app.tabs[0].mode.render_state(),
+            app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::SelectFields { .. }
         ));
     }
@@ -923,11 +936,17 @@ mod tests {
     async fn test_select_fields_saved_order() {
         let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
         // Set a saved order on the field_layout (full ordered list) and hide level
-        app.tabs[0].field_layout.columns = Some(vec!["message".to_string(), "level".to_string()]);
-        app.tabs[0].hidden_fields.insert("level".to_string());
+        app.tabs[0].display.field_layout.columns =
+            Some(vec!["message".to_string(), "level".to_string()]);
+        app.tabs[0]
+            .display
+            .hidden_fields
+            .insert("level".to_string());
         let result = app.run_command("select-fields").await.unwrap();
         assert!(result);
-        if let ModeRenderState::SelectFields { fields, .. } = app.tabs[0].mode.render_state() {
+        if let ModeRenderState::SelectFields { fields, .. } =
+            app.tabs[0].interaction.mode.render_state()
+        {
             // "message" should be first and enabled, "level" second and disabled
             assert_eq!(fields[0].0, "message");
             assert!(fields[0].1);
@@ -944,7 +963,7 @@ mod tests {
         let result = app.run_command("value-colors").await.unwrap();
         assert!(result);
         assert!(matches!(
-            app.tabs[0].mode.render_state(),
+            app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::ValueColors { .. }
         ));
     }
@@ -969,7 +988,7 @@ mod tests {
     async fn test_set_color_on_exclude_filter() {
         let mut app = make_app(&["INFO a", "WARN b"]).await;
         app.execute_command_str("exclude WARN".to_string()).await;
-        app.tabs[0].filter_context = Some(0);
+        app.tabs[0].filter.filter_context = Some(0);
         // set-color on an exclude filter should be a no-op (no crash)
         let result = app.run_command("set-color --fg red").await;
         assert!(result.is_ok());
@@ -979,7 +998,7 @@ mod tests {
     async fn test_set_color_with_line_flag() {
         let mut app = make_app(&["INFO a", "WARN b"]).await;
         app.execute_command_str("filter INFO".to_string()).await;
-        app.tabs[0].filter_context = Some(0);
+        app.tabs[0].filter.filter_context = Some(0);
         app.run_command("set-color --fg green -l").await.unwrap();
         let cc = app.tabs[0].log_manager.get_filters()[0]
             .color_config
@@ -994,7 +1013,7 @@ mod tests {
         let mut app = make_app(&["error line", "info line", "error again"]).await;
         // No existing include filters → incremental path used; only "error" lines remain.
         app.run_command("filter error").await.unwrap();
-        assert_eq!(app.tab().visible_indices.len(), 2);
+        assert_eq!(app.tab().filter.visible_indices.len(), 2);
     }
 
     #[tokio::test]
@@ -1002,11 +1021,11 @@ mod tests {
         // Second include filter expands visible set → must fall back to full refresh.
         let mut app = make_app(&["error line", "info line", "error again"]).await;
         app.run_command("filter error").await.unwrap();
-        assert_eq!(app.tab().visible_indices.len(), 2);
+        assert_eq!(app.tab().filter.visible_indices.len(), 2);
         // Adding a second include filter expands the visible set back.
         app.run_command("filter info").await.unwrap();
         await_filter_computations(&mut app).await;
-        assert_eq!(app.tab().visible_indices.len(), 3);
+        assert_eq!(app.tab().filter.visible_indices.len(), 3);
     }
 
     #[tokio::test]
@@ -1014,7 +1033,7 @@ mod tests {
         let mut app = make_app(&["INFO a", "WARN b"]).await;
         app.execute_command_str("filter INFO".to_string()).await;
         let old_id = app.tabs[0].log_manager.get_filters()[0].id;
-        app.tabs[0].editing_filter_id = Some(old_id);
+        app.tabs[0].filter.editing_filter_id = Some(old_id);
 
         app.run_command("filter WARN").await.unwrap();
         let filters = app.tabs[0].log_manager.get_filters();
@@ -1027,7 +1046,7 @@ mod tests {
         let mut app = make_app(&["INFO a", "WARN b"]).await;
         app.execute_command_str("filter INFO".to_string()).await;
         let old_id = app.tabs[0].log_manager.get_filters()[0].id;
-        app.tabs[0].editing_filter_id = Some(old_id);
+        app.tabs[0].filter.editing_filter_id = Some(old_id);
 
         app.run_command("exclude WARN").await.unwrap();
         let filters = app.tabs[0].log_manager.get_filters();
@@ -1046,7 +1065,7 @@ mod tests {
         let filters = app.tabs[0].log_manager.get_filters();
         let middle_id = filters[1].id;
         assert_eq!(filters[1].pattern, "WARN");
-        app.tabs[0].editing_filter_id = Some(middle_id);
+        app.tabs[0].filter.editing_filter_id = Some(middle_id);
 
         app.run_command("filter DEBUG").await.unwrap();
 
@@ -1080,35 +1099,35 @@ mod tests {
     #[tokio::test]
     async fn test_show_keys_command() {
         let mut app = make_app(&["line"]).await;
-        assert!(!app.tab().show_keys);
+        assert!(!app.tab().display.show_keys);
         app.run_command("show-keys").await.unwrap();
-        assert!(app.tab().show_keys);
+        assert!(app.tab().display.show_keys);
     }
 
     #[tokio::test]
     async fn test_hide_keys_command() {
         let mut app = make_app(&["line"]).await;
-        app.tabs[0].show_keys = true;
+        app.tabs[0].display.show_keys = true;
         app.run_command("hide-keys").await.unwrap();
-        assert!(!app.tab().show_keys);
+        assert!(!app.tab().display.show_keys);
     }
 
     #[tokio::test]
     async fn test_raw_toggle() {
         let mut app = make_app(&["line"]).await;
-        assert!(!app.tab().raw_mode);
+        assert!(!app.tab().display.raw_mode);
         app.run_command("raw").await.unwrap();
-        assert!(app.tab().raw_mode);
+        assert!(app.tab().display.raw_mode);
         app.run_command("raw").await.unwrap();
-        assert!(!app.tab().raw_mode);
+        assert!(!app.tab().display.raw_mode);
     }
 
     #[tokio::test]
     async fn test_wrap_toggle() {
         let mut app = make_app(&["line"]).await;
-        assert!(!app.tab().wrap);
+        assert!(!app.tab().display.wrap);
         app.run_command("wrap").await.unwrap();
-        assert!(app.tab().wrap);
+        assert!(app.tab().display.wrap);
     }
 
     #[tokio::test]
@@ -1120,7 +1139,7 @@ mod tests {
             let fr = FileReader::from_bytes(data);
             let lm = LogManager::new(app.db.clone(), None).await;
             let mut t = crate::ui::TabState::new(fr, lm, "extra".to_string());
-            t.keybindings = app.keybindings.clone();
+            t.interaction.keybindings = app.keybindings.clone();
             app.tabs.push(t);
         }
         assert_eq!(app.tabs.len(), 3);
@@ -1185,35 +1204,41 @@ mod tests {
     #[tokio::test]
     async fn test_filtering_toggle() {
         let mut app = make_app(&["line1", "line2"]).await;
-        assert!(app.tab().filtering_enabled);
+        assert!(app.tab().filter.enabled);
         app.run_command("filtering").await.unwrap();
-        assert!(!app.tab().filtering_enabled);
+        assert!(!app.tab().filter.enabled);
         app.run_command("filtering").await.unwrap();
-        assert!(app.tab().filtering_enabled);
+        assert!(app.tab().filter.enabled);
     }
 
     #[tokio::test]
     async fn test_hide_field() {
         let mut app = make_app(&["line"]).await;
         app.run_command("hide-field level").await.unwrap();
-        assert!(app.tabs[0].hidden_fields.contains("level"));
+        assert!(app.tabs[0].display.hidden_fields.contains("level"));
     }
 
     #[tokio::test]
     async fn test_show_field() {
         let mut app = make_app(&["line"]).await;
-        app.tabs[0].hidden_fields.insert("level".to_string());
+        app.tabs[0]
+            .display
+            .hidden_fields
+            .insert("level".to_string());
         app.run_command("show-field level").await.unwrap();
-        assert!(!app.tabs[0].hidden_fields.contains("level"));
+        assert!(!app.tabs[0].display.hidden_fields.contains("level"));
     }
 
     #[tokio::test]
     async fn test_show_all_fields() {
         let mut app = make_app(&["line"]).await;
-        app.tabs[0].hidden_fields.insert("level".to_string());
-        app.tabs[0].hidden_fields.insert("msg".to_string());
+        app.tabs[0]
+            .display
+            .hidden_fields
+            .insert("level".to_string());
+        app.tabs[0].display.hidden_fields.insert("msg".to_string());
         app.run_command("show-all-fields").await.unwrap();
-        assert!(app.tabs[0].hidden_fields.is_empty());
+        assert!(app.tabs[0].display.hidden_fields.is_empty());
     }
 
     #[tokio::test]
@@ -1222,12 +1247,12 @@ mod tests {
         let all_fields = app.tabs[0].collect_field_names();
         let first_visible = all_fields
             .iter()
-            .find(|n| !app.tabs[0].hidden_fields.contains(n.as_str()))
+            .find(|n| !app.tabs[0].display.hidden_fields.contains(n.as_str()))
             .unwrap()
             .clone();
         app.run_command("hide-field 0").await.unwrap();
         assert!(
-            app.tabs[0].hidden_fields.contains(&first_visible),
+            app.tabs[0].display.hidden_fields.contains(&first_visible),
             "hide-field 0 should hide the first visible field '{first_visible}'"
         );
     }
@@ -1238,11 +1263,11 @@ mod tests {
         let all_fields = app.tabs[0].collect_field_names();
         let first = all_fields[0].clone();
         let second = all_fields[1].clone();
-        app.tabs[0].hidden_fields.insert(first.clone());
+        app.tabs[0].display.hidden_fields.insert(first.clone());
         // With first field hidden, index 0 should now resolve to the second field.
         app.run_command("hide-field 0").await.unwrap();
         assert!(
-            app.tabs[0].hidden_fields.contains(&second),
+            app.tabs[0].display.hidden_fields.contains(&second),
             "hide-field 0 should skip hidden '{first}' and hide '{second}'"
         );
     }
@@ -1291,7 +1316,7 @@ mod tests {
         let result = app.run_command(&format!("open {}", dir)).await.unwrap();
         assert!(result, "open <dir> should return true (mode was set)");
         assert!(matches!(
-            app.tabs[0].mode.render_state(),
+            app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::ConfirmOpenDir { .. }
         ));
     }
@@ -1373,7 +1398,7 @@ mod tests {
         let result = app.run_command("3").await;
         assert!(result.is_ok());
         assert!(!result.unwrap()); // mode not set
-        assert_eq!(app.tab().scroll_offset, 2);
+        assert_eq!(app.tab().scroll.scroll_offset, 2);
     }
 
     #[tokio::test]
@@ -1389,7 +1414,7 @@ mod tests {
         let mut app = make_app(&["a", "b", "c"]).await;
         let result = app.run_command("999").await;
         assert!(result.is_ok());
-        assert_eq!(app.tab().scroll_offset, 2);
+        assert_eq!(app.tab().scroll.scroll_offset, 2);
     }
 
     #[tokio::test]
@@ -1397,7 +1422,7 @@ mod tests {
         let mut app = make_app(&["a", "b", "c", "d", "e"]).await;
         let result = app.run_command("  4  ").await;
         assert!(result.is_ok());
-        assert_eq!(app.tab().scroll_offset, 3);
+        assert_eq!(app.tab().scroll.scroll_offset, 3);
     }
 
     // ── stop ──────────────────────────────────────────────────────────────────
@@ -1408,14 +1433,14 @@ mod tests {
         let temp_file = tempfile::NamedTempFile::new().unwrap();
         let reader_path = temp_file.path().to_owned();
         let (tx, rx) = tokio::sync::watch::channel(());
-        app.tabs[0].watch_state = Some(super::super::FileWatchState {
+        app.tabs[0].stream.watch = Some(super::super::FileWatchState {
             snapshot_rx: rx,
             reader_path,
             temp_file: Some(temp_file),
         });
-        assert!(app.tab().watch_state.is_some());
+        assert!(app.tab().stream.watch.is_some());
         app.run_command("stop").await.unwrap();
-        assert!(app.tab().watch_state.is_none());
+        assert!(app.tab().stream.watch.is_none());
         drop(tx);
     }
 
@@ -1438,9 +1463,9 @@ mod tests {
     #[tokio::test]
     async fn test_stop_on_tab_with_no_watcher_is_noop() {
         let mut app = make_app(&["line1"]).await;
-        assert!(app.tab().watch_state.is_none());
+        assert!(app.tab().stream.watch.is_none());
         app.run_command("stop").await.unwrap();
-        assert!(app.tab().watch_state.is_none());
+        assert!(app.tab().stream.watch.is_none());
     }
 
     // ── pause / resume ────────────────────────────────────────────────────────
@@ -1448,26 +1473,26 @@ mod tests {
     #[tokio::test]
     async fn test_pause_sets_paused_flag() {
         let mut app = make_app(&["line1"]).await;
-        assert!(!app.tab().paused);
+        assert!(!app.tab().stream.paused);
         app.run_command("pause").await.unwrap();
-        assert!(app.tab().paused);
+        assert!(app.tab().stream.paused);
     }
 
     #[tokio::test]
     async fn test_resume_clears_paused_flag() {
         let mut app = make_app(&["line1"]).await;
         app.run_command("pause").await.unwrap();
-        assert!(app.tab().paused);
+        assert!(app.tab().stream.paused);
         app.run_command("resume").await.unwrap();
-        assert!(!app.tab().paused);
+        assert!(!app.tab().stream.paused);
     }
 
     #[tokio::test]
     async fn test_resume_on_unpaused_tab_is_noop() {
         let mut app = make_app(&["line1"]).await;
-        assert!(!app.tab().paused);
+        assert!(!app.tab().stream.paused);
         app.run_command("resume").await.unwrap();
-        assert!(!app.tab().paused);
+        assert!(!app.tab().stream.paused);
     }
 
     // ── save ──────────────────────────────────────────────────────────────────
@@ -1557,7 +1582,7 @@ mod tests {
         app.run_command("filter error").await.unwrap();
         await_filter_computations(&mut app).await;
         app.tabs[0].log_manager.toggle_mark(0);
-        app.tabs[0].show_line_numbers = false;
+        app.tabs[0].display.show_line_numbers = false;
         app.show_mode_bar = false;
 
         app.run_command("reset").await.unwrap();
@@ -1565,11 +1590,11 @@ mod tests {
 
         assert!(app.tabs[0].log_manager.get_filters().is_empty());
         assert!(app.tabs[0].log_manager.get_marked_indices().is_empty());
-        assert!(app.tabs[0].show_line_numbers);
+        assert!(app.tabs[0].display.show_line_numbers);
         assert!(app.show_mode_bar);
-        assert_eq!(app.tabs[0].scroll_offset, 0);
-        assert!(app.tabs[0].filtering_enabled);
-        assert!(!app.tabs[0].show_marks_only);
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
+        assert!(app.tabs[0].filter.enabled);
+        assert!(!app.tabs[0].filter.show_marks_only);
     }
 
     #[tokio::test]
@@ -1584,15 +1609,15 @@ mod tests {
 
         app.tabs[0].log_manager.toggle_mark(0);
         app.tabs[1].log_manager.toggle_mark(1);
-        app.tabs[0].tail_mode = true;
-        app.tabs[1].raw_mode = true;
+        app.tabs[0].stream.tail_mode = true;
+        app.tabs[1].display.raw_mode = true;
 
         app.run_command("reset").await.unwrap();
 
         for tab in &app.tabs {
             assert!(tab.log_manager.get_marked_indices().is_empty());
-            assert!(!tab.tail_mode);
-            assert!(!tab.raw_mode);
+            assert!(!tab.stream.tail_mode);
+            assert!(!tab.display.raw_mode);
         }
     }
 

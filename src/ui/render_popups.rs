@@ -1524,7 +1524,7 @@ mod tests {
             field_layout_columns: None,
             filtering_enabled: true,
         };
-        app.tabs[0].mode = Box::new(ConfirmRestoreMode { context });
+        app.tabs[0].interaction.mode = Box::new(ConfirmRestoreMode { context });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1537,7 +1537,7 @@ mod tests {
             ("level".to_string(), true),
             ("message".to_string(), false),
         ];
-        app.tabs[0].mode = Box::new(SelectFieldsMode::new(
+        app.tabs[0].interaction.mode = Box::new(SelectFieldsMode::new(
             fields,
             FieldLayout::default(),
             std::collections::HashSet::new(),
@@ -1552,7 +1552,7 @@ mod tests {
         let fields: Vec<(String, bool)> = (0..35)
             .map(|i| (format!("field_{}", i), i % 2 == 0))
             .collect();
-        app.tabs[0].mode = Box::new(SelectFieldsMode::new(
+        app.tabs[0].interaction.mode = Box::new(SelectFieldsMode::new(
             fields,
             FieldLayout::default(),
             std::collections::HashSet::new(),
@@ -1582,7 +1582,7 @@ mod tests {
             ],
         }];
         let mode = ValueColorsMode::new(groups, HashSet::new());
-        app.tabs[0].mode = Box::new(mode);
+        app.tabs[0].interaction.mode = Box::new(mode);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1609,7 +1609,7 @@ mod tests {
         }];
         let mut mode = ValueColorsMode::new(groups, HashSet::new());
         mode.search = "http".to_string();
-        app.tabs[0].mode = Box::new(mode);
+        app.tabs[0].interaction.mode = Box::new(mode);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1643,7 +1643,7 @@ mod tests {
         let mut disabled = HashSet::new();
         disabled.insert("status_4xx".to_string());
         let mode = ValueColorsMode::new(groups, disabled);
-        app.tabs[0].mode = Box::new(mode);
+        app.tabs[0].interaction.mode = Box::new(mode);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1664,7 +1664,7 @@ mod tests {
             children,
         }];
         let mode = ValueColorsMode::new(groups, HashSet::new());
-        app.tabs[0].mode = Box::new(mode);
+        app.tabs[0].interaction.mode = Box::new(mode);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1692,7 +1692,7 @@ mod tests {
                 status: "Up 1 hour".to_string(),
             },
         ];
-        app.tabs[0].mode = Box::new(DockerSelectMode::new(containers));
+        app.tabs[0].interaction.mode = Box::new(DockerSelectMode::new(containers));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1700,7 +1700,8 @@ mod tests {
     #[tokio::test]
     async fn test_docker_select_error() {
         let mut app = make_app(&["line one", "line two"]).await;
-        app.tabs[0].mode = Box::new(DockerSelectMode::with_error("Docker not found".to_string()));
+        app.tabs[0].interaction.mode =
+            Box::new(DockerSelectMode::with_error("Docker not found".to_string()));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1716,7 +1717,7 @@ mod tests {
                 status: format!("Up {} hours", i),
             })
             .collect();
-        app.tabs[0].mode = Box::new(DockerSelectMode::new(containers));
+        app.tabs[0].interaction.mode = Box::new(DockerSelectMode::new(containers));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1724,7 +1725,7 @@ mod tests {
     #[tokio::test]
     async fn test_keybindings_help_basic() {
         let mut app = make_app(&["line one", "line two"]).await;
-        app.tabs[0].mode = Box::new(KeybindingsHelpMode::new());
+        app.tabs[0].interaction.mode = Box::new(KeybindingsHelpMode::new());
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1734,7 +1735,7 @@ mod tests {
         let mut app = make_app(&["line one", "line two"]).await;
         let mut mode = KeybindingsHelpMode::new();
         mode.search = "scroll".to_string();
-        app.tabs[0].mode = Box::new(mode);
+        app.tabs[0].interaction.mode = Box::new(mode);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1744,7 +1745,7 @@ mod tests {
         let mut app = make_app(&["line one", "line two"]).await;
         let mut mode = KeybindingsHelpMode::new();
         mode.scroll = 5;
-        app.tabs[0].mode = Box::new(mode);
+        app.tabs[0].interaction.mode = Box::new(mode);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1752,7 +1753,7 @@ mod tests {
     #[tokio::test]
     async fn test_confirm_restore_session() {
         let mut app = make_app(&["line one", "line two"]).await;
-        app.tabs[0].mode = Box::new(ConfirmRestoreSessionMode {
+        app.tabs[0].interaction.mode = Box::new(ConfirmRestoreSessionMode {
             files: vec!["file1.log".to_string(), "file2.log".to_string()],
         });
         let mut terminal = make_terminal();
@@ -1762,7 +1763,7 @@ mod tests {
     #[tokio::test]
     async fn test_comment_popup_basic() {
         let mut app = make_app(&["line one", "line two"]).await;
-        app.tabs[0].mode = Box::new(CommentMode::new(vec![0, 1]));
+        app.tabs[0].interaction.mode = Box::new(CommentMode::new(vec![0, 1]));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1773,7 +1774,7 @@ mod tests {
         let mut mode = CommentMode::new(vec![0, 1]);
         mode.lines = vec!["line 1".to_string(), "line 2".to_string()];
         mode.cursor_row = 1;
-        app.tabs[0].mode = Box::new(mode);
+        app.tabs[0].interaction.mode = Box::new(mode);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1784,7 +1785,7 @@ mod tests {
         let mut mode = CommentMode::new(vec![0]);
         mode.lines = vec!["short".to_string()];
         mode.cursor_col = 100;
-        app.tabs[0].mode = Box::new(mode);
+        app.tabs[0].interaction.mode = Box::new(mode);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }

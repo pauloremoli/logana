@@ -119,7 +119,7 @@ fn resolve_completions(
     query_text: &str,
     completion_index: Option<usize>,
 ) -> CompletionSource {
-    if let Some(err) = &tab.command_error {
+    if let Some(err) = &tab.interaction.command_error {
         return CompletionSource::Error(err.clone());
     }
     if let Some(fc) = extract_field_partial(query_text.trim_start()) {
@@ -170,10 +170,10 @@ fn resolve_completions(
     }
     if let Some(partial_raw) = query_text.trim_start().strip_prefix("show-field ") {
         let partial = partial_raw.trim_start();
-        let candidates: Vec<String> = if tab.hidden_fields.is_empty() {
+        let candidates: Vec<String> = if tab.display.hidden_fields.is_empty() {
             tab.build_field_index().names
         } else {
-            let mut v: Vec<String> = tab.hidden_fields.iter().cloned().collect();
+            let mut v: Vec<String> = tab.display.hidden_fields.iter().cloned().collect();
             v.sort();
             v
         };
@@ -250,12 +250,13 @@ impl App {
 
         // Extract mode-derived state up front via a single render_state() call,
         // avoiding holding a borrow over the rest of rendering.
-        let render_state = self.tabs[self.active_tab].mode.render_state();
+        let render_state = self.tabs[self.active_tab].interaction.mode.render_state();
 
         let persistent_pattern: Option<String> = if matches!(render_state, ModeRenderState::Normal)
         {
             self.tabs[self.active_tab]
                 .search
+                .query
                 .get_pattern()
                 .map(|p| p.to_string())
         } else {
@@ -299,10 +300,14 @@ impl App {
             // When CommandMode is entered from the filter menu (set-color, filter-edit),
             // filter_context holds the originating filter index — use it so the sidebar
             // keeps the correct filter highlighted throughout the command.
-            _ => self.tabs[self.active_tab].filter_context.unwrap_or(0),
+            _ => self.tabs[self.active_tab]
+                .filter
+                .filter_context
+                .unwrap_or(0),
         };
-        let keybindings = self.tabs[self.active_tab].keybindings.clone();
+        let keybindings = self.tabs[self.active_tab].interaction.keybindings.clone();
         let status_line = self.tabs[self.active_tab]
+            .interaction
             .mode
             .mode_bar_content(&keybindings, &self.theme);
         let show_mode_bar = self.show_mode_bar;
@@ -389,14 +394,14 @@ impl App {
             _ => None,
         };
 
-        let show_borders = self.tabs[self.active_tab].show_borders;
+        let show_borders = self.tabs[self.active_tab].display.show_borders;
         // Auto-dismiss the notification after 10 seconds.
-        if let Some(set_at) = self.tabs[self.active_tab].notification_set_at
+        if let Some(set_at) = self.tabs[self.active_tab].interaction.notification_set_at
             && set_at.elapsed() > std::time::Duration::from_secs(10)
         {
             self.tabs[self.active_tab].clear_notification();
         }
-        let notification = self.tabs[self.active_tab].notification.clone();
+        let notification = self.tabs[self.active_tab].interaction.notification.clone();
         // Show the notification row when there is a message and the command bar
         // is not already open (where it would appear in the hint area instead).
         let has_notification = notification.is_some() && !has_input_bar;
@@ -477,8 +482,8 @@ impl App {
 
         let tab = &self.tabs[self.active_tab];
 
-        let sidebar_width = tab.sidebar_width;
-        let (logs_area, sidebar_area) = if tab.show_sidebar {
+        let sidebar_width = tab.display.sidebar_width;
+        let (logs_area, sidebar_area) = if tab.display.show_sidebar {
             if show_borders {
                 let horizontal = Layout::default()
                     .direction(Direction::Horizontal)
@@ -604,7 +609,7 @@ impl App {
         }
 
         if let Some((lines, cursor_row, cursor_col, line_count)) = comment_popup {
-            let kb = self.tabs[self.active_tab].keybindings.clone();
+            let kb = self.tabs[self.active_tab].interaction.keybindings.clone();
             self.render_comment_popup(frame, &lines, cursor_row, cursor_col, line_count, &kb);
         }
 
@@ -646,8 +651,8 @@ impl App {
         show_tab_bar: bool,
         has_input_bar: bool,
     ) {
-        let num_visible = self.tabs[self.active_tab].visible_indices.len();
-        let show_borders = self.tabs[self.active_tab].show_borders;
+        let num_visible = self.tabs[self.active_tab].filter.visible_indices.len();
+        let show_borders = self.tabs[self.active_tab].display.show_borders;
 
         // When borders are on they consume 1 row/col on each side (2 total).
         // When the tab bar is visible the top border is omitted from the block
@@ -665,9 +670,9 @@ impl App {
         let visible_height = (logs_area.height as usize)
             .saturating_sub(vertical_border)
             .saturating_sub(usize::from(has_input_bar));
-        self.tabs[self.active_tab].visible_height = visible_height;
+        self.tabs[self.active_tab].scroll.visible_height = visible_height;
 
-        let show_line_numbers = self.tabs[self.active_tab].show_line_numbers;
+        let show_line_numbers = self.tabs[self.active_tab].display.show_line_numbers;
         let total_lines = self.tabs[self.active_tab].file_reader.line_count();
         let line_number_width = if show_line_numbers {
             total_lines.max(1).to_string().len()
@@ -683,34 +688,34 @@ impl App {
         };
         let inner_width =
             (logs_area.width as usize).saturating_sub(horizontal_shrink + ln_prefix_width);
-        self.tabs[self.active_tab].visible_width = inner_width;
+        self.tabs[self.active_tab].scroll.visible_width = inner_width;
 
-        let wrap = self.tabs[self.active_tab].wrap;
+        let wrap = self.tabs[self.active_tab].display.wrap;
 
         // Clone early so both the viewport row-count closure and the flat_map
         // rendering closure can use them without re-borrowing `self`.
-        let hidden_fields = self.tabs[self.active_tab].hidden_fields.clone();
-        let field_layout = self.tabs[self.active_tab].field_layout.clone();
-        let show_keys = self.tabs[self.active_tab].show_keys;
-        let raw_mode = self.tabs[self.active_tab].raw_mode;
+        let hidden_fields = self.tabs[self.active_tab].display.hidden_fields.clone();
+        let field_layout = self.tabs[self.active_tab].display.field_layout.clone();
+        let show_keys = self.tabs[self.active_tab].display.show_keys;
+        let raw_mode = self.tabs[self.active_tab].display.raw_mode;
 
         if num_visible == 0 {
-            self.tabs[self.active_tab].scroll_offset = 0;
-            self.tabs[self.active_tab].viewport_offset = 0;
+            self.tabs[self.active_tab].scroll.scroll_offset = 0;
+            self.tabs[self.active_tab].scroll.viewport_offset = 0;
         } else {
-            if self.tabs[self.active_tab].scroll_offset >= num_visible {
-                self.tabs[self.active_tab].scroll_offset = num_visible - 1;
+            if self.tabs[self.active_tab].scroll.scroll_offset >= num_visible {
+                self.tabs[self.active_tab].scroll.scroll_offset = num_visible - 1;
             }
-            if self.tabs[self.active_tab].viewport_offset >= num_visible {
+            if self.tabs[self.active_tab].scroll.viewport_offset >= num_visible {
                 // viewport_offset is stale (e.g. filter contracted the visible set);
                 // reset it so the cursor stays visible and the viewport fills backward.
-                self.tabs[self.active_tab].viewport_offset =
+                self.tabs[self.active_tab].scroll.viewport_offset =
                     num_visible.saturating_sub(visible_height);
             }
         }
 
-        let scroll_offset = self.tabs[self.active_tab].scroll_offset;
-        let viewport_offset = self.tabs[self.active_tab].viewport_offset;
+        let scroll_offset = self.tabs[self.active_tab].scroll.scroll_offset;
+        let viewport_offset = self.tabs[self.active_tab].scroll.viewport_offset;
 
         // Compute new_viewport and end in a scoped block so the shared borrow of
         // `self.tabs[active_tab]` (for detected_format) is released before the
@@ -720,7 +725,7 @@ impl App {
             let parser = if raw_mode {
                 None
             } else {
-                tab.detected_format.as_deref()
+                tab.display.format.as_deref()
             };
             // In wrap mode, use the structured-rendering width when a format is
             // detected: raw JSON/tracing bytes can be 3-5× wider than the rendered
@@ -747,7 +752,7 @@ impl App {
                 let gap = scroll_offset.saturating_sub(viewport_offset);
                 let overflowed = gap > visible_height || {
                     let rows_used: usize = (viewport_offset..=scroll_offset)
-                        .map(|i| row_count(tab.visible_indices.get(i)))
+                        .map(|i| row_count(tab.filter.visible_indices.get(i)))
                         .sum();
                     rows_used > visible_height
                 };
@@ -759,7 +764,7 @@ impl App {
                             break;
                         }
                         new_vp -= 1;
-                        let h = row_count(tab.visible_indices.get(new_vp));
+                        let h = row_count(tab.filter.visible_indices.get(new_vp));
                         if rows + h > visible_height {
                             new_vp += 1;
                             break;
@@ -784,7 +789,7 @@ impl App {
                 let mut rows = 0usize;
                 let mut e = start;
                 while e < num_visible {
-                    let h = row_count(tab.visible_indices.get(e));
+                    let h = row_count(tab.filter.visible_indices.get(e));
                     if rows + h > visible_height {
                         break;
                     }
@@ -812,7 +817,7 @@ impl App {
                             break;
                         }
                         s -= 1;
-                        let h = row_count(tab.visible_indices.get(s));
+                        let h = row_count(tab.filter.visible_indices.get(s));
                         if rows + h > visible_height {
                             s += 1;
                             break;
@@ -831,7 +836,7 @@ impl App {
                         let mut rows = 0usize;
                         let mut e = filled_start;
                         while e < num_visible {
-                            let h = row_count(tab.visible_indices.get(e));
+                            let h = row_count(tab.filter.visible_indices.get(e));
                             if rows + h > visible_height {
                                 break;
                             }
@@ -856,15 +861,16 @@ impl App {
             (new_viewport, end)
         };
 
-        self.tabs[self.active_tab].viewport_offset = new_viewport;
+        self.tabs[self.active_tab].scroll.viewport_offset = new_viewport;
         let start = new_viewport;
 
         // advise the kernel to prefetch mmap pages for the current viewport so
         // async I/O can overlap with the CPU work of setting up styles and the render loop.
         #[cfg(unix)]
-        if start < end && !self.tabs[self.active_tab].visible_indices.is_empty() {
-            let first = self.tabs[self.active_tab].visible_indices.get(start);
+        if start < end && !self.tabs[self.active_tab].filter.visible_indices.is_empty() {
+            let first = self.tabs[self.active_tab].filter.visible_indices.get(start);
             let last = self.tabs[self.active_tab]
+                .filter
                 .visible_indices
                 .get((end - 1).max(start));
             self.tabs[self.active_tab]
@@ -873,14 +879,14 @@ impl App {
         }
 
         // Aho-Corasick every frame. The cache was set in the most recent refresh_visible().
-        let filter_manager_arc = self.tabs[self.active_tab].filter_manager_arc.clone();
+        let filter_manager_arc = self.tabs[self.active_tab].filter.manager.clone();
         let filter_manager = &*filter_manager_arc;
         let (mut styles, date_filter_styles, field_filter_styles) =
-            if self.tabs[self.active_tab].filtering_enabled {
+            if self.tabs[self.active_tab].filter.enabled {
                 (
-                    self.tabs[self.active_tab].filter_styles.clone(),
-                    self.tabs[self.active_tab].filter_date_styles.clone(),
-                    self.tabs[self.active_tab].filter_field_styles.clone(),
+                    self.tabs[self.active_tab].filter.text_styles.clone(),
+                    self.tabs[self.active_tab].filter.date_styles.clone(),
+                    self.tabs[self.active_tab].filter.field_styles.clone(),
                 )
             } else {
                 (Vec::new(), Vec::new(), Vec::new())
@@ -890,7 +896,7 @@ impl App {
         let detected_format_arc: Option<Arc<dyn crate::parser::LogFormatParser>> = if raw_mode {
             None
         } else {
-            self.tabs[self.active_tab].detected_format.clone()
+            self.tabs[self.active_tab].display.format.clone()
         };
         let search_style = Style::default()
             .fg(self.theme.search_fg)
@@ -934,18 +940,19 @@ impl App {
         // Parsing (JSON, logfmt, etc.) is the most expensive per-line operation; caching it
         // means subsequent frames at the same scroll position pay only a HashMap lookup.
         // This block must run before `search_results` borrows `self.tabs`, as the cache
-        // write requires a mutable borrow of `self.tabs[active_tab].parse_cache`.
+        // write requires a mutable borrow of `self.tabs[active_tab].cache.parse`.
         {
-            let cache_gen = self.tabs[self.active_tab].parse_cache_gen;
+            let cache_gen = self.tabs[self.active_tab].cache.parse_gen;
             let mut new_entries: Vec<(usize, super::CachedParsedLine)> = Vec::new();
             {
                 let tab = &self.tabs[self.active_tab];
-                if !raw_mode && let Some(parser) = tab.detected_format.as_deref() {
+                if !raw_mode && let Some(parser) = tab.display.format.as_deref() {
                     for vi in start..end {
-                        let line_idx = tab.visible_indices.get(vi);
+                        let line_idx = tab.filter.visible_indices.get(vi);
                         // Skip if already cached at the current generation.
                         if tab
-                            .parse_cache
+                            .cache
+                            .parse
                             .get(&line_idx)
                             .map(|(g, _)| *g == cache_gen)
                             .unwrap_or(false)
@@ -956,9 +963,9 @@ impl App {
                         if let Some(parts) = parser.parse_line(line_bytes) {
                             let cols = apply_field_layout(
                                 &parts,
-                                &tab.field_layout,
-                                &tab.hidden_fields,
-                                tab.show_keys,
+                                &tab.display.field_layout,
+                                &tab.display.hidden_fields,
+                                tab.display.show_keys,
                             );
                             let all_cols_hidden = cols.is_empty();
                             // Extract strings before consuming `parts` fields.
@@ -1024,21 +1031,26 @@ impl App {
             // Write new entries now that the shared borrow of `tab` is released.
             for (line_idx, entry) in new_entries {
                 self.tabs[self.active_tab]
-                    .parse_cache
+                    .cache
+                    .parse
                     .insert(line_idx, (cache_gen, entry));
             }
         }
 
-        let search_results = self.tabs[self.active_tab].search.get_results();
+        let search_results = self.tabs[self.active_tab].search.query.get_results();
         // Pre-compute which line holds the current occurrence and which index within it.
         let current_search_info: Option<(usize, usize)> = if search_results.is_empty() {
             None
         } else {
-            let ri = self.tabs[self.active_tab].search.get_current_match_index();
+            let ri = self.tabs[self.active_tab]
+                .search
+                .query
+                .get_current_match_index();
             Some((
                 search_results[ri].line_idx,
                 self.tabs[self.active_tab]
                     .search
+                    .query
                     .get_current_occurrence_index(),
             ))
         };
@@ -1056,12 +1068,13 @@ impl App {
         // the rendered string (raw-byte positions from search_map don't map there).
         let search_regex = self.tabs[self.active_tab]
             .search
+            .query
             .get_compiled_pattern()
             .cloned();
 
         let theme = &self.theme;
-        let level_colors_disabled = &self.tabs[self.active_tab].level_colors_disabled;
-        let current_scroll = self.tabs[self.active_tab].scroll_offset;
+        let level_colors_disabled = &self.tabs[self.active_tab].display.level_colors_disabled;
+        let current_scroll = self.tabs[self.active_tab].scroll.scroll_offset;
         // Pre-compute visual selection range (indices into visible_indices space).
         let visual_range: Option<(usize, usize)> = visual_anchor.map(|anchor| {
             let lo = anchor.min(current_scroll);
@@ -1081,7 +1094,7 @@ impl App {
 
         let (banner_at, vis_comment_map) = prepare_comment_maps(
             &comments_for_render,
-            &self.tabs[self.active_tab].visible_indices,
+            &self.tabs[self.active_tab].filter.visible_indices,
             start,
             end,
         );
@@ -1096,14 +1109,17 @@ impl App {
         let banner_cont_style = Style::default().fg(theme.comment_fg);
 
         // Read render cache generation keys once before the loop.
-        let render_gen = self.tabs[self.active_tab].render_cache_gen;
-        let search_gen = self.tabs[self.active_tab].search_result_gen;
+        let render_gen = self.tabs[self.active_tab].cache.render_gen;
+        let search_gen = self.tabs[self.active_tab].cache.search_result_gen;
         // Misses collected here; batch-inserted after the loop to satisfy the borrow checker.
         let mut render_cache_misses: Vec<(usize, Option<usize>, Line<'static>)> = Vec::new();
 
         let mut log_lines: Vec<Line> = Vec::new();
         for abs_vis_idx in start..end {
-            let line_idx = self.tabs[self.active_tab].visible_indices.get(abs_vis_idx);
+            let line_idx = self.tabs[self.active_tab]
+                .filter
+                .visible_indices
+                .get(abs_vis_idx);
             let line_bytes = self.tabs[self.active_tab].file_reader.get_line(line_idx);
             let is_current = abs_vis_idx == current_scroll;
             let is_marked = self.tabs[self.active_tab].log_manager.is_marked(line_idx);
@@ -1113,9 +1129,10 @@ impl App {
 
             // Use the cached level string for structured lines instead of
             // re-scanning raw bytes with detect_from_bytes on every frame.
-            let parse_gen = self.tabs[self.active_tab].parse_cache_gen;
+            let parse_gen = self.tabs[self.active_tab].cache.parse_gen;
             let cached = self.tabs[self.active_tab]
-                .parse_cache
+                .cache
+                .parse
                 .get(&line_idx)
                 .filter(|(g, _)| *g == parse_gen)
                 .map(|(_, c)| c);
@@ -1178,7 +1195,8 @@ impl App {
             // Item 1: check the render cache before running the expensive pipeline.
             let content_line: Line<'static> = if let Some((_, _, _, cached_line)) = self.tabs
                 [self.active_tab]
-                .render_line_cache
+                .cache
+                .render_line
                 .get(&line_idx)
                 .filter(|(rg, sg, occ, _)| {
                     *rg == render_gen && *sg == search_gen && *occ == current_occ
@@ -1400,14 +1418,14 @@ impl App {
 
         // Batch-insert render cache misses now that the immutable borrow of tabs is released.
         for (line_idx, current_occ, content_line) in render_cache_misses {
-            self.tabs[self.active_tab].render_line_cache.insert(
+            self.tabs[self.active_tab].cache.render_line.insert(
                 line_idx,
                 (render_gen, search_gen, current_occ, content_line),
             );
         }
 
-        let tail_mode = self.tabs[self.active_tab].tail_mode;
-        let paused = self.tabs[self.active_tab].paused;
+        let tail_mode = self.tabs[self.active_tab].stream.tail_mode;
+        let paused = self.tabs[self.active_tab].stream.paused;
         let logs_title = if show_tab_bar {
             String::new()
         } else {
@@ -1461,11 +1479,12 @@ impl App {
                 block.title(logs_title).title_style(title_style)
             }
         };
-        let mut paragraph = Paragraph::new(log_lines)
-            .block(logs_block)
-            .scroll((0, self.tabs[self.active_tab].horizontal_scroll as u16));
+        let mut paragraph = Paragraph::new(log_lines).block(logs_block).scroll((
+            0,
+            self.tabs[self.active_tab].scroll.horizontal_scroll as u16,
+        ));
 
-        if self.tabs[self.active_tab].wrap {
+        if self.tabs[self.active_tab].display.wrap {
             paragraph = paragraph.wrap(Wrap { trim: false });
         }
 
@@ -1512,7 +1531,10 @@ impl App {
             }
 
             let hint_area = chunks[chunk_idx + 1];
-            let total = self.tabs[self.active_tab].search.get_total_match_count();
+            let total = self.tabs[self.active_tab]
+                .search
+                .query
+                .get_total_match_count();
             let hint_text = if !input_str.is_empty() {
                 if is_active {
                     format!("  {} matches", total)
@@ -1521,6 +1543,7 @@ impl App {
                 } else {
                     let current = self.tabs[self.active_tab]
                         .search
+                        .query
                         .get_current_occurrence_number();
                     format!("  match {} / {}", current, total)
                 }
@@ -1532,7 +1555,7 @@ impl App {
             frame.render_widget(hint, hint_area);
 
             let progress_text: Option<String> =
-                self.tabs[self.active_tab].search_handle.as_ref().map(|h| {
+                self.tabs[self.active_tab].search.handle.as_ref().map(|h| {
                     let (bar, pct) = progress_bar_str(*h.progress_rx.borrow());
                     format!(" {} {}% ", bar, pct)
                 });
@@ -1686,9 +1709,9 @@ impl App {
         sidebar_area: Option<Rect>,
     ) {
         if let Some(sidebar_area) = sidebar_area {
-            let show_borders = self.tabs[self.active_tab].show_borders;
+            let show_borders = self.tabs[self.active_tab].display.show_borders;
             let filters = self.tabs[self.active_tab].log_manager.get_filters();
-            let match_counts = self.tabs[self.active_tab].filter_match_counts.clone();
+            let match_counts = self.tabs[self.active_tab].filter.match_counts.clone();
             let filters_text: Vec<Line> = filters
                 .iter()
                 .enumerate()
@@ -1758,12 +1781,13 @@ impl App {
                 String::new()
             };
             let filter_progress: Option<usize> = self.tabs[self.active_tab]
-                .filter_handle
+                .filter
+                .handle
                 .as_ref()
                 .map(|h| (h.displayed_progress * 100.0) as usize);
-            let sidebar_title = if self.tabs[self.active_tab].show_marks_only {
+            let sidebar_title = if self.tabs[self.active_tab].filter.show_marks_only {
                 format!("Filters [MARKS ONLY]{}", filter_count_suffix)
-            } else if self.tabs[self.active_tab].filtering_enabled {
+            } else if self.tabs[self.active_tab].filter.enabled {
                 format!("Filters{}", filter_count_suffix)
             } else {
                 format!("Filters [OFF]{}", filter_count_suffix)
@@ -1827,7 +1851,7 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(i, t)| {
-                t.filter_handle.as_ref().map(|h| {
+                t.filter.handle.as_ref().map(|h| {
                     let pct = (h.displayed_progress * 100.0) as usize;
                     (i, pct)
                 })
@@ -1874,7 +1898,8 @@ impl App {
                 .find(|(idx, _)| *idx == i)
                 .map(|(_, p)| *p);
             let retry_info = self.tabs[i]
-                .stream_retry
+                .stream
+                .retry
                 .as_ref()
                 .filter(|r| !r.connected)
                 .map(|r| r.attempt);
@@ -1884,14 +1909,14 @@ impl App {
                 (_, Some(_), _) => " Indexing… ".to_string(),
                 (_, _, Some(attempt)) => format!(" [RETRY #{}] ", attempt),
                 _ if is_active => {
-                    let num_visible = self.tabs[i].visible_indices.len();
-                    let tail = self.tabs[i].tail_mode;
-                    let raw = self.tabs[i].raw_mode;
-                    let paused = self.tabs[i].paused;
+                    let num_visible = self.tabs[i].filter.visible_indices.len();
+                    let tail = self.tabs[i].stream.tail_mode;
+                    let raw = self.tabs[i].display.raw_mode;
+                    let paused = self.tabs[i].stream.paused;
                     let fmt_label = if raw {
                         String::new()
                     } else {
-                        match &self.tabs[i].detected_format {
+                        match &self.tabs[i].display.format {
                             Some(p) => format!(" [{}]", p.name()),
                             None if num_visible == 0 => String::new(),
                             None => " [unknown format]".to_string(),
@@ -1907,11 +1932,11 @@ impl App {
                     )
                 }
                 _ => {
-                    if self.tabs[i].raw_mode {
+                    if self.tabs[i].display.raw_mode {
                         " ".to_string()
                     } else {
                         let has_lines = self.tabs[i].file_reader.line_count() > 0;
-                        match &self.tabs[i].detected_format {
+                        match &self.tabs[i].display.format {
                             Some(p) => format!(" [{}] ", p.name()),
                             None if has_lines => " [unknown format] ".to_string(),
                             None => " ".to_string(),
@@ -2065,7 +2090,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_no_sidebar() {
         let mut app = make_app(&["line A", "line B", "line C"]).await;
-        app.tabs[0].show_sidebar = false;
+        app.tabs[0].display.show_sidebar = false;
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2073,7 +2098,8 @@ mod tests {
     #[tokio::test]
     async fn test_ui_command_mode() {
         let mut app = make_app(&["log line"]).await;
-        app.tabs[0].mode = Box::new(CommandMode::with_history("filter ".to_string(), 7, vec![]));
+        app.tabs[0].interaction.mode =
+            Box::new(CommandMode::with_history("filter ".to_string(), 7, vec![]));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2081,8 +2107,9 @@ mod tests {
     #[tokio::test]
     async fn test_ui_command_mode_error() {
         let mut app = make_app(&["log line"]).await;
-        app.tabs[0].command_error = Some("test error".to_string());
-        app.tabs[0].mode = Box::new(CommandMode::with_history("bad-cmd".to_string(), 7, vec![]));
+        app.tabs[0].interaction.command_error = Some("test error".to_string());
+        app.tabs[0].interaction.mode =
+            Box::new(CommandMode::with_history("bad-cmd".to_string(), 7, vec![]));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2090,7 +2117,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_command_mode_completion_index() {
         let mut app = make_app(&["log line"]).await;
-        app.tabs[0].mode = Box::new(CommandMode {
+        app.tabs[0].interaction.mode = Box::new(CommandMode {
             input: "fil".to_string(),
             cursor: 3,
             history: vec![],
@@ -2105,7 +2132,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_search_mode_forward() {
         let mut app = make_app(&["hello world", "test line"]).await;
-        app.tabs[0].mode = Box::new(SearchMode {
+        app.tabs[0].interaction.mode = Box::new(SearchMode {
             input: "test".to_string(),
             forward: true,
         });
@@ -2116,7 +2143,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_search_mode_backward() {
         let mut app = make_app(&["hello world", "test line"]).await;
-        app.tabs[0].mode = Box::new(SearchMode {
+        app.tabs[0].interaction.mode = Box::new(SearchMode {
             input: "test".to_string(),
             forward: false,
         });
@@ -2127,7 +2154,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_search_mode_empty() {
         let mut app = make_app(&["hello world"]).await;
-        app.tabs[0].mode = Box::new(SearchMode {
+        app.tabs[0].interaction.mode = Box::new(SearchMode {
             input: String::new(),
             forward: true,
         });
@@ -2159,7 +2186,7 @@ mod tests {
             )
             .await;
         app.tabs[0].refresh_visible();
-        app.tabs[0].mode = Box::new(FilterManagementMode {
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
             selected_filter_index: 0,
         });
         let mut terminal = make_terminal();
@@ -2169,7 +2196,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_visual_line_mode() {
         let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
-        app.tabs[0].mode = Box::new(VisualLineMode {
+        app.tabs[0].interaction.mode = Box::new(VisualLineMode {
             anchor: 0,
             count: None,
         });
@@ -2199,7 +2226,7 @@ mod tests {
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
-        assert_eq!(app.tabs[0].level_colors_disabled, default_disabled);
+        assert_eq!(app.tabs[0].display.level_colors_disabled, default_disabled);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2212,7 +2239,7 @@ mod tests {
             "ERROR error occurred",
         ])
         .await;
-        app.tabs[0].level_colors_disabled = [
+        app.tabs[0].display.level_colors_disabled = [
             "trace", "debug", "info", "notice", "warning", "error", "fatal",
         ]
         .iter()
@@ -2225,7 +2252,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_with_line_numbers() {
         let mut app = make_app(&["line A", "line B"]).await;
-        assert!(app.tabs[0].show_line_numbers);
+        assert!(app.tabs[0].display.show_line_numbers);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2233,7 +2260,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_without_line_numbers() {
         let mut app = make_app(&["line A", "line B"]).await;
-        app.tabs[0].show_line_numbers = false;
+        app.tabs[0].display.show_line_numbers = false;
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2271,8 +2298,8 @@ mod tests {
     async fn test_ui_wrap_enabled() {
         let long_line = "A".repeat(200);
         let mut app = make_app(&[&long_line, "short"]).await;
-        app.tabs[0].wrap = true;
-        assert!(app.tabs[0].wrap);
+        app.tabs[0].display.wrap = true;
+        assert!(app.tabs[0].display.wrap);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2281,7 +2308,7 @@ mod tests {
     async fn test_ui_wrap_disabled() {
         let long_line = "B".repeat(200);
         let mut app = make_app(&[&long_line, "short"]).await;
-        app.tabs[0].wrap = false;
+        app.tabs[0].display.wrap = false;
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2290,8 +2317,8 @@ mod tests {
     async fn test_ui_horizontal_scroll() {
         let long_line = "C".repeat(200);
         let mut app = make_app(&[&long_line]).await;
-        app.tabs[0].wrap = false;
-        app.tabs[0].horizontal_scroll = 10;
+        app.tabs[0].display.wrap = false;
+        app.tabs[0].scroll.horizontal_scroll = 10;
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2321,8 +2348,11 @@ mod tests {
             r#"{"level":"WARN","msg":"world"}"#,
         ])
         .await;
-        app.tabs[0].hidden_fields.insert("level".to_string());
-        app.tabs[0].hidden_fields.insert("msg".to_string());
+        app.tabs[0]
+            .display
+            .hidden_fields
+            .insert("level".to_string());
+        app.tabs[0].display.hidden_fields.insert("msg".to_string());
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2334,7 +2364,7 @@ mod tests {
         let file_reader2 = FileReader::from_bytes(data2);
         let log_manager2 = LogManager::new(app.db.clone(), None).await;
         let mut tab2 = super::super::TabState::new(file_reader2, log_manager2, "tab2".to_string());
-        tab2.keybindings = app.keybindings.clone();
+        tab2.interaction.keybindings = app.keybindings.clone();
         app.tabs.push(tab2);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2343,7 +2373,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_filtering_disabled() {
         let mut app = make_app(&["line 0", "line 1"]).await;
-        app.tabs[0].filtering_enabled = false;
+        app.tabs[0].filter.enabled = false;
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2352,7 +2382,7 @@ mod tests {
     async fn test_ui_marks_only() {
         let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
         app.tabs[0].log_manager.toggle_mark(1);
-        app.tabs[0].show_marks_only = true;
+        app.tabs[0].filter.show_marks_only = true;
         app.tabs[0].refresh_visible();
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2361,7 +2391,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_confirm_restore_session() {
         let mut app = make_app(&[]).await;
-        app.tabs[0].mode = Box::new(ConfirmRestoreSessionMode {
+        app.tabs[0].interaction.mode = Box::new(ConfirmRestoreSessionMode {
             files: vec!["file.log".to_string()],
         });
         let mut terminal = make_terminal();
@@ -2386,7 +2416,7 @@ mod tests {
     #[tokio::test]
     async fn test_compute_hint_height_error() {
         let mut app = make_app(&["line"]).await;
-        app.tabs[0].command_error = Some("something went wrong".to_string());
+        app.tabs[0].interaction.command_error = Some("something went wrong".to_string());
         let input = Some(("bad".to_string(), 3));
         let result = app.compute_hint_height(&input, None, 80, None);
         assert!(result >= 1);
@@ -2402,7 +2432,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_scroll_beyond_visible() {
         let mut app = make_app(&["line 0", "line 1"]).await;
-        app.tabs[0].scroll_offset = 999;
+        app.tabs[0].scroll.scroll_offset = 999;
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2437,7 +2467,7 @@ mod tests {
     async fn test_ui_filtering_progress_in_sidebar_title() {
         let mut app = make_app(&["line 0", "line 1"]).await;
         let (_result_tx, result_rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(4);
-        app.tabs[0].filter_handle = Some(super::super::FilterHandle {
+        app.tabs[0].filter.handle = Some(super::super::FilterHandle {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             displayed_progress: 0.42,
@@ -2466,7 +2496,7 @@ mod tests {
     async fn test_ui_indexing_shown_in_sidebar_title() {
         let mut app = make_app(&["line 0", "line 1"]).await;
         let (_result_tx, result_rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(4);
-        app.tabs[0].filter_handle = Some(super::super::FilterHandle {
+        app.tabs[0].filter.handle = Some(super::super::FilterHandle {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             displayed_progress: 1.0,
@@ -2495,7 +2525,7 @@ mod tests {
     async fn test_ui_filtering_progress_in_tab_name() {
         let mut app = make_app(&["line 0", "line 1"]).await;
         let (_result_tx, result_rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(4);
-        app.tabs[0].filter_handle = Some(super::super::FilterHandle {
+        app.tabs[0].filter.handle = Some(super::super::FilterHandle {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             displayed_progress: 0.42,
@@ -2520,7 +2550,7 @@ mod tests {
     async fn test_ui_indexing_shown_when_progress_complete() {
         let mut app = make_app(&["line 0", "line 1"]).await;
         let (_result_tx, result_rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(4);
-        app.tabs[0].filter_handle = Some(super::super::FilterHandle {
+        app.tabs[0].filter.handle = Some(super::super::FilterHandle {
             result_rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             displayed_progress: 1.0,
@@ -2550,11 +2580,12 @@ mod tests {
         ])
         .await;
         app.execute_command_str("filter INFO".to_string()).await;
-        let visible = app.tabs[0].visible_indices.clone();
+        let visible = app.tabs[0].filter.visible_indices.clone();
         let tab = &mut app.tabs[0];
         let texts = tab.collect_display_texts(visible.iter());
         let _ = tab
             .search
+            .query
             .search("something", visible.iter(), |li| texts.get(&li).cloned());
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2659,19 +2690,20 @@ mod tests {
     async fn make_app_with_search(progress: Option<f64>) -> (App, Terminal<TestBackend>) {
         let mut app = make_app(&["line 0", "line 1"]).await;
         app.show_mode_bar = false;
-        app.tabs[0].show_mode_bar = false;
+        app.tabs[0].display.show_mode_bar = false;
 
-        let visible = app.tabs[0].visible_indices.clone();
+        let visible = app.tabs[0].filter.visible_indices.clone();
         let tab = &mut app.tabs[0];
         let texts = tab.collect_display_texts(visible.iter());
         let _ = tab
             .search
+            .query
             .search("line", visible.iter(), |li| texts.get(&li).cloned());
 
         if let Some(p) = progress {
             let (_result_tx, result_rx) = tokio::sync::mpsc::channel(1);
             let (_progress_tx, progress_rx) = tokio::sync::watch::channel(p);
-            app.tabs[0].search_handle = Some(super::super::SearchHandle {
+            app.tabs[0].search.handle = Some(super::super::SearchHandle {
                 result_rx,
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 progress_rx,
@@ -2723,8 +2755,8 @@ mod tests {
         let mut app = make_app(&line_refs).await;
 
         // Simulate state after scrolling to the end of 50 lines.
-        app.tabs[0].scroll_offset = 49;
-        app.tabs[0].viewport_offset = 49;
+        app.tabs[0].scroll.scroll_offset = 49;
+        app.tabs[0].scroll.viewport_offset = 49;
 
         // Add a filter that keeps only lines 0..30 (those containing a single digit
         // or two-digit number < 30).
@@ -2737,8 +2769,8 @@ mod tests {
 
         // viewport_offset must have been pulled back so the full visible_height is used.
         // With 30 visible lines and visible_height=23, the latest valid start is 30-23=7.
-        let vp = app.tabs[0].viewport_offset;
-        let visible = app.tabs[0].visible_indices.len();
+        let vp = app.tabs[0].scroll.viewport_offset;
+        let visible = app.tabs[0].filter.visible_indices.len();
         let visible_height = 23; // 24-row terminal minus 1 title row (no borders)
         assert!(
             vp + visible_height >= visible,
@@ -2756,22 +2788,22 @@ mod tests {
         // Without input bar.
         let mut app_no_bar = make_app(&line_refs).await;
         app_no_bar.show_mode_bar = false;
-        app_no_bar.tabs[0].show_mode_bar = false;
+        app_no_bar.tabs[0].display.show_mode_bar = false;
         let mut terminal = make_terminal(); // 80×24
         terminal.draw(|f| app_no_bar.ui(f)).unwrap();
-        let height_without_bar = app_no_bar.tabs[0].visible_height;
+        let height_without_bar = app_no_bar.tabs[0].scroll.visible_height;
 
         // With search input bar active.
         let mut app_with_bar = make_app(&line_refs).await;
         app_with_bar.show_mode_bar = false;
-        app_with_bar.tabs[0].show_mode_bar = false;
-        app_with_bar.tabs[0].mode = Box::new(SearchMode {
+        app_with_bar.tabs[0].display.show_mode_bar = false;
+        app_with_bar.tabs[0].interaction.mode = Box::new(SearchMode {
             input: String::new(),
             forward: true,
         });
         let mut terminal2 = make_terminal();
         terminal2.draw(|f| app_with_bar.ui(f)).unwrap();
-        let height_with_bar = app_with_bar.tabs[0].visible_height;
+        let height_with_bar = app_with_bar.tabs[0].scroll.visible_height;
 
         assert!(
             height_with_bar < height_without_bar,
@@ -2801,7 +2833,7 @@ mod tests {
     async fn test_tab_bar_shows_mode_when_mode_bar_hidden() {
         let mut app = make_two_tab_app().await;
         app.show_mode_bar = false;
-        app.tabs[0].show_mode_bar = false;
+        app.tabs[0].display.show_mode_bar = false;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2839,8 +2871,8 @@ mod tests {
 
         let mut app = make_two_tab_app().await;
         app.show_mode_bar = false;
-        app.tabs[0].show_mode_bar = false;
-        app.tabs[0].mode = Box::new(FilterManagementMode {
+        app.tabs[0].display.show_mode_bar = false;
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
             selected_filter_index: 0,
         });
 
@@ -2860,7 +2892,7 @@ mod tests {
     async fn test_inactive_tab_has_no_mode_prefix() {
         let mut app = make_two_tab_app().await;
         app.show_mode_bar = false;
-        app.tabs[0].show_mode_bar = false;
+        app.tabs[0].display.show_mode_bar = false;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2883,7 +2915,7 @@ mod tests {
         let expected_fg = app.theme.text_highlight_fg;
         let expected_bg = app.theme.root_bg;
         app.show_mode_bar = false;
-        app.tabs[0].show_mode_bar = false;
+        app.tabs[0].display.show_mode_bar = false;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2912,8 +2944,8 @@ mod tests {
     async fn test_logs_title_omits_filename_when_tab_bar_visible() {
         let mut app = make_two_tab_app().await;
         app.tabs[0].title = "myfile.log".to_string();
-        app.tabs[0].show_borders = true;
-        app.tabs[1].show_borders = true;
+        app.tabs[0].display.show_borders = true;
+        app.tabs[1].display.show_borders = true;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2946,8 +2978,8 @@ mod tests {
     async fn test_active_tab_shows_count_in_tab_bar() {
         let mut app = make_two_tab_app().await;
         app.tabs[0].title = "myfile.log".to_string();
-        app.tabs[0].show_borders = true;
-        app.tabs[1].show_borders = true;
+        app.tabs[0].display.show_borders = true;
+        app.tabs[1].display.show_borders = true;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2972,9 +3004,9 @@ mod tests {
     async fn test_active_tab_shows_unknown_format_when_no_parser() {
         let mut app = make_two_tab_app().await;
         app.tabs[0].title = "myfile.log".to_string();
-        app.tabs[0].show_borders = true;
-        app.tabs[1].show_borders = true;
-        assert!(app.tabs[0].detected_format.is_none());
+        app.tabs[0].display.show_borders = true;
+        app.tabs[1].display.show_borders = true;
+        assert!(app.tabs[0].display.format.is_none());
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2992,10 +3024,10 @@ mod tests {
     async fn test_active_tab_hides_unknown_format_in_raw_mode() {
         let mut app = make_two_tab_app().await;
         app.tabs[0].title = "myfile.log".to_string();
-        app.tabs[0].show_borders = true;
-        app.tabs[0].raw_mode = true;
-        app.tabs[1].show_borders = true;
-        app.tabs[1].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
+        app.tabs[0].display.show_borders = true;
+        app.tabs[0].display.raw_mode = true;
+        app.tabs[1].display.show_borders = true;
+        app.tabs[1].display.format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
             schema: &crate::parser::SCHEMA_GENERIC_JSON,
             fields_container: None,
             span_key: None,
@@ -3018,15 +3050,15 @@ mod tests {
     async fn test_active_tab_hides_unknown_format_when_parser_detected() {
         let mut app = make_two_tab_app().await;
         app.tabs[0].title = "myfile.log".to_string();
-        app.tabs[0].show_borders = true;
-        app.tabs[0].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
+        app.tabs[0].display.show_borders = true;
+        app.tabs[0].display.format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
             schema: &crate::parser::SCHEMA_GENERIC_JSON,
             fields_container: None,
             span_key: None,
             score_weight: 1.0,
         }));
-        app.tabs[1].show_borders = true;
-        app.tabs[1].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
+        app.tabs[1].display.show_borders = true;
+        app.tabs[1].display.format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
             schema: &crate::parser::SCHEMA_GENERIC_JSON,
             fields_container: None,
             span_key: None,
@@ -3083,9 +3115,9 @@ mod tests {
     #[tokio::test]
     async fn test_sidebar_title_on_same_row_as_tab_bar() {
         let mut app = make_two_tab_app().await;
-        app.tabs[0].show_sidebar = true;
-        app.tabs[0].show_borders = true;
-        app.tabs[1].show_borders = true;
+        app.tabs[0].display.show_sidebar = true;
+        app.tabs[0].display.show_borders = true;
+        app.tabs[1].display.show_borders = true;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

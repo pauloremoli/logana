@@ -78,7 +78,7 @@ impl Mode for CommentMode {
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
-        let comment_kb = tab.keybindings.comment.clone();
+        let comment_kb = tab.interaction.keybindings.comment.clone();
 
         // Insert newline: split current line at cursor (configurable, default Enter)
         // Checked first so it runs before save — Enter = newline is the common case.

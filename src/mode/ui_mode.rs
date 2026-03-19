@@ -20,10 +20,10 @@ pub struct UiMode {
 impl UiMode {
     pub fn from_tab(tab: &TabState) -> Self {
         Self {
-            sidebar: tab.show_sidebar,
-            mode_bar: tab.show_mode_bar,
-            borders: tab.show_borders,
-            wrap: tab.wrap,
+            sidebar: tab.display.show_sidebar,
+            mode_bar: tab.display.show_mode_bar,
+            borders: tab.display.show_borders,
+            wrap: tab.display.wrap,
         }
     }
 }
@@ -36,14 +36,14 @@ impl Mode for UiMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = tab.keybindings.clone();
+        let kb = tab.interaction.keybindings.clone();
 
         if kb.ui.exit.matches(key, modifiers) {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
         if kb.ui.toggle_sidebar.matches(key, modifiers) {
-            tab.show_sidebar = !tab.show_sidebar;
+            tab.display.show_sidebar = !tab.display.show_sidebar;
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
@@ -53,12 +53,12 @@ impl Mode for UiMode {
         }
 
         if kb.ui.toggle_borders.matches(key, modifiers) {
-            tab.show_borders = !tab.show_borders;
+            tab.display.show_borders = !tab.display.show_borders;
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
         if kb.ui.toggle_wrap.matches(key, modifiers) {
-            tab.wrap = !tab.wrap;
+            tab.display.wrap = !tab.display.wrap;
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
@@ -146,11 +146,11 @@ mod tests {
     #[tokio::test]
     async fn test_s_toggles_sidebar() {
         let mut tab = make_tab().await;
-        let initial = tab.show_sidebar;
+        let initial = tab.display.show_sidebar;
         press(&mut tab, KeyCode::Char('s'), KeyModifiers::NONE).await;
-        assert_eq!(tab.show_sidebar, !initial);
+        assert_eq!(tab.display.show_sidebar, !initial);
         press(&mut tab, KeyCode::Char('s'), KeyModifiers::NONE).await;
-        assert_eq!(tab.show_sidebar, initial);
+        assert_eq!(tab.display.show_sidebar, initial);
     }
 
     #[tokio::test]
@@ -163,19 +163,19 @@ mod tests {
     #[tokio::test]
     async fn test_capital_b_toggles_borders() {
         let mut tab = make_tab().await;
-        let initial = tab.show_borders;
+        let initial = tab.display.show_borders;
         press(&mut tab, KeyCode::Char('B'), KeyModifiers::NONE).await;
-        assert_eq!(tab.show_borders, !initial);
+        assert_eq!(tab.display.show_borders, !initial);
     }
 
     #[tokio::test]
     async fn test_w_toggles_wrap() {
         let mut tab = make_tab().await;
-        let initial = tab.wrap;
+        let initial = tab.display.wrap;
         press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
-        assert_eq!(tab.wrap, !initial);
+        assert_eq!(tab.display.wrap, !initial);
         press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
-        assert_eq!(tab.wrap, initial);
+        assert_eq!(tab.display.wrap, initial);
     }
 
     #[tokio::test]
@@ -202,10 +202,10 @@ mod tests {
     #[tokio::test]
     async fn test_snapshot_reflects_state() {
         let mut tab = make_tab().await;
-        tab.show_sidebar = false;
+        tab.display.show_sidebar = false;
         let mode = UiMode::from_tab(&tab);
         assert!(!mode.sidebar);
-        tab.show_sidebar = true;
+        tab.display.show_sidebar = true;
         let mode = UiMode::from_tab(&tab);
         assert!(mode.sidebar);
     }
