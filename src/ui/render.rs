@@ -596,47 +596,118 @@ impl App {
             }
         }
 
+        let frame_area = frame.area();
+
         if is_confirm_restore {
-            self.render_confirm_restore_modal(frame);
+            frame.render_widget(
+                super::widgets::ConfirmRestoreModal {
+                    theme: &self.theme,
+                    keybindings: &self.keybindings,
+                },
+                frame_area,
+            );
         }
 
         if let Some(files) = session_files {
-            self.render_confirm_restore_session_modal(frame, &files);
+            frame.render_widget(
+                super::widgets::ConfirmRestoreSessionModal {
+                    theme: &self.theme,
+                    keybindings: &self.keybindings,
+                    files: &files,
+                },
+                frame_area,
+            );
         }
 
-        if let Some((dir, files)) = confirm_open_dir {
-            self.render_confirm_open_dir_modal(frame, &dir, &files);
+        if let Some((_dir, files)) = confirm_open_dir {
+            frame.render_widget(
+                super::widgets::ConfirmOpenDirModal {
+                    theme: &self.theme,
+                    keybindings: &self.keybindings,
+                    files: &files,
+                },
+                frame_area,
+            );
         }
 
         if let Some((lines, cursor_row, cursor_col, line_count)) = comment_popup {
-            let kb = self.tabs[self.active_tab].interaction.keybindings.clone();
-            self.render_comment_popup(frame, &lines, cursor_row, cursor_col, line_count, &kb);
+            let popup = super::widgets::CommentPopup {
+                theme: &self.theme,
+                keybindings: &self.tabs[self.active_tab].interaction.keybindings,
+                lines: &lines,
+                cursor_row,
+                cursor_col,
+                line_count,
+            };
+            if let Some((cx, cy)) = popup.cursor_position(frame_area) {
+                frame.set_cursor_position((cx, cy));
+            }
+            frame.render_widget(popup, frame_area);
         }
 
         if let Some((fields, selected)) = select_fields_state {
-            self.render_select_fields_popup(frame, &fields, selected);
+            frame.render_widget(
+                super::widgets::SelectFieldsPopup {
+                    theme: &self.theme,
+                    keybindings: &self.keybindings,
+                    fields: &fields,
+                    selected,
+                },
+                frame_area,
+            );
         }
 
         if let Some((containers, selected, error)) = docker_select {
-            self.render_docker_select_popup(frame, &containers, selected, error.as_deref());
+            frame.render_widget(
+                super::widgets::DockerSelectPopup {
+                    theme: &self.theme,
+                    keybindings: &self.keybindings,
+                    containers: &containers,
+                    selected,
+                    error: error.as_deref(),
+                },
+                frame_area,
+            );
         }
 
         if let Some((devices, selected, error, adding)) = dlt_select {
-            self.render_dlt_select_popup(
-                frame,
-                &devices,
-                selected,
-                error.as_deref(),
-                adding.as_ref(),
+            frame.render_widget(
+                super::widgets::DltSelectPopup {
+                    theme: &self.theme,
+                    keybindings: &self.keybindings,
+                    devices: &devices,
+                    selected,
+                    error: error.as_deref(),
+                    adding: adding.as_ref(),
+                },
+                frame_area,
             );
         }
 
         if let Some((groups, search, selected, title)) = value_colors_state {
-            self.render_value_colors_popup(frame, &groups, &search, selected, title);
+            frame.render_widget(
+                super::widgets::ValueColorsPopup {
+                    theme: &self.theme,
+                    keybindings: &self.keybindings,
+                    groups: &groups,
+                    search: &search,
+                    selected,
+                    title,
+                },
+                frame_area,
+            );
         }
 
         if let Some((scroll, search)) = help_state {
-            self.render_keybindings_help_popup(frame, &keybindings, scroll, &search);
+            frame.render_widget(
+                super::widgets::KeybindingsHelpPopup {
+                    theme: &self.theme,
+                    keybindings: &keybindings,
+                    scroll,
+                    search: &search,
+                },
+                frame_area,
+            );
         }
     }
 

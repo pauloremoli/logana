@@ -5,6 +5,7 @@ mod loading;
 mod render;
 mod render_popups;
 mod tab_state;
+pub(crate) mod widgets;
 
 pub use app::App;
 pub use tab_state::*;

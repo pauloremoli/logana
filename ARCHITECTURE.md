@@ -93,6 +93,18 @@ flowchart TD
 
 All `impl TabState` methods remain on `TabState` to avoid cross-cutting borrow complexity.
 
+### Popup Widgets
+
+Popup rendering is implemented as ratatui `Widget` types in `src/ui/widgets/`:
+- `ConfirmRestoreModal` / `ConfirmRestoreSessionModal` / `ConfirmOpenDirModal` — session/directory confirmation dialogs
+- `CommentPopup` — inline log-line annotation editor (exposes `cursor_position()` for `frame.set_cursor_position`)
+- `SelectFieldsPopup` — field visibility and reorder modal
+- `DockerSelectPopup` / `DltSelectPopup` — streaming source selection (DLT includes an add-device form)
+- `ValueColorsPopup` — value/level colour toggle list with fuzzy search
+- `KeybindingsHelpPopup` — keybindings reference with search filtering
+
+Each widget borrows `&Theme` and `&Keybindings` plus the mode-specific data cloned in `App::ui()`. `App::ui()` constructs the widget and calls `frame.render_widget(popup, frame.area())`.
+
 ## MCP Server
 
 ```mermaid

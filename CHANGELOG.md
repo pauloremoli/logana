@@ -14,6 +14,7 @@ All notable changes to logana will be documented in this file.
 
 ### Changed
 - `TabState` decomposed into focused sub-structs (`ScrollState`, `FilterState`, `SearchState`, `CacheState`, `StreamState`, `DisplayConfig`, `InteractionState`) in `src/ui/tab_state/`.
+- All popup UI surfaces extracted into ratatui `Widget` types in `src/ui/widgets/` (`ConfirmRestoreModal`, `ConfirmRestoreSessionModal`, `ConfirmOpenDirModal`, `CommentPopup`, `SelectFieldsPopup`, `DockerSelectPopup`, `DltSelectPopup`, `ValueColorsPopup`, `KeybindingsHelpPopup`).
 - MCP server no longer exposes the `logana://filtered` resource (filtered lines can be very large).
 - Parser layer refactored
 - Field names unified, now it's always the same name regardless of source format.
