@@ -23,6 +23,7 @@
 - [Annotations & Export](annotations.md)
 - [Docker Logs](docker.md)
 - [DLT Streaming](dlt.md)
+- [OTLP Streaming](otlp.md)
 - [Multi-Tab](multi-tab.md)
 - [MCP Server](mcp.md)
 

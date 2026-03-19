@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use super::types::{DisplayParts, LogFormatParser};
+use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_extra_field, push_field_as};
 
 #[derive(Debug)]
 pub struct SyslogParser;
@@ -110,18 +110,20 @@ fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
     }
 
     if hostname != "-" {
-        parts.extra_fields.push(("hostname", hostname));
+        push_field_as(&mut parts.extra_fields, FieldSemantic::Hostname, hostname);
     }
     if procid != "-" {
-        parts.extra_fields.push(("pid", procid));
+        push_field_as(&mut parts.extra_fields, FieldSemantic::Pid, procid);
     }
     if facility < FACILITY_NAMES.len() as u8 {
-        parts
-            .extra_fields
-            .push(("facility", FACILITY_NAMES[facility as usize]));
+        push_field_as(
+            &mut parts.extra_fields,
+            FieldSemantic::Facility,
+            FACILITY_NAMES[facility as usize],
+        );
     }
     if msgid != "-" {
-        parts.extra_fields.push(("msgid", msgid));
+        push_field_as(&mut parts.extra_fields, FieldSemantic::MsgId, msgid);
     }
 
     let rest = rest.trim_start();
@@ -230,7 +232,7 @@ fn parse_sd_params<'a>(content: &'a str, parts: &mut DisplayParts<'a>) {
             pos += 1;
         }
 
-        parts.extra_fields.push((param_name, param_val));
+        push_extra_field(&mut parts.extra_fields, param_name, param_val);
     }
 }
 
@@ -257,9 +259,11 @@ fn extract_unit_pid<'a>(tag: &'a str, parts: &mut DisplayParts<'a>) {
     if let Some(bracket_start) = tag.find('[') {
         parts.target = Some(&tag[..bracket_start]);
         if let Some(bracket_end) = tag[bracket_start..].find(']') {
-            parts
-                .extra_fields
-                .push(("pid", &tag[bracket_start + 1..bracket_start + bracket_end]));
+            push_field_as(
+                &mut parts.extra_fields,
+                FieldSemantic::Pid,
+                &tag[bracket_start + 1..bracket_start + bracket_end],
+            );
         }
     } else {
         parts.target = Some(tag);
@@ -281,7 +285,7 @@ fn parse_rfc3164_inner<'a>(s: &'a str, priority: Option<u8>) -> Option<DisplayPa
     }
 
     let (hostname, rest) = next_token(rest)?;
-    parts.extra_fields.push(("hostname", hostname));
+    push_field_as(&mut parts.extra_fields, FieldSemantic::Hostname, hostname);
 
     if rest.is_empty() {
         return Some(parts);
@@ -292,9 +296,11 @@ fn parse_rfc3164_inner<'a>(s: &'a str, priority: Option<u8>) -> Option<DisplayPa
     if let Some(pri) = priority {
         let facility = pri >> 3;
         if facility < FACILITY_NAMES.len() as u8 {
-            parts
-                .extra_fields
-                .push(("facility", FACILITY_NAMES[facility as usize]));
+            push_field_as(
+                &mut parts.extra_fields,
+                FieldSemantic::Facility,
+                FACILITY_NAMES[facility as usize],
+            );
         }
     }
 
@@ -337,7 +343,7 @@ impl LogFormatParser for SyslogParser {
 
         for &line in lines {
             if let Some(parts) = self.parse_line(line) {
-                for (key, _) in &parts.extra_fields {
+                for (_, key, _) in &parts.extra_fields {
                     let k = key.to_string();
                     if seen.insert(k.clone()) {
                         extras.push(k);
@@ -411,19 +417,19 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "hostname" && *v == "myhost")
+                .any(|(_, k, v)| *k == "hostname" && *v == "myhost")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "pid" && *v == "1234")
+                .any(|(_, k, v)| *k == "pid" && *v == "1234")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "facility" && *v == "local0")
+                .any(|(_, k, v)| *k == "facility" && *v == "local0")
         );
     }
 
@@ -433,7 +439,7 @@ mod tests {
         let parser = SyslogParser;
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.target, Some("sshd"));
-        assert!(!parts.extra_fields.iter().any(|(k, _)| *k == "pid"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "pid"));
         assert_eq!(parts.message, Some("Accepted password for user"));
     }
 
@@ -456,13 +462,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "hostname" && *v == "myhost")
+                .any(|(_, k, v)| *k == "hostname" && *v == "myhost")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "pid" && *v == "1234")
+                .any(|(_, k, v)| *k == "pid" && *v == "1234")
         );
         assert_eq!(parts.message, Some("Accepted password for user"));
         // No level without priority
@@ -510,26 +516,26 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "hostname" && *v == "mymachine.example.com")
+                .any(|(_, k, v)| *k == "hostname" && *v == "mymachine.example.com")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "msgid" && *v == "ID47")
+                .any(|(_, k, v)| *k == "msgid" && *v == "ID47")
         );
         // SD params
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "iut" && *v == "3")
+                .any(|(_, k, v)| *k == "iut" && *v == "3")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "eventSource" && *v == "Application")
+                .any(|(_, k, v)| *k == "eventSource" && *v == "Application")
         );
         assert_eq!(parts.message, Some("An application event log entry..."));
     }
@@ -565,13 +571,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "a" && *v == "1")
+                .any(|(_, k, v)| *k == "a" && *v == "1")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "b" && *v == "2")
+                .any(|(_, k, v)| *k == "b" && *v == "2")
         );
         assert_eq!(parts.message, Some("msg"));
     }

@@ -137,8 +137,8 @@ pub(crate) fn resolve_field<'a>(field: &str, parts: &'a DisplayParts<'a>) -> Opt
         return parts
             .extra_fields
             .iter()
-            .find(|(k, _)| *k == fields_key)
-            .map(|(_, v)| *v);
+            .find(|(_, k, _)| *k == fields_key)
+            .map(|(_, _, v)| *v);
     }
     match field {
         "level" | "lvl" => parts.level,
@@ -148,8 +148,8 @@ pub(crate) fn resolve_field<'a>(field: &str, parts: &'a DisplayParts<'a>) -> Opt
         other => parts
             .extra_fields
             .iter()
-            .find(|(k, _)| *k == other)
-            .map(|(_, v)| *v),
+            .find(|(_, k, _)| *k == other)
+            .map(|(_, _, v)| *v),
     }
 }
 
@@ -252,12 +252,16 @@ mod tests {
         target: Option<&'a str>,
         extra: Vec<(&'a str, &'a str)>,
     ) -> DisplayParts<'a> {
+        use crate::parser::FieldSemantic;
         DisplayParts {
             level,
             timestamp,
             target,
             message,
-            extra_fields: extra,
+            extra_fields: extra
+                .into_iter()
+                .map(|(k, v)| (FieldSemantic::Extra, k, v))
+                .collect(),
             ..Default::default()
         }
     }
@@ -430,13 +434,16 @@ mod tests {
         extra: Vec<(&'a str, &'a str)>,
         span_fields: Vec<(&'a str, &'a str)>,
     ) -> DisplayParts<'a> {
-        use crate::parser::SpanInfo;
+        use crate::parser::{FieldSemantic, SpanInfo};
         DisplayParts {
             span: Some(SpanInfo {
                 name: "req",
                 fields: span_fields,
             }),
-            extra_fields: extra,
+            extra_fields: extra
+                .into_iter()
+                .map(|(k, v)| (FieldSemantic::Extra, k, v))
+                .collect(),
             ..Default::default()
         }
     }

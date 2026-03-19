@@ -1045,13 +1045,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "ecu" && v == "ECU1")
+                .any(|(_, k, v)| *k == "ecu" && *v == "ECU1")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "ctid" && v == "CTX1")
+                .any(|(_, k, v)| *k == "ctid" && *v == "CTX1")
         );
     }
 
@@ -1178,13 +1178,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "ecu" && v == "ECU1")
+                .any(|(_, k, v)| *k == "ecu" && *v == "ECU1")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "ctid" && v == "CTX1")
+                .any(|(_, k, v)| *k == "ctid" && *v == "CTX1")
         );
     }
 

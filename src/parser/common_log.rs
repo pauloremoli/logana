@@ -7,7 +7,7 @@ use super::timestamp::{
     is_level_keyword, normalize_level, parse_datetime_timestamp, parse_iso_timestamp,
     parse_nano_timestamp,
 };
-use super::types::{DisplayParts, LogFormatParser, SpanInfo};
+use super::types::{DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, push_field_as};
 
 #[derive(Debug)]
 pub struct CommonLogParser;
@@ -196,7 +196,7 @@ fn try_logback(s: &str) -> Option<DisplayParts<'_>> {
         level: Some(level),
         ..Default::default()
     };
-    parts.extra_fields.push(("thread", thread));
+    push_field_as(&mut parts.extra_fields, FieldSemantic::Thread, thread);
 
     if let Some(sep_pos) = rest.find(" - ") {
         let target = &rest[..sep_pos];
@@ -259,8 +259,12 @@ fn try_spring_boot(s: &str) -> Option<DisplayParts<'_>> {
         level: Some(level),
         ..Default::default()
     };
-    parts.extra_fields.push(("pid", pid));
-    parts.extra_fields.push(("thread", thread.trim()));
+    push_field_as(&mut parts.extra_fields, FieldSemantic::Pid, pid);
+    push_field_as(
+        &mut parts.extra_fields,
+        FieldSemantic::Thread,
+        thread.trim(),
+    );
 
     if let Some(sep_pos) = rest.find(" : ") {
         let target = &rest[..sep_pos];
@@ -568,7 +572,7 @@ impl LogFormatParser for CommonLogParser {
                 if parts.message.is_some() {
                     has_message = true;
                 }
-                for (key, _) in &parts.extra_fields {
+                for (_, key, _) in &parts.extra_fields {
                     let k = key.to_string();
                     if seen.insert(k.clone()) {
                         extras.push(k);
@@ -722,7 +726,7 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "thread" && *v == "main")
+                .any(|(_, k, v)| *k == "thread" && *v == "main")
         );
         assert_eq!(parts.target, Some("com.example.App"));
         assert_eq!(parts.message, Some("Application started"));
@@ -752,13 +756,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "pid" && *v == "12345")
+                .any(|(_, k, v)| *k == "pid" && *v == "12345")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "thread" && *v == "main")
+                .any(|(_, k, v)| *k == "thread" && *v == "main")
         );
         assert_eq!(parts.target, Some("c.e.MyApp"));
         assert_eq!(parts.message, Some("Started MyApp in 2.5 seconds"));

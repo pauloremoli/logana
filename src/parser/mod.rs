@@ -8,6 +8,7 @@ pub mod journalctl;
 pub mod json;
 pub mod logfmt;
 pub mod otlp;
+pub mod schema;
 pub mod syslog;
 pub(crate) mod timestamp;
 pub mod types;
@@ -17,14 +18,17 @@ pub use common_log::CommonLogParser;
 pub use dlt::DltParser;
 pub use journalctl::JournalctlParser;
 pub use json::{
-    JsonField, JsonParser, LEVEL_KEYS, LogFormat, LogLine, MESSAGE_KEYS, TARGET_KEYS,
-    TIMESTAMP_KEYS, build_display_json, classify_json_fields, classify_json_fields_all,
-    detect_json_format, parse_json_line, strip_json_prefixes,
+    JsonField, JsonParser, LogLine, build_display_json, parse_json_line, strip_json_prefixes,
 };
 pub use logfmt::LogfmtParser;
 pub use otlp::OtlpParser;
+pub use schema::{
+    LogSchema, SCHEMA_GELF, SCHEMA_GENERIC_JSON, SCHEMA_JOURNALCTL_JSON, SCHEMA_LOGFMT,
+    SCHEMA_TRACING,
+};
 pub use syslog::SyslogParser;
-pub use types::{DisplayParts, LogFormatParser, SpanInfo, format_span_col};
+pub use types::{DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, format_span_col};
+pub use types::{push_extra_field, push_field_as};
 
 pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
     if sample.is_empty() {
@@ -32,15 +36,42 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
     }
 
     let parsers: Vec<Box<dyn LogFormatParser>> = vec![
-        // OtlpParser scores up to 1.5 to beat JsonParser (max 1.0) on OTLP files
+        // OtlpParser scores up to 1.5 to beat JsonParser on OTLP files
         Box::new(OtlpParser),
         // DltParser scores up to 1.2 — DLT text is highly distinctive
         Box::new(DltParser),
-        Box::new(JsonParser),
+        // journalctl JSON: detect_keys=["MESSAGE","PRIORITY"], score_weight=1.2
+        Box::new(JsonParser {
+            schema: &SCHEMA_JOURNALCTL_JSON,
+            fields_container: None,
+            span_key: None,
+            score_weight: 1.2,
+        }),
+        // tracing-subscriber JSON: detect_keys=["target","fields"], score_weight=1.1
+        Box::new(JsonParser {
+            schema: &SCHEMA_TRACING,
+            fields_container: Some("fields"),
+            span_key: Some("span"),
+            score_weight: 1.1,
+        }),
+        // GELF: detect_keys=["short_message","version"], score_weight=1.05
+        Box::new(JsonParser {
+            schema: &SCHEMA_GELF,
+            fields_container: None,
+            span_key: None,
+            score_weight: 1.05,
+        }),
+        // Generic JSON catch-all (logrus/zap/bunyan/pino/structlog/syslog-json), score_weight=1.0
+        Box::new(JsonParser {
+            schema: &SCHEMA_GENERIC_JSON,
+            fields_container: None,
+            span_key: None,
+            score_weight: 1.0,
+        }),
         Box::new(SyslogParser),
         Box::new(JournalctlParser),
         Box::new(ClfParser),
-        Box::new(LogfmtParser),
+        Box::new(LogfmtParser::default()),
         // CommonLogParser last — broadest catch-all with 0.95× score penalty
         Box::new(CommonLogParser),
     ];
@@ -103,7 +134,6 @@ mod tests {
 
     #[test]
     fn test_detect_format_mixed_json_wins() {
-        // Mostly JSON with one non-JSON line
         let lines: Vec<&[u8]> = vec![
             br#"{"level":"INFO","msg":"hello"}"#,
             b"not json",
@@ -174,8 +204,6 @@ mod tests {
         assert_eq!(parser.name(), "journalctl");
     }
 
-    // ── New format detection tests ────────────────────────────────────
-
     #[test]
     fn test_detect_format_nano_timestamp_common_log() {
         let lines: Vec<&[u8]> = vec![
@@ -226,7 +254,6 @@ mod tests {
             b"2024-07-24T10:00:01Z ERROR database error",
         ];
         let parser = detect_format(&lines).unwrap();
-        // Should be common-log (not journalctl, since "INFO" fails hostname check)
         assert_eq!(parser.name(), "common-log");
     }
 
@@ -257,10 +284,8 @@ mod tests {
             br#"{"version":"1.1","host":"example.org","short_message":"Another msg","level":6}"#,
         ];
         let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "json");
-        // Verify short_message is classified as message
-        let fields = parse_json_line(lines[0]).unwrap();
-        let parts = classify_json_fields_all(&fields);
+        assert_eq!(parser.name(), "gelf");
+        let parts = parser.parse_line(lines[0]).unwrap();
         assert_eq!(parts.message, Some("A short message"));
     }
 
@@ -286,13 +311,37 @@ mod tests {
 
     #[test]
     fn test_otlp_beats_json() {
-        // OTLP lines are valid JSON, but OtlpParser should win
         let lines: Vec<&[u8]> = vec![
             br#"{"timeUnixNano":"1700000000000000000","severityNumber":9,"body":{"stringValue":"msg"},"attributes":[]}"#,
             br#"{"timeUnixNano":"1700000001000000000","severityNumber":13,"body":{"stringValue":"warn"},"attributes":[]}"#,
         ];
         let parser = detect_format(&lines).unwrap();
         assert_eq!(parser.name(), "otlp");
+    }
+
+    #[test]
+    fn test_detect_format_journalctl_json() {
+        let lines: Vec<&[u8]> = vec![
+            br#"{"MESSAGE":"Accepted password","PRIORITY":"6","__REALTIME_TIMESTAMP":"1699","_HOSTNAME":"myhost","SYSLOG_IDENTIFIER":"sshd"}"#,
+            br#"{"MESSAGE":"Session opened","PRIORITY":"6","__REALTIME_TIMESTAMP":"1700","_HOSTNAME":"myhost","SYSLOG_IDENTIFIER":"sshd"}"#,
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "journalctl-json");
+        let parts = parser.parse_line(lines[0]).unwrap();
+        assert_eq!(parts.message, Some("Accepted password"));
+        assert_eq!(parts.level, Some("INFO"));
+    }
+
+    #[test]
+    fn test_detect_format_tracing_json() {
+        let lines: Vec<&[u8]> = vec![
+            br#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","target":"myapp","fields":{"message":"server started"}}"#,
+            br#"{"timestamp":"2024-01-01T00:00:01Z","level":"WARN","target":"myapp","fields":{"message":"slow query"}}"#,
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "tracing-json");
+        let parts = parser.parse_line(lines[0]).unwrap();
+        assert_eq!(parts.message, Some("server started"));
     }
 
     // ── New journalctl format detection tests ─────────────────────────
@@ -362,7 +411,6 @@ mod tests {
 
     #[test]
     fn test_journalctl_beats_common_log() {
-        // Lines that journalctl parser can handle (valid hostname)
         let lines: Vec<&[u8]> = vec![
             b"2024-02-22T10:15:30+0000 myhost sshd[1234]: msg1",
             b"2024-02-22T10:15:31+0000 myhost sshd[1234]: msg2",

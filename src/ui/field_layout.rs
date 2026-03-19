@@ -140,34 +140,37 @@ pub(crate) fn get_col(p: &DisplayParts<'_>, name: &str, show_keys: bool) -> Opti
             }
             // Resolve dotted fields sub-field names (e.g. "fields.message", "fields.count").
             if let Some(suffix) = n.strip_prefix("fields.") {
-                return if crate::parser::MESSAGE_KEYS.contains(&suffix) {
+                return if suffix == "message" {
                     p.message.map(|s| s.to_string())
                 } else {
                     p.extra_fields
                         .iter()
-                        .find(|(k, _)| *k == suffix)
-                        .map(|(_, v)| v.to_string())
+                        .find(|(_, k, _)| *k == suffix)
+                        .map(|(_, _, v)| v.to_string())
                 };
             }
-            // Resolve all known aliases to their canonical DisplayParts slots.
-            if crate::parser::TIMESTAMP_KEYS.contains(&n) {
-                return p.timestamp.map(|s| {
-                    crate::date_filter::canonical_timestamp(s).unwrap_or_else(|| s.to_string())
-                });
-            }
-            if crate::parser::LEVEL_KEYS.contains(&n) {
-                return p.level.map(|l| format!("{:<5}", l));
-            }
-            if crate::parser::TARGET_KEYS.contains(&n) {
-                return p.target.map(|s| s.to_string());
-            }
-            if crate::parser::MESSAGE_KEYS.contains(&n) {
-                return p.message.map(|s| s.to_string());
+            // Map canonical slot names to DisplayParts slots.
+            match n {
+                "timestamp" => {
+                    return p.timestamp.map(|s| {
+                        crate::date_filter::canonical_timestamp(s).unwrap_or_else(|| s.to_string())
+                    });
+                }
+                "level" => {
+                    return p.level.map(|l| format!("{:<5}", l));
+                }
+                "target" => {
+                    return p.target.map(|s| s.to_string());
+                }
+                "message" => {
+                    return p.message.map(|s| s.to_string());
+                }
+                _ => {}
             }
             p.extra_fields
                 .iter()
-                .find(|(k, _)| *k == n)
-                .map(|(_, v)| v.to_string())
+                .find(|(_, k, _)| *k == n)
+                .map(|(_, _, v)| v.to_string())
         }
     }
 }
@@ -187,7 +190,7 @@ fn default_cols(p: &DisplayParts<'_>, show_keys: bool) -> Vec<String> {
     if let Some(span) = &p.span {
         cols.push(format_span_col(span, show_keys));
     }
-    for (key, value) in &p.extra_fields {
+    for (_, key, value) in &p.extra_fields {
         if show_keys {
             cols.push(format!("{key}={value}"));
         } else {
@@ -248,28 +251,20 @@ pub(crate) fn apply_field_layout(
         // Default layout — rebuild without hidden fields.
         // Check all aliases for each canonical slot so that hiding by raw key
         // (e.g. "lvl") works in the default (no explicit layout) path too.
+        let ts_hidden = hidden_fields.contains("timestamp");
+        let lvl_hidden = hidden_fields.contains("level");
+        let tgt_hidden = hidden_fields.contains("target");
+        let msg_hidden = hidden_fields.contains("message");
         let mut cols = Vec::new();
-        if !crate::parser::TIMESTAMP_KEYS
-            .iter()
-            .any(|k| hidden_fields.contains(*k))
-            && let Some(ts) = p.timestamp
-        {
+        if !ts_hidden && let Some(ts) = p.timestamp {
             cols.push(
                 crate::date_filter::canonical_timestamp(ts).unwrap_or_else(|| ts.to_string()),
             );
         }
-        if !crate::parser::LEVEL_KEYS
-            .iter()
-            .any(|k| hidden_fields.contains(*k))
-            && let Some(lvl) = p.level
-        {
+        if !lvl_hidden && let Some(lvl) = p.level {
             cols.push(format!("{:<5}", lvl));
         }
-        if !crate::parser::TARGET_KEYS
-            .iter()
-            .any(|k| hidden_fields.contains(*k))
-            && let Some(tgt) = p.target
-        {
+        if !tgt_hidden && let Some(tgt) = p.target {
             cols.push(tgt.to_string());
         }
         if !hidden_fields.contains("span")
@@ -278,8 +273,8 @@ pub(crate) fn apply_field_layout(
             cols.push(render_span(span, &excluded_keys, show_keys));
         }
         let mut sorted_extras: Vec<_> = p.extra_fields.iter().collect();
-        sorted_extras.sort_by_key(|(k, _)| *k);
-        for (key, value) in sorted_extras {
+        sorted_extras.sort_by_key(|(_, k, _)| *k);
+        for (_, key, value) in sorted_extras {
             if !hidden_fields.contains(*key) {
                 if show_keys {
                     cols.push(format!("{key}={value}"));
@@ -288,11 +283,7 @@ pub(crate) fn apply_field_layout(
                 }
             }
         }
-        if !crate::parser::MESSAGE_KEYS
-            .iter()
-            .any(|k| hidden_fields.contains(*k))
-            && let Some(msg) = p.message
-        {
+        if !msg_hidden && let Some(msg) = p.message {
             cols.push(msg.to_string());
         }
         cols
@@ -405,7 +396,7 @@ mod tests {
                 name: "handler",
                 fields: vec![("method", "GET")],
             }),
-            extra_fields: vec![("count", "42")],
+            extra_fields: vec![(crate::parser::FieldSemantic::Extra, "count", "42")],
             message: Some("hello world"),
         }
     }
@@ -503,13 +494,17 @@ mod tests {
 
     #[test]
     fn test_get_col_alias_resolution() {
-        let p = make_parts();
-        // "lvl" is an alias for level
-        assert!(get_col(&p, "lvl", false).is_some());
-        // "msg" is an alias for message
-        assert!(get_col(&p, "msg", false).is_some());
-        // "ts" is an alias for timestamp
-        assert!(get_col(&p, "ts", false).is_some());
+        use crate::parser::{FieldSemantic, push_field_as};
+        // push_field_as stores canonical key — "pid" resolves directly for any source
+        let mut extra_fields = vec![];
+        push_field_as(&mut extra_fields, FieldSemantic::Pid, "1234");
+        push_field_as(&mut extra_fields, FieldSemantic::Hostname, "myhost");
+        let p = DisplayParts {
+            extra_fields,
+            ..Default::default()
+        };
+        assert_eq!(get_col(&p, "pid", false), Some("1234".to_string()));
+        assert_eq!(get_col(&p, "hostname", false), Some("myhost".to_string()));
     }
 
     #[test]
@@ -629,7 +624,12 @@ mod tests {
     fn test_effective_row_count_with_parser_uses_rendered_width() {
         // A JSON line that is long in raw bytes but short when structured-rendered.
         let json = br#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","target":"app","fields":{"message":"ok"}}"#;
-        let parser = JsonParser;
+        let parser = JsonParser {
+            schema: &crate::parser::SCHEMA_TRACING,
+            fields_container: Some("fields"),
+            span_key: Some("span"),
+            score_weight: 1.1,
+        };
         let layout = FieldLayout::default();
         let hidden = HashSet::new();
         // Raw bytes are ~94 chars; at width=20 that's 5 rows.
@@ -644,7 +644,12 @@ mod tests {
 
     #[test]
     fn test_effective_row_count_parse_failure_falls_back_to_raw() {
-        let parser = JsonParser;
+        let parser = JsonParser {
+            schema: &crate::parser::SCHEMA_TRACING,
+            fields_container: Some("fields"),
+            span_key: Some("span"),
+            score_weight: 1.1,
+        };
         let layout = FieldLayout::default();
         let hidden = HashSet::new();
         // Non-JSON input: parse returns None → falls back to raw byte width.
@@ -657,7 +662,12 @@ mod tests {
 
     #[test]
     fn test_effective_row_count_all_hidden_falls_back_to_raw() {
-        let parser = JsonParser;
+        let parser = JsonParser {
+            schema: &crate::parser::SCHEMA_TRACING,
+            fields_container: Some("fields"),
+            span_key: Some("span"),
+            score_weight: 1.1,
+        };
         let layout = FieldLayout::default();
         // Hide every known field so cols is empty → falls back to raw.
         let mut hidden = HashSet::new();
@@ -790,8 +800,8 @@ mod tests {
         let p = make_parts();
         let layout = FieldLayout::default();
         let mut hidden = HashSet::new();
-        // "lvl" is an alias for level — hiding it should hide the level column
-        hidden.insert("lvl".to_string());
+        // canonical name for level — hiding it should hide the level column
+        hidden.insert("level".to_string());
         let cols = apply_field_layout(&p, &layout, &hidden, false);
         // Should have 5 (all minus level)
         assert_eq!(cols.len(), 5);

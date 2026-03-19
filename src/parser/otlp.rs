@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use super::json::parse_json_line;
-use super::types::{DisplayParts, LogFormatParser};
+use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_extra_field, push_field_as};
 
 #[derive(Debug)]
 pub struct OtlpParser;
@@ -137,7 +137,7 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
     let mut level_num: Option<&'a str> = None;
     let mut message: Option<&'a str> = None;
     let mut target: Option<&'a str> = None;
-    let mut extra_fields: Vec<(&'a str, &'a str)> = Vec::new();
+    let mut extra_fields: Vec<(FieldSemantic, &'a str, &'a str)> = Vec::new();
 
     for f in fields {
         match f.key {
@@ -179,7 +179,7 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
                     if is_target_attr(k) && target.is_none() {
                         target = Some(v);
                     } else {
-                        extra_fields.push((k, v));
+                        push_extra_field(&mut extra_fields, k, v);
                     }
                 }
             }
@@ -204,10 +204,10 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
             }
 
             "traceId" | "trace_id" | "TraceID" => {
-                extra_fields.push(("traceId", f.value));
+                push_field_as(&mut extra_fields, FieldSemantic::TraceId, f.value);
             }
             "spanId" | "span_id" | "SpanID" => {
-                extra_fields.push(("spanId", f.value));
+                push_field_as(&mut extra_fields, FieldSemantic::SpanId, f.value);
             }
 
             "flags"
@@ -225,7 +225,7 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
             }
 
             _ => {
-                extra_fields.push((f.key, f.value));
+                push_extra_field(&mut extra_fields, f.key, f.value);
             }
         }
     }
@@ -265,7 +265,7 @@ impl LogFormatParser for OtlpParser {
                     continue;
                 }
                 let parts = classify_otlp_fields(&fields);
-                for (k, _) in parts.extra_fields {
+                for (_, k, _) in parts.extra_fields {
                     let key = k.to_string();
                     if seen.insert(key.clone()) {
                         extras.push(key);
@@ -454,19 +454,19 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "http.method" && v == "GET")
+                .any(|(_, k, v)| *k == "http.method" && *v == "GET")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "traceId" && v == "abc123")
+                .any(|(_, k, v)| *k == "traceId" && *v == "abc123")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "spanId" && v == "def456")
+                .any(|(_, k, v)| *k == "spanId" && *v == "def456")
         );
     }
 
@@ -503,7 +503,7 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "user.id" && v == "u123")
+                .any(|(_, k, v)| *k == "user.id" && *v == "u123")
         );
     }
 
@@ -624,7 +624,10 @@ mod tests {
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.target, Some("my-svc"));
         assert!(
-            !parts.extra_fields.iter().any(|&(k, _)| k == "service.name"),
+            !parts
+                .extra_fields
+                .iter()
+                .any(|(_, k, _)| *k == "service.name"),
             "service.name must not appear in extra_fields"
         );
     }
@@ -636,7 +639,10 @@ mod tests {
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.target, Some("from-attrs"));
         assert!(
-            !parts.extra_fields.iter().any(|&(k, _)| k == "service.name"),
+            !parts
+                .extra_fields
+                .iter()
+                .any(|(_, k, _)| *k == "service.name"),
             "service.name must not appear in extra_fields"
         );
     }

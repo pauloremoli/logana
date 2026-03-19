@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use super::types::{DisplayParts, LogFormatParser};
+use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_field_as};
 
 #[derive(Debug)]
 pub struct ClfParser;
@@ -59,14 +59,18 @@ fn parse_clf_line(s: &str) -> Option<DisplayParts<'_>> {
     };
 
     if ident != "-" {
-        parts.extra_fields.push(("ident", ident));
+        push_field_as(&mut parts.extra_fields, FieldSemantic::HttpIdent, ident);
     }
     if authuser != "-" {
-        parts.extra_fields.push(("authuser", authuser));
+        push_field_as(
+            &mut parts.extra_fields,
+            FieldSemantic::HttpAuthUser,
+            authuser,
+        );
     }
-    parts.extra_fields.push(("status", status));
+    push_field_as(&mut parts.extra_fields, FieldSemantic::HttpStatus, status);
     if bytes_str != "-" {
-        parts.extra_fields.push(("bytes", bytes_str));
+        push_field_as(&mut parts.extra_fields, FieldSemantic::HttpBytes, bytes_str);
     }
 
     pos = skip_spaces(s, pos);
@@ -76,7 +80,7 @@ fn parse_clf_line(s: &str) -> Option<DisplayParts<'_>> {
     {
         pos = new_pos;
         if referer != "-" {
-            parts.extra_fields.push(("referer", referer));
+            push_field_as(&mut parts.extra_fields, FieldSemantic::HttpReferer, referer);
         }
 
         pos = skip_spaces(s, pos);
@@ -85,7 +89,11 @@ fn parse_clf_line(s: &str) -> Option<DisplayParts<'_>> {
             && let Some((user_agent, _)) = read_quoted(s, pos)
             && user_agent != "-"
         {
-            parts.extra_fields.push(("user_agent", user_agent));
+            push_field_as(
+                &mut parts.extra_fields,
+                FieldSemantic::HttpUserAgent,
+                user_agent,
+            );
         }
     }
 
@@ -191,7 +199,7 @@ impl LogFormatParser for ClfParser {
 
         for &line in lines {
             if let Some(parts) = self.parse_line(line) {
-                for (key, _) in &parts.extra_fields {
+                for (_, key, _) in &parts.extra_fields {
                     let k = key.to_string();
                     if seen.insert(k.clone()) {
                         extras.push(k);
@@ -228,22 +236,22 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "authuser" && *v == "frank")
+                .any(|(_, k, v)| *k == "authuser" && *v == "frank")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "status" && *v == "200")
+                .any(|(_, k, v)| *k == "status" && *v == "200")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "bytes" && *v == "2326")
+                .any(|(_, k, v)| *k == "bytes" && *v == "2326")
         );
         // ident is "-" so should be absent
-        assert!(!parts.extra_fields.iter().any(|(k, _)| *k == "ident"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "ident"));
     }
 
     #[test]
@@ -253,14 +261,14 @@ mod tests {
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.target, Some("192.168.1.1"));
         assert_eq!(parts.message, Some("POST /api HTTP/1.1"));
-        assert!(!parts.extra_fields.iter().any(|(k, _)| *k == "ident"));
-        assert!(!parts.extra_fields.iter().any(|(k, _)| *k == "authuser"));
-        assert!(!parts.extra_fields.iter().any(|(k, _)| *k == "bytes"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "ident"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "authuser"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "bytes"));
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "status" && *v == "201")
+                .any(|(_, k, v)| *k == "status" && *v == "201")
         );
     }
 
@@ -274,13 +282,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "ident" && *v == "user-id")
+                .any(|(_, k, v)| *k == "ident" && *v == "user-id")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "authuser" && *v == "admin")
+                .any(|(_, k, v)| *k == "authuser" && *v == "admin")
         );
     }
 
@@ -298,13 +306,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "referer" && *v == "http://www.example.com/start.html")
+                .any(|(_, k, v)| *k == "referer" && *v == "http://www.example.com/start.html")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "user_agent" && *v == "Mozilla/4.08 [en] (Win98; I ;Nav)")
+                .any(|(_, k, v)| *k == "user_agent" && *v == "Mozilla/4.08 [en] (Win98; I ;Nav)")
         );
     }
 
@@ -315,8 +323,13 @@ mod tests {
         let parser = ClfParser;
         let parts = parser.parse_line(line).unwrap();
         // "-" values should be omitted
-        assert!(!parts.extra_fields.iter().any(|(k, _)| *k == "referer"));
-        assert!(!parts.extra_fields.iter().any(|(k, _)| *k == "user_agent"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "referer"));
+        assert!(
+            !parts
+                .extra_fields
+                .iter()
+                .any(|(_, k, _)| *k == "user_agent")
+        );
     }
 
     #[test]
@@ -328,9 +341,14 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "referer" && *v == "http://example.com")
+                .any(|(_, k, v)| *k == "referer" && *v == "http://example.com")
         );
-        assert!(!parts.extra_fields.iter().any(|(k, _)| *k == "user_agent"));
+        assert!(
+            !parts
+                .extra_fields
+                .iter()
+                .any(|(_, k, _)| *k == "user_agent")
+        );
     }
 
     // ── Date validation ────────────────────────────────────────────────
@@ -434,7 +452,7 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "status" && *v == "-")
+                .any(|(_, k, v)| *k == "status" && *v == "-")
         );
     }
 

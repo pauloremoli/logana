@@ -1919,12 +1919,6 @@ impl TabState {
             .map(|i| self.file_reader.get_line(i))
             .collect();
         let names = parser.collect_field_names(&name_lines);
-        let no_sample: HashSet<&str> = crate::parser::json::TIMESTAMP_KEYS
-            .iter()
-            .chain(crate::parser::json::MESSAGE_KEYS.iter())
-            .copied()
-            .collect();
-
         // Step 2: Scan raw lines to collect values and per-name frequency counts.
         let mut name_freq: HashMap<String, usize> = HashMap::new();
         let mut value_map: HashMap<String, HashSet<String>> = HashMap::new();
@@ -1937,7 +1931,8 @@ impl TabState {
             for name in &names {
                 if let Some(v) = crate::field_filter::resolve_field(name, &parts) {
                     *name_freq.entry(name.clone()).or_insert(0) += 1;
-                    if !no_sample.contains(name.as_str()) {
+                    let skip = matches!(name.as_str(), "timestamp" | "message");
+                    if !skip {
                         value_map
                             .entry(name.clone())
                             .or_default()
@@ -2549,7 +2544,7 @@ mod tests {
         let fields = tab.collect_field_names();
         assert!(!fields.is_empty());
         assert!(fields.contains(&"level".to_string()));
-        assert!(fields.contains(&"msg".to_string()));
+        assert!(fields.contains(&"message".to_string()));
     }
 
     #[tokio::test]
@@ -3713,15 +3708,13 @@ mod tests {
         let tab = make_tab(&lines).await;
         let index = tab.build_field_index();
         assert!(
-            index.names.contains(&"ts".to_string()),
-            "ts should still appear in names"
+            index.names.contains(&"timestamp".to_string()),
+            "ts should be normalised to canonical 'timestamp' in field names"
         );
-        for ts_key in crate::parser::json::TIMESTAMP_KEYS {
-            assert!(
-                index.values.get(*ts_key).map_or(true, |v| v.is_empty()),
-                "timestamp key '{ts_key}' should have no sampled values"
-            );
-        }
+        assert!(
+            index.values.get("timestamp").map_or(true, |v| v.is_empty()),
+            "timestamp should have no sampled values"
+        );
         assert!(!index.values.get("level").unwrap_or(&vec![]).is_empty());
     }
 
@@ -3729,21 +3722,18 @@ mod tests {
     async fn test_build_field_index_no_values_for_message_fields() {
         let lines = [
             r#"{"time":"2024-01-01T00:00:00Z","level":"info","msg":"hello"}"#,
-            r#"{"time":"2024-01-01T00:00:01Z","level":"warn","message":"world"}"#,
+            r#"{"time":"2024-01-01T00:00:01Z","level":"warn","msg":"world"}"#,
         ];
         let tab = make_tab(&lines).await;
         let index = tab.build_field_index();
         assert!(
-            index.names.contains(&"msg".to_string())
-                || index.names.contains(&"message".to_string()),
-            "message key should still appear in names"
+            index.names.contains(&"message".to_string()),
+            "msg should be normalised to canonical 'message' in field names"
         );
-        for msg_key in crate::parser::json::MESSAGE_KEYS {
-            assert!(
-                index.values.get(*msg_key).map_or(true, |v| v.is_empty()),
-                "message key '{msg_key}' should have no sampled values"
-            );
-        }
+        assert!(
+            index.values.get("message").map_or(true, |v| v.is_empty()),
+            "message should have no sampled values"
+        );
         assert!(!index.values.get("level").unwrap_or(&vec![]).is_empty());
     }
 

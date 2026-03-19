@@ -923,13 +923,13 @@ mod tests {
     async fn test_select_fields_saved_order() {
         let mut app = make_app(&[r#"{"level":"INFO","msg":"hello"}"#]).await;
         // Set a saved order on the field_layout (full ordered list) and hide level
-        app.tabs[0].field_layout.columns = Some(vec!["msg".to_string(), "level".to_string()]);
+        app.tabs[0].field_layout.columns = Some(vec!["message".to_string(), "level".to_string()]);
         app.tabs[0].hidden_fields.insert("level".to_string());
         let result = app.run_command("select-fields").await.unwrap();
         assert!(result);
         if let ModeRenderState::SelectFields { fields, .. } = app.tabs[0].mode.render_state() {
-            // "msg" should be first and enabled, "level" second and disabled
-            assert_eq!(fields[0].0, "msg");
+            // "message" should be first and enabled, "level" second and disabled
+            assert_eq!(fields[0].0, "message");
             assert!(fields[0].1);
             assert_eq!(fields[1].0, "level");
             assert!(!fields[1].1);

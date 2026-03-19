@@ -8,7 +8,7 @@
 //!
 //! Missing fields use `----` as a placeholder.
 
-use super::types::{DisplayParts, LogFormatParser};
+use super::types::{DisplayParts, LogFormatParser, push_extra_field};
 
 #[derive(Debug)]
 pub struct DltParser;
@@ -92,21 +92,21 @@ fn parse_dlt_text_line<'a>(line: &'a [u8]) -> Option<DisplayParts<'a>> {
 
     let mut extra_fields = Vec::new();
     if hw_timestamp != "0" && hw_timestamp != "----" {
-        extra_fields.push(("hw_ts", hw_timestamp));
+        push_extra_field(&mut extra_fields, "hw_ts", hw_timestamp);
     }
     if mcnt != "---" {
-        extra_fields.push(("mcnt", mcnt));
+        push_extra_field(&mut extra_fields, "mcnt", mcnt);
     }
     if ecu != "----" {
-        extra_fields.push(("ecu", ecu));
+        push_extra_field(&mut extra_fields, "ecu", ecu);
     }
     if ctid != "----" {
-        extra_fields.push(("ctid", ctid));
+        push_extra_field(&mut extra_fields, "ctid", ctid);
     }
-    extra_fields.push(("type", msg_type));
-    extra_fields.push(("subtype", subtype));
+    push_extra_field(&mut extra_fields, "type", msg_type);
+    push_extra_field(&mut extra_fields, "subtype", subtype);
     if mode != "----" {
-        extra_fields.push(("mode", mode));
+        push_extra_field(&mut extra_fields, "mode", mode);
     }
 
     let message = if payload.is_empty() {
@@ -186,37 +186,37 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "hw_ts" && v == "1234567")
+                .any(|(_, k, v)| *k == "hw_ts" && *v == "1234567")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "ecu" && v == "ECU1")
+                .any(|(_, k, v)| *k == "ecu" && *v == "ECU1")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "ctid" && v == "CTX1")
+                .any(|(_, k, v)| *k == "ctid" && *v == "CTX1")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "type" && v == "log")
+                .any(|(_, k, v)| *k == "type" && *v == "log")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "subtype" && v == "info")
+                .any(|(_, k, v)| *k == "subtype" && *v == "info")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|&(k, v)| k == "mode" && v == "verbose")
+                .any(|(_, k, v)| *k == "mode" && *v == "verbose")
         );
     }
 
@@ -227,10 +227,10 @@ mod tests {
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024/01/15 10:30:45.123456"));
         assert_eq!(parts.target, None);
-        assert!(!parts.extra_fields.iter().any(|&(k, _)| k == "hw_ts"));
-        assert!(!parts.extra_fields.iter().any(|&(k, _)| k == "ecu"));
-        assert!(!parts.extra_fields.iter().any(|&(k, _)| k == "ctid"));
-        assert!(!parts.extra_fields.iter().any(|&(k, _)| k == "mode"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "hw_ts"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "ecu"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "ctid"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "mode"));
     }
 
     #[test]

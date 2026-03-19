@@ -1,13 +1,19 @@
-//! JSON log parser supporting tracing, bunyan, GELF, journalctl JSON, and similar formats.
+//! JSON log parser — schema-driven, one instance per log format.
 //!
-//! Also handles journalctl JSON output variants:
-//! - `json`      one JSON object per line
-//! - `json-sse`  server-sent events wrapper: `data: {...}`
-//! - `json-seq`  RFC 7464 JSON sequence: RS (0x1E) + `{...}`
+//! Multiple `JsonParser` instances are registered in the format registry,
+//! each carrying a `LogSchema` that defines key→slot mappings for one format
+//! (tracing-subscriber, journalctl JSON, GELF, generic JSON, …).
+//!
+//! JSON wrapper prefixes supported transparently:
+//! - `json-sse`  `data: {...}`
+//! - `json-seq`  RS (0x1E) + `{...}`
 
 use std::collections::HashSet;
 
-use super::types::{DisplayParts, LogFormatParser, SpanInfo};
+use super::schema::LogSchema;
+use super::types::{
+    DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, push_extra_field, push_field_as,
+};
 
 #[derive(Debug)]
 pub struct LogLine<'a> {
@@ -30,7 +36,6 @@ impl<'a> LogLine<'a> {
         let mut level = None;
         let mut current_pos = 0;
 
-        // Try to parse timestamp
         if line.len() > 1
             && line[0] == b'['
             && let Some(ts_end_bracket) = line[1..].iter().position(|&b| b == b']')
@@ -42,7 +47,6 @@ impl<'a> LogLine<'a> {
             }
         }
 
-        // Try to parse level
         if current_pos < line.len() {
             if let Some(level_space) = line[current_pos..].iter().position(|&b| b == b' ') {
                 level = std::str::from_utf8(&line[current_pos..current_pos + level_space]).ok();
@@ -64,13 +68,6 @@ pub struct JsonField<'a> {
     pub key: &'a str,
     pub value: &'a str,
     pub value_is_string: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LogFormat {
-    Plain,
-    JournalctlJson,
-    SyslogJson,
 }
 
 /// Parse a JSON log line into zero-copy key-value fields.
@@ -124,19 +121,6 @@ pub fn parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'_>>> {
     }
 }
 
-pub fn detect_json_format(fields: &[JsonField<'_>]) -> LogFormat {
-    if fields.iter().any(|f| f.key == "MESSAGE") {
-        LogFormat::JournalctlJson
-    } else if fields
-        .iter()
-        .any(|f| matches!(f.key, "message" | "msg" | "log" | "text"))
-    {
-        LogFormat::SyslogJson
-    } else {
-        LogFormat::Plain
-    }
-}
-
 pub fn build_display_json(
     fields: &[JsonField<'_>],
     hidden_names: &HashSet<String>,
@@ -154,131 +138,6 @@ pub fn build_display_json(
         }
     }
     parts.join(" ")
-}
-
-pub const TIMESTAMP_KEYS: &[&str] = &[
-    "timestamp",
-    "time",
-    "ts",
-    "@timestamp",
-    "datetime",
-    "_SOURCE_REALTIME_TIMESTAMP",
-    "__REALTIME_TIMESTAMP",
-];
-pub const LEVEL_KEYS: &[&str] = &["level", "lvl", "severity", "PRIORITY", "log_level"];
-pub const TARGET_KEYS: &[&str] = &[
-    "target",
-    "module",
-    "logger",
-    "source",
-    "component",
-    "service",
-    "name",
-    "SYSLOG_IDENTIFIER",
-    "_COMM",
-    "caller",
-];
-pub const MESSAGE_KEYS: &[&str] = &[
-    "message",
-    "msg",
-    "log",
-    "text",
-    "MESSAGE",
-    "body",
-    "short_message",
-];
-
-pub fn classify_json_fields_all<'a>(fields: &[JsonField<'a>]) -> DisplayParts<'a> {
-    classify_json_fields(fields, &HashSet::new(), &HashSet::new())
-}
-
-/// Classify `fields` into known slots and extra fields, honouring hidden-field
-/// rules. Fields in `hidden_names` or at a 0-based index in `hidden_indices`
-/// are omitted entirely. When a known category already has a value, subsequent
-/// fields with the same category key are silently dropped (not added to extras).
-pub fn classify_json_fields<'a>(
-    fields: &[JsonField<'a>],
-    hidden_names: &HashSet<String>,
-    hidden_indices: &HashSet<usize>,
-) -> DisplayParts<'a> {
-    let mut parts = DisplayParts::default();
-
-    for (idx, field) in fields.iter().enumerate() {
-        if hidden_indices.contains(&idx) || hidden_names.contains(field.key) {
-            continue;
-        }
-        classify_field(field, &mut parts);
-    }
-
-    parts
-}
-
-fn priority_to_level(value: &str) -> &'static str {
-    match value {
-        "0" => "EMERG",
-        "1" => "ALERT",
-        "2" => "CRITICAL",
-        "3" => "ERROR",
-        "4" => "WARNING",
-        "5" => "NOTICE",
-        "6" => "INFO",
-        "7" => "DEBUG",
-        _ => "UNKNOWN",
-    }
-}
-
-fn classify_field<'a>(field: &JsonField<'a>, parts: &mut DisplayParts<'a>) {
-    match field.key {
-        "fields" if !field.value_is_string => {
-            if let Some(sub_fields) = parse_json_line(field.value.as_bytes()) {
-                for sub in &sub_fields {
-                    if MESSAGE_KEYS.contains(&sub.key) {
-                        parts.message.get_or_insert(sub.value);
-                    } else {
-                        parts.extra_fields.push((sub.key, sub.value));
-                    }
-                }
-            }
-        }
-        "span" if !field.value_is_string => {
-            if let Some(sub_fields) = parse_json_line(field.value.as_bytes()) {
-                let mut span_name = "";
-                let mut span_fields: Vec<(&str, &str)> = Vec::new();
-                for sub in &sub_fields {
-                    if sub.key == "name" {
-                        span_name = sub.value;
-                    } else {
-                        span_fields.push((sub.key, sub.value));
-                    }
-                }
-                parts.span = Some(SpanInfo {
-                    name: span_name,
-                    fields: span_fields,
-                });
-            }
-        }
-        "spans" => {}
-        key if TIMESTAMP_KEYS.contains(&key) => {
-            parts.timestamp.get_or_insert(field.value);
-        }
-        key if LEVEL_KEYS.contains(&key) => {
-            let value = if key == "PRIORITY" {
-                priority_to_level(field.value)
-            } else {
-                field.value
-            };
-            parts.level.get_or_insert(value);
-        }
-        key if TARGET_KEYS.contains(&key) => {
-            parts.target.get_or_insert(field.value);
-        }
-        key if MESSAGE_KEYS.contains(&key) => {
-            parts.message.get_or_insert(field.value);
-        }
-        key => {
-            parts.extra_fields.push((key, field.value));
-        }
-    }
 }
 
 /// Strip a `json-sse` `data: ` prefix if present.
@@ -300,28 +159,123 @@ pub fn strip_json_prefixes(line: &[u8]) -> &[u8] {
     strip_seq_prefix(strip_sse_prefix(line))
 }
 
-/// Fields visible in journalctl `short` output mode. When journalctl JSON is
-/// detected these are kept visible and all other extra fields are hidden.
-const JOURNALCTL_KEEP_EXTRA: &[&str] = &["_HOSTNAME", "_PID"];
-
+/// Schema-driven JSON parser. One instance per log format in the registry.
 #[derive(Debug)]
-pub struct JsonParser;
+pub struct JsonParser {
+    pub schema: &'static LogSchema,
+    /// Key whose object value is unpacked into extra fields (e.g. `"fields"` for tracing-subscriber).
+    pub fields_container: Option<&'static str>,
+    /// Key whose object value is parsed as a span (e.g. `"span"` for tracing-subscriber).
+    pub span_key: Option<&'static str>,
+    /// Multiplier applied to the base detection score (>1.0 prioritises this parser).
+    pub score_weight: f64,
+}
+
+impl JsonParser {
+    fn classify_fields<'a>(
+        &self,
+        fields: &[JsonField<'a>],
+        hidden_names: &HashSet<String>,
+        hidden_indices: &HashSet<usize>,
+    ) -> DisplayParts<'a> {
+        let mut parts = DisplayParts::default();
+
+        for (idx, field) in fields.iter().enumerate() {
+            if hidden_indices.contains(&idx) || hidden_names.contains(field.key) {
+                continue;
+            }
+
+            if let Some(container) = self.fields_container
+                && field.key == container
+                && !field.value_is_string
+            {
+                if let Some(sub_fields) = parse_json_line(field.value.as_bytes()) {
+                    for sub in &sub_fields {
+                        match self.schema.classify_key(sub.key) {
+                            FieldSemantic::Message => {
+                                parts.message.get_or_insert(sub.value);
+                            }
+                            FieldSemantic::Extra => {
+                                push_extra_field(&mut parts.extra_fields, sub.key, sub.value);
+                            }
+                            semantic => {
+                                push_field_as(&mut parts.extra_fields, semantic, sub.value);
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if let Some(span_key) = self.span_key {
+                if field.key == span_key && !field.value_is_string {
+                    if let Some(sub_fields) = parse_json_line(field.value.as_bytes()) {
+                        let mut span_name = "";
+                        let mut span_fields: Vec<(&str, &str)> = Vec::new();
+                        for sub in &sub_fields {
+                            if sub.key == "name" {
+                                span_name = sub.value;
+                            } else {
+                                span_fields.push((sub.key, sub.value));
+                            }
+                        }
+                        parts.span = Some(SpanInfo {
+                            name: span_name,
+                            fields: span_fields,
+                        });
+                    }
+                    continue;
+                }
+                if field.key == "spans" {
+                    continue;
+                }
+            }
+
+            match self.schema.classify_key(field.key) {
+                FieldSemantic::Timestamp => {
+                    parts.timestamp.get_or_insert(field.value);
+                }
+                FieldSemantic::Level => {
+                    let value = if let Some(transform) = self.schema.level_transform {
+                        transform(field.value).unwrap_or(field.value)
+                    } else {
+                        field.value
+                    };
+                    parts.level.get_or_insert(value);
+                }
+                FieldSemantic::Target => {
+                    parts.target.get_or_insert(field.value);
+                }
+                FieldSemantic::Message => {
+                    parts.message.get_or_insert(field.value);
+                }
+                FieldSemantic::Extra => {
+                    push_extra_field(&mut parts.extra_fields, field.key, field.value);
+                }
+                semantic => {
+                    push_field_as(&mut parts.extra_fields, semantic, field.value);
+                }
+            }
+        }
+
+        parts
+    }
+}
 
 impl LogFormatParser for JsonParser {
     fn parse_line<'a>(&self, line: &'a [u8]) -> Option<DisplayParts<'a>> {
         let line = strip_json_prefixes(line);
         let fields = parse_json_line(line)?;
-        Some(classify_json_fields_all(&fields))
+        Some(self.classify_fields(&fields, &HashSet::new(), &HashSet::new()))
     }
 
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String> {
         let mut seen = HashSet::new();
-        // Slot lists hold raw key names in first-seen order per canonical group.
-        let mut timestamp_keys = Vec::new();
-        let mut level_keys = Vec::new();
-        let mut target_keys = Vec::new();
-        let mut message_keys = Vec::new();
-        let mut extras = Vec::new();
+        let mut timestamp_seen = false;
+        let mut level_seen = false;
+        let mut target_seen = false;
+        let mut message_seen = false;
+        let mut extras: Vec<String> = Vec::new();
 
         for &line in lines {
             let line = strip_json_prefixes(line);
@@ -329,13 +283,13 @@ impl LogFormatParser for JsonParser {
                 for field in &fields {
                     let key = field.key;
 
-                    // Expand `fields` container into dotted sub-field names.
-                    // Always add as "fields.{raw}" extras — never inject a bare
-                    // canonical name, so there's no duplication.
-                    if key == "fields" && !field.value_is_string {
+                    if let Some(container) = self.fields_container
+                        && key == container
+                        && !field.value_is_string
+                    {
                         if let Some(subs) = parse_json_line(field.value.as_bytes()) {
                             for sub in &subs {
-                                let dotted = format!("fields.{}", sub.key);
+                                let dotted = format!("{container}.{}", sub.key);
                                 if seen.insert(dotted.clone()) {
                                     extras.push(dotted);
                                 }
@@ -344,83 +298,100 @@ impl LogFormatParser for JsonParser {
                         continue;
                     }
 
-                    // Expand `span` container into dotted sub-field names.
-                    if key == "span" && !field.value_is_string {
-                        if let Some(subs) = parse_json_line(field.value.as_bytes()) {
-                            for sub in &subs {
-                                let dotted = format!("span.{}", sub.key);
-                                if seen.insert(dotted.clone()) {
-                                    extras.push(dotted);
+                    if let Some(span_key) = self.span_key {
+                        if key == span_key && !field.value_is_string {
+                            if let Some(subs) = parse_json_line(field.value.as_bytes()) {
+                                for sub in &subs {
+                                    let dotted = format!("{span_key}.{}", sub.key);
+                                    if seen.insert(dotted.clone()) {
+                                        extras.push(dotted);
+                                    }
                                 }
                             }
+                            continue;
                         }
-                        continue;
-                    }
-
-                    if key == "spans" {
-                        continue;
+                        if key == "spans" {
+                            continue;
+                        }
                     }
 
                     if seen.insert(key.to_string()) {
-                        if TIMESTAMP_KEYS.contains(&key) {
-                            timestamp_keys.push(key.to_string());
-                        } else if LEVEL_KEYS.contains(&key) {
-                            level_keys.push(key.to_string());
-                        } else if TARGET_KEYS.contains(&key) {
-                            target_keys.push(key.to_string());
-                        } else if MESSAGE_KEYS.contains(&key) {
-                            message_keys.push(key.to_string());
-                        } else {
-                            extras.push(key.to_string());
+                        match self.schema.classify_key(key) {
+                            FieldSemantic::Timestamp => timestamp_seen = true,
+                            FieldSemantic::Level => level_seen = true,
+                            FieldSemantic::Target => target_seen = true,
+                            FieldSemantic::Message => message_seen = true,
+                            sem => {
+                                let canonical = sem.to_string();
+                                if canonical.is_empty() {
+                                    extras.push(key.to_string());
+                                } else {
+                                    extras.push(canonical);
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Order: timestamp-group → level-group → target-group → sorted extras → message-group last
         let mut result: Vec<String> = Vec::new();
-        result.extend(timestamp_keys);
-        result.extend(level_keys);
-        result.extend(target_keys);
+        if timestamp_seen {
+            result.push("timestamp".to_string());
+        }
+        if level_seen {
+            result.push("level".to_string());
+        }
+        if target_seen {
+            result.push("target".to_string());
+        }
         extras.sort();
         extras.dedup();
         result.extend(extras);
-        result.extend(message_keys);
+        if message_seen {
+            result.push("message".to_string());
+        }
         result
     }
 
-    fn name(&self) -> &str {
-        "json"
+    fn detect_score(&self, sample: &[&[u8]]) -> f64 {
+        let non_empty: Vec<&[u8]> = sample.iter().copied().filter(|l| !l.is_empty()).collect();
+        if non_empty.is_empty() {
+            return 0.0;
+        }
+        let matched = non_empty
+            .iter()
+            .filter(|&&l| {
+                let l = strip_json_prefixes(l);
+                if let Some(fields) = parse_json_line(l) {
+                    let field_keys: Vec<&str> = fields.iter().map(|f| f.key).collect();
+                    self.schema.matches_detect_keys(&field_keys)
+                } else {
+                    false
+                }
+            })
+            .count();
+        if matched == 0 {
+            return 0.0;
+        }
+        (matched as f64 / non_empty.len() as f64) * self.score_weight
     }
 
-    /// For journalctl JSON output, hide all systemd-internal fields that are not
-    /// visible in `short` mode. Only timestamp, level, target, `_HOSTNAME`,
-    /// `_PID`, and message are kept visible by default.
-    fn default_hidden_fields(&self, sample: &[&[u8]]) -> HashSet<String> {
-        let is_journalctl = sample.iter().any(|&line| {
-            let line = strip_json_prefixes(line);
-            if let Some(fields) = parse_json_line(line) {
-                matches!(detect_json_format(&fields), LogFormat::JournalctlJson)
-            } else {
-                false
-            }
-        });
+    fn name(&self) -> &str {
+        self.schema.name
+    }
 
-        if !is_journalctl {
+    fn default_hidden_fields(&self, sample: &[&[u8]]) -> HashSet<String> {
+        if self.schema.keep_visible_extras.is_empty() {
             return HashSet::new();
         }
-
-        // Hide every extra field that isn't one of the short-mode visible extras.
         self.collect_field_names(sample)
             .into_iter()
             .filter(|name| {
-                let is_canonical = TIMESTAMP_KEYS.contains(&name.as_str())
-                    || LEVEL_KEYS.contains(&name.as_str())
-                    || TARGET_KEYS.contains(&name.as_str())
-                    || MESSAGE_KEYS.contains(&name.as_str());
-                let is_kept = JOURNALCTL_KEEP_EXTRA.contains(&name.as_str());
-                !is_canonical && !is_kept
+                let is_primary =
+                    matches!(name.as_str(), "timestamp" | "level" | "target" | "message");
+                let is_kept = self.schema.keep_visible_extras.contains(&name.as_str());
+                !is_primary && !is_kept
             })
             .collect()
     }
@@ -518,6 +489,45 @@ fn read_value<'a>(line: &'a [u8], pos: &mut usize) -> Option<(&'a str, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::schema::{
+        SCHEMA_GELF, SCHEMA_GENERIC_JSON, SCHEMA_JOURNALCTL_JSON, SCHEMA_TRACING,
+    };
+
+    fn generic_parser() -> JsonParser {
+        JsonParser {
+            schema: &SCHEMA_GENERIC_JSON,
+            fields_container: None,
+            span_key: None,
+            score_weight: 1.0,
+        }
+    }
+
+    fn tracing_parser() -> JsonParser {
+        JsonParser {
+            schema: &SCHEMA_TRACING,
+            fields_container: Some("fields"),
+            span_key: Some("span"),
+            score_weight: 1.1,
+        }
+    }
+
+    fn journalctl_parser() -> JsonParser {
+        JsonParser {
+            schema: &SCHEMA_JOURNALCTL_JSON,
+            fields_container: None,
+            span_key: None,
+            score_weight: 1.2,
+        }
+    }
+
+    fn gelf_parser() -> JsonParser {
+        JsonParser {
+            schema: &SCHEMA_GELF,
+            fields_container: None,
+            span_key: None,
+            score_weight: 1.05,
+        }
+    }
 
     #[test]
     fn test_parse_log_line_full() {
@@ -575,7 +585,6 @@ mod tests {
 
     #[test]
     fn test_parse_json_empty_object() {
-        // An empty object {} has no fields → treated as non-JSON
         assert!(parse_json_line(b"{}").is_none());
     }
 
@@ -697,36 +706,6 @@ mod tests {
         assert_eq!(fields[2].key, "m");
     }
 
-    // ── detect_json_format ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_detect_journalctl_format() {
-        let line = br#"{"MESSAGE":"hello","PRIORITY":"6","_HOSTNAME":"host"}"#;
-        let fields = parse_json_line(line).unwrap();
-        assert_eq!(detect_json_format(&fields), LogFormat::JournalctlJson);
-    }
-
-    #[test]
-    fn test_detect_syslog_json_via_message_key() {
-        let line = br#"{"time":"2024","level":"INFO","message":"hello"}"#;
-        let fields = parse_json_line(line).unwrap();
-        assert_eq!(detect_json_format(&fields), LogFormat::SyslogJson);
-    }
-
-    #[test]
-    fn test_detect_syslog_json_via_msg_key() {
-        let line = br#"{"ts":"2024","level":"WARN","msg":"warn msg"}"#;
-        let fields = parse_json_line(line).unwrap();
-        assert_eq!(detect_json_format(&fields), LogFormat::SyslogJson);
-    }
-
-    #[test]
-    fn test_detect_plain_json_format() {
-        let line = br#"{"foo":"bar","baz":42}"#;
-        let fields = parse_json_line(line).unwrap();
-        assert_eq!(detect_json_format(&fields), LogFormat::Plain);
-    }
-
     // ── build_display_json ───────────────────────────────────────────────────
 
     #[test]
@@ -755,7 +734,7 @@ mod tests {
         let line = br#"{"level":"INFO","msg":"hello","pid":42}"#;
         let fields = parse_json_line(line).unwrap();
         let mut hidden_idx = HashSet::new();
-        hidden_idx.insert(0usize); // hide "level"
+        hidden_idx.insert(0usize);
         let display = build_display_json(&fields, &HashSet::new(), &hidden_idx);
         assert!(!display.contains("level="));
         assert!(display.contains("msg=hello"));
@@ -779,7 +758,6 @@ mod tests {
         let display = build_display_json(&fields, &HashSet::new(), &HashSet::new());
         assert!(display.contains("pid=1234"));
         assert!(display.contains("ok=true"));
-        // Values are NOT double-quoted
         assert!(!display.contains("pid=\"1234\""));
     }
 
@@ -797,13 +775,13 @@ mod tests {
         assert!(display.contains("PRIORITY=6"));
     }
 
-    // ── classify_json_fields ─────────────────────────────────────────────────
+    // ── JsonParser::classify_fields ──────────────────────────────────────────
 
     #[test]
     fn test_classify_known_fields_extracted() {
+        let parser = generic_parser();
         let line = br#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","target":"myapp","message":"hello"}"#;
-        let fields = parse_json_line(line).unwrap();
-        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-01-01T00:00:00Z"));
         assert_eq!(parts.level, Some("INFO"));
         assert_eq!(parts.target, Some("myapp"));
@@ -813,50 +791,53 @@ mod tests {
 
     #[test]
     fn test_classify_unknown_fields_go_to_extra() {
+        let parser = generic_parser();
         let line = br#"{"level":"WARN","request_id":"abc","msg":"hi"}"#;
-        let fields = parse_json_line(line).unwrap();
-        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("WARN"));
         assert_eq!(parts.message, Some("hi"));
         assert_eq!(parts.extra_fields.len(), 1);
-        assert_eq!(parts.extra_fields[0], ("request_id", "abc"));
+        assert_eq!(parts.extra_fields[0].1, "request_id");
+        assert_eq!(parts.extra_fields[0].2, "abc");
     }
 
     #[test]
     fn test_classify_extra_fields_preserve_order() {
+        let parser = generic_parser();
         let line = br#"{"msg":"hi","z_field":"z","a_field":"a","level":"INFO"}"#;
-        let fields = parse_json_line(line).unwrap();
-        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
-        assert_eq!(parts.extra_fields[0].0, "z_field");
-        assert_eq!(parts.extra_fields[1].0, "a_field");
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.extra_fields[0].1, "z_field");
+        assert_eq!(parts.extra_fields[1].1, "a_field");
     }
 
     #[test]
     fn test_classify_hidden_by_name_excluded() {
+        let parser = generic_parser();
         let line = br#"{"level":"INFO","request_id":"abc","msg":"hi"}"#;
         let fields = parse_json_line(line).unwrap();
         let mut hidden = HashSet::new();
         hidden.insert("request_id".to_string());
-        let parts = classify_json_fields(&fields, &hidden, &HashSet::new());
+        let parts = parser.classify_fields(&fields, &hidden, &HashSet::new());
         assert!(parts.extra_fields.is_empty());
         assert_eq!(parts.message, Some("hi"));
     }
 
     #[test]
     fn test_classify_hidden_by_index_excluded() {
+        let parser = generic_parser();
         let line = br#"{"level":"INFO","request_id":"abc","msg":"hi"}"#;
         let fields = parse_json_line(line).unwrap();
         let mut hidden_idx = HashSet::new();
-        hidden_idx.insert(1usize); // "request_id"
-        let parts = classify_json_fields(&fields, &HashSet::new(), &hidden_idx);
+        hidden_idx.insert(1usize);
+        let parts = parser.classify_fields(&fields, &HashSet::new(), &hidden_idx);
         assert!(parts.extra_fields.is_empty());
     }
 
     #[test]
     fn test_classify_journalctl_format() {
+        let parser = journalctl_parser();
         let line = br#"{"__REALTIME_TIMESTAMP":"1699999999","PRIORITY":"6","SYSLOG_IDENTIFIER":"sshd","MESSAGE":"Accepted"}"#;
-        let fields = parse_json_line(line).unwrap();
-        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("1699999999"));
         assert_eq!(parts.level, Some("INFO"));
         assert_eq!(parts.target, Some("sshd"));
@@ -865,19 +846,18 @@ mod tests {
 
     #[test]
     fn test_classify_duplicate_known_key_drops_second() {
-        // "time" and "ts" both match timestamp — only the first fills the slot
+        let parser = generic_parser();
         let line = br#"{"time":"t1","ts":"t2","msg":"hi"}"#;
-        let fields = parse_json_line(line).unwrap();
-        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("t1"));
-        assert!(parts.extra_fields.is_empty()); // "ts" is silently dropped
+        assert!(parts.extra_fields.is_empty());
     }
 
     #[test]
     fn test_classify_all_unknown_fields_only() {
+        let parser = generic_parser();
         let line = br#"{"foo":"bar","baz":42}"#;
-        let fields = parse_json_line(line).unwrap();
-        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        let parts = parser.parse_line(line).unwrap();
         assert!(parts.timestamp.is_none());
         assert!(parts.level.is_none());
         assert!(parts.target.is_none());
@@ -887,29 +867,29 @@ mod tests {
 
     #[test]
     fn test_classify_fields_container_extracts_message() {
-        // tracing-subscriber JSON format: message inside "fields" object
+        let parser = tracing_parser();
         let line = br#"{"level":"INFO","target":"todo_app","fields":{"message":"Listening on 0.0.0.0:3000"}}"#;
-        let fields = parse_json_line(line).unwrap();
-        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.message, Some("Listening on 0.0.0.0:3000"));
         assert!(parts.extra_fields.is_empty());
     }
 
     #[test]
     fn test_classify_fields_container_extracts_extras_too() {
+        let parser = tracing_parser();
         let line = br#"{"level":"INFO","fields":{"message":"todos listed","count":9}}"#;
-        let fields = parse_json_line(line).unwrap();
-        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.message, Some("todos listed"));
         assert_eq!(parts.extra_fields.len(), 1);
-        assert_eq!(parts.extra_fields[0], ("count", "9"));
+        assert_eq!(parts.extra_fields[0].1, "count");
+        assert_eq!(parts.extra_fields[0].2, "9");
     }
 
     #[test]
     fn test_classify_span_extracts_name_and_fields() {
+        let parser = tracing_parser();
         let line = br#"{"level":"INFO","span":{"name":"request","method":"GET","uri":"/todos"},"fields":{"message":"ok"}}"#;
-        let fields = parse_json_line(line).unwrap();
-        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
+        let parts = parser.parse_line(line).unwrap();
         let span = parts.span.unwrap();
         assert_eq!(span.name, "request");
         assert_eq!(span.fields.len(), 2);
@@ -927,19 +907,27 @@ mod tests {
 
     #[test]
     fn test_classify_spans_array_is_skipped() {
-        let line = br#"{"level":"INFO","spans":[{"name":"root"}],"msg":"hi"}"#;
-        let fields = parse_json_line(line).unwrap();
-        let parts = classify_json_fields(&fields, &HashSet::new(), &HashSet::new());
-        // "spans" key must not appear in extra_fields
+        let parser = tracing_parser();
+        let line = br#"{"level":"INFO","spans":[{"name":"root"}],"message":"hi"}"#;
+        let parts = parser.parse_line(line).unwrap();
         assert!(parts.extra_fields.is_empty());
         assert!(parts.span.is_none());
+    }
+
+    #[test]
+    fn test_gelf_short_message_classified_as_message() {
+        let parser = gelf_parser();
+        let line =
+            br#"{"version":"1.1","host":"example.org","short_message":"A short message","level":1}"#;
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.message, Some("A short message"));
     }
 
     // ── JsonParser trait impl ────────────────────────────────────────────────
 
     #[test]
     fn test_json_parser_parse_line() {
-        let parser = JsonParser;
+        let parser = generic_parser();
         let line = br#"{"timestamp":"2024-01-01","level":"INFO","message":"hello"}"#;
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-01-01"));
@@ -949,13 +937,13 @@ mod tests {
 
     #[test]
     fn test_json_parser_parse_line_not_json() {
-        let parser = JsonParser;
+        let parser = generic_parser();
         assert!(parser.parse_line(b"not json").is_none());
     }
 
     #[test]
-    fn test_json_parser_detect_score() {
-        let parser = JsonParser;
+    fn test_json_parser_detect_score_generic_matches_all_json() {
+        let parser = generic_parser();
         let lines: Vec<&[u8]> = vec![
             br#"{"level":"INFO","msg":"hello"}"#,
             br#"{"level":"WARN","msg":"world"}"#,
@@ -966,15 +954,41 @@ mod tests {
 
     #[test]
     fn test_json_parser_detect_score_mixed() {
-        let parser = JsonParser;
+        let parser = generic_parser();
         let lines: Vec<&[u8]> = vec![br#"{"level":"INFO","msg":"hello"}"#, b"not json"];
         let score = parser.detect_score(&lines);
         assert!((score - 0.5).abs() < 0.001);
     }
 
     #[test]
-    fn test_json_parser_collect_field_names() {
-        let parser = JsonParser;
+    fn test_json_parser_detect_score_journalctl_schema_requires_specific_keys() {
+        let parser = journalctl_parser();
+        let lines: Vec<&[u8]> = vec![
+            br#"{"level":"INFO","msg":"hello"}"#,
+            br#"{"level":"WARN","msg":"world"}"#,
+        ];
+        let score = parser.detect_score(&lines);
+        assert!(
+            (score).abs() < 0.001,
+            "journalctl schema should not match generic JSON"
+        );
+    }
+
+    #[test]
+    fn test_json_parser_detect_score_journalctl_matches_journalctl_json() {
+        let parser = journalctl_parser();
+        let lines: Vec<&[u8]> =
+            vec![br#"{"MESSAGE":"hello","PRIORITY":"6","__REALTIME_TIMESTAMP":"123"}"#];
+        let score = parser.detect_score(&lines);
+        assert!(
+            score > 1.0,
+            "journalctl schema should score > 1.0 on journalctl JSON"
+        );
+    }
+
+    #[test]
+    fn test_json_parser_collect_field_names_canonical() {
+        let parser = generic_parser();
         let lines: Vec<&[u8]> =
             vec![br#"{"timestamp":"2024","level":"INFO","request_id":"abc","message":"hi"}"#];
         let names = parser.collect_field_names(&lines);
@@ -985,16 +999,37 @@ mod tests {
     }
 
     #[test]
+    fn test_json_parser_collect_field_names_returns_canonical_not_raw() {
+        let parser = generic_parser();
+        let lines: Vec<&[u8]> = vec![br#"{"ts":"2024","lvl":"INFO","msg":"hi"}"#];
+        let names = parser.collect_field_names(&lines);
+        assert!(
+            names.contains(&"timestamp".to_string()),
+            "ts should be normalised to 'timestamp'"
+        );
+        assert!(
+            names.contains(&"level".to_string()),
+            "lvl should be normalised to 'level'"
+        );
+        assert!(
+            names.contains(&"message".to_string()),
+            "msg should be normalised to 'message'"
+        );
+    }
+
+    #[test]
     fn test_json_parser_name() {
-        let parser = JsonParser;
-        assert_eq!(parser.name(), "json");
+        assert_eq!(generic_parser().name(), "json");
+        assert_eq!(journalctl_parser().name(), "journalctl-json");
+        assert_eq!(tracing_parser().name(), "tracing-json");
+        assert_eq!(gelf_parser().name(), "gelf");
     }
 
     // ── json-sse (Server-Sent Events) support ────────────────────────────────
 
     #[test]
     fn test_json_sse_parse_line() {
-        let parser = JsonParser;
+        let parser = generic_parser();
         let line = br#"data: {"level":"INFO","msg":"hello"}"#;
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("INFO"));
@@ -1003,7 +1038,7 @@ mod tests {
 
     #[test]
     fn test_json_sse_detect_score() {
-        let parser = JsonParser;
+        let parser = generic_parser();
         let lines: Vec<&[u8]> = vec![
             br#"data: {"level":"INFO","msg":"hello"}"#,
             br#"data: {"level":"WARN","msg":"world"}"#,
@@ -1014,20 +1049,19 @@ mod tests {
 
     #[test]
     fn test_json_sse_collect_field_names() {
-        let parser = JsonParser;
+        let parser = generic_parser();
         let lines: Vec<&[u8]> = vec![br#"data: {"timestamp":"2024","level":"INFO","msg":"hi"}"#];
         let names = parser.collect_field_names(&lines);
         assert!(names.contains(&"timestamp".to_string()));
         assert!(names.contains(&"level".to_string()));
-        assert!(names.contains(&"msg".to_string()));
+        assert!(names.contains(&"message".to_string()));
     }
 
     // ── json-seq (RFC 7464 JSON Sequence) support ────────────────────────────
 
     #[test]
     fn test_json_seq_parse_line() {
-        let parser = JsonParser;
-        // 0x1e is the RS (record separator) character
+        let parser = generic_parser();
         let mut line = vec![0x1eu8];
         line.extend_from_slice(br#"{"level":"INFO","msg":"hello"}"#);
         let parts = parser.parse_line(&line).unwrap();
@@ -1037,7 +1071,7 @@ mod tests {
 
     #[test]
     fn test_json_seq_detect_score() {
-        let parser = JsonParser;
+        let parser = generic_parser();
         let mut line1 = vec![0x1eu8];
         line1.extend_from_slice(br#"{"level":"INFO","msg":"hello"}"#);
         let mut line2 = vec![0x1eu8];
@@ -1051,12 +1085,11 @@ mod tests {
 
     #[test]
     fn test_default_hidden_fields_journalctl_json() {
-        let parser = JsonParser;
+        let parser = journalctl_parser();
         let lines: Vec<&[u8]> = vec![
             br#"{"__CURSOR":"s=abc","__REALTIME_TIMESTAMP":"1699","__MONOTONIC_TIMESTAMP":"123","_BOOT_ID":"abc","PRIORITY":"6","_HOSTNAME":"myhost","SYSLOG_IDENTIFIER":"sshd","_PID":"1234","_UID":"1000","_COMM":"sshd","MESSAGE":"Accepted"}"#,
         ];
         let hidden = parser.default_hidden_fields(&lines);
-        // Internal fields should be hidden
         assert!(hidden.contains("__CURSOR"), "__CURSOR should be hidden");
         assert!(
             hidden.contains("__MONOTONIC_TIMESTAMP"),
@@ -1064,46 +1097,49 @@ mod tests {
         );
         assert!(hidden.contains("_BOOT_ID"), "_BOOT_ID should be hidden");
         assert!(hidden.contains("_UID"), "_UID should be hidden");
-        // Short-mode visible fields should NOT be hidden
         assert!(
             !hidden.contains("__REALTIME_TIMESTAMP"),
-            "__REALTIME_TIMESTAMP should be visible"
+            "__REALTIME_TIMESTAMP should be visible (timestamp slot)"
         );
-        assert!(!hidden.contains("PRIORITY"), "PRIORITY should be visible");
+        assert!(
+            !hidden.contains("PRIORITY"),
+            "PRIORITY should be visible (level slot)"
+        );
         assert!(
             !hidden.contains("SYSLOG_IDENTIFIER"),
-            "SYSLOG_IDENTIFIER should be visible"
+            "SYSLOG_IDENTIFIER should be visible (target slot)"
         );
-        assert!(!hidden.contains("_HOSTNAME"), "_HOSTNAME should be visible");
-        assert!(!hidden.contains("_PID"), "_PID should be visible");
-        assert!(!hidden.contains("MESSAGE"), "MESSAGE should be visible");
+        assert!(!hidden.contains("hostname"), "hostname should be visible");
+        assert!(!hidden.contains("pid"), "pid should be visible");
+        assert!(
+            !hidden.contains("MESSAGE"),
+            "MESSAGE should be visible (message slot)"
+        );
     }
 
     #[test]
-    fn test_default_hidden_fields_non_journalctl_json() {
-        // Regular JSON logs should not have any default hidden fields
-        let parser = JsonParser;
+    fn test_default_hidden_fields_generic_json_empty() {
+        let parser = generic_parser();
         let lines: Vec<&[u8]> =
             vec![br#"{"timestamp":"2024","level":"INFO","message":"hello","request_id":"abc"}"#];
         let hidden = parser.default_hidden_fields(&lines);
         assert!(
             hidden.is_empty(),
-            "Non-journalctl JSON should have no hidden fields by default"
+            "Generic JSON should have no default hidden fields"
         );
     }
 
     #[test]
     fn test_default_hidden_fields_journalctl_json_sse() {
-        // json-sse wrapper should also trigger journalctl JSON hidden fields
-        let parser = JsonParser;
+        let parser = journalctl_parser();
         let lines: Vec<&[u8]> = vec![
             br#"data: {"__CURSOR":"s=abc","__REALTIME_TIMESTAMP":"1699","PRIORITY":"6","_HOSTNAME":"myhost","SYSLOG_IDENTIFIER":"sshd","_PID":"1234","_BOOT_ID":"xyz","MESSAGE":"Started"}"#,
         ];
         let hidden = parser.default_hidden_fields(&lines);
         assert!(hidden.contains("__CURSOR"));
         assert!(hidden.contains("_BOOT_ID"));
-        assert!(!hidden.contains("_HOSTNAME"));
-        assert!(!hidden.contains("_PID"));
+        assert!(!hidden.contains("hostname"));
+        assert!(!hidden.contains("pid"));
     }
 
     // ── strip_json_prefixes ──────────────────────────────────────────────────
@@ -1112,7 +1148,7 @@ mod tests {
     fn test_strip_sse_prefix() {
         assert_eq!(strip_sse_prefix(b"data: {}"), b"{}");
         assert_eq!(strip_sse_prefix(b"{}"), b"{}");
-        assert_eq!(strip_sse_prefix(b"data:{}"), b"data:{}"); // no space → no strip
+        assert_eq!(strip_sse_prefix(b"data:{}"), b"data:{}");
     }
 
     #[test]

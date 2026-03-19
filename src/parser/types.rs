@@ -2,6 +2,89 @@
 
 use std::collections::HashSet;
 
+/// Semantic meaning of a log field key, shared across all parsers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FieldSemantic {
+    // Canonical display slots
+    Timestamp,
+    Level,
+    Target,
+    Span,
+    Message,
+    // Host / process metadata
+    Hostname,
+    Pid,
+    Thread,
+    // Syslog
+    Facility,
+    MsgId,
+    // Distributed tracing
+    TraceId,
+    SpanId,
+    // HTTP / access log (CLF)
+    HttpStatus,
+    HttpBytes,
+    HttpReferer,
+    HttpUserAgent,
+    HttpIdent,
+    HttpAuthUser,
+    // Anything not recognised
+    Extra,
+}
+
+impl FieldSemantic {
+    /// Canonical field name for this semantic slot.
+    /// Returns `""` for `Extra` and `Span` (no fixed name).
+    pub fn canonical_name(self) -> &'static str {
+        match self {
+            FieldSemantic::Timestamp => "timestamp",
+            FieldSemantic::Level => "level",
+            FieldSemantic::Target => "target",
+            FieldSemantic::Message => "message",
+            FieldSemantic::Hostname => "hostname",
+            FieldSemantic::Pid => "pid",
+            FieldSemantic::Thread => "thread",
+            FieldSemantic::Facility => "facility",
+            FieldSemantic::MsgId => "msgid",
+            FieldSemantic::TraceId => "traceId",
+            FieldSemantic::SpanId => "spanId",
+            FieldSemantic::HttpStatus => "status",
+            FieldSemantic::HttpBytes => "bytes",
+            FieldSemantic::HttpReferer => "referer",
+            FieldSemantic::HttpUserAgent => "user_agent",
+            FieldSemantic::HttpIdent => "ident",
+            FieldSemantic::HttpAuthUser => "authuser",
+            FieldSemantic::Span | FieldSemantic::Extra => "",
+        }
+    }
+}
+
+impl std::fmt::Display for FieldSemantic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.canonical_name())
+    }
+}
+
+/// Push a known-semantic field into `extra_fields`.
+/// The canonical name for the semantic is used as the key.
+/// Use [`push_extra_field`] for unrecognised fields.
+pub fn push_field_as<'a>(
+    fields: &mut Vec<(FieldSemantic, &'a str, &'a str)>,
+    semantic: FieldSemantic,
+    val: &'a str,
+) {
+    fields.push((semantic, semantic.canonical_name(), val));
+}
+
+/// Push an unrecognised (`Extra`) field into `extra_fields`, preserving the raw key.
+pub fn push_extra_field<'a>(
+    fields: &mut Vec<(FieldSemantic, &'a str, &'a str)>,
+    key: &'a str,
+    val: &'a str,
+) {
+    fields.push((FieldSemantic::Extra, key, val));
+}
+
 #[derive(Debug)]
 pub struct SpanInfo<'a> {
     pub name: &'a str,
@@ -16,7 +99,7 @@ pub struct DisplayParts<'a> {
     pub level: Option<&'a str>,
     pub target: Option<&'a str>,
     pub span: Option<SpanInfo<'a>>,
-    pub extra_fields: Vec<(&'a str, &'a str)>,
+    pub extra_fields: Vec<(FieldSemantic, &'a str, &'a str)>,
     pub message: Option<&'a str>,
 }
 
@@ -121,5 +204,34 @@ mod tests {
             format_span_col(&span, true),
             "request: method=GET uri=/health"
         );
+    }
+
+    #[test]
+    fn test_field_semantic_canonical_names() {
+        assert_eq!(FieldSemantic::Timestamp.canonical_name(), "timestamp");
+        assert_eq!(FieldSemantic::Level.canonical_name(), "level");
+        assert_eq!(FieldSemantic::Target.canonical_name(), "target");
+        assert_eq!(FieldSemantic::Message.canonical_name(), "message");
+        assert_eq!(FieldSemantic::Hostname.canonical_name(), "hostname");
+        assert_eq!(FieldSemantic::Pid.canonical_name(), "pid");
+        assert_eq!(FieldSemantic::Thread.canonical_name(), "thread");
+        assert_eq!(FieldSemantic::TraceId.canonical_name(), "traceId");
+        assert_eq!(FieldSemantic::SpanId.canonical_name(), "spanId");
+        assert_eq!(FieldSemantic::Extra.canonical_name(), "");
+        assert_eq!(FieldSemantic::Span.canonical_name(), "");
+        // Display delegates to canonical_name
+        assert_eq!(FieldSemantic::Pid.to_string(), "pid");
+        assert_eq!(FieldSemantic::Extra.to_string(), "");
+    }
+
+    #[test]
+    fn test_push_field_as_uses_canonical_key() {
+        let mut fields: Vec<(FieldSemantic, &str, &str)> = Vec::new();
+        push_field_as(&mut fields, FieldSemantic::Pid, "1234");
+        push_field_as(&mut fields, FieldSemantic::Hostname, "myhost");
+        push_extra_field(&mut fields, "request_id", "abc");
+        assert_eq!(fields[0], (FieldSemantic::Pid, "pid", "1234"));
+        assert_eq!(fields[1], (FieldSemantic::Hostname, "hostname", "myhost"));
+        assert_eq!(fields[2], (FieldSemantic::Extra, "request_id", "abc"));
     }
 }

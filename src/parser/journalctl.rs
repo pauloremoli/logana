@@ -19,7 +19,7 @@ use super::timestamp::{
     is_level_keyword, parse_bsd_plain_timestamp, parse_bsd_precise_timestamp, parse_full_timestamp,
     parse_iso_timestamp, parse_monotonic_timestamp, parse_unix_timestamp,
 };
-use super::types::{DisplayParts, LogFormatParser};
+use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_field_as};
 
 #[derive(Debug)]
 pub struct JournalctlParser;
@@ -61,7 +61,7 @@ fn parse_host_unit_message<'a>(rest: &'a str) -> Option<DisplayParts<'a>> {
         return None;
     }
 
-    parts.extra_fields.push(("hostname", hostname));
+    push_field_as(&mut parts.extra_fields, FieldSemantic::Hostname, hostname);
     let rest = &rest[space + 1..];
 
     if rest.is_empty() {
@@ -95,7 +95,7 @@ fn extract_unit_pid<'a>(tag: &'a str, parts: &mut DisplayParts<'a>) {
         parts.target = Some(unit);
         if let Some(bracket_end) = tag[bracket_start..].find(']') {
             let pid = &tag[bracket_start + 1..bracket_start + bracket_end];
-            parts.extra_fields.push(("pid", pid));
+            push_field_as(&mut parts.extra_fields, FieldSemantic::Pid, pid);
         }
     } else {
         parts.target = Some(tag);
@@ -161,7 +161,7 @@ impl LogFormatParser for JournalctlParser {
 
         for &line in lines {
             if let Some(parts) = self.parse_line(line) {
-                for (key, _) in &parts.extra_fields {
+                for (_, key, _) in &parts.extra_fields {
                     let k = key.to_string();
                     if seen.insert(k.clone()) {
                         extras.push(k);
@@ -199,13 +199,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "hostname" && *v == "myhost")
+                .any(|(_, k, v)| *k == "hostname" && *v == "myhost")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "pid" && *v == "1234")
+                .any(|(_, k, v)| *k == "pid" && *v == "1234")
         );
     }
 
@@ -215,7 +215,7 @@ mod tests {
         let parser = JournalctlParser;
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.target, Some("kernel"));
-        assert!(!parts.extra_fields.iter().any(|(k, _)| *k == "pid"));
+        assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "pid"));
         assert_eq!(parts.message, Some("something happened"));
     }
 
@@ -242,7 +242,7 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "pid" && *v == "5678")
+                .any(|(_, k, v)| *k == "pid" && *v == "5678")
         );
     }
 
@@ -268,13 +268,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "hostname" && *v == "myhost")
+                .any(|(_, k, v)| *k == "hostname" && *v == "myhost")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "pid" && *v == "1234")
+                .any(|(_, k, v)| *k == "pid" && *v == "1234")
         );
     }
 
@@ -349,7 +349,7 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "hostname" && *v == "myhost")
+                .any(|(_, k, v)| *k == "hostname" && *v == "myhost")
         );
         assert_eq!(parts.message, Some("kernel"));
     }
@@ -368,13 +368,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "hostname" && *v == "hostname")
+                .any(|(_, k, v)| *k == "hostname" && *v == "hostname")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "pid" && *v == "1234")
+                .any(|(_, k, v)| *k == "pid" && *v == "1234")
         );
     }
 
@@ -441,7 +441,7 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "pid" && *v == "1")
+                .any(|(_, k, v)| *k == "pid" && *v == "1")
         );
     }
 
@@ -628,13 +628,13 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "hostname" && *v == "hostname")
+                .any(|(_, k, v)| *k == "hostname" && *v == "hostname")
         );
         assert!(
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "pid" && *v == "42")
+                .any(|(_, k, v)| *k == "pid" && *v == "42")
         );
     }
 
@@ -684,7 +684,7 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "hostname" && *v == "my-pc")
+                .any(|(_, k, v)| *k == "hostname" && *v == "my-pc")
         );
     }
 

@@ -25,7 +25,8 @@ A fast terminal log viewer for files of any size — including multi-GB logs. Bu
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
 - **Annotations** — attach comments to log lines; export analysis to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
-- **Multi-tab** — open multiple files, Docker streams, or DLT daemon connections; each tab has independent filters and session state
+- **Live OTLP receiver** — receive OpenTelemetry logs in real time over gRPC (`:otlp`, port 4317) or HTTP/JSON (`:otlp --http`, port 4318); compatible with any OTel SDK
+- **Multi-tab** — open multiple files, Docker streams, DLT daemon connections, or OTLP receivers; each tab has independent filters and session state
 - **MCP server** — embedded Model Context Protocol server; expose marks and annotations to AI assistants and let them interact with your session
 - **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs.
 - **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 22 bundled themes
@@ -93,6 +94,11 @@ logana            # then type :dlt
 
 # Open a DLT binary file
 logana trace.dlt
+
+# Receive OpenTelemetry logs over gRPC (port 4317 — matches OTel SDK defaults)
+logana            # then type :otlp
+# Or use HTTP/JSON on port 4318
+logana            # then type :otlp --http
 
 # Add inline filters on the command line
 logana app.log -i error -o debug
@@ -258,6 +264,19 @@ Set a persistent default port in `~/.config/logana/config.json`:
 ```
 
 ---
+
+## OTLP Streaming
+
+logana embeds an OpenTelemetry log receiver. Point your OTel SDK directly at logana and see structured logs in real time.
+
+```
+:otlp              # gRPC on port 4317 (default — matches OTel SDK defaults)
+:otlp --http       # HTTP/JSON on port 4318
+:otlp 9000         # gRPC on a custom port
+```
+
+The gRPC receiver runs in plaintext mode. Set `OTEL_EXPORTER_OTLP_INSECURE=true` (or use `http://localhost:4317` as the endpoint URL) so your SDK skips TLS negotiation.
+
 
 ## Key Reference
 

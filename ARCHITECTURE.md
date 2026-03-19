@@ -12,8 +12,12 @@ logana is structured around a strict separation between domain logic and the UI 
 - Binary data formats like DLT are converted to newline-delimited text before entering the line-based pipeline.
 - The OTLP HTTP receiver (`FileReader::spawn_otlp_http_receiver`) listens on a local port (default 4318), accepts `POST /v1/logs` with both `application/json` and `application/x-protobuf` payloads (gzip-compressed variants supported), flattens each `LogRecord` into a newline-delimited JSON line, and feeds it through the existing `OtlpParser`.
 
-**Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, DLT, etc.). 
-- Parsers extract a normalised set of fields (timestamp, level, message, structured fields) that the rest of the system consumes uniformly regardless of the original format. 
+**Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, DLT, etc.).
+- Parsers extract a normalised `DisplayParts` struct (timestamp, level, target, message, extra fields) that the rest of the system consumes uniformly regardless of the original format.
+- Every extra field carries a `FieldSemantic` tag (e.g. `Pid`, `Hostname`, `TraceId`, `HttpStatus`). `FieldSemantic` implements `Display` to expose a canonical name for each variant (e.g. `Pid` → `"pid"`, `TraceId` → `"traceId"`), enabling format-agnostic field filtering regardless of the raw key name (`_PID`, `procid`, or `pid` all resolve to `"pid"`).
+- Log format key→slot mappings are encoded in `LogSchema` constants (`schema.rs`). The `JsonParser` and `LogfmtParser` are schema-driven: each `JsonParser` instance carries a `LogSchema` (journalctl-json, tracing-json, GELF, or generic JSON). Adding a new structured format requires only a new `LogSchema` constant — no changes to parser logic.
+- `collect_field_names()` returns canonical names for all fields: primary slots (`"timestamp"`, `"level"`, `"target"`, `"message"`) and semantic extras (e.g. `"hostname"` for `_HOSTNAME`, `"traceId"` for `trace_id`). Raw key aliases are collapsed to their canonical form.
+- All parsers use `push_field_as(fields, semantic, key, value)` to explicitly tag extra fields with their semantic.
 
 **Filter Pipeline** — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap.
 - The pipeline runs in a background thread so the UI stays responsive during large scans. 

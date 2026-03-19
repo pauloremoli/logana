@@ -2,16 +2,22 @@
 
 use std::collections::HashSet;
 
+use super::schema::{LogSchema, SCHEMA_LOGFMT};
 use super::timestamp::normalize_level;
-use super::types::{DisplayParts, LogFormatParser};
-
-const TIMESTAMP_KEYS: &[&str] = &["time", "timestamp", "ts", "datetime"];
-const LEVEL_KEYS: &[&str] = &["level", "lvl", "severity"];
-const MESSAGE_KEYS: &[&str] = &["msg", "message"];
-const TARGET_KEYS: &[&str] = &["source", "caller", "logger", "component", "module"];
+use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_extra_field, push_field_as};
 
 #[derive(Debug)]
-pub struct LogfmtParser;
+pub struct LogfmtParser {
+    pub schema: &'static LogSchema,
+}
+
+impl Default for LogfmtParser {
+    fn default() -> Self {
+        Self {
+            schema: &SCHEMA_LOGFMT,
+        }
+    }
+}
 
 fn parse_pair(s: &str, mut pos: usize) -> Option<(&str, &str, usize)> {
     let b = s.as_bytes();
@@ -62,8 +68,8 @@ fn parse_pair(s: &str, mut pos: usize) -> Option<(&str, &str, usize)> {
     }
 }
 
-/// Count pairs and check for known keys in a single pass.
-fn analyze_pairs(s: &str) -> (usize, bool) {
+/// Count pairs and check for known keys (case-insensitive) in a single pass.
+fn analyze_pairs(s: &str, schema: &LogSchema) -> (usize, bool) {
     let mut count = 0;
     let mut has_known = false;
     let mut pos = 0;
@@ -71,18 +77,14 @@ fn analyze_pairs(s: &str) -> (usize, bool) {
         count += 1;
         if !has_known {
             let k = key.to_ascii_lowercase();
-            let k = k.as_str();
-            has_known = TIMESTAMP_KEYS.contains(&k)
-                || LEVEL_KEYS.contains(&k)
-                || MESSAGE_KEYS.contains(&k)
-                || TARGET_KEYS.contains(&k);
+            has_known = !matches!(schema.classify_key(k.as_str()), FieldSemantic::Extra);
         }
         pos = new_pos;
     }
     (count, has_known)
 }
 
-fn parse_logfmt_line(s: &str) -> Option<DisplayParts<'_>> {
+fn parse_logfmt_line<'a>(s: &'a str, schema: &LogSchema) -> Option<DisplayParts<'a>> {
     let mut parts = DisplayParts::default();
     let mut pos = 0;
     let mut pair_count = 0;
@@ -90,23 +92,26 @@ fn parse_logfmt_line(s: &str) -> Option<DisplayParts<'_>> {
     while let Some((key, value, new_pos)) = parse_pair(s, pos) {
         pair_count += 1;
         let k_lower = key.to_ascii_lowercase();
-        let k_lower = k_lower.as_str();
 
-        if TIMESTAMP_KEYS.contains(&k_lower) && parts.timestamp.is_none() {
-            parts.timestamp = Some(value);
-        } else if LEVEL_KEYS.contains(&k_lower) && parts.level.is_none() {
-            // Normalize the level value
-            if let Some(normalized) = normalize_level(value) {
-                parts.level = Some(normalized);
-            } else {
-                parts.level = Some(value);
+        match schema.classify_key(k_lower.as_str()) {
+            FieldSemantic::Timestamp if parts.timestamp.is_none() => {
+                parts.timestamp = Some(value);
             }
-        } else if MESSAGE_KEYS.contains(&k_lower) && parts.message.is_none() {
-            parts.message = Some(value);
-        } else if TARGET_KEYS.contains(&k_lower) && parts.target.is_none() {
-            parts.target = Some(value);
-        } else {
-            parts.extra_fields.push((key, value));
+            FieldSemantic::Level if parts.level.is_none() => {
+                parts.level = Some(normalize_level(value).unwrap_or(value));
+            }
+            FieldSemantic::Message if parts.message.is_none() => {
+                parts.message = Some(value);
+            }
+            FieldSemantic::Target if parts.target.is_none() => {
+                parts.target = Some(value);
+            }
+            FieldSemantic::Extra => {
+                push_extra_field(&mut parts.extra_fields, key, value);
+            }
+            semantic => {
+                push_field_as(&mut parts.extra_fields, semantic, value);
+            }
         }
 
         pos = new_pos;
@@ -121,7 +126,7 @@ impl LogFormatParser for LogfmtParser {
         if s.is_empty() || s.starts_with('{') {
             return None;
         }
-        parse_logfmt_line(s)
+        parse_logfmt_line(s, self.schema)
     }
 
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String> {
@@ -146,7 +151,7 @@ impl LogFormatParser for LogfmtParser {
                 if parts.message.is_some() {
                     has_message = true;
                 }
-                for (key, _) in &parts.extra_fields {
+                for (_, key, _) in &parts.extra_fields {
                     let k = key.to_string();
                     if seen.insert(k.clone()) {
                         extras.push(k);
@@ -185,7 +190,7 @@ impl LogFormatParser for LogfmtParser {
                 Ok(s) if !s.is_empty() && !s.starts_with('{') => s,
                 _ => continue,
             };
-            let (pairs, has_known) = analyze_pairs(s);
+            let (pairs, has_known) = analyze_pairs(s, self.schema);
             if pairs >= 3 {
                 parseable += 1;
                 total_score += if has_known { 1.0 } else { 0.5 };
@@ -205,6 +210,10 @@ impl LogFormatParser for LogfmtParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parser() -> LogfmtParser {
+        LogfmtParser::default()
+    }
 
     // ── parse_pair ────────────────────────────────────────────────────
 
@@ -254,20 +263,19 @@ mod tests {
     #[test]
     fn test_parse_line_full() {
         let line = b"time=2024-01-01T00:00:00Z level=info msg=\"request handled\" status=200";
-        let parser = LogfmtParser;
-        let parts = parser.parse_line(line).unwrap();
+        let parts = parser().parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-01-01T00:00:00Z"));
         assert_eq!(parts.level, Some("INFO"));
         assert_eq!(parts.message, Some("request handled"));
         assert_eq!(parts.extra_fields.len(), 1);
-        assert_eq!(parts.extra_fields[0], ("status", "200"));
+        assert_eq!(parts.extra_fields[0].1, "status");
+        assert_eq!(parts.extra_fields[0].2, "200");
     }
 
     #[test]
     fn test_parse_line_with_target() {
         let line = b"time=2024-01-01 level=debug source=myapp msg=\"starting\" port=8080";
-        let parser = LogfmtParser;
-        let parts = parser.parse_line(line).unwrap();
+        let parts = parser().parse_line(line).unwrap();
         assert_eq!(parts.target, Some("myapp"));
         assert_eq!(parts.level, Some("DEBUG"));
     }
@@ -275,8 +283,7 @@ mod tests {
     #[test]
     fn test_parse_line_no_known_keys() {
         let line = b"foo=bar baz=qux quux=corge";
-        let parser = LogfmtParser;
-        let parts = parser.parse_line(line).unwrap();
+        let parts = parser().parse_line(line).unwrap();
         assert!(parts.timestamp.is_none());
         assert!(parts.level.is_none());
         assert_eq!(parts.extra_fields.len(), 3);
@@ -285,27 +292,23 @@ mod tests {
     #[test]
     fn test_parse_line_too_few_pairs() {
         let line = b"key=value";
-        let parser = LogfmtParser;
-        assert!(parser.parse_line(line).is_none());
+        assert!(parser().parse_line(line).is_none());
     }
 
     #[test]
     fn test_parse_line_json_rejected() {
-        let parser = LogfmtParser;
-        assert!(parser.parse_line(br#"{"level":"INFO"}"#).is_none());
+        assert!(parser().parse_line(br#"{"level":"INFO"}"#).is_none());
     }
 
     #[test]
     fn test_parse_line_empty() {
-        let parser = LogfmtParser;
-        assert!(parser.parse_line(b"").is_none());
+        assert!(parser().parse_line(b"").is_none());
     }
 
     #[test]
     fn test_parse_line_go_slog_format() {
         let line = b"time=2024-07-24T10:00:00Z level=INFO msg=\"request handled\" method=GET path=/api status=200 duration=12ms";
-        let parser = LogfmtParser;
-        let parts = parser.parse_line(line).unwrap();
+        let parts = parser().parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24T10:00:00Z"));
         assert_eq!(parts.level, Some("INFO"));
         assert_eq!(parts.message, Some("request handled"));
@@ -313,15 +316,14 @@ mod tests {
             parts
                 .extra_fields
                 .iter()
-                .any(|(k, v)| *k == "method" && *v == "GET")
+                .any(|(_, k, v)| *k == "method" && *v == "GET")
         );
     }
 
     #[test]
     fn test_parse_line_heroku_format() {
         let line = b"at=info method=GET path=\"/\" host=myapp.herokuapp.com request_id=abc fwd=\"1.2.3.4\" dyno=web.1 connect=1ms service=5ms status=200 bytes=1234";
-        let parser = LogfmtParser;
-        let parts = parser.parse_line(line).unwrap();
+        let parts = parser().parse_line(line).unwrap();
         assert!(parts.extra_fields.len() > 3);
     }
 
@@ -329,37 +331,33 @@ mod tests {
 
     #[test]
     fn test_detect_score_full_logfmt() {
-        let parser = LogfmtParser;
         let lines: Vec<&[u8]> = vec![
             b"time=2024-01-01 level=info msg=hello",
             b"time=2024-01-02 level=warn msg=world",
         ];
-        let score = parser.detect_score(&lines);
+        let score = parser().detect_score(&lines);
         assert!(score > 0.9, "Expected high score, got {}", score);
     }
 
     #[test]
     fn test_detect_score_unknown_keys_lower() {
-        let parser = LogfmtParser;
         let lines: Vec<&[u8]> = vec![b"foo=bar baz=qux quux=corge"];
-        let score = parser.detect_score(&lines);
+        let score = parser().detect_score(&lines);
         assert!(score > 0.0);
         assert!(score <= 0.5);
     }
 
     #[test]
     fn test_detect_score_none() {
-        let parser = LogfmtParser;
         let lines: Vec<&[u8]> = vec![b"just plain text", b"more text"];
-        let score = parser.detect_score(&lines);
+        let score = parser().detect_score(&lines);
         assert!((score - 0.0).abs() < 0.001);
     }
 
     #[test]
     fn test_detect_score_empty() {
-        let parser = LogfmtParser;
         let lines: Vec<&[u8]> = vec![];
-        let score = parser.detect_score(&lines);
+        let score = parser().detect_score(&lines);
         assert!((score - 0.0).abs() < 0.001);
     }
 
@@ -367,12 +365,11 @@ mod tests {
 
     #[test]
     fn test_collect_field_names() {
-        let parser = LogfmtParser;
         let lines: Vec<&[u8]> = vec![
             b"time=2024-01-01 level=info msg=hello status=200",
             b"time=2024-01-02 level=warn msg=world duration=5ms",
         ];
-        let names = parser.collect_field_names(&lines);
+        let names = parser().collect_field_names(&lines);
         assert_eq!(names[0], "timestamp");
         assert_eq!(names[1], "level");
         assert!(names.contains(&"duration".to_string()));
@@ -384,25 +381,22 @@ mod tests {
 
     #[test]
     fn test_name() {
-        let parser = LogfmtParser;
-        assert_eq!(parser.name(), "logfmt");
+        assert_eq!(parser().name(), "logfmt");
     }
 
     // ── level normalization ──────────────────────────────────────────
 
     #[test]
     fn test_level_normalization() {
-        let parser = LogfmtParser;
         let line = b"time=2024-01-01 level=warning msg=test extra=val";
-        let parts = parser.parse_line(line).unwrap();
+        let parts = parser().parse_line(line).unwrap();
         assert_eq!(parts.level, Some("WARN"));
     }
 
     #[test]
     fn test_level_normalization_debug() {
-        let parser = LogfmtParser;
         let line = b"time=2024-01-01 lvl=DBG msg=test extra=val";
-        let parts = parser.parse_line(line).unwrap();
+        let parts = parser().parse_line(line).unwrap();
         assert_eq!(parts.level, Some("DEBUG"));
     }
 }

@@ -14,6 +14,8 @@ All notable changes to logana will be documented in this file.
 
 ### Changed
 - MCP server no longer exposes the `logana://filtered` resource (filtered lines can be very large).
+- Parser layer refactored
+- Field names unified, now it's always the same name regardless of source format.
 
 ### Fixed
 - OTLP parser now correctly sets the process color for `service.name` when it arrives as a top-level field (as produced by the OTLP HTTP receiver).

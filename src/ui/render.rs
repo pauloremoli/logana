@@ -968,8 +968,8 @@ impl App {
                             let pid = parts
                                 .extra_fields
                                 .iter()
-                                .find(|(k, _)| *k == "pid")
-                                .map(|(_, v)| v.to_string());
+                                .find(|(_, k, _)| *k == "pid")
+                                .map(|(_, _, v)| v.to_string());
                             // Build the joined string with a pre-sized buffer
                             // instead of `cols.join(" ")` (avoids intermediate allocation).
                             let rendered = if all_cols_hidden {
@@ -2995,7 +2995,12 @@ mod tests {
         app.tabs[0].show_borders = true;
         app.tabs[0].raw_mode = true;
         app.tabs[1].show_borders = true;
-        app.tabs[1].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser));
+        app.tabs[1].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
+            schema: &crate::parser::SCHEMA_GENERIC_JSON,
+            fields_container: None,
+            span_key: None,
+            score_weight: 1.0,
+        }));
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -3014,9 +3019,19 @@ mod tests {
         let mut app = make_two_tab_app().await;
         app.tabs[0].title = "myfile.log".to_string();
         app.tabs[0].show_borders = true;
-        app.tabs[0].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser));
+        app.tabs[0].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
+            schema: &crate::parser::SCHEMA_GENERIC_JSON,
+            fields_container: None,
+            span_key: None,
+            score_weight: 1.0,
+        }));
         app.tabs[1].show_borders = true;
-        app.tabs[1].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser));
+        app.tabs[1].detected_format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
+            schema: &crate::parser::SCHEMA_GENERIC_JSON,
+            fields_container: None,
+            span_key: None,
+            score_weight: 1.0,
+        }));
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
