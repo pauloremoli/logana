@@ -1,245 +1,17 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
 use ratatui::{
     Frame,
     prelude::*,
-    style::Modifier,
-    widgets::{
-        Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
-    },
-};
-
-use crate::auto_complete::{
-    FieldCompletion, complete_color, complete_field_name, complete_field_value, complete_file_path,
-    complete_flags, extract_color_partial, extract_field_partial, extract_flag_partial,
-    find_command_completions, fuzzy_match, shell_split,
-};
-use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
-use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
-use crate::theme::complete_theme;
-use crate::types::{FilterType, LogLevel, parse_color};
-use crate::value_colors::{
-    VALUE_STYLE_HTTP_DELETE, VALUE_STYLE_HTTP_GET, VALUE_STYLE_HTTP_OTHER, VALUE_STYLE_HTTP_PATCH,
-    VALUE_STYLE_HTTP_POST, VALUE_STYLE_HTTP_PUT, VALUE_STYLE_IP, VALUE_STYLE_STATUS_2XX,
-    VALUE_STYLE_STATUS_3XX, VALUE_STYLE_STATUS_4XX, VALUE_STYLE_STATUS_5XX, VALUE_STYLE_UUID,
-    collect_value_color_spans,
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
 use crate::mode::app_mode::ModeRenderState;
 
-use super::field_layout::{apply_field_layout, count_wrapped_lines, effective_row_count};
-use super::{App, LoadContext, TabState, VisibleLines};
-
-/// Prepend a line number gutter to a rendered line.
-#[inline]
-fn prepend_line_number(
-    line: Line<'static>,
-    line_idx: usize,
-    line_number_width: usize,
-    is_annotated: bool,
-    comment_fg: Color,
-    line_number_fg: Color,
-    render_style: Style,
-) -> Line<'static> {
-    let line_num = line_idx + 1;
-    let line_num_str = format!("{:>width$} ", line_num, width = line_number_width);
-    let bar_span = if is_annotated {
-        Span::styled("│", Style::default().fg(comment_fg))
-    } else {
-        Span::styled(" ", Style::default().fg(line_number_fg))
-    };
-    let num_span = Span::styled(line_num_str, Style::default().fg(line_number_fg));
-    let mut all_spans = vec![bar_span, num_span];
-    all_spans.extend(line.spans);
-    Line::from(all_spans).style(render_style)
-}
-
-/// Build comment banner and annotation maps for the visible viewport.
-///
-/// Returns `(banner_at, vis_comment_map)`:
-/// - `banner_at`: `abs_vis_idx → cmt_idx` — where to inject a comment banner
-/// - `vis_comment_map`: `abs_vis_idx → cmt_idx` — drives the annotation bar characters
-#[inline]
-fn prepare_comment_maps(
-    comments: &[(Vec<usize>, String)],
-    visible_indices: &VisibleLines,
-    start: usize,
-    end: usize,
-) -> (HashMap<usize, usize>, HashMap<usize, usize>) {
-    let mut line_cmt_map: HashMap<usize, usize> = HashMap::new();
-    for (cmt_idx, (line_indices, _)) in comments.iter().enumerate() {
-        for &li in line_indices {
-            line_cmt_map.entry(li).or_insert(cmt_idx);
-        }
-    }
-    let mut banner_at: HashMap<usize, usize> = HashMap::new();
-    let mut vis_comment_map: HashMap<usize, usize> = HashMap::new();
-    let mut seen_cmts: HashSet<usize> = HashSet::new();
-    for abs_vi in start..end {
-        let li = visible_indices.get(abs_vi);
-        if let Some(&cmt_idx) = line_cmt_map.get(&li) {
-            vis_comment_map.insert(abs_vi, cmt_idx);
-            if seen_cmts.insert(cmt_idx) {
-                banner_at.insert(abs_vi, cmt_idx);
-            }
-        }
-    }
-    (banner_at, vis_comment_map)
-}
-
-/// Extract display name from a file path for completion hints.
-#[inline]
-fn file_display_name(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| {
-            if path.ends_with('/') {
-                format!("{}/", n.trim_end_matches('/'))
-            } else {
-                n.to_string()
-            }
-        })
-        .unwrap_or_else(|| path.to_string())
-}
-
-/// Which completion list to show in the command bar.
-enum CompletionSource {
-    Error(String),
-    Items(Vec<String>),
-    ColorItems(Vec<String>),
-    FileItems(Vec<String>),
-    CommandHelp(String),
-}
-
-/// Resolve which completions to display given the current command query.
-fn resolve_completions(
-    tab: &mut TabState,
-    query_text: &str,
-    completion_index: Option<usize>,
-) -> CompletionSource {
-    if let Some(err) = &tab.interaction.command_error {
-        return CompletionSource::Error(err.clone());
-    }
-    if let Some(fc) = extract_field_partial(query_text.trim_start()) {
-        let field_index = tab.build_field_index();
-        let completions = match &fc {
-            FieldCompletion::Name(partial) => complete_field_name(partial, &field_index),
-            FieldCompletion::Value { field, partial } => {
-                complete_field_value(field, partial, &field_index)
-            }
-        };
-        return CompletionSource::Items(completions);
-    }
-    if let Some((_, partial)) = extract_flag_partial(query_text) {
-        let cmd = shell_split(query_text)
-            .into_iter()
-            .next()
-            .unwrap_or_default();
-        return CompletionSource::Items(
-            complete_flags(&cmd, &partial)
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect(),
-        );
-    }
-    if let Some(partial) = extract_color_partial(query_text.trim_start()) {
-        return CompletionSource::ColorItems(
-            complete_color(partial)
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect(),
-        );
-    }
-    let trimmed = query_text.trim();
-    let file_cmd = FILE_PATH_COMMANDS
-        .iter()
-        .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
-    if let Some(&cmd) = file_cmd {
-        let partial = trimmed[cmd.len()..].trim_start();
-        return CompletionSource::FileItems(complete_file_path(partial));
-    }
-    if let Some(partial_raw) = query_text.trim_start().strip_prefix("set-theme ") {
-        return CompletionSource::Items(complete_theme(partial_raw.trim_start()));
-    }
-    if let Some(partial_raw) = query_text.trim_start().strip_prefix("hide-field ") {
-        let partial = partial_raw.trim_start();
-        let index = tab.build_field_index();
-        return CompletionSource::Items(complete_field_name(partial, &index));
-    }
-    if let Some(partial_raw) = query_text.trim_start().strip_prefix("show-field ") {
-        let partial = partial_raw.trim_start();
-        let candidates: Vec<String> = if tab.display.hidden_fields.is_empty() {
-            tab.build_field_index().names
-        } else {
-            let mut v: Vec<String> = tab.display.hidden_fields.iter().cloned().collect();
-            v.sort();
-            v
-        };
-        let completions = candidates
-            .iter()
-            .filter(|n| fuzzy_match(partial, n))
-            .cloned()
-            .collect();
-        return CompletionSource::Items(completions);
-    }
-    if completion_index.is_none()
-        && let Some(cmd) = find_matching_command(query_text)
-    {
-        return CompletionSource::CommandHelp(format!("  {} - {}", cmd.usage, cmd.description));
-    }
-    CompletionSource::Items(
-        find_command_completions(trimmed)
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect(),
-    )
-}
-
-/// Render a list of completion hints as styled spans.
-#[inline]
-fn render_completion_hints(
-    frame: &mut Frame<'_>,
-    completions: &[String],
-    completion_index: Option<usize>,
-    bg: Color,
-    area: Rect,
-    span_fn: impl Fn(usize, &str) -> (String, Style, Style),
-) {
-    if completions.is_empty() {
-        return;
-    }
-    let hint_spans: Vec<Span> = completions
-        .iter()
-        .enumerate()
-        .flat_map(|(i, name)| {
-            let (display, item_normal, item_highlight) = span_fn(i, name);
-            let style = if completion_index == Some(i) {
-                item_highlight
-            } else {
-                item_normal
-            };
-            vec![
-                Span::styled(format!(" {} ", display), style),
-                Span::raw(" "),
-            ]
-        })
-        .collect();
-    let hint = Paragraph::new(Line::from(hint_spans))
-        .style(Style::default().bg(bg))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(hint, area);
-}
-
-/// Default span formatter for most completion hint types.
-#[inline]
-fn default_span_fn(
-    normal_style: Style,
-    highlight_style: Style,
-) -> impl Fn(usize, &str) -> (String, Style, Style) {
-    move |_i, name| (name.to_string(), normal_style, highlight_style)
-}
+use super::field_layout::count_wrapped_lines;
+use super::widgets::{
+    CommandBar, CompletionSource, InputBar, LogPanel, Sidebar, TabBar, TabBarEntry,
+    file_display_name, prepare_log_panel, resolve_completions,
+};
+use super::{App, LoadContext};
 
 impl App {
     pub(super) fn ui(&mut self, frame: &mut Frame) {
@@ -468,14 +240,69 @@ impl App {
             None
         };
 
-        self.render_tab_bar(
-            frame,
-            show_tab_bar,
-            show_borders,
-            &chunks,
-            &mut chunk_idx,
-            mode_name_for_title,
-        );
+        if show_tab_bar {
+            let tab_bar_area = chunks[chunk_idx];
+            chunk_idx += 1;
+
+            let loading_info: Option<(usize, usize)> = self.file_load_state.as_ref().map(|s| {
+                let pct = (*s.progress_rx.borrow() * 100.0) as usize;
+                let tab_idx = match &s.on_complete {
+                    LoadContext::ReplaceInitialTab => 0,
+                    LoadContext::ReplaceTab { tab_idx } => *tab_idx,
+                    LoadContext::SessionRestoreTab { tab_idx, .. } => *tab_idx,
+                };
+                (tab_idx, pct)
+            });
+            let filtering_tabs: Vec<(usize, usize)> = self
+                .tabs
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| {
+                    t.filter.handle.as_ref().map(|h| {
+                        let pct = (h.displayed_progress * 100.0) as usize;
+                        (i, pct)
+                    })
+                })
+                .collect();
+            let tab_entries: Vec<TabBarEntry<'_>> = self
+                .tabs
+                .iter()
+                .map(|t| {
+                    let format_name = if t.display.raw_mode {
+                        None
+                    } else {
+                        t.display.format.as_ref().map(|p| p.name().to_string())
+                    };
+                    TabBarEntry {
+                        title: &t.title,
+                        format_name,
+                        num_visible: t.filter.visible_indices.len(),
+                        tail_mode: t.stream.tail_mode,
+                        raw_mode: t.display.raw_mode,
+                        paused: t.stream.paused,
+                        retry_attempt: t
+                            .stream
+                            .retry
+                            .as_ref()
+                            .filter(|r| !r.connected)
+                            .map(|r| r.attempt),
+                        has_lines: t.file_reader.line_count() > 0,
+                    }
+                })
+                .collect();
+            frame.render_widget(
+                TabBar {
+                    tabs: tab_entries,
+                    active_tab: self.active_tab,
+                    loading_info,
+                    filtering_tabs,
+                    show_borders,
+                    mode_name: mode_name_for_title,
+                    theme: &self.theme,
+                },
+                tab_bar_area,
+            );
+        }
 
         let main_chunk = chunks[chunk_idx];
         chunk_idx += 1;
@@ -490,11 +317,6 @@ impl App {
                     .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
                     .split(main_chunk);
                 let raw_sidebar = horizontal[1];
-                // When the tab bar is visible it forms the top border of the
-                // main panel. Extend the sidebar upward by one row so its own
-                // top border (which carries the "Filters" title) lands on the
-                // same row as the tab bar, overwriting the fill characters
-                // in the sidebar's column range.
                 let sidebar = if show_tab_bar {
                     Rect {
                         y: raw_sidebar.y.saturating_sub(1),
@@ -506,7 +328,6 @@ impl App {
                 };
                 (horizontal[0], Some(sidebar))
             } else {
-                // Add a 1-column gap between logs and sidebar when borders are off.
                 let horizontal = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
@@ -521,28 +342,106 @@ impl App {
             (main_chunk, None)
         };
 
-        self.render_logs_panel(
-            frame,
+        let log_panel_data = prepare_log_panel(
+            &mut self.tabs[self.active_tab],
             logs_area,
             visual_anchor,
             visual_char_selection,
             mode_name_for_title,
             show_tab_bar,
             has_input_bar,
+            &self.theme,
+        );
+        frame.render_widget(
+            LogPanel {
+                data: &log_panel_data,
+            },
+            logs_area,
         );
 
-        self.render_side_bar(frame, selected_filter_idx, sidebar_area);
+        if let Some(sidebar_area) = sidebar_area {
+            let tab = &self.tabs[self.active_tab];
+            let filters = tab.log_manager.get_filters();
+            let match_counts = tab.filter.match_counts.clone();
+            let filter_progress: Option<usize> = tab
+                .filter
+                .handle
+                .as_ref()
+                .map(|h| (h.displayed_progress * 100.0) as usize);
+            frame.render_widget(
+                Sidebar {
+                    filters,
+                    match_counts: &match_counts,
+                    selected_filter_idx,
+                    filter_enabled: tab.filter.enabled,
+                    show_marks_only: tab.filter.show_marks_only,
+                    filter_progress,
+                    show_borders,
+                    theme: &self.theme,
+                },
+                sidebar_area,
+            );
+        }
 
-        self.render_command_bar(
-            frame,
-            command_input,
-            completion_query.as_deref(),
-            completion_index,
-            &chunks,
-            chunk_idx,
-        );
+        if let Some((input_text, cursor_pos)) = command_input {
+            let query_text = completion_query.as_deref().unwrap_or(input_text.as_str());
+            let completion = resolve_completions(
+                &mut self.tabs[self.active_tab],
+                query_text,
+                completion_index,
+            );
+            let input_area = chunks[chunk_idx];
+            let hint_area = chunks[chunk_idx + 1];
+            let cmd_bar = CommandBar {
+                input_text: &input_text,
+                cursor_pos,
+                completion,
+                theme: &self.theme,
+            };
+            if let Some((cx, cy)) = cmd_bar.cursor_position(input_area) {
+                frame.set_cursor_position((cx, cy));
+            }
+            let combined = Rect {
+                height: input_area.height + hint_area.height,
+                ..input_area
+            };
+            frame.render_widget(cmd_bar, combined);
+        }
 
-        self.render_input_bar(frame, search_input, &chunks, chunk_idx);
+        if let Some((input_str, forward, is_active)) = search_input {
+            let input_area = chunks[chunk_idx];
+            let hint_area = chunks[chunk_idx + 1];
+            let total = self.tabs[self.active_tab]
+                .search
+                .query
+                .get_total_match_count();
+            let current_occurrence = self.tabs[self.active_tab]
+                .search
+                .query
+                .get_current_occurrence_number();
+            let progress = self.tabs[self.active_tab]
+                .search
+                .handle
+                .as_ref()
+                .map(|h| progress_bar_str(*h.progress_rx.borrow()));
+            let bar = InputBar {
+                query: &input_str,
+                forward,
+                is_active,
+                total_matches: total,
+                current_occurrence,
+                progress,
+                theme: &self.theme,
+            };
+            if let Some((cx, cy)) = bar.cursor_position(input_area) {
+                frame.set_cursor_position((cx, cy));
+            }
+            let combined = Rect {
+                height: input_area.height + hint_area.height,
+                ..input_area
+            };
+            frame.render_widget(bar, combined);
+        }
 
         if let Some(idx) = notification_chunk_idx
             && let Some(msg) = &notification
@@ -711,943 +610,6 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn render_logs_panel(
-        &mut self,
-        frame: &mut Frame<'_>,
-        logs_area: Rect,
-        visual_anchor: Option<usize>,
-        visual_char_selection: Option<(usize, usize)>,
-        mode_name: Option<&str>,
-        show_tab_bar: bool,
-        has_input_bar: bool,
-    ) {
-        let num_visible = self.tabs[self.active_tab].filter.visible_indices.len();
-        let show_borders = self.tabs[self.active_tab].display.show_borders;
-
-        // When borders are on they consume 1 row/col on each side (2 total).
-        // When the tab bar is visible the top border is omitted from the block
-        // (the tab bar row serves as the top of the box), so only the bottom
-        // border (1 row) is consumed. When borders are off we still reserve 1
-        // col on the left for visual padding, and the block title occupies 1
-        // row (ratatui Block::inner subtracts 1 for has_title_at_position(Top)
-        // even when Borders::NONE).
-        let vertical_border = if show_borders {
-            if show_tab_bar { 1 } else { 2 }
-        } else {
-            1
-        };
-        let horizontal_shrink = if show_borders { 2 } else { 1 };
-        let visible_height = (logs_area.height as usize)
-            .saturating_sub(vertical_border)
-            .saturating_sub(usize::from(has_input_bar));
-        self.tabs[self.active_tab].scroll.visible_height = visible_height;
-
-        let show_line_numbers = self.tabs[self.active_tab].display.show_line_numbers;
-        let total_lines = self.tabs[self.active_tab].file_reader.line_count();
-        let line_number_width = if show_line_numbers {
-            total_lines.max(1).to_string().len()
-        } else {
-            0
-        };
-
-        let ln_prefix_width = if show_line_numbers {
-            // "{number}{annot_marker}{space}" = line_number_width + 1 (marker) + 1 (space)
-            line_number_width + 2
-        } else {
-            0
-        };
-        let inner_width =
-            (logs_area.width as usize).saturating_sub(horizontal_shrink + ln_prefix_width);
-        self.tabs[self.active_tab].scroll.visible_width = inner_width;
-
-        let wrap = self.tabs[self.active_tab].display.wrap;
-
-        // Clone early so both the viewport row-count closure and the flat_map
-        // rendering closure can use them without re-borrowing `self`.
-        let hidden_fields = self.tabs[self.active_tab].display.hidden_fields.clone();
-        let field_layout = self.tabs[self.active_tab].display.field_layout.clone();
-        let show_keys = self.tabs[self.active_tab].display.show_keys;
-        let raw_mode = self.tabs[self.active_tab].display.raw_mode;
-
-        if num_visible == 0 {
-            self.tabs[self.active_tab].scroll.scroll_offset = 0;
-            self.tabs[self.active_tab].scroll.viewport_offset = 0;
-        } else {
-            if self.tabs[self.active_tab].scroll.scroll_offset >= num_visible {
-                self.tabs[self.active_tab].scroll.scroll_offset = num_visible - 1;
-            }
-            if self.tabs[self.active_tab].scroll.viewport_offset >= num_visible {
-                // viewport_offset is stale (e.g. filter contracted the visible set);
-                // reset it so the cursor stays visible and the viewport fills backward.
-                self.tabs[self.active_tab].scroll.viewport_offset =
-                    num_visible.saturating_sub(visible_height);
-            }
-        }
-
-        let scroll_offset = self.tabs[self.active_tab].scroll.scroll_offset;
-        let viewport_offset = self.tabs[self.active_tab].scroll.viewport_offset;
-
-        // Compute new_viewport and end in a scoped block so the shared borrow of
-        // `self.tabs[active_tab]` (for detected_format) is released before the
-        // mutable write to viewport_offset below.
-        let (new_viewport, end) = {
-            let tab = &self.tabs[self.active_tab];
-            let parser = if raw_mode {
-                None
-            } else {
-                tab.display.format.as_deref()
-            };
-            // In wrap mode, use the structured-rendering width when a format is
-            // detected: raw JSON/tracing bytes can be 3-5× wider than the rendered
-            // columns, causing the viewport to show far fewer lines than it should.
-            let row_count = |li: usize| -> usize {
-                effective_row_count(
-                    tab.file_reader.get_line(li),
-                    inner_width,
-                    parser,
-                    &field_layout,
-                    &hidden_fields,
-                    show_keys,
-                )
-            };
-
-            let new_viewport = if scroll_offset < viewport_offset {
-                scroll_offset
-            } else if wrap && inner_width > 0 && num_visible > 0 {
-                // Fast path: if the line gap alone exceeds visible_height, the
-                // viewport is definitely stale — skip the O(N) row-count sum.
-                // Each line occupies at least 1 terminal row, so
-                // (scroll_offset - viewport_offset) > visible_height guarantees
-                // rows_used > visible_height without iterating every line.
-                let gap = scroll_offset.saturating_sub(viewport_offset);
-                let overflowed = gap > visible_height || {
-                    let rows_used: usize = (viewport_offset..=scroll_offset)
-                        .map(|i| row_count(tab.filter.visible_indices.get(i)))
-                        .sum();
-                    rows_used > visible_height
-                };
-                if overflowed {
-                    let mut rows = 0usize;
-                    let mut new_vp = scroll_offset + 1;
-                    loop {
-                        if new_vp == 0 {
-                            break;
-                        }
-                        new_vp -= 1;
-                        let h = row_count(tab.filter.visible_indices.get(new_vp));
-                        if rows + h > visible_height {
-                            new_vp += 1;
-                            break;
-                        }
-                        rows += h;
-                        if new_vp == 0 {
-                            break;
-                        }
-                    }
-                    new_vp.min(scroll_offset)
-                } else {
-                    viewport_offset
-                }
-            } else if visible_height > 0 && scroll_offset >= viewport_offset + visible_height {
-                scroll_offset - visible_height + 1
-            } else {
-                viewport_offset
-            };
-
-            let start = new_viewport;
-            let end = if wrap && inner_width > 0 {
-                let mut rows = 0usize;
-                let mut e = start;
-                while e < num_visible {
-                    let h = row_count(tab.filter.visible_indices.get(e));
-                    if rows + h > visible_height {
-                        break;
-                    }
-                    rows += h;
-                    e += 1;
-                }
-                if e == start && start < num_visible {
-                    e = start + 1;
-                }
-                e
-            } else {
-                (start + visible_height).min(num_visible)
-            };
-
-            // If the viewport reached the end of visible lines before filling the
-            // screen (blank rows at bottom), push new_viewport backward to use all
-            // available rows. This happens after filter toggles that shrink the
-            // visible set while viewport_offset was near the old end.
-            let (new_viewport, end) = if end == num_visible && num_visible > 0 {
-                let filled_start = if wrap && inner_width > 0 {
-                    let mut rows = 0usize;
-                    let mut s = num_visible;
-                    loop {
-                        if s == 0 {
-                            break;
-                        }
-                        s -= 1;
-                        let h = row_count(tab.filter.visible_indices.get(s));
-                        if rows + h > visible_height {
-                            s += 1;
-                            break;
-                        }
-                        rows += h;
-                        if s == 0 {
-                            break;
-                        }
-                    }
-                    s
-                } else {
-                    num_visible.saturating_sub(visible_height)
-                };
-                if filled_start < new_viewport {
-                    let adj_end = if wrap && inner_width > 0 {
-                        let mut rows = 0usize;
-                        let mut e = filled_start;
-                        while e < num_visible {
-                            let h = row_count(tab.filter.visible_indices.get(e));
-                            if rows + h > visible_height {
-                                break;
-                            }
-                            rows += h;
-                            e += 1;
-                        }
-                        if e == filled_start && filled_start < num_visible {
-                            e += 1;
-                        }
-                        e
-                    } else {
-                        num_visible
-                    };
-                    (filled_start, adj_end)
-                } else {
-                    (new_viewport, end)
-                }
-            } else {
-                (new_viewport, end)
-            };
-
-            (new_viewport, end)
-        };
-
-        self.tabs[self.active_tab].scroll.viewport_offset = new_viewport;
-        let start = new_viewport;
-
-        // advise the kernel to prefetch mmap pages for the current viewport so
-        // async I/O can overlap with the CPU work of setting up styles and the render loop.
-        #[cfg(unix)]
-        if start < end && !self.tabs[self.active_tab].filter.visible_indices.is_empty() {
-            let first = self.tabs[self.active_tab].filter.visible_indices.get(start);
-            let last = self.tabs[self.active_tab]
-                .filter
-                .visible_indices
-                .get((end - 1).max(start));
-            self.tabs[self.active_tab]
-                .file_reader
-                .advise_viewport(first, last);
-        }
-
-        // Aho-Corasick every frame. The cache was set in the most recent refresh_visible().
-        let filter_manager_arc = self.tabs[self.active_tab].filter.manager.clone();
-        let filter_manager = &*filter_manager_arc;
-        let (mut styles, date_filter_styles, field_filter_styles) =
-            if self.tabs[self.active_tab].filter.enabled {
-                (
-                    self.tabs[self.active_tab].filter.text_styles.clone(),
-                    self.tabs[self.active_tab].filter.date_styles.clone(),
-                    self.tabs[self.active_tab].filter.field_styles.clone(),
-                )
-            } else {
-                (Vec::new(), Vec::new(), Vec::new())
-            };
-        // Clone the detected format Arc so it's available in the render closure without
-        // re-borrowing self.tabs inside the loop (which conflicts with parse_cache borrows).
-        let detected_format_arc: Option<Arc<dyn crate::parser::LogFormatParser>> = if raw_mode {
-            None
-        } else {
-            self.tabs[self.active_tab].display.format.clone()
-        };
-        let search_style = Style::default()
-            .fg(self.theme.search_fg)
-            .bg(self.theme.text_highlight_fg);
-        let current_search_style = Style::default()
-            .fg(self.theme.text_highlight_fg)
-            .bg(self.theme.search_fg);
-        // Reserve style slots for process colors right after filter styles.
-        let process_style_start = styles.len() as u8;
-        let process_colors_len = self.theme.process_colors.len();
-        for &color in &self.theme.process_colors {
-            styles.push(Style::default().fg(color));
-        }
-        styles.resize(256, Style::default());
-        styles[255] = search_style;
-        styles[254] = current_search_style;
-        styles[VALUE_STYLE_HTTP_GET as usize] =
-            Style::default().fg(self.theme.value_colors.http_get);
-        styles[VALUE_STYLE_HTTP_POST as usize] =
-            Style::default().fg(self.theme.value_colors.http_post);
-        styles[VALUE_STYLE_HTTP_PUT as usize] =
-            Style::default().fg(self.theme.value_colors.http_put);
-        styles[VALUE_STYLE_HTTP_DELETE as usize] =
-            Style::default().fg(self.theme.value_colors.http_delete);
-        styles[VALUE_STYLE_HTTP_PATCH as usize] =
-            Style::default().fg(self.theme.value_colors.http_patch);
-        styles[VALUE_STYLE_HTTP_OTHER as usize] =
-            Style::default().fg(self.theme.value_colors.http_other);
-        styles[VALUE_STYLE_STATUS_2XX as usize] =
-            Style::default().fg(self.theme.value_colors.status_2xx);
-        styles[VALUE_STYLE_STATUS_3XX as usize] =
-            Style::default().fg(self.theme.value_colors.status_3xx);
-        styles[VALUE_STYLE_STATUS_4XX as usize] =
-            Style::default().fg(self.theme.value_colors.status_4xx);
-        styles[VALUE_STYLE_STATUS_5XX as usize] =
-            Style::default().fg(self.theme.value_colors.status_5xx);
-        styles[VALUE_STYLE_IP as usize] = Style::default().fg(self.theme.value_colors.ip_address);
-        styles[VALUE_STYLE_UUID as usize] = Style::default().fg(self.theme.value_colors.uuid);
-
-        // Pre-populate the parse cache for every line in the current viewport.
-        // Parsing (JSON, logfmt, etc.) is the most expensive per-line operation; caching it
-        // means subsequent frames at the same scroll position pay only a HashMap lookup.
-        // This block must run before `search_results` borrows `self.tabs`, as the cache
-        // write requires a mutable borrow of `self.tabs[active_tab].cache.parse`.
-        {
-            let cache_gen = self.tabs[self.active_tab].cache.parse_gen;
-            let mut new_entries: Vec<(usize, super::CachedParsedLine)> = Vec::new();
-            {
-                let tab = &self.tabs[self.active_tab];
-                if !raw_mode && let Some(parser) = tab.display.format.as_deref() {
-                    for vi in start..end {
-                        let line_idx = tab.filter.visible_indices.get(vi);
-                        // Skip if already cached at the current generation.
-                        if tab
-                            .cache
-                            .parse
-                            .get(&line_idx)
-                            .map(|(g, _)| *g == cache_gen)
-                            .unwrap_or(false)
-                        {
-                            continue;
-                        }
-                        let line_bytes = tab.file_reader.get_line(line_idx);
-                        if let Some(parts) = parser.parse_line(line_bytes) {
-                            let cols = apply_field_layout(
-                                &parts,
-                                &tab.display.field_layout,
-                                &tab.display.hidden_fields,
-                                tab.display.show_keys,
-                            );
-                            let all_cols_hidden = cols.is_empty();
-                            // Extract strings before consuming `parts` fields.
-                            let level = parts.level.map(|s| s.to_string());
-                            let timestamp = parts.timestamp.map(|s| s.to_string());
-                            let target = parts.target.map(|s| s.to_string());
-                            let pid = parts
-                                .extra_fields
-                                .iter()
-                                .find(|(_, k, _)| *k == "pid")
-                                .map(|(_, _, v)| v.to_string());
-                            // Build the joined string with a pre-sized buffer
-                            // instead of `cols.join(" ")` (avoids intermediate allocation).
-                            let rendered = if all_cols_hidden {
-                                String::new()
-                            } else {
-                                let cap: usize =
-                                    cols.iter().map(|c| c.len()).sum::<usize>() + cols.len();
-                                let mut buf = String::with_capacity(cap);
-                                for (i, col) in cols.iter().enumerate() {
-                                    if i > 0 {
-                                        buf.push(' ');
-                                    }
-                                    buf.push_str(col);
-                                }
-                                buf
-                            };
-                            // Cache byte offsets of target/pid/timestamp within `rendered`
-                            // so the render loop avoids repeated O(len) `str::find` calls.
-                            // Use whole-token search for target and pid to avoid false matches
-                            // when the value is a short string (e.g. pid "1" for systemd)
-                            // that also appears inside the timestamp or other fields.
-                            let target_offset = target
-                                .as_deref()
-                                .filter(|t| !t.is_empty())
-                                .and_then(|t| find_token_offset(&rendered, t));
-                            let pid_offset = pid
-                                .as_deref()
-                                .filter(|p| !p.is_empty())
-                                .and_then(|p| find_token_offset(&rendered, p));
-                            let timestamp_offset = timestamp
-                                .as_deref()
-                                .filter(|ts| !ts.is_empty())
-                                .and_then(|ts| rendered.find(ts));
-                            new_entries.push((
-                                line_idx,
-                                super::CachedParsedLine {
-                                    rendered,
-                                    level,
-                                    timestamp,
-                                    target,
-                                    pid,
-                                    all_cols_hidden,
-                                    target_offset,
-                                    pid_offset,
-                                    timestamp_offset,
-                                },
-                            ));
-                        }
-                    }
-                }
-            }
-            // Write new entries now that the shared borrow of `tab` is released.
-            for (line_idx, entry) in new_entries {
-                self.tabs[self.active_tab]
-                    .cache
-                    .parse
-                    .insert(line_idx, (cache_gen, entry));
-            }
-        }
-
-        let search_results = self.tabs[self.active_tab].search.query.get_results();
-        // Pre-compute which line holds the current occurrence and which index within it.
-        let current_search_info: Option<(usize, usize)> = if search_results.is_empty() {
-            None
-        } else {
-            let ri = self.tabs[self.active_tab]
-                .search
-                .query
-                .get_current_match_index();
-            Some((
-                search_results[ri].line_idx,
-                self.tabs[self.active_tab]
-                    .search
-                    .query
-                    .get_current_occurrence_index(),
-            ))
-        };
-        // search_results is sorted by line_idx (scanned in order), so use
-        // binary search instead of a HashMap — O(log N) per lookup, zero
-        // allocation, and avoids the O(N) HashMap build on every render frame
-        // that caused 100% CPU when there were millions of search results.
-        let find_search_result = |line_idx: usize| -> Option<&crate::types::SearchResult> {
-            search_results
-                .binary_search_by_key(&line_idx, |r| r.line_idx)
-                .ok()
-                .map(|i| &search_results[i])
-        };
-        // Clone the compiled regex once so the JSON render path can re-match against
-        // the rendered string (raw-byte positions from search_map don't map there).
-        let search_regex = self.tabs[self.active_tab]
-            .search
-            .query
-            .get_compiled_pattern()
-            .cloned();
-
-        let theme = &self.theme;
-        let level_colors_disabled = &self.tabs[self.active_tab].display.level_colors_disabled;
-        let current_scroll = self.tabs[self.active_tab].scroll.scroll_offset;
-        // Pre-compute visual selection range (indices into visible_indices space).
-        let visual_range: Option<(usize, usize)> = visual_anchor.map(|anchor| {
-            let lo = anchor.min(current_scroll);
-            let hi = anchor.max(current_scroll);
-            (lo, hi)
-        });
-        let visual_style = Style::default()
-            .fg(theme.visual_select_fg)
-            .bg(theme.visual_select_bg);
-
-        let comments_for_render: Vec<(Vec<usize>, String)> = self.tabs[self.active_tab]
-            .log_manager
-            .get_comments()
-            .iter()
-            .map(|a| (a.line_indices.clone(), a.text.clone()))
-            .collect();
-
-        let (banner_at, vis_comment_map) = prepare_comment_maps(
-            &comments_for_render,
-            &self.tabs[self.active_tab].filter.visible_indices,
-            start,
-            end,
-        );
-
-        // Comment banner styles — full-width separator bar.
-        let banner_dash_style = Style::default()
-            .fg(theme.comment_fg)
-            .add_modifier(Modifier::DIM);
-        let banner_text_style = Style::default()
-            .fg(theme.comment_fg)
-            .add_modifier(Modifier::BOLD);
-        let banner_cont_style = Style::default().fg(theme.comment_fg);
-
-        // Read render cache generation keys once before the loop.
-        let render_gen = self.tabs[self.active_tab].cache.render_gen;
-        let search_gen = self.tabs[self.active_tab].cache.search_result_gen;
-        // Misses collected here; batch-inserted after the loop to satisfy the borrow checker.
-        let mut render_cache_misses: Vec<(usize, Option<usize>, Line<'static>)> = Vec::new();
-
-        let mut log_lines: Vec<Line> = Vec::new();
-        for abs_vis_idx in start..end {
-            let line_idx = self.tabs[self.active_tab]
-                .filter
-                .visible_indices
-                .get(abs_vis_idx);
-            let line_bytes = self.tabs[self.active_tab].file_reader.get_line(line_idx);
-            let is_current = abs_vis_idx == current_scroll;
-            let is_marked = self.tabs[self.active_tab].log_manager.is_marked(line_idx);
-            let is_visual_selected = visual_range
-                .map(|(lo, hi)| abs_vis_idx >= lo && abs_vis_idx <= hi)
-                .unwrap_or(false);
-
-            // Use the cached level string for structured lines instead of
-            // re-scanning raw bytes with detect_from_bytes on every frame.
-            let parse_gen = self.tabs[self.active_tab].cache.parse_gen;
-            let cached = self.tabs[self.active_tab]
-                .cache
-                .parse
-                .get(&line_idx)
-                .filter(|(g, _)| *g == parse_gen)
-                .map(|(_, c)| c);
-
-            let mut base_style = Style::default().fg(theme.text);
-            if level_colors_disabled.len() < 7 {
-                // At least one level has colour enabled.
-                let level = cached
-                    .and_then(|c| c.level.as_deref())
-                    .map(LogLevel::parse_level)
-                    .unwrap_or_else(|| LogLevel::detect_from_bytes(line_bytes));
-                match level {
-                    LogLevel::Trace if !level_colors_disabled.contains("trace") => {
-                        base_style = base_style.fg(theme.trace_fg)
-                    }
-                    LogLevel::Debug if !level_colors_disabled.contains("debug") => {
-                        base_style = base_style.fg(theme.debug_fg)
-                    }
-                    LogLevel::Info if !level_colors_disabled.contains("info") => {
-                        base_style = base_style.fg(theme.info_fg)
-                    }
-                    LogLevel::Notice if !level_colors_disabled.contains("notice") => {
-                        base_style = base_style.fg(theme.notice_fg)
-                    }
-                    LogLevel::Warning if !level_colors_disabled.contains("warning") => {
-                        base_style = base_style.bg(theme.warning_bg)
-                    }
-                    LogLevel::Error if !level_colors_disabled.contains("error") => {
-                        base_style = base_style.bg(theme.error_bg)
-                    }
-                    LogLevel::Fatal if !level_colors_disabled.contains("fatal") => {
-                        base_style = base_style.bg(theme.fatal_bg)
-                    }
-                    _ => {}
-                }
-            }
-            if is_marked {
-                base_style = base_style.fg(theme.mark_fg).bg(theme.mark_bg);
-            }
-            if is_visual_selected {
-                base_style = visual_style;
-            }
-
-            // In visual-char mode, skip cursor highlight on the current line so
-            // the char-level REVERSED selection is the only visual indicator.
-            let render_style = if is_current && visual_char_selection.is_none() {
-                Style::default()
-                    .fg(theme.cursor_fg)
-                    .bg(theme.cursor_bg)
-                    .add_modifier(Modifier::BOLD)
-                    .add_modifier(Modifier::UNDERLINED)
-            } else {
-                base_style
-            };
-
-            // Determine which occurrence index (if any) is current for this line.
-            let current_occ = current_search_info
-                .and_then(|(cl, co)| if cl == line_idx { Some(co) } else { None });
-
-            // Item 1: check the render cache before running the expensive pipeline.
-            let content_line: Line<'static> = if let Some((_, _, _, cached_line)) = self.tabs
-                [self.active_tab]
-                .cache
-                .render_line
-                .get(&line_idx)
-                .filter(|(rg, sg, occ, _)| {
-                    *rg == render_gen && *sg == search_gen && *occ == current_occ
-                }) {
-                cached_line.clone()
-            } else {
-                // For structured lines, render columns and run filter evaluation
-                // against the rendered string so match-only highlights apply correctly.
-                //   timestamp  level  target  span_name: k=v, k=v  extra=val  message
-                // Known-field values are shown without their key names. Unknown fields
-                // and span context are rendered as key=value before the message.
-                // Filter visibility decisions still use the raw bytes (unaffected).
-                // Use the cached parse result so parse_line is called at most once
-                // per line per viewport refresh rather than once per line per frame.
-                let structured_line: Option<Line<'static>> =
-                    cached.filter(|_| !raw_mode).map(|c| {
-                        if c.all_cols_hidden {
-                            // All fields hidden — fall back to raw bytes with filter +
-                            // search highlighting (raw-byte positions are correct here).
-                            let mut collector = MatchCollector::new(line_bytes);
-                            if let Ok(text) = std::str::from_utf8(line_bytes) {
-                                for (s, e, sid) in
-                                    collect_value_color_spans(text, &theme.value_colors)
-                                {
-                                    collector.push(s, e, sid);
-                                }
-                            }
-                            collector.with_priority(500);
-                            filter_manager.evaluate_into(&mut collector);
-                            if let Some(sr) = find_search_result(line_idx) {
-                                collector.with_priority(1000);
-                                for (i, &(s, e)) in sr.matches.iter().enumerate() {
-                                    let sid = if current_occ == Some(i) {
-                                        CURRENT_SEARCH_STYLE_ID
-                                    } else {
-                                        SEARCH_STYLE_ID
-                                    };
-                                    collector.push(s, e, sid);
-                                }
-                            }
-                            render_line(&collector, &styles)
-                        } else {
-                            // Evaluate filters AND search against the cached rendered string so
-                            // all spans land at the correct visible positions.
-                            let rendered = &c.rendered;
-                            let mut collector = MatchCollector::new(rendered.as_bytes());
-                            // Value colors at priority 0 (lowest).
-                            for (s, e, sid) in
-                                collect_value_color_spans(rendered, &theme.value_colors)
-                            {
-                                collector.push(s, e, sid);
-                            }
-                            // Colour the target + pid columns using the per-process palette.
-                            collector.with_priority(10);
-                            if process_colors_len > 0
-                                && !theme.value_colors.is_disabled("process_colors")
-                                && let Some(target) = c.target.as_deref()
-                            {
-                                let idx = stable_hash(target) % process_colors_len;
-                                let sid = process_style_start.saturating_add(idx as u8);
-                                // Use cached offsets to avoid O(len) `str::find` per render miss.
-                                if let Some(pos) = c.target_offset {
-                                    collector.push(pos, pos + target.len(), sid);
-                                }
-                                // Also colour the pid column so that formats like
-                                // journalctl (unit[pid]) show both name and id coloured.
-                                if let Some(pid_val) = c.pid.as_deref() {
-                                    let pid_sid = process_style_start.saturating_add(
-                                        (stable_hash(target) % process_colors_len) as u8,
-                                    );
-                                    if let Some(pos) = c.pid_offset {
-                                        collector.push(pos, pos + pid_val.len(), pid_sid);
-                                    }
-                                }
-                            }
-                            collector.with_priority(500);
-                            filter_manager.evaluate_into(&mut collector);
-                            // Apply date filter styles: timestamp-only or full line.
-                            if let Some(ts) = c.timestamp.as_deref() {
-                                for dfs in &date_filter_styles {
-                                    if dfs.filter.matches(ts) {
-                                        collector.with_priority(500);
-                                        if dfs.match_only {
-                                            if let Some(ts_pos) = c.timestamp_offset {
-                                                collector.push(
-                                                    ts_pos,
-                                                    ts_pos + ts.len(),
-                                                    dfs.style_id,
-                                                );
-                                            }
-                                        } else {
-                                            collector.push(0, rendered.len(), dfs.style_id);
-                                        }
-                                    }
-                                }
-                            }
-                            // Apply field filter styles: matched-value-only or full line.
-                            if !field_filter_styles.is_empty()
-                                && let Some(ref parser_arc) = detected_format_arc
-                            {
-                                let ffs_parser: &dyn crate::parser::LogFormatParser =
-                                    parser_arc.as_ref();
-                                if let Some(parts) = ffs_parser.parse_line(line_bytes) {
-                                    collector.with_priority(500);
-                                    for ffs in &field_filter_styles {
-                                        if let Some(val) = crate::field_filter::resolve_field(
-                                            &ffs.field_filter.field,
-                                            &parts,
-                                        )
-                                        .filter(|v| v.contains(ffs.field_filter.pattern.as_str()))
-                                        {
-                                            if ffs.match_only {
-                                                if let Some(pos) = rendered.find(val) {
-                                                    collector.push(
-                                                        pos,
-                                                        pos + val.len(),
-                                                        ffs.style_id,
-                                                    );
-                                                }
-                                            } else {
-                                                collector.push(0, rendered.len(), ffs.style_id);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if let Some(ref regex) = search_regex {
-                                collector.with_priority(1000);
-                                for (i, m) in regex.find_iter(rendered).enumerate() {
-                                    let sid = if current_occ == Some(i) {
-                                        CURRENT_SEARCH_STYLE_ID
-                                    } else {
-                                        SEARCH_STYLE_ID
-                                    };
-                                    collector.push(m.start(), m.end(), sid);
-                                }
-                            }
-                            render_line(&collector, &styles)
-                        }
-                    });
-
-                let line = if let Some(structured_line) = structured_line {
-                    structured_line
-                } else {
-                    let mut collector = MatchCollector::new(line_bytes);
-                    if let Ok(text) = std::str::from_utf8(line_bytes) {
-                        for (s, e, sid) in collect_value_color_spans(text, &theme.value_colors) {
-                            collector.push(s, e, sid);
-                        }
-                    }
-                    collector.with_priority(500);
-                    filter_manager.evaluate_into(&mut collector);
-                    if let Some(sr) = find_search_result(line_idx) {
-                        collector.with_priority(1000);
-                        for (i, &(s, e)) in sr.matches.iter().enumerate() {
-                            let sid = if current_occ == Some(i) {
-                                CURRENT_SEARCH_STYLE_ID
-                            } else {
-                                SEARCH_STYLE_ID
-                            };
-                            collector.push(s, e, sid);
-                        }
-                    }
-                    render_line(&collector, &styles)
-                };
-                render_cache_misses.push((line_idx, current_occ, line.clone()));
-                line
-            };
-
-            // Use line-level base style so per-span highlights (search, filters) are
-            // preserved on the cursor line. Spans with explicit fg/bg override the base.
-            let mut line = content_line.style(render_style);
-
-            if is_current && let Some((lo, hi)) = visual_char_selection {
-                line = crate::mode::visual_char_mode::apply_char_selection(line, lo, hi);
-            }
-
-            if show_line_numbers {
-                let is_annotated = vis_comment_map.contains_key(&abs_vis_idx);
-                line = prepend_line_number(
-                    line,
-                    line_idx,
-                    line_number_width,
-                    is_annotated,
-                    theme.comment_fg,
-                    theme.line_number_fg,
-                    render_style,
-                );
-            }
-
-            // Prepend a full-width separator banner before the first visible line of each
-            // comment group: " ── {text} ──────────────────────────────────"
-            if let Some(&cmt_idx) = banner_at.get(&abs_vis_idx) {
-                let (_, text) = &comments_for_render[cmt_idx];
-                let total_width = inner_width + ln_prefix_width;
-                for (i, text_line) in text.lines().enumerate() {
-                    if i == 0 {
-                        let left = " ── ";
-                        let text_len = text_line.chars().count();
-                        let used = left.len() + text_len + 1; // +1 for space before right dashes
-                        let right_dashes = "─".repeat(total_width.saturating_sub(used).max(1));
-                        let spans = vec![
-                            Span::styled(left, banner_dash_style),
-                            Span::styled(text_line.to_string(), banner_text_style),
-                            Span::styled(format!(" {right_dashes}"), banner_dash_style),
-                        ];
-                        log_lines.push(Line::from(spans));
-                    } else {
-                        let spans = vec![
-                            Span::styled("    ", banner_cont_style),
-                            Span::styled(text_line.to_string(), banner_cont_style),
-                        ];
-                        log_lines.push(Line::from(spans));
-                    }
-                }
-            }
-            log_lines.push(line);
-        }
-
-        // Batch-insert render cache misses now that the immutable borrow of tabs is released.
-        for (line_idx, current_occ, content_line) in render_cache_misses {
-            self.tabs[self.active_tab].cache.render_line.insert(
-                line_idx,
-                (render_gen, search_gen, current_occ, content_line),
-            );
-        }
-
-        let tail_mode = self.tabs[self.active_tab].stream.tail_mode;
-        let paused = self.tabs[self.active_tab].stream.paused;
-        let logs_title = if show_tab_bar {
-            String::new()
-        } else {
-            format!(
-                "{}{} ({}){}{}{}",
-                mode_name.map(|m| format!("[{}] ", m)).unwrap_or_default(),
-                self.tabs[self.active_tab]
-                    .log_manager
-                    .source_file()
-                    .map(|s| {
-                        std::path::Path::new(s)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(s)
-                            .to_string()
-                    })
-                    .unwrap_or(String::from("Logs")),
-                num_visible,
-                if tail_mode { " [TAIL]" } else { "" },
-                if raw_mode { " [RAW]" } else { "" },
-                if paused { " [PAUSED]" } else { "" },
-            )
-        };
-
-        let logs_borders = if show_borders {
-            if show_tab_bar {
-                Borders::LEFT | Borders::RIGHT | Borders::BOTTOM
-            } else {
-                Borders::ALL
-            }
-        } else {
-            Borders::NONE
-        };
-        let title_style = Style::default().fg(self.theme.border_title);
-        let logs_block = if show_borders {
-            let block = Block::default()
-                .borders(logs_borders)
-                .border_style(Style::default().fg(self.theme.border));
-            if logs_title.is_empty() {
-                block
-            } else {
-                block.title(logs_title).title_style(title_style)
-            }
-        } else {
-            let block = Block::default()
-                .borders(Borders::NONE)
-                .padding(Padding::new(1, 0, 0, 0));
-            if logs_title.is_empty() {
-                block
-            } else {
-                block.title(logs_title).title_style(title_style)
-            }
-        };
-        let mut paragraph = Paragraph::new(log_lines).block(logs_block).scroll((
-            0,
-            self.tabs[self.active_tab].scroll.horizontal_scroll as u16,
-        ));
-
-        if self.tabs[self.active_tab].display.wrap {
-            paragraph = paragraph.wrap(Wrap { trim: false });
-        }
-
-        frame.render_widget(paragraph, logs_area);
-
-        if num_visible > 0 {
-            // content_length = max_scroll ensures position/content_length == 1.0
-            // when at the last entry, so the thumb reaches the bottom of the track.
-            let max_scroll = num_visible.saturating_sub(visible_height);
-            let mut scrollbar_state = ScrollbarState::new(max_scroll.max(1)).position(start);
-            frame.render_stateful_widget(
-                Scrollbar::default()
-                    .orientation(ScrollbarOrientation::VerticalRight)
-                    .style(Style::default().fg(self.theme.border)),
-                logs_area,
-                &mut scrollbar_state,
-            );
-        }
-    }
-
-    fn render_input_bar(
-        &mut self,
-        frame: &mut Frame<'_>,
-        search_input: Option<(String, bool, bool)>,
-        chunks: &std::rc::Rc<[Rect]>,
-        chunk_idx: usize,
-    ) {
-        if let Some((input_str, forward, is_active)) = search_input {
-            let prefix = if forward { "/" } else { "?" };
-            let search_line = Paragraph::new(format!("{}{}", prefix, input_str))
-                .style(
-                    Style::default()
-                        .fg(self.theme.cursor_fg)
-                        .bg(self.theme.cursor_bg),
-                )
-                .wrap(Wrap { trim: false });
-            let input_area = chunks[chunk_idx];
-            frame.render_widget(search_line, input_area);
-            if is_active {
-                let cursor_x = input_area.x + 1 + input_str.len() as u16;
-                if cursor_x < input_area.x + input_area.width {
-                    frame.set_cursor_position((cursor_x, input_area.y));
-                }
-            }
-
-            let hint_area = chunks[chunk_idx + 1];
-            let total = self.tabs[self.active_tab]
-                .search
-                .query
-                .get_total_match_count();
-            let hint_text = if !input_str.is_empty() {
-                if is_active {
-                    format!("  {} matches", total)
-                } else if total == 0 {
-                    "  no matches".to_string()
-                } else {
-                    let current = self.tabs[self.active_tab]
-                        .search
-                        .query
-                        .get_current_occurrence_number();
-                    format!("  match {} / {}", current, total)
-                }
-            } else {
-                "  Type pattern and press Enter to search".to_string()
-            };
-            let hint = Paragraph::new(hint_text)
-                .style(Style::default().fg(self.theme.text).bg(self.theme.root_bg));
-            frame.render_widget(hint, hint_area);
-
-            let progress_text: Option<String> =
-                self.tabs[self.active_tab].search.handle.as_ref().map(|h| {
-                    let (bar, pct) = progress_bar_str(*h.progress_rx.borrow());
-                    format!(" {} {}% ", bar, pct)
-                });
-            if let Some(text) = progress_text {
-                let text_width = text.chars().count() as u16;
-                let x = hint_area.x + (hint_area.width.saturating_sub(text_width)) / 2;
-                let w = hint_area.width.min(text_width);
-                let progress_rect = Rect::new(x, hint_area.y, w, 1);
-                frame.render_widget(
-                    Paragraph::new(text).style(
-                        Style::default()
-                            .fg(self.theme.border)
-                            .bg(self.theme.root_bg),
-                    ),
-                    progress_rect,
-                );
-            }
-        }
-    }
-
-    /// Compute how many rows the command-mode hint area needs (1–3).
     fn compute_hint_height(
         &mut self,
         command_input: &Option<(String, usize)>,
@@ -1682,365 +644,6 @@ impl App {
         }
         (count_wrapped_lines(&text, width) as u16).clamp(1, 3)
     }
-
-    fn render_command_bar(
-        &mut self,
-        frame: &mut Frame<'_>,
-        command_input: Option<(String, usize)>,
-        completion_query: Option<&str>,
-        completion_index: Option<usize>,
-        chunks: &std::rc::Rc<[Rect]>,
-        chunk_idx: usize,
-    ) {
-        if let Some((input_text, cursor_pos)) = command_input {
-            let query_text = completion_query.unwrap_or(input_text.as_str());
-            let input_prefix = ":";
-            let command_line = Paragraph::new(format!("{}{}", input_prefix, input_text))
-                .style(
-                    Style::default()
-                        .fg(self.theme.cursor_fg)
-                        .bg(self.theme.cursor_bg),
-                )
-                .wrap(Wrap { trim: false });
-            let input_area = chunks[chunk_idx];
-            frame.render_widget(command_line, input_area);
-            let cursor_x = input_area.x + 1 + cursor_pos as u16;
-            if cursor_x < input_area.x + input_area.width {
-                frame.set_cursor_position((cursor_x, input_area.y));
-            }
-
-            let hint_area = chunks[chunk_idx + 1];
-            let normal_style = Style::default().fg(self.theme.text).bg(self.theme.root_bg);
-            let highlight_style = Style::default()
-                .fg(self.theme.cursor_fg)
-                .bg(self.theme.cursor_bg);
-            let root_bg = self.theme.root_bg;
-            let cursor_bg = self.theme.cursor_bg;
-
-            let tab = &mut self.tabs[self.active_tab];
-            let source = resolve_completions(tab, query_text, completion_index);
-            match source {
-                CompletionSource::Error(err) => {
-                    let error_paragraph = Paragraph::new(err)
-                        .style(Style::default().fg(Color::Red).bg(root_bg))
-                        .wrap(Wrap { trim: false });
-                    frame.render_widget(error_paragraph, hint_area);
-                }
-                CompletionSource::Items(items) => {
-                    render_completion_hints(
-                        frame,
-                        &items,
-                        completion_index,
-                        root_bg,
-                        hint_area,
-                        default_span_fn(normal_style, highlight_style),
-                    );
-                }
-                CompletionSource::ColorItems(items) => {
-                    render_completion_hints(
-                        frame,
-                        &items,
-                        completion_index,
-                        root_bg,
-                        hint_area,
-                        |_i, name| {
-                            let color = parse_color(name).unwrap_or(Color::White);
-                            (
-                                name.to_string(),
-                                Style::default().fg(color).bg(root_bg),
-                                Style::default().fg(color).bg(cursor_bg),
-                            )
-                        },
-                    );
-                }
-                CompletionSource::FileItems(items) => {
-                    render_completion_hints(
-                        frame,
-                        &items,
-                        completion_index,
-                        root_bg,
-                        hint_area,
-                        |_i, path| (file_display_name(path), normal_style, highlight_style),
-                    );
-                }
-                CompletionSource::CommandHelp(help) => {
-                    let hint = Paragraph::new(help)
-                        .style(normal_style)
-                        .wrap(Wrap { trim: false });
-                    frame.render_widget(hint, hint_area);
-                }
-            }
-        }
-    }
-
-    fn render_side_bar(
-        &mut self,
-        frame: &mut Frame<'_>,
-        selected_filter_idx: usize,
-        sidebar_area: Option<Rect>,
-    ) {
-        if let Some(sidebar_area) = sidebar_area {
-            let show_borders = self.tabs[self.active_tab].display.show_borders;
-            let filters = self.tabs[self.active_tab].log_manager.get_filters();
-            let match_counts = self.tabs[self.active_tab].filter.match_counts.clone();
-            let filters_text: Vec<Line> = filters
-                .iter()
-                .enumerate()
-                .map(|(i, filter)| {
-                    let status = if filter.enabled { "[x]" } else { "[ ]" };
-                    let selected_prefix = if i == selected_filter_idx { ">" } else { " " };
-                    let is_date = filter.pattern.starts_with(crate::date_filter::DATE_PREFIX);
-                    let is_field = filter
-                        .pattern
-                        .starts_with(crate::field_filter::FIELD_PREFIX);
-                    let filter_type_str = if is_date {
-                        "Date"
-                    } else {
-                        match filter.filter_type {
-                            FilterType::Include => "In",
-                            FilterType::Exclude => "Out",
-                        }
-                    };
-                    let field_display_buf: String;
-                    let (display_pattern, field_tag) = if is_date {
-                        (&filter.pattern[crate::date_filter::DATE_PREFIX.len()..], "")
-                    } else if is_field {
-                        let expr = &filter.pattern[crate::field_filter::FIELD_PREFIX.len()..];
-                        // Convert internal "key:value" back to "key=value" for display.
-                        field_display_buf = if let Some(colon) = expr.find(':') {
-                            format!("{}={}", &expr[..colon], &expr[colon + 1..])
-                        } else {
-                            expr.to_string()
-                        };
-                        (field_display_buf.as_str(), " [field]")
-                    } else {
-                        (&filter.pattern[..], "")
-                    };
-                    let count_str = if filter.enabled {
-                        let count = match_counts.get(i).copied().unwrap_or(0);
-                        format!(" ({})", count)
-                    } else {
-                        String::new()
-                    };
-                    let mut style = Style::default().fg(self.theme.text);
-                    if let Some(cfg) = &filter.color_config {
-                        if let Some(fg) = cfg.fg {
-                            style = style.fg(fg);
-                        }
-                        if let Some(bg) = cfg.bg {
-                            style = style.bg(bg);
-                        }
-                    }
-                    Line::from(format!(
-                        "{}{} {}: {}{}{}",
-                        selected_prefix,
-                        status,
-                        filter_type_str,
-                        display_pattern,
-                        field_tag,
-                        count_str
-                    ))
-                    .style(style)
-                })
-                .collect();
-
-            let active_count = filters.iter().filter(|f| f.enabled).count();
-            let total_count = filters.len();
-            let filter_count_suffix = if total_count > 0 {
-                format!(" [{}/{}]", active_count, total_count)
-            } else {
-                String::new()
-            };
-            let filter_progress: Option<usize> = self.tabs[self.active_tab]
-                .filter
-                .handle
-                .as_ref()
-                .map(|h| (h.displayed_progress * 100.0) as usize);
-            let sidebar_title = if self.tabs[self.active_tab].filter.show_marks_only {
-                format!("Filters [MARKS ONLY]{}", filter_count_suffix)
-            } else if self.tabs[self.active_tab].filter.enabled {
-                format!("Filters{}", filter_count_suffix)
-            } else {
-                format!("Filters [OFF]{}", filter_count_suffix)
-            };
-            let sidebar_title = match filter_progress {
-                Some(pct) if pct < 100 => format!("{} {}%", sidebar_title, pct),
-                Some(_) => format!("{} Indexing…", sidebar_title),
-                None => sidebar_title,
-            };
-            let sidebar_block = if show_borders {
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.border))
-                    .title(sidebar_title)
-                    .title_style(Style::default().fg(self.theme.border_title))
-            } else {
-                Block::default()
-                    .borders(Borders::NONE)
-                    .padding(Padding::new(1, 0, 0, 0))
-                    .title(sidebar_title)
-                    .title_style(Style::default().fg(self.theme.border_title))
-            };
-            let sidebar = Paragraph::new(filters_text)
-                .wrap(ratatui::widgets::Wrap { trim: false })
-                .block(sidebar_block);
-            frame.render_widget(sidebar, sidebar_area);
-        }
-    }
-
-    fn render_tab_bar(
-        &mut self,
-        frame: &mut Frame<'_>,
-        show_tab_bar: bool,
-        show_borders: bool,
-        chunks: &std::rc::Rc<[Rect]>,
-        chunk_idx: &mut usize,
-        mode_name: Option<&str>,
-    ) {
-        if !show_tab_bar {
-            return;
-        }
-
-        let tab_bar_area = chunks[*chunk_idx];
-        *chunk_idx += 1;
-
-        // Determine which tab (if any) is currently loading, and at what progress.
-        let loading_info: Option<(usize, usize)> = self.file_load_state.as_ref().map(|s| {
-            let pct = (*s.progress_rx.borrow() * 100.0) as usize;
-            let tab_idx = match &s.on_complete {
-                LoadContext::ReplaceInitialTab => 0,
-                LoadContext::ReplaceTab { tab_idx } => *tab_idx,
-                LoadContext::SessionRestoreTab { tab_idx, .. } => *tab_idx,
-            };
-            (tab_idx, pct)
-        });
-
-        // Collect which tabs are currently computing a filter in the background,
-        // along with the current progress percentage (0–100).
-        let filtering_tabs: Vec<(usize, usize)> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .filter_map(|(i, t)| {
-                t.filter.handle.as_ref().map(|h| {
-                    let pct = (h.displayed_progress * 100.0) as usize;
-                    (i, pct)
-                })
-            })
-            .collect();
-
-        let active_tab = self.active_tab;
-        let border_style = Style::default().fg(self.theme.border);
-        // Mode badge style mirrors the mode bar: text_highlight_fg + BOLD on the
-        // root_bg background (no explicit bg → paragraph root_bg fills in).
-        let mode_style = Style::default()
-            .fg(self.theme.text_highlight_fg)
-            .add_modifier(Modifier::BOLD);
-
-        let mut spans: Vec<Span> = Vec::new();
-        let mut used_width: usize = 0;
-
-        // In bordered mode the tab bar forms the top border of the logs panel.
-        if show_borders {
-            spans.push(Span::styled("┌", border_style));
-            used_width += 1;
-        }
-
-        // Mode badge always appears at the far left, before all tabs.
-        if let Some(m) = mode_name {
-            let text = format!(" [{}] ", m);
-            used_width += unicode_width::UnicodeWidthStr::width(text.as_str());
-            spans.push(Span::styled(text, mode_style));
-        }
-
-        for (i, t) in self.tabs.iter().enumerate() {
-            let is_active = i == active_tab;
-            let tab_style = if is_active {
-                Style::default()
-                    .fg(self.theme.border_title)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-                    .fg(self.theme.inactive_tab_fg)
-                    .bg(self.theme.root_bg)
-            };
-            let filter_pct = filtering_tabs
-                .iter()
-                .find(|(idx, _)| *idx == i)
-                .map(|(_, p)| *p);
-            let retry_info = self.tabs[i]
-                .stream
-                .retry
-                .as_ref()
-                .filter(|r| !r.connected)
-                .map(|r| r.attempt);
-            let suffix = match (loading_info, filter_pct, retry_info) {
-                (Some((idx, pct)), _, _) if idx == i => format!(" {}% ", pct),
-                (_, Some(pct), _) if pct < 100 => format!(" Filtering… {}% ", pct),
-                (_, Some(_), _) => " Indexing… ".to_string(),
-                (_, _, Some(attempt)) => format!(" [RETRY #{}] ", attempt),
-                _ if is_active => {
-                    let num_visible = self.tabs[i].filter.visible_indices.len();
-                    let tail = self.tabs[i].stream.tail_mode;
-                    let raw = self.tabs[i].display.raw_mode;
-                    let paused = self.tabs[i].stream.paused;
-                    let fmt_label = if raw {
-                        String::new()
-                    } else {
-                        match &self.tabs[i].display.format {
-                            Some(p) => format!(" [{}]", p.name()),
-                            None if num_visible == 0 => String::new(),
-                            None => " [unknown format]".to_string(),
-                        }
-                    };
-                    format!(
-                        " ({}){}{}{}{}  ",
-                        num_visible,
-                        if tail { " [TAIL]" } else { "" },
-                        if raw { " [RAW]" } else { "" },
-                        if paused { " [PAUSED]" } else { "" },
-                        fmt_label,
-                    )
-                }
-                _ => {
-                    if self.tabs[i].display.raw_mode {
-                        " ".to_string()
-                    } else {
-                        let has_lines = self.tabs[i].file_reader.line_count() > 0;
-                        match &self.tabs[i].display.format {
-                            Some(p) => format!(" [{}] ", p.name()),
-                            None if has_lines => " [unknown format] ".to_string(),
-                            None => " ".to_string(),
-                        }
-                    }
-                }
-            };
-            let tab_text = format!(" {}{}", t.title, suffix);
-            used_width += unicode_width::UnicodeWidthStr::width(tab_text.as_str());
-            spans.push(Span::styled(tab_text, tab_style));
-
-            if !show_borders {
-                // Visual gap between tabs when not in bordered mode.
-                spans.push(Span::styled(" ", Style::default().bg(self.theme.root_bg)));
-                used_width += 1;
-            }
-        }
-
-        if show_borders {
-            // Fill remaining space with ─ to complete the top border line.
-            let total = tab_bar_area.width as usize;
-            let fill = total.saturating_sub(used_width + 1); // +1 for ┐
-            if fill > 0 {
-                spans.push(Span::styled("─".repeat(fill), border_style));
-            }
-            spans.push(Span::styled("┐", border_style));
-        }
-
-        // Render as a Line widget directly — bypasses Paragraph's base-style
-        // application, which can interfere with individual span fg colours.
-        // The root Block rendered in ui() already filled the row with root_bg.
-        frame.render_widget(Line::from(spans), tab_bar_area);
-    }
 }
 
 /// djb2-style hash for stable per-process color assignment.
@@ -2057,21 +660,14 @@ fn progress_bar_str(progress: f64) -> (String, usize) {
     (bar, pct)
 }
 
+#[allow(dead_code)]
 fn stable_hash(s: &str) -> usize {
     s.bytes().fold(5381usize, |acc, b| {
         acc.wrapping_mul(33).wrapping_add(b as usize)
     })
 }
 
-/// Find the byte offset of `needle` as a complete whitespace-delimited token
-/// in `haystack`. Returns `None` if the needle is empty or not found as a
-/// whole token.
-///
-/// This prevents short values such as `"1"` (a common PID for systemd) from
-/// matching as a substring inside a longer token like a timestamp
-/// (`"2024-01-15T…"`). Only positions where the character immediately before
-/// is a space (or the string start) **and** the character immediately after
-/// is a space (or the string end) are considered.
+#[allow(dead_code)]
 fn find_token_offset(haystack: &str, needle: &str) -> Option<usize> {
     if needle.is_empty() {
         return None;
