@@ -292,6 +292,14 @@ impl<'a> MatchCollector<'a> {
         }
     }
 
+    pub fn with_capacity(line: &'a [u8], capacity: usize) -> Self {
+        Self {
+            line,
+            spans: Vec::with_capacity(capacity),
+            current_priority: 0,
+        }
+    }
+
     pub fn with_priority(&mut self, priority: u32) -> &mut Self {
         self.current_priority = priority;
         self
@@ -552,12 +560,18 @@ impl FilterManager {
 
             for mat in ac.find_iter(line) {
                 let (filter_idx, decision) = self.combined_ac_meta[mat.pattern().as_usize()];
+                if filter_idx == 0 {
+                    return decision;
+                }
                 if best.is_none_or(|(best_idx, _)| filter_idx < best_idx) {
                     best = Some((filter_idx, decision));
                 }
             }
 
             for &fi in &self.regex_filter_indices {
+                if best.is_some_and(|(best_idx, _)| best_idx < fi) {
+                    break;
+                }
                 if let Some(filter) = self.filters.get(fi) {
                     let d = filter.matches(line);
                     if d.is_decided() && best.is_none_or(|(best_idx, _)| fi < best_idx) {
@@ -591,7 +605,7 @@ impl FilterManager {
 
     /// Run all filters on `line` and collect styling spans for rendering.
     pub fn evaluate_line<'a>(&self, line: &'a [u8]) -> MatchCollector<'a> {
-        let mut collector = MatchCollector::new(line);
+        let mut collector = MatchCollector::with_capacity(line, self.filters.len());
         for filter in &self.filters {
             filter.evaluate(line, &mut collector);
         }

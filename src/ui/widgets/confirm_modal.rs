@@ -404,7 +404,7 @@ mod tests {
         use super::ConfirmOpenDirModal;
         use crate::config::Keybindings;
         use crate::theme::Theme;
-        use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, prelude::Widget};
+        use ratatui::{buffer::Buffer, prelude::Widget};
         let theme = Theme::default();
         let kb = Keybindings::default();
         let files = vec!["/tmp/a.log".to_string(), "/tmp/b.log".to_string()];
@@ -425,7 +425,7 @@ mod tests {
         use super::ConfirmOpenDirModal;
         use crate::config::Keybindings;
         use crate::theme::Theme;
-        use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, prelude::Widget};
+        use ratatui::{buffer::Buffer, prelude::Widget};
         let theme = Theme::default();
         let kb = Keybindings::default();
         let files = vec!["/tmp/a.log".to_string()];

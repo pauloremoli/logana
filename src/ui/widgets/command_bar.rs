@@ -369,7 +369,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_completions_error() {
-        use crate::config::Keybindings;
         use crate::db::Database;
         use crate::file_reader::FileReader;
         use crate::log_manager::LogManager;
@@ -386,7 +385,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_completions_field_name() {
-        use crate::config::Keybindings;
         use crate::db::Database;
         use crate::file_reader::FileReader;
         use crate::log_manager::LogManager;
