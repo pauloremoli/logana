@@ -2819,8 +2819,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_dlt_stream_error_sets_retry() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
         let mut app = make_app(&["line"]).await;
-        app.open_dlt_stream("192.0.2.1".to_string(), 9999, "test-device".to_string())
+        app.open_dlt_stream("127.0.0.1".to_string(), port, "test-device".to_string())
             .await;
         let tab_idx = app.tabs.len() - 1;
         assert!(

@@ -25,7 +25,7 @@ A fast terminal log viewer for files of any size — including multi-GB logs. Bu
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search, `e`/`w` error/warning jumps
 - **Annotations** — attach comments to log lines; export analysis to Markdown or Jira
 - **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
-- **Live OTel collector** — receive OpenTelemetry logs in real time over gRPC or HTTP/JSON; compatible with any OTel SDK
+- **OTel collector** — receive OpenTelemetry logs in real time over gRPC or HTTP/JSON; compatible with any OTel SDK
 - **Multi-tab** — open multiple files, Docker streams, DLT daemon connections, or OTel collector tabs; each tab has independent filters and session state
 - **MCP server** — embedded Model Context Protocol server; expose marks and annotations to AI assistants
 - **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs
@@ -98,13 +98,14 @@ logana app.log --headless -i error --output filtered.log
 
 ## Documentation
 
-Full documentation is available in the [`docs/`](docs/) directory:
+Full documentation is at **[pauloremoli.github.io/logana](https://pauloremoli.github.io/logana/)**.
 
-- [Keybindings](docs/src/configuration/keybindings.md)
-- [Configuration](docs/src/configuration/index.md)
-- [Filtering](docs/src/filtering/index.md)
-- [Annotations](docs/src/annotations.md)
-- [MCP Server](docs/src/mcp.md)
-- [OTel Collector](docs/src/otel.md)
-- [Log Formats](docs/src/log-formats.md)
-- [Architecture](ARCHITECTURE.md)
+- [Quick Start](https://pauloremoli.github.io/logana/quick-start.html)
+- [Commands](https://pauloremoli.github.io/logana/commands.html)
+- [Filtering](https://pauloremoli.github.io/logana/filtering/)
+- [Configuration](https://pauloremoli.github.io/logana/configuration/)
+- [Keybindings](https://pauloremoli.github.io/logana/configuration/keybindings.html)
+- [Annotations](https://pauloremoli.github.io/logana/annotations.html)
+- [OTel Collector](https://pauloremoli.github.io/logana/otel.html)
+- [MCP Server](https://pauloremoli.github.io/logana/mcp.html)
+- [Log Formats](https://pauloremoli.github.io/logana/log-formats.html)
