@@ -130,6 +130,32 @@ impl LogFormatParser for DltParser {
         parse_dlt_text_line(line)
     }
 
+    fn parse_timestamp<'a>(&self, line: &'a [u8]) -> Option<&'a str> {
+        if line.len() < 26 {
+            return None;
+        }
+        if line[4] != b'/'
+            || line[7] != b'/'
+            || line[10] != b' '
+            || line[13] != b':'
+            || line[16] != b':'
+            || line[19] != b'.'
+        {
+            return None;
+        }
+        if !line[0..4].iter().all(|b| b.is_ascii_digit())
+            || !line[5..7].iter().all(|b| b.is_ascii_digit())
+            || !line[8..10].iter().all(|b| b.is_ascii_digit())
+            || !line[11..13].iter().all(|b| b.is_ascii_digit())
+            || !line[14..16].iter().all(|b| b.is_ascii_digit())
+            || !line[17..19].iter().all(|b| b.is_ascii_digit())
+            || !line[20..26].iter().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        std::str::from_utf8(&line[..26]).ok()
+    }
+
     fn collect_field_names(&self, _lines: &[&[u8]]) -> Vec<String> {
         vec![
             "timestamp".to_string(),
@@ -369,5 +395,39 @@ mod tests {
         let line =
             b"2024/01/15 10:30:45.123456 1234567 000 ECU1 APP1 CTX1 unknown info verbose 1 msg";
         assert!(DltParser.parse_line(line).is_none());
+    }
+
+    // ── parse_timestamp ────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_timestamp_returns_correct_slice() {
+        let parser = DltParser;
+        assert_eq!(
+            parser.parse_timestamp(FULL_LINE),
+            Some("2024/01/15 10:30:45.123456")
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_matches_parse_line() {
+        let parser = DltParser;
+        assert_eq!(
+            parser.parse_timestamp(FULL_LINE),
+            parser.parse_line(FULL_LINE).and_then(|p| p.timestamp)
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_too_short_returns_none() {
+        assert!(DltParser.parse_timestamp(b"2024/01/15").is_none());
+    }
+
+    #[test]
+    fn test_parse_timestamp_bad_format_returns_none() {
+        assert!(
+            DltParser
+                .parse_timestamp(b"not-a-dlt-timestamp-at-all-here")
+                .is_none()
+        );
     }
 }

@@ -106,6 +106,10 @@ pub struct DisplayParts<'a> {
 pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
     fn parse_line<'a>(&self, line: &'a [u8]) -> Option<DisplayParts<'a>>;
 
+    fn parse_timestamp<'a>(&self, line: &'a [u8]) -> Option<&'a str> {
+        self.parse_line(line).and_then(|p| p.timestamp)
+    }
+
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String>;
 
     fn detect_score(&self, sample: &[&[u8]]) -> f64 {

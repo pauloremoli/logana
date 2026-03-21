@@ -838,7 +838,14 @@ impl FilterManager {
         n_filters: usize,
     ) -> (Vec<usize>, Vec<usize>) {
         let sub_line_count = sub_end - sub_start;
-        let mut state = SubChunkState::new(sub_line_count, n_filters);
+        let all_ac_bits: u64 = if n_filters <= 64 {
+            self.combined_ac_meta
+                .iter()
+                .fold(0u64, |acc, &(fi, _)| acc | (1u64 << fi))
+        } else {
+            0
+        };
+        let mut state = SubChunkState::new(sub_line_count, n_filters, all_ac_bits);
 
         self.scan_ac_with_cursor(ac, data, line_starts, sub_start, &mut state);
         self.scan_regex_fallback(data, line_starts, sub_start, &mut state);
@@ -880,6 +887,9 @@ impl FilterManager {
 
             let (filter_idx, _) = self.combined_ac_meta[mat.pattern().as_usize()];
             state.record(cursor, filter_idx);
+            if state.all_saturated() {
+                break;
+            }
         }
     }
 
@@ -942,10 +952,14 @@ struct SubChunkState {
     seen_set: Vec<Vec<usize>>,
     /// Whether the bitset path is in use.
     use_bitset: bool,
+    /// Bitmask of all filter indices covered by the combined AC automaton.
+    all_ac_bits: u64,
+    /// Number of lines whose `seen_bits` covers all AC filter bits (i.e., fully recorded).
+    saturated_count: usize,
 }
 
 impl SubChunkState {
-    fn new(sub_line_count: usize, n_filters: usize) -> Self {
+    fn new(sub_line_count: usize, n_filters: usize, all_ac_bits: u64) -> Self {
         let use_bitset = n_filters <= 64;
         SubChunkState {
             best: vec![u8::MAX; sub_line_count],
@@ -960,7 +974,15 @@ impl SubChunkState {
                 vec![Vec::new(); sub_line_count]
             },
             use_bitset,
+            all_ac_bits,
+            saturated_count: 0,
         }
+    }
+
+    /// Returns true when every line has been matched by all AC-covered filters.
+    #[inline]
+    fn all_saturated(&self) -> bool {
+        self.use_bitset && self.all_ac_bits != 0 && self.saturated_count == self.best.len()
     }
 
     /// Record a filter match for the given local line index.
@@ -971,7 +993,15 @@ impl SubChunkState {
             self.best[local] = fi8;
         }
         if self.use_bitset {
-            self.seen_bits[local] |= 1u64 << filter_idx;
+            let bit = 1u64 << filter_idx;
+            let prev = self.seen_bits[local];
+            if prev & bit == 0 {
+                let next = prev | bit;
+                self.seen_bits[local] = next;
+                if self.all_ac_bits != 0 && next & self.all_ac_bits == self.all_ac_bits {
+                    self.saturated_count += 1;
+                }
+            }
         } else {
             self.seen_set[local].push(filter_idx);
         }

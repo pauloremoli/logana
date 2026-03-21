@@ -1,12 +1,14 @@
 use std::io::{self, BufWriter, Read, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 
 use crate::date_filter::extract_date_filters;
 use crate::db::Database;
 use crate::field_filter::extract_field_filters;
-use crate::file_reader::FileReader;
+use crate::file_reader::{FileReader, VisibilityPredicate};
 use crate::filters::FilterDecision;
 use crate::log_manager::LogManager;
 use crate::parser::detect_format;
@@ -46,6 +48,16 @@ pub(crate) fn same_file(input: &str, output: &std::path::Path) -> bool {
     }
 }
 
+fn finalize_output(tmp_path: Option<(PathBuf, PathBuf)>) -> Result<()> {
+    if let Some((tmp, final_path)) = tmp_path
+        && let Err(e) = std::fs::rename(&tmp, &final_path)
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
     if let (Some(input), Some(output)) = (&args.file, &args.output)
         && same_file(input.as_str(), output)
@@ -71,18 +83,66 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
     )
     .await?;
 
-    let reader = load_reader(&args.file)?;
-
-    let mut writer: Box<dyn Write> = match &args.output {
-        Some(path) => Box::new(BufWriter::with_capacity(
-            8 * 1024 * 1024,
-            std::fs::File::create(path)?,
-        )),
-        None => Box::new(BufWriter::new(io::stdout())),
+    // Write to a sibling temp file, then rename it over the final path.
+    //
+    // Writing directly to the output file with O_TRUNC forces ext4 (data=ordered)
+    // to flush all dirty pages of the *previous* output to disk before it can
+    // truncate — blocking for tens of seconds on slow disks.  Writing without
+    // O_TRUNC and calling set_len() afterward has the same problem: ftruncate
+    // also requires a full data flush before the journal can record the new size.
+    //
+    // With temp+rename: the old output file is unlinked by rename(), which lets
+    // the kernel discard its dirty pages without a flush; the new file's dirty
+    // pages are written by the kernel in the background after the process returns.
+    let (mut writer, tmp_path): (Box<dyn Write>, Option<(PathBuf, PathBuf)>) = match &args.output {
+        Some(path) => {
+            let mut tmp = path.as_os_str().to_owned();
+            tmp.push(".tmp");
+            let tmp_path = PathBuf::from(tmp);
+            let file = std::fs::File::create(&tmp_path)?;
+            (
+                Box::new(BufWriter::with_capacity(8 * 1024 * 1024, file)),
+                Some((tmp_path, path.clone())),
+            )
+        }
+        None => (Box::new(BufWriter::new(io::stdout())), None),
     };
 
-    run_headless_to_writer(reader, log_manager, &mut *writer)?;
+    let Some(ref path) = args.file else {
+        let mut bytes = Vec::new();
+        io::stdin().read_to_end(&mut bytes)?;
+        let reader = FileReader::from_bytes(bytes);
+        run_headless_to_writer(reader, log_manager, &mut *writer)?;
+        writer.flush()?;
+        finalize_output(tmp_path)?;
+        return Ok(());
+    };
+
+    let (fm, _, _, _) = log_manager.build_filter_manager();
+    let needs_parse = {
+        let filter_defs = log_manager.get_filters();
+        let date_filters = extract_date_filters(filter_defs);
+        let (inc_ff, exc_ff) = extract_field_filters(filter_defs);
+        !date_filters.is_empty() || !inc_ff.is_empty() || !exc_ff.is_empty()
+    };
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let predicate = (!needs_parse).then(|| VisibilityPredicate::new(fm));
+    let keep_pages = predicate.is_some();
+    let handle = FileReader::load(path.clone(), predicate, false, cancel, keep_pages).await?;
+    let result = handle
+        .result_rx
+        .await
+        .map_err(|_| io::Error::other("file load cancelled"))??;
+
+    if let Some(visible) = result.precomputed_visible {
+        write_visible_lines(&mut *writer, &result.reader, &visible)?;
+    } else {
+        run_headless_to_writer(result.reader, log_manager, &mut *writer)?;
+    }
+
     writer.flush()?;
+    finalize_output(tmp_path)?;
     Ok(())
 }
 
@@ -157,15 +217,44 @@ fn build_field_pattern(pattern: &str) -> Result<String> {
     ))
 }
 
-fn load_reader(file: &Option<String>) -> io::Result<FileReader> {
-    match file {
-        Some(path) => FileReader::new(path),
-        None => {
-            let mut bytes = Vec::new();
-            io::stdin().read_to_end(&mut bytes)?;
-            Ok(FileReader::from_bytes(bytes))
-        }
+fn write_visible_lines(
+    writer: &mut dyn Write,
+    reader: &FileReader,
+    visible: &[usize],
+) -> Result<()> {
+    if visible.is_empty() {
+        return Ok(());
     }
+
+    let data = reader.data();
+    let line_starts = reader.line_starts();
+
+    let mut i = 0;
+    while i < visible.len() {
+        let mut j = i + 1;
+        while j < visible.len() && visible[j] == visible[j - 1] + 1 {
+            j += 1;
+        }
+
+        let first = visible[i];
+        let last = visible[j - 1];
+        let byte_start = line_starts[first];
+        let byte_end = if last + 1 < line_starts.len() {
+            line_starts[last + 1]
+        } else {
+            data.len()
+        };
+
+        let chunk = &data[byte_start..byte_end];
+        writer.write_all(chunk)?;
+        if !chunk.ends_with(b"\n") {
+            writer.write_all(b"\n")?;
+        }
+
+        i = j;
+    }
+
+    Ok(())
 }
 
 pub fn run_headless_to_writer(
@@ -183,9 +272,11 @@ pub fn run_headless_to_writer(
     let date_filters = extract_date_filters(filter_defs);
     let (inc_ff, exc_ff) = extract_field_filters(filter_defs);
     let needs_parse = !date_filters.is_empty() || !inc_ff.is_empty() || !exc_ff.is_empty();
+    let date_only = !date_filters.is_empty() && inc_ff.is_empty() && exc_ff.is_empty();
     let has_text_includes = fm.has_include();
     let n_date = date_filters.len();
     let line_count = reader.line_count();
+    let use_wholefile = !needs_parse && fm.has_combined_ac();
 
     use rayon::prelude::*;
 
@@ -198,53 +289,72 @@ pub fn run_headless_to_writer(
     while chunk_start < line_count {
         let chunk_end = (chunk_start + CHUNK_LINES).min(line_count);
 
-        let visible: Vec<usize> = (chunk_start..chunk_end)
-            .into_par_iter()
-            .with_min_len(512)
-            .fold(
-                || (Vec::new(), vec![0usize; n_date]),
-                |(mut vis, mut dc), idx| {
-                    let line = reader.get_line(idx);
-                    let text_dec = fm.evaluate_text(line);
-                    let can_skip = text_dec == FilterDecision::Exclude
-                        || (text_dec == FilterDecision::Neutral
-                            && has_text_includes
-                            && inc_ff.is_empty());
-                    let parts = if needs_parse && !can_skip {
-                        parser_ref.and_then(|p| p.parse_line(line))
-                    } else {
-                        None
-                    };
-                    if crate::ui::line_is_visible(
-                        text_dec,
-                        has_text_includes,
-                        &date_filters,
-                        &mut dc,
-                        &inc_ff,
-                        &exc_ff,
-                        parts.as_ref(),
-                    ) {
-                        vis.push(idx);
-                    }
-                    (vis, dc)
-                },
-            )
-            .reduce(
-                || (Vec::new(), vec![0usize; n_date]),
-                |(mut va, mut da), (vb, db)| {
-                    va.extend(vb);
-                    for (a, b) in da.iter_mut().zip(db) {
-                        *a += b;
-                    }
-                    (va, da)
-                },
-            )
-            .0;
+        #[cfg(unix)]
+        reader.advise_for_scan(chunk_start..chunk_end);
 
-        for idx in visible {
-            writer.write_all(reader.get_line(idx))?;
-            writer.write_all(b"\n")?;
-        }
+        let visible: Vec<usize> = if use_wholefile {
+            let (vis, _) = fm.evaluate_chunk_wholefile(
+                reader.data(),
+                reader.line_starts(),
+                chunk_start..chunk_end,
+            );
+            vis
+        } else {
+            (chunk_start..chunk_end)
+                .into_par_iter()
+                .with_min_len(512)
+                .fold(
+                    || (Vec::new(), vec![0usize; n_date]),
+                    |(mut vis, mut dc), idx| {
+                        let line = reader.get_line(idx);
+                        let text_dec = fm.evaluate_text(line);
+                        let can_skip = text_dec == FilterDecision::Exclude
+                            || (text_dec == FilterDecision::Neutral
+                                && has_text_includes
+                                && inc_ff.is_empty());
+                        if date_only && !can_skip {
+                            let visible = parser_ref
+                                .and_then(|p| p.parse_timestamp(line))
+                                .map(|ts| date_filters.iter().any(|df| df.matches(ts)))
+                                .unwrap_or(true);
+                            if visible {
+                                vis.push(idx);
+                            }
+                        } else {
+                            let parts = if needs_parse && !can_skip {
+                                parser_ref.and_then(|p| p.parse_line(line))
+                            } else {
+                                None
+                            };
+                            if crate::ui::line_is_visible(
+                                text_dec,
+                                has_text_includes,
+                                &date_filters,
+                                &mut dc,
+                                &inc_ff,
+                                &exc_ff,
+                                parts.as_ref(),
+                            ) {
+                                vis.push(idx);
+                            }
+                        }
+                        (vis, dc)
+                    },
+                )
+                .reduce(
+                    || (Vec::new(), vec![0usize; n_date]),
+                    |(mut va, mut da), (vb, db)| {
+                        va.extend(vb);
+                        for (a, b) in da.iter_mut().zip(db) {
+                            *a += b;
+                        }
+                        (va, da)
+                    },
+                )
+                .0
+        };
+
+        write_visible_lines(writer, &reader, &visible)?;
 
         chunk_start = chunk_end;
     }
@@ -264,6 +374,30 @@ mod tests {
     fn make_reader(lines: &[&str]) -> FileReader {
         let data = lines.join("\n").into_bytes();
         FileReader::from_bytes(data)
+    }
+
+    #[test]
+    fn test_write_visible_lines_coalesces_consecutive() {
+        let reader = make_reader(&["aaa", "bbb", "ccc", "ddd"]);
+        let mut out = Vec::new();
+        write_visible_lines(&mut out, &reader, &[0, 1, 3]).unwrap();
+        assert_eq!(out, b"aaa\nbbb\nddd\n");
+    }
+
+    #[test]
+    fn test_write_visible_lines_all_consecutive() {
+        let reader = make_reader(&["x", "y", "z"]);
+        let mut out = Vec::new();
+        write_visible_lines(&mut out, &reader, &[0, 1, 2]).unwrap();
+        assert_eq!(out, b"x\ny\nz\n");
+    }
+
+    #[test]
+    fn test_write_visible_lines_empty() {
+        let reader = make_reader(&["a", "b"]);
+        let mut out = Vec::new();
+        write_visible_lines(&mut out, &reader, &[]).unwrap();
+        assert!(out.is_empty());
     }
 
     #[tokio::test]

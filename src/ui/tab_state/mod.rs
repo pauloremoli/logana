@@ -654,11 +654,15 @@ impl TabState {
                 || !inc_ff.is_empty()
                 || !exc_ff.is_empty();
             let has_text_includes = fm.has_include();
+            let date_only = !date_filters.is_empty() && inc_ff.is_empty() && exc_ff.is_empty();
             let line_count = self.file_reader.line_count();
 
             // Choose scan strategy: whole-file AC when text-only filters and
             // combined AC available.
             let use_wholefile = !needs_parse && fm.has_combined_ac();
+
+            #[cfg(unix)]
+            file_reader.advise_for_scan(0..line_count);
 
             let (visible, text_counts, field_counts, date_counts) = if use_wholefile {
                 let (vis, tc) = fm.evaluate_chunk_wholefile(
@@ -690,27 +694,44 @@ impl TabState {
                                 || (text_dec == FilterDecision::Neutral
                                     && has_text_includes
                                     && inc_ff.is_empty());
-                            let parts = if needs_parse && !can_skip {
-                                parser.and_then(|p| p.parse_line(line))
+                            let visible = if date_only && !can_skip {
+                                parser
+                                    .and_then(|p| p.parse_timestamp(line))
+                                    .map(|ts| {
+                                        let mut any = false;
+                                        for (df, cnt) in date_filters.iter().zip(dc.iter_mut()) {
+                                            if df.matches(ts) {
+                                                *cnt += 1;
+                                                any = true;
+                                            }
+                                        }
+                                        any
+                                    })
+                                    .unwrap_or(true)
                             } else {
-                                None
-                            };
-                            if !field_defs.is_empty() {
-                                crate::field_filter::count_field_filter_matches(
-                                    &field_defs,
+                                let parts = if needs_parse && !can_skip {
+                                    parser.and_then(|p| p.parse_line(line))
+                                } else {
+                                    None
+                                };
+                                if !field_defs.is_empty() {
+                                    crate::field_filter::count_field_filter_matches(
+                                        &field_defs,
+                                        parts.as_ref(),
+                                        &mut fc,
+                                    );
+                                }
+                                line_is_visible(
+                                    text_dec,
+                                    has_text_includes,
+                                    &date_filters,
+                                    &mut dc,
+                                    &inc_ff,
+                                    &exc_ff,
                                     parts.as_ref(),
-                                    &mut fc,
-                                );
-                            }
-                            if line_is_visible(
-                                text_dec,
-                                has_text_includes,
-                                &date_filters,
-                                &mut dc,
-                                &inc_ff,
-                                &exc_ff,
-                                parts.as_ref(),
-                            ) {
+                                )
+                            };
+                            if visible {
                                 vis.push(idx);
                             }
                             (vis, tc, fc, dc)
@@ -1181,6 +1202,7 @@ impl TabState {
                 || !inc_ff.is_empty()
                 || !exc_ff.is_empty();
             let has_text_includes = fm_arc.has_include();
+            let date_only = !date_filters.is_empty() && inc_ff.is_empty() && exc_ff.is_empty();
 
             // Whole-file AC scan: single contiguous pass per chunk instead of
             // per-line iterator calls.  Used when only text filters are active
@@ -1205,6 +1227,9 @@ impl TabState {
                 } else {
                     chunk_start as f64 / line_count as f64
                 };
+
+                #[cfg(unix)]
+                file_reader.advise_for_scan(chunk_start..chunk_end);
 
                 let (visible, text_counts, field_counts, date_counts) = if use_wholefile {
                     // Fast path: whole-buffer AC scan with rayon sub-chunking.
@@ -1233,27 +1258,45 @@ impl TabState {
                                 let text_dec = fm_arc.evaluate_and_count(line, &mut tc);
                                 let can_skip =
                                     text_dec == FilterDecision::Exclude && field_defs.is_empty();
-                                let parts = if needs_parse && !can_skip {
-                                    parser_ref.and_then(|p| p.parse_line(line))
+                                let visible = if date_only && !can_skip {
+                                    parser_ref
+                                        .and_then(|p| p.parse_timestamp(line))
+                                        .map(|ts| {
+                                            let mut any = false;
+                                            for (df, cnt) in date_filters.iter().zip(dc.iter_mut())
+                                            {
+                                                if df.matches(ts) {
+                                                    *cnt += 1;
+                                                    any = true;
+                                                }
+                                            }
+                                            any
+                                        })
+                                        .unwrap_or(true)
                                 } else {
-                                    None
-                                };
-                                if !field_defs.is_empty() {
-                                    crate::field_filter::count_field_filter_matches(
-                                        &field_defs,
+                                    let parts = if needs_parse && !can_skip {
+                                        parser_ref.and_then(|p| p.parse_line(line))
+                                    } else {
+                                        None
+                                    };
+                                    if !field_defs.is_empty() {
+                                        crate::field_filter::count_field_filter_matches(
+                                            &field_defs,
+                                            parts.as_ref(),
+                                            &mut fc,
+                                        );
+                                    }
+                                    line_is_visible(
+                                        text_dec,
+                                        has_text_includes,
+                                        &date_filters,
+                                        &mut dc,
+                                        &inc_ff,
+                                        &exc_ff,
                                         parts.as_ref(),
-                                        &mut fc,
-                                    );
-                                }
-                                if line_is_visible(
-                                    text_dec,
-                                    has_text_includes,
-                                    &date_filters,
-                                    &mut dc,
-                                    &inc_ff,
-                                    &exc_ff,
-                                    parts.as_ref(),
-                                ) {
+                                    )
+                                };
+                                if visible {
                                     vis.push(i);
                                 }
                                 (vis, tc, fc, dc)
@@ -1418,6 +1461,7 @@ impl TabState {
             crate::field_filter::extract_field_filters(self.log_manager.get_filters());
         let has_text_includes = self.filter.manager.has_include();
         let needs_parse = !date_filters.is_empty() || !inc_ff.is_empty() || !exc_ff.is_empty();
+        let date_only = !date_filters.is_empty() && inc_ff.is_empty() && exc_ff.is_empty();
         let parser: Option<&dyn crate::parser::LogFormatParser> = if self.display.raw_mode {
             None
         } else {
@@ -1439,20 +1483,37 @@ impl TabState {
                 .evaluate_and_count(line, &mut dummy_text_counts);
             let can_skip =
                 text_dec == FilterDecision::Exclude && inc_ff.is_empty() && exc_ff.is_empty();
-            let parts = if needs_parse && !can_skip {
-                parser.and_then(|p| p.parse_line(line))
+            let visible = if date_only && !can_skip {
+                parser
+                    .and_then(|p| p.parse_timestamp(line))
+                    .map(|ts| {
+                        let mut any = false;
+                        for (df, cnt) in date_filters.iter().zip(dummy_date_counts.iter_mut()) {
+                            if df.matches(ts) {
+                                *cnt += 1;
+                                any = true;
+                            }
+                        }
+                        any
+                    })
+                    .unwrap_or(true)
             } else {
-                None
+                let parts = if needs_parse && !can_skip {
+                    parser.and_then(|p| p.parse_line(line))
+                } else {
+                    None
+                };
+                line_is_visible(
+                    text_dec,
+                    has_text_includes,
+                    &date_filters,
+                    &mut dummy_date_counts,
+                    &inc_ff,
+                    &exc_ff,
+                    parts.as_ref(),
+                )
             };
-            if line_is_visible(
-                text_dec,
-                has_text_includes,
-                &date_filters,
-                &mut dummy_date_counts,
-                &inc_ff,
-                &exc_ff,
-                parts.as_ref(),
-            ) {
+            if visible {
                 new_visible.push(i);
             }
         }
@@ -3735,6 +3796,71 @@ mod tests {
             }
         }
         assert_eq!(all_visible, vec![1]);
+    }
+
+    // ── date-only fast path (parse_timestamp instead of parse_line) ──────────
+
+    const CLF_IN: &str = r#"127.0.0.1 - - [10/Oct/2000:13:00:00 -0700] "GET /a HTTP/1.0" 200 100"#;
+    const CLF_OUT: &str = r#"127.0.0.1 - - [10/Oct/2000:20:00:00 -0700] "GET /b HTTP/1.0" 200 200"#;
+
+    #[tokio::test]
+    async fn test_refresh_visible_date_only_clf_fast_path() {
+        let mut tab = make_tab(&[CLF_IN, CLF_OUT]).await;
+        let pattern = format!("{}12:00:00 .. 14:00:00", crate::date_filter::DATE_PREFIX);
+        tab.log_manager
+            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .await;
+        tab.refresh_visible();
+        assert_eq!(tab.filter.visible_indices, VisibleLines::Filtered(vec![0]));
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_date_only_clf_fast_path() {
+        let lines = [CLF_IN, CLF_OUT];
+        let mut tab = make_tab(&lines).await;
+        let pattern = format!("{}12:00:00 .. 14:00:00", crate::date_filter::DATE_PREFIX);
+        tab.log_manager
+            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .await;
+        tab.begin_filter_refresh();
+        let mut h = tab.filter.handle.take().unwrap();
+        let mut all_visible = Vec::new();
+        while let Some(chunk) = h.result_rx.recv().await {
+            all_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+        assert_eq!(all_visible, vec![0]);
+    }
+
+    #[tokio::test]
+    async fn test_filter_new_lines_date_only_clf_fast_path() {
+        let mut tab = make_tab(&[CLF_IN]).await;
+        let pattern = format!("{}12:00:00 .. 14:00:00", crate::date_filter::DATE_PREFIX);
+        tab.log_manager
+            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .await;
+        tab.refresh_visible();
+        assert_eq!(
+            tab.filter.visible_indices,
+            VisibleLines::Filtered(vec![0]),
+            "CLF_IN should match"
+        );
+
+        let old_count = tab.file_reader.line_count();
+        tab.file_reader
+            .append_bytes(format!("\n{}\n{}", CLF_OUT, CLF_IN).as_bytes());
+        tab.filter_new_lines(old_count);
+
+        match &tab.filter.visible_indices {
+            VisibleLines::Filtered(v) => {
+                assert!(v.contains(&0), "original CLF_IN visible: {:?}", v);
+                assert!(!v.contains(&1), "CLF_OUT should be hidden: {:?}", v);
+                assert!(v.contains(&2), "new CLF_IN should be visible: {:?}", v);
+            }
+            other => panic!("expected Filtered, got {:?}", other),
+        }
     }
 
     // ── line_is_visible ──────────────────────────────────────────────────────

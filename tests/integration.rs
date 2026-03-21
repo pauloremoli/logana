@@ -330,6 +330,7 @@ async fn test_single_pass_predicate_matches_compute_visible() {
         Some(pred),
         false,
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        false,
     )
     .await
     .unwrap();

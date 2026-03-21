@@ -2,6 +2,8 @@
 //! Covers env_logger, tracing fmt, logback, Spring Boot, Python, loguru, structlog.
 
 use std::collections::HashSet;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::timestamp::{
     is_level_keyword, normalize_level, parse_datetime_timestamp, parse_iso_timestamp,
@@ -9,8 +11,92 @@ use super::timestamp::{
 };
 use super::types::{DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, push_field_as};
 
-#[derive(Debug)]
-pub struct CommonLogParser;
+#[derive(Debug, Clone, Copy)]
+enum LineParser {
+    SpringBoot,
+    Logback,
+    Loguru,
+    Structlog,
+    EnvLogger,
+    PythonProd,
+    TracingFmt,
+    Generic,
+    PythonBasic,
+}
+
+impl LineParser {
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn from_index(i: usize) -> Self {
+        match i {
+            0 => Self::SpringBoot,
+            1 => Self::Logback,
+            2 => Self::Loguru,
+            3 => Self::Structlog,
+            4 => Self::EnvLogger,
+            5 => Self::PythonProd,
+            6 => Self::TracingFmt,
+            7 => Self::Generic,
+            _ => Self::PythonBasic,
+        }
+    }
+}
+
+const MIN_SAMPLES: u32 = 50;
+
+#[derive(Debug, Clone, Copy)]
+enum CommonFormat {
+    BracketIso,
+    BracketDatetime,
+    Iso,
+    Datetime,
+    Nano,
+}
+
+fn detect_common_timestamp(s: &str) -> Option<(CommonFormat, &str)> {
+    if let Some(inner) = s.strip_prefix('[') {
+        if let Some((ts, _)) = parse_iso_timestamp(inner) {
+            return Some((CommonFormat::BracketIso, ts));
+        }
+        if let Some((ts, _)) = parse_datetime_timestamp(inner) {
+            return Some((CommonFormat::BracketDatetime, ts));
+        }
+        return None;
+    }
+    if let Some((ts, _)) = parse_iso_timestamp(s) {
+        return Some((CommonFormat::Iso, ts));
+    }
+    if let Some((ts, _)) = parse_datetime_timestamp(s) {
+        return Some((CommonFormat::Datetime, ts));
+    }
+    parse_nano_timestamp(s).map(|(ts, _)| (CommonFormat::Nano, ts))
+}
+
+fn extract_common_timestamp(s: &str, fmt: CommonFormat) -> Option<&str> {
+    match fmt {
+        CommonFormat::BracketIso => {
+            let inner = s.strip_prefix('[')?;
+            parse_iso_timestamp(inner).map(|(ts, _)| ts)
+        }
+        CommonFormat::BracketDatetime => {
+            let inner = s.strip_prefix('[')?;
+            parse_datetime_timestamp(inner).map(|(ts, _)| ts)
+        }
+        CommonFormat::Iso => parse_iso_timestamp(s).map(|(ts, _)| ts),
+        CommonFormat::Datetime => parse_datetime_timestamp(s).map(|(ts, _)| ts),
+        CommonFormat::Nano => parse_nano_timestamp(s).map(|(ts, _)| ts),
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct CommonLogParser {
+    format: OnceLock<CommonFormat>,
+    line_parser: OnceLock<LineParser>,
+    lp_counts: [AtomicU32; 9],
+    lp_total: AtomicU32,
+}
 fn try_env_logger(s: &str) -> Option<DisplayParts<'_>> {
     if !s.starts_with('[') {
         return None;
@@ -502,39 +588,77 @@ fn try_generic(s: &str) -> Option<DisplayParts<'_>> {
     Some(parts)
 }
 
+impl CommonLogParser {
+    fn record_line_parser(&self, lp: LineParser) {
+        self.lp_counts[lp.index()].fetch_add(1, Ordering::Relaxed);
+        let total = self.lp_total.fetch_add(1, Ordering::Relaxed) + 1;
+        if total >= MIN_SAMPLES && self.line_parser.get().is_none() {
+            let winner = (0..9)
+                .max_by_key(|&i| self.lp_counts[i].load(Ordering::Relaxed))
+                .unwrap_or(0);
+            let _ = self.line_parser.set(LineParser::from_index(winner));
+        }
+    }
+}
+
 impl LogFormatParser for CommonLogParser {
+    fn parse_timestamp<'a>(&self, line: &'a [u8]) -> Option<&'a str> {
+        let s = std::str::from_utf8(line).ok()?;
+        if s.is_empty() {
+            return None;
+        }
+        if let Some(&fmt) = self.format.get() {
+            return extract_common_timestamp(s, fmt);
+        }
+        let (fmt, ts) = detect_common_timestamp(s)?;
+        let _ = self.format.set(fmt);
+        Some(ts)
+    }
+
     fn parse_line<'a>(&self, line: &'a [u8]) -> Option<DisplayParts<'a>> {
         let s = std::str::from_utf8(line).ok()?;
         if s.is_empty() {
             return None;
         }
 
-        if let Some(parts) = try_spring_boot(s) {
-            return Some(parts);
+        if let Some(&winner) = self.line_parser.get() {
+            let result = match winner {
+                LineParser::SpringBoot => try_spring_boot(s),
+                LineParser::Logback => try_logback(s),
+                LineParser::Loguru => try_loguru(s),
+                LineParser::Structlog => try_structlog(s),
+                LineParser::EnvLogger => try_env_logger(s),
+                LineParser::PythonProd => try_python_prod(s),
+                LineParser::TracingFmt => try_tracing_fmt(s),
+                LineParser::Generic => try_generic(s),
+                LineParser::PythonBasic => try_python_basic(s),
+            };
+            if result.is_some() {
+                return result;
+            }
         }
-        if let Some(parts) = try_logback(s) {
-            return Some(parts);
-        }
-        if let Some(parts) = try_loguru(s) {
-            return Some(parts);
-        }
-        if let Some(parts) = try_structlog(s) {
-            return Some(parts);
-        }
-        if let Some(parts) = try_env_logger(s) {
-            return Some(parts);
-        }
-        if let Some(parts) = try_python_prod(s) {
-            return Some(parts);
-        }
-        if let Some(parts) = try_tracing_fmt(s) {
-            return Some(parts);
-        }
-        if let Some(parts) = try_generic(s) {
-            return Some(parts);
-        }
-        if let Some(parts) = try_python_basic(s) {
-            return Some(parts);
+
+        type ParserEntry = (
+            &'static dyn for<'s> Fn(&'s str) -> Option<DisplayParts<'s>>,
+            LineParser,
+        );
+        let parsers: &[ParserEntry] = &[
+            (&try_spring_boot, LineParser::SpringBoot),
+            (&try_logback, LineParser::Logback),
+            (&try_loguru, LineParser::Loguru),
+            (&try_structlog, LineParser::Structlog),
+            (&try_env_logger, LineParser::EnvLogger),
+            (&try_python_prod, LineParser::PythonProd),
+            (&try_tracing_fmt, LineParser::TracingFmt),
+            (&try_generic, LineParser::Generic),
+            (&try_python_basic, LineParser::PythonBasic),
+        ];
+
+        for (f, variant) in parsers {
+            if let Some(parts) = f(s) {
+                self.record_line_parser(*variant);
+                return Some(parts);
+            }
         }
 
         None
@@ -633,7 +757,7 @@ mod tests {
     #[test]
     fn test_env_logger_iso() {
         let line = b"[2024-07-24T10:00:00Z INFO  myapp] Starting server";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24T10:00:00Z"));
         assert_eq!(parts.level, Some("INFO"));
@@ -644,7 +768,7 @@ mod tests {
     #[test]
     fn test_env_logger_no_timestamp() {
         let line = b"[WARN myapp::server] Connection timeout";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert!(parts.timestamp.is_none());
         assert_eq!(parts.level, Some("WARN"));
@@ -655,7 +779,7 @@ mod tests {
     #[test]
     fn test_env_logger_level_only() {
         let line = b"[ERROR] Something failed";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("ERROR"));
         assert_eq!(parts.message, Some("Something failed"));
@@ -666,7 +790,7 @@ mod tests {
     #[test]
     fn test_tracing_fmt_with_module_path() {
         let line = b"2024-07-24T10:00:00Z INFO myapp::server:: listening on 0.0.0.0:3000";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24T10:00:00Z"));
         assert_eq!(parts.level, Some("INFO"));
@@ -677,7 +801,7 @@ mod tests {
     #[test]
     fn test_generic_iso_level_message() {
         let line = b"2024-07-24T10:00:00Z ERROR database connection failed";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24T10:00:00Z"));
         assert_eq!(parts.level, Some("ERROR"));
@@ -687,7 +811,7 @@ mod tests {
     #[test]
     fn test_generic_datetime_level_message() {
         let line = b"2024-07-24 10:00:00 INFO request processed";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24 10:00:00"));
         assert_eq!(parts.level, Some("INFO"));
@@ -697,7 +821,7 @@ mod tests {
     #[test]
     fn test_generic_with_target_colon() {
         let line = b"2024-07-24T10:00:00Z WARN myapp: disk space low";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("WARN"));
         assert_eq!(parts.target, Some("myapp"));
@@ -707,7 +831,7 @@ mod tests {
     #[test]
     fn test_generic_with_target_dash() {
         let line = b"2024-07-24T10:00:00Z INFO myapp - starting up";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.target, Some("myapp"));
         assert_eq!(parts.message, Some("starting up"));
@@ -718,7 +842,7 @@ mod tests {
     #[test]
     fn test_logback_basic() {
         let line = b"2024-07-24 10:00:00.123 [main] INFO  com.example.App - Application started";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24 10:00:00.123"));
         assert_eq!(parts.level, Some("INFO"));
@@ -736,7 +860,7 @@ mod tests {
     fn test_logback_warn() {
         let line =
             b"2024-07-24 10:00:00,456 [http-nio-8080-exec-1] WARN  c.e.security.AuthFilter - Unauthorized access attempt";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24 10:00:00,456"));
         assert_eq!(parts.level, Some("WARN"));
@@ -748,7 +872,7 @@ mod tests {
     #[test]
     fn test_spring_boot_basic() {
         let line = b"2024-07-24 10:00:00.123  INFO 12345 --- [           main] c.e.MyApp : Started MyApp in 2.5 seconds";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24 10:00:00.123"));
         assert_eq!(parts.level, Some("INFO"));
@@ -771,7 +895,7 @@ mod tests {
     #[test]
     fn test_spring_boot_warn() {
         let line = b"2024-07-24 10:00:00.123  WARN 99 --- [pool-1-thread-3] c.e.CacheService : Cache miss for key=abc";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("WARN"));
     }
@@ -781,7 +905,7 @@ mod tests {
     #[test]
     fn test_python_basic_level_target_msg() {
         let line = b"WARNING:django.server:Not Found: /favicon.ico";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("WARN"));
         assert_eq!(parts.target, Some("django.server"));
@@ -791,7 +915,7 @@ mod tests {
     #[test]
     fn test_python_basic_info() {
         let line = b"INFO:root:Application started";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("INFO"));
         assert_eq!(parts.target, Some("root"));
@@ -801,7 +925,7 @@ mod tests {
     #[test]
     fn test_python_prod() {
         let line = b"2024-07-24 10:00:00,123 - myapp.views - INFO - Request handled successfully";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24 10:00:00,123"));
         assert_eq!(parts.level, Some("INFO"));
@@ -812,7 +936,7 @@ mod tests {
     #[test]
     fn test_python_prod_error() {
         let line = b"2024-07-24 10:00:00,123 - myapp.db - ERROR - Connection refused to database";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("ERROR"));
         assert_eq!(parts.target, Some("myapp.db"));
@@ -823,7 +947,7 @@ mod tests {
     #[test]
     fn test_loguru_basic() {
         let line = b"2024-07-24 10:00:00.123 | INFO     | myapp.main - Starting application";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24 10:00:00.123"));
         assert_eq!(parts.level, Some("INFO"));
@@ -834,7 +958,7 @@ mod tests {
     #[test]
     fn test_loguru_debug() {
         let line = b"2024-07-24 10:00:00.123 | DEBUG    | module:func:42 - Processing item";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("DEBUG"));
     }
@@ -844,7 +968,7 @@ mod tests {
     #[test]
     fn test_structlog_basic() {
         let line = b"2024-07-24 10:00:00 [info     ] request handled              key=val";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2024-07-24 10:00:00"));
         assert_eq!(parts.level, Some("INFO"));
@@ -854,7 +978,7 @@ mod tests {
     #[test]
     fn test_structlog_warning() {
         let line = b"2024-07-24 10:00:00 [warning  ] cache miss                   key=abc";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("WARN"));
     }
@@ -864,7 +988,7 @@ mod tests {
     #[test]
     fn test_trace_level() {
         let line = b"2024-07-24T10:00:00Z TRACE entering function";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("TRACE"));
     }
@@ -872,7 +996,7 @@ mod tests {
     #[test]
     fn test_fatal_level() {
         let line = b"2024-07-24T10:00:00Z FATAL system crash";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("FATAL"));
     }
@@ -880,7 +1004,7 @@ mod tests {
     #[test]
     fn test_critical_level() {
         let line = b"2024-07-24T10:00:00Z CRITICAL out of memory";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("FATAL"));
     }
@@ -889,19 +1013,19 @@ mod tests {
 
     #[test]
     fn test_parse_empty() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         assert!(parser.parse_line(b"").is_none());
     }
 
     #[test]
     fn test_parse_plain_text() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         assert!(parser.parse_line(b"just some random text").is_none());
     }
 
     #[test]
     fn test_parse_json_not_common_log() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         assert!(
             parser
                 .parse_line(br#"{"level":"INFO","msg":"hello"}"#)
@@ -912,7 +1036,7 @@ mod tests {
     #[test]
     fn test_parse_no_level_keyword() {
         // Timestamp but no level keyword — should NOT match
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         assert!(
             parser
                 .parse_line(b"2024-07-24T10:00:00Z myhost sshd: accepted")
@@ -924,7 +1048,7 @@ mod tests {
 
     #[test]
     fn test_detect_score_all_common() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let lines: Vec<&[u8]> = vec![
             b"2024-07-24T10:00:00Z INFO msg1",
             b"2024-07-24T10:00:01Z WARN msg2",
@@ -936,7 +1060,7 @@ mod tests {
 
     #[test]
     fn test_detect_score_mixed() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let lines: Vec<&[u8]> = vec![b"2024-07-24T10:00:00Z INFO msg1", b"plain text"];
         let score = parser.detect_score(&lines);
         assert!((score - 0.475).abs() < 0.001, "Got {}", score);
@@ -944,7 +1068,7 @@ mod tests {
 
     #[test]
     fn test_detect_score_none() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let lines: Vec<&[u8]> = vec![b"plain text", b"more text"];
         let score = parser.detect_score(&lines);
         assert!((score - 0.0).abs() < 0.001);
@@ -952,7 +1076,7 @@ mod tests {
 
     #[test]
     fn test_detect_score_empty() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let lines: Vec<&[u8]> = vec![];
         let score = parser.detect_score(&lines);
         assert!((score - 0.0).abs() < 0.001);
@@ -962,7 +1086,7 @@ mod tests {
 
     #[test]
     fn test_collect_field_names() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let lines: Vec<&[u8]> = vec![
             b"2024-07-24T10:00:00Z INFO myapp: hello",
             b"2024-07-24T10:00:01Z WARN myapp: world",
@@ -976,7 +1100,7 @@ mod tests {
 
     #[test]
     fn test_collect_field_names_logback() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let lines: Vec<&[u8]> =
             vec![b"2024-07-24 10:00:00.123 [main] INFO com.example.App - started"];
         let names = parser.collect_field_names(&lines);
@@ -988,7 +1112,7 @@ mod tests {
     #[test]
     fn test_nano_timestamp_level_target_message() {
         let line = b"1700046000000000000 INFO  api-gateway server started on 0.0.0.0:8080";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("1700046000000000000"));
         assert_eq!(parts.level, Some("INFO"));
@@ -998,7 +1122,7 @@ mod tests {
     #[test]
     fn test_nano_timestamp_with_service_and_host() {
         let line = b"1700046001123000000 INFO  api-gateway prod-host-01 request received";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("1700046001123000000"));
         assert_eq!(parts.level, Some("INFO"));
@@ -1008,7 +1132,7 @@ mod tests {
 
     #[test]
     fn test_name() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         assert_eq!(parser.name(), "common-log");
     }
 
@@ -1087,7 +1211,7 @@ mod tests {
     #[test]
     fn test_tracing_fmt_request_span() {
         let line = b"2026-03-05T10:55:16.661990Z DEBUG request{method=GET uri=/api/store-settings version=HTTP/1.1}: tower_http::trace::on_request: started processing request";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2026-03-05T10:55:16.661990Z"));
         assert_eq!(parts.level, Some("DEBUG"));
@@ -1108,7 +1232,7 @@ mod tests {
     #[test]
     fn test_tracing_fmt_actor_span_quoted_fields() {
         let line = br#"2026-03-05T10:44:59.381757Z DEBUG Actor{id="0.5" name="payments"}: api_server::actors::payment: PaymentMsg::CheckExpiredPix"#;
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("DEBUG"));
         assert_eq!(parts.target, Some("api_server::actors::payment"));
@@ -1123,7 +1247,7 @@ mod tests {
         // Startup lines without a span still parse via try_generic
         let line =
             b"2026-03-05T10:44:59.378731Z INFO  api_server API server listening on 0.0.0.0:3001";
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2026-03-05T10:44:59.378731Z"));
         assert_eq!(parts.level, Some("INFO"));
@@ -1132,7 +1256,7 @@ mod tests {
 
     #[test]
     fn test_collect_field_names_includes_span_dotted() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let lines: Vec<&[u8]> = vec![
             b"2026-03-05T10:55:16.661990Z DEBUG request{method=GET uri=/api/store-settings version=HTTP/1.1}: tower_http::trace::on_request: started processing request",
             b"2026-03-05T10:55:16.662071Z DEBUG request{method=GET uri=/api/store-settings version=HTTP/1.1}: api_server::routes::catalog: get_store_settings",
@@ -1150,7 +1274,7 @@ mod tests {
     fn test_detect_score_mixed_startup_and_span_lines() {
         // Format detection from startup-only sample should still yield common-log,
         // and span lines should parse once the parser is applied to the full log.
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         let startup: Vec<&[u8]> = vec![
             b"2026-03-05T10:44:59.378731Z INFO  api_server SMTP_HOST not set",
             b"2026-03-05T10:44:59.382274Z INFO  api_server API server listening on 0.0.0.0:3001",
@@ -1167,7 +1291,7 @@ mod tests {
 
     #[test]
     fn test_journalctl_line_no_level_rejected() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         // Journalctl: timestamp + hostname + unit — no level keyword
         assert!(
             parser
@@ -1178,12 +1302,101 @@ mod tests {
 
     #[test]
     fn test_syslog_bsd_rejected() {
-        let parser = CommonLogParser;
+        let parser = CommonLogParser::default();
         // BSD syslog without level
         assert!(
             parser
                 .parse_line(b"Oct 11 22:14:15 myhost sshd[1234]: msg")
                 .is_none()
         );
+    }
+
+    // ── parse_timestamp ────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_timestamp_iso_prefix() {
+        let line = b"2024-02-22T10:15:30Z INFO app: message";
+        let parser = CommonLogParser::default();
+        assert_eq!(parser.parse_timestamp(line), Some("2024-02-22T10:15:30Z"));
+    }
+
+    #[test]
+    fn test_parse_timestamp_datetime_prefix() {
+        let line = b"2024-01-15 10:30:00.123 [thread] INFO target - msg";
+        let parser = CommonLogParser::default();
+        assert_eq!(
+            parser.parse_timestamp(line),
+            parser.parse_line(line).and_then(|p| p.timestamp)
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_bracket_iso() {
+        let line = b"[2024-02-22T10:15:30Z INFO target] message";
+        let parser = CommonLogParser::default();
+        assert_eq!(
+            parser.parse_timestamp(line),
+            parser.parse_line(line).and_then(|p| p.timestamp)
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_nano() {
+        let line = b"1700046010234000000 INFO target: msg";
+        let parser = CommonLogParser::default();
+        assert_eq!(parser.parse_timestamp(line), Some("1700046010234000000"));
+    }
+
+    #[test]
+    fn test_parse_timestamp_no_timestamp_returns_none() {
+        let parser = CommonLogParser::default();
+        assert!(parser.parse_timestamp(b"ERROR:root:msg").is_none());
+    }
+
+    #[test]
+    fn test_line_parser_winner_not_set_before_min_samples() {
+        let parser = CommonLogParser::default();
+        let line = b"2024-07-24T10:00:00Z INFO myapp::server:: listening on 0.0.0.0:3000";
+        for _ in 0..MIN_SAMPLES - 1 {
+            parser.parse_line(line).unwrap();
+        }
+        assert!(parser.line_parser.get().is_none());
+    }
+
+    #[test]
+    fn test_line_parser_winner_set_after_min_samples() {
+        let parser = CommonLogParser::default();
+        let line = b"2024-07-24T10:00:00Z INFO myapp::server:: listening on 0.0.0.0:3000";
+        for _ in 0..MIN_SAMPLES {
+            parser.parse_line(line).unwrap();
+        }
+        assert!(parser.line_parser.get().is_some());
+    }
+
+    #[test]
+    fn test_line_parser_majority_wins() {
+        let parser = CommonLogParser::default();
+        let tracing = b"2024-07-24T10:00:00Z INFO myapp::server:: listening on 0.0.0.0:3000";
+        let generic = b"2024-07-24T10:00:00Z ERROR something happened";
+        for _ in 0..MIN_SAMPLES - 1 {
+            parser.parse_line(tracing).unwrap();
+        }
+        parser.parse_line(generic).unwrap();
+        assert!(parser.line_parser.get().is_some());
+    }
+
+    #[test]
+    fn test_line_parser_consistent_output_before_and_after_lock() {
+        let parser = CommonLogParser::default();
+        let line = b"2024-07-24T10:00:00Z INFO myapp::server:: listening on 0.0.0.0:3000";
+        let before = parser.parse_line(line).unwrap();
+        for _ in 0..MIN_SAMPLES {
+            parser.parse_line(line).unwrap();
+        }
+        let after = parser.parse_line(line).unwrap();
+        assert_eq!(before.timestamp, after.timestamp);
+        assert_eq!(before.level, after.level);
+        assert_eq!(before.target, after.target);
+        assert_eq!(before.message, after.message);
     }
 }

@@ -1,5 +1,5 @@
 use crate::parser::dlt_binary;
-use memchr::{memchr_iter, memchr2, memchr3_iter};
+use memchr::{memchr_iter, memchr2};
 
 fn is_any_dlt_binary(data: &[u8]) -> bool {
     dlt_binary::is_dlt_binary(data) || dlt_binary::is_dlt_wire_format(data)
@@ -76,6 +76,9 @@ impl FileReader {
         // Hint sequential access so the kernel prefetches ahead during the scan.
         #[cfg(unix)]
         let _ = scan_mmap.advise(Advice::Sequential);
+        // Pre-fault all pages before the scan so concurrent page faults don't stall workers.
+        #[cfg(target_os = "linux")]
+        let _ = scan_mmap.advise(Advice::PopulateRead);
 
         if is_any_dlt_binary(&scan_mmap) {
             let text = dlt_binary::convert_dlt_binary_to_text(&scan_mmap);
@@ -85,17 +88,14 @@ impl FileReader {
             return Ok(reader);
         }
 
+        let has_ansi = memchr2(b'\x1b', b'\r', &scan_mmap).is_some();
         let mut starts = vec![0usize];
-        let mut has_ansi = false;
-        for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &scan_mmap) {
-            if scan_mmap[pos] == b'\n' {
+        if !has_ansi {
+            for pos in memchr_iter(b'\n', &scan_mmap) {
                 let next = pos + 1;
                 if next <= len {
                     starts.push(next);
                 }
-            } else {
-                has_ansi = true;
-                break;
             }
         }
 
@@ -108,20 +108,8 @@ impl FileReader {
             });
         }
 
-        // Drop the scan mmap. munmap() is guaranteed to remove all its pages
-        // from the process RSS immediately — unlike MADV_DONTNEED which is
-        // merely advisory and can be ignored by the kernel for file-backed
-        // shared mappings.
-        drop(scan_mmap);
-
-        // Fresh mmap for on-demand access: zero pages in RSS until get_line
-        // faults in only the specific 4 KiB page(s) it needs.
-        let access_mmap = unsafe { Mmap::map(&file)? };
-        #[cfg(unix)]
-        let _ = access_mmap.advise(Advice::Random);
-
         Ok(FileReader {
-            storage: Storage::Mmap(std::sync::Arc::new(access_mmap)),
+            storage: Storage::Mmap(std::sync::Arc::new(scan_mmap)),
             line_starts: std::sync::Arc::new(starts),
             is_dlt: false,
         })
@@ -129,18 +117,14 @@ impl FileReader {
 
     /// Build a `FileReader` from an in-memory byte buffer (e.g. stdin content).
     pub fn from_bytes(data: Vec<u8>) -> Self {
-        // Single pass: scan for '\n', '\x1b', '\r' simultaneously.
+        let has_ansi = memchr2(b'\x1b', b'\r', &data).is_some();
         let mut starts = vec![0usize];
-        let mut has_ansi = false;
-        for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &data) {
-            if data[pos] == b'\n' {
+        if !has_ansi {
+            for pos in memchr_iter(b'\n', &data) {
                 let next = pos + 1;
                 if next <= data.len() {
                     starts.push(next);
                 }
-            } else {
-                has_ansi = true;
-                break;
             }
         }
 
@@ -346,14 +330,22 @@ impl FileReader {
         predicate: Option<VisibilityPredicate>,
         tail: bool,
         cancel: Arc<AtomicBool>,
+        keep_pages: bool,
     ) -> io::Result<FileLoadHandle> {
         let total_bytes = std::fs::metadata(&path)?.len();
         let (progress_tx, progress_rx) = watch::channel(0.0_f64);
         let (result_tx, result_rx) = oneshot::channel();
 
         spawn_blocking(move || {
-            let result =
-                Self::index_chunked(&path, total_bytes, progress_tx, predicate, tail, &cancel);
+            let result = Self::index_chunked(
+                &path,
+                total_bytes,
+                progress_tx,
+                predicate,
+                tail,
+                &cancel,
+                keep_pages,
+            );
             // Ignore send error — UI may have quit before we finish.
             let _ = result_tx.send(result);
         });
@@ -386,6 +378,7 @@ impl FileReader {
         predicate: Option<VisibilityPredicate>,
         tail: bool,
         cancel: &AtomicBool,
+        keep_pages: bool,
     ) -> io::Result<FileLoadResult> {
         use rayon::prelude::*;
         use std::sync::atomic::AtomicUsize;
@@ -393,6 +386,9 @@ impl FileReader {
         let file = File::open(path)?;
         let scan_mmap = unsafe { Mmap::map(&file)? };
         let len = scan_mmap.len();
+
+        #[cfg(unix)]
+        let _ = scan_mmap.advise(Advice::Sequential);
 
         if is_any_dlt_binary(&scan_mmap) {
             let text = dlt_binary::convert_dlt_binary_to_text(&scan_mmap);
@@ -474,20 +470,14 @@ impl FileReader {
                     return (false, vec![]);
                 }
                 let chunk_start = chunk_idx * chunk_size;
-                let mut has_ansi = false;
+                let has_ansi = memchr2(b'\x1b', b'\r', chunk).is_some();
                 let mut local_starts: Vec<usize> = Vec::new();
 
-                for pos in memchr3_iter(b'\n', b'\x1b', b'\r', chunk) {
-                    match chunk[pos] {
-                        b'\n' => {
-                            let next = chunk_start + pos + 1;
-                            if next <= len {
-                                local_starts.push(next);
-                            }
-                        }
-                        _ => {
-                            has_ansi = true;
-                            break;
+                if !has_ansi {
+                    for pos in memchr_iter(b'\n', chunk) {
+                        let next = chunk_start + pos + 1;
+                        if next <= len {
+                            local_starts.push(next);
                         }
                     }
                 }
@@ -585,10 +575,11 @@ impl FileReader {
             (None, None)
         };
 
-        // If phase 2 ran, the predicate accessed every line and re-faulted all
-        // pages into RSS. Release them now — only the viewport pages will be
-        // re-faulted during rendering.
-        if precomputed_visible.is_some()
+        // Release mmap pages for the UI case: only the viewport pages will be
+        // re-faulted during rendering. Skipped when keep_pages=true (headless
+        // write mode) so the data stays in cache for write_visible_lines.
+        if !keep_pages
+            && precomputed_visible.is_some()
             && let Storage::Mmap(ref m) = reader.storage
         {
             // SAFETY: phase 2 is complete; no borrows of the mmap data remain
@@ -654,6 +645,23 @@ impl FileReader {
     /// where line `i` begins in [`data()`].
     pub fn line_starts(&self) -> &[usize] {
         &self.line_starts
+    }
+
+    #[cfg(unix)]
+    pub fn advise_for_scan(&self, line_range: std::ops::Range<usize>) {
+        if let Storage::Mmap(ref m) = self.storage {
+            let len = m.len();
+            let start = self.line_starts.get(line_range.start).copied().unwrap_or(0);
+            let end = self
+                .line_starts
+                .get(line_range.end)
+                .copied()
+                .unwrap_or(len)
+                .min(len);
+            if end > start {
+                let _ = m.advise_range(Advice::Sequential, start, end - start);
+            }
+        }
     }
 
     /// Hint the kernel to prefetch the mmap pages covering lines `first_line..=last_line`.
@@ -1234,7 +1242,7 @@ mod tests {
     async fn test_load_no_predicate_no_precomputed_visible() {
         let f = make_tmp(&["line1", "line2"]);
         let path = f.path().to_str().unwrap().to_string();
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)), false)
             .await
             .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
@@ -1250,9 +1258,15 @@ mod tests {
         let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = VisibilityPredicate::new(fm);
-        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
-            .await
-            .unwrap();
+        let handle = FileReader::load(
+            path,
+            Some(pred),
+            false,
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .await
+        .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![0, 2]));
         assert_eq!(result.precomputed_text_counts, Some(vec![2]));
@@ -1266,9 +1280,15 @@ mod tests {
         let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = VisibilityPredicate::new(fm);
-        let handle = FileReader::load(path, Some(pred), true, Arc::new(AtomicBool::new(false)))
-            .await
-            .unwrap();
+        let handle = FileReader::load(
+            path,
+            Some(pred),
+            true,
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .await
+        .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         let visible = result.precomputed_visible.unwrap();
         // Backward evaluation, but result must be sorted ascending.
@@ -1291,9 +1311,15 @@ mod tests {
         let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = VisibilityPredicate::new(fm);
-        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
-            .await
-            .unwrap();
+        let handle = FileReader::load(
+            path,
+            Some(pred),
+            false,
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .await
+        .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
 
         // Predicate operates on stripped bytes ("ERROR: red", etc.)
@@ -1308,9 +1334,15 @@ mod tests {
         let f = make_tmp(&["a", "b", "c"]);
         let path = f.path().to_str().unwrap().to_string();
         let pred = VisibilityPredicate::new(crate::filters::FilterManager::empty());
-        let handle = FileReader::load(path, Some(pred), true, Arc::new(AtomicBool::new(false)))
-            .await
-            .unwrap();
+        let handle = FileReader::load(
+            path,
+            Some(pred),
+            true,
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .await
+        .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![0, 1, 2]));
         assert_eq!(result.precomputed_text_counts, Some(vec![]));
@@ -1324,9 +1356,15 @@ mod tests {
         let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = VisibilityPredicate::new(fm);
-        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
-            .await
-            .unwrap();
+        let handle = FileReader::load(
+            path,
+            Some(pred),
+            false,
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .await
+        .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
         assert_eq!(result.precomputed_visible, Some(vec![]));
         assert_eq!(result.precomputed_text_counts, Some(vec![0]));
@@ -1729,7 +1767,7 @@ mod tests {
         writeln!(f, "line 3").unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)), false)
             .await
             .unwrap();
         assert!(handle.total_bytes > 0);
@@ -1747,7 +1785,7 @@ mod tests {
         }
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)), false)
             .await
             .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
@@ -1764,7 +1802,7 @@ mod tests {
         f.write_all(b"\x1b[31mred\x1b[0m\nplain\n").unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)), false)
             .await
             .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
@@ -1780,6 +1818,7 @@ mod tests {
             None,
             false,
             Arc::new(AtomicBool::new(false)),
+            false,
         )
         .await;
         assert!(result.is_err());
@@ -1790,7 +1829,7 @@ mod tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)), false)
             .await
             .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
@@ -1802,7 +1841,9 @@ mod tests {
         let f = make_tmp(&["line1", "line2", "line3"]);
         let path = f.path().to_str().unwrap().to_string();
         let cancel = Arc::new(AtomicBool::new(true)); // pre-cancelled
-        let handle = FileReader::load(path, None, false, cancel).await.unwrap();
+        let handle = FileReader::load(path, None, false, cancel, false)
+            .await
+            .unwrap();
         let result = handle.result_rx.await.unwrap();
         // The load should have returned an Interrupted error because cancel was pre-set.
         assert!(result.is_err());
@@ -2287,7 +2328,7 @@ mod tests {
         let (f, expected_lines) = make_large_tmp(line, 6 * 1024 * 1024);
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)), false)
             .await
             .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
@@ -2305,7 +2346,7 @@ mod tests {
         let (f, n) = make_large_tmp(line, 6 * 1024 * 1024);
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)), false)
             .await
             .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
@@ -2343,9 +2384,15 @@ mod tests {
         let filter = SubstringFilter::new("EVEN", FilterDecision::Include, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = VisibilityPredicate::new(fm);
-        let handle = FileReader::load(path, Some(pred), false, Arc::new(AtomicBool::new(false)))
-            .await
-            .unwrap();
+        let handle = FileReader::load(
+            path,
+            Some(pred),
+            false,
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .await
+        .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();
 
         let visible = result.precomputed_visible.unwrap();
@@ -2386,7 +2433,7 @@ mod tests {
         f.flush().unwrap();
         let path = f.path().to_str().unwrap().to_string();
 
-        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)))
+        let handle = FileReader::load(path, None, false, Arc::new(AtomicBool::new(false)), false)
             .await
             .unwrap();
         let result = handle.result_rx.await.unwrap().unwrap();

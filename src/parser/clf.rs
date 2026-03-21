@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use memchr::memchr;
+
 use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_field_as};
 
 #[derive(Debug)]
@@ -191,6 +193,18 @@ impl LogFormatParser for ClfParser {
             return None;
         }
         parse_clf_line(s)
+    }
+
+    fn parse_timestamp<'a>(&self, line: &'a [u8]) -> Option<&'a str> {
+        let open = memchr(b'[', line)?;
+        let rest = &line[open + 1..];
+        let close = memchr(b']', rest)?;
+        let date = std::str::from_utf8(&rest[..close]).ok()?;
+        if validate_clf_date(date) {
+            Some(date)
+        } else {
+            None
+        }
     }
 
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String> {
@@ -529,5 +543,48 @@ mod tests {
     fn test_name() {
         let parser = ClfParser;
         assert_eq!(parser.name(), "clf");
+    }
+
+    // ── parse_timestamp ────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_timestamp_returns_correct_slice() {
+        let line =
+            b"127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] \"GET /apache_pb.gif HTTP/1.0\" 200 2326";
+        let parser = ClfParser;
+        assert_eq!(
+            parser.parse_timestamp(line),
+            Some("10/Oct/2000:13:55:36 -0700")
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_matches_parse_line() {
+        let line =
+            b"127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] \"GET /apache_pb.gif HTTP/1.0\" 200 2326";
+        let parser = ClfParser;
+        let ts_fast = parser.parse_timestamp(line);
+        let ts_full = parser.parse_line(line).and_then(|p| p.timestamp);
+        assert_eq!(ts_fast, ts_full);
+    }
+
+    #[test]
+    fn test_parse_timestamp_no_brackets_returns_none() {
+        let parser = ClfParser;
+        assert!(
+            parser
+                .parse_timestamp(b"127.0.0.1 - - no bracket here 200 0")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_malformed_date_returns_none() {
+        let parser = ClfParser;
+        assert!(
+            parser
+                .parse_timestamp(b"127.0.0.1 - - [not-a-date] \"GET / HTTP/1.0\" 200 0")
+                .is_none()
+        );
     }
 }

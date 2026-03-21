@@ -68,12 +68,12 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
             span_key: None,
             score_weight: 1.0,
         }),
-        Box::new(SyslogParser),
-        Box::new(JournalctlParser),
+        Box::new(SyslogParser::default()),
+        Box::new(JournalctlParser::default()),
         Box::new(ClfParser),
         Box::new(LogfmtParser::default()),
         // CommonLogParser last — broadest catch-all with 0.95× score penalty
-        Box::new(CommonLogParser),
+        Box::new(CommonLogParser::default()),
     ];
 
     parsers

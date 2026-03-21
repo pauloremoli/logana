@@ -3,3 +3,5 @@ logs/
 .claude
 tarpaulin-report.html
 docs/book/
+perf.data*
+report.txt

@@ -436,7 +436,7 @@ impl App {
             }
 
             let cancel = Arc::new(AtomicBool::new(false));
-            match FileReader::load(path.clone(), predicate, tail, cancel.clone()).await {
+            match FileReader::load(path.clone(), predicate, tail, cancel.clone(), false).await {
                 Ok(handle) => {
                     self.file_load_state = Some(FileLoadState {
                         path,
@@ -1114,7 +1114,7 @@ mod tests {
         // Manually set a different format to verify it is NOT overwritten.
         use crate::parser::SyslogParser;
         use std::sync::Arc;
-        app.tabs[0].display.format = Some(Arc::new(SyslogParser));
+        app.tabs[0].display.format = Some(Arc::new(SyslogParser::default()));
 
         let f2 = make_stdin_file(b"Mar 15 10:00:00 myhost sshd[1234]: first line\nMar 15 10:00:01 myhost sshd[1234]: second line\n");
         app.update_stdin_tab(f2.path()).await;

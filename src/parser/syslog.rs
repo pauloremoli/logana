@@ -1,11 +1,38 @@
 //! Syslog parser supporting RFC 3164 (BSD) and RFC 5424.
 
 use std::collections::HashSet;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_extra_field, push_field_as};
 
-#[derive(Debug)]
-pub struct SyslogParser;
+#[derive(Debug, Clone, Copy)]
+enum SyslogFormat {
+    Rfc3164,
+    Rfc5424,
+}
+
+impl SyslogFormat {
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn from_index(i: usize) -> Self {
+        match i {
+            0 => Self::Rfc3164,
+            _ => Self::Rfc5424,
+        }
+    }
+}
+
+const MIN_SAMPLES: u32 = 50;
+
+#[derive(Debug, Default)]
+pub struct SyslogParser {
+    format: OnceLock<SyslogFormat>,
+    fmt_counts: [AtomicU32; 2],
+    fmt_total: AtomicU32,
+}
 
 const FACILITY_NAMES: &[&str] = &[
     "kern", "user", "mail", "daemon", "auth", "syslog", "lpr", "news", "uucp", "cron", "authpriv",
@@ -317,24 +344,121 @@ fn next_token(s: &str) -> Option<(&str, &str)> {
     }
 }
 
+fn detect_syslog_timestamp<'a>(s: &'a str, line: &'a [u8]) -> Option<(SyslogFormat, &'a str)> {
+    let body = if s.starts_with('<') {
+        let (_, consumed) = parse_priority(line)?;
+        &s[consumed..]
+    } else {
+        s
+    };
+    if let Some((ts, _)) = parse_bsd_timestamp(body) {
+        return Some((SyslogFormat::Rfc3164, ts));
+    }
+    if body
+        .as_bytes()
+        .first()
+        .map(|b| b.is_ascii_digit())
+        .unwrap_or(false)
+    {
+        let ver_end = body.find(' ')?;
+        let rest = &body[ver_end + 1..];
+        let (ts, _) = next_token(rest)?;
+        if ts != "-" {
+            return Some((SyslogFormat::Rfc5424, ts));
+        }
+    }
+    None
+}
+
+fn extract_syslog_timestamp_rfc3164<'a>(s: &'a str, line: &'a [u8]) -> Option<&'a str> {
+    let body = if s.starts_with('<') {
+        let (_, consumed) = parse_priority(line)?;
+        &s[consumed..]
+    } else {
+        s
+    };
+    parse_bsd_timestamp(body).map(|(ts, _)| ts)
+}
+
+fn extract_syslog_timestamp_rfc5424<'a>(s: &'a str, line: &'a [u8]) -> Option<&'a str> {
+    let (_, consumed) = parse_priority(line)?;
+    let rest = &s[consumed..];
+    let ver_end = rest.find(' ')?;
+    let rest = &rest[ver_end + 1..];
+    let (ts, _) = next_token(rest)?;
+    if ts != "-" { Some(ts) } else { None }
+}
+
+impl SyslogParser {
+    fn record_format(&self, fmt: SyslogFormat) {
+        self.fmt_counts[fmt.index()].fetch_add(1, Ordering::Relaxed);
+        let total = self.fmt_total.fetch_add(1, Ordering::Relaxed) + 1;
+        if total >= MIN_SAMPLES && self.format.get().is_none() {
+            let winner = (0..2)
+                .max_by_key(|&i| self.fmt_counts[i].load(Ordering::Relaxed))
+                .unwrap_or(0);
+            let _ = self.format.set(SyslogFormat::from_index(winner));
+        }
+    }
+}
+
 impl LogFormatParser for SyslogParser {
+    fn parse_timestamp<'a>(&self, line: &'a [u8]) -> Option<&'a str> {
+        let s = std::str::from_utf8(line).ok()?;
+        if s.is_empty() {
+            return None;
+        }
+        if let Some(&fmt) = self.format.get() {
+            return match fmt {
+                SyslogFormat::Rfc3164 => extract_syslog_timestamp_rfc3164(s, line),
+                SyslogFormat::Rfc5424 => extract_syslog_timestamp_rfc5424(s, line),
+            };
+        }
+        let (fmt, ts) = detect_syslog_timestamp(s, line)?;
+        self.record_format(fmt);
+        Some(ts)
+    }
+
     fn parse_line<'a>(&self, line: &'a [u8]) -> Option<DisplayParts<'a>> {
         let s = std::str::from_utf8(line).ok()?;
         if s.is_empty() {
             return None;
         }
 
+        if let Some(&fmt) = self.format.get() {
+            let result = match fmt {
+                SyslogFormat::Rfc5424 => {
+                    let (priority, consumed) = parse_priority(line)?;
+                    parse_rfc5424(&s[consumed..], priority)
+                }
+                SyslogFormat::Rfc3164 => {
+                    if let Some((priority, consumed)) = parse_priority(line) {
+                        parse_rfc3164_inner(&s[consumed..], Some(priority))
+                    } else {
+                        parse_rfc3164_inner(s, None)
+                    }
+                }
+            };
+            if result.is_some() {
+                return result;
+            }
+        }
+
         if let Some((priority, consumed)) = parse_priority(line) {
             let rest = &s[consumed..];
             if let Some(parts) = parse_rfc5424(rest, priority) {
+                self.record_format(SyslogFormat::Rfc5424);
                 return Some(parts);
             }
             if let Some(parts) = parse_rfc3164_inner(rest, Some(priority)) {
+                self.record_format(SyslogFormat::Rfc3164);
                 return Some(parts);
             }
         }
 
-        parse_rfc3164_inner(s, None)
+        let parts = parse_rfc3164_inner(s, None)?;
+        self.record_format(SyslogFormat::Rfc3164);
+        Some(parts)
     }
 
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String> {
@@ -406,7 +530,7 @@ mod tests {
     #[test]
     fn test_rfc3164_full() {
         let line = b"<134>Oct 11 22:14:15 myhost sshd[1234]: Accepted password for user";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("Oct 11 22:14:15"));
         assert_eq!(parts.level, Some("INFO")); // severity 6
@@ -436,7 +560,7 @@ mod tests {
     #[test]
     fn test_rfc3164_no_pid() {
         let line = b"<134>Oct 11 22:14:15 myhost sshd: Accepted password for user";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.target, Some("sshd"));
         assert!(!parts.extra_fields.iter().any(|(_, k, _)| *k == "pid"));
@@ -446,7 +570,7 @@ mod tests {
     #[test]
     fn test_rfc3164_single_digit_day() {
         let line = b"<134>Oct  5 22:14:15 myhost sshd[1234]: message";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("Oct  5 22:14:15"));
     }
@@ -454,7 +578,7 @@ mod tests {
     #[test]
     fn test_rfc3164_no_priority() {
         let line = b"Oct 11 22:14:15 myhost sshd[1234]: Accepted password for user";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("Oct 11 22:14:15"));
         assert_eq!(parts.target, Some("sshd"));
@@ -479,7 +603,7 @@ mod tests {
     fn test_rfc3164_error_severity() {
         // priority = 11 → facility 1 (user), severity 3 (err)
         let line = b"<11>Oct 11 22:14:15 myhost app: error message";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("ERROR"));
     }
@@ -488,7 +612,7 @@ mod tests {
     fn test_rfc3164_warning_severity() {
         // priority = 12 → facility 1 (user), severity 4 (warning)
         let line = b"<12>Oct 11 22:14:15 myhost app: warn message";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("WARN"));
     }
@@ -497,7 +621,7 @@ mod tests {
     fn test_rfc3164_debug_severity() {
         // priority = 15 → facility 1 (user), severity 7 (debug)
         let line = b"<15>Oct 11 22:14:15 myhost app: debug message";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("DEBUG"));
     }
@@ -507,7 +631,7 @@ mod tests {
     #[test]
     fn test_rfc5424_full() {
         let line = b"<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\"] An application event log entry...";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2003-10-11T22:14:15.003Z"));
         assert_eq!(parts.level, Some("INFO")); // severity 5 (notice)
@@ -543,7 +667,7 @@ mod tests {
     #[test]
     fn test_rfc5424_nil_fields() {
         let line = b"<134>1 2003-10-11T22:14:15.003Z - - - - - No structured data";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2003-10-11T22:14:15.003Z"));
         assert_eq!(parts.level, Some("INFO")); // severity 6
@@ -554,7 +678,7 @@ mod tests {
     #[test]
     fn test_rfc5424_no_message() {
         let line = b"<134>1 2003-10-11T22:14:15.003Z myhost myapp 1234 - -";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2003-10-11T22:14:15.003Z"));
         assert_eq!(parts.target, Some("myapp"));
@@ -565,7 +689,7 @@ mod tests {
     fn test_rfc5424_multiple_sd_elements() {
         let line =
             b"<165>1 2003-10-11T22:14:15.003Z host app - - [sdA@1 a=\"1\"][sdB@1 b=\"2\"] msg";
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let parts = parser.parse_line(line).unwrap();
         assert!(
             parts
@@ -586,7 +710,7 @@ mod tests {
 
     #[test]
     fn test_detect_score_all_syslog() {
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let lines: Vec<&[u8]> = vec![
             b"<134>Oct 11 22:14:15 myhost sshd[1234]: msg1",
             b"<134>Oct 11 22:14:16 myhost sshd[1234]: msg2",
@@ -597,7 +721,7 @@ mod tests {
 
     #[test]
     fn test_detect_score_mixed() {
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let lines: Vec<&[u8]> = vec![
             b"<134>Oct 11 22:14:15 myhost sshd[1234]: msg1",
             b"not syslog at all",
@@ -608,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_detect_score_none_syslog() {
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let lines: Vec<&[u8]> = vec![b"plain text", b"more plain text"];
         let score = parser.detect_score(&lines);
         assert!((score - 0.0).abs() < 0.001);
@@ -616,7 +740,7 @@ mod tests {
 
     #[test]
     fn test_detect_score_empty() {
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let lines: Vec<&[u8]> = vec![];
         let score = parser.detect_score(&lines);
         assert!((score - 0.0).abs() < 0.001);
@@ -626,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_collect_field_names_rfc3164() {
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let lines: Vec<&[u8]> = vec![b"<134>Oct 11 22:14:15 myhost sshd[1234]: msg"];
         let names = parser.collect_field_names(&lines);
         assert!(names.contains(&"timestamp".to_string()));
@@ -640,7 +764,7 @@ mod tests {
 
     #[test]
     fn test_collect_field_names_rfc5424_with_sd() {
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         let lines: Vec<&[u8]> =
             vec![b"<165>1 2003-10-11T22:14:15.003Z host app - ID47 [sd@1 key=\"val\"] msg"];
         let names = parser.collect_field_names(&lines);
@@ -653,13 +777,13 @@ mod tests {
 
     #[test]
     fn test_parse_empty_line() {
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         assert!(parser.parse_line(b"").is_none());
     }
 
     #[test]
     fn test_parse_json_line_not_syslog() {
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         assert!(
             parser
                 .parse_line(br#"{"level":"INFO","msg":"hello"}"#)
@@ -669,7 +793,93 @@ mod tests {
 
     #[test]
     fn test_parse_plain_text_not_syslog() {
-        let parser = SyslogParser;
+        let parser = SyslogParser::default();
         assert!(parser.parse_line(b"just plain text").is_none());
+    }
+
+    // ── parse_timestamp ────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_timestamp_rfc3164_with_priority() {
+        let line = b"<134>Oct 11 22:14:15 myhost sshd[1234]: msg";
+        let parser = SyslogParser::default();
+        assert_eq!(parser.parse_timestamp(line), Some("Oct 11 22:14:15"));
+    }
+
+    #[test]
+    fn test_parse_timestamp_rfc3164_matches_parse_line() {
+        let line = b"<134>Oct 11 22:14:15 myhost sshd[1234]: msg";
+        let parser = SyslogParser::default();
+        assert_eq!(
+            parser.parse_timestamp(line),
+            parser.parse_line(line).and_then(|p| p.timestamp)
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_rfc5424_matches_parse_line() {
+        let line = b"<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 - msg";
+        let parser = SyslogParser::default();
+        assert_eq!(
+            parser.parse_timestamp(line),
+            parser.parse_line(line).and_then(|p| p.timestamp)
+        );
+    }
+
+    #[test]
+    fn test_parse_timestamp_no_priority_bsd() {
+        let line = b"Oct 11 22:14:15 myhost sshd[1234]: msg";
+        let parser = SyslogParser::default();
+        assert_eq!(parser.parse_timestamp(line), Some("Oct 11 22:14:15"));
+    }
+
+    #[test]
+    fn test_parse_timestamp_plain_text_returns_none() {
+        let parser = SyslogParser::default();
+        assert!(parser.parse_timestamp(b"just plain text").is_none());
+    }
+
+    #[test]
+    fn test_format_winner_not_set_before_min_samples() {
+        let parser = SyslogParser::default();
+        let line = b"Oct 11 22:14:15 myhost sshd[1234]: msg";
+        for _ in 0..MIN_SAMPLES - 1 {
+            parser.parse_line(line).unwrap();
+        }
+        assert!(parser.format.get().is_none());
+    }
+
+    #[test]
+    fn test_format_winner_set_after_min_samples_rfc3164() {
+        let parser = SyslogParser::default();
+        let line = b"Oct 11 22:14:15 myhost sshd[1234]: msg";
+        for _ in 0..MIN_SAMPLES {
+            parser.parse_line(line).unwrap();
+        }
+        assert!(parser.format.get().is_some());
+    }
+
+    #[test]
+    fn test_format_winner_set_after_min_samples_rfc5424() {
+        let parser = SyslogParser::default();
+        let line = b"<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 - msg";
+        for _ in 0..MIN_SAMPLES {
+            parser.parse_line(line).unwrap();
+        }
+        assert!(parser.format.get().is_some());
+    }
+
+    #[test]
+    fn test_format_consistent_output_before_and_after_lock() {
+        let parser = SyslogParser::default();
+        let line = b"<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 - msg";
+        let before = parser.parse_line(line).unwrap();
+        for _ in 0..MIN_SAMPLES {
+            parser.parse_line(line).unwrap();
+        }
+        let after = parser.parse_line(line).unwrap();
+        assert_eq!(before.timestamp, after.timestamp);
+        assert_eq!(before.level, after.level);
+        assert_eq!(before.target, after.target);
     }
 }

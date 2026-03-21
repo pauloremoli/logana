@@ -13,6 +13,8 @@ All notable changes to logana will be documented in this file.
 - `--mcp [PORT]` CLI flag to start the MCP server automatically on launch (port defaults to 9876).
 
 ### Changed
+- `CommonLogParser`, `JournalctlParser`, and `SyslogParser` now use majority voting over the first 50 successfully parsed lines to select the format.
+- `TabState` filtering loops now use `parse_timestamp` instead of `parse_line` when only `@date:` filters are active.
 - `TabState` decomposed into focused sub-structs (`ScrollState`, `FilterState`, `SearchState`, `CacheState`, `StreamState`, `DisplayConfig`, `InteractionState`) in `src/ui/tab_state/`.
 - All popup UI surfaces extracted into ratatui `Widget` types in `src/ui/widgets/` (`ConfirmRestoreModal`, `ConfirmRestoreSessionModal`, `ConfirmOpenDirModal`, `CommentPopup`, `SelectFieldsPopup`, `DockerSelectPopup`, `DltSelectPopup`, `ValueColorsPopup`, `KeybindingsHelpPopup`).
 - Popup widget tests moved to their respective widget modules; `render_popups.rs` deleted.
