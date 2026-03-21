@@ -584,6 +584,11 @@ impl App {
                     return;
                 }
                 self.tabs[0].file_reader = result.reader;
+                // Reset visible_indices to All(n) so that the scroll anchor
+                // computed below (from the saved absolute file line) is resolved
+                // against the full file, not the small preview.
+                self.tabs[0].filter.visible_indices =
+                    VisibleLines::All(self.tabs[0].file_reader.line_count());
                 self.tabs[0].detect_and_apply_format();
                 let had_precomputed = result.precomputed_visible.is_some();
                 if let Some(visible) = result.precomputed_visible {
@@ -618,6 +623,12 @@ impl App {
                     } else {
                         self.tabs[0].filter.match_counts = Vec::new();
                     }
+                    // The precomputed path skips begin_filter_refresh, so there
+                    // is no scroll-anchor mechanism.  Translate the saved absolute
+                    // file line (set by apply_file_context above) to its position
+                    // in the already-computed filtered view.
+                    let saved_line = self.tabs[0].scroll.scroll_offset;
+                    self.tabs[0].restore_scroll_to_line(Some(saved_line));
                 } else {
                     self.tabs[0].begin_filter_refresh();
                 }
@@ -652,6 +663,14 @@ impl App {
                     return;
                 }
                 self.tabs[tab_idx].file_reader = result.reader;
+                // Reset visible_indices to All(n) so that the scroll anchor
+                // computed in begin_filter_refresh reflects the full file, not
+                // a stale preview.  apply_file_context stores an absolute file
+                // line (saved by to_file_context) in scroll_offset; begin_filter_refresh
+                // converts it via visible_indices.get_opt — so visible_indices
+                // must cover the full file at that point.
+                self.tabs[tab_idx].filter.visible_indices =
+                    VisibleLines::All(self.tabs[tab_idx].file_reader.line_count());
                 self.tabs[tab_idx].detect_and_apply_format();
                 if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     self.tabs[tab_idx].apply_file_context(&ctx);

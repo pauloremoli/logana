@@ -1,6 +1,6 @@
+use crate::parser::dlt_binary;
 #[cfg(target_os = "linux")]
 use libc;
-use crate::parser::dlt_binary;
 use memchr::{memchr_iter, memchr2, memchr3_iter};
 
 fn is_any_dlt_binary(data: &[u8]) -> bool {
@@ -118,9 +118,8 @@ impl FileReader {
             }
             let num_threads = rayon::current_num_threads().max(1);
             let chunk_size = size.div_ceil(num_threads).max(4 * 1024 * 1024);
-            v.par_chunks_mut(chunk_size)
-                .enumerate()
-                .try_for_each(|(i, chunk)| -> io::Result<()> {
+            v.par_chunks_mut(chunk_size).enumerate().try_for_each(
+                |(i, chunk)| -> io::Result<()> {
                     let offset = (i * chunk_size) as u64;
                     let mut filled = 0;
                     while filled < chunk.len() {
@@ -132,7 +131,8 @@ impl FileReader {
                         }
                     }
                     Ok(())
-                })?;
+                },
+            )?;
             v
         };
         #[cfg(not(unix))]
@@ -703,8 +703,7 @@ impl FileReader {
                             }
                         }
                     }
-                    let done =
-                        bytes_done.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+                    let done = bytes_done.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
                     if len > 0 {
                         let _ = progress_tx.send(done as f64 / len as f64);
                     }
@@ -945,7 +944,9 @@ impl FileReader {
         );
         let mut data: Vec<u8> = match old_storage {
             Storage::Bytes(v) => std::sync::Arc::try_unwrap(v).unwrap_or_else(|arc| (*arc).clone()),
-            Storage::File { data, .. } => std::sync::Arc::try_unwrap(data).unwrap_or_else(|arc| (*arc).clone()),
+            Storage::File { data, .. } => {
+                std::sync::Arc::try_unwrap(data).unwrap_or_else(|arc| (*arc).clone())
+            }
         };
         let offset = data.len();
         data.extend_from_slice(effective_data);
@@ -1246,19 +1247,18 @@ impl FileReader {
                 interval.tick().await;
 
                 let path_clone = path.clone();
-                let result =
-                    tokio::task::spawn_blocking(move || -> io::Result<(u64, u64, u64)> {
-                        let meta = std::fs::metadata(&path_clone)?;
-                        let size = meta.len();
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::MetadataExt;
-                            Ok((size, meta.ino(), meta.dev()))
-                        }
-                        #[cfg(not(unix))]
-                        Ok((size, 0, 0))
-                    })
-                    .await;
+                let result = tokio::task::spawn_blocking(move || -> io::Result<(u64, u64, u64)> {
+                    let meta = std::fs::metadata(&path_clone)?;
+                    let size = meta.len();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt;
+                        Ok((size, meta.ino(), meta.dev()))
+                    }
+                    #[cfg(not(unix))]
+                    Ok((size, 0, 0))
+                })
+                .await;
 
                 if let Ok(Ok((current_size, ino, dev))) = result {
                     // Detect rotation-by-rename: inode changed under the path.

@@ -1768,7 +1768,16 @@ impl TabState {
         let file_hash = LogManager::compute_file_hash(source);
         Some(FileContext {
             source_file: source.to_string(),
-            scroll_offset: self.scroll.scroll_offset,
+            // Save the absolute file-line index, not the visible position.
+            // The position is an index into the current filtered set and would
+            // be meaningless once filters are reapplied on next session start.
+            // get_opt converts visible-position → file-line; on All views they
+            // are identical, so this is always a no-op for unfiltered sessions.
+            scroll_offset: self
+                .filter
+                .visible_indices
+                .get_opt(self.scroll.scroll_offset)
+                .unwrap_or(self.scroll.scroll_offset),
             search_query: self
                 .search
                 .query
