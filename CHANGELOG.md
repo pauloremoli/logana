@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-21
+
 ### Added
 - OTLP gRPC receiver: `:otlp` now defaults to gRPC on port 4317, matching the OTel SDK default export protocol. Use `:otlp --http` for the previous HTTP/JSON transport on port 4318. Custom ports still work: `:otlp 4317`, `:otlp --http 4318`.
 - OTLP HTTP/JSON receiver: use `:otlp --http [port]` (default 4318) to open a tab that accepts `POST /v1/logs` from any OpenTelemetry SDK. Logs are parsed by the existing OTLP parser and support all filtering features. Session state is persisted and restored across restarts.
