@@ -486,14 +486,20 @@ impl TabState {
         if self.display.format.is_none() || self.display.raw_mode {
             return VisibleLines::All(n);
         }
-        let vis: Vec<usize> = (0..n)
-            .filter(|&i| !self.file_reader.get_line(i).is_empty())
-            .collect();
-        if vis.len() == n {
-            VisibleLines::All(n)
-        } else {
-            VisibleLines::Filtered(vis)
+        // Fast path: scan for the first blank line.  If none exist (the common
+        // case for log files) return All without allocating a Vec at all.
+        let first_empty = (0..n).find(|&i| self.file_reader.get_line(i).is_empty());
+        let Some(first_empty) = first_empty else {
+            return VisibleLines::All(n);
+        };
+        // Slow path: at least one blank line — collect non-empty indices.
+        let mut vis = Vec::with_capacity(n - 1);
+        for i in 0..n {
+            if i != first_empty && !self.file_reader.get_line(i).is_empty() {
+                vis.push(i);
+            }
         }
+        VisibleLines::Filtered(vis)
     }
 
     /// Scan forward from `from` (exclusive) for the next visible ERROR/FATAL line.

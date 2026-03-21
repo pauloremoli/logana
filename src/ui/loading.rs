@@ -512,7 +512,7 @@ impl App {
             let tail_mode = self.tabs[idx].stream.tail_mode;
             let incremental = self.tabs[idx]
                 .file_reader
-                .try_extend_from_mmap(path_str)
+                .try_extend_from_read()
                 .unwrap_or(false);
             if !incremental {
                 match FileReader::new(path_str) {
@@ -702,7 +702,7 @@ impl App {
                     let old_line_count = self.tabs[i].file_reader.line_count();
                     let incremental = self.tabs[i]
                         .file_reader
-                        .try_extend_from_mmap(path_str)
+                        .try_extend_from_read()
                         .unwrap_or(false);
                     if !incremental {
                         match crate::file_reader::FileReader::new(path_str) {

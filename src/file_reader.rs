@@ -1,12 +1,11 @@
+#[cfg(target_os = "linux")]
+use libc;
 use crate::parser::dlt_binary;
-use memchr::{memchr_iter, memchr2};
+use memchr::{memchr_iter, memchr2, memchr3_iter};
 
 fn is_any_dlt_binary(data: &[u8]) -> bool {
     dlt_binary::is_dlt_binary(data) || dlt_binary::is_dlt_wire_format(data)
 }
-use memmap2::Mmap;
-#[cfg(unix)]
-use memmap2::{Advice, UncheckedAdvice};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fs::File, io};
@@ -47,14 +46,24 @@ pub struct FileLoadHandle {
 
 #[derive(Clone)]
 enum Storage {
-    Mmap(std::sync::Arc<Mmap>),
-    Bytes(std::sync::Arc<Vec<u8>>),
+    /// Heap-owned file content.  The `File` handle is kept open so that
+    /// `try_extend_from_read` can `pread` new bytes without re-opening the
+    /// path (which could race with log rotation).
+    /// `inode` and `device` are used to detect rotation-by-rename on Unix.
+    File {
+        data: Arc<Vec<u8>>,
+        file: Arc<File>,
+        path: Arc<std::path::PathBuf>,
+        inode: u64,
+        device: u64,
+    },
+    Bytes(Arc<Vec<u8>>),
 }
 
 impl Storage {
     fn as_bytes(&self) -> &[u8] {
         match self {
-            Storage::Mmap(m) => m.as_ref(),
+            Storage::File { data, .. } => data.as_slice(),
             Storage::Bytes(v) => v.as_slice(),
         }
     }
@@ -69,38 +78,97 @@ pub struct FileReader {
 
 impl FileReader {
     pub fn new(path: &str) -> io::Result<Self> {
-        let file = File::open(path)?;
-        let scan_mmap = unsafe { Mmap::map(&file)? };
-        let len = scan_mmap.len();
+        use rayon::prelude::*;
 
-        // Hint sequential access so the kernel prefetches ahead during the scan.
+        let canonical_path = Arc::new(
+            std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path)),
+        );
+        let file = Arc::new(File::open(path)?);
+        let size = file.metadata()?.len() as usize;
+
+        // Parallel pread + MADV_POPULATE_WRITE, same as index_chunked.
         #[cfg(unix)]
-        let _ = scan_mmap.advise(Advice::Sequential);
-        // Pre-fault all pages before the scan so concurrent page faults don't stall workers.
-        #[cfg(target_os = "linux")]
-        let _ = scan_mmap.advise(Advice::PopulateRead);
+        let data: Vec<u8> = {
+            use std::os::unix::fs::FileExt;
+            let mut v = Vec::with_capacity(size);
+            // SAFETY: `set_len` exposes `size` uninitialized bytes.  This is
+            // sound because every byte is written by the `read_at` loop below
+            // before any part of `v` is read:
+            //   • `par_chunks_mut` gives each rayon worker a non-overlapping,
+            //     non-aliased slice — no two workers touch the same memory.
+            //   • The `try_for_each` propagates the first I/O error; on error
+            //     we return `Err` and `v` is dropped, so the uninitialized
+            //     region is never observed by safe code.
+            //   • `size` equals `file.metadata().len()`, so the backing
+            //     allocation is exactly large enough.
+            unsafe { v.set_len(size) };
+            // SAFETY: `v.as_mut_ptr()` is a valid, writable mapping of exactly
+            // `size` bytes (just set above).  `madvise(MADV_POPULATE_WRITE)`
+            // only touches the kernel's page tables — it does not read or write
+            // user memory — so calling it on uninitialized bytes is safe.
+            // On kernels < 5.14 it returns EINVAL; we ignore the return value
+            // intentionally (demand-paging fallback).
+            #[cfg(target_os = "linux")]
+            unsafe {
+                libc::madvise(
+                    v.as_mut_ptr() as *mut libc::c_void,
+                    size,
+                    libc::MADV_POPULATE_WRITE,
+                );
+            }
+            let num_threads = rayon::current_num_threads().max(1);
+            let chunk_size = size.div_ceil(num_threads).max(4 * 1024 * 1024);
+            v.par_chunks_mut(chunk_size)
+                .enumerate()
+                .try_for_each(|(i, chunk)| -> io::Result<()> {
+                    let offset = (i * chunk_size) as u64;
+                    let mut filled = 0;
+                    while filled < chunk.len() {
+                        match file.read_at(&mut chunk[filled..], offset + filled as u64) {
+                            Ok(0) => break,
+                            Ok(n) => filled += n,
+                            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    Ok(())
+                })?;
+            v
+        };
+        #[cfg(not(unix))]
+        let data: Vec<u8> = {
+            use std::io::Read;
+            let mut v = Vec::with_capacity(size);
+            (&*file).read_to_end(&mut v)?;
+            v
+        };
 
-        if is_any_dlt_binary(&scan_mmap) {
-            let text = dlt_binary::convert_dlt_binary_to_text(&scan_mmap);
-            drop(scan_mmap);
+        let len = data.len();
+
+        if is_any_dlt_binary(&data) {
+            let text = dlt_binary::convert_dlt_binary_to_text(&data);
             let mut reader = Self::from_bytes(text);
             reader.is_dlt = true;
             return Ok(reader);
         }
 
-        let has_ansi = memchr2(b'\x1b', b'\r', &scan_mmap).is_some();
+        // Single pass: scan for '\n', '\x1b', '\r' simultaneously.
         let mut starts = vec![0usize];
-        if !has_ansi {
-            for pos in memchr_iter(b'\n', &scan_mmap) {
+        let mut has_ansi = false;
+        for pos in memchr3_iter(b'\n', b'\x1b', b'\r', &data) {
+            if data[pos] == b'\n' {
                 let next = pos + 1;
                 if next <= len {
                     starts.push(next);
                 }
+            } else {
+                has_ansi = true;
+                break;
             }
         }
 
         if has_ansi {
-            let (stripped, line_starts) = strip_ansi_and_index(&scan_mmap);
+            let (stripped, line_starts) = strip_ansi_and_index(&data);
             return Ok(FileReader {
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
@@ -108,8 +176,24 @@ impl FileReader {
             });
         }
 
+        // Capture file identity for rotation detection.
+        #[cfg(unix)]
+        let (inode, device) = {
+            use std::os::unix::fs::MetadataExt;
+            let m = file.metadata()?;
+            (m.ino(), m.dev())
+        };
+        #[cfg(not(unix))]
+        let (inode, device) = (0u64, 0u64);
+
         Ok(FileReader {
-            storage: Storage::Mmap(std::sync::Arc::new(scan_mmap)),
+            storage: Storage::File {
+                data: Arc::new(data),
+                file,
+                path: canonical_path,
+                inode,
+                device,
+            },
             line_starts: std::sync::Arc::new(starts),
             is_dlt: false,
         })
@@ -225,26 +309,102 @@ impl FileReader {
         Ok(Self::from_bytes(buf))
     }
 
-    /// Extend this reader from a growing file, scanning only new bytes.
+    /// Extend this reader from a growing file, scanning only new bytes via `pread`.
     ///
-    /// Returns `true` when incremental extension succeeded.
-    /// Returns `false` when storage is `Bytes` (ANSI/DLT) — caller falls back to `FileReader::new()`.
-    pub fn try_extend_from_mmap(&mut self, path: &str) -> io::Result<bool> {
-        if matches!(self.storage, Storage::Bytes(_)) {
+    /// Returns `true` when incremental extension succeeded (file grew or unchanged).
+    /// Returns `false` when:
+    ///   - storage is `Bytes` (ANSI/DLT) — caller falls back to `FileReader::new()`.
+    ///   - file was truncated (`new_size < old_size`) — caller does a full reload.
+    ///   - file identity changed (inode/device mismatch) — caller does a full reload.
+    pub fn try_extend_from_read(&mut self) -> io::Result<bool> {
+        let (file, data, path, old_size, old_inode, old_device) = match &self.storage {
+            Storage::File {
+                file,
+                data,
+                path,
+                inode,
+                device,
+            } => (
+                Arc::clone(file),
+                Arc::clone(data),
+                Arc::clone(path),
+                data.len(),
+                *inode,
+                *device,
+            ),
+            Storage::Bytes(_) => return Ok(false),
+        };
+
+        // Stat the path (not the fd) so rotation-by-rename is detectable:
+        // after `mv app.log app.log.1`, fstat on the old fd still reports the
+        // original inode, but stat on the path sees the new file's inode.
+        #[cfg(unix)]
+        let (new_size, current_inode, current_device) = {
+            use std::os::unix::fs::MetadataExt;
+            match std::fs::metadata(&*path) {
+                Ok(m) => (m.len() as usize, m.ino(), m.dev()),
+                Err(_) => return Ok(false), // path gone — rotation or deletion
+            }
+        };
+        #[cfg(not(unix))]
+        let (new_size, current_inode, current_device) = {
+            let sz = file
+                .metadata()
+                .map(|m| m.len() as usize)
+                .unwrap_or(old_size);
+            (sz, 0u64, 0u64)
+        };
+
+        // Inode/device mismatch: file was replaced (rotation by rename).
+        #[cfg(unix)]
+        if current_inode != old_inode || current_device != old_device {
             return Ok(false);
         }
-        let file = File::open(path)?;
-        let new_mmap = unsafe { Mmap::map(&file)? };
-        let old_size = self.storage.as_bytes().len();
-        let new_size = new_mmap.len();
-        if new_size <= old_size {
+        #[cfg(not(unix))]
+        let _ = (old_inode, old_device, current_inode, current_device);
+
+        if new_size == old_size {
             return Ok(true);
         }
-        let starts = Arc::make_mut(&mut self.line_starts);
-        for pos in memchr_iter(b'\n', &new_mmap[old_size..]) {
-            starts.push(old_size + pos + 1);
+        if new_size < old_size {
+            // Truncation: caller must do a full reload.
+            return Ok(false);
         }
-        self.storage = Storage::Mmap(Arc::new(new_mmap));
+
+        // Obtain an owned Vec, avoiding a copy when this is the only Arc handle.
+        let mut new_data = Arc::try_unwrap(data).unwrap_or_else(|arc| (*arc).clone());
+
+        let starts = Arc::make_mut(&mut self.line_starts);
+
+        // Read only the new bytes via pread and append them to the buffer.
+        let extra = new_size - old_size;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt;
+            let mut buf = vec![0u8; extra];
+            file.read_at(&mut buf, old_size as u64)?;
+            for pos in memchr_iter(b'\n', &buf) {
+                starts.push(old_size + pos + 1);
+            }
+            new_data.extend_from_slice(&buf);
+        }
+        #[cfg(not(unix))]
+        {
+            use std::io::{Read, Seek};
+            (&*file).seek(io::SeekFrom::Start(old_size as u64))?;
+            (&*file).read_to_end(&mut new_data)?;
+            for pos in memchr_iter(b'\n', &new_data[old_size..]) {
+                starts.push(old_size + pos + 1);
+            }
+        }
+
+        self.storage = Storage::File {
+            data: Arc::new(new_data),
+            file,
+            path,
+            inode: current_inode,
+            device: current_device,
+        };
         Ok(true)
     }
 
@@ -373,26 +533,71 @@ impl FileReader {
     ///     result is reversed to restore ascending order.
     fn index_chunked(
         path: &str,
-        _total_bytes: u64,
+        total_bytes: u64,
         progress_tx: watch::Sender<f64>,
         predicate: Option<VisibilityPredicate>,
         tail: bool,
         cancel: &AtomicBool,
-        keep_pages: bool,
+        _keep_pages: bool,
     ) -> io::Result<FileLoadResult> {
         use rayon::prelude::*;
         use std::sync::atomic::AtomicUsize;
 
-        let file = File::open(path)?;
-        let scan_mmap = unsafe { Mmap::map(&file)? };
-        let len = scan_mmap.len();
+        let canonical_path = Arc::new(
+            std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path)),
+        );
+        let file = Arc::new(File::open(path)?);
+        let size = total_bytes as usize;
 
+        // Pre-allocate the file buffer.  On Unix we fill it via parallel pread
+        // (one chunk per rayon worker) so that I/O and the newline scan run in the
+        // same parallel pass.  On non-Unix we fall back to sequential read_to_end.
         #[cfg(unix)]
-        let _ = scan_mmap.advise(Advice::Sequential);
+        let mut file_data: Vec<u8> = {
+            let mut v = Vec::with_capacity(size);
+            // SAFETY: `set_len` exposes `size` uninitialized bytes.  This is
+            // sound because every byte is written by the `read_at` loop in the
+            // par_chunks_mut call below before any part of `v` is read:
+            //   • `par_chunks_mut` gives each rayon worker a non-overlapping,
+            //     non-aliased slice — no two workers touch the same memory.
+            //   • On any I/O error `try_for_each` returns Err immediately and
+            //     `index_chunked` propagates it; `v` is dropped, so the
+            //     uninitialized region is never observed by safe code.
+            //   • `size` equals `total_bytes` from `metadata().len()` (caller),
+            //     so the backing allocation is exactly large enough.
+            unsafe { v.set_len(size) };
+            // SAFETY: `v.as_mut_ptr()` is a valid, writable mapping of exactly
+            // `size` bytes (just set above).  `madvise(MADV_POPULATE_WRITE)`
+            // only touches the kernel's page tables — it does not read or write
+            // user memory — so calling it on uninitialized bytes is safe.
+            // Pre-faulting all anonymous pages before the parallel pread
+            // eliminates the per-page page-fault stall inside rep_movs_alternative,
+            // letting the memcpy run at full memory bandwidth.
+            // On kernels < 5.14 it returns EINVAL; we ignore the return value
+            // intentionally (demand-paging fallback).
+            #[cfg(target_os = "linux")]
+            unsafe {
+                libc::madvise(
+                    v.as_mut_ptr() as *mut libc::c_void,
+                    size,
+                    libc::MADV_POPULATE_WRITE,
+                );
+            }
+            v
+        };
+        #[cfg(not(unix))]
+        let mut file_data: Vec<u8> = {
+            use std::io::Read;
+            let mut v = Vec::with_capacity(size);
+            (&*file).read_to_end(&mut v)?;
+            v
+        };
 
-        if is_any_dlt_binary(&scan_mmap) {
-            let text = dlt_binary::convert_dlt_binary_to_text(&scan_mmap);
-            drop(scan_mmap);
+        let len = file_data.len();
+
+        if is_any_dlt_binary(&file_data) {
+            let text = dlt_binary::convert_dlt_binary_to_text(&file_data);
+            drop(file_data);
             let _ = progress_tx.send(1.0);
             let mut reader = Self::from_bytes(text);
             reader.is_dlt = true;
@@ -450,19 +655,66 @@ impl FileReader {
             });
         }
 
-        // Phase 1: parallel chunk scan for '\n', '\x1b', '\r'.
+        // Phase 1: parallel pread + scan for '\n', '\x1b', '\r' in one pass.
         //
-        // Divide the mmap into one chunk per rayon thread (minimum 4 MiB each so
-        // tiny files don't spawn more tasks than lines).  Each thread independently
-        // finds newline positions and reports them as absolute byte offsets.
-        // progress_tx is Sync so it can be referenced from multiple threads;
+        // Each rayon worker fills its chunk via pread (parallelising I/O) then
+        // immediately scans it while the data is hot in L2/L3 cache.  This avoids
+        // the sequential read_to_end bottleneck: with mmap the kernel page-faults
+        // occurred in parallel across rayon workers; here pread achieves the same
+        // effect without the SIGBUS risk.
+        //
+        // chunk_size is one slice per rayon thread (minimum 4 MiB).
         // bytes_done is a shared counter for fractional progress updates.
         let num_threads = rayon::current_num_threads().max(1);
         let chunk_size = len.div_ceil(num_threads).max(4 * 1024 * 1024);
         let bytes_done = AtomicUsize::new(0);
 
         // Each element: (has_ansi, Vec<absolute next-line offsets for this chunk>)
-        let chunk_results: Vec<(bool, Vec<usize>)> = scan_mmap
+        #[cfg(unix)]
+        let chunk_results: Vec<(bool, Vec<usize>)> = {
+            use std::os::unix::fs::FileExt;
+            file_data
+                .par_chunks_mut(chunk_size)
+                .enumerate()
+                .map(|(chunk_idx, chunk)| -> io::Result<(bool, Vec<usize>)> {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Ok((false, vec![]));
+                    }
+                    // Fill the chunk via pread (does not move the file cursor).
+                    let offset = (chunk_idx * chunk_size) as u64;
+                    let mut filled = 0;
+                    while filled < chunk.len() {
+                        match file.read_at(&mut chunk[filled..], offset + filled as u64) {
+                            Ok(0) => break, // EOF before expected — file shrank
+                            Ok(n) => filled += n,
+                            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    let chunk = &chunk[..filled];
+                    let chunk_start = chunk_idx * chunk_size;
+                    let has_ansi = memchr2(b'\x1b', b'\r', chunk).is_some();
+                    let mut local_starts: Vec<usize> = Vec::new();
+                    if !has_ansi {
+                        for pos in memchr_iter(b'\n', chunk) {
+                            let next = chunk_start + pos + 1;
+                            if next <= len {
+                                local_starts.push(next);
+                            }
+                        }
+                    }
+                    let done =
+                        bytes_done.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+                    if len > 0 {
+                        let _ = progress_tx.send(done as f64 / len as f64);
+                    }
+                    Ok((has_ansi, local_starts))
+                })
+                .collect::<io::Result<Vec<_>>>()?
+        };
+
+        #[cfg(not(unix))]
+        let chunk_results: Vec<(bool, Vec<usize>)> = file_data
             .par_chunks(chunk_size)
             .enumerate()
             .map(|(chunk_idx, chunk)| {
@@ -472,7 +724,6 @@ impl FileReader {
                 let chunk_start = chunk_idx * chunk_size;
                 let has_ansi = memchr2(b'\x1b', b'\r', chunk).is_some();
                 let mut local_starts: Vec<usize> = Vec::new();
-
                 if !has_ansi {
                     for pos in memchr_iter(b'\n', chunk) {
                         let next = chunk_start + pos + 1;
@@ -481,12 +732,10 @@ impl FileReader {
                         }
                     }
                 }
-
                 let done = bytes_done.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
                 if len > 0 {
                     let _ = progress_tx.send(done as f64 / len as f64);
                 }
-
                 (has_ansi, local_starts)
             })
             .collect();
@@ -498,10 +747,8 @@ impl FileReader {
         let has_ansi = chunk_results.iter().any(|(a, _)| *a);
 
         let reader = if has_ansi {
-            // Strip into a Vec<u8>; scan_mmap is dropped here so munmap
-            // reclaims the pages — no explicit DontNeed needed.
-            let (stripped, line_starts) = strip_ansi_and_index(&scan_mmap);
-            drop(scan_mmap);
+            let (stripped, line_starts) = strip_ansi_and_index(&file_data);
+            drop(file_data);
             let _ = progress_tx.send(1.0);
             FileReader {
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
@@ -519,9 +766,24 @@ impl FileReader {
                 starts.extend(local);
             }
 
+            #[cfg(unix)]
+            let (inode, device) = {
+                use std::os::unix::fs::MetadataExt;
+                let m = file.metadata()?;
+                (m.ino(), m.dev())
+            };
+            #[cfg(not(unix))]
+            let (inode, device) = (0u64, 0u64);
+
             FileReader {
-                storage: Storage::Mmap(std::sync::Arc::new(scan_mmap)),
-                line_starts: std::sync::Arc::new(starts),
+                storage: Storage::File {
+                    data: Arc::new(file_data),
+                    file,
+                    path: canonical_path,
+                    inode,
+                    device,
+                },
+                line_starts: Arc::new(starts),
                 is_dlt: false,
             }
         };
@@ -574,19 +836,6 @@ impl FileReader {
         } else {
             (None, None)
         };
-
-        // Release mmap pages for the UI case: only the viewport pages will be
-        // re-faulted during rendering. Skipped when keep_pages=true (headless
-        // write mode) so the data stays in cache for write_visible_lines.
-        if !keep_pages
-            && precomputed_visible.is_some()
-            && let Storage::Mmap(ref m) = reader.storage
-        {
-            // SAFETY: phase 2 is complete; no borrows of the mmap data remain
-            // (the predicate closures are done and the Arc has count 1 here).
-            #[cfg(unix)]
-            let _ = unsafe { (**m).unchecked_advise(UncheckedAdvice::DontNeed) };
-        }
 
         Ok(FileLoadResult {
             reader,
@@ -648,41 +897,13 @@ impl FileReader {
     }
 
     #[cfg(unix)]
-    pub fn advise_for_scan(&self, line_range: std::ops::Range<usize>) {
-        if let Storage::Mmap(ref m) = self.storage {
-            let len = m.len();
-            let start = self.line_starts.get(line_range.start).copied().unwrap_or(0);
-            let end = self
-                .line_starts
-                .get(line_range.end)
-                .copied()
-                .unwrap_or(len)
-                .min(len);
-            if end > start {
-                let _ = m.advise_range(Advice::Sequential, start, end - start);
-            }
-        }
+    pub fn advise_for_scan(&self, _line_range: std::ops::Range<usize>) {
+        // Data is already in RAM (Vec<u8>); no prefetch hint needed.
     }
 
-    /// Hint the kernel to prefetch the mmap pages covering lines `first_line..=last_line`.
-    /// Called before the render loop so async I/O can overlap with CPU work.
-    /// No-op for in-memory (stdin/test) readers or on non-Unix platforms.
+    /// No-op: data is already in RAM so no prefetch hint is needed.
     #[cfg(unix)]
-    pub fn advise_viewport(&self, first_line: usize, last_line: usize) {
-        if let Storage::Mmap(ref m) = self.storage {
-            let len = m.len();
-            let start = self.line_starts.get(first_line).copied().unwrap_or(0);
-            let end = self
-                .line_starts
-                .get(last_line + 1)
-                .copied()
-                .unwrap_or(len)
-                .min(len);
-            if end > start {
-                let _ = m.advise_range(Advice::WillNeed, start, end - start);
-            }
-        }
-    }
+    pub fn advise_viewport(&self, _first_line: usize, _last_line: usize) {}
 
     /// Iterate over `(line_index, line_bytes)` pairs.
     pub fn iter(&self) -> impl Iterator<Item = (usize, &[u8])> {
@@ -718,14 +939,13 @@ impl FileReader {
             return;
         }
 
-        // Convert mmap to owned bytes before extending.
         let old_storage = std::mem::replace(
             &mut self.storage,
             Storage::Bytes(std::sync::Arc::new(Vec::new())),
         );
         let mut data: Vec<u8> = match old_storage {
             Storage::Bytes(v) => std::sync::Arc::try_unwrap(v).unwrap_or_else(|arc| (*arc).clone()),
-            Storage::Mmap(m) => m.to_vec(),
+            Storage::File { data, .. } => std::sync::Arc::try_unwrap(data).unwrap_or_else(|arc| (*arc).clone()),
         };
         let offset = data.len();
         data.extend_from_slice(effective_data);
@@ -990,17 +1210,17 @@ impl FileReader {
         Ok((rx, temp_file))
     }
 
-    /// Spawn a background task that polls `path` for new bytes every 500 ms.
+    /// Spawn a background task that polls `path` for new bytes every 50 ms.
     ///
     /// `initial_offset` must be the **original** (unstripped) file size in
     /// bytes at the time the file was first loaded (from
     /// `std::fs::metadata(path)?.len()`).
     ///
-    /// Returns a `watch::Receiver<()>` that fires when the file grows.
-    /// The caller should mmap the original `path` directly to read new content,
-    /// using `FileReader::try_extend_from_mmap`.  For ANSI-containing files
-    /// (where `try_extend_from_mmap` returns `false`), `FileReader::new` will
-    /// re-load and strip the whole file.
+    /// Returns a `watch::Receiver<()>` that fires when the file grows, is
+    /// truncated, or is replaced (inode change on Unix).
+    /// The caller should call `FileReader::try_extend_from_read` to apply the
+    /// update.  For ANSI-containing files (where `try_extend_from_read` returns
+    /// `false`), `FileReader::new` will re-load and strip the whole file.
     ///
     /// When the background task stops (receiver dropped), the sender is dropped.
     pub async fn spawn_file_watcher(path: String, initial_offset: u64) -> watch::Receiver<()> {
@@ -1010,7 +1230,15 @@ impl FileReader {
             use tokio::time::MissedTickBehavior;
 
             let mut last_offset = initial_offset;
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+
+            // Capture initial file identity for rotation-by-rename detection.
+            #[cfg(unix)]
+            let mut last_identity: Option<(u64, u64)> = {
+                use std::os::unix::fs::MetadataExt;
+                std::fs::metadata(&path).ok().map(|m| (m.ino(), m.dev()))
+            };
+
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             interval.tick().await; // skip initial immediate tick
 
@@ -1018,13 +1246,39 @@ impl FileReader {
                 interval.tick().await;
 
                 let path_clone = path.clone();
-                let result = tokio::task::spawn_blocking(move || -> io::Result<u64> {
-                    let current_size = std::fs::metadata(&path_clone)?.len();
-                    Ok(current_size)
-                })
-                .await;
+                let result =
+                    tokio::task::spawn_blocking(move || -> io::Result<(u64, u64, u64)> {
+                        let meta = std::fs::metadata(&path_clone)?;
+                        let size = meta.len();
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::MetadataExt;
+                            Ok((size, meta.ino(), meta.dev()))
+                        }
+                        #[cfg(not(unix))]
+                        Ok((size, 0, 0))
+                    })
+                    .await;
 
-                if let Ok(Ok(current_size)) = result {
+                if let Ok(Ok((current_size, ino, dev))) = result {
+                    // Detect rotation-by-rename: inode changed under the path.
+                    #[cfg(unix)]
+                    {
+                        let identity = (ino, dev);
+                        if let Some(last) = last_identity {
+                            if identity != last {
+                                last_identity = Some(identity);
+                                last_offset = current_size;
+                                if tx.send(()).is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
+                        } else {
+                            last_identity = Some(identity);
+                        }
+                    }
+
                     if current_size < last_offset {
                         // File was truncated (e.g. log rotation) — reset offset.
                         last_offset = current_size;
@@ -1854,6 +2108,67 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // try_extend_from_read
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_try_extend_from_read_bytes_returns_false() {
+        let mut reader = make(b"line1\nline2\n");
+        assert!(!reader.try_extend_from_read().unwrap());
+    }
+
+    #[test]
+    fn test_try_extend_from_read_appends_new_lines() {
+        use std::io::Write;
+
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "line1\nline2\n").unwrap();
+        f.flush().unwrap();
+
+        let mut reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(reader.line_count(), 2);
+
+        write!(f, "line3\nline4\n").unwrap();
+        f.flush().unwrap();
+
+        assert!(reader.try_extend_from_read().unwrap());
+        assert_eq!(reader.line_count(), 4);
+        assert_eq!(reader.get_line(2), b"line3");
+        assert_eq!(reader.get_line(3), b"line4");
+    }
+
+    #[test]
+    fn test_try_extend_from_read_unchanged_returns_true() {
+        use std::io::Write;
+
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "line1\n").unwrap();
+        f.flush().unwrap();
+
+        let mut reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
+        // No new data — should return true (no-op success).
+        assert!(reader.try_extend_from_read().unwrap());
+        assert_eq!(reader.line_count(), 1);
+    }
+
+    #[test]
+    fn test_try_extend_from_read_truncation_returns_false() {
+        use std::io::Write;
+
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "line1\nline2\nline3\n").unwrap();
+        f.flush().unwrap();
+
+        let mut reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(reader.line_count(), 3);
+
+        // Truncate the file — try_extend_from_read must signal a full reload.
+        f.as_file().set_len(0).unwrap();
+
+        assert!(!reader.try_extend_from_read().unwrap());
+    }
+
+    // -----------------------------------------------------------------------
     // Async: spawn_file_watcher
     // -----------------------------------------------------------------------
 
@@ -1875,8 +2190,8 @@ mod tests {
         write!(f, "appended\n").unwrap();
         f.flush().unwrap();
 
-        // Wait for the watcher to detect the change (polls every 500ms)
-        sleep(Duration::from_millis(1500)).await;
+        // Wait for the watcher to detect the change (polls every 50ms)
+        sleep(Duration::from_millis(200)).await;
 
         assert!(
             rx.has_changed().unwrap(),
@@ -2246,7 +2561,7 @@ mod tests {
 
     #[test]
     fn test_append_bytes_on_file_backed_reader() {
-        // FileReader::new uses Mmap storage. Appending should convert to Vec.
+        // FileReader::new uses File storage. Appending should convert to Bytes.
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(b"mmap line\n").unwrap();
         f.flush().unwrap();
@@ -2283,14 +2598,14 @@ mod tests {
         // Step 1: truncate to 0 bytes — the watcher detects this and resets
         // its internal offset to 0.
         f.as_file().set_len(0).unwrap();
-        sleep(Duration::from_millis(1500)).await;
+        sleep(Duration::from_millis(200)).await;
 
         // Step 2: write new data — now the file grows past the reset offset
         // and the watcher picks up the new content.
         f.seek(SeekFrom::Start(0)).unwrap();
         write!(f, "after truncation\n").unwrap();
         f.flush().unwrap();
-        sleep(Duration::from_millis(1500)).await;
+        sleep(Duration::from_millis(200)).await;
 
         assert!(
             rx.has_changed().unwrap(),

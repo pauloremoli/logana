@@ -25,6 +25,7 @@ All notable changes to logana will be documented in this file.
 - Field names unified, now it's always the same name regardless of source format.
 
 ### Fixed
+- Eliminated a SIGBUS risk in the file-watching path: incremental log-tail updates now use `pread` instead of remapping the file with `mmap`, so a concurrent log rotation (truncation or rename) can no longer cause a bus error. The file watcher also detects rotation-by-rename via inode/device checks (Unix) and fires a notification immediately, reducing the detection interval from 500 ms to 50 ms.
 - OTLP parser now correctly sets the process color for `service.name` when it arrives as a top-level field (as produced by the OTLP HTTP receiver).
 - `traceId`, `spanId`, and `telemetry.sdk.*` fields are now hidden by default in the OTLP parser; they can be shown via `:fields`.
 - OTLP receiver now supports protobuf-encoded payloads (`application/x-protobuf`), the default format for most OTel SDKs. Previously protobuf requests were rejected with 415.

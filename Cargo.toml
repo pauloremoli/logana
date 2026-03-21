@@ -19,6 +19,7 @@ eula = false
 
 [dependencies]
 anyhow            = { version = "1.0",    default-features = false, features = ["std"] }
+libc              = { version = "0.2",    default-features = false }
 clap              = { version = "4.5",    default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 regex             = { version = "1.10",   default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
 ratatui           = { version = "0.30",   default-features = false, features = ["crossterm"] }
@@ -34,7 +35,6 @@ rmcp              = { version = "1.2",    default-features = false, features = [
 axum              = { version = "0.8",    default-features = false, features = ["http1", "tokio", "tower-log"] }
 async-trait       = "0.1"
 dirs              = "6.0.0"
-memmap2           = "0.9"
 memchr            = { version = "2",      default-features = false, features = ["std"] }
 aho-corasick      = { version = "1",      default-features = false, features = ["std", "perf-literal"] }
 rayon             = "1"
