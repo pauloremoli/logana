@@ -90,22 +90,11 @@ impl FileReader {
         #[cfg(unix)]
         let data: Vec<u8> = {
             use std::os::unix::fs::FileExt;
-            let mut v = Vec::with_capacity(size);
-            // SAFETY: `set_len` exposes `size` uninitialized bytes.  This is
-            // sound because every byte is written by the `read_at` loop below
-            // before any part of `v` is read:
-            //   • `par_chunks_mut` gives each rayon worker a non-overlapping,
-            //     non-aliased slice — no two workers touch the same memory.
-            //   • The `try_for_each` propagates the first I/O error; on error
-            //     we return `Err` and `v` is dropped, so the uninitialized
-            //     region is never observed by safe code.
-            //   • `size` equals `file.metadata().len()`, so the backing
-            //     allocation is exactly large enough.
-            unsafe { v.set_len(size) };
+            let mut v = vec![0u8; size];
             // SAFETY: `v.as_mut_ptr()` is a valid, writable mapping of exactly
-            // `size` bytes (just set above).  `madvise(MADV_POPULATE_WRITE)`
+            // `size` bytes.  `madvise(MADV_POPULATE_WRITE)`
             // only touches the kernel's page tables — it does not read or write
-            // user memory — so calling it on uninitialized bytes is safe.
+            // user memory — so calling it on initialized bytes is safe.
             // On kernels < 5.14 it returns EINVAL; we ignore the return value
             // intentionally (demand-paging fallback).
             #[cfg(target_os = "linux")]
@@ -554,25 +543,13 @@ impl FileReader {
         // same parallel pass.  On non-Unix we fall back to sequential read_to_end.
         #[cfg(unix)]
         let mut file_data: Vec<u8> = {
-            let mut v = Vec::with_capacity(size);
-            // SAFETY: `set_len` exposes `size` uninitialized bytes.  This is
-            // sound because every byte is written by the `read_at` loop in the
-            // par_chunks_mut call below before any part of `v` is read:
-            //   • `par_chunks_mut` gives each rayon worker a non-overlapping,
-            //     non-aliased slice — no two workers touch the same memory.
-            //   • On any I/O error `try_for_each` returns Err immediately and
-            //     `index_chunked` propagates it; `v` is dropped, so the
-            //     uninitialized region is never observed by safe code.
-            //   • `size` equals `total_bytes` from `metadata().len()` (caller),
-            //     so the backing allocation is exactly large enough.
-            unsafe { v.set_len(size) };
+            let mut v = vec![0u8; size];
             // SAFETY: `v.as_mut_ptr()` is a valid, writable mapping of exactly
-            // `size` bytes (just set above).  `madvise(MADV_POPULATE_WRITE)`
+            // `size` bytes.  `madvise(MADV_POPULATE_WRITE)`
             // only touches the kernel's page tables — it does not read or write
-            // user memory — so calling it on uninitialized bytes is safe.
-            // Pre-faulting all anonymous pages before the parallel pread
-            // eliminates the per-page page-fault stall inside rep_movs_alternative,
-            // letting the memcpy run at full memory bandwidth.
+            // user memory — so calling it on initialized bytes is safe.
+            // Pre-faulting all pages before the parallel pread eliminates
+            // per-page page-fault stalls, letting memcpy run at full bandwidth.
             // On kernels < 5.14 it returns EINVAL; we ignore the return value
             // intentionally (demand-paging fallback).
             #[cfg(target_os = "linux")]

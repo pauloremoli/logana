@@ -14,6 +14,9 @@ All notable changes to logana will be documented in this file.
 
 ### Changed
 - `CommonLogParser`, `JournalctlParser`, and `SyslogParser` now use majority voting over the first 50 successfully parsed lines to select the format.
+- Format detection now uses exclusivity-weighted scoring: lines matched by multiple parsers contribute proportionally less weight (1/N where N is the number of matching parsers), so format-exclusive lines drive selection. Syslog files containing priority-prefixed lines (`<PRI>...`) are now correctly detected as syslog even when most lines are ambiguous plain BSD-timestamp format.
+- `SyslogParser` now recognises rsyslog's default file format (`RSYSLOG_FileFormat`): ISO 8601 timestamp with no `<PRI>` prefix. Files like `/var/log/syslog` written by modern rsyslog are now correctly detected as syslog instead of journalctl.
+- Plain BSD-timestamp lines (`Oct 11 22:14:15 hostname tag: msg`) now resolve to syslog over journalctl, as both formats use this timestamp style but it is more common in syslog output.
 - `TabState` filtering loops now use `parse_timestamp` instead of `parse_line` when only `@date:` filters are active.
 - `TabState` decomposed into focused sub-structs (`ScrollState`, `FilterState`, `SearchState`, `CacheState`, `StreamState`, `DisplayConfig`, `InteractionState`) in `src/ui/tab_state/`.
 - All popup UI surfaces extracted into ratatui `Widget` types in `src/ui/widgets/` (`ConfirmRestoreModal`, `ConfirmRestoreSessionModal`, `ConfirmOpenDirModal`, `CommentPopup`, `SelectFieldsPopup`, `DockerSelectPopup`, `DltSelectPopup`, `ValueColorsPopup`, `KeybindingsHelpPopup`).

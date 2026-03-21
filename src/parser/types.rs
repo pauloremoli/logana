@@ -112,6 +112,25 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
 
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String>;
 
+    /// Returns whether this parser considers `line` a match for format-detection
+    /// purposes.  This may be stricter than `parse_line` — for example, JSON
+    /// schema parsers only return `true` when the line contains their required
+    /// schema keys, even though `parse_line` can render any valid JSON.
+    ///
+    /// Used by `detect_format` to build the cross-parser exclusivity matrix.
+    /// Defaults to `parse_line(line).is_some()`.
+    fn matches_for_detection(&self, line: &[u8]) -> bool {
+        self.parse_line(line).is_some()
+    }
+
+    /// Format-specific multiplier applied to the exclusivity-weighted score in
+    /// `detect_format`.  Parsers that need to beat equally-matched alternatives
+    /// (e.g. OTLP vs generic JSON) return a value > 1.0; overly-broad parsers
+    /// return < 1.0.  Defaults to 1.0.
+    fn detection_weight(&self) -> f64 {
+        1.0
+    }
+
     fn detect_score(&self, sample: &[&[u8]]) -> f64 {
         // Empty lines are structural delimiters (e.g. SSE separators), not
         // log records. Exclude them from both numerator and denominator so they

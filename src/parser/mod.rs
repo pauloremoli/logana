@@ -76,15 +76,58 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
         Box::new(CommonLogParser::default()),
     ];
 
-    parsers
-        .into_iter()
-        .map(|p| {
-            let score = p.detect_score(sample);
-            (p, score)
+    let non_empty: Vec<&[u8]> = sample.iter().copied().filter(|l| !l.is_empty()).collect();
+    if non_empty.is_empty() {
+        return None;
+    }
+    let n = non_empty.len();
+    let p = parsers.len();
+
+    // matches[pi][li]: line li is a detection match for parser pi.
+    // Uses matches_for_detection, which may be stricter than parse_line — e.g.
+    // JSON schema parsers only count a line when it contains their required keys.
+    let matches: Vec<Vec<bool>> = parsers
+        .iter()
+        .map(|parser| {
+            non_empty
+                .iter()
+                .map(|l| parser.matches_for_detection(l))
+                .collect()
         })
-        .filter(|(_, s)| *s > 0.0)
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(p, _)| p)
+        .collect();
+
+    // line_weight[li]: contribution of line li to any matching parser.
+    //   1.0 → exclusively matched by one parser  (decisive signal)
+    //   1/N → matched by N parsers               (ambiguous, lower weight)
+    let line_weight: Vec<f64> = (0..n)
+        .map(|li| {
+            let hits = (0..p).filter(|&pi| matches[pi][li]).count();
+            if hits == 0 { 0.0 } else { 1.0 / hits as f64 }
+        })
+        .collect();
+
+    // Score each parser: exclusivity-weighted match ratio × format-specific multiplier.
+    // Use >= so that, on a tie, the last parser in the list wins — same behaviour as
+    // the previous max_by, preserving existing tests.
+    let mut best_pi: Option<usize> = None;
+    let mut best_score = 0.0f64;
+    for pi in 0..p {
+        let score: f64 = (0..n)
+            .filter(|&li| matches[pi][li])
+            .map(|li| line_weight[li])
+            .sum::<f64>()
+            / n as f64
+            * parsers[pi].detection_weight();
+        if score >= best_score && score > 0.0 {
+            best_score = score;
+            best_pi = Some(pi);
+        }
+    }
+
+    best_pi.map(|i| {
+        let mut parsers = parsers;
+        parsers.remove(i)
+    })
 }
 
 #[cfg(test)]
@@ -151,7 +194,8 @@ mod tests {
             b"2024-02-22T10:15:31+0000 myhost sshd[1234]: Session opened",
         ];
         let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "journalctl");
+        // ISO-timestamp hostname tag: message is also rsyslog format → syslog wins
+        assert_eq!(parser.name(), "syslog");
     }
 
     #[test]
@@ -201,7 +245,8 @@ mod tests {
             b"2026-02-22T00:07:24.887273+01:00 my-pc systemd[1]: Starting sysstat-summary.service",
         ];
         let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "journalctl");
+        // rsyslog ISO format — syslog wins over journalctl
+        assert_eq!(parser.name(), "syslog");
     }
 
     #[test]
@@ -348,6 +393,8 @@ mod tests {
 
     #[test]
     fn test_detect_format_journalctl_short() {
+        // Plain BSD lines without priority — syslog does not claim these for
+        // detection (shared with journalctl short format), so journalctl wins.
         let lines: Vec<&[u8]> = vec![
             b"Jul 12 22:23:01 myhost sshd[1234]: Accepted password",
             b"Jul 12 22:23:02 myhost sshd[1234]: Session opened",
@@ -397,10 +444,27 @@ mod tests {
         assert_eq!(parser.name(), "json");
     }
 
+    #[test]
+    fn test_detect_format_syslog_wins_when_priority_lines_present() {
+        // Priority-prefixed lines are exclusively syslog; plain BSD lines are
+        // ambiguous (both syslog and journalctl parse them).  Exclusivity
+        // weighting should tip the balance toward syslog.
+        let lines: Vec<&[u8]> = vec![
+            b"<134>Oct 11 22:14:15 myhost sshd[1234]: Accepted password",
+            b"Oct 11 22:14:16 myhost sshd[1234]: Session opened", // ambiguous
+            b"<30>Oct 11 22:14:17 myhost systemd[1]: Started cron",
+        ];
+        let parser = detect_format(&lines).unwrap();
+        assert_eq!(parser.name(), "syslog");
+    }
+
     // ── Priority: specific parsers beat common-log ────────────────────
 
     #[test]
-    fn test_detect_format_selects_journalctl_over_syslog() {
+    fn test_detect_format_journalctl_wins_plain_bsd_without_priority() {
+        // Plain BSD lines without a priority prefix are shared with journalctl
+        // short format; syslog deliberately does not claim them for detection,
+        // so journalctl wins (e.g. `journalctl --output short | logana`).
         let lines: Vec<&[u8]> = vec![
             b"Mar 15 10:00:00 myhost sshd[1234]: Accepted password",
             b"Mar 15 10:00:01 myhost sshd[1234]: Session opened",
@@ -410,12 +474,13 @@ mod tests {
     }
 
     #[test]
-    fn test_journalctl_beats_common_log() {
+    fn test_syslog_beats_common_log_on_iso_format() {
+        // rsyslog ISO format — syslog wins over both journalctl and common-log
         let lines: Vec<&[u8]> = vec![
             b"2024-02-22T10:15:30+0000 myhost sshd[1234]: msg1",
             b"2024-02-22T10:15:31+0000 myhost sshd[1234]: msg2",
         ];
         let parser = detect_format(&lines).unwrap();
-        assert_eq!(parser.name(), "journalctl");
+        assert_eq!(parser.name(), "syslog");
     }
 }

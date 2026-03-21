@@ -188,6 +188,10 @@ impl LogFormatParser for DltParser {
         parsed as f64 / sample.len() as f64 * 1.2
     }
 
+    fn detection_weight(&self) -> f64 {
+        1.2
+    }
+
     fn name(&self) -> &str {
         "dlt"
     }

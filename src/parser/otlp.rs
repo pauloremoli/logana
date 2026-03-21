@@ -304,6 +304,16 @@ impl LogFormatParser for OtlpParser {
         otlp_count as f64 / sample.len() as f64 * 1.5
     }
 
+    fn matches_for_detection(&self, line: &[u8]) -> bool {
+        parse_json_line(line)
+            .map(|f| is_otlp_record(&f))
+            .unwrap_or(false)
+    }
+
+    fn detection_weight(&self) -> f64 {
+        1.5
+    }
+
     fn default_hidden_fields(&self, _sample: &[&[u8]]) -> HashSet<String> {
         [
             "traceId",

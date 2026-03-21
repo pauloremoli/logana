@@ -266,6 +266,14 @@ impl LogFormatParser for JournalctlParser {
         result
     }
 
+    /// Slight penalty relative to SyslogParser (1.0) so that lines shared
+    /// between the two formats (ISO timestamp, plain BSD) resolve to syslog.
+    /// Journalctl-exclusive formats (full, monotonic, unix, precise BSD) still
+    /// win because only this parser matches them.
+    fn detection_weight(&self) -> f64 {
+        0.99
+    }
+
     fn name(&self) -> &str {
         "journalctl"
     }

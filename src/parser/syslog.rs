@@ -1,4 +1,4 @@
-//! Syslog parser supporting RFC 3164 (BSD) and RFC 5424.
+//! Syslog parser supporting RFC 3164 (BSD), RFC 5424, and rsyslog ISO format.
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -10,6 +10,9 @@ use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_extra_fiel
 enum SyslogFormat {
     Rfc3164,
     Rfc5424,
+    /// rsyslog RSYSLOG_FileFormat: `ISO-timestamp hostname tag[pid]: message`
+    /// (ISO 8601 timestamp with no `<PRI>` prefix).
+    RsyslogIso,
 }
 
 impl SyslogFormat {
@@ -20,7 +23,8 @@ impl SyslogFormat {
     fn from_index(i: usize) -> Self {
         match i {
             0 => Self::Rfc3164,
-            _ => Self::Rfc5424,
+            1 => Self::Rfc5424,
+            _ => Self::RsyslogIso,
         }
     }
 }
@@ -30,7 +34,7 @@ const MIN_SAMPLES: u32 = 50;
 #[derive(Debug, Default)]
 pub struct SyslogParser {
     format: OnceLock<SyslogFormat>,
-    fmt_counts: [AtomicU32; 2],
+    fmt_counts: [AtomicU32; 3],
     fmt_total: AtomicU32,
 }
 
@@ -300,13 +304,20 @@ fn extract_unit_pid<'a>(tag: &'a str, parts: &mut DisplayParts<'a>) {
 fn parse_rfc3164_inner<'a>(s: &'a str, priority: Option<u8>) -> Option<DisplayParts<'a>> {
     let (timestamp, ts_end) = parse_bsd_timestamp(s)?;
 
+    // Reject precise BSD timestamps (`Feb 22 10:15:30.123456 …`) — the fractional
+    // second suffix belongs to the journalctl `short-precise` format, not RFC 3164.
+    let after_ts = &s[ts_end..];
+    if !after_ts.is_empty() && !after_ts.starts_with(' ') {
+        return None;
+    }
+
     let mut parts = DisplayParts {
         timestamp: Some(timestamp),
         level: priority.map(|p| severity_to_level(p & 0x07)),
         ..Default::default()
     };
 
-    let rest = s[ts_end..].strip_prefix(' ').unwrap_or(&s[ts_end..]);
+    let rest = after_ts.strip_prefix(' ').unwrap_or(after_ts);
     if rest.is_empty() {
         return Some(parts);
     }
@@ -334,6 +345,81 @@ fn parse_rfc3164_inner<'a>(s: &'a str, priority: Option<u8>) -> Option<DisplayPa
     Some(parts)
 }
 
+fn is_level_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "TRACE"
+            | "DEBUG"
+            | "INFO"
+            | "NOTICE"
+            | "WARN"
+            | "WARNING"
+            | "ERROR"
+            | "CRITICAL"
+            | "FATAL"
+            | "PANIC"
+            | "EMERG"
+            | "ALERT"
+            | "CRIT"
+            | "ERR"
+    )
+}
+
+/// Returns false for tokens that look like log-level keywords, Rust module paths,
+/// or short all-uppercase identifiers — these indicate common-log format, not a
+/// syslog hostname following an ISO timestamp.
+fn is_valid_syslog_hostname(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    if is_level_keyword(token) {
+        return false;
+    }
+    if token.contains("::") {
+        return false;
+    }
+    // Reject short all-caps tokens (e.g. "APP", "API", "MYAPP") that are likely
+    // application names or log targets, not hostnames.
+    if token.len() <= 8
+        && token
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    {
+        return false;
+    }
+    true
+}
+
+/// Parse rsyslog RSYSLOG_FileFormat: `ISO-timestamp hostname tag[pid]: message`.
+/// This is the default rsyslog file output format — no `<PRI>` prefix, ISO 8601
+/// timestamp with optional subseconds and timezone offset.
+fn parse_rsyslog_iso_inner<'a>(s: &'a str) -> Option<DisplayParts<'a>> {
+    let (timestamp, ts_end) = super::timestamp::parse_iso_timestamp(s)?;
+    let rest = s[ts_end..].strip_prefix(' ')?;
+
+    let mut parts = DisplayParts {
+        timestamp: Some(timestamp),
+        ..Default::default()
+    };
+
+    if rest.is_empty() {
+        return Some(parts);
+    }
+
+    let (hostname, rest) = next_token(rest)?;
+    if !is_valid_syslog_hostname(hostname) {
+        return None;
+    }
+    push_field_as(&mut parts.extra_fields, FieldSemantic::Hostname, hostname);
+
+    if rest.is_empty() {
+        return Some(parts);
+    }
+
+    extract_tag_and_message(rest, &mut parts);
+    Some(parts)
+}
+
 fn next_token(s: &str) -> Option<(&str, &str)> {
     if s.is_empty() {
         return None;
@@ -351,8 +437,12 @@ fn detect_syslog_timestamp<'a>(s: &'a str, line: &'a [u8]) -> Option<(SyslogForm
     } else {
         s
     };
-    if let Some((ts, _)) = parse_bsd_timestamp(body) {
-        return Some((SyslogFormat::Rfc3164, ts));
+    if let Some((ts, ts_end)) = parse_bsd_timestamp(body) {
+        // Only accept if followed by space (not a precise BSD timestamp).
+        let after = &body[ts_end..];
+        if after.is_empty() || after.starts_with(' ') {
+            return Some((SyslogFormat::Rfc3164, ts));
+        }
     }
     if body
         .as_bytes()
@@ -360,11 +450,16 @@ fn detect_syslog_timestamp<'a>(s: &'a str, line: &'a [u8]) -> Option<(SyslogForm
         .map(|b| b.is_ascii_digit())
         .unwrap_or(false)
     {
-        let ver_end = body.find(' ')?;
-        let rest = &body[ver_end + 1..];
-        let (ts, _) = next_token(rest)?;
-        if ts != "-" {
-            return Some((SyslogFormat::Rfc5424, ts));
+        // Could be RFC 5424 (`<PRI>VER ISO-timestamp …`) or rsyslog ISO (no PRI).
+        if s.starts_with('<') {
+            let ver_end = body.find(' ')?;
+            let rest = &body[ver_end + 1..];
+            let (ts, _) = next_token(rest)?;
+            if ts != "-" {
+                return Some((SyslogFormat::Rfc5424, ts));
+            }
+        } else if let Some((ts, _)) = super::timestamp::parse_iso_timestamp(body) {
+            return Some((SyslogFormat::RsyslogIso, ts));
         }
     }
     None
@@ -377,7 +472,13 @@ fn extract_syslog_timestamp_rfc3164<'a>(s: &'a str, line: &'a [u8]) -> Option<&'
     } else {
         s
     };
-    parse_bsd_timestamp(body).map(|(ts, _)| ts)
+    let (ts, ts_end) = parse_bsd_timestamp(body)?;
+    let after = &body[ts_end..];
+    if after.is_empty() || after.starts_with(' ') {
+        Some(ts)
+    } else {
+        None
+    }
 }
 
 fn extract_syslog_timestamp_rfc5424<'a>(s: &'a str, line: &'a [u8]) -> Option<&'a str> {
@@ -389,12 +490,16 @@ fn extract_syslog_timestamp_rfc5424<'a>(s: &'a str, line: &'a [u8]) -> Option<&'
     if ts != "-" { Some(ts) } else { None }
 }
 
+fn extract_syslog_timestamp_rsyslog_iso(s: &str) -> Option<&str> {
+    super::timestamp::parse_iso_timestamp(s).map(|(ts, _)| ts)
+}
+
 impl SyslogParser {
     fn record_format(&self, fmt: SyslogFormat) {
         self.fmt_counts[fmt.index()].fetch_add(1, Ordering::Relaxed);
         let total = self.fmt_total.fetch_add(1, Ordering::Relaxed) + 1;
         if total >= MIN_SAMPLES && self.format.get().is_none() {
-            let winner = (0..2)
+            let winner = (0..3)
                 .max_by_key(|&i| self.fmt_counts[i].load(Ordering::Relaxed))
                 .unwrap_or(0);
             let _ = self.format.set(SyslogFormat::from_index(winner));
@@ -412,6 +517,7 @@ impl LogFormatParser for SyslogParser {
             return match fmt {
                 SyslogFormat::Rfc3164 => extract_syslog_timestamp_rfc3164(s, line),
                 SyslogFormat::Rfc5424 => extract_syslog_timestamp_rfc5424(s, line),
+                SyslogFormat::RsyslogIso => extract_syslog_timestamp_rsyslog_iso(s),
             };
         }
         let (fmt, ts) = detect_syslog_timestamp(s, line)?;
@@ -438,6 +544,7 @@ impl LogFormatParser for SyslogParser {
                         parse_rfc3164_inner(s, None)
                     }
                 }
+                SyslogFormat::RsyslogIso => parse_rsyslog_iso_inner(s),
             };
             if result.is_some() {
                 return result;
@@ -456,9 +563,17 @@ impl LogFormatParser for SyslogParser {
             }
         }
 
-        let parts = parse_rfc3164_inner(s, None)?;
-        self.record_format(SyslogFormat::Rfc3164);
-        Some(parts)
+        if let Some(parts) = parse_rfc3164_inner(s, None) {
+            self.record_format(SyslogFormat::Rfc3164);
+            return Some(parts);
+        }
+
+        if let Some(parts) = parse_rsyslog_iso_inner(s) {
+            self.record_format(SyslogFormat::RsyslogIso);
+            return Some(parts);
+        }
+
+        None
     }
 
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String> {
@@ -487,6 +602,30 @@ impl LogFormatParser for SyslogParser {
         result.extend(extras);
         result.push("message".to_string());
         result
+    }
+
+    /// Only claim lines that carry a format-specific syslog signal:
+    ///   • priority prefix (`<PRI>…`) — exclusively RFC 3164 / RFC 5424
+    ///   • ISO timestamp (`YYYY-MM-DDTHH:MM:SS…`) — rsyslog RSYSLOG_FileFormat
+    ///
+    /// Plain BSD lines without a priority prefix (`Oct 11 22:14:15 host tag: msg`)
+    /// are shared with journalctl `--output short` and are intentionally **not**
+    /// claimed here so that piped `journalctl` output is still detected as
+    /// journalctl.  Those lines can still be *parsed* by `parse_line` once the
+    /// format is locked by other lines in the sample.
+    fn matches_for_detection(&self, line: &[u8]) -> bool {
+        if line.is_empty() {
+            return false;
+        }
+        // Priority-prefixed lines are exclusively syslog.
+        if line[0] == b'<' {
+            return parse_priority(line).is_some();
+        }
+        // rsyslog ISO format — ISO timestamp + valid hostname.
+        if let Ok(s) = std::str::from_utf8(line) {
+            return parse_rsyslog_iso_inner(s).is_some();
+        }
+        false
     }
 
     fn name(&self) -> &str {

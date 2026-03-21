@@ -743,6 +743,10 @@ impl LogFormatParser for CommonLogParser {
         (parsed as f64 / sample.len() as f64) * 0.95
     }
 
+    fn detection_weight(&self) -> f64 {
+        0.95
+    }
+
     fn name(&self) -> &str {
         "common-log"
     }

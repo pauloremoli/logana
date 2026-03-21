@@ -377,6 +377,20 @@ impl LogFormatParser for JsonParser {
         (matched as f64 / non_empty.len() as f64) * self.score_weight
     }
 
+    fn matches_for_detection(&self, line: &[u8]) -> bool {
+        let l = strip_json_prefixes(line);
+        if let Some(fields) = parse_json_line(l) {
+            let field_keys: Vec<&str> = fields.iter().map(|f| f.key).collect();
+            self.schema.matches_detect_keys(&field_keys)
+        } else {
+            false
+        }
+    }
+
+    fn detection_weight(&self) -> f64 {
+        self.score_weight
+    }
+
     fn name(&self) -> &str {
         self.schema.name
     }
