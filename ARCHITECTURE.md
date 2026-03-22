@@ -1,12 +1,12 @@
 # logana Architecture
 
-Terminal-based log analysis tool built in Rust with a Ratatui TUI. Logs are read via memory-mapped files; filters and UI context are persisted in SQLite.
+Terminal-based log analysis tool built in Rust with a Ratatui TUI. Filters and UI context are persisted in SQLite.
 
 ## High-Level Design
 
 logana is structured around a strict separation between domain logic and the UI layer. The application is divided into five broad concerns:
 
-**File I/O & Ingestion** — `FileReader` memory-maps regular files and exposes O(1) random line access via a pre-built offset index.
+**File I/O & Ingestion** — `FileReader` reads regular files and exposes O(1) random line access via a pre-built offset index.
 - Stdin is handled separately by a background thread that accumulates bytes and publishes snapshots.
 - Streaming sources (DLT TCP, Docker logs, file tailing, OTLP HTTP) deliver chunks through a watch channel that the event loop appends each frame.
 - Binary data formats like DLT are converted to newline-delimited text before entering the line-based pipeline.
@@ -134,7 +134,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    File[(Log file)] -->|mmap| FR[FileReader]
+    File[(Log file)] --> FR[FileReader]
     FR -->|build line index| Lines[Line offsets]
     FR -->|sample lines| Detect{Format detection}
     Detect -->|select| Parser[LogFormatParser]
@@ -189,7 +189,6 @@ flowchart TD
 | **ratatui** | TUI rendering | Immediate-mode terminal UI; widgets are stateless values composed each frame, which eliminates a whole class of stale-state bugs |
 | **crossterm** | Terminal I/O, key events | Cross-platform raw mode and keyboard input, including kitty keyboard protocol for disambiguating modifier keys |
 | **tokio** | Async runtime | Drives the event loop and background tasks (file loading, filter computation, stdin streaming) without blocking the render thread |
-| **memmap2** | Memory-mapped file I/O | Zero-copy random access to arbitrary byte ranges; `get_line` is O(1) with no heap allocation per call |
 | **memchr** | SIMD byte scanning | Accelerates the line-indexing pass; scanning for `\n`, `\r`, and ESC in a single pass is faster than calling `memchr` three times separately |
 | **aho-corasick** | Literal substring matching | Optimal for the common case of plain-text filter patterns; builds a finite automaton once and matches in O(input) regardless of pattern count |
 | **regex** | Regex matching | Used only when a pattern contains metacharacters; compiled once and cached |

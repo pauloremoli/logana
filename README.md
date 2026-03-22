@@ -8,7 +8,7 @@
   <a href="https://github.com/pauloremoli/logana/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/logana.svg?style=flat-square" /></a>
 </p>
 
-A fast terminal log viewer for files of any size — including multi-GB logs. Built on memory-mapped I/O and SIMD line indexing. Auto-detects log formats, filters by pattern, regex, field value, or date range — bookmark lines, add annotations, and export your analysis.
+A fast terminal log viewer for files of any size — including multi-GB logs. Built on SIMD-accelerated line indexing, search, and filtering. Auto-detects log formats, filters by pattern, regex, field value, or date range — bookmark lines, add annotations, and export your analysis.
 
 <p align="center">
   <img src="docs/src/demo.gif" alt="logana demo" />
