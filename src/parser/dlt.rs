@@ -195,6 +195,10 @@ impl LogFormatParser for DltParser {
     fn name(&self) -> &str {
         "dlt"
     }
+
+    fn has_synthetic_level(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

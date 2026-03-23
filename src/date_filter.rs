@@ -792,7 +792,7 @@ impl DateFilter {
     pub fn matches(&self, timestamp: &str) -> bool {
         let norm = match normalize_log_timestamp(timestamp) {
             Some(n) => n,
-            None => return true, // unparseable → pass through
+            None => return true,
         };
         match self {
             DateFilter::Range { mode, lower, upper } => match mode {

@@ -156,6 +156,15 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
     fn default_hidden_fields(&self, _sample: &[&[u8]]) -> HashSet<String> {
         HashSet::new()
     }
+
+    /// Returns `true` when the parsed `level` field is derived from data that
+    /// does not appear verbatim in the raw line bytes (e.g. a numeric syslog
+    /// priority code).  When `true`, the filter pipeline also runs text filters
+    /// against the normalized level string so that a filter like "INFO" matches
+    /// syslog lines whose raw bytes only contain `<134>`.
+    fn has_synthetic_level(&self) -> bool {
+        false
+    }
 }
 
 pub fn format_span_col(s: &SpanInfo<'_>, show_keys: bool) -> String {

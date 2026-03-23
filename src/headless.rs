@@ -271,9 +271,13 @@ pub fn run_headless_to_writer(
     let filter_defs = log_manager.get_filters();
     let date_filters = extract_date_filters(filter_defs);
     let (inc_ff, exc_ff) = extract_field_filters(filter_defs);
-    let needs_parse = !date_filters.is_empty() || !inc_ff.is_empty() || !exc_ff.is_empty();
-    let date_only = !date_filters.is_empty() && inc_ff.is_empty() && exc_ff.is_empty();
     let has_text_includes = fm.has_include();
+    let synthetic_level =
+        parser_ref.map_or(false, |p| p.has_synthetic_level()) && fm.filter_count() > 0;
+    let needs_parse =
+        !date_filters.is_empty() || !inc_ff.is_empty() || !exc_ff.is_empty() || synthetic_level;
+    let date_only =
+        !date_filters.is_empty() && inc_ff.is_empty() && exc_ff.is_empty() && !synthetic_level;
     let n_date = date_filters.len();
     let line_count = reader.line_count();
     let use_wholefile = !needs_parse && fm.has_combined_ac();
@@ -307,11 +311,12 @@ pub fn run_headless_to_writer(
                     || (Vec::new(), vec![0usize; n_date]),
                     |(mut vis, mut dc), idx| {
                         let line = reader.get_line(idx);
-                        let text_dec = fm.evaluate_text(line);
+                        let mut text_dec = fm.evaluate_text(line);
                         let can_skip = text_dec == FilterDecision::Exclude
                             || (text_dec == FilterDecision::Neutral
                                 && has_text_includes
-                                && inc_ff.is_empty());
+                                && inc_ff.is_empty()
+                                && !synthetic_level);
                         if date_only && !can_skip {
                             let visible = parser_ref
                                 .and_then(|p| p.parse_timestamp(line))
@@ -326,6 +331,21 @@ pub fn run_headless_to_writer(
                             } else {
                                 None
                             };
+                            if text_dec == FilterDecision::Neutral && synthetic_level {
+                                if let Some(p) = parts.as_ref() {
+                                    let display = crate::ui::field_layout::apply_field_layout(
+                                        p,
+                                        &crate::types::FieldLayout::default(),
+                                        &std::collections::HashSet::new(),
+                                        false,
+                                    )
+                                    .join(" ");
+                                    let dec = fm.evaluate_text(display.as_bytes());
+                                    if dec != FilterDecision::Neutral {
+                                        text_dec = dec;
+                                    }
+                                }
+                            }
                             if crate::ui::line_is_visible(
                                 text_dec,
                                 has_text_includes,
@@ -554,5 +574,78 @@ mod tests {
         assert!(msg.contains("same as the input file"));
         // Original file must be untouched.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "INFO foo\n");
+    }
+
+    #[tokio::test]
+    async fn test_headless_syslog_include_filter_matches_synthetic_level() {
+        // Syslog lines encode the level as a numeric <PRI> prefix.
+        // Priority 134 = facility 16 (local0), severity 6 → "INFO".
+        // Priority 11  = facility 1  (user),   severity 3 → "ERROR".
+        // The raw bytes contain no "INFO" or "ERROR" text, so a plain text
+        // filter must match against the normalized level produced by the parser.
+        let info_line = b"<134>Mar 23 10:00:00 host myapp: all systems go";
+        let error_line = b"<11>Mar 23 10:00:01 host myapp: something failed";
+
+        let mut lm = make_log_manager().await;
+        lm.add_filter_with_color("INFO".to_string(), FilterType::Include, None, None, true)
+            .await;
+
+        let data = [info_line.as_ref(), b"\n", error_line.as_ref(), b"\n"].concat();
+        let reader = FileReader::from_bytes(data);
+        let mut out = Vec::new();
+        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        let result = String::from_utf8(out).unwrap();
+        assert_eq!(
+            result, "<134>Mar 23 10:00:00 host myapp: all systems go\n",
+            "only the INFO line should be visible"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_headless_syslog_regex_spanning_level_and_message() {
+        // Regex filter that spans the synthetic level AND message text.
+        // "ERROR.*failed" must match only the ERROR+failed line, not the INFO line.
+        let info_line = b"<134>Mar 23 10:00:00 host myapp: all systems go";
+        let error_line = b"<11>Mar 23 10:00:01 host myapp: something failed";
+
+        let mut lm = make_log_manager().await;
+        lm.add_filter_with_color(
+            r"ERROR.*failed".to_string(),
+            FilterType::Include,
+            None,
+            None,
+            true,
+        )
+        .await;
+
+        let data = [info_line.as_ref(), b"\n", error_line.as_ref(), b"\n"].concat();
+        let reader = FileReader::from_bytes(data);
+        let mut out = Vec::new();
+        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        let result = String::from_utf8(out).unwrap();
+        assert_eq!(
+            result, "<11>Mar 23 10:00:01 host myapp: something failed\n",
+            "only the ERROR+failed line should match"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_headless_syslog_exclude_filter_matches_synthetic_level() {
+        let info_line = b"<134>Mar 23 10:00:00 host myapp: all systems go";
+        let error_line = b"<11>Mar 23 10:00:01 host myapp: something failed";
+
+        let mut lm = make_log_manager().await;
+        lm.add_filter_with_color("INFO".to_string(), FilterType::Exclude, None, None, true)
+            .await;
+
+        let data = [info_line.as_ref(), b"\n", error_line.as_ref(), b"\n"].concat();
+        let reader = FileReader::from_bytes(data);
+        let mut out = Vec::new();
+        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        let result = String::from_utf8(out).unwrap();
+        assert_eq!(
+            result, "<11>Mar 23 10:00:01 host myapp: something failed\n",
+            "only the non-INFO line should be visible"
+        );
     }
 }

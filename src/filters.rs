@@ -908,9 +908,6 @@ impl FilterManager {
         for local in 0..sub_line_count {
             let global = sub_start + local;
             for &fi in &self.regex_filter_indices {
-                if state.best[local] != u8::MAX && (state.best[local] as usize) < fi {
-                    continue;
-                }
                 if let Some(filter) = self.filters.get(fi) {
                     let lb = line_bytes_at(data, line_starts, global);
                     if filter.matches(lb).is_decided() {
@@ -1852,5 +1849,74 @@ mod tests {
         assert_eq!(visible, vec![0, 1]);
         assert_eq!(counts[0], 1, "ERROR filter");
         assert_eq!(counts[1], 1, "regex digit filter");
+    }
+
+    #[test]
+    fn test_wholefile_regex_counted_for_line_also_matching_literal() {
+        // A line that matches both literal filter 0 ("ERROR") and regex filter 1 (\d{3})
+        // must increment both counts. Previously scan_regex_fallback skipped fi=1 when
+        // state.best[local] was already set to fi=0 by the AC scan.
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let ac = AhoCorasick::builder()
+            .ascii_case_insensitive(false)
+            .build(["ERROR"])
+            .ok();
+        let meta = vec![(0, FilterDecision::Include)];
+        let fm = FilterManager::new_with_combined(vec![f_lit, f_re], true, ac, meta, vec![1]);
+        // This line matches both "ERROR" (literal) and "404" (regex \d{3})
+        let (data, starts) = make_wholefile_data(&["ERROR 404 not found"]);
+        let (visible, counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..1);
+        assert_eq!(visible, vec![0]);
+        assert_eq!(counts[0], 1, "literal ERROR filter must be counted");
+        assert_eq!(counts[1], 1, "regex digit filter must also be counted");
+    }
+
+    #[test]
+    fn test_wholefile_consistent_with_per_line_including_regex() {
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let ac = AhoCorasick::builder()
+            .ascii_case_insensitive(false)
+            .build(["ERROR"])
+            .ok();
+        let meta = vec![(0, FilterDecision::Include)];
+        let fm = FilterManager::new_with_combined(vec![f_lit, f_re], true, ac, meta, vec![1]);
+        let lines = [
+            "ERROR 404 not found", // matches both
+            "status 200 OK",       // regex only
+            "ERROR: bad",          // literal only
+            "INFO: fine",          // neither
+        ];
+        let (data, starts) = make_wholefile_data(&lines);
+        let (wf_visible, wf_counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..4);
+
+        let mut pl_counts = vec![0usize; 2];
+        let mut pl_visible = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let dec = fm.evaluate_and_count(line.as_bytes(), &mut pl_counts);
+            let vis = match dec {
+                FilterDecision::Include => true,
+                FilterDecision::Exclude => false,
+                FilterDecision::Neutral => !fm.has_include(),
+            };
+            if vis {
+                pl_visible.push(i);
+            }
+        }
+
+        assert_eq!(
+            wf_visible, pl_visible,
+            "visibility must match per-line path"
+        );
+        assert_eq!(wf_counts, pl_counts, "counts must match per-line path");
     }
 }

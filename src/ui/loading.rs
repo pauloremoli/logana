@@ -575,11 +575,11 @@ impl App {
     pub(super) async fn advance_file_load(&mut self) {
         let mut completed = Vec::new();
         for tab in &mut self.tabs {
-            if let Some(ref mut ls) = tab.load_state {
-                if let Ok(result) = ls.result_rx.try_recv() {
-                    let ls = tab.load_state.take().unwrap();
-                    completed.push((ls.path, ls.total_bytes, ls.on_complete, result));
-                }
+            if let Some(ref mut ls) = tab.load_state
+                && let Ok(result) = ls.result_rx.try_recv()
+            {
+                let ls = tab.load_state.take().unwrap();
+                completed.push((ls.path, ls.total_bytes, ls.on_complete, result));
             }
         }
         for (path, total_bytes, context, result) in completed {

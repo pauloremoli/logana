@@ -631,11 +631,20 @@ impl LogFormatParser for SyslogParser {
     fn name(&self) -> &str {
         "syslog"
     }
+
+    fn has_synthetic_level(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_has_synthetic_level() {
+        assert!(SyslogParser::default().has_synthetic_level());
+    }
 
     #[test]
     fn test_parse_priority_valid() {
