@@ -557,6 +557,20 @@ impl App {
         }
     }
 
+    pub(super) fn remove_empty_placeholder(&mut self) {
+        if self.tabs.len() > 1 && self.stdin_load_state.is_none() {
+            if let Some(idx) = self.tabs.iter().position(|t| {
+                t.log_manager.source_file().is_none() && t.file_reader.line_count() == 0
+            }) {
+                self.tabs.remove(idx);
+                if self.active_tab > idx {
+                    self.active_tab -= 1;
+                }
+                self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+            }
+        }
+    }
+
     /// Poll for completion of background file loads across all tabs (called every frame).
     pub(super) async fn advance_file_load(&mut self) {
         let mut completed = Vec::new();
@@ -1672,6 +1686,74 @@ mod tests {
         let result = app.open_file("/tmp").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_lowercase().contains("directory"));
+    }
+
+    #[tokio::test]
+    async fn test_remove_empty_placeholder_removes_initial_tab() {
+        let tmp0 = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp0.path(), b"line0\n").unwrap();
+        let tmp1 = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp1.path(), b"line1\n").unwrap();
+
+        let mut app = make_app(&[]).await;
+        assert_eq!(app.tabs.len(), 1);
+        assert!(app.tabs[0].log_manager.source_file().is_none());
+
+        app.open_file(tmp0.path().to_str().unwrap()).await.unwrap();
+        app.open_file(tmp1.path().to_str().unwrap()).await.unwrap();
+        assert_eq!(app.tabs.len(), 3);
+
+        app.remove_empty_placeholder();
+
+        assert_eq!(app.tabs.len(), 2, "placeholder tab should be removed");
+        assert!(
+            app.tabs[0].log_manager.source_file().is_some(),
+            "remaining tabs should have a source file"
+        );
+        assert!(
+            app.tabs[1].log_manager.source_file().is_some(),
+            "remaining tabs should have a source file"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_empty_placeholder_keeps_only_tab() {
+        let mut app = make_app(&[]).await;
+        assert_eq!(app.tabs.len(), 1);
+
+        app.remove_empty_placeholder();
+
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "should not remove when only one tab exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_empty_placeholder_skips_when_stdin_active() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"line\n").unwrap();
+
+        let mut app = make_app(&[]).await;
+        app.open_file(tmp.path().to_str().unwrap()).await.unwrap();
+        assert_eq!(app.tabs.len(), 2);
+
+        let fake_file = tempfile::NamedTempFile::new().unwrap();
+        let (_, rx) = tokio::sync::watch::channel(());
+        app.stdin_load_state = Some(StdinLoadState {
+            snapshot_rx: rx,
+            temp_path: fake_file.path().to_owned(),
+            temp_file: fake_file,
+        });
+
+        app.remove_empty_placeholder();
+
+        assert_eq!(
+            app.tabs.len(),
+            2,
+            "should not remove while stdin is loading"
+        );
     }
 
     #[tokio::test]

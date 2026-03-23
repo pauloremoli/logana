@@ -8,7 +8,11 @@ All notable changes to logana will be documented in this file.
 - Visual indication in the filter sidebar with different color when the filter mode is active.
 
 ### Fixed
+- Empty stdin placeholder tab is now removed when files are opened via directory selection or `:open`.
 - Fix issue with single file being watched when multiple files were open.
+- Regex and literal include filters now correctly suppress lines that do not match them even when a date filter is also active. 
+- Regex filter match counts are now correct when literal filters are also active. Previously evaluation of regex filters was being skipped for lines already matched by a lower-indexed literal filter, causing regex counts to be underreported.
+- Text filters now match against the full display text for formats where level field is not represented as text (syslog `<PRI>` priority codes, DLT subtype). 
 
 ## [0.4.0] - 2026-03-21
 

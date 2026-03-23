@@ -475,6 +475,7 @@ impl App {
                         break;
                     }
                 }
+                self.remove_empty_placeholder();
             }
             KeyResult::AlwaysRestoreFile(_) => {
                 self.restore_file_policy = RestoreSessionPolicy::Always;
