@@ -23,6 +23,65 @@ pub struct TabBar<'a> {
     pub theme: &'a Theme,
 }
 
+fn tab_display_width(
+    entry: &TabBarEntry<'_>,
+    is_active: bool,
+    loading_info: &[(usize, usize)],
+    filter_pct: Option<usize>,
+    idx: usize,
+    show_borders: bool,
+) -> usize {
+    let suffix = tab_suffix(entry, is_active, loading_info, filter_pct, idx);
+    let text = format!(" {}{}", entry.title, suffix);
+    let w = unicode_width::UnicodeWidthStr::width(text.as_str());
+    w + if !show_borders { 1 } else { 0 }
+}
+
+fn compute_tab_offset(
+    tabs: &[TabBarEntry<'_>],
+    active_tab: usize,
+    available_width: usize,
+    loading_info: &[(usize, usize)],
+    filtering_tabs: &[(usize, usize)],
+    show_borders: bool,
+) -> usize {
+    if tabs.is_empty() || active_tab >= tabs.len() {
+        return 0;
+    }
+    let filter_pct_for = |i: usize| {
+        filtering_tabs
+            .iter()
+            .find(|(idx, _)| *idx == i)
+            .map(|(_, p)| *p)
+    };
+    let mut used = tab_display_width(
+        &tabs[active_tab],
+        true,
+        loading_info,
+        filter_pct_for(active_tab),
+        active_tab,
+        show_borders,
+    );
+    let mut offset = active_tab;
+    for i in (0..active_tab).rev() {
+        let w = tab_display_width(
+            &tabs[i],
+            false,
+            loading_info,
+            filter_pct_for(i),
+            i,
+            show_borders,
+        );
+        if used + w <= available_width {
+            used += w;
+            offset = i;
+        } else {
+            break;
+        }
+    }
+    offset
+}
+
 fn tab_suffix(
     entry: &TabBarEntry<'_>,
     is_active: bool,
@@ -93,7 +152,18 @@ impl<'a> Widget for TabBar<'a> {
             spans.push(Span::styled(text, mode_style));
         }
 
-        for (i, entry) in self.tabs.iter().enumerate() {
+        let right_border = if self.show_borders { 1 } else { 0 };
+        let available_for_tabs = (area.width as usize).saturating_sub(used_width + right_border);
+        let offset = compute_tab_offset(
+            &self.tabs,
+            self.active_tab,
+            available_for_tabs,
+            &self.loading_info,
+            &self.filtering_tabs,
+            self.show_borders,
+        );
+
+        for (i, entry) in self.tabs.iter().enumerate().skip(offset) {
             let is_active = i == self.active_tab;
             let tab_style = if is_active {
                 Style::default()
@@ -235,5 +305,101 @@ mod tests {
         assert!(suffix.contains("(5)"));
         assert!(suffix.contains("[TAIL]"));
         assert!(suffix.contains("[json]"));
+    }
+
+    // Entries with has_lines=false and num_visible=0 give predictable widths:
+    // inactive: " <title> " = title.len() + 2
+    // active:   " <title> (0)  " = title.len() + 7
+    fn make_small_entry(title: &str) -> TabBarEntry<'_> {
+        TabBarEntry {
+            title,
+            format_name: None,
+            num_visible: 0,
+            tail_mode: false,
+            raw_mode: false,
+            paused: false,
+            retry_attempt: None,
+            has_lines: false,
+        }
+    }
+
+    #[test]
+    fn test_compute_tab_offset_all_fit() {
+        // 3 tabs, widths inactive=3, active=8, inactive=3 → total=14 ≤ 100.
+        let tabs = vec![
+            make_small_entry("a"),
+            make_small_entry("b"),
+            make_small_entry("c"),
+        ];
+        let offset = compute_tab_offset(&tabs, 1, 100, &[], &[], true);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn test_compute_tab_offset_active_at_end_no_room_for_predecessors() {
+        // Available width = 10, active tab width = 8, predecessor widths = 3 each.
+        // Only the active tab fits (8 ≤ 10 but 8+3=11 > 10).
+        let tabs = vec![
+            make_small_entry("a"),
+            make_small_entry("b"),
+            make_small_entry("c"),
+        ];
+        let offset = compute_tab_offset(&tabs, 2, 10, &[], &[], true);
+        assert_eq!(offset, 2);
+    }
+
+    #[test]
+    fn test_compute_tab_offset_active_in_middle_partial_fit() {
+        // 5 tabs, active at index 3 (width=8), inactive width=3.
+        // Available = 14: active(8) + tab2(3) + tab1(3) = 14, tab0(3) would make 17 > 14.
+        let tabs = vec![
+            make_small_entry("a"),
+            make_small_entry("b"),
+            make_small_entry("c"),
+            make_small_entry("d"),
+            make_small_entry("e"),
+        ];
+        let offset = compute_tab_offset(&tabs, 3, 14, &[], &[], true);
+        assert_eq!(offset, 1);
+    }
+
+    #[test]
+    fn test_tab_bar_active_tab_visible_when_many_tabs() {
+        // Narrow terminal (30 cols) with 5 tabs; active is the last one.
+        // The active tab title must appear in the rendered output.
+        let theme = Theme::default();
+        let tabs = vec![
+            make_small_entry("alpha"),
+            make_small_entry("beta"),
+            make_small_entry("gamma"),
+            make_small_entry("delta"),
+            make_small_entry("omega"),
+        ];
+        let tab_bar = TabBar {
+            tabs,
+            active_tab: 4,
+            loading_info: vec![],
+            filtering_tabs: vec![],
+            show_borders: false,
+            mode_name: None,
+            theme: &theme,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(30, 1)).unwrap();
+        let buf = terminal
+            .draw(|f| f.render_widget(tab_bar, f.area()))
+            .unwrap()
+            .buffer
+            .clone();
+        let row: String = (0..30).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(
+            row.contains("omega"),
+            "active tab 'omega' must be visible; got: {:?}",
+            row
+        );
+        assert!(
+            !row.contains("alpha"),
+            "first tab 'alpha' should be scrolled off; got: {:?}",
+            row
+        );
     }
 }
