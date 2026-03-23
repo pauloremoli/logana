@@ -6,12 +6,12 @@ use ratatui::{
 
 use crate::mode::app_mode::ModeRenderState;
 
+use super::App;
 use super::field_layout::count_wrapped_lines;
 use super::widgets::{
     CommandBar, CompletionSource, InputBar, LogPanel, ModeBar, Sidebar, TabBar, TabBarEntry,
     file_display_name, prepare_log_panel, resolve_completions,
 };
-use super::{App, LoadContext};
 
 type DltSelectData = Option<(
     Vec<crate::config::DltDevice>,
@@ -388,15 +388,17 @@ impl App {
         mode_name: Option<&str>,
         state: &UiRenderState,
     ) {
-        let loading_info: Option<(usize, usize)> = self.file_load_state.as_ref().map(|s| {
-            let pct = (*s.progress_rx.borrow() * 100.0) as usize;
-            let tab_idx = match &s.on_complete {
-                LoadContext::ReplaceInitialTab => 0,
-                LoadContext::ReplaceTab { tab_idx } => *tab_idx,
-                LoadContext::SessionRestoreTab { tab_idx, .. } => *tab_idx,
-            };
-            (tab_idx, pct)
-        });
+        let loading_info: Vec<(usize, usize)> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, tab)| {
+                tab.load_state.as_ref().map(|ls| {
+                    let pct = (*ls.progress_rx.borrow() * 100.0) as usize;
+                    (i, pct)
+                })
+            })
+            .collect();
         let filtering_tabs: Vec<(usize, usize)> = self
             .tabs
             .iter()
@@ -1234,7 +1236,7 @@ mod tests {
         let mut app = make_app(&["placeholder"]).await;
         let (_progress_tx, progress_rx) = tokio::sync::watch::channel(0.5f64);
         let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
-        app.file_load_state = Some(super::super::FileLoadState {
+        app.tabs[0].load_state = Some(super::super::FileLoadState {
             path: "/tmp/test.log".to_string(),
             progress_rx,
             result_rx,

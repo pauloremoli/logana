@@ -13,7 +13,7 @@ use crate::mode::filter_mode::FilterManagementMode;
 use crate::mode::normal_mode::NormalMode;
 use crate::theme::Theme;
 
-use super::{FileLoadState, KeyResult, StdinLoadState, TabState};
+use super::{KeyResult, StdinLoadState, TabState};
 
 async fn resolve_bool_setting(
     db: &crate::db::Database,
@@ -54,8 +54,6 @@ pub struct App {
     pub theme: Theme,
     pub db: Arc<crate::db::Database>,
     pub should_quit: bool,
-    /// In-progress background file load (startup or session restore).
-    pub file_load_state: Option<FileLoadState>,
     /// In-progress stdin read — separate slot so session-restore cannot overwrite it.
     pub stdin_load_state: Option<StdinLoadState>,
     /// Shared keybindings — propagated to every new tab.
@@ -197,7 +195,6 @@ impl App {
             theme,
             db,
             should_quit: false,
-            file_load_state: None,
             stdin_load_state: None,
             keybindings,
             clipboard: None,
@@ -281,14 +278,7 @@ impl App {
             h.cancel.store(true, Ordering::Relaxed);
         }
 
-        // Cancel the background file load if it belongs to this tab.
-        if let Some(ref fls) = self.file_load_state
-            && (matches!(&fls.on_complete,
-                    super::LoadContext::ReplaceTab { tab_idx } if *tab_idx == self.active_tab)
-                || matches!(&fls.on_complete, super::LoadContext::ReplaceInitialTab if self.active_tab == 0)
-                || matches!(&fls.on_complete,
-                    super::LoadContext::SessionRestoreTab { tab_idx, .. } if *tab_idx == self.active_tab))
-        {
+        if let Some(ref fls) = self.tabs[self.active_tab].load_state {
             fls.cancel.store(true, Ordering::Relaxed);
         }
 

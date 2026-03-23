@@ -404,6 +404,7 @@ pub struct TabState {
     pub stream: StreamState,
     pub display: DisplayConfig,
     pub interaction: InteractionState,
+    pub load_state: Option<FileLoadState>,
 }
 
 impl TabState {
@@ -456,6 +457,7 @@ impl TabState {
                 },
                 ..InteractionState::default()
             },
+            load_state: None,
         };
         tab.refresh_visible();
         tab
@@ -1961,6 +1963,7 @@ impl std::fmt::Debug for TabState {
 }
 
 /// What to do once a background file load completes.
+#[derive(Clone)]
 pub enum LoadContext {
     /// Replace the placeholder file_reader in the initial tab (startup).
     ReplaceInitialTab,

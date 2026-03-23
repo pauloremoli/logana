@@ -4,6 +4,11 @@ All notable changes to logana will be documented in this file.
 
 
 ## [Unreleased]
+### Changed
+- Visual indication in the filter sidebar with different color when the filter mode is active.
+
+### Fixed
+- Fix issue with single file being watched when multiple files were open.
 
 ## [0.4.0] - 2026-03-21
 

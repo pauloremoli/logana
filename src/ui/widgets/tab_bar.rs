@@ -16,7 +16,7 @@ pub struct TabBarEntry<'a> {
 pub struct TabBar<'a> {
     pub tabs: Vec<TabBarEntry<'a>>,
     pub active_tab: usize,
-    pub loading_info: Option<(usize, usize)>,
+    pub loading_info: Vec<(usize, usize)>,
     pub filtering_tabs: Vec<(usize, usize)>,
     pub show_borders: bool,
     pub mode_name: Option<&'a str>,
@@ -26,13 +26,11 @@ pub struct TabBar<'a> {
 fn tab_suffix(
     entry: &TabBarEntry<'_>,
     is_active: bool,
-    loading_info: Option<(usize, usize)>,
+    loading_info: &[(usize, usize)],
     filter_pct: Option<usize>,
     idx: usize,
 ) -> String {
-    if let Some((load_idx, pct)) = loading_info
-        && load_idx == idx
-    {
+    if let Some(&(_, pct)) = loading_info.iter().find(|(load_idx, _)| *load_idx == idx) {
         return format!(" {}% ", pct);
     }
     if let Some(pct) = filter_pct {
@@ -111,7 +109,7 @@ impl<'a> Widget for TabBar<'a> {
                 .iter()
                 .find(|(idx, _)| *idx == i)
                 .map(|(_, p)| *p);
-            let suffix = tab_suffix(entry, is_active, self.loading_info, filter_pct, i);
+            let suffix = tab_suffix(entry, is_active, &self.loading_info, filter_pct, i);
             let tab_text = format!(" {}{}", entry.title, suffix);
             used_width += unicode_width::UnicodeWidthStr::width(tab_text.as_str());
             spans.push(Span::styled(tab_text, tab_style));
@@ -161,7 +159,7 @@ mod tests {
         let tab_bar = TabBar {
             tabs,
             active_tab: 0,
-            loading_info: None,
+            loading_info: vec![],
             filtering_tabs: vec![],
             show_borders: true,
             mode_name: None,
@@ -180,7 +178,7 @@ mod tests {
         let tab_bar = TabBar {
             tabs,
             active_tab: 1,
-            loading_info: None,
+            loading_info: vec![],
             filtering_tabs: vec![],
             show_borders: false,
             mode_name: Some("FILTER"),
@@ -195,21 +193,21 @@ mod tests {
     #[test]
     fn test_tab_suffix_loading() {
         let entry = make_entry("t");
-        let suffix = tab_suffix(&entry, true, Some((0, 42)), None, 0);
+        let suffix = tab_suffix(&entry, true, &[(0, 42)], None, 0);
         assert_eq!(suffix, " 42% ");
     }
 
     #[test]
     fn test_tab_suffix_filtering_in_progress() {
         let entry = make_entry("t");
-        let suffix = tab_suffix(&entry, false, None, Some(55), 0);
+        let suffix = tab_suffix(&entry, false, &[], Some(55), 0);
         assert!(suffix.contains("55%"));
     }
 
     #[test]
     fn test_tab_suffix_indexing_complete() {
         let entry = make_entry("t");
-        let suffix = tab_suffix(&entry, false, None, Some(100), 0);
+        let suffix = tab_suffix(&entry, false, &[], Some(100), 0);
         assert!(suffix.contains("Indexing"));
     }
 
@@ -217,7 +215,7 @@ mod tests {
     fn test_tab_suffix_retry() {
         let mut entry = make_entry("t");
         entry.retry_attempt = Some(3);
-        let suffix = tab_suffix(&entry, false, None, None, 0);
+        let suffix = tab_suffix(&entry, false, &[], None, 0);
         assert!(suffix.contains("RETRY #3"));
     }
 
@@ -233,7 +231,7 @@ mod tests {
             retry_attempt: None,
             has_lines: true,
         };
-        let suffix = tab_suffix(&entry, true, None, None, 0);
+        let suffix = tab_suffix(&entry, true, &[], None, 0);
         assert!(suffix.contains("(5)"));
         assert!(suffix.contains("[TAIL]"));
         assert!(suffix.contains("[json]"));

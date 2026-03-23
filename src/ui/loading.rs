@@ -435,17 +435,24 @@ impl App {
                 }
             }
 
+            let tab_idx = match &context {
+                LoadContext::ReplaceInitialTab => 0,
+                LoadContext::ReplaceTab { tab_idx } => *tab_idx,
+                LoadContext::SessionRestoreTab { tab_idx, .. } => *tab_idx,
+            };
             let cancel = Arc::new(AtomicBool::new(false));
             match FileReader::load(path.clone(), predicate, tail, cancel.clone(), false).await {
                 Ok(handle) => {
-                    self.file_load_state = Some(FileLoadState {
-                        path,
-                        progress_rx: handle.progress_rx,
-                        result_rx: handle.result_rx,
-                        total_bytes: handle.total_bytes,
-                        on_complete: context,
-                        cancel,
-                    });
+                    if tab_idx < self.tabs.len() {
+                        self.tabs[tab_idx].load_state = Some(FileLoadState {
+                            path,
+                            progress_rx: handle.progress_rx,
+                            result_rx: handle.result_rx,
+                            total_bytes: handle.total_bytes,
+                            on_complete: context,
+                            cancel,
+                        });
+                    }
                 }
                 Err(_) => self.skip_or_fail_load(context).await,
             }
@@ -550,22 +557,21 @@ impl App {
         }
     }
 
-    /// Poll for completion of the current background file load (called every frame).
+    /// Poll for completion of background file loads across all tabs (called every frame).
     pub(super) async fn advance_file_load(&mut self) {
-        // try_recv needs &mut, so we can't hold a shared borrow of file_load_state.
-        let done_result = self
-            .file_load_state
-            .as_mut()
-            .and_then(|s| s.result_rx.try_recv().ok());
-
-        if let Some(load_result) = done_result {
-            let state = self.file_load_state.take().unwrap();
-            match load_result {
-                Ok(result) => {
-                    self.on_load_success(state.path, state.total_bytes, state.on_complete, result)
-                        .await
+        let mut completed = Vec::new();
+        for tab in &mut self.tabs {
+            if let Some(ref mut ls) = tab.load_state {
+                if let Ok(result) = ls.result_rx.try_recv() {
+                    let ls = tab.load_state.take().unwrap();
+                    completed.push((ls.path, ls.total_bytes, ls.on_complete, result));
                 }
-                Err(_) => self.skip_or_fail_load(state.on_complete).await,
+            }
+        }
+        for (path, total_bytes, context, result) in completed {
+            match result {
+                Ok(r) => self.on_load_success(path, total_bytes, context, r).await,
+                Err(_) => self.skip_or_fail_load(context).await,
             }
         }
     }
@@ -1596,9 +1602,60 @@ mod tests {
     #[tokio::test]
     async fn test_advance_file_load_no_state() {
         let mut app = make_app(&[]).await;
-        assert!(app.file_load_state.is_none());
+        assert!(app.tabs.iter().all(|t| t.load_state.is_none()));
         // Should not panic.
         app.advance_file_load().await;
+    }
+
+    #[tokio::test]
+    async fn test_advance_file_load_concurrent_tabs_both_complete() {
+        let tmp0 = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp0.path(), b"file0\n").unwrap();
+        let tmp1 = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp1.path(), b"file1\n").unwrap();
+
+        let mut app = make_app(&[]).await;
+
+        let path0 = tmp0.path().to_str().unwrap().to_string();
+        let path1 = tmp1.path().to_str().unwrap().to_string();
+
+        app.open_file(&path0).await.unwrap();
+        app.open_file(&path1).await.unwrap();
+
+        assert_eq!(app.tabs.len(), 3, "two new tabs should have been added");
+        assert!(
+            app.tabs[1].load_state.is_some(),
+            "tab 1 load should be in progress"
+        );
+        assert!(
+            app.tabs[2].load_state.is_some(),
+            "tab 2 load should be in progress"
+        );
+
+        for _ in 0..200 {
+            if app.tabs[1].load_state.is_none() && app.tabs[2].load_state.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            app.advance_file_load().await;
+        }
+
+        assert!(
+            app.tabs[1].load_state.is_none(),
+            "tab 1 load should have completed"
+        );
+        assert!(
+            app.tabs[2].load_state.is_none(),
+            "tab 2 load should have completed"
+        );
+        assert!(
+            app.tabs[1].stream.watch.is_some(),
+            "tab 1 should have a file watcher"
+        );
+        assert!(
+            app.tabs[2].stream.watch.is_some(),
+            "tab 2 should have a file watcher"
+        );
     }
 
     #[tokio::test]
@@ -1633,7 +1690,7 @@ mod tests {
             "preview should be populated"
         );
         assert!(
-            app.file_load_state.is_some(),
+            app.tabs[1].load_state.is_some(),
             "background load should be in progress"
         );
     }
@@ -1675,7 +1732,7 @@ mod tests {
         app.advance_file_load().await;
         // Load may still be in progress; drain it.
         for _ in 0..100 {
-            if app.file_load_state.is_none() {
+            if app.tabs[0].load_state.is_none() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -1699,8 +1756,8 @@ mod tests {
         let path = tmp.path().to_str().unwrap().to_string();
         app.begin_file_load(path.clone(), LoadContext::ReplaceInitialTab, None, false)
             .await;
-        assert!(app.file_load_state.is_some());
-        assert_eq!(app.file_load_state.as_ref().unwrap().path, path);
+        assert!(app.tabs[0].load_state.is_some());
+        assert_eq!(app.tabs[0].load_state.as_ref().unwrap().path, path);
     }
 
     #[tokio::test]
@@ -1717,7 +1774,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.file_load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(super::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -1729,7 +1786,7 @@ mod tests {
         app.advance_file_load().await;
 
         // Load state should be consumed.
-        assert!(app.file_load_state.is_none());
+        assert!(app.tabs[0].load_state.is_none());
         // The initial tab should have the loaded data.
         assert_eq!(app.tabs[0].file_reader.line_count(), 1);
     }
@@ -1754,7 +1811,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.file_load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(super::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -1765,7 +1822,7 @@ mod tests {
 
         app.advance_file_load().await;
 
-        assert!(app.file_load_state.is_none());
+        assert!(app.tabs[0].load_state.is_none());
         assert!(
             app.tabs[0].display.format.is_some(),
             "Format should be re-detected after ReplaceInitialTab load"
@@ -1786,7 +1843,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.file_load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(super::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -1836,7 +1893,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.file_load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(super::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -1873,7 +1930,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.file_load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(super::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -1902,7 +1959,7 @@ mod tests {
             "gone",
         )));
 
-        app.file_load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(super::FileLoadState {
             path: "missing.log".to_string(),
             progress_rx,
             result_rx,
@@ -1914,7 +1971,7 @@ mod tests {
         app.advance_file_load().await;
 
         // Load state should be consumed even on failure.
-        assert!(app.file_load_state.is_none());
+        assert!(app.tabs[0].load_state.is_none());
         // Initial tab should still exist (empty placeholder).
         assert_eq!(app.tabs.len(), 1);
     }
@@ -2285,7 +2342,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.file_load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(super::FileLoadState {
             path: abs_path,
             progress_rx,
             result_rx,
@@ -2593,7 +2650,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.file_load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(super::FileLoadState {
             path: "journalctl.json".to_string(),
             progress_rx,
             result_rx,
@@ -2682,13 +2739,16 @@ mod tests {
 
         // Poll until the background full-file load completes.
         for _ in 0..100 {
-            if app.file_load_state.is_none() {
+            if app.tabs[0].load_state.is_none() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             app.advance_file_load().await;
         }
-        assert!(app.file_load_state.is_none(), "file load should complete");
+        assert!(
+            app.tabs[0].load_state.is_none(),
+            "file load should complete"
+        );
 
         // After full load, hidden_fields must still be set.
         assert!(
