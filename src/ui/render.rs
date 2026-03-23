@@ -119,7 +119,17 @@ impl App {
             self.compute_main_areas(main_chunk, show_tab_bar, show_borders);
         self.render_log_panel(frame, logs_area, show_tab_bar, mode_name, &state);
         if let Some(sa) = sidebar_area {
-            self.render_sidebar(frame, sa, show_borders, state.selected_filter_idx);
+            let is_filter_mode = matches!(
+                render_state,
+                ModeRenderState::FilterManagement { .. } | ModeRenderState::FilterEdit
+            );
+            self.render_sidebar(
+                frame,
+                sa,
+                show_borders,
+                state.selected_filter_idx,
+                is_filter_mode,
+            );
         }
 
         self.render_command_bar_widget(frame, &chunks, chunk_idx, &state);
@@ -471,6 +481,7 @@ impl App {
         sidebar_area: Rect,
         show_borders: bool,
         selected_filter_idx: usize,
+        is_filter_mode: bool,
     ) {
         let tab = &self.tabs[self.active_tab];
         let filters = tab.log_manager.get_filters();
@@ -489,6 +500,7 @@ impl App {
                 show_marks_only: tab.filter.show_marks_only,
                 filter_progress,
                 show_borders,
+                is_filter_mode,
                 theme: &self.theme,
             },
             sidebar_area,

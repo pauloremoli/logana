@@ -14,6 +14,7 @@ pub struct Sidebar<'a> {
     pub show_marks_only: bool,
     pub filter_progress: Option<usize>,
     pub show_borders: bool,
+    pub is_filter_mode: bool,
     pub theme: &'a Theme,
 }
 
@@ -127,18 +128,28 @@ impl<'a> Widget for Sidebar<'a> {
             total_count,
         );
 
+        let title_style = if self.is_filter_mode {
+            Style::default().fg(self.theme.text_highlight_fg)
+        } else {
+            Style::default().fg(self.theme.border_title)
+        };
         let sidebar_block = if self.show_borders {
+            let border_style = if self.is_filter_mode {
+                Style::default().fg(self.theme.text_highlight_fg)
+            } else {
+                Style::default().fg(self.theme.border)
+            };
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(self.theme.border))
+                .border_style(border_style)
                 .title(sidebar_title)
-                .title_style(Style::default().fg(self.theme.border_title))
+                .title_style(title_style)
         } else {
             Block::default()
                 .borders(Borders::NONE)
                 .padding(Padding::new(1, 0, 0, 0))
                 .title(sidebar_title)
-                .title_style(Style::default().fg(self.theme.border_title))
+                .title_style(title_style)
         };
 
         Paragraph::new(filters_text)
@@ -176,6 +187,7 @@ mod tests {
             show_marks_only: false,
             filter_progress: None,
             show_borders: true,
+            is_filter_mode: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -200,6 +212,7 @@ mod tests {
             show_marks_only: false,
             filter_progress: None,
             show_borders: false,
+            is_filter_mode: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -266,5 +279,93 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("key=val"));
         assert!(text.contains("[field]"));
+    }
+
+    #[test]
+    fn test_sidebar_filter_mode_active_bold_title_bordered() {
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let buf = terminal
+            .draw(|f| {
+                f.render_widget(
+                    Sidebar {
+                        filters: &[],
+                        match_counts: &[],
+                        selected_filter_idx: 0,
+                        filter_enabled: true,
+                        show_marks_only: false,
+                        filter_progress: None,
+                        show_borders: true,
+                        is_filter_mode: true,
+                        theme: &theme,
+                    },
+                    f.area(),
+                )
+            })
+            .unwrap()
+            .area;
+        assert_eq!(buf, buf);
+        let active_style = Style::default().fg(theme.text_highlight_fg);
+        let inactive_style = Style::default().fg(theme.border_title);
+        assert_ne!(active_style, inactive_style);
+    }
+
+    #[test]
+    fn test_sidebar_filter_mode_inactive_normal_title_bordered() {
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(
+                    Sidebar {
+                        filters: &[],
+                        match_counts: &[],
+                        selected_filter_idx: 0,
+                        filter_enabled: true,
+                        show_marks_only: false,
+                        filter_progress: None,
+                        show_borders: true,
+                        is_filter_mode: false,
+                        theme: &theme,
+                    },
+                    f.area(),
+                )
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_sidebar_filter_mode_active_borderless() {
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(
+                    Sidebar {
+                        filters: &[],
+                        match_counts: &[],
+                        selected_filter_idx: 0,
+                        filter_enabled: true,
+                        show_marks_only: false,
+                        filter_progress: None,
+                        show_borders: false,
+                        is_filter_mode: true,
+                        theme: &theme,
+                    },
+                    f.area(),
+                )
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_filter_mode_active_uses_highlight_border_color() {
+        let theme = Theme::default();
+        let active_border = Style::default().fg(theme.text_highlight_fg);
+        let inactive_border = Style::default().fg(theme.border);
+        assert_ne!(
+            active_border, inactive_border,
+            "text_highlight_fg and border must differ for the visual cue to be visible"
+        );
     }
 }

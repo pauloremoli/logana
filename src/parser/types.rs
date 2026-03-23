@@ -5,23 +5,18 @@ use std::collections::HashSet;
 /// Semantic meaning of a log field key, shared across all parsers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FieldSemantic {
-    // Canonical display slots
     Timestamp,
     Level,
     Target,
     Span,
     Message,
-    // Host / process metadata
     Hostname,
     Pid,
     Thread,
-    // Syslog
     Facility,
     MsgId,
-    // Distributed tracing
     TraceId,
     SpanId,
-    // HTTP / access log (CLF)
     HttpStatus,
     HttpBytes,
     HttpReferer,
