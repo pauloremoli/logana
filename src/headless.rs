@@ -273,7 +273,7 @@ pub fn run_headless_to_writer(
     let (inc_ff, exc_ff) = extract_field_filters(filter_defs);
     let has_text_includes = fm.has_include();
     let synthetic_level =
-        parser_ref.map_or(false, |p| p.has_synthetic_level()) && fm.filter_count() > 0;
+        parser_ref.is_some_and(|p| p.has_synthetic_level()) && fm.filter_count() > 0;
     let needs_parse =
         !date_filters.is_empty() || !inc_ff.is_empty() || !exc_ff.is_empty() || synthetic_level;
     let date_only =
@@ -331,19 +331,20 @@ pub fn run_headless_to_writer(
                             } else {
                                 None
                             };
-                            if text_dec == FilterDecision::Neutral && synthetic_level {
-                                if let Some(p) = parts.as_ref() {
-                                    let display = crate::ui::field_layout::apply_field_layout(
-                                        p,
-                                        &crate::types::FieldLayout::default(),
-                                        &std::collections::HashSet::new(),
-                                        false,
-                                    )
-                                    .join(" ");
-                                    let dec = fm.evaluate_text(display.as_bytes());
-                                    if dec != FilterDecision::Neutral {
-                                        text_dec = dec;
-                                    }
+                            if text_dec == FilterDecision::Neutral
+                                && synthetic_level
+                                && let Some(p) = parts.as_ref()
+                            {
+                                let display = crate::ui::field_layout::apply_field_layout(
+                                    p,
+                                    &crate::types::FieldLayout::default(),
+                                    &std::collections::HashSet::new(),
+                                    false,
+                                )
+                                .join(" ");
+                                let dec = fm.evaluate_text(display.as_bytes());
+                                if dec != FilterDecision::Neutral {
+                                    text_dec = dec;
                                 }
                             }
                             if crate::ui::line_is_visible(

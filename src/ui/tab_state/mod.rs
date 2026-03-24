@@ -661,7 +661,7 @@ impl TabState {
             let n_field = field_defs.len();
             let n_date = date_filters.len();
             let has_text_includes = fm.has_include();
-            let synthetic_level = parser.map_or(false, |p| p.has_synthetic_level()) && n_text > 0;
+            let synthetic_level = parser.is_some_and(|p| p.has_synthetic_level()) && n_text > 0;
             let needs_parse = !date_filters.is_empty()
                 || !field_defs.is_empty()
                 || !inc_ff.is_empty()
@@ -731,20 +731,20 @@ impl TabState {
                                 } else {
                                     None
                                 };
-                                if text_dec == FilterDecision::Neutral && synthetic_level {
-                                    if let Some(p) = parts.as_ref() {
-                                        let display = crate::ui::field_layout::apply_field_layout(
-                                            p,
-                                            field_layout,
-                                            hidden_fields,
-                                            show_keys,
-                                        )
-                                        .join(" ");
-                                        let dec =
-                                            fm.evaluate_and_count(display.as_bytes(), &mut tc);
-                                        if dec != FilterDecision::Neutral {
-                                            text_dec = dec;
-                                        }
+                                if text_dec == FilterDecision::Neutral
+                                    && synthetic_level
+                                    && let Some(p) = parts.as_ref()
+                                {
+                                    let display = crate::ui::field_layout::apply_field_layout(
+                                        p,
+                                        field_layout,
+                                        hidden_fields,
+                                        show_keys,
+                                    )
+                                    .join(" ");
+                                    let dec = fm.evaluate_and_count(display.as_bytes(), &mut tc);
+                                    if dec != FilterDecision::Neutral {
+                                        text_dec = dec;
                                     }
                                 }
                                 if !field_defs.is_empty() {
@@ -1235,8 +1235,7 @@ impl TabState {
             let n_date = date_filters.len();
 
             let has_text_includes = fm_arc.has_include();
-            let synthetic_level =
-                parser_ref.map_or(false, |p| p.has_synthetic_level()) && n_text > 0;
+            let synthetic_level = parser_ref.is_some_and(|p| p.has_synthetic_level()) && n_text > 0;
             let needs_parse = !date_filters.is_empty()
                 || !field_defs.is_empty()
                 || !inc_ff.is_empty()
@@ -1325,21 +1324,21 @@ impl TabState {
                                     } else {
                                         None
                                     };
-                                    if text_dec == FilterDecision::Neutral && synthetic_level {
-                                        if let Some(p) = parts.as_ref() {
-                                            let display =
-                                                crate::ui::field_layout::apply_field_layout(
-                                                    p,
-                                                    &field_layout,
-                                                    &hidden_fields,
-                                                    show_keys,
-                                                )
-                                                .join(" ");
-                                            let dec = fm_arc
-                                                .evaluate_and_count(display.as_bytes(), &mut tc);
-                                            if dec != FilterDecision::Neutral {
-                                                text_dec = dec;
-                                            }
+                                    if text_dec == FilterDecision::Neutral
+                                        && synthetic_level
+                                        && let Some(p) = parts.as_ref()
+                                    {
+                                        let display = crate::ui::field_layout::apply_field_layout(
+                                            p,
+                                            &field_layout,
+                                            &hidden_fields,
+                                            show_keys,
+                                        )
+                                        .join(" ");
+                                        let dec =
+                                            fm_arc.evaluate_and_count(display.as_bytes(), &mut tc);
+                                        if dec != FilterDecision::Neutral {
+                                            text_dec = dec;
                                         }
                                     }
                                     if !field_defs.is_empty() {
@@ -1528,7 +1527,7 @@ impl TabState {
         } else {
             self.display.format.as_deref()
         };
-        let synthetic_level = parser.map_or(false, |p| p.has_synthetic_level())
+        let synthetic_level = parser.is_some_and(|p| p.has_synthetic_level())
             && self.filter.manager.filter_count() > 0;
         let needs_parse =
             !date_filters.is_empty() || !inc_ff.is_empty() || !exc_ff.is_empty() || synthetic_level;
@@ -1573,22 +1572,23 @@ impl TabState {
                 } else {
                     None
                 };
-                if text_dec == FilterDecision::Neutral && synthetic_level {
-                    if let Some(p) = parts.as_ref() {
-                        let display = crate::ui::field_layout::apply_field_layout(
-                            p,
-                            &self.display.field_layout,
-                            &self.display.hidden_fields,
-                            self.display.show_keys,
-                        )
-                        .join(" ");
-                        let dec = self
-                            .filter
-                            .manager
-                            .evaluate_and_count(display.as_bytes(), &mut dummy_text_counts);
-                        if dec != FilterDecision::Neutral {
-                            text_dec = dec;
-                        }
+                if text_dec == FilterDecision::Neutral
+                    && synthetic_level
+                    && let Some(p) = parts.as_ref()
+                {
+                    let display = crate::ui::field_layout::apply_field_layout(
+                        p,
+                        &self.display.field_layout,
+                        &self.display.hidden_fields,
+                        self.display.show_keys,
+                    )
+                    .join(" ");
+                    let dec = self
+                        .filter
+                        .manager
+                        .evaluate_and_count(display.as_bytes(), &mut dummy_text_counts);
+                    if dec != FilterDecision::Neutral {
+                        text_dec = dec;
                     }
                 }
                 line_is_visible(
