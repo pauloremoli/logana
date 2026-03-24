@@ -4,6 +4,8 @@ All notable changes to logana will be documented in this file.
 
 
 ## [Unreleased]
+
+## [0.4.1] - 2026-03-25
 ### Changed
 - Visual indication in the filter sidebar with different color when the filter mode is active.
 - Removed background color from selected line, colors and inherited from line.
