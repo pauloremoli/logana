@@ -1,18 +1,9 @@
-//! Entry point for logana — a terminal log analysis tool.
-//!
-//! Parses CLI arguments, initialises the tokio runtime and SQLite database,
-//! loads configuration, builds the [`FileReader`] and [`LogManager`], then
-//! hands control to [`App::run`] for the interactive TUI event loop.
-
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    ExecutableCommand,
-    event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
-    terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-        supports_keyboard_enhancement,
-    },
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use logana::config::Config;
 use logana::db::Database;
@@ -86,6 +77,27 @@ struct Args {
     output: Option<std::path::PathBuf>,
 }
 
+struct AlternateScreen {
+    terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
+}
+
+impl AlternateScreen {
+    fn new() -> Result<Self> {
+        enable_raw_mode()?;
+        execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+        terminal.clear()?;
+        Ok(Self { terminal })
+    }
+}
+
+impl Drop for AlternateScreen {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture);
+    }
+}
+
 fn get_db_path() -> String {
     if let Some(data_dir) = dirs::data_dir() {
         let app_dir = data_dir.join("logana");
@@ -95,8 +107,6 @@ fn get_db_path() -> String {
     }
 }
 
-/// Validate that `path` exists (file or directory).
-/// Returns `Ok(())` on success, or an error message describing the problem.
 fn validate_file_arg(path: &str) -> std::result::Result<(), String> {
     let p = std::path::Path::new(path);
     if !p.exists() {
@@ -105,9 +115,6 @@ fn validate_file_arg(path: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// Validate an inline filter argument string by pre-parsing it with the same
-/// clap parser used by the TUI command mode. Returns `Err` with a message if
-/// the string is not a valid command argument list.
 fn validate_inline_filter(prefix: &str, args_str: &str) -> std::result::Result<(), String> {
     use clap::Parser as _;
     use logana::auto_complete::shell_split;
@@ -119,10 +126,6 @@ fn validate_inline_filter(prefix: &str, args_str: &str) -> std::result::Result<(
         .map_err(|e| e.to_string())
 }
 
-/// Determine whether to start a background file load and what source path
-/// to associate with the `LogManager`.
-/// For directories, returns `(None, false)` — the dir mode is handled via
-/// `ConfirmOpenDirMode` after the TUI is started.
 fn resolve_source(file_path: &Option<String>) -> (Option<String>, bool) {
     if let Some(path) = file_path {
         let p = std::path::Path::new(path);
@@ -140,11 +143,7 @@ fn resolve_source(file_path: &Option<String>) -> (Option<String>, bool) {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
-    let file_path = args.file;
-
+async fn init_database() -> Result<Arc<Database>> {
     let db_path = get_db_path();
     let db = match Database::new(&db_path).await {
         Ok(db) => db,
@@ -156,237 +155,225 @@ async fn main() -> Result<()> {
             Database::in_memory().await?
         }
     };
-    let db = Arc::new(db);
+    Ok(Arc::new(db))
+}
 
-    // Validate the file path before entering the TUI (gives a clean error message).
-    if let Some(ref path) = file_path
+fn validate_startup_args(args: &Args) -> std::result::Result<(), String> {
+    if let Some(ref path) = args.file
         && let Err(msg) = validate_file_arg(path)
     {
-        eprintln!("Error: {}", msg);
-        std::process::exit(1);
+        return Err(format!("Error: {}", msg));
     }
 
-    // Validate the filter file path before entering the TUI.
     if let Some(ref fpath) = args.filters
         && let Err(msg) = validate_file_arg(fpath)
     {
-        eprintln!("Error (--filters): {}", msg);
-        std::process::exit(1);
+        return Err(format!("Error (--filters): {}", msg));
     }
-
-    // Validate inline filter argument strings before entering the TUI.
     for args_str in &args.include_filters {
         if let Err(msg) = validate_inline_filter("filter", args_str) {
-            eprintln!("Error (-i/--include): {}", msg);
-            std::process::exit(1);
+            return Err(format!("Error (-i/--include): {}", msg));
         }
     }
     for args_str in &args.exclude_filters {
         if let Err(msg) = validate_inline_filter("exclude", args_str) {
-            eprintln!("Error (-o/--exclude): {}", msg);
-            std::process::exit(1);
+            return Err(format!("Error (-o/--exclude): {}", msg));
         }
     }
     for args_str in &args.timestamp_filters {
         if let Err(msg) = validate_inline_filter("date-filter", args_str) {
-            eprintln!("Error (-t/--timestamp): {}", msg);
-            std::process::exit(1);
+            return Err(format!("Error (-t/--timestamp): {}", msg));
         }
     }
 
-    // Headless mode: dispatch before any TUI or session-restore setup.
-    // run_headless always uses an in-memory database so no saved session
-    // state (filters, marks, scroll position) from previous TUI runs is
-    // ever applied — output depends solely on the parameters given.
+    Ok(())
+}
+
+async fn run_headless_mode(args: Args) -> Result<()> {
+    if let Some(ref path) = args.file
+        && std::path::Path::new(path).is_dir()
+    {
+        eprintln!(
+            "Error: '{}' is a directory. --headless requires a file path or stdin.",
+            path
+        );
+        std::process::exit(1);
+    }
+    logana::headless::run_headless(&logana::headless::HeadlessArgs {
+        file: args.file,
+        filters: args.filters,
+        include_filters: args.include_filters,
+        exclude_filters: args.exclude_filters,
+        timestamp_filters: args.timestamp_filters,
+        output: args.output,
+    })
+    .await
+}
+
+async fn build_app(log_manager: LogManager, config: Config) -> App {
+    let theme = config
+        .theme
+        .as_deref()
+        .and_then(|name| Theme::from_file(format!("{}.json", name)).ok())
+        .unwrap_or_default();
+    let keybinding_conflicts: Vec<String> = config.keybindings.validate();
+    let keybindings = Arc::new(config.keybindings);
+
+    let mut app = App::new(
+        log_manager,
+        FileReader::from_bytes(vec![]),
+        theme,
+        keybindings,
+        config.restore_session,
+        config.restore_file_context,
+        config.show_mode_bar,
+        config.show_borders,
+        config.show_line_numbers,
+        config.show_sidebar,
+        config.wrap,
+    )
+    .await;
+    app.preview_bytes = config.preview_bytes;
+    app.dlt_devices = config.dlt_devices;
+    app.mcp_port = config.mcp_port;
+    app.startup_warnings = keybinding_conflicts;
+    app
+}
+
+async fn apply_cli_args_to_app(app: &mut App, args: &Args) {
+    if let Some(ref fpath) = args.filters
+        && let Err(e) = app.tabs[0].log_manager.load_filters(fpath).await
+    {
+        eprintln!("Warning: could not load filters from '{}': {}", fpath, e);
+    }
+
+    app.startup_tail = args.tail;
+
+    let has_inline_filters = !args.include_filters.is_empty()
+        || !args.exclude_filters.is_empty()
+        || !args.timestamp_filters.is_empty();
+
+    for args_str in &args.include_filters {
+        app.execute_command_str(format!("filter {}", args_str))
+            .await;
+    }
+    for args_str in &args.exclude_filters {
+        app.execute_command_str(format!("exclude {}", args_str))
+            .await;
+    }
+    for args_str in &args.timestamp_filters {
+        app.execute_command_str(format!("date-filter {}", args_str))
+            .await;
+    }
+
+    app.startup_filters = args.filters.is_some() || has_inline_filters;
+
+    if let Some(port) = args.mcp {
+        let p = app.mcp_port.unwrap_or(port);
+        if let Err(e) = app.start_mcp(p).await {
+            app.startup_warnings
+                .push(format!("Failed to start MCP server on port {p}: {e}"));
+        }
+    }
+}
+
+async fn begin_initial_load(
+    app: &mut App,
+    source_path: Option<String>,
+    background_file_load: bool,
+    stdin_is_piped: bool,
+    args: &Args,
+) {
+    let has_inline_filters = !args.include_filters.is_empty()
+        || !args.exclude_filters.is_empty()
+        || !args.timestamp_filters.is_empty();
+
+    let startup_predicate: Option<VisibilityPredicate> =
+        if background_file_load && (args.filters.is_some() || has_inline_filters) {
+            let (fm, _, _, _) = app.tabs[0].log_manager.build_filter_manager();
+            Some(VisibilityPredicate::new(fm))
+        } else {
+            None
+        };
+
+    if background_file_load {
+        if let Some(path) = source_path {
+            app.begin_file_load(
+                path,
+                LoadContext::ReplaceInitialTab,
+                startup_predicate,
+                args.tail,
+            )
+            .await;
+        }
+    } else if stdin_is_piped {
+        app.begin_stdin_load().await;
+    }
+
+    if let Some(ref path) = args.file
+        && std::path::Path::new(path).is_dir()
+    {
+        let files = list_dir_files(path);
+        app.tabs[0].interaction.mode = Box::new(ConfirmOpenDirMode {
+            dir: path.clone(),
+            files,
+        });
+    }
+}
+
+async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
+    let stdin_is_piped = args.file.is_none() && !stdin().is_terminal();
+    let (source_path, background_file_load) = resolve_source(&args.file);
+
+    let log_manager = LogManager::new(db, source_path.clone()).await;
+    let config = Config::load();
+
+    let mut screen = AlternateScreen::new()?;
+    let mut app = build_app(log_manager, config).await;
+    apply_cli_args_to_app(&mut app, &args).await;
+    begin_initial_load(
+        &mut app,
+        source_path,
+        background_file_load,
+        stdin_is_piped,
+        &args,
+    )
+    .await;
+
+    let result = app.run(&mut screen.terminal).await;
+    if let Err(ref err) = result {
+        eprintln!("Application error: {:?}", err);
+    }
+    result
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    let db = init_database().await?;
+    if let Err(msg) = validate_startup_args(&args) {
+        eprintln!("{}", msg);
+        std::process::exit(1);
+    }
+
     if args.headless {
-        if let Some(ref path) = file_path
-            && std::path::Path::new(path).is_dir()
-        {
-            eprintln!(
-                "Error: '{}' is a directory. --headless requires a file path or stdin.",
-                path
-            );
-            std::process::exit(1);
-        }
-        logana::headless::run_headless(&logana::headless::HeadlessArgs {
-            file: file_path,
-            filters: args.filters,
-            include_filters: args.include_filters,
-            exclude_filters: args.exclude_filters,
-            timestamp_filters: args.timestamp_filters,
-            output: args.output,
-        })
-        .await?;
-        return Ok(());
+        return run_headless_mode(args).await;
     }
 
-    // For a directory argument, pre-check that it contains files so we can
-    // give a clean error before entering the TUI.
-    if let Some(ref path) = file_path
+    if let Some(ref path) = args.file
         && std::path::Path::new(path).is_dir()
         && logana::ui::list_dir_files(path).is_empty()
     {
         eprintln!("Error: '{}' contains no files.", path);
         std::process::exit(1);
     }
-
-    // Detect piped stdin before entering the TUI.
-    let stdin_is_piped = file_path.is_none() && !stdin().is_terminal();
-
-    let (source_path, background_file_load) = resolve_source(&file_path);
-
-    let log_manager = LogManager::new(db.clone(), source_path.clone()).await;
-    let config = Config::load();
-    let theme = config
-        .theme
-        .as_deref()
-        .and_then(|name| Theme::from_file(format!("{}.json", name)).ok())
-        .unwrap_or_default();
-    let show_mode_bar = config.show_mode_bar;
-    let show_borders = config.show_borders;
-    let show_line_numbers = config.show_line_numbers;
-    let show_sidebar = config.show_sidebar;
-    let wrap = config.wrap;
-    let preview_bytes = config.preview_bytes;
-    let dlt_devices = config.dlt_devices;
-    let restore_policy = config.restore_session;
-    let restore_file_policy = config.restore_file_context;
-
-    let keybinding_conflicts: Vec<String> = config.keybindings.validate();
-    let keybindings = Arc::new(config.keybindings);
-
-    let res = {
-        enable_raw_mode()?;
-        stdout().execute(EnterAlternateScreen)?;
-        let keyboard_enhanced = supports_keyboard_enhancement().unwrap_or(false);
-        if keyboard_enhanced {
-            stdout().execute(PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-            ))?;
-        }
-        let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
-        terminal.clear()?;
-
-        let mut app = App::new(
-            log_manager,
-            FileReader::from_bytes(vec![]),
-            theme,
-            keybindings,
-            restore_policy,
-            restore_file_policy,
-            show_mode_bar,
-            show_borders,
-            show_line_numbers,
-            show_sidebar,
-            wrap,
-        )
-        .await;
-
-        app.preview_bytes = preview_bytes;
-        app.dlt_devices = dlt_devices;
-        app.mcp_port = config.mcp_port;
-        app.startup_warnings = keybinding_conflicts;
-
-        // If a filter file was provided, load it into the initial tab's log manager
-        // so filters are active both for the single-pass optimisation and for
-        // interactive use (add/remove/edit in filter management mode).
-        if let Some(ref fpath) = args.filters
-            && let Err(e) = app.tabs[0].log_manager.load_filters(fpath).await
-        {
-            eprintln!("Warning: could not load filters from '{}': {}", fpath, e);
-        }
-
-        // Mark the initial tab for tail mode so on_load_success can apply it.
-        app.startup_tail = args.tail;
-
-        // Apply inline CLI filters (already validated before entering the TUI).
-        let has_inline_filters = !args.include_filters.is_empty()
-            || !args.exclude_filters.is_empty()
-            || !args.timestamp_filters.is_empty();
-        for args_str in &args.include_filters {
-            app.execute_command_str(format!("filter {}", args_str))
-                .await;
-        }
-        for args_str in &args.exclude_filters {
-            app.execute_command_str(format!("exclude {}", args_str))
-                .await;
-        }
-        for args_str in &args.timestamp_filters {
-            app.execute_command_str(format!("date-filter {}", args_str))
-                .await;
-        }
-
-        // Suppress the previous-session restore prompt when any filters were provided.
-        app.startup_filters = args.filters.is_some() || has_inline_filters;
-
-        // Start MCP server if requested via --mcp.
-        if let Some(port) = args.mcp {
-            let p = app.mcp_port.unwrap_or(port);
-            if let Err(e) = app.start_mcp(p).await {
-                app.startup_warnings
-                    .push(format!("Failed to start MCP server on port {p}: {e}"));
-            }
-        }
-
-        // Build a visibility predicate for the single-pass optimisation when both
-        // filters and a background file load are in play.
-        let startup_predicate: Option<VisibilityPredicate> =
-            if background_file_load && (args.filters.is_some() || has_inline_filters) {
-                let (fm, _, _, _) = app.tabs[0].log_manager.build_filter_manager();
-                Some(VisibilityPredicate::new(fm))
-            } else {
-                None
-            };
-
-        // Kick off the background file load now that the TUI is visible.
-        if background_file_load {
-            if let Some(path) = source_path {
-                app.begin_file_load(
-                    path,
-                    LoadContext::ReplaceInitialTab,
-                    startup_predicate,
-                    args.tail,
-                )
-                .await;
-            }
-        } else if stdin_is_piped {
-            app.begin_stdin_load().await;
-        }
-
-        // Directory argument: show confirmation popup to open each file in its own tab.
-        if let Some(ref path) = file_path
-            && std::path::Path::new(path).is_dir()
-        {
-            let files = list_dir_files(path);
-            app.tabs[0].interaction.mode = Box::new(ConfirmOpenDirMode {
-                dir: path.clone(),
-                files,
-            });
-        }
-
-        let app_result = app.run(&mut terminal).await;
-
-        if keyboard_enhanced {
-            stdout().execute(PopKeyboardEnhancementFlags)?;
-        }
-        disable_raw_mode()?;
-        stdout().execute(LeaveAlternateScreen)?;
-        app_result
-    };
-
-    if let Err(err) = res {
-        eprintln!("Application error: {:?}", err);
-        return Err(err);
-    }
-
-    Ok(())
+    run_tui(args, db).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Args (clap) ───────────────────────────────────────────────────
 
     #[test]
     fn test_args_no_file() {
@@ -515,8 +502,6 @@ mod tests {
         assert_eq!(args.include_filters, vec!["--field level=ERROR"]);
     }
 
-    // ── validate_inline_filter ────────────────────────────────────────
-
     #[test]
     fn test_validate_inline_filter_valid_pattern() {
         assert!(validate_inline_filter("filter", "error").is_ok());
@@ -572,8 +557,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── --mcp arg ─────────────────────────────────────────────────────
-
     #[test]
     fn test_args_mcp_absent() {
         let args = Args::try_parse_from(["logana"]).unwrap();
@@ -591,8 +574,6 @@ mod tests {
         let args = Args::try_parse_from(["logana", "--mcp", "8080"]).unwrap();
         assert_eq!(args.mcp, Some(8080));
     }
-
-    // ── get_db_path ───────────────────────────────────────────────────
 
     #[test]
     fn test_get_db_path_contains_logana() {
@@ -612,8 +593,6 @@ mod tests {
     #[test]
     fn test_get_db_path_uses_data_dir_when_available() {
         let path = get_db_path();
-        // On most systems dirs::data_dir() returns Some, so the path
-        // should include the app subdirectory.
         if dirs::data_dir().is_some() {
             assert!(
                 path.contains("logana"),
@@ -625,8 +604,6 @@ mod tests {
         }
     }
 
-    // ── validate_file_arg ─────────────────────────────────────────────
-
     #[test]
     fn test_validate_file_arg_nonexistent() {
         let result = validate_file_arg("/nonexistent/path/file.log");
@@ -636,7 +613,6 @@ mod tests {
 
     #[test]
     fn test_validate_file_arg_directory_is_ok() {
-        // Directories are now accepted (handled via ConfirmOpenDirMode).
         let result = validate_file_arg("/tmp");
         assert!(result.is_ok());
     }
@@ -651,11 +627,8 @@ mod tests {
     #[test]
     fn test_validate_file_arg_empty_string() {
         let result = validate_file_arg("");
-        // Empty path doesn't exist.
         assert!(result.is_err());
     }
-
-    // ── resolve_source ────────────────────────────────────────────────
 
     #[test]
     fn test_resolve_source_with_file() {
