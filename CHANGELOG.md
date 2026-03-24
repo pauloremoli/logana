@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 ### Changed
 - Visual indication in the filter sidebar with different color when the filter mode is active.
+- Removed background color from selected line, colors and inherited from line.
 
 ### Fixed
 - Empty stdin placeholder tab is now removed when files are opened via directory selection or `:open`.

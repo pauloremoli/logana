@@ -637,9 +637,7 @@ pub fn prepare_log_panel(
         }
 
         let render_style = if is_current && visual_char_selection.is_none() {
-            Style::default()
-                .fg(theme.cursor_fg)
-                .bg(theme.cursor_bg)
+            base_style
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED)
         } else {

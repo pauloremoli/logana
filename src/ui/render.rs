@@ -2252,6 +2252,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cursor_line_has_no_cursor_bg() {
+        let mut app = make_app(&["INFO first line", "ERROR second line"]).await;
+        let cursor_bg = app.theme.cursor_bg;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let cursor_row = 1u16;
+        let has_cursor_bg = (0..buf.area.width).any(|x| {
+            buf.cell((x, cursor_row))
+                .map_or(false, |c| c.bg == cursor_bg)
+        });
+        assert!(!has_cursor_bg, "cursor line should not use cursor_bg color");
+    }
+
+    #[tokio::test]
     async fn test_startup_warnings_cleared_on_keypress() {
         let mut app = make_app(&["line 0"]).await;
         app.startup_warnings = vec!["conflict".to_string()];
