@@ -29,7 +29,7 @@ A fast terminal log viewer for files of any size — including multi-GB logs. Bu
 - **Multi-tab** — open multiple files, Docker streams, DLT daemon connections, or OTel collector tabs; each tab has independent filters and session state
 - **MCP server** — embedded Model Context Protocol server; expose marks and annotations to AI assistants
 - **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs
-- **Fully configurable** — all keybindings remappable via `~/.config/logana/config.json`; 22 bundled themes
+- **Fully configurable** — all keybindings remappable via a config file
 
 ---
 

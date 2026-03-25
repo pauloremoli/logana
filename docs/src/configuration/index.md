@@ -1,12 +1,16 @@
 # Configuration
 
-logana is configured via `~/.config/logana/config.json`. The file is entirely optional — all settings have sensible defaults and logana starts normally even if the file is missing or contains invalid JSON.
+logana is configured via a `config.json` file. The file is entirely optional — all settings have sensible defaults and logana starts normally even if the file is missing. If the file exists but cannot be read or contains invalid JSON or unknown keys, a warning is shown in the notification area on startup.
 
 ## Config File Location
 
-```
-~/.config/logana/config.json
-```
+The path depends on the operating system:
+
+| OS | Path |
+|---|---|
+| Linux | `~/.config/logana/config.json` |
+| macOS | `~/Library/Application Support/logana/config.json` |
+| Windows | `%APPDATA%\logana\config.json` |
 
 ## Full Example
 

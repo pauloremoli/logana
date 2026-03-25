@@ -2,12 +2,14 @@
 
 ## Runtime Files
 
-| Path | Contents |
-|---|---|
-| `~/.local/share/logana/logana.db` | SQLite database: filters, session state, file contexts |
-| `~/.config/logana/config.json` | Keybindings, theme, UI defaults |
-| `~/.config/logana/themes/` | Custom theme JSON files |
-| `~/.config/logana/templates/` | Custom export template files |
+Paths depend on the operating system:
+
+| Location | Linux | macOS | Windows |
+|---|---|---|---|
+| Database | `~/.local/share/logana/logana.db` | `~/Library/Application Support/logana/logana.db` | `%APPDATA%\logana\logana.db` |
+| Config file | `~/.config/logana/config.json` | `~/Library/Application Support/logana/config.json` | `%APPDATA%\logana\config.json` |
+| Themes dir | `~/.config/logana/themes/` | `~/Library/Application Support/logana/themes/` | `%APPDATA%\logana\themes\` |
+| Templates dir | `~/.config/logana/templates/` | `~/Library/Application Support/logana/templates/` | `%APPDATA%\logana\templates\` |
 
 ## Database
 
@@ -21,7 +23,7 @@ The database is created automatically on first run. Schema migrations run on sta
 
 ## Config File
 
-The config file is optional. If it is absent or contains invalid JSON, logana starts with all defaults. Partial configs are valid — only specified keys override defaults.
+The config file is optional. If it is absent, logana starts with all defaults. If the file exists but cannot be read, contains invalid JSON, or has unknown keys, a warning is shown in the notification area on startup. Partial configs are valid — only specified keys override defaults.
 
 See [Configuration](configuration/index.md) for the full schema.
 
