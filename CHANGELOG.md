@@ -9,6 +9,7 @@ All notable changes to logana will be documented in this file.
 
 ### Fixed
 - Show an error in the notification bar on startup when the config file exists but cannot be read or parsed
+- Selection via mouse when lines are wrapping both on filter and logs.
 
 ## [0.4.1] - 2026-03-25
 ### Changed

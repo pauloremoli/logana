@@ -597,8 +597,31 @@ impl App {
         }
         let tab = &self.tabs[self.active_tab];
         let item_row = row.saturating_sub(area.y + 1) as usize;
-        let num_filters = tab.log_manager.get_filters().len();
-        Some(item_row.min(num_filters.saturating_sub(1)))
+        let filters = tab.log_manager.get_filters();
+        let num_filters = filters.len();
+        if num_filters == 0 {
+            return None;
+        }
+        let inner_width = if tab.display.show_borders {
+            area.width.saturating_sub(2) as usize
+        } else {
+            area.width.saturating_sub(1) as usize
+        };
+        let mut accumulated = 0usize;
+        for (idx, filter) in filters.iter().enumerate() {
+            let text = super::widgets::sidebar::filter_row_display_text(
+                filter,
+                idx,
+                0,
+                &tab.filter.match_counts,
+            );
+            let rc = super::field_layout::line_row_count(text.as_bytes(), inner_width);
+            if accumulated + rc > item_row {
+                return Some(idx);
+            }
+            accumulated += rc;
+        }
+        Some(num_filters.saturating_sub(1))
     }
 
     fn hit_test_log_panel(&self, col: u16, row: u16) -> Option<usize> {
@@ -623,12 +646,44 @@ impl App {
             return None;
         }
         let visual_row = (row - inner.y) as usize;
-        let visible_idx = tab.scroll.viewport_offset + visual_row;
-        if visible_idx < tab.filter.visible_indices.len() {
-            Some(visible_idx)
-        } else {
-            None
+        if !tab.display.wrap {
+            let visible_idx = tab.scroll.viewport_offset + visual_row;
+            return if visible_idx < tab.filter.visible_indices.len() {
+                Some(visible_idx)
+            } else {
+                None
+            };
         }
+        // Wrap mode: one logical line may span multiple screen rows.
+        // Walk from viewport_offset accumulating row counts to find which
+        // logical visible-line index the clicked screen row belongs to.
+        let inner_width = tab.scroll.visible_width;
+        let parser = tab.display.format.as_deref();
+        let field_layout = &tab.display.field_layout;
+        let hidden_fields = &tab.display.hidden_fields;
+        let show_keys = tab.display.show_keys;
+        let visible_count = tab.filter.visible_indices.len();
+        let mut accumulated = 0usize;
+        let mut idx = tab.scroll.viewport_offset;
+        while idx < visible_count {
+            let line_bytes = tab
+                .file_reader
+                .get_line(tab.filter.visible_indices.get(idx));
+            let rc = super::field_layout::effective_row_count(
+                line_bytes,
+                inner_width,
+                parser,
+                field_layout,
+                hidden_fields,
+                show_keys,
+            );
+            if accumulated + rc > visual_row {
+                return Some(idx);
+            }
+            accumulated += rc;
+            idx += 1;
+        }
+        None
     }
 
     async fn handle_left_click(&mut self, col: u16, row: u16) {

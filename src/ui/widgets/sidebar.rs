@@ -18,13 +18,14 @@ pub struct Sidebar<'a> {
     pub theme: &'a Theme,
 }
 
-fn build_filter_row(
+/// Returns the plain display text for a filter row (no styling).
+/// Used both for rendering and for hit-testing wrapped sidebar rows.
+pub(crate) fn filter_row_display_text(
     filter: &FilterDef,
     idx: usize,
     selected: usize,
     match_counts: &[usize],
-    theme: &Theme,
-) -> Line<'static> {
+) -> String {
     let status = if filter.enabled { "[x]" } else { "[ ]" };
     let selected_prefix = if idx == selected { ">" } else { " " };
     let is_date = filter.pattern.starts_with(crate::date_filter::DATE_PREFIX);
@@ -59,6 +60,20 @@ fn build_filter_row(
     } else {
         String::new()
     };
+    format!(
+        "{}{} {}: {}{}{}",
+        selected_prefix, status, filter_type_str, display_pattern, field_tag, count_str
+    )
+}
+
+fn build_filter_row(
+    filter: &FilterDef,
+    idx: usize,
+    selected: usize,
+    match_counts: &[usize],
+    theme: &Theme,
+) -> Line<'static> {
+    let text = filter_row_display_text(filter, idx, selected, match_counts);
     let mut style = Style::default().fg(theme.text);
     if let Some(cfg) = &filter.color_config {
         if let Some(fg) = cfg.fg {
@@ -68,11 +83,7 @@ fn build_filter_row(
             style = style.bg(bg);
         }
     }
-    Line::from(format!(
-        "{}{} {}: {}{}{}",
-        selected_prefix, status, filter_type_str, display_pattern, field_tag, count_str
-    ))
-    .style(style)
+    Line::from(text).style(style)
 }
 
 fn build_sidebar_title(
