@@ -471,6 +471,101 @@ impl App {
         });
     }
 
+    /// Spawn archive extraction in the background (non-blocking).
+    /// Shows an "Extracting…" notification on the active tab.
+    /// Call [`Self::poll_archive_extraction`] each frame to check for completion.
+    pub fn begin_archive_extraction(&mut self, path: &str) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let path_str = path.to_string();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(crate::archive::extract(&path_str));
+        });
+        self.pending_archive = Some(super::ArchiveExtractionState { result_rx: rx });
+        let name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(path)
+            .to_string();
+        self.tabs[self.active_tab].set_notification(format!("Extracting '{name}'…"));
+    }
+
+    /// Poll the pending archive extraction each frame.  When the background task
+    /// finishes, opens one tab per extracted file and clears `pending_archive`.
+    pub async fn poll_archive_extraction(&mut self) {
+        let Some(ref mut state) = self.pending_archive else {
+            return;
+        };
+        match state.result_rx.try_recv() {
+            Ok(Ok(files)) => {
+                self.pending_archive = None;
+                if files.is_empty() {
+                    self.tabs[self.active_tab].set_notification("Archive contains no files.");
+                    return;
+                }
+                for file in files {
+                    let tmp_path = file.temp_file.path().to_string_lossy().to_string();
+                    let preview = FileReader::from_file_head(&tmp_path, self.preview_bytes)
+                        .await
+                        .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
+                    let log_manager =
+                        LogManager::new(self.db.clone(), Some(tmp_path.clone())).await;
+                    let mut tab = TabState::new(preview, log_manager, file.name);
+                    tab.archive_temp = Some(file.temp_file);
+                    self.apply_tab_defaults(&mut tab);
+                    self.tabs.push(tab);
+                    self.active_tab = self.tabs.len() - 1;
+                    let tab_idx = self.active_tab;
+                    self.begin_file_load(
+                        tmp_path,
+                        LoadContext::ReplaceTab { tab_idx },
+                        None,
+                        false,
+                    )
+                    .await;
+                }
+            }
+            Ok(Err(e)) => {
+                self.pending_archive = None;
+                self.tabs[self.active_tab]
+                    .set_notification(format!("Failed to extract archive: {e}"));
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.pending_archive = None;
+            }
+        }
+    }
+
+    /// Extract an archive synchronously (blocking on a thread pool) and open each
+    /// contained file as a new tab.  Suitable for use before the event loop starts
+    /// (startup) or in headless mode where there is no UI to keep responsive.
+    pub async fn open_archive_blocking(&mut self, path: &str) -> Result<(), String> {
+        let path_str = path.to_string();
+        let files = tokio::task::spawn_blocking(move || crate::archive::extract(&path_str))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Failed to extract '{path}': {e}"))?;
+        if files.is_empty() {
+            return Err(format!("'{path}' contains no files."));
+        }
+        for file in files {
+            let tmp_path = file.temp_file.path().to_string_lossy().to_string();
+            let preview = FileReader::from_file_head(&tmp_path, self.preview_bytes)
+                .await
+                .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
+            let log_manager = LogManager::new(self.db.clone(), Some(tmp_path.clone())).await;
+            let mut tab = TabState::new(preview, log_manager, file.name);
+            tab.archive_temp = Some(file.temp_file);
+            self.apply_tab_defaults(&mut tab);
+            self.tabs.push(tab);
+            self.active_tab = self.tabs.len() - 1;
+            let tab_idx = self.active_tab;
+            self.begin_file_load(tmp_path, LoadContext::ReplaceTab { tab_idx }, None, false)
+                .await;
+        }
+        Ok(())
+    }
+
     /// Poll for new stdin data each frame and apply it to the stdin tab.
     pub(super) async fn advance_stdin_load(&mut self) {
         let status = self
@@ -3169,6 +3264,7 @@ mod tests {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_logs: vec![ScopeLogs {
                     log_records: vec![LogRecord {

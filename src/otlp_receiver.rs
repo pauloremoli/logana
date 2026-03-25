@@ -97,7 +97,7 @@ fn decompress_gzip(data: &[u8]) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
-pub(crate) fn otlp_payload_to_lines(payload: &serde_json::Value) -> Vec<String> {
+pub fn otlp_payload_to_lines(payload: &serde_json::Value) -> Vec<String> {
     let mut lines = Vec::new();
     let Some(resource_logs) = payload.get("resourceLogs").and_then(|v| v.as_array()) else {
         return lines;
@@ -183,7 +183,7 @@ fn any_value_to_plain(v: &opentelemetry_proto::tonic::common::v1::AnyValue) -> s
     }
 }
 
-pub(crate) fn otlp_export_request_to_lines(
+pub fn otlp_export_request_to_lines(
     request: &opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest,
 ) -> Vec<String> {
     let mut lines = Vec::new();
@@ -277,7 +277,7 @@ pub(crate) fn otlp_export_request_to_lines(
     lines
 }
 
-pub(crate) fn otlp_protobuf_to_lines(data: &[u8]) -> Result<Vec<String>, prost::DecodeError> {
+pub fn otlp_protobuf_to_lines(data: &[u8]) -> Result<Vec<String>, prost::DecodeError> {
     use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
     use prost::Message;
 
@@ -349,7 +349,7 @@ pub async fn spawn_otlp_grpc_receiver(
 
     tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
-            .add_service(service)
+            .add_routes(tonic::service::Routes::new(service))
             .serve_with_incoming(incoming)
             .await;
     });
@@ -543,6 +543,7 @@ mod tests {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_logs: vec![ScopeLogs {
                     log_records: vec![LogRecord {
@@ -782,6 +783,7 @@ mod tests {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_logs: vec![ScopeLogs {
                     log_records: vec![LogRecord {
@@ -829,6 +831,7 @@ mod tests {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],
                 }),
                 scope_logs: vec![ScopeLogs {
                     log_records: vec![LogRecord {

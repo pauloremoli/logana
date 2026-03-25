@@ -105,6 +105,8 @@ pub struct App {
     pub last_click: Option<(std::time::Instant, u16, u16)>,
     /// Whether the user is currently dragging the scrollbar thumb.
     pub scrollbar_dragging: bool,
+    /// In-progress background archive extraction.
+    pub pending_archive: Option<crate::ui::ArchiveExtractionState>,
 }
 
 impl std::fmt::Debug for App {
@@ -231,6 +233,7 @@ impl App {
             sidebar_area: None,
             last_click: None,
             scrollbar_dragging: false,
+            pending_archive: None,
         }
     }
 
@@ -395,6 +398,7 @@ impl App {
             self.advance_stream_retries();
             self.advance_search();
             self.advance_filter_computation();
+            self.poll_archive_extraction().await;
 
             let mut poll_timeout = tick_rate
                 .checked_sub(last_tick.elapsed())

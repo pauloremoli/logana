@@ -121,7 +121,7 @@ pub fn extract_field_filters(filter_defs: &[FilterDef]) -> (Vec<FieldFilter>, Ve
 /// - `fields.<key>`              → linear search of `parts.extra_fields` by bare key
 ///   (tracing-subscriber inlines the `fields` container into `extra_fields`)
 /// - anything else               → linear search of `parts.extra_fields` by key
-pub(crate) fn resolve_field<'a>(field: &str, parts: &'a DisplayParts<'a>) -> Option<&'a str> {
+pub fn resolve_field<'a>(field: &str, parts: &'a DisplayParts<'a>) -> Option<&'a str> {
     if let Some(span_key) = field.strip_prefix("span.") {
         let span = parts.span.as_ref()?;
         if span_key == "name" {

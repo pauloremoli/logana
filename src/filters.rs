@@ -316,7 +316,7 @@ impl<'a> MatchCollector<'a> {
 }
 
 /// Returns true if `pattern` contains any regex metacharacters.
-pub(crate) fn is_regex_pattern(pattern: &str) -> bool {
+pub fn is_regex_pattern(pattern: &str) -> bool {
     pattern.chars().any(|c| {
         matches!(
             c,

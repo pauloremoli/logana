@@ -1,12 +1,12 @@
 //! Shared timestamp parsing and level normalization utilities.
 
-pub(crate) const WEEKDAYS: &[&str] = &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+pub const WEEKDAYS: &[&str] = &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-pub(crate) const BSD_MONTHS: &[&str] = &[
+pub const BSD_MONTHS: &[&str] = &[
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-pub(crate) fn parse_iso_timestamp(s: &str) -> Option<(&str, usize)> {
+pub fn parse_iso_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 19 {
         return None;
     }
@@ -29,7 +29,7 @@ pub(crate) fn parse_iso_timestamp(s: &str) -> Option<(&str, usize)> {
     Some((&s[..end], end))
 }
 
-pub(crate) fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
+pub fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 16 {
         return None;
     }
@@ -86,7 +86,7 @@ pub(crate) fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
 
 /// Matches a 19-digit all-digit nanosecond Unix epoch prefix (e.g. OTLP-style plain-text logs).
 /// Returns the matched slice and the consumed byte count.
-pub(crate) fn parse_nano_timestamp(s: &str) -> Option<(&str, usize)> {
+pub fn parse_nano_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 19 {
         return None;
     }
@@ -100,7 +100,7 @@ pub(crate) fn parse_nano_timestamp(s: &str) -> Option<(&str, usize)> {
     Some((&s[..19], 19))
 }
 
-pub(crate) fn parse_full_timestamp(s: &str) -> Option<(&str, usize)> {
+pub fn parse_full_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 27 {
         return None;
     }
@@ -158,7 +158,7 @@ pub(crate) fn parse_full_timestamp(s: &str) -> Option<(&str, usize)> {
     Some((&s[..tz_end], tz_end))
 }
 
-pub(crate) fn parse_datetime_timestamp(s: &str) -> Option<(&str, usize)> {
+pub fn parse_datetime_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 19 {
         return None;
     }
@@ -218,7 +218,7 @@ pub(crate) fn parse_datetime_timestamp(s: &str) -> Option<(&str, usize)> {
 /// Returns `(timestamp_slice, bytes_consumed)` or `None`.
 /// Unlike `parse_bsd_precise_timestamp`, this rejects timestamps followed by `.`
 /// so the two parsers remain mutually exclusive.
-pub(crate) fn parse_bsd_plain_timestamp(s: &str) -> Option<(&str, usize)> {
+pub fn parse_bsd_plain_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 15 {
         return None;
     }
@@ -268,7 +268,7 @@ pub(crate) fn parse_bsd_plain_timestamp(s: &str) -> Option<(&str, usize)> {
 
 /// Parse a monotonic (boot-relative) timestamp: `[     0.000000]` or `[1234.567890]`.
 /// Returns `(timestamp_slice, bytes_consumed)` or `None`.
-pub(crate) fn parse_monotonic_timestamp(s: &str) -> Option<(&str, usize)> {
+pub fn parse_monotonic_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.is_empty() || s.as_bytes()[0] != b'[' {
         return None;
     }
@@ -308,7 +308,7 @@ pub(crate) fn parse_monotonic_timestamp(s: &str) -> Option<(&str, usize)> {
 /// The integer part must be at least 9 digits (Unix epoch ≥ ~2001) to avoid
 /// false positives on small numbers. Must be followed by a space.
 /// Returns `(timestamp_slice, bytes_consumed)` or `None`.
-pub(crate) fn parse_unix_timestamp(s: &str) -> Option<(&str, usize)> {
+pub fn parse_unix_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 12 {
         return None;
     }
@@ -343,7 +343,7 @@ pub(crate) fn parse_unix_timestamp(s: &str) -> Option<(&str, usize)> {
     Some((&s[..pos], pos))
 }
 
-pub(crate) fn normalize_level(token: &str) -> Option<&'static str> {
+pub fn normalize_level(token: &str) -> Option<&'static str> {
     match token.to_ascii_uppercase().as_str() {
         "TRACE" | "TRC" => Some("TRACE"),
         "DEBUG" | "DBG" => Some("DEBUG"),
@@ -356,7 +356,7 @@ pub(crate) fn normalize_level(token: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn is_level_keyword(token: &str) -> bool {
+pub fn is_level_keyword(token: &str) -> bool {
     normalize_level(token).is_some()
 }
 

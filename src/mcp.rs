@@ -56,7 +56,7 @@ pub fn build_annotations(log_manager: &LogManager) -> Vec<Comment> {
     log_manager.get_comments().to_vec()
 }
 
-pub(crate) fn format_marks_resource(snapshot: &McpSnapshot) -> String {
+pub fn format_marks_resource(snapshot: &McpSnapshot) -> String {
     snapshot
         .marked_lines
         .iter()
@@ -65,7 +65,7 @@ pub(crate) fn format_marks_resource(snapshot: &McpSnapshot) -> String {
         .join("\n")
 }
 
-pub(crate) fn format_annotations_resource(snapshot: &McpSnapshot) -> String {
+pub fn format_annotations_resource(snapshot: &McpSnapshot) -> String {
     snapshot
         .annotations
         .iter()

@@ -13,7 +13,7 @@ use crate::types::{ColorConfig, Comment, FilterDef, FilterType, parse_color};
 use aho_corasick::AhoCorasick;
 
 pub struct LogManager {
-    pub(crate) db: Arc<Database>,
+    pub db: Arc<Database>,
     source_file: Option<String>,
     filter_defs: Vec<FilterDef>,
     marks: HashSet<usize>,

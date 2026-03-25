@@ -389,7 +389,7 @@ async fn test_field_filter_level_include() {
             .to_vec(),
     );
     let mut out = Vec::new();
-    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    run_headless_to_writer(reader, &manager, &mut out).unwrap();
     let result = String::from_utf8(out).unwrap();
     assert!(result.contains("something failed"));
     assert!(!result.contains("starting up"));
@@ -416,7 +416,7 @@ async fn test_field_filter_level_exclude() {
             .to_vec(),
     );
     let mut out = Vec::new();
-    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    run_headless_to_writer(reader, &manager, &mut out).unwrap();
     let result = String::from_utf8(out).unwrap();
     assert!(result.contains("starting up"));
     assert!(result.contains("something failed"));
@@ -436,7 +436,7 @@ async fn test_headless_multiple_includes_or_semantics() {
     let file = create_sample_log_file();
     let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
     let mut out = Vec::new();
-    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    run_headless_to_writer(reader, &manager, &mut out).unwrap();
     let result = String::from_utf8(out).unwrap();
     assert!(result.contains("ERROR"));
     assert!(result.contains("WARNING"));
@@ -454,7 +454,7 @@ async fn test_headless_regex_filter() {
     let file = create_sample_log_file();
     let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
     let mut out = Vec::new();
-    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    run_headless_to_writer(reader, &manager, &mut out).unwrap();
     let lines: Vec<&str> = out
         .split(|&b| b == b'\n')
         .filter(|l| !l.is_empty())
@@ -477,7 +477,7 @@ async fn test_headless_no_matching_lines() {
 
     let reader = FileReader::from_bytes(b"INFO foo\nDEBUG bar\nERROR baz\n".to_vec());
     let mut out = Vec::new();
-    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    run_headless_to_writer(reader, &manager, &mut out).unwrap();
     assert!(out.is_empty());
 }
 
@@ -495,7 +495,7 @@ async fn test_headless_exclude_before_include() {
     let file = create_sample_log_file();
     let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
     let mut out = Vec::new();
-    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    run_headless_to_writer(reader, &manager, &mut out).unwrap();
     let result = String::from_utf8(out).unwrap();
     assert!(result.contains("Connection failed"));
     assert!(!result.contains("Connection established"));
@@ -522,7 +522,7 @@ async fn test_headless_filter_file_roundtrip() {
 
     let reader = FileReader::from_bytes(b"INFO line\nERROR line\nDEBUG line\n".to_vec());
     let mut out = Vec::new();
-    run_headless_to_writer(reader, manager, &mut out).unwrap();
+    run_headless_to_writer(reader, &manager, &mut out).unwrap();
     let result = String::from_utf8(out).unwrap();
     assert_eq!(result, "ERROR line\n");
 }

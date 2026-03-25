@@ -109,11 +109,11 @@ pub struct FilterHandle {
 /// Used by [`TabState::begin_filter_refresh`] to skip a redundant re-scan when the
 /// filter state is toggled off and then back on without any changes in between.
 pub struct CachedScanResult {
-    pub(crate) filter_fingerprint: Vec<crate::types::FilterDef>,
-    pub(crate) line_count: usize,
-    pub(crate) raw_mode: bool,
-    pub(crate) view: FilterViewSnapshot,
-    pub(crate) match_counts: Vec<usize>,
+    pub filter_fingerprint: Vec<crate::types::FilterDef>,
+    pub line_count: usize,
+    pub raw_mode: bool,
+    pub view: FilterViewSnapshot,
+    pub match_counts: Vec<usize>,
 }
 
 /// List the flat (non-recursive), non-hidden regular files in `path`.
@@ -144,7 +144,7 @@ pub fn list_dir_files(path: &str) -> Vec<String> {
 
 /// Merge three compacted per-type count vectors into a single `Vec<usize>` of length
 /// `filters.len()`, indexed by position in `filter_defs`. Disabled filters get count 0.
-pub(crate) fn merge_filter_counts(
+pub fn merge_filter_counts(
     filters: &[crate::types::FilterDef],
     text: &[usize],
     field: &[usize],
@@ -183,7 +183,7 @@ pub(crate) fn merge_filter_counts(
 /// Pass-through rules (field filters only):
 /// - If the line cannot be parsed (e.g. a stack-trace continuation) → field filters do not apply.
 /// - If the line was parsed but the named field is absent → treated as Miss (hidden).
-pub(crate) fn line_is_visible(
+pub fn line_is_visible(
     text_dec: FilterDecision,
     has_text_includes: bool,
     date_filters: &[crate::date_filter::DateFilter],
@@ -372,7 +372,7 @@ pub struct CachedParsedLine {
 // background search task, which cannot hold a &TabState across await points).
 // ---------------------------------------------------------------------------
 
-pub(crate) fn display_text_for_line(
+pub fn display_text_for_line(
     line_idx: usize,
     file_reader: &FileReader,
     detected_format: &Option<Arc<dyn LogFormatParser>>,
@@ -405,6 +405,8 @@ pub struct TabState {
     pub display: DisplayConfig,
     pub interaction: InteractionState,
     pub load_state: Option<FileLoadState>,
+    /// Keeps extracted archive temp file alive for the lifetime of this tab.
+    pub archive_temp: Option<tempfile::NamedTempFile>,
 }
 
 impl TabState {
@@ -458,6 +460,7 @@ impl TabState {
                 ..InteractionState::default()
             },
             load_state: None,
+            archive_temp: None,
         };
         tab.refresh_visible();
         tab
@@ -2082,7 +2085,13 @@ pub struct StdinLoadState {
     pub temp_path: std::path::PathBuf,
     /// Keeps the temp file alive; dropped after the final mmap is established.
     #[allow(dead_code)]
-    pub(crate) temp_file: tempfile::NamedTempFile,
+    pub temp_file: tempfile::NamedTempFile,
+}
+
+/// Tracks an in-progress background archive extraction.
+pub struct ArchiveExtractionState {
+    pub result_rx:
+        tokio::sync::oneshot::Receiver<Result<Vec<crate::archive::ExtractedFile>, String>>,
 }
 
 /// Per-tab state for watching a file for new appended content.
@@ -2095,7 +2104,7 @@ pub struct FileWatchState {
     pub reader_path: std::path::PathBuf,
     /// Keeps the temp file alive for stream sources. `None` for file watchers.
     #[allow(dead_code)]
-    pub(crate) temp_file: Option<tempfile::NamedTempFile>,
+    pub temp_file: Option<tempfile::NamedTempFile>,
 }
 
 /// The result of a successful stream connection: a notification channel and
@@ -2117,7 +2126,7 @@ pub struct StreamRetryState {
     /// The retry state is kept alive so the attempt counter survives reconnect
     /// cycles and the backoff keeps increasing on repeated drops.
     pub connected: bool,
-    pub(crate) connect: ConnectFn,
+    pub connect: ConnectFn,
 }
 
 impl StreamRetryState {

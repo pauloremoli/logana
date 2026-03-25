@@ -301,13 +301,22 @@ async fn begin_initial_load(
 
     if background_file_load {
         if let Some(path) = source_path {
-            app.begin_file_load(
-                path,
-                LoadContext::ReplaceInitialTab,
-                startup_predicate,
-                args.tail,
-            )
-            .await;
+            if logana::archive::detect_archive_type(&path).is_some() {
+                if let Err(e) = app.open_archive_blocking(&path).await {
+                    app.startup_warnings.push(e);
+                } else if app.tabs.len() > 1 && app.tabs[0].file_reader.line_count() == 0 {
+                    app.tabs.remove(0);
+                    app.active_tab = app.active_tab.saturating_sub(1);
+                }
+            } else {
+                app.begin_file_load(
+                    path,
+                    LoadContext::ReplaceInitialTab,
+                    startup_predicate,
+                    args.tail,
+                )
+                .await;
+            }
         }
     } else if stdin_is_piped {
         app.begin_stdin_load().await;

@@ -411,7 +411,7 @@ fn make_equals_range(
 ///   `> <bound>` / `>= <bound>`         — after
 ///   `< <bound>` / `<= <bound>`         — before
 ///   `<bound>`                          — equals (expands to an inclusive range)
-pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
+pub fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
     let s = input.trim();
     if s.is_empty() {
         return Err("Empty date filter expression".to_string());
@@ -499,7 +499,7 @@ pub(crate) fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
 /// `DisplayParts.timestamp`) into a canonical form for comparison.
 ///
 /// Returns `None` for dmesg-style boot-relative timestamps or unparseable input.
-pub(crate) fn canonical_timestamp(ts: &str) -> Option<String> {
+pub fn canonical_timestamp(ts: &str) -> Option<String> {
     normalize_log_timestamp(ts).map(|n| {
         let mut c = n.canonical;
         if &c[..5] == b"0000-" {
@@ -848,7 +848,7 @@ impl DateFilter {
 
 /// Collect all enabled `@date:` filters from the filter list, parsed.
 /// Filters that fail to parse are silently skipped.
-pub(crate) fn extract_date_filters(filter_defs: &[FilterDef]) -> Vec<DateFilter> {
+pub fn extract_date_filters(filter_defs: &[FilterDef]) -> Vec<DateFilter> {
     filter_defs
         .iter()
         .filter(|f| f.enabled && f.pattern.starts_with(DATE_PREFIX))

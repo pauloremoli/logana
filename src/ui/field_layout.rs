@@ -13,7 +13,7 @@ use crate::types::FieldLayout;
 /// - Words wider than `inner_width` are split at character boundaries across rows.
 ///
 /// Returns 1 when `inner_width` is 0 or the line is empty.
-pub(crate) fn line_row_count(bytes: &[u8], inner_width: usize) -> usize {
+pub fn line_row_count(bytes: &[u8], inner_width: usize) -> usize {
     if inner_width == 0 {
         return 1;
     }
@@ -72,7 +72,7 @@ pub(crate) fn line_row_count(bytes: &[u8], inner_width: usize) -> usize {
 
 /// Simulate word-wrap of `text` into a box of `width` columns and return the
 /// number of lines that result. Used to size the status bar dynamically.
-pub(crate) fn count_wrapped_lines(text: &str, width: usize) -> usize {
+pub fn count_wrapped_lines(text: &str, width: usize) -> usize {
     if width == 0 {
         return 1;
     }
@@ -97,7 +97,7 @@ pub(crate) fn count_wrapped_lines(text: &str, width: usize) -> usize {
 /// raw bytes can be much longer than the rendered output, causing `line_row_count`
 /// on raw bytes to underestimate how many lines fit in the viewport. This function
 /// uses the actual rendered-column text width instead.
-pub(crate) fn effective_row_count(
+pub fn effective_row_count(
     line_bytes: &[u8],
     inner_width: usize,
     parser: Option<&dyn LogFormatParser>,
@@ -121,7 +121,7 @@ pub(crate) fn effective_row_count(
 // Structured field layout helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn get_col(p: &DisplayParts<'_>, name: &str, show_keys: bool) -> Option<String> {
+pub fn get_col(p: &DisplayParts<'_>, name: &str, show_keys: bool) -> Option<String> {
     match name {
         "span" => p.span.as_ref().map(|s| format_span_col(s, show_keys)),
         n => {
@@ -221,7 +221,7 @@ fn render_span(s: &SpanInfo<'_>, excluded_keys: &HashSet<&str>, show_keys: bool)
     format_span_col(&filtered, show_keys)
 }
 
-pub(crate) fn apply_field_layout(
+pub fn apply_field_layout(
     p: &DisplayParts<'_>,
     layout: &FieldLayout,
     hidden_fields: &HashSet<String>,

@@ -24,7 +24,7 @@ pub struct HeadlessArgs {
     pub output: Option<std::path::PathBuf>,
 }
 
-pub(crate) fn same_file(input: &str, output: &std::path::Path) -> bool {
+pub fn same_file(input: &str, output: &std::path::Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -112,11 +112,18 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
         let mut bytes = Vec::new();
         io::stdin().read_to_end(&mut bytes)?;
         let reader = FileReader::from_bytes(bytes);
-        run_headless_to_writer(reader, log_manager, &mut *writer)?;
+        run_headless_to_writer(reader, &log_manager, &mut *writer)?;
         writer.flush()?;
         finalize_output(tmp_path)?;
         return Ok(());
     };
+
+    if crate::archive::detect_archive_type(path).is_some() {
+        run_headless_archive(path, &log_manager, &mut *writer).await?;
+        writer.flush()?;
+        finalize_output(tmp_path)?;
+        return Ok(());
+    }
 
     let (fm, _, _, _) = log_manager.build_filter_manager();
     let needs_parse = {
@@ -138,11 +145,50 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
     if let Some(visible) = result.precomputed_visible {
         write_visible_lines(&mut *writer, &result.reader, &visible)?;
     } else {
-        run_headless_to_writer(result.reader, log_manager, &mut *writer)?;
+        run_headless_to_writer(result.reader, &log_manager, &mut *writer)?;
     }
 
     writer.flush()?;
     finalize_output(tmp_path)?;
+    Ok(())
+}
+
+async fn run_headless_archive(
+    path: &str,
+    log_manager: &LogManager,
+    writer: &mut dyn Write,
+) -> Result<()> {
+    let path_str = path.to_string();
+    let files = tokio::task::spawn_blocking(move || crate::archive::extract(&path_str))
+        .await
+        .map_err(|e| anyhow::anyhow!("Archive extraction task failed: {e}"))?
+        .map_err(|e| anyhow::anyhow!("Failed to extract '{path}': {e}"))?;
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    for file in files {
+        let tmp_path = file.temp_file.path().to_string_lossy().to_string();
+        let (fm, _, _, _) = log_manager.build_filter_manager();
+        let needs_parse = {
+            let filter_defs = log_manager.get_filters();
+            let date_filters = extract_date_filters(filter_defs);
+            let (inc_ff, exc_ff) = extract_field_filters(filter_defs);
+            !date_filters.is_empty() || !inc_ff.is_empty() || !exc_ff.is_empty()
+        };
+        let predicate = (!needs_parse).then(|| VisibilityPredicate::new(fm));
+        let keep_pages = predicate.is_some();
+        let handle =
+            FileReader::load(tmp_path, predicate, false, Arc::clone(&cancel), keep_pages).await?;
+        let result = handle
+            .result_rx
+            .await
+            .map_err(|_| io::Error::other("file load cancelled"))??;
+
+        if let Some(visible) = result.precomputed_visible {
+            write_visible_lines(writer, &result.reader, &visible)?;
+        } else {
+            run_headless_to_writer(result.reader, log_manager, writer)?;
+        }
+    }
     Ok(())
 }
 
@@ -259,7 +305,7 @@ fn write_visible_lines(
 
 pub fn run_headless_to_writer(
     reader: FileReader,
-    log_manager: LogManager,
+    log_manager: &LogManager,
     writer: &mut dyn Write,
 ) -> Result<()> {
     let sample_limit = reader.line_count().min(200);
@@ -397,6 +443,84 @@ mod tests {
         FileReader::from_bytes(data)
     }
 
+    fn make_gz(content: &[u8]) -> tempfile::NamedTempFile {
+        use std::io::Write as _;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut enc = flate2::write::GzEncoder::new(&mut tmp, flate2::Compression::default());
+        enc.write_all(content).unwrap();
+        enc.finish().unwrap();
+        tmp
+    }
+
+    fn make_tar_gz(entries: &[(&str, &[u8])]) -> tempfile::NamedTempFile {
+        use std::io::Write as _;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut tmp, flate2::Compression::default());
+            let mut builder = tar::Builder::new(enc);
+            for (name, content) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(content.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append_data(&mut header, name, *content).unwrap();
+            }
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        tmp
+    }
+
+    #[tokio::test]
+    async fn test_headless_gz_filters_output() {
+        use std::io::Write as _;
+        let content = b"INFO line\nERROR boom\nDEBUG trace\n";
+        let gz_tmp = make_gz(content);
+        let path = gz_tmp.path().to_str().unwrap().to_string() + ".gz";
+        std::fs::copy(gz_tmp.path(), &path).unwrap();
+
+        let mut lm = make_log_manager().await;
+        lm.add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
+            .await;
+        let mut out = Vec::new();
+        run_headless_archive(&path, &lm, &mut out).await.unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let result = String::from_utf8(out).unwrap();
+        assert_eq!(result, "ERROR boom\n");
+    }
+
+    #[tokio::test]
+    async fn test_headless_tar_gz_multiple_files() {
+        use std::io::Write as _;
+        let tar_tmp = make_tar_gz(&[
+            ("a.log", b"INFO alpha\nERROR beta\n"),
+            ("b.log", b"INFO gamma\nERROR delta\n"),
+        ]);
+        let path = tar_tmp.path().to_str().unwrap().to_string() + ".tar.gz";
+        std::fs::copy(tar_tmp.path(), &path).unwrap();
+
+        let mut lm = make_log_manager().await;
+        lm.add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
+            .await;
+        let mut out = Vec::new();
+        run_headless_archive(&path, &lm, &mut out).await.unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let result = String::from_utf8(out).unwrap();
+        assert!(
+            result.contains("ERROR beta\n"),
+            "expected ERROR beta in output"
+        );
+        assert!(
+            result.contains("ERROR delta\n"),
+            "expected ERROR delta in output"
+        );
+        assert!(
+            !result.contains("INFO"),
+            "INFO lines should be filtered out"
+        );
+    }
+
     #[test]
     fn test_write_visible_lines_coalesces_consecutive() {
         let reader = make_reader(&["aaa", "bbb", "ccc", "ddd"]);
@@ -426,7 +550,7 @@ mod tests {
         let lm = make_log_manager().await;
         let reader = make_reader(&["INFO foo", "ERROR bar", "INFO baz"]);
         let mut out = Vec::new();
-        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        run_headless_to_writer(reader, &lm, &mut out).unwrap();
         let result = String::from_utf8(out).unwrap();
         assert_eq!(result, "INFO foo\nERROR bar\nINFO baz\n");
     }
@@ -438,7 +562,7 @@ mod tests {
             .await;
         let reader = make_reader(&["INFO foo", "ERROR bar", "INFO baz"]);
         let mut out = Vec::new();
-        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        run_headless_to_writer(reader, &lm, &mut out).unwrap();
         let result = String::from_utf8(out).unwrap();
         assert_eq!(result, "ERROR bar\n");
     }
@@ -450,7 +574,7 @@ mod tests {
             .await;
         let reader = make_reader(&["INFO foo", "DEBUG bar", "ERROR baz"]);
         let mut out = Vec::new();
-        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        run_headless_to_writer(reader, &lm, &mut out).unwrap();
         let result = String::from_utf8(out).unwrap();
         assert_eq!(result, "INFO foo\nERROR baz\n");
     }
@@ -460,7 +584,7 @@ mod tests {
         let lm = make_log_manager().await;
         let reader = make_reader(&["line1", "line2"]);
         let mut out = Vec::new();
-        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        run_headless_to_writer(reader, &lm, &mut out).unwrap();
         assert_eq!(out, b"line1\nline2\n");
     }
 
@@ -472,7 +596,7 @@ mod tests {
         lm.add_filter_with_color("beta".to_string(), FilterType::Include, None, None, true)
             .await;
         let mut out = Vec::new();
-        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        run_headless_to_writer(reader, &lm, &mut out).unwrap();
         let result = String::from_utf8(out).unwrap();
         assert_eq!(result, "beta\n");
     }
@@ -594,7 +718,7 @@ mod tests {
         let data = [info_line.as_ref(), b"\n", error_line.as_ref(), b"\n"].concat();
         let reader = FileReader::from_bytes(data);
         let mut out = Vec::new();
-        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        run_headless_to_writer(reader, &lm, &mut out).unwrap();
         let result = String::from_utf8(out).unwrap();
         assert_eq!(
             result, "<134>Mar 23 10:00:00 host myapp: all systems go\n",
@@ -622,7 +746,7 @@ mod tests {
         let data = [info_line.as_ref(), b"\n", error_line.as_ref(), b"\n"].concat();
         let reader = FileReader::from_bytes(data);
         let mut out = Vec::new();
-        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        run_headless_to_writer(reader, &lm, &mut out).unwrap();
         let result = String::from_utf8(out).unwrap();
         assert_eq!(
             result, "<11>Mar 23 10:00:01 host myapp: something failed\n",
@@ -642,7 +766,7 @@ mod tests {
         let data = [info_line.as_ref(), b"\n", error_line.as_ref(), b"\n"].concat();
         let reader = FileReader::from_bytes(data);
         let mut out = Vec::new();
-        run_headless_to_writer(reader, lm, &mut out).unwrap();
+        run_headless_to_writer(reader, &lm, &mut out).unwrap();
         let result = String::from_utf8(out).unwrap();
         assert_eq!(
             result, "<11>Mar 23 10:00:01 host myapp: something failed\n",

@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod auto_complete;
 pub mod commands;
 pub mod config;

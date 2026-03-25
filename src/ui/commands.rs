@@ -373,6 +373,10 @@ impl App {
                         Box::new(crate::mode::app_mode::ConfirmOpenDirMode { dir: path, files });
                     return Ok(true);
                 }
+                if crate::archive::detect_archive_type(&path).is_some() {
+                    self.begin_archive_extraction(&path);
+                    return Ok(true);
+                }
                 self.open_file(&path).await?;
             }
             Some(Commands::CloseTab) => {

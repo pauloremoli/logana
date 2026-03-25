@@ -11,6 +11,7 @@ logana is structured around a strict separation between domain logic and the UI 
 - Streaming sources (DLT TCP, Docker logs, file tailing, OTLP HTTP) deliver chunks through a watch channel that the event loop appends each frame.
 - Binary data formats like DLT are converted to newline-delimited text before entering the line-based pipeline.
 - The OTLP HTTP receiver (`FileReader::spawn_otlp_http_receiver`) listens on a local port (default 4318), accepts `POST /v1/logs` with both `application/json` and `application/x-protobuf` payloads (gzip-compressed variants supported), flattens each `LogRecord` into a newline-delimited JSON line, and feeds it through the existing `OtlpParser`.
+- Compressed and archive files (`.gz`, `.bz2`, `.xz`, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`) are handled by `archive.rs`. Detection is extension-based (`detect_archive_type`). For interactive `:open`, extraction runs on tokio's blocking thread pool (`spawn_blocking`) and is non-blocking to the event loop — `App::pending_archive` holds the `oneshot::Receiver` and `poll_archive_extraction` is called each render frame. Each extracted file is written to a `NamedTempFile` stored in `TabState::archive_temp` (keeping it alive for the tab's lifetime) and loaded as a separate tab. Startup and headless mode use `open_archive_blocking` / `run_headless_archive` which await the spawn_blocking call directly.
 
 **Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, DLT, etc.).
 - Parsers extract a normalised `DisplayParts` struct (timestamp, level, target, message, extra fields) that the rest of the system consumes uniformly regardless of the original format.
@@ -204,7 +205,12 @@ flowchart TD
 | **anyhow** | Error handling | Ergonomic error propagation with context in the top-level `main` |
 | **async-trait** | Async trait methods | Native `async fn` in traits (stable since 1.75) is not object-safe: each impl returns a differently-sized future, which a vtable cannot handle. The crate rewrites async methods to return `Pin<Box<dyn Future>>` — a fixed-size pointer — making the trait usable as `Box<dyn Mode>`. The same can be written by hand; the crate is purely a syntactic convenience |
 | **tokio-util** | Async utilities | Provides `CancellationToken` for cooperative shutdown of the MCP HTTP server |
-| **tempfile** | Temporary files | Creates named temporary files in tests for headless-mode and filter integration tests |
+| **tempfile** | Temporary files | Creates named temporary files for archive extraction (kept alive in `TabState::archive_temp`), stdin streaming, and tests |
+| **flate2** | Gzip compression | Decompresses `.gz` and `.tar.gz` files; also used in the OTLP HTTP receiver for gzip-encoded payloads |
+| **zip** | ZIP archives | Parses `.zip` container format and decompresses entries (uses flate2 internally for deflate) |
+| **bzip2** | Bzip2 compression | Decompresses `.bz2` and `.tar.bz2` files |
+| **xz2** | XZ/LZMA compression | Decompresses `.xz` and `.tar.xz` files (wraps liblzma) |
+| **tar** | Tar archives | Iterates entries in `.tar`, `.tar.gz`, `.tar.bz2`, and `.tar.xz` files |
 | **rmcp** | MCP server | Implements the Model Context Protocol server side; provides the `tool` / `tool_router` macros, resource/tool dispatch, and the Streamable HTTP transport |
 | **axum** | HTTP server | Hosts the MCP Streamable HTTP service; used only as the transport layer for the MCP server |
 | **opentelemetry-proto** | OTLP protobuf types | Pre-generated prost bindings for `ExportLogsServiceRequest` and related types; enables decoding binary protobuf OTLP payloads |

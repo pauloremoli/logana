@@ -10,7 +10,7 @@ pub mod logfmt;
 pub mod otlp;
 pub mod schema;
 pub mod syslog;
-pub(crate) mod timestamp;
+pub mod timestamp;
 pub mod types;
 
 pub use clf::ClfParser;

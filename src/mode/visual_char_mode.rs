@@ -341,7 +341,7 @@ impl Mode for VisualMode {
 /// Wraps `pattern` in double quotes when it contains whitespace, escaping
 /// any embedded `"` as `\"` so that `shell_split` reconstructs the original
 /// pattern correctly.
-pub(crate) fn quote_for_command(pattern: &str) -> String {
+pub fn quote_for_command(pattern: &str) -> String {
     if pattern.chars().any(char::is_whitespace) {
         let escaped = pattern.replace('"', "\\\"");
         format!("\"{}\"", escaped)
@@ -352,7 +352,7 @@ pub(crate) fn quote_for_command(pattern: &str) -> String {
 
 /// Returns the displayed text for the current scroll line using parsed
 /// field-layout (if available) or raw bytes as fallback.
-pub(crate) fn display_line_text(tab: &TabState) -> String {
+pub fn display_line_text(tab: &TabState) -> String {
     if let Some(idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
         let bytes = tab.file_reader.get_line(idx);
         if !tab.display.raw_mode
@@ -410,7 +410,7 @@ fn is_word_char(c: char) -> bool {
 
 /// Returns the (start, end) inclusive char indices of the word at `col`.
 /// Returns `None` if `col` is not on a word character.
-pub(crate) fn word_bounds_at(text: &str, col: usize) -> Option<(usize, usize)> {
+pub fn word_bounds_at(text: &str, col: usize) -> Option<(usize, usize)> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     if col >= n || !is_word_char(chars[col]) {

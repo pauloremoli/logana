@@ -20,7 +20,7 @@ pub struct Sidebar<'a> {
 
 /// Returns the plain display text for a filter row (no styling).
 /// Used both for rendering and for hit-testing wrapped sidebar rows.
-pub(crate) fn filter_row_display_text(
+pub fn filter_row_display_text(
     filter: &FilterDef,
     idx: usize,
     selected: usize,
