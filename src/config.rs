@@ -1564,6 +1564,7 @@ pub enum RestoreSessionPolicy {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Theme name (without `.json` extension) to load on startup.
     pub theme: Option<String>,
@@ -1622,21 +1623,35 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Load configuration from `~/.config/logana/config.json`.
-    ///
-    /// This function is infallible — any I/O or parse error falls back to
-    /// `Config::default()` so a bad config never prevents startup.
-    pub fn load() -> Self {
+    fn load_from_path(config_path: &std::path::Path) -> Result<Self, String> {
+        let contents = match std::fs::read_to_string(config_path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Config::default());
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Could not read config file '{}': {}",
+                    config_path.display(),
+                    e
+                ));
+            }
+        };
+        serde_json::from_str(&contents).map_err(|e| {
+            format!(
+                "Could not parse config file '{}': {}",
+                config_path.display(),
+                e
+            )
+        })
+    }
+
+    pub fn load() -> Result<Self, String> {
         let Some(config_path) = dirs::config_dir().map(|d| d.join("logana").join("config.json"))
         else {
-            return Config::default();
+            return Ok(Config::default());
         };
-
-        let Ok(contents) = std::fs::read_to_string(&config_path) else {
-            return Config::default();
-        };
-
-        serde_json::from_str(&contents).unwrap_or_default()
+        Self::load_from_path(&config_path)
     }
 }
 
@@ -3033,5 +3048,41 @@ mod tests {
         let json = r#"{"mcp_port": 8765}"#;
         let config: Config = serde_json::from_str(json).unwrap();
         assert_eq!(config.mcp_port, Some(8765));
+    }
+
+    #[test]
+    fn test_load_from_path_missing_file_returns_default() {
+        let result = Config::load_from_path(std::path::Path::new("/nonexistent/config.json"));
+        assert!(result.is_ok());
+        assert!(result.unwrap().mcp_port.is_none());
+    }
+
+    #[test]
+    fn test_load_from_path_invalid_json_returns_err() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"{invalid}").unwrap();
+        let result = Config::load_from_path(tmp.path());
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("Could not parse config file"));
+    }
+
+    #[test]
+    fn test_load_from_path_valid_json_returns_config() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), br#"{"mcp_port": 1234}"#).unwrap();
+        let result = Config::load_from_path(tmp.path());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().mcp_port, Some(1234));
+    }
+
+    #[test]
+    fn test_load_from_path_unknown_key_returns_err() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), br#"{"unknown_key": true}"#).unwrap();
+        let result = Config::load_from_path(tmp.path());
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("Could not parse config file"));
     }
 }

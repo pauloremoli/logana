@@ -329,10 +329,16 @@ async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
     let (source_path, background_file_load) = resolve_source(&args.file);
 
     let log_manager = LogManager::new(db, source_path.clone()).await;
-    let config = Config::load();
+    let (config, config_error) = match Config::load() {
+        Ok(cfg) => (cfg, None),
+        Err(e) => (Config::default(), Some(e)),
+    };
 
     let mut screen = AlternateScreen::new()?;
     let mut app = build_app(log_manager, config).await;
+    if let Some(err) = config_error {
+        app.startup_warnings.push(err);
+    }
     apply_cli_args_to_app(&mut app, &args).await;
     begin_initial_load(
         &mut app,

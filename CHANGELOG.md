@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 ### Added
 - Mouse support
+- Show an error in the notification area on startup when the config file exists but cannot be read or parsed
 
 ### Fixed
 ## [0.4.1] - 2026-03-25
