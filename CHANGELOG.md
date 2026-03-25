@@ -4,7 +4,10 @@ All notable changes to logana will be documented in this file.
 
 
 ## [Unreleased]
+### Added
+- Mouse support
 
+### Fixed
 ## [0.4.1] - 2026-03-25
 ### Changed
 - Visual indication in the filter sidebar with different color when the filter mode is active.

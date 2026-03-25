@@ -3,6 +3,8 @@ use ratatui::{Terminal, prelude::*};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+const DOUBLE_CLICK_MS: u128 = 300;
+
 use crate::config::{Keybindings, RestoreSessionPolicy};
 use crate::db::{AppSettingsStore, FileContext, FileContextStore, SessionStore};
 use crate::file_reader::FileReader;
@@ -95,6 +97,14 @@ pub struct App {
     pub mcp_cmd_rx: Option<tokio::sync::mpsc::Receiver<crate::mcp::McpCommand>>,
     /// Handle to the running MCP server, if one is active.
     pub mcp_server_handle: Option<crate::mcp::McpServerHandle>,
+    /// Log panel area captured during the last render frame, used for mouse hit-testing.
+    pub log_panel_area: Rect,
+    /// Filter sidebar area captured during the last render frame, used for mouse hit-testing.
+    pub sidebar_area: Option<Rect>,
+    /// Time and screen position of the last left-button down event, for double-click detection.
+    pub last_click: Option<(std::time::Instant, u16, u16)>,
+    /// Whether the user is currently dragging the scrollbar thumb.
+    pub scrollbar_dragging: bool,
 }
 
 impl std::fmt::Debug for App {
@@ -217,6 +227,10 @@ impl App {
             )),
             mcp_cmd_rx: None,
             mcp_server_handle: None,
+            log_panel_area: Rect::default(),
+            sidebar_area: None,
+            last_click: None,
+            scrollbar_dragging: false,
         }
     }
 
@@ -382,25 +396,41 @@ impl App {
             self.advance_search();
             self.advance_filter_computation();
 
-            let poll_timeout = tick_rate
+            let mut poll_timeout = tick_rate
                 .checked_sub(last_tick.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
-
-            if crossterm::event::poll(poll_timeout)?
-                && let crossterm::event::Event::Key(key) = crossterm::event::read()?
-                && key.kind == crossterm::event::KeyEventKind::Press
-            {
-                self.startup_warnings.clear();
-                let tab = &mut self.tabs[self.active_tab];
-                let mode =
-                    std::mem::replace(&mut tab.interaction.mode, Box::new(NormalMode::default()));
-                let (next_mode, result) = mode.handle_key(tab, key.code, key.modifiers).await;
-                tab.interaction.mode = next_mode;
-                self.dispatch_key_result(result, key.code, key.modifiers)
-                    .await;
-                self.refresh_mcp_snapshot();
+            if let Some((t, _, _)) = self.last_click {
+                let remaining =
+                    Duration::from_millis(DOUBLE_CLICK_MS as u64).saturating_sub(t.elapsed());
+                poll_timeout = poll_timeout.min(remaining);
             }
 
+            if crossterm::event::poll(poll_timeout)? {
+                match crossterm::event::read()? {
+                    crossterm::event::Event::Key(key)
+                        if key.kind == crossterm::event::KeyEventKind::Press =>
+                    {
+                        self.startup_warnings.clear();
+                        let tab = &mut self.tabs[self.active_tab];
+                        let mode = std::mem::replace(
+                            &mut tab.interaction.mode,
+                            Box::new(NormalMode::default()),
+                        );
+                        let (next_mode, result) =
+                            mode.handle_key(tab, key.code, key.modifiers).await;
+                        tab.interaction.mode = next_mode;
+                        self.dispatch_key_result(result, key.code, key.modifiers)
+                            .await;
+                        self.refresh_mcp_snapshot();
+                    }
+                    crossterm::event::Event::Mouse(mouse) => {
+                        self.handle_mouse_event(mouse).await;
+                    }
+                    _ => {}
+                }
+            }
+
+            self.flush_pending_click().await;
             self.poll_mcp_commands().await;
 
             if self.should_quit {
@@ -429,6 +459,193 @@ impl App {
         let (next_mode, result) = mode.handle_key(tab, key_code, modifiers).await;
         tab.interaction.mode = next_mode;
         self.dispatch_key_result(result, key_code, modifiers).await;
+    }
+
+    async fn handle_mouse_event(&mut self, event: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        match event.kind {
+            MouseEventKind::ScrollUp => self.mouse_scroll(-3),
+            MouseEventKind::ScrollDown => self.mouse_scroll(3),
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.hit_test_scrollbar(event.column, event.row).is_some() {
+                    self.scrollbar_dragging = true;
+                }
+                self.handle_left_down(event.column, event.row).await;
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if self.scrollbar_dragging {
+                    let scroll_pos = self.hit_test_scrollbar(event.column, event.row);
+                    if let Some(pos) = scroll_pos {
+                        self.tabs[self.active_tab].scroll.scroll_offset = pos;
+                    }
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.scrollbar_dragging = false;
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_left_down(&mut self, col: u16, row: u16) {
+        let now = Instant::now();
+        if let Some((t, c, r)) = self.last_click.take() {
+            if t.elapsed().as_millis() < DOUBLE_CLICK_MS && c == col && r == row {
+                self.handle_double_click(col, row);
+                return;
+            }
+            self.handle_left_click(c, r).await;
+        }
+        if self.hit_test_log_panel(col, row).is_some() {
+            self.last_click = Some((now, col, row));
+        } else {
+            self.handle_left_click(col, row).await;
+        }
+    }
+
+    async fn flush_pending_click(&mut self) {
+        if let Some((t, c, r)) = self.last_click {
+            if t.elapsed().as_millis() < DOUBLE_CLICK_MS {
+                return;
+            }
+            self.last_click = None;
+            self.handle_left_click(c, r).await;
+        }
+    }
+
+    fn handle_double_click(&mut self, col: u16, row: u16) {
+        use crate::mode::visual_char_mode::{VisualMode, display_line_text, word_bounds_at};
+        let Some(visible_idx) = self.hit_test_log_panel(col, row) else {
+            return;
+        };
+        let char_col = self.col_to_char_offset(col);
+        self.tabs[self.active_tab].scroll.scroll_offset = visible_idx;
+        let line_text = display_line_text(&self.tabs[self.active_tab]);
+        if let Some((word_start, word_end)) = word_bounds_at(&line_text, char_col) {
+            let mut mode = VisualMode::new(line_text);
+            mode.anchor_col = Some(word_start);
+            mode.cursor_col = word_end;
+            self.tabs[self.active_tab].interaction.mode = Box::new(mode);
+        }
+    }
+
+    fn col_to_char_offset(&self, col: u16) -> usize {
+        let area = self.log_panel_area;
+        let tab = &self.tabs[self.active_tab];
+        let x_off: u16 = if tab.display.show_borders { 1 } else { 0 };
+        let total_lines = tab.file_reader.line_count();
+        let ln_prefix: u16 = if tab.display.show_line_numbers {
+            (total_lines.max(1).to_string().len() + 2) as u16
+        } else {
+            0
+        };
+        col.saturating_sub(area.x + x_off + ln_prefix) as usize + tab.scroll.horizontal_scroll
+    }
+
+    fn mouse_scroll(&mut self, delta: i32) {
+        let tab = &mut self.tabs[self.active_tab];
+        let max_scroll = tab
+            .filter
+            .visible_indices
+            .len()
+            .saturating_sub(tab.scroll.visible_height);
+        if delta < 0 {
+            tab.scroll.scroll_offset = tab
+                .scroll
+                .scroll_offset
+                .saturating_sub(delta.unsigned_abs() as usize);
+        } else {
+            tab.scroll.scroll_offset = (tab.scroll.scroll_offset + delta as usize).min(max_scroll);
+        }
+        if matches!(
+            tab.interaction.mode.render_state(),
+            crate::mode::app_mode::ModeRenderState::Visual { .. }
+        ) {
+            let mut mode =
+                std::mem::replace(&mut tab.interaction.mode, Box::new(NormalMode::default()));
+            mode.on_scroll_line_change(tab);
+            tab.interaction.mode = mode;
+        }
+    }
+
+    fn hit_test_scrollbar(&self, col: u16, row: u16) -> Option<usize> {
+        let area = self.log_panel_area;
+        if row < area.y || row >= area.y + area.height {
+            return None;
+        }
+        let tab = &self.tabs[self.active_tab];
+        let show_borders = tab.display.show_borders;
+        let scrollbar_col = if show_borders {
+            area.right().saturating_sub(2)
+        } else {
+            area.right().saturating_sub(1)
+        };
+        if col != scrollbar_col {
+            return None;
+        }
+        let total_visible = tab.filter.visible_indices.len();
+        let max_scroll = total_visible.saturating_sub(tab.scroll.visible_height);
+        let bar_height = area.height as usize;
+        let pos = (row - area.y) as usize;
+        Some(((pos * max_scroll) / bar_height.max(1)).min(max_scroll))
+    }
+
+    fn hit_test_sidebar(&self, col: u16, row: u16) -> Option<usize> {
+        let area = self.sidebar_area?;
+        if !area.contains(Position::new(col, row)) {
+            return None;
+        }
+        let tab = &self.tabs[self.active_tab];
+        let item_row = row.saturating_sub(area.y + 1) as usize;
+        let num_filters = tab.log_manager.get_filters().len();
+        Some(item_row.min(num_filters.saturating_sub(1)))
+    }
+
+    fn hit_test_log_panel(&self, col: u16, row: u16) -> Option<usize> {
+        let area = self.log_panel_area;
+        let tab = &self.tabs[self.active_tab];
+        let show_borders = tab.display.show_borders;
+        let show_tab_bar = !self.tabs.is_empty();
+        let x_off: u16 = if show_borders { 1 } else { 0 };
+        let y_off: u16 = if show_borders && !show_tab_bar { 1 } else { 0 };
+        let height_sub: u16 = if show_borders {
+            if show_tab_bar { 1 } else { 2 }
+        } else {
+            0
+        };
+        let inner = Rect {
+            x: area.x + x_off,
+            y: area.y + y_off,
+            width: area.width.saturating_sub(x_off * 2 + 1),
+            height: area.height.saturating_sub(height_sub),
+        };
+        if !inner.contains(Position::new(col, row)) {
+            return None;
+        }
+        let visual_row = (row - inner.y) as usize;
+        let visible_idx = tab.scroll.viewport_offset + visual_row;
+        if visible_idx < tab.filter.visible_indices.len() {
+            Some(visible_idx)
+        } else {
+            None
+        }
+    }
+
+    async fn handle_left_click(&mut self, col: u16, row: u16) {
+        if let Some(scroll_pos) = self.hit_test_scrollbar(col, row) {
+            self.tabs[self.active_tab].scroll.scroll_offset = scroll_pos;
+            return;
+        }
+        if let Some(filter_idx) = self.hit_test_sidebar(col, row) {
+            self.tabs[self.active_tab].interaction.mode = Box::new(FilterManagementMode {
+                selected_filter_index: filter_idx,
+            });
+            return;
+        }
+        if let Some(visible_idx) = self.hit_test_log_panel(col, row) {
+            self.tabs[self.active_tab].scroll.scroll_offset = visible_idx;
+            self.tabs[self.active_tab].interaction.mode = Box::new(NormalMode::default());
+        }
     }
 
     async fn dispatch_key_result(
@@ -2046,5 +2263,616 @@ mod tests {
         app.startup_warnings = vec!["warning 1".to_string(), "warning 2".to_string()];
         app.handle_key_event(KeyCode::Char('j')).await;
         assert!(app.startup_warnings.is_empty());
+    }
+
+    async fn app_with_areas(
+        visible_lines: usize,
+        visible_height: usize,
+        log_area: Rect,
+        sidebar_area: Option<Rect>,
+    ) -> App {
+        let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let data: Vec<u8> = (0..visible_lines)
+            .map(|i| format!("line {}\n", i))
+            .collect::<String>()
+            .into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let mut app = App::new(
+            log_manager,
+            file_reader,
+            crate::theme::Theme::default(),
+            Arc::new(crate::config::Keybindings::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        app.log_panel_area = log_area;
+        app.sidebar_area = sidebar_area;
+        app.tabs[0].scroll.visible_height = visible_height;
+        app
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_scrollbar_correct_column_no_borders() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 40,
+        };
+        let app = app_with_areas(200, 40, area, None).await;
+        assert!(app.hit_test_scrollbar(79, 10).is_some());
+        assert!(app.hit_test_scrollbar(78, 10).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_scrollbar_out_of_row_range() {
+        let area = Rect {
+            x: 0,
+            y: 5,
+            width: 80,
+            height: 20,
+        };
+        let app = app_with_areas(200, 20, area, None).await;
+        assert!(app.hit_test_scrollbar(79, 4).is_none());
+        assert!(app.hit_test_scrollbar(79, 25).is_none());
+        assert!(app.hit_test_scrollbar(79, 5).is_some());
+        assert!(app.hit_test_scrollbar(79, 24).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_scrollbar_proportional_position() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let app = app_with_areas(100, 10, area, None).await;
+        let pos = app.hit_test_scrollbar(79, 5).unwrap();
+        assert_eq!(pos, 45);
+        assert_eq!(app.hit_test_scrollbar(79, 0).unwrap(), 0);
+        let bottom_pos = app.hit_test_scrollbar(79, 9).unwrap();
+        assert!(bottom_pos <= 90);
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_sidebar_inside_maps_to_filter_index() {
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 40,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 40,
+        };
+        let mut app = app_with_areas(10, 10, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter foo".to_string()).await;
+        app.execute_command_str("filter bar".to_string()).await;
+        // title row maps to filter 0 (saturating sub)
+        assert_eq!(app.hit_test_sidebar(65, 0), Some(0));
+        // filter 0 row
+        assert_eq!(app.hit_test_sidebar(65, 1), Some(0));
+        // filter 1 row
+        assert_eq!(app.hit_test_sidebar(65, 2), Some(1));
+        // whitespace below filters clamps to last filter
+        assert_eq!(app.hit_test_sidebar(65, 5), Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_sidebar_outside_returns_none() {
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 40,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 40,
+        };
+        let app = app_with_areas(10, 10, log_area, Some(sidebar_area)).await;
+        assert!(app.hit_test_sidebar(59, 0).is_none());
+        assert!(app.hit_test_sidebar(80, 0).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_sidebar_no_sidebar_returns_none() {
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 40,
+        };
+        let app = app_with_areas(10, 10, log_area, None).await;
+        assert!(app.hit_test_sidebar(70, 5).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_click_sidebar_filter_enters_filter_management_mode() {
+        use crate::mode::app_mode::ModeRenderState;
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter foo".to_string()).await;
+        app.execute_command_str("filter bar".to_string()).await;
+        // row 2 is where filter 1 renders (row 0 = title, row 1 = filter 0, row 2 = filter 1)
+        app.handle_left_click(65, 2).await;
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::FilterManagement { selected_index: 1 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_click_sidebar_filter_selects_correct_index() {
+        use crate::mode::app_mode::ModeRenderState;
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter foo".to_string()).await;
+        app.execute_command_str("filter bar".to_string()).await;
+        app.execute_command_str("filter baz".to_string()).await;
+        // row 1 = filter 0
+        app.handle_left_click(65, 1).await;
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::FilterManagement { selected_index: 0 }
+        ));
+        // row 3 = filter 2
+        app.handle_left_click(65, 3).await;
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::FilterManagement { selected_index: 2 }
+        ));
+        // whitespace below all filters clamps to last filter (index 2)
+        app.handle_left_click(65, 15).await;
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::FilterManagement { selected_index: 2 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_log_panel_maps_row_to_visible_idx() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(50, 20, area, None).await;
+        app.tabs[0].scroll.viewport_offset = 5;
+        assert_eq!(app.hit_test_log_panel(10, 3), Some(8));
+        assert_eq!(app.hit_test_log_panel(10, 0), Some(5));
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_log_panel_with_borders_no_top_border() {
+        // With borders and a tab bar (always present), the log panel renders with
+        // LEFT | RIGHT | BOTTOM only — no top border. Row 0 of the area is the
+        // first log line, not a border row.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(50, 20, area, None).await;
+        app.tabs[0].display.show_borders = true;
+        app.tabs[0].scroll.viewport_offset = 5;
+        // row 0 is the first content row (no top border)
+        assert_eq!(app.hit_test_log_panel(10, 0), Some(5));
+        assert_eq!(app.hit_test_log_panel(10, 3), Some(8));
+        // row 19 is the bottom border — should not select a line
+        assert_eq!(app.hit_test_log_panel(10, 19), None);
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_log_panel_outside_returns_none() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let app = app_with_areas(50, 20, area, None).await;
+        assert!(app.hit_test_log_panel(79, 5).is_none());
+        assert!(app.hit_test_log_panel(10, 20).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_log_panel_beyond_visible_lines_returns_none() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(5, 20, area, None).await;
+        app.tabs[0].scroll.scroll_offset = 0;
+        assert!(app.hit_test_log_panel(10, 5).is_none());
+        assert!(app.hit_test_log_panel(10, 4).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_down_clamps_to_max() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let mut app = app_with_areas(15, 10, area, None).await;
+        app.tabs[0].scroll.scroll_offset = 0;
+        app.mouse_scroll(100);
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 5);
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_up_clamps_to_zero() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let mut app = app_with_areas(15, 10, area, None).await;
+        app.tabs[0].scroll.scroll_offset = 2;
+        app.mouse_scroll(-100);
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_clears_visual_char_selection() {
+        use crate::mode::app_mode::ModeRenderState;
+        use crate::mode::visual_char_mode::VisualMode;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let mut app = app_with_areas(15, 10, area, None).await;
+        let mut mode = VisualMode::new("hello world".to_string());
+        mode.anchor_col = Some(0);
+        mode.cursor_col = 4;
+        app.tabs[0].interaction.mode = Box::new(mode);
+        app.mouse_scroll(1);
+        match app.tabs[0].interaction.mode.render_state() {
+            ModeRenderState::Visual {
+                anchor_col,
+                cursor_col,
+                ..
+            } => {
+                assert_eq!(anchor_col, None);
+                // cursor_col clamped to new line length, not reset to 0
+                assert!(cursor_col <= "line 1".len());
+            }
+            other => panic!("expected Visual mode, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_does_not_affect_other_modes() {
+        use crate::mode::app_mode::ModeRenderState;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let mut app = app_with_areas(15, 10, area, None).await;
+        app.mouse_scroll(1);
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::Normal
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_left_click_log_panel_selects_line() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(50, 20, area, None).await;
+        app.tabs[0].scroll.scroll_offset = 0;
+        app.handle_left_click(10, 7).await;
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 7);
+    }
+
+    #[tokio::test]
+    async fn test_left_click_log_panel_stays_normal_mode() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(50, 20, area, None).await;
+        app.handle_left_click(10, 3).await;
+        use crate::mode::app_mode::ModeRenderState;
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::Normal
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_left_click_log_panel_returns_to_normal_from_visual() {
+        use crate::mode::app_mode::ModeRenderState;
+        use crate::mode::visual_mode::VisualLineMode;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(50, 20, area, None).await;
+        app.tabs[0].interaction.mode = Box::new(VisualLineMode {
+            anchor: 0,
+            count: None,
+        });
+        app.handle_left_click(10, 5).await;
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::Normal
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_double_click_selects_word() {
+        use crate::mode::app_mode::ModeRenderState;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(5, 20, area, None).await;
+        // no borders, no line numbers: char_col = col - area.x
+        app.tabs[0].display.show_borders = false;
+        app.tabs[0].display.show_line_numbers = false;
+        // col 3 is inside "line 0" at visible row 0 → char_col = 3 → 'e' in "line"
+        app.handle_double_click(3, 0);
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
+        match app.tabs[0].interaction.mode.render_state() {
+            ModeRenderState::Visual {
+                anchor_col,
+                cursor_col,
+                ..
+            } => {
+                assert_eq!(anchor_col, Some(0));
+                assert_eq!(cursor_col, 3);
+            }
+            other => panic!("expected Visual mode, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_double_click_on_whitespace_selects_line() {
+        use crate::mode::app_mode::ModeRenderState;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(5, 20, area, None).await;
+        app.tabs[0].display.show_borders = false;
+        app.tabs[0].display.show_line_numbers = false;
+        // col 4 is the space in "line 0"
+        app.handle_double_click(4, 0);
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
+        assert!(
+            matches!(
+                app.tabs[0].interaction.mode.render_state(),
+                ModeRenderState::Normal
+            ),
+            "whitespace double-click should stay in Normal mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_left_down_no_double_click_without_repeat() {
+        use crate::mode::app_mode::ModeRenderState;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(20, 20, area, None).await;
+        app.handle_left_down(10, 5).await;
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::Normal
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_click_is_deferred_until_flush() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(50, 20, area, None).await;
+        app.handle_left_down(10, 7).await;
+        // click is deferred: scroll_offset unchanged
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
+        assert!(app.last_click.is_some());
+        // flush before timeout: still deferred
+        app.flush_pending_click().await;
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
+        // simulate timeout by backdating the pending click
+        app.last_click = Some((Instant::now() - Duration::from_millis(400), 10, 7));
+        app.flush_pending_click().await;
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 7);
+        assert!(app.last_click.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_double_click_cancels_deferred_single_click() {
+        use crate::mode::app_mode::ModeRenderState;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut app = app_with_areas(50, 20, area, None).await;
+        app.tabs[0].display.show_borders = false;
+        app.tabs[0].display.show_line_numbers = false;
+        // first click defers
+        app.handle_left_down(3, 0).await;
+        assert!(app.last_click.is_some());
+        // second click at same position within window → double-click, no single-click
+        app.handle_left_down(3, 0).await;
+        assert!(app.last_click.is_none());
+        // should be in Visual or VisualLine mode, not Normal
+        assert!(!matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::Normal
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_click_is_immediate_not_deferred() {
+        use crate::mode::app_mode::ModeRenderState;
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter foo".to_string()).await;
+        // sidebar click should take effect immediately, not be deferred
+        app.handle_left_down(65, 1).await;
+        assert!(app.last_click.is_none());
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_scrollbar_drag_updates_scroll_offset() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 10,
+        };
+        let mut app = app_with_areas(50, 10, area, None).await;
+        app.tabs[0].display.show_borders = false;
+        // scrollbar column is area.right() - 1 = 19
+        let scrollbar_col = 19u16;
+        // simulate pressing down on the scrollbar
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: scrollbar_col,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert!(app.scrollbar_dragging);
+        // drag to halfway down the bar
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: scrollbar_col,
+            row: 5,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert!(app.tabs[0].scroll.scroll_offset > 0);
+    }
+
+    #[tokio::test]
+    async fn test_scrollbar_drag_stopped_on_mouse_up() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 10,
+        };
+        let mut app = app_with_areas(50, 10, area, None).await;
+        app.tabs[0].display.show_borders = false;
+        app.scrollbar_dragging = true;
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 19,
+            row: 5,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert!(!app.scrollbar_dragging);
+    }
+
+    #[tokio::test]
+    async fn test_drag_outside_scrollbar_when_not_dragging_does_nothing() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 10,
+        };
+        let mut app = app_with_areas(50, 10, area, None).await;
+        app.tabs[0].display.show_borders = false;
+        let initial_offset = app.tabs[0].scroll.scroll_offset;
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 5,
+            row: 5,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert_eq!(app.tabs[0].scroll.scroll_offset, initial_offset);
     }
 }

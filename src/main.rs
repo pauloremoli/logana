@@ -93,8 +93,11 @@ impl AlternateScreen {
 
 impl Drop for AlternateScreen {
     fn drop(&mut self) {
+        while crossterm::event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
+            let _ = crossterm::event::read();
+        }
+        let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen);
         let _ = disable_raw_mode();
-        let _ = execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture);
     }
 }
 

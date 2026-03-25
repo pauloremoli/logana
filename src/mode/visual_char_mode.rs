@@ -327,6 +327,11 @@ impl Mode for VisualMode {
             pending_motion: self.pending_motion.is_some(),
         }
     }
+
+    fn on_scroll_line_change(&mut self, tab: &mut TabState) {
+        self.on_line_change(tab);
+        tab.scroll_char_cursor_into_view(self.cursor_col, &self.line_text);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,7 +405,26 @@ pub fn char_right(text: &str, col: usize) -> usize {
 }
 
 fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+    c.is_alphanumeric() || c == '_' || c == '-'
+}
+
+/// Returns the (start, end) inclusive char indices of the word at `col`.
+/// Returns `None` if `col` is not on a word character.
+pub(crate) fn word_bounds_at(text: &str, col: usize) -> Option<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    if col >= n || !is_word_char(chars[col]) {
+        return None;
+    }
+    let mut start = col;
+    while start > 0 && is_word_char(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end + 1 < n && is_word_char(chars[end + 1]) {
+        end += 1;
+    }
+    Some((start, end))
 }
 
 pub fn word_forward(text: &str, col: usize) -> usize {
@@ -1607,6 +1631,53 @@ mod tests {
             tab.scroll.horizontal_scroll, 0,
             "wrap mode should not adjust scroll"
         );
+    }
+
+    #[test]
+    fn test_word_bounds_at_middle_of_word() {
+        assert_eq!(word_bounds_at("hello world", 3), Some((0, 4)));
+    }
+
+    #[test]
+    fn test_word_bounds_at_start_of_word() {
+        assert_eq!(word_bounds_at("hello world", 0), Some((0, 4)));
+    }
+
+    #[test]
+    fn test_word_bounds_at_end_of_word() {
+        assert_eq!(word_bounds_at("hello world", 4), Some((0, 4)));
+    }
+
+    #[test]
+    fn test_word_bounds_at_second_word() {
+        assert_eq!(word_bounds_at("hello world", 6), Some((6, 10)));
+    }
+
+    #[test]
+    fn test_word_bounds_at_whitespace_returns_none() {
+        assert_eq!(word_bounds_at("hello world", 5), None);
+    }
+
+    #[test]
+    fn test_word_bounds_at_out_of_range_returns_none() {
+        assert_eq!(word_bounds_at("hello", 10), None);
+    }
+
+    #[test]
+    fn test_word_bounds_at_underscore_included() {
+        assert_eq!(word_bounds_at("foo_bar baz", 4), Some((0, 6)));
+    }
+
+    #[test]
+    fn test_word_bounds_at_dash_included() {
+        assert_eq!(word_bounds_at("foo-bar baz", 4), Some((0, 6)));
+    }
+
+    #[test]
+    fn test_word_bounds_at_uuid() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let end = uuid.chars().count() - 1;
+        assert_eq!(word_bounds_at(uuid, 10), Some((0, end)));
     }
 
     #[tokio::test]

@@ -136,6 +136,13 @@ pub trait Mode: std::fmt::Debug + Send {
     /// UI elements to draw. Each variant carries exactly the data its renderer
     /// needs — no more, no less.
     fn render_state(&self) -> ModeRenderState;
+
+    /// Called when the cursor line changes due to mouse scrolling.
+    /// Modes that hold per-line state (e.g. visual char selection) should
+    /// refresh that state. The default implementation is a no-op.
+    /// Called when the cursor line changes due to mouse scrolling.
+    /// Modes that hold per-line state should refresh it here. Default is a no-op.
+    fn on_scroll_line_change(&mut self, _tab: &mut TabState) {}
 }
 
 /// Like `status_entry` but accepts a runtime-computed action string.

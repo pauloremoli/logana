@@ -117,6 +117,8 @@ impl App {
 
         let (logs_area, sidebar_area) =
             self.compute_main_areas(main_chunk, show_tab_bar, show_borders);
+        self.log_panel_area = logs_area;
+        self.sidebar_area = sidebar_area;
         self.render_log_panel(frame, logs_area, show_tab_bar, mode_name, &state);
         if let Some(sa) = sidebar_area {
             let is_filter_mode = matches!(
@@ -2238,11 +2240,11 @@ mod tests {
         let cursor_row = 1u16;
         let has_bold = (0..buf.area.width).any(|x| {
             buf.cell((x, cursor_row))
-                .map_or(false, |c| c.modifier.contains(Modifier::BOLD))
+                .is_some_and(|c| c.modifier.contains(Modifier::BOLD))
         });
         let has_underlined = (0..buf.area.width).any(|x| {
             buf.cell((x, cursor_row))
-                .map_or(false, |c| c.modifier.contains(Modifier::UNDERLINED))
+                .is_some_and(|c| c.modifier.contains(Modifier::UNDERLINED))
         });
         assert!(has_bold, "cursor line should have BOLD modifier");
         assert!(

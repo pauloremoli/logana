@@ -177,6 +177,47 @@ mod tests {
     }
 
     #[test]
+    fn test_sidebar_filter_row_positions_no_borders() {
+        let theme = Theme::default();
+        let filters = vec![
+            make_filter("foo", true, FilterType::Include),
+            make_filter("bar", true, FilterType::Include),
+        ];
+        let sidebar = Sidebar {
+            filters: &filters,
+            match_counts: &[1, 2],
+            selected_filter_idx: 0,
+            filter_enabled: true,
+            show_marks_only: false,
+            filter_progress: None,
+            show_borders: false,
+            is_filter_mode: false,
+            theme: &theme,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let buf = terminal
+            .draw(|f| f.render_widget(sidebar, f.area()))
+            .unwrap();
+        let row_text = |row: u16| -> String {
+            (0..40u16)
+                .map(|c| {
+                    buf.buffer
+                        .cell(ratatui::prelude::Position::new(c, row))
+                        .unwrap()
+                        .symbol()
+                        .to_string()
+                })
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        // row 0 is the title; filter 0 starts at row 1, filter 1 at row 2
+        assert!(row_text(0).contains("Filters"), "row 0 should be title");
+        assert!(row_text(1).contains("foo"), "filter 0 should be at row 1");
+        assert!(row_text(2).contains("bar"), "filter 1 should be at row 2");
+    }
+
+    #[test]
     fn test_sidebar_renders_without_filters() {
         let theme = Theme::default();
         let sidebar = Sidebar {
