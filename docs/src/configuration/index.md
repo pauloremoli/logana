@@ -2,6 +2,12 @@
 
 logana is configured via a `config.json` file. The file is entirely optional — all settings have sensible defaults and logana starts normally even if the file is missing. If the file exists but cannot be read or contains invalid JSON or unknown keys, a warning is shown in the notification area on startup.
 
+## How the Config File Works
+
+logana never writes to the config file. Any settings defined there are applied on startup and take precedence over the values stored in the database.
+
+Some settings (UI toggles like `show_mode_bar`, `show_borders`, `show_sidebar`, `show_line_numbers`, and `wrap`) can also be changed at runtime via the UI options menu (`u`). When changed at runtime, the new value is saved to the database and restored on the next session — unless the setting is explicitly defined in the config file, in which case the config file value always wins.
+
 ## Config File Location
 
 The path depends on the operating system:
@@ -71,8 +77,6 @@ The path depends on the operating system:
 | `restore_session` | string | `"ask"` | Whether to reopen tabs from the previous session (`"ask"`, `"always"`, `"never"`) |
 | `restore_file_context` | string | `"ask"` | Whether to restore per-file state (scroll, marks, search) when reopening a file (`"ask"`, `"always"`, `"never"`) |
 | `dlt_devices` | array | `[]` | Pre-configured DLT daemon connections; each entry has `name`, `host`, and optional `port` (default `3490`) |
-
-UI toggles (`show_mode_bar`, `show_borders`, `show_sidebar`, `show_line_numbers`, `wrap`) can also be changed at runtime via the UI options menu (`u`). The runtime state is stored in the database and is not written back to the config file.
 
 ## Sections
 
