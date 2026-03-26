@@ -1,6 +1,9 @@
 use aho_corasick::AhoCorasick;
+use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+use serde_with::{DisplayFromStr, serde_as};
 
 /// Index into the styles array passed to `render_line`.
 pub type StyleId = u8;
@@ -1050,6 +1053,41 @@ fn merge_sub_chunk_results(
     (visible, counts)
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum FilterType {
+    Include,
+    Exclude,
+}
+
+impl std::fmt::Display for FilterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FilterType::Include => write!(f, "Include"),
+            FilterType::Exclude => write!(f, "Exclude"),
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
+pub struct ColorConfig {
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub fg: Option<Color>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub bg: Option<Color>,
+    #[serde(default)]
+    pub match_only: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FilterDef {
+    pub id: usize,
+    pub pattern: String,
+    pub filter_type: FilterType,
+    pub enabled: bool,
+    pub color_config: Option<ColorConfig>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1918,5 +1956,11 @@ mod tests {
             "visibility must match per-line path"
         );
         assert_eq!(wf_counts, pl_counts, "counts must match per-line path");
+    }
+
+    #[test]
+    fn test_filter_type_display() {
+        assert_eq!(FilterType::Include.to_string(), "Include");
+        assert_eq!(FilterType::Exclude.to_string(), "Exclude");
     }
 }

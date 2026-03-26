@@ -14,7 +14,7 @@ logana is structured around a strict separation between domain logic and the UI 
 - Compressed and archive files (`.gz`, `.bz2`, `.xz`, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`) are handled by `ingestion/archive.rs`. Detection is extension-based (`detect_archive_type`). For interactive `:open`, extraction runs on tokio's blocking thread pool (`spawn_blocking`) and is non-blocking to the event loop — `App::pending_archive` holds the `oneshot::Receiver` and `poll_archive_extraction` is called each render frame. Each extracted file is written to a `NamedTempFile` stored in `TabState::archive_temp` (keeping it alive for the tab's lifetime) and loaded as a separate tab. Startup and headless mode use `open_archive_blocking` / `run_headless_archive` which await the spawn_blocking call directly.
 
 **Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, DLT, etc.).
-- Parsers extract a normalised `DisplayParts` struct (timestamp, level, target, message, extra fields) that the rest of the system consumes uniformly regardless of the original format.
+- Parsers extract a normalised `DisplayParts` struct (timestamp, level, target, message, extra fields) that the rest of the system consumes uniformly regardless of the original format. `LogLevel` is also defined in `parser/types.rs` and shared across the system.
 - Every extra field carries a `FieldSemantic` tag (e.g. `Pid`, `Hostname`, `TraceId`, `HttpStatus`). `FieldSemantic` implements `Display` to expose a canonical name for each variant (e.g. `Pid` → `"pid"`, `TraceId` → `"traceId"`), enabling format-agnostic field filtering regardless of the raw key name (`_PID`, `procid`, or `pid` all resolve to `"pid"`).
 - Log format key→slot mappings are encoded in `LogSchema` constants (`schema.rs`). The `JsonParser` and `LogfmtParser` are schema-driven: each `JsonParser` instance carries a `LogSchema` (journalctl-json, tracing-json, GELF, or generic JSON). Adding a new structured format requires only a new `LogSchema` constant — no changes to parser logic.
 - `collect_field_names()` returns canonical names for all fields: primary slots (`"timestamp"`, `"level"`, `"target"`, `"message"`) and semantic extras (e.g. `"hostname"` for `_HOSTNAME`, `"traceId"` for `trace_id`). Raw key aliases are collapsed to their canonical form.
@@ -49,7 +49,7 @@ logana is structured around a strict separation between domain logic and the UI 
 - `display.rs` — display and theme commands
 - `stream.rs` — streaming source (DLT, Docker, OTLP, tail) commands
 
-**UI & Rendering** — `ui/` owns the terminal handle and drives the Ratatui render loop. Theme definitions live in `ui/theme.rs` and value/level colour mappings in `ui/value_colors.rs`.
+**UI & Rendering** — `ui/` owns the terminal handle and drives the Ratatui render loop. Theme definitions live in `ui/theme.rs` (including `parse_color`/`color_to_string` utilities) and value/level colour mappings in `ui/value_colors.rs`. `FieldLayout` (column visibility/ordering) lives in `ui/field_layout.rs`.
 - The renderer reads tab state and produces widgets each frame; it never mutates state.
 - The event loop dispatches key events to the active mode and acts on the returned result.
 - Session state (open tabs, filters, marks, scroll position) is persisted to SQLite and restored on reopen.

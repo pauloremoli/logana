@@ -1,4 +1,4 @@
-use crate::types::FilterType;
+use crate::filters::FilterType;
 use crate::ui::App;
 
 impl App {
@@ -105,13 +105,13 @@ impl App {
         match output {
             Ok(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout);
-                let containers: Vec<crate::types::DockerContainer> = text
+                let containers: Vec<crate::mode::docker_select_mode::DockerContainer> = text
                     .lines()
                     .filter(|l| !l.is_empty())
                     .filter_map(|line| {
                         let parts: Vec<&str> = line.splitn(4, '\t').collect();
                         if parts.len() == 4 {
-                            Some(crate::types::DockerContainer {
+                            Some(crate::mode::docker_select_mode::DockerContainer {
                                 id: parts[0].to_string(),
                                 name: parts[1].to_string(),
                                 image: parts[2].to_string(),

@@ -3,8 +3,8 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
+use crate::filters::{FilterDef, FilterType};
 use crate::theme::Theme;
-use crate::types::{FilterDef, FilterType};
 
 pub struct Sidebar<'a> {
     pub filters: &'a [FilterDef],
@@ -171,8 +171,8 @@ impl<'a> Widget for Sidebar<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filters::{FilterDef, FilterType};
     use crate::theme::Theme;
-    use crate::types::{FilterDef, FilterType};
     use ratatui::{Terminal, backend::TestBackend};
 
     fn make_filter(pattern: &str, enabled: bool, filter_type: FilterType) -> FilterDef {

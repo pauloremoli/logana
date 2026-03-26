@@ -5,7 +5,8 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
 use std::collections::HashSet;
 
-use crate::types::{ColorConfig, Comment, FilterDef, FilterType};
+use crate::filters::{ColorConfig, FilterDef, FilterType};
+use crate::types::Comment;
 
 #[async_trait]
 pub trait FilterStore: Send + Sync {

@@ -6,6 +6,7 @@ pub use value_colors::*;
 mod app;
 mod commands;
 pub mod field_layout;
+pub use field_layout::FieldLayout;
 mod loading;
 mod render;
 mod tab_state;

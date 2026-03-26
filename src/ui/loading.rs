@@ -2054,7 +2054,7 @@ mod tests {
             .log_manager
             .add_filter_with_color(
                 "ERROR".into(),
-                crate::types::FilterType::Include,
+                crate::filters::FilterType::Include,
                 None,
                 None,
                 true,
@@ -2955,7 +2955,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_filter_computation_saves_cached_scan_result() {
-        use crate::types::FilterType;
+        use crate::filters::FilterType;
         let mut app = make_app(&["error line", "info line", "error again"]).await;
         app.tabs[0]
             .log_manager
@@ -3100,7 +3100,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_search_accumulates_results() {
-        use crate::types::SearchResult;
+        use crate::search::SearchResult;
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
 
@@ -3132,7 +3132,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_search_done_clears_handle() {
-        use crate::types::SearchResult;
+        use crate::search::SearchResult;
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
 
@@ -3162,7 +3162,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_search_navigate_scrolls_to_match() {
-        use crate::types::SearchResult;
+        use crate::search::SearchResult;
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
 

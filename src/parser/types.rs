@@ -2,6 +2,84 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Notice,
+    Warning,
+    Error,
+    Fatal,
+    #[default]
+    Unknown,
+}
+
+impl LogLevel {
+    pub fn parse_level(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "trace" | "trc" => LogLevel::Trace,
+            "debug" | "dbg" => LogLevel::Debug,
+            "info" | "inf" => LogLevel::Info,
+            "notice" => LogLevel::Notice,
+            "warn" | "warning" | "wrn" => LogLevel::Warning,
+            "error" | "err" => LogLevel::Error,
+            "fatal" | "ftl" | "critical" | "crit" | "emerg" | "alert" => LogLevel::Fatal,
+            _ => LogLevel::Unknown,
+        }
+    }
+
+    pub fn detect_from_bytes(line: &[u8]) -> Self {
+        let mut i = 0;
+        while i + 4 <= line.len() {
+            let w4 = [
+                line[i].to_ascii_uppercase(),
+                line[i + 1].to_ascii_uppercase(),
+                line[i + 2].to_ascii_uppercase(),
+                line[i + 3].to_ascii_uppercase(),
+            ];
+            if w4 == *b"FATA" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'L') {
+                return LogLevel::Fatal;
+            }
+            if w4 == *b"CRIT" {
+                return LogLevel::Fatal;
+            }
+            if w4 == *b"EMER" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'G') {
+                return LogLevel::Fatal;
+            }
+            if w4 == *b"ALER" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'T') {
+                return LogLevel::Fatal;
+            }
+            if w4 == *b"ERRO" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'R') {
+                return LogLevel::Error;
+            }
+            if w4 == *b"WARN" {
+                return LogLevel::Warning;
+            }
+            if w4 == *b"NOTI"
+                && i + 6 <= line.len()
+                && line[i + 4].eq_ignore_ascii_case(&b'C')
+                && line[i + 5].eq_ignore_ascii_case(&b'E')
+            {
+                return LogLevel::Notice;
+            }
+            if w4 == *b"INFO" {
+                return LogLevel::Info;
+            }
+            if w4 == *b"DEBU" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'G') {
+                return LogLevel::Debug;
+            }
+            if w4 == *b"TRAC" && i + 5 <= line.len() && line[i + 4].eq_ignore_ascii_case(&b'E') {
+                return LogLevel::Trace;
+            }
+            i += 1;
+        }
+        LogLevel::Unknown
+    }
+}
+
 /// Semantic meaning of a log field key, shared across all parsers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FieldSemantic {
@@ -260,5 +338,85 @@ mod tests {
         assert_eq!(fields[0], (FieldSemantic::Pid, "pid", "1234"));
         assert_eq!(fields[1], (FieldSemantic::Hostname, "hostname", "myhost"));
         assert_eq!(fields[2], (FieldSemantic::Extra, "request_id", "abc"));
+    }
+
+    #[test]
+    fn test_log_level_from_str() {
+        assert_eq!(LogLevel::parse_level("trace"), LogLevel::Trace);
+        assert_eq!(LogLevel::parse_level("TRC"), LogLevel::Trace);
+        assert_eq!(LogLevel::parse_level("debug"), LogLevel::Debug);
+        assert_eq!(LogLevel::parse_level("DBG"), LogLevel::Debug);
+        assert_eq!(LogLevel::parse_level("info"), LogLevel::Info);
+        assert_eq!(LogLevel::parse_level("INFO"), LogLevel::Info);
+        assert_eq!(LogLevel::parse_level("INF"), LogLevel::Info);
+        assert_eq!(LogLevel::parse_level("notice"), LogLevel::Notice);
+        assert_eq!(LogLevel::parse_level("warn"), LogLevel::Warning);
+        assert_eq!(LogLevel::parse_level("WARNING"), LogLevel::Warning);
+        assert_eq!(LogLevel::parse_level("WRN"), LogLevel::Warning);
+        assert_eq!(LogLevel::parse_level("error"), LogLevel::Error);
+        assert_eq!(LogLevel::parse_level("ERR"), LogLevel::Error);
+        assert_eq!(LogLevel::parse_level("fatal"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("FTL"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("critical"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("CRIT"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("emerg"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("alert"), LogLevel::Fatal);
+        assert_eq!(LogLevel::parse_level("unknown"), LogLevel::Unknown);
+    }
+
+    #[test]
+    fn test_log_level_detect_from_bytes() {
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"some INFO message"),
+            LogLevel::Info
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"WARN: disk full"),
+            LogLevel::Warning
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"ERROR: connection lost"),
+            LogLevel::Error
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"DEBUG: value=5"),
+            LogLevel::Debug
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"plain log line"),
+            LogLevel::Unknown
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"error happened"),
+            LogLevel::Error
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"warn about something"),
+            LogLevel::Warning
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"TRACE entering function"),
+            LogLevel::Trace
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"NOTICE system event"),
+            LogLevel::Notice
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"FATAL system crash"),
+            LogLevel::Fatal
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"CRITICAL out of memory"),
+            LogLevel::Fatal
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"EMERG kernel panic"),
+            LogLevel::Fatal
+        );
+        assert_eq!(
+            LogLevel::detect_from_bytes(b"ALERT security breach"),
+            LogLevel::Fatal
+        );
     }
 }

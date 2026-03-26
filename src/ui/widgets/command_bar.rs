@@ -9,8 +9,8 @@ use crate::auto_complete::{
     find_command_completions, fuzzy_match, shell_split,
 };
 use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
+use crate::theme::parse_color;
 use crate::theme::{Theme, complete_theme};
-use crate::types::parse_color;
 use crate::ui::TabState;
 
 pub enum CompletionSource {

@@ -1,4 +1,4 @@
-use crate::types::FilterType;
+use crate::filters::FilterType;
 use crate::ui::App;
 
 impl App {

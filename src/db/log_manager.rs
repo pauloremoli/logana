@@ -6,10 +6,12 @@ use std::sync::Arc;
 use ratatui::style::Style;
 
 use crate::db::{Database, FilterStore};
+use crate::filters::{ColorConfig, FilterDef, FilterType};
 use crate::filters::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
 use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter, is_regex_pattern};
 use crate::ingestion::FileReader;
-use crate::types::{ColorConfig, Comment, FilterDef, FilterType, parse_color};
+use crate::theme::parse_color;
+use crate::types::Comment;
 use aho_corasick::AhoCorasick;
 
 pub struct LogManager {

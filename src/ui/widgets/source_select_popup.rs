@@ -14,7 +14,7 @@ use super::popup_entry;
 pub struct DockerSelectPopup<'a> {
     pub theme: &'a Theme,
     pub keybindings: &'a Keybindings,
-    pub containers: &'a [crate::types::DockerContainer],
+    pub containers: &'a [crate::mode::docker_select_mode::DockerContainer],
     pub selected: usize,
     pub error: Option<&'a str>,
 }
@@ -520,9 +520,9 @@ mod tests {
     use crate::db::Database;
     use crate::db::LogManager;
     use crate::ingestion::FileReader;
+    use crate::mode::docker_select_mode::DockerContainer;
     use crate::mode::docker_select_mode::DockerSelectMode;
     use crate::theme::Theme;
-    use crate::types::DockerContainer;
     use crate::ui::App;
     use ratatui::{Terminal, backend::TestBackend};
     use std::sync::Arc;

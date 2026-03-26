@@ -27,6 +27,7 @@ pub use schema::{
     SCHEMA_TRACING,
 };
 pub use syslog::SyslogParser;
+pub use types::LogLevel;
 pub use types::{DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, format_span_col};
 pub use types::{push_extra_field, push_field_as};
 

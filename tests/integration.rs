@@ -1,9 +1,9 @@
 use logana::db::Database;
 use logana::db::LogManager;
 use logana::filters::FilterManager;
+use logana::filters::FilterType;
 use logana::headless::run_headless_to_writer;
 use logana::ingestion::FileReader;
-use logana::types::FilterType;
 use std::io::Write;
 use std::sync::Arc;
 use tempfile::NamedTempFile;

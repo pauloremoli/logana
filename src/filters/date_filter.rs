@@ -1,6 +1,6 @@
+use crate::filters::FilterDef;
 use crate::filters::StyleId;
 use crate::parser::timestamp::BSD_MONTHS;
-use crate::types::FilterDef;
 
 pub const DATE_PREFIX: &str = "@date:";
 
@@ -1558,7 +1558,7 @@ mod tests {
         let defs = vec![FilterDef {
             id: 1,
             pattern: "ERROR".to_string(),
-            filter_type: crate::types::FilterType::Include,
+            filter_type: crate::filters::FilterType::Include,
             enabled: true,
             color_config: None,
         }];
@@ -1571,7 +1571,7 @@ mod tests {
         let defs = vec![FilterDef {
             id: 1,
             pattern: "@date:01:00:00 .. 02:00:00".to_string(),
-            filter_type: crate::types::FilterType::Include,
+            filter_type: crate::filters::FilterType::Include,
             enabled: true,
             color_config: None,
         }];
@@ -1584,7 +1584,7 @@ mod tests {
         let defs = vec![FilterDef {
             id: 1,
             pattern: "@date:01:00:00 .. 02:00:00".to_string(),
-            filter_type: crate::types::FilterType::Include,
+            filter_type: crate::filters::FilterType::Include,
             enabled: false,
             color_config: None,
         }];
@@ -1597,7 +1597,7 @@ mod tests {
         let defs = vec![FilterDef {
             id: 1,
             pattern: "@date:garbage".to_string(),
-            filter_type: crate::types::FilterType::Include,
+            filter_type: crate::filters::FilterType::Include,
             enabled: true,
             color_config: None,
         }];

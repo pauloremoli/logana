@@ -8,9 +8,17 @@ use crate::{
     mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,
     theme::Theme,
-    types::DockerContainer,
     ui::{KeyResult, TabState},
 };
+
+/// A running Docker container discovered by `docker ps`.
+#[derive(Debug, Clone)]
+pub struct DockerContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub status: String,
+}
 
 #[derive(Debug)]
 pub struct DockerSelectMode {

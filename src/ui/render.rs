@@ -41,7 +41,11 @@ struct UiRenderState {
     comment_popup: Option<(Vec<String>, usize, usize, usize)>,
     help_state: Option<(usize, String)>,
     select_fields_state: Option<(Vec<(String, bool)>, usize)>,
-    docker_select: Option<(Vec<crate::types::DockerContainer>, usize, Option<String>)>,
+    docker_select: Option<(
+        Vec<crate::mode::docker_select_mode::DockerContainer>,
+        usize,
+        Option<String>,
+    )>,
     dlt_select: DltSelectData,
     value_colors_state: ValueColorsData,
     confirm_open_dir: Option<(String, Vec<String>)>,
@@ -234,15 +238,18 @@ impl App {
             ModeRenderState::SelectFields { fields, selected } => Some((fields.clone(), *selected)),
             _ => None,
         };
-        let docker_select: Option<(Vec<crate::types::DockerContainer>, usize, Option<String>)> =
-            match render_state {
-                ModeRenderState::DockerSelect {
-                    containers,
-                    selected,
-                    error,
-                } => Some((containers.clone(), *selected, error.clone())),
-                _ => None,
-            };
+        let docker_select: Option<(
+            Vec<crate::mode::docker_select_mode::DockerContainer>,
+            usize,
+            Option<String>,
+        )> = match render_state {
+            ModeRenderState::DockerSelect {
+                containers,
+                selected,
+                error,
+            } => Some((containers.clone(), *selected, error.clone())),
+            _ => None,
+        };
         let dlt_select: DltSelectData = match render_state {
             ModeRenderState::DltSelect {
                 devices,
@@ -965,7 +972,7 @@ mod tests {
             .log_manager
             .add_filter_with_color(
                 "INFO".to_string(),
-                crate::types::FilterType::Include,
+                crate::filters::FilterType::Include,
                 None,
                 None,
                 false,
@@ -975,7 +982,7 @@ mod tests {
             .log_manager
             .add_filter_with_color(
                 "ERROR".to_string(),
-                crate::types::FilterType::Include,
+                crate::filters::FilterType::Include,
                 None,
                 None,
                 false,
@@ -1939,7 +1946,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_whole_line_filter_fg_suppresses_value_colors_on_covered_spans() {
-        use crate::types::FilterType;
+        use crate::filters::FilterType;
 
         let mut app = make_app(&["log GET /api"]).await;
         let get_color = app.theme.value_colors.http_get;
@@ -1995,7 +2002,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_value_colors_apply_to_unfiltered_parts_of_filter_colored_line() {
-        use crate::types::FilterType;
+        use crate::filters::FilterType;
 
         let mut app = make_app(&["log GET /api"]).await;
         let get_color = app.theme.value_colors.http_get;
@@ -2030,7 +2037,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_filter_fg_bg_on_ip_overrides_value_colors() {
-        use crate::types::FilterType;
+        use crate::filters::FilterType;
 
         let mut app = make_app(&["log from 5.120.204.67 done"]).await;
         let ip_color = app.theme.value_colors.ip_address;
@@ -2065,7 +2072,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_filter_fg_bg_wins_after_initial_value_color_render() {
-        use crate::types::FilterType;
+        use crate::filters::FilterType;
 
         let mut app = make_app(&["log from 5.120.204.67 done"]).await;
         let ip_color = app.theme.value_colors.ip_address;
@@ -2101,7 +2108,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_filter_fg_bg_wins_after_incremental_include() {
-        use crate::types::FilterType;
+        use crate::filters::FilterType;
 
         let mut app = make_app(&["log from 5.120.204.67 done"]).await;
         let ip_color = app.theme.value_colors.ip_address;
@@ -2137,7 +2144,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_filter_fg_bg_on_ip_in_structured_log() {
-        use crate::types::FilterType;
+        use crate::filters::FilterType;
 
         let json_line = r#"{"level":"info","msg":"request from 5.120.204.67 done"}"#;
         let mut app = make_app(&[json_line]).await;

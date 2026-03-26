@@ -8,11 +8,11 @@ use anyhow::Result;
 use crate::db::Database;
 use crate::db::LogManager;
 use crate::filters::FilterDecision;
+use crate::filters::FilterType;
 use crate::filters::extract_date_filters;
 use crate::filters::extract_field_filters;
 use crate::ingestion::{FileReader, VisibilityPredicate};
 use crate::parser::detect_format;
-use crate::types::FilterType;
 
 /// Arguments required to run logana in headless mode.
 pub struct HeadlessArgs {
@@ -383,7 +383,7 @@ pub fn run_headless_to_writer(
                             {
                                 let display = crate::ui::field_layout::apply_field_layout(
                                     p,
-                                    &crate::types::FieldLayout::default(),
+                                    &crate::ui::FieldLayout::default(),
                                     &std::collections::HashSet::new(),
                                     false,
                                 )
@@ -453,7 +453,6 @@ mod tests {
     }
 
     fn make_tar_gz(entries: &[(&str, &[u8])]) -> tempfile::NamedTempFile {
-        use std::io::Write as _;
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         {
             let enc = flate2::write::GzEncoder::new(&mut tmp, flate2::Compression::default());
@@ -472,7 +471,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_headless_gz_filters_output() {
-        use std::io::Write as _;
         let content = b"INFO line\nERROR boom\nDEBUG trace\n";
         let gz_tmp = make_gz(content);
         let path = gz_tmp.path().to_str().unwrap().to_string() + ".gz";
@@ -491,7 +489,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_headless_tar_gz_multiple_files() {
-        use std::io::Write as _;
         let tar_tmp = make_tar_gz(&[
             ("a.log", b"INFO alpha\nERROR beta\n"),
             ("b.log", b"INFO gamma\nERROR delta\n"),

@@ -891,8 +891,8 @@ mod tests {
     use crate::config::{Keybindings, RestoreSessionPolicy};
     use crate::db::Database;
     use crate::db::LogManager;
+    use crate::filters::FilterType;
     use crate::ingestion::FileReader;
-    use crate::types::FilterType;
     use std::sync::Arc;
 
     /// Awaits all pending background filter computations across all tabs.

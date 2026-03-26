@@ -1,9 +1,9 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use logana::db::Database;
 use logana::file_reader::FileReader;
+use logana::filters::FilterType;
 use logana::headless::run_headless_to_writer;
 use logana::log_manager::LogManager;
-use logana::types::FilterType;
 use std::sync::Arc;
 
 fn plain_log_bytes(lines: usize) -> Vec<u8> {

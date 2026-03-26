@@ -122,10 +122,10 @@ mod tests {
     use crate::config::Keybindings;
     use crate::db::Database;
     use crate::db::LogManager;
+    use crate::filters::FilterType;
     use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
-    use crate::types::FilterType;
     use crate::ui::VisibleLines;
     use crate::ui::app::App;
     use std::sync::Arc;

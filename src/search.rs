@@ -1,5 +1,10 @@
-use crate::types::SearchResult;
 use regex::Regex;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchResult {
+    pub line_idx: usize,
+    pub matches: Vec<(usize, usize)>,
+}
 
 #[derive(Debug, Clone)]
 pub struct Search {
@@ -138,7 +143,7 @@ impl Search {
     }
 
     /// Replace results once a background search completes.
-    pub fn set_results(&mut self, results: Vec<crate::types::SearchResult>, pattern: Regex) {
+    pub fn set_results(&mut self, results: Vec<SearchResult>, pattern: Regex) {
         self.results = results;
         self.pattern = Some(pattern);
         self.current_result_index = 0;
@@ -149,7 +154,7 @@ impl Search {
     ///
     /// Chunks arrive in line order so extending preserves sort.
     /// Unlike `set_results`, this does NOT reset navigation indices.
-    pub fn extend_results(&mut self, new_results: Vec<crate::types::SearchResult>) {
+    pub fn extend_results(&mut self, new_results: Vec<SearchResult>) {
         self.results.extend(new_results);
     }
 

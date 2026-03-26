@@ -18,7 +18,8 @@ use crate::ingestion::FileReader;
 use crate::mode::normal_mode::NormalMode;
 use crate::parser::{LogFormatParser, detect_format};
 use crate::search::Search;
-use crate::types::{FieldLayout, SearchResult};
+use crate::search::SearchResult;
+use crate::ui::FieldLayout;
 
 pub mod cache_state;
 pub mod display_config;
@@ -97,7 +98,7 @@ pub struct FilterHandle {
     pub received_first_chunk: bool,
     /// Enabled filter snapshot captured at scan-start; stored here so
     /// `advance_filter_computation` can persist a `CachedScanResult` on completion.
-    pub scan_fingerprint: Vec<crate::types::FilterDef>,
+    pub scan_fingerprint: Vec<crate::filters::FilterDef>,
     /// File line count at scan-start; part of the cache key.
     pub scan_line_count: usize,
     /// `raw_mode` value at scan-start; part of the cache key.
@@ -109,7 +110,7 @@ pub struct FilterHandle {
 /// Used by [`TabState::begin_filter_refresh`] to skip a redundant re-scan when the
 /// filter state is toggled off and then back on without any changes in between.
 pub struct CachedScanResult {
-    pub filter_fingerprint: Vec<crate::types::FilterDef>,
+    pub filter_fingerprint: Vec<crate::filters::FilterDef>,
     pub line_count: usize,
     pub raw_mode: bool,
     pub view: FilterViewSnapshot,
@@ -145,7 +146,7 @@ pub fn list_dir_files(path: &str) -> Vec<String> {
 /// Merge three compacted per-type count vectors into a single `Vec<usize>` of length
 /// `filters.len()`, indexed by position in `filter_defs`. Disabled filters get count 0.
 pub fn merge_filter_counts(
-    filters: &[crate::types::FilterDef],
+    filters: &[crate::filters::FilterDef],
     text: &[usize],
     field: &[usize],
     date: &[usize],
@@ -554,7 +555,7 @@ impl TabState {
         parser: Option<&dyn LogFormatParser>,
         errors: bool,
     ) -> bool {
-        use crate::types::LogLevel;
+        use crate::parser::LogLevel;
         let file_idx = self.filter.visible_indices.get(pos);
         let bytes = self.file_reader.get_line(file_idx);
         let level = parser
@@ -1160,7 +1161,7 @@ impl TabState {
             return;
         }
 
-        let desired_fingerprint: Vec<crate::types::FilterDef> = self
+        let desired_fingerprint: Vec<crate::filters::FilterDef> = self
             .log_manager
             .get_filters()
             .iter()
@@ -2284,8 +2285,9 @@ mod tests {
         assert!(files.is_empty());
     }
     use crate::db::LogManager;
+    use crate::filters::FilterType;
     use crate::ingestion::FileReader;
-    use crate::types::{Comment, FilterType};
+    use crate::types::Comment;
     use std::sync::Arc;
 
     async fn make_tab(lines: &[&str]) -> TabState {
@@ -3494,7 +3496,7 @@ mod tests {
             .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
             .await;
         // Seed the cache as if a completed scan had run.
-        let fingerprint: Vec<crate::types::FilterDef> = tab
+        let fingerprint: Vec<crate::filters::FilterDef> = tab
             .log_manager
             .get_filters()
             .iter()
@@ -3531,7 +3533,7 @@ mod tests {
         tab.log_manager
             .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
             .await;
-        let fingerprint: Vec<crate::types::FilterDef> = tab
+        let fingerprint: Vec<crate::filters::FilterDef> = tab
             .log_manager
             .get_filters()
             .iter()
@@ -3564,7 +3566,7 @@ mod tests {
             .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
             .await;
         // Cache built for a different enabled filter.
-        let stale_filter = crate::types::FilterDef {
+        let stale_filter = crate::filters::FilterDef {
             id: 99,
             pattern: "other".to_string(),
             filter_type: FilterType::Include,
@@ -3594,7 +3596,7 @@ mod tests {
         tab.log_manager
             .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
             .await;
-        let fingerprint: Vec<crate::types::FilterDef> = tab
+        let fingerprint: Vec<crate::filters::FilterDef> = tab
             .log_manager
             .get_filters()
             .iter()

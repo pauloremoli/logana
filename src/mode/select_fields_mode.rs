@@ -10,8 +10,7 @@ use crate::{
     mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,
     theme::Theme,
-    types::FieldLayout,
-    ui::{KeyResult, TabState},
+    ui::{FieldLayout, KeyResult, TabState},
 };
 
 #[derive(Debug)]

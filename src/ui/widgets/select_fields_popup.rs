@@ -179,8 +179,8 @@ mod tests {
     use crate::ingestion::FileReader;
     use crate::mode::select_fields_mode::SelectFieldsMode;
     use crate::theme::Theme;
-    use crate::types::FieldLayout;
     use crate::ui::App;
+    use crate::ui::FieldLayout;
     use ratatui::{Terminal, backend::TestBackend};
     use std::sync::Arc;
 

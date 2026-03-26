@@ -695,6 +695,75 @@ pub fn complete_theme(partial: &str) -> Vec<String> {
     }
 }
 
+/// Parse a color string supporting `[r,g,b]` RGB triplets in addition to
+/// ratatui's built-in named colours (`Red`, `LightBlue`, ...) and hex (`#RRGGBB`).
+pub fn parse_color(s: &str) -> Option<Color> {
+    let trimmed = s.trim();
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let parts: Vec<&str> = inner.split(',').collect();
+        if parts.len() == 3
+            && let (Ok(r), Ok(g), Ok(b)) = (
+                parts[0].trim().parse::<u8>(),
+                parts[1].trim().parse::<u8>(),
+                parts[2].trim().parse::<u8>(),
+            )
+        {
+            return Some(Color::Rgb(r, g, b));
+        }
+        return None;
+    }
+    if let Some(c) = parse_extended_named_color(trimmed) {
+        return Some(c);
+    }
+    Color::from_str(trimmed).ok()
+}
+
+fn parse_extended_named_color(s: &str) -> Option<Color> {
+    match s.to_lowercase().as_str() {
+        "orange" => Some(Color::Rgb(255, 165, 0)),
+        "pink" => Some(Color::Rgb(255, 105, 180)),
+        "purple" => Some(Color::Rgb(128, 0, 128)),
+        "violet" => Some(Color::Rgb(238, 130, 238)),
+        "indigo" => Some(Color::Rgb(75, 0, 130)),
+        "teal" => Some(Color::Rgb(0, 128, 128)),
+        "turquoise" => Some(Color::Rgb(64, 224, 208)),
+        "coral" => Some(Color::Rgb(255, 127, 80)),
+        "salmon" => Some(Color::Rgb(250, 128, 114)),
+        "gold" => Some(Color::Rgb(255, 215, 0)),
+        "lime" => Some(Color::Rgb(0, 255, 0)),
+        "maroon" => Some(Color::Rgb(128, 0, 0)),
+        "navy" => Some(Color::Rgb(0, 0, 128)),
+        "olive" => Some(Color::Rgb(128, 128, 0)),
+        "brown" => Some(Color::Rgb(165, 42, 42)),
+        _ => None,
+    }
+}
+
+/// Convert a `Color` to its display string.
+/// Extended named colors (those added beyond ratatui's built-ins) are returned
+/// as their human-readable name rather than ratatui's hex representation.
+pub fn color_to_string(c: Color) -> String {
+    match c {
+        Color::Rgb(255, 165, 0) => "Orange".to_string(),
+        Color::Rgb(255, 105, 180) => "Pink".to_string(),
+        Color::Rgb(128, 0, 128) => "Purple".to_string(),
+        Color::Rgb(238, 130, 238) => "Violet".to_string(),
+        Color::Rgb(75, 0, 130) => "Indigo".to_string(),
+        Color::Rgb(0, 128, 128) => "Teal".to_string(),
+        Color::Rgb(64, 224, 208) => "Turquoise".to_string(),
+        Color::Rgb(255, 127, 80) => "Coral".to_string(),
+        Color::Rgb(250, 128, 114) => "Salmon".to_string(),
+        Color::Rgb(255, 215, 0) => "Gold".to_string(),
+        Color::Rgb(0, 255, 0) => "Lime".to_string(),
+        Color::Rgb(128, 0, 0) => "Maroon".to_string(),
+        Color::Rgb(0, 0, 128) => "Navy".to_string(),
+        Color::Rgb(128, 128, 0) => "Olive".to_string(),
+        Color::Rgb(165, 42, 42) => "Brown".to_string(),
+        other => format!("{other}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1106,5 +1175,98 @@ mod tests {
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: Wrapper = serde_json::from_str(&json).unwrap();
         assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_parse_color_rgb_triplet() {
+        assert_eq!(parse_color("[255,0,0]"), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(parse_color("[0,255,0]"), Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(parse_color("[0,0,255]"), Some(Color::Rgb(0, 0, 255)));
+    }
+
+    #[test]
+    fn test_parse_color_rgb_triplet_with_spaces() {
+        assert_eq!(parse_color("[255, 128, 0]"), Some(Color::Rgb(255, 128, 0)));
+        assert_eq!(
+            parse_color("[ 10 , 20 , 30 ]"),
+            Some(Color::Rgb(10, 20, 30))
+        );
+    }
+
+    #[test]
+    fn test_parse_color_named() {
+        assert_eq!(parse_color("Red"), Some(Color::Red));
+        assert_eq!(parse_color("LightBlue"), Some(Color::LightBlue));
+        assert_eq!(parse_color("green"), Some(Color::Green));
+        assert_eq!(parse_color("Black"), Some(Color::Black));
+        assert_eq!(parse_color("black"), Some(Color::Black));
+        assert_eq!(parse_color("White"), Some(Color::White));
+    }
+
+    #[test]
+    fn test_parse_color_hex() {
+        assert_eq!(parse_color("#FF0000"), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(parse_color("#00ff00"), Some(Color::Rgb(0, 255, 0)));
+    }
+
+    #[test]
+    fn test_parse_color_invalid() {
+        assert_eq!(parse_color("not_a_color"), None);
+        assert_eq!(parse_color("[256,0,0]"), None);
+        assert_eq!(parse_color("[1,2]"), None);
+        assert_eq!(parse_color("[]"), None);
+        assert_eq!(parse_color("[a,b,c]"), None);
+    }
+
+    #[test]
+    fn test_parse_color_extended_named() {
+        assert_eq!(parse_color("orange"), Some(Color::Rgb(255, 165, 0)));
+        assert_eq!(parse_color("pink"), Some(Color::Rgb(255, 105, 180)));
+        assert_eq!(parse_color("purple"), Some(Color::Rgb(128, 0, 128)));
+        assert_eq!(parse_color("violet"), Some(Color::Rgb(238, 130, 238)));
+        assert_eq!(parse_color("indigo"), Some(Color::Rgb(75, 0, 130)));
+        assert_eq!(parse_color("teal"), Some(Color::Rgb(0, 128, 128)));
+        assert_eq!(parse_color("turquoise"), Some(Color::Rgb(64, 224, 208)));
+        assert_eq!(parse_color("coral"), Some(Color::Rgb(255, 127, 80)));
+        assert_eq!(parse_color("salmon"), Some(Color::Rgb(250, 128, 114)));
+        assert_eq!(parse_color("gold"), Some(Color::Rgb(255, 215, 0)));
+        assert_eq!(parse_color("lime"), Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(parse_color("maroon"), Some(Color::Rgb(128, 0, 0)));
+        assert_eq!(parse_color("navy"), Some(Color::Rgb(0, 0, 128)));
+        assert_eq!(parse_color("olive"), Some(Color::Rgb(128, 128, 0)));
+        assert_eq!(parse_color("brown"), Some(Color::Rgb(165, 42, 42)));
+    }
+
+    #[test]
+    fn test_color_to_string_extended_named() {
+        assert_eq!(color_to_string(Color::Rgb(255, 165, 0)), "Orange");
+        assert_eq!(color_to_string(Color::Rgb(255, 105, 180)), "Pink");
+        assert_eq!(color_to_string(Color::Rgb(128, 0, 128)), "Purple");
+        assert_eq!(color_to_string(Color::Rgb(0, 128, 128)), "Teal");
+        assert_eq!(color_to_string(Color::Rgb(165, 42, 42)), "Brown");
+        assert_eq!(color_to_string(Color::Rgb(0, 0, 128)), "Navy");
+    }
+
+    #[test]
+    fn test_color_to_string_ratatui_named_passes_through() {
+        assert_eq!(color_to_string(Color::Red), "Red");
+        assert_eq!(color_to_string(Color::LightBlue), "LightBlue");
+    }
+
+    #[test]
+    fn test_color_to_string_roundtrip() {
+        for name in &["Orange", "Pink", "Purple", "Teal", "Navy", "Brown"] {
+            let color = parse_color(name).unwrap();
+            assert_eq!(color_to_string(color).to_lowercase(), name.to_lowercase());
+        }
+    }
+
+    #[test]
+    fn test_parse_color_extended_named_case_insensitive() {
+        assert_eq!(parse_color("Orange"), Some(Color::Rgb(255, 165, 0)));
+        assert_eq!(parse_color("ORANGE"), Some(Color::Rgb(255, 165, 0)));
+        assert_eq!(parse_color("Teal"), Some(Color::Rgb(0, 128, 128)));
+        assert_eq!(parse_color("NAVY"), Some(Color::Rgb(0, 0, 128)));
+        assert_eq!(parse_color("Brown"), Some(Color::Rgb(165, 42, 42)));
     }
 }

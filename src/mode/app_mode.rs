@@ -6,12 +6,12 @@ use ratatui::text::{Line, Span};
 use crate::{
     config::{DltDevice, Keybindings},
     db::FileContext,
+    mode::docker_select_mode::DockerContainer,
     mode::{
         dlt_select_mode::AddDeviceRenderState, normal_mode::NormalMode,
         value_colors_mode::ValueColorGroup,
     },
     theme::Theme,
-    types::DockerContainer,
     ui::{KeyResult, TabState},
 };
 
@@ -381,8 +381,8 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::db::LogManager;
+    use crate::filters::FilterType;
     use crate::ingestion::FileReader;
-    use crate::types::FilterType;
     use crate::ui::{KeyResult, TabState};
     use std::sync::Arc;
 

@@ -10,7 +10,8 @@ static BUNDLED_TEMPLATES: &[(&str, &str)] = &[
 ];
 use crate::ingestion::FileReader;
 use crate::parser::LogFormatParser;
-use crate::types::{Comment, FieldLayout};
+use crate::types::Comment;
+use crate::ui::FieldLayout;
 use crate::ui::field_layout::apply_field_layout;
 
 #[derive(Debug, Clone)]

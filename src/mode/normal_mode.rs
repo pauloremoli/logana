@@ -1122,7 +1122,7 @@ mod tests {
         tab.log_manager
             .add_filter_with_color(
                 "error".to_string(),
-                crate::types::FilterType::Include,
+                crate::filters::FilterType::Include,
                 None,
                 None,
                 false,

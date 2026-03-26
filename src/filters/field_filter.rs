@@ -1,6 +1,5 @@
-use crate::filters::{FilterDecision, StyleId};
+use crate::filters::{FilterDecision, FilterDef, FilterType, StyleId};
 use crate::parser::DisplayParts;
-use crate::types::{FilterDef, FilterType};
 
 pub const FIELD_PREFIX: &str = "@field:";
 
@@ -209,8 +208,8 @@ pub fn field_include_vote(includes: &[FieldFilter], parts: Option<&DisplayParts<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filters::{FilterDef, FilterType};
     use crate::parser::DisplayParts;
-    use crate::types::{FilterDef, FilterType};
 
     // ── parse_field_filter ───────────────────────────────────────────────────
 

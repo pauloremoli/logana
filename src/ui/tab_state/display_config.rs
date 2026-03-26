@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::parser::LogFormatParser;
-use crate::types::FieldLayout;
+use crate::ui::FieldLayout;
 
 pub struct DisplayConfig {
     pub wrap: bool,

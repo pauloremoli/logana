@@ -3,7 +3,11 @@ use std::collections::HashSet;
 use unicode_width::UnicodeWidthChar;
 
 use crate::parser::{DisplayParts, LogFormatParser, SpanInfo, format_span_col};
-use crate::types::FieldLayout;
+
+#[derive(Debug, Clone, Default)]
+pub struct FieldLayout {
+    pub columns: Option<Vec<String>>,
+}
 
 /// Number of terminal rows a line occupies when word-wrapped to `inner_width` columns.
 ///
@@ -425,7 +429,6 @@ mod tests {
 
     #[test]
     fn test_apply_field_layout_default_nano_epoch_converted() {
-        use crate::types::FieldLayout;
         let p = DisplayParts {
             timestamp: Some("1700046000000000000"),
             level: Some("INFO"),

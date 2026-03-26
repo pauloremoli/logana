@@ -10,8 +10,9 @@ use ratatui::{
 };
 
 use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
+use crate::parser::LogLevel;
+use crate::search::SearchResult;
 use crate::theme::Theme;
-use crate::types::LogLevel;
 use crate::ui::field_layout::{apply_field_layout, effective_row_count};
 use crate::ui::{CachedParsedLine, TabState, VisibleLines};
 use crate::value_colors::{
@@ -150,7 +151,7 @@ fn compute_viewport(
     wrap: bool,
     inner_width: usize,
     hidden_fields: &HashSet<String>,
-    field_layout: &crate::types::FieldLayout,
+    field_layout: &crate::ui::FieldLayout,
     show_keys: bool,
     raw_mode: bool,
 ) -> (usize, usize) {
@@ -285,7 +286,7 @@ fn populate_parse_cache(
     end: usize,
     raw_mode: bool,
     hidden_fields: &HashSet<String>,
-    field_layout: &crate::types::FieldLayout,
+    field_layout: &crate::ui::FieldLayout,
     show_keys: bool,
 ) {
     let cache_gen = tab.cache.parse_gen;
@@ -534,7 +535,7 @@ pub fn prepare_log_panel(
             tab.search.query.get_current_occurrence_index(),
         ))
     };
-    let find_search_result = |line_idx: usize| -> Option<&crate::types::SearchResult> {
+    let find_search_result = |line_idx: usize| -> Option<&SearchResult> {
         search_results
             .binary_search_by_key(&line_idx, |r| r.line_idx)
             .ok()
