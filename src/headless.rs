@@ -201,7 +201,7 @@ async fn apply_inline_filters(
     use clap::Parser;
 
     use crate::auto_complete::shell_split;
-    use crate::mode::command_mode::{CommandLine, Commands};
+    use crate::commands::{CommandLine, Commands};
 
     for args_str in include_filters {
         let cmd = format!("filter {}", args_str);

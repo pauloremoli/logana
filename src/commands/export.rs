@@ -5,8 +5,8 @@ use std::path::Path;
 use crate::auto_complete::fuzzy_match;
 
 static BUNDLED_TEMPLATES: &[(&str, &str)] = &[
-    ("markdown", include_str!("../templates/markdown.txt")),
-    ("jira", include_str!("../templates/jira.txt")),
+    ("markdown", include_str!("../../templates/markdown.txt")),
+    ("jira", include_str!("../../templates/jira.txt")),
 ];
 use crate::ingestion::FileReader;
 use crate::parser::LogFormatParser;

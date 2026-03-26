@@ -2,7 +2,6 @@ pub mod auto_complete;
 pub mod commands;
 pub mod config;
 pub mod db;
-pub mod export;
 pub mod filters;
 pub mod headless;
 pub mod ingestion;

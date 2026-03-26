@@ -1,17 +1,16 @@
-use std::io::{BufWriter, Write};
-
 use clap::Parser;
 
-use crate::auto_complete::{expand_tilde, shell_split};
-use crate::mode::command_mode::{CommandLine, Commands};
-use crate::theme::Theme;
-use crate::types::FilterType;
+use crate::auto_complete::shell_split;
+use crate::commands::{CommandLine, Commands};
 
 use super::App;
 
-/// Parse a `key=value` pattern for `--field` filters.
-/// Returns `Err` if `=` is absent or if key/value are empty.
-fn parse_key_value(pattern: &str) -> Result<(&str, &str), String> {
+mod display;
+mod filter;
+mod io;
+mod stream;
+
+pub(super) fn parse_key_value(pattern: &str) -> Result<(&str, &str), String> {
     let eq = pattern
         .find('=')
         .ok_or_else(|| format!("--field pattern must be 'key=value', got: {pattern}"))?;
@@ -26,9 +25,10 @@ fn parse_key_value(pattern: &str) -> Result<(&str, &str), String> {
     Ok((key, value))
 }
 
-/// Resolve a `hide-field` argument: index into the currently visible (non-hidden) fields,
-/// or a literal name.
-fn resolve_hide_field_arg(tab: &mut crate::ui::TabState, arg: &str) -> Result<String, String> {
+pub(super) fn resolve_hide_field_arg(
+    tab: &mut crate::ui::TabState,
+    arg: &str,
+) -> Result<String, String> {
     if let Ok(idx) = arg.parse::<usize>() {
         let visible: Vec<String> = tab
             .collect_field_names()
@@ -65,645 +65,52 @@ impl App {
                 bg,
                 line_mode,
                 field,
-            }) => {
-                // When --field is set, rewrite the pattern as the internal @field: form.
-                let stored_pattern = if field {
-                    let (key, value) = parse_key_value(&pattern)?;
-                    format!("{}{}:{}", crate::filters::FIELD_PREFIX, key, value)
-                } else {
-                    pattern.clone()
-                };
-
-                // Check eligibility for incremental include BEFORE mutating state.
-                // Safe when: not editing, filtering enabled, not marks-only, and no
-                // pre-existing enabled include filters (current visible == all minus excludes).
-                // Field filters always require a full refresh.
-                let can_incremental = !field
-                    && self.tabs[self.active_tab]
-                        .filter
-                        .editing_filter_id
-                        .is_none()
-                    && {
-                        let tab = &self.tabs[self.active_tab];
-                        tab.filter.enabled
-                            && !tab.filter.show_marks_only
-                            && !tab.log_manager.get_filters().iter().any(|f| {
-                                f.enabled
-                                    && f.filter_type == FilterType::Include
-                                    && !f.pattern.starts_with(crate::filters::DATE_PREFIX)
-                                    && !f.pattern.starts_with(crate::filters::FIELD_PREFIX)
-                            })
-                    };
-
-                if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
-                    self.tabs[self.active_tab]
-                        .log_manager
-                        .update_filter(
-                            old_id,
-                            stored_pattern.clone(),
-                            FilterType::Include,
-                            fg.as_deref(),
-                            bg.as_deref(),
-                            !line_mode,
-                        )
-                        .await;
-                } else {
-                    let was_new = self.tabs[self.active_tab]
-                        .log_manager
-                        .add_filter_with_color(
-                            stored_pattern.clone(),
-                            FilterType::Include,
-                            fg.as_deref(),
-                            bg.as_deref(),
-                            !line_mode,
-                        )
-                        .await;
-                    self.tabs[self.active_tab].scroll.scroll_offset = 0;
-                    // Incremental include — only re-check visible lines instead of
-                    // scanning the entire file again via refresh_visible/compute_visible.
-                    if was_new && can_incremental {
-                        self.tabs[self.active_tab].apply_incremental_include(&stored_pattern);
-                    } else {
-                        self.tabs[self.active_tab].begin_filter_refresh();
-                    }
-                    return Ok(false);
-                }
-                self.tabs[self.active_tab].scroll.scroll_offset = 0;
-                self.tabs[self.active_tab].begin_filter_refresh();
-            }
+            }) => return self.cmd_filter(pattern, fg, bg, line_mode, field).await,
             Some(Commands::Exclude { pattern, field }) => {
-                // When --field is set, rewrite the pattern as the internal @field: form.
-                let stored_pattern = if field {
-                    let (key, value) = parse_key_value(&pattern)?;
-                    format!("{}{}:{}", crate::filters::FIELD_PREFIX, key, value)
-                } else {
-                    pattern.clone()
-                };
-
-                if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
-                    self.tabs[self.active_tab]
-                        .log_manager
-                        .update_filter(
-                            old_id,
-                            stored_pattern,
-                            FilterType::Exclude,
-                            None,
-                            None,
-                            true,
-                        )
-                        .await;
-                    self.tabs[self.active_tab].scroll.scroll_offset = 0;
-                    self.tabs[self.active_tab].begin_filter_refresh();
-                } else {
-                    let was_new = self.tabs[self.active_tab]
-                        .log_manager
-                        .add_filter_with_color(
-                            stored_pattern.clone(),
-                            FilterType::Exclude,
-                            None,
-                            None,
-                            true,
-                        )
-                        .await;
-                    self.tabs[self.active_tab].scroll.scroll_offset = 0;
-                    if was_new {
-                        if field {
-                            // Field filters require a full refresh.
-                            self.tabs[self.active_tab].begin_filter_refresh();
-                        } else {
-                            // Incremental exclude — only re-check visible lines instead of
-                            // scanning the entire file again via refresh_visible/compute_visible.
-                            self.tabs[self.active_tab].apply_incremental_exclude(&stored_pattern);
-                        }
-                    }
-                }
+                return self.cmd_exclude(pattern, field).await;
             }
             Some(Commands::SetColor { fg, bg, line_mode }) => {
-                let selected_filter_index = self.tabs[self.active_tab]
-                    .filter
-                    .filter_context
-                    .unwrap_or(0);
-                let filters = self.tabs[self.active_tab].log_manager.get_filters();
-                if let Some(filter) = filters.get(selected_filter_index)
-                    && filter.filter_type == FilterType::Include
-                {
-                    // When -l is not explicitly passed, preserve the filter's
-                    // existing match_only setting instead of resetting it.
-                    let match_only = if line_mode {
-                        false
-                    } else {
-                        filter
-                            .color_config
-                            .as_ref()
-                            .map(|cc| cc.match_only)
-                            .unwrap_or(true)
-                    };
-                    let filter_id = filter.id;
-                    self.tabs[self.active_tab]
-                        .log_manager
-                        .set_color_config(filter_id, fg.as_deref(), bg.as_deref(), match_only)
-                        .await;
-                    self.tabs[self.active_tab].refresh_filter_colors();
-                }
+                return self.cmd_set_color(fg, bg, line_mode).await;
             }
-            Some(Commands::ExportMarked { path }) => {
-                if !path.is_empty() {
-                    let expanded = expand_tilde(&path);
-                    let tab = &self.tabs[self.active_tab];
-                    if let Some(src) = tab.log_manager.source_file()
-                        && crate::headless::same_file(src, std::path::Path::new(&expanded))
-                    {
-                        return Err(format!(
-                            "Output path '{}' is the same as the input file",
-                            expanded
-                        ));
-                    }
-                    let marked_lines = tab.log_manager.get_marked_lines(&tab.file_reader);
-                    let file = std::fs::File::create(&expanded)
-                        .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
-                    let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
-                    for line in marked_lines {
-                        writer
-                            .write_all(line)
-                            .and_then(|_| writer.write_all(b"\n"))
-                            .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
-                    }
-                    writer
-                        .flush()
-                        .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
-                }
-            }
-            Some(Commands::Save { path }) => {
-                if path.is_empty() {
-                    return Err("Path is required".to_string());
-                }
-                let expanded = expand_tilde(&path);
-                let tab = &self.tabs[self.active_tab];
-                if let Some(src) = tab.log_manager.source_file()
-                    && crate::headless::same_file(src, std::path::Path::new(&expanded))
-                {
-                    return Err(format!(
-                        "Output path '{}' is the same as the input file",
-                        expanded
-                    ));
-                }
-                let file = std::fs::File::create(&expanded)
-                    .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
-                let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
-                for file_idx in tab.filter.visible_indices.iter() {
-                    writer
-                        .write_all(tab.file_reader.get_line(file_idx))
-                        .and_then(|_| writer.write_all(b"\n"))
-                        .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
-                }
-                writer
-                    .flush()
-                    .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
-            }
-            Some(Commands::Export { path, template }) => {
-                if path.is_empty() {
-                    return Err("Path is required".to_string());
-                }
-                let tab = &self.tabs[self.active_tab];
-                if let Some(src) = tab.log_manager.source_file()
-                    && crate::headless::same_file(src, std::path::Path::new(&path))
-                {
-                    return Err(format!(
-                        "Output path '{}' is the same as the input file",
-                        path
-                    ));
-                }
-                let tpl = crate::export::load_template(&template).map_err(|e| e.to_string())?;
-                let data = crate::export::ExportData {
-                    filename: tab.log_manager.source_file().unwrap_or("stdin"),
-                    comments: tab.log_manager.get_comments(),
-                    marked_indices: tab.log_manager.get_marked_indices(),
-                    file_reader: &tab.file_reader,
-                    parser: if tab.display.raw_mode {
-                        None
-                    } else {
-                        tab.display.format.as_deref()
-                    },
-                    field_layout: &tab.display.field_layout,
-                    hidden_fields: &tab.display.hidden_fields,
-                    show_keys: tab.display.show_keys,
-                };
-                let output = crate::export::render_export(&tpl, &data);
-                let file =
-                    std::fs::File::create(&path).map_err(|e| format!("Failed to write: {}", e))?;
-                let mut writer = BufWriter::new(file);
-                writer
-                    .write_all(output.as_bytes())
-                    .and_then(|_| writer.flush())
-                    .map_err(|e| format!("Failed to write: {}", e))?;
-            }
-            Some(Commands::SaveFilters { path }) => {
-                if !path.is_empty() {
-                    self.tabs[self.active_tab]
-                        .log_manager
-                        .save_filters(&path)
-                        .map_err(|e| format!("Failed to save filters: {}", e))?;
-                }
-            }
-            Some(Commands::LoadFilters { path }) => {
-                if !path.is_empty() {
-                    self.tabs[self.active_tab]
-                        .log_manager
-                        .load_filters(&path)
-                        .await
-                        .map_err(|e| format!("Failed to load filters: {}", e))?;
-                    self.tabs[self.active_tab].begin_filter_refresh();
-                }
-            }
-            Some(Commands::Wrap) => {
-                self.tabs[self.active_tab].display.wrap = !self.tabs[self.active_tab].display.wrap;
-            }
-            Some(Commands::LineNumbers) => {
-                self.tabs[self.active_tab].display.show_line_numbers =
-                    !self.tabs[self.active_tab].display.show_line_numbers;
-            }
-            Some(Commands::LevelColors) => {
-                use crate::mode::value_colors_mode::{
-                    ValueColorEntry, ValueColorGroup as VCGroup, ValueColorsMode,
-                };
-                let disabled = &self.tabs[self.active_tab].display.level_colors_disabled;
-                let levels: Vec<(&str, &str, ratatui::style::Color)> = vec![
-                    ("trace", "TRACE", self.theme.trace_fg),
-                    ("debug", "DEBUG", self.theme.debug_fg),
-                    ("info", "INFO", self.theme.info_fg),
-                    ("notice", "NOTICE", self.theme.notice_fg),
-                    ("warning", "WARNING", self.theme.warning_fg),
-                    ("error", "ERROR", self.theme.error_fg),
-                    ("fatal", "FATAL", self.theme.fatal_fg),
-                ];
-                let groups = vec![VCGroup {
-                    label: "Log levels".to_string(),
-                    children: levels
-                        .into_iter()
-                        .map(|(key, label, color)| ValueColorEntry {
-                            key: key.to_string(),
-                            label: label.to_string(),
-                            color,
-                            enabled: !disabled.contains(key),
-                        })
-                        .collect(),
-                }];
-                let original_disabled = disabled.clone();
-                self.tabs[self.active_tab].interaction.mode =
-                    Box::new(ValueColorsMode::new_level_colors(groups, original_disabled));
-                return Ok(true);
-            }
-            Some(Commands::SetTheme { theme_name }) => {
-                let theme_filename = format!("{}.json", theme_name.to_lowercase());
-                self.theme = Theme::from_file(&theme_filename)
-                    .map_err(|e| format!("Failed to load theme '{}': {}", theme_name, e))?;
-                for tab in &mut self.tabs {
-                    tab.cache.render_gen = tab.cache.render_gen.wrapping_add(1);
-                    tab.cache.render_line.clear();
-                }
-            }
-            Some(Commands::Open { path }) => {
-                let path = expand_tilde(&path);
-                if std::path::Path::new(&path).is_dir() {
-                    let files = crate::ui::list_dir_files(&path);
-                    if files.is_empty() {
-                        return Err(format!("'{}' contains no files.", path));
-                    }
-                    self.tabs[self.active_tab].interaction.mode =
-                        Box::new(crate::mode::app_mode::ConfirmOpenDirMode { dir: path, files });
-                    return Ok(true);
-                }
-                if crate::ingestion::detect_archive_type(&path).is_some() {
-                    self.begin_archive_extraction(&path);
-                    return Ok(true);
-                }
-                self.open_file(&path).await?;
-            }
-            Some(Commands::CloseTab) => {
-                if self.tabs.len() <= 1 {
-                    return Err("Cannot close last tab. Use 'q' to quit.".to_string());
-                }
-                self.tabs.remove(self.active_tab);
-                if self.active_tab >= self.tabs.len() {
-                    self.active_tab = self.tabs.len() - 1;
-                }
-            }
-            Some(Commands::ClearFilters) => {
-                self.tabs[self.active_tab].log_manager.clear_filters().await;
-                self.tabs[self.active_tab].begin_filter_refresh();
-            }
-            Some(Commands::DisableFilters) => {
-                self.tabs[self.active_tab]
-                    .log_manager
-                    .disable_all_filters()
-                    .await;
-                self.tabs[self.active_tab].begin_filter_refresh();
-            }
-            Some(Commands::EnableFilters) => {
-                self.tabs[self.active_tab]
-                    .log_manager
-                    .enable_all_filters()
-                    .await;
-                self.tabs[self.active_tab].begin_filter_refresh();
-            }
-            Some(Commands::Filtering) => {
-                let tab = &mut self.tabs[self.active_tab];
-                tab.filter.enabled = !tab.filter.enabled;
-                tab.begin_filter_refresh();
-            }
-            Some(Commands::HideField { field }) => {
-                let resolved = resolve_hide_field_arg(&mut self.tabs[self.active_tab], &field)?;
-                let tab = &mut self.tabs[self.active_tab];
-                tab.display.hidden_fields.insert(resolved);
-                tab.invalidate_parse_cache();
-            }
-            Some(Commands::ShowField { field }) => {
-                let tab = &mut self.tabs[self.active_tab];
-                tab.display.hidden_fields.remove(&field);
-                tab.invalidate_parse_cache();
-            }
-            Some(Commands::ShowAllFields) => {
-                let tab = &mut self.tabs[self.active_tab];
-                tab.display.hidden_fields.clear();
-                tab.invalidate_parse_cache();
-            }
-            Some(Commands::SelectFields) => {
-                let tab = &mut self.tabs[self.active_tab];
-                let all_names = tab.collect_field_names();
-                if all_names.is_empty() {
-                    return Err("No structured fields found in visible lines".to_string());
-                }
-                let saved_order = &tab.display.field_layout.columns;
-                // Restore the previous full ordering if available, then append
-                // any newly-discovered fields. Visibility comes from hidden_fields.
-                let fields: Vec<(String, bool)> = match saved_order {
-                    Some(order) => {
-                        let mut ordered: Vec<(String, bool)> = order
-                            .iter()
-                            .filter(|n| all_names.contains(n))
-                            .map(|n| (n.clone(), !tab.display.hidden_fields.contains(n.as_str())))
-                            .collect();
-                        // Append fields not yet in the saved order.
-                        for name in &all_names {
-                            if !order.contains(name) {
-                                ordered.push((
-                                    name.clone(),
-                                    !tab.display.hidden_fields.contains(name.as_str()),
-                                ));
-                            }
-                        }
-                        ordered
-                    }
-                    None => all_names
-                        .into_iter()
-                        .map(|n| {
-                            let enabled = !tab.display.hidden_fields.contains(n.as_str());
-                            (n, enabled)
-                        })
-                        .collect(),
-                };
-                let original_layout = tab.display.field_layout.clone();
-                let original_hidden_fields = tab.display.hidden_fields.clone();
-                tab.interaction.mode =
-                    Box::new(crate::mode::select_fields_mode::SelectFieldsMode::new(
-                        fields,
-                        original_layout,
-                        original_hidden_fields,
-                    ));
-                return Ok(true);
-            }
-            Some(Commands::Docker) => {
-                let output = std::process::Command::new("docker")
-                    .args([
-                        "ps",
-                        "--format",
-                        "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
-                    ])
-                    .output();
-                match output {
-                    Ok(out) if out.status.success() => {
-                        let text = String::from_utf8_lossy(&out.stdout);
-                        let containers: Vec<crate::types::DockerContainer> = text
-                            .lines()
-                            .filter(|l| !l.is_empty())
-                            .filter_map(|line| {
-                                let parts: Vec<&str> = line.splitn(4, '\t').collect();
-                                if parts.len() == 4 {
-                                    Some(crate::types::DockerContainer {
-                                        id: parts[0].to_string(),
-                                        name: parts[1].to_string(),
-                                        image: parts[2].to_string(),
-                                        status: parts[3].to_string(),
-                                    })
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        if containers.is_empty() {
-                            self.tabs[self.active_tab].interaction.mode = Box::new(
-                                crate::mode::docker_select_mode::DockerSelectMode::with_error(
-                                    "No running containers found".to_string(),
-                                ),
-                            );
-                        } else {
-                            self.tabs[self.active_tab].interaction.mode = Box::new(
-                                crate::mode::docker_select_mode::DockerSelectMode::new(containers),
-                            );
-                        }
-                        return Ok(true);
-                    }
-                    Ok(out) => {
-                        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                        self.tabs[self.active_tab].interaction.mode = Box::new(
-                            crate::mode::docker_select_mode::DockerSelectMode::with_error(
-                                if stderr.is_empty() {
-                                    "docker ps failed".to_string()
-                                } else {
-                                    stderr
-                                },
-                            ),
-                        );
-                        return Ok(true);
-                    }
-                    Err(e) => {
-                        self.tabs[self.active_tab].interaction.mode = Box::new(
-                            crate::mode::docker_select_mode::DockerSelectMode::with_error(format!(
-                                "Failed to run docker: {}",
-                                e
-                            )),
-                        );
-                        return Ok(true);
-                    }
-                }
-            }
-            Some(Commands::ValueColors) => {
-                use crate::mode::value_colors_mode::{ValueColorEntry, ValueColorGroup as VCGroup};
-                let disabled = &self.theme.value_colors.disabled;
-                let process_representative = self.theme.process_colors.first().copied();
-                let groups: Vec<VCGroup> = self
-                    .theme
-                    .value_colors
-                    .grouped_categories(process_representative)
-                    .into_iter()
-                    .map(|g| VCGroup {
-                        label: g.label.to_string(),
-                        children: g
-                            .children
-                            .into_iter()
-                            .map(|(key, label, color)| ValueColorEntry {
-                                key: key.to_string(),
-                                label: label.to_string(),
-                                color,
-                                enabled: !disabled.contains(key),
-                            })
-                            .collect(),
-                    })
-                    .collect();
-                let original_disabled = disabled.clone();
-                self.tabs[self.active_tab].interaction.mode = Box::new(
-                    crate::mode::value_colors_mode::ValueColorsMode::new(groups, original_disabled),
-                );
-                return Ok(true);
-            }
+            Some(Commands::ExportMarked { path }) => return self.cmd_export_marked(path),
+            Some(Commands::Save { path }) => return self.cmd_save(path),
+            Some(Commands::Export { path, template }) => return self.cmd_export(path, template),
+            Some(Commands::SaveFilters { path }) => return self.cmd_save_filters(path),
+            Some(Commands::LoadFilters { path }) => return self.cmd_load_filters(path).await,
+            Some(Commands::Wrap) => self.cmd_wrap(),
+            Some(Commands::LineNumbers) => self.cmd_line_numbers(),
+            Some(Commands::LevelColors) => return self.cmd_level_colors(),
+            Some(Commands::SetTheme { theme_name }) => return self.cmd_set_theme(theme_name),
+            Some(Commands::Open { path }) => return self.cmd_open(path).await,
+            Some(Commands::CloseTab) => return self.cmd_close_tab(),
+            Some(Commands::ClearFilters) => return self.cmd_clear_filters().await,
+            Some(Commands::DisableFilters) => return self.cmd_disable_filters().await,
+            Some(Commands::EnableFilters) => return self.cmd_enable_filters().await,
+            Some(Commands::Filtering) => self.cmd_filtering(),
+            Some(Commands::HideField { field }) => return self.cmd_hide_field(field),
+            Some(Commands::ShowField { field }) => self.cmd_show_field(field),
+            Some(Commands::ShowAllFields) => self.cmd_show_all_fields(),
+            Some(Commands::SelectFields) => return self.cmd_select_fields(),
+            Some(Commands::Docker) => return self.cmd_docker(),
+            Some(Commands::ValueColors) => return self.cmd_value_colors(),
             Some(Commands::DateFilter {
                 expr,
                 fg,
                 bg,
                 line_mode,
-            }) => {
-                let tab = &self.tabs[self.active_tab];
-                if tab.display.format.is_none() {
-                    return Err(
-                        "No log format detected — date filter requires structured timestamps"
-                            .to_string(),
-                    );
-                }
-                let expression = expr.join(" ");
-                // Validate the expression parses before storing.
-                crate::filters::parse_date_filter(&expression)
-                    .map_err(|e| format!("Invalid date filter: {}", e))?;
-                let pattern = format!("{}{}", crate::filters::DATE_PREFIX, expression);
-                if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
-                    self.tabs[self.active_tab]
-                        .log_manager
-                        .update_filter(
-                            old_id,
-                            pattern,
-                            FilterType::Include,
-                            fg.as_deref(),
-                            bg.as_deref(),
-                            !line_mode,
-                        )
-                        .await;
-                } else {
-                    self.tabs[self.active_tab]
-                        .log_manager
-                        .add_filter_with_color(
-                            pattern,
-                            FilterType::Include,
-                            fg.as_deref(),
-                            bg.as_deref(),
-                            !line_mode,
-                        )
-                        .await;
-                }
-                self.tabs[self.active_tab].begin_filter_refresh();
-            }
-            Some(Commands::Tail) => {
-                let tab = &mut self.tabs[self.active_tab];
-                tab.stream.tail_mode = !tab.stream.tail_mode;
-                if tab.stream.tail_mode {
-                    let new_count = tab.filter.visible_indices.len();
-                    tab.scroll.scroll_offset = new_count.saturating_sub(1);
-                }
-            }
-            Some(Commands::ShowKeys) => {
-                let tab = &mut self.tabs[self.active_tab];
-                tab.display.show_keys = true;
-                tab.invalidate_parse_cache();
-            }
-            Some(Commands::HideKeys) => {
-                let tab = &mut self.tabs[self.active_tab];
-                tab.display.show_keys = false;
-                tab.invalidate_parse_cache();
-            }
-            Some(Commands::Raw) => {
-                let tab = &mut self.tabs[self.active_tab];
-                tab.display.raw_mode = !tab.display.raw_mode;
-                tab.invalidate_parse_cache();
-            }
-            Some(Commands::Stop) => {
-                self.stdin_load_state = None;
-                self.tabs[self.active_tab].stream.watch = None;
-            }
-            Some(Commands::Pause) => {
-                self.tabs[self.active_tab].stream.paused = true;
-            }
-            Some(Commands::Resume) => {
-                self.tabs[self.active_tab].stream.paused = false;
-            }
-            Some(Commands::Reset) => {
-                self.db
-                    .reset_all()
-                    .await
-                    .map_err(|e| format!("Failed to reset database: {e}"))?;
-
-                self.show_mode_bar = true;
-                self.show_borders_default = false;
-                self.show_line_numbers = true;
-                self.show_sidebar = true;
-                self.wrap = false;
-                self.restore_policy = crate::config::RestoreSessionPolicy::Ask;
-                self.restore_file_policy = crate::config::RestoreSessionPolicy::Ask;
-
-                for tab in &mut self.tabs {
-                    tab.display.show_mode_bar = true;
-                    tab.display.show_borders = false;
-                    tab.display.show_line_numbers = true;
-                    tab.display.show_sidebar = true;
-                    tab.display.wrap = false;
-                    tab.reset_tab_state();
-                }
-            }
-            Some(Commands::Dlt) => {
-                let devices = self.dlt_devices.clone();
-                self.tabs[self.active_tab].interaction.mode =
-                    Box::new(crate::mode::dlt_select_mode::DltSelectMode::new(devices));
-                return Ok(true);
-            }
-            Some(Commands::Otel { http, port }) => {
-                if http {
-                    let port = port.unwrap_or(4318);
-                    self.open_otlp_stream(port).await;
-                } else {
-                    let port = port.unwrap_or(4317);
-                    self.open_otlp_grpc_stream(port).await;
-                }
-                return Ok(true);
-            }
-            Some(Commands::EnableMcp { port }) => {
-                let p = self.mcp_port.unwrap_or(port);
-                match self.start_mcp(p).await {
-                    Ok(()) => {
-                        self.tabs[self.active_tab].interaction.notification =
-                            Some(format!("MCP server listening on port {p}"));
-                        self.tabs[self.active_tab].interaction.notification_set_at =
-                            Some(std::time::Instant::now());
-                    }
-                    Err(e) => {
-                        self.tabs[self.active_tab].interaction.command_error =
-                            Some(format!("Failed to start MCP server on port {p}: {e}"));
-                    }
-                }
-            }
-            Some(Commands::DisableMcp) => {
-                self.stop_mcp();
-                self.tabs[self.active_tab].interaction.notification =
-                    Some("MCP server stopped".to_string());
-                self.tabs[self.active_tab].interaction.notification_set_at =
-                    Some(std::time::Instant::now());
-            }
+            }) => return self.cmd_date_filter(expr, fg, bg, line_mode).await,
+            Some(Commands::Tail) => self.cmd_tail(),
+            Some(Commands::ShowKeys) => self.cmd_show_keys(),
+            Some(Commands::HideKeys) => self.cmd_hide_keys(),
+            Some(Commands::Raw) => self.cmd_raw(),
+            Some(Commands::Stop) => self.cmd_stop(),
+            Some(Commands::Pause) => self.cmd_pause(),
+            Some(Commands::Resume) => self.cmd_resume(),
+            Some(Commands::Reset) => return self.cmd_reset().await,
+            Some(Commands::Dlt) => return self.cmd_dlt(),
+            Some(Commands::Otel { http, port }) => return self.cmd_otel(http, port).await,
+            Some(Commands::EnableMcp { port }) => return self.cmd_enable_mcp(port).await,
+            Some(Commands::DisableMcp) => self.cmd_disable_mcp(),
             None => {}
         }
         Ok(false)

@@ -28,7 +28,7 @@ logana is structured around a strict separation between domain logic and the UI 
 
 **Mode System** — The UI is vim-inspired: a state machine (`mode/`) where each mode captures keyboard input and handles it independently. Modes return a `KeyResult` that the event loop acts on for effects beyond the mode's scope (closing tabs, clipboard, navigation).
 - **Normal** — default log browsing, scrolling, marks
-- **Command** — `:` command input with tab completion
+- **Command** — `:` command input with tab completion. The `CommandLine` input struct and `Commands` enum (clap definitions) live in `src/commands/parser.rs`; `command_mode.rs` imports from `crate::commands`.
 - **Search** — `/` and `?` incremental search
 - **Filter** — sidebar filter management (add, edit, toggle, reorder)
 - **Visual / Visual Char** — line and character selection for copy/export
@@ -37,6 +37,17 @@ logana is structured around a strict separation between domain logic and the UI 
 - **DLT Select / Docker Select** — pick a streaming source to connect to
 - **OTLP** — `:otlp [port]` command opens a receiver tab (no interactive picker needed)
 - **UI / Keybindings Help** — settings and shortcut reference
+
+**Commands Module** — `src/commands/` is a dedicated module for command-related types shared across the mode and UI layers:
+- `commands/parser.rs` — `CommandLine` (clap derive struct for the `:` input bar) and the `Commands` enum with all recognised subcommands. `command_mode.rs` imports these instead of defining them locally.
+- `commands/info.rs` — command metadata (descriptions, completions) consumed by the command-mode tab completion logic.
+- `commands/export.rs` — export template definitions and rendering helpers used by visual-mode export and the `:export` command.
+
+**UI Commands** — `src/ui/commands/` contains the handlers that execute `:` commands dispatched from `command_mode.rs`, split into four focused submodules:
+- `filter.rs` — filter add/remove/toggle commands
+- `io.rs` — file open/save and session commands
+- `display.rs` — display and theme commands
+- `stream.rs` — streaming source (DLT, Docker, OTLP, tail) commands
 
 **UI & Rendering** — `ui/` owns the terminal handle and drives the Ratatui render loop. Theme definitions live in `ui/theme.rs` and value/level colour mappings in `ui/value_colors.rs`.
 - The renderer reads tab state and produces widgets each frame; it never mutates state.

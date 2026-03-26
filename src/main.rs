@@ -121,7 +121,7 @@ fn validate_file_arg(path: &str) -> std::result::Result<(), String> {
 fn validate_inline_filter(prefix: &str, args_str: &str) -> std::result::Result<(), String> {
     use clap::Parser as _;
     use logana::auto_complete::shell_split;
-    use logana::mode::command_mode::CommandLine;
+    use logana::commands::CommandLine;
 
     let cmd = format!("{} {}", prefix, args_str);
     CommandLine::try_parse_from(shell_split(&cmd))
