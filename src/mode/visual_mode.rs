@@ -284,8 +284,8 @@ fn lo_line_text(tab: &TabState, anchor: usize, scroll_offset: usize) -> String {
 mod tests {
     use super::*;
     use crate::db::Database;
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
     use crate::ui::TabState;
     use std::sync::Arc;

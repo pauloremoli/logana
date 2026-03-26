@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ratatui::style::Style;
 
-use crate::date_filter::DateFilterStyle;
+use crate::filters::DateFilterStyle;
 use crate::filters::FilterManager;
 
 use super::{CachedScanResult, FilterHandle, VisibleLines};
@@ -16,7 +16,7 @@ pub struct FilterState {
     pub manager: Arc<FilterManager>,
     pub text_styles: Vec<Style>,
     pub date_styles: Vec<DateFilterStyle>,
-    pub field_styles: Vec<crate::field_filter::FieldFilterStyle>,
+    pub field_styles: Vec<crate::filters::FieldFilterStyle>,
     pub match_counts: Vec<usize>,
     pub saved_view: Option<FilterViewSnapshot>,
     pub cached_scan: Option<CachedScanResult>,
@@ -28,7 +28,7 @@ pub type FilterViewSnapshot = (
     Arc<FilterManager>,
     Vec<Style>,
     Vec<DateFilterStyle>,
-    Vec<crate::field_filter::FieldFilterStyle>,
+    Vec<crate::filters::FieldFilterStyle>,
 );
 
 impl Default for FilterState {

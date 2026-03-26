@@ -7,8 +7,8 @@ use crossterm::{
 };
 use logana::config::Config;
 use logana::db::Database;
-use logana::file_reader::{FileReader, VisibilityPredicate};
-use logana::log_manager::LogManager;
+use logana::db::LogManager;
+use logana::ingestion::{FileReader, VisibilityPredicate};
 use logana::mode::app_mode::ConfirmOpenDirMode;
 use logana::theme::Theme;
 use logana::ui::{App, LoadContext, list_dir_files};
@@ -301,7 +301,7 @@ async fn begin_initial_load(
 
     if background_file_load {
         if let Some(path) = source_path {
-            if logana::archive::detect_archive_type(&path).is_some() {
+            if logana::ingestion::detect_archive_type(&path).is_some() {
                 if let Err(e) = app.open_archive_blocking(&path).await {
                     app.startup_warnings.push(e);
                 } else if app.tabs.len() > 1 && app.tabs[0].file_reader.line_count() == 0 {

@@ -28,10 +28,8 @@ pub fn filter_row_display_text(
 ) -> String {
     let status = if filter.enabled { "[x]" } else { "[ ]" };
     let selected_prefix = if idx == selected { ">" } else { " " };
-    let is_date = filter.pattern.starts_with(crate::date_filter::DATE_PREFIX);
-    let is_field = filter
-        .pattern
-        .starts_with(crate::field_filter::FIELD_PREFIX);
+    let is_date = filter.pattern.starts_with(crate::filters::DATE_PREFIX);
+    let is_field = filter.pattern.starts_with(crate::filters::FIELD_PREFIX);
     let filter_type_str = if is_date {
         "Date"
     } else {
@@ -42,9 +40,9 @@ pub fn filter_row_display_text(
     };
     let field_display_buf: String;
     let (display_pattern, field_tag) = if is_date {
-        (&filter.pattern[crate::date_filter::DATE_PREFIX.len()..], "")
+        (&filter.pattern[crate::filters::DATE_PREFIX.len()..], "")
     } else if is_field {
-        let expr = &filter.pattern[crate::field_filter::FIELD_PREFIX.len()..];
+        let expr = &filter.pattern[crate::filters::FIELD_PREFIX.len()..];
         field_display_buf = if let Some(colon) = expr.find(':') {
             format!("{}={}", &expr[..colon], &expr[colon + 1..])
         } else {
@@ -325,7 +323,7 @@ mod tests {
     #[test]
     fn test_build_filter_row_field_filter() {
         let theme = Theme::default();
-        let pattern = format!("{}key:val", crate::field_filter::FIELD_PREFIX);
+        let pattern = format!("{}key:val", crate::filters::FIELD_PREFIX);
         let filter = make_filter(&pattern, true, FilterType::Include);
         let line = build_filter_row(&filter, 0, 0, &[1], &theme);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();

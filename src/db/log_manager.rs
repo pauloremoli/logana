@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use ratatui::style::Style;
 
-use crate::date_filter::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
 use crate::db::{Database, FilterStore};
-use crate::file_reader::FileReader;
+use crate::filters::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
 use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter, is_regex_pattern};
+use crate::ingestion::FileReader;
 use crate::types::{ColorConfig, Comment, FilterDef, FilterType, parse_color};
 use aho_corasick::AhoCorasick;
 
@@ -368,12 +368,12 @@ impl LogManager {
         FilterManager,
         Vec<Style>,
         Vec<DateFilterStyle>,
-        Vec<crate::field_filter::FieldFilterStyle>,
+        Vec<crate::filters::FieldFilterStyle>,
     ) {
         let mut filters: Vec<Box<dyn crate::filters::Filter>> = Vec::new();
         let mut styles: Vec<Style> = Vec::new();
         let mut date_filter_styles: Vec<DateFilterStyle> = Vec::new();
-        let mut field_filter_styles: Vec<crate::field_filter::FieldFilterStyle> = Vec::new();
+        let mut field_filter_styles: Vec<crate::filters::FieldFilterStyle> = Vec::new();
         let mut has_include = false;
         let mut literal_patterns: Vec<String> = Vec::new();
         let mut combined_ac_meta: Vec<(usize, FilterDecision)> = Vec::new();
@@ -382,11 +382,11 @@ impl LogManager {
         let mut style_idx: usize = 0;
         for def in self.filter_defs.iter().filter(|f| f.enabled) {
             // Field filters: applied separately for visibility; collect styles for highlighting.
-            if def.pattern.starts_with(crate::field_filter::FIELD_PREFIX) {
+            if def.pattern.starts_with(crate::filters::FIELD_PREFIX) {
                 if let Some(cc) = &def.color_config
                     && (cc.fg.is_some() || cc.bg.is_some())
-                    && let Ok((field, pattern)) = crate::field_filter::parse_field_filter(
-                        &def.pattern[crate::field_filter::FIELD_PREFIX.len()..],
+                    && let Ok((field, pattern)) = crate::filters::parse_field_filter(
+                        &def.pattern[crate::filters::FIELD_PREFIX.len()..],
                     )
                 {
                     let style_id = style_idx as crate::filters::StyleId;
@@ -404,8 +404,8 @@ impl LogManager {
                     } else {
                         FilterDecision::Exclude
                     };
-                    field_filter_styles.push(crate::field_filter::FieldFilterStyle {
-                        field_filter: crate::field_filter::FieldFilter {
+                    field_filter_styles.push(crate::filters::FieldFilterStyle {
+                        field_filter: crate::filters::FieldFilter {
                             field,
                             pattern,
                             decision,

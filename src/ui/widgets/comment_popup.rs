@@ -124,8 +124,8 @@ impl<'a> Widget for CommentPopup<'a> {
 mod tests {
     use crate::config::Keybindings;
     use crate::db::Database;
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
     use crate::mode::comment_mode::CommentMode;
     use crate::theme::Theme;
     use crate::ui::App;

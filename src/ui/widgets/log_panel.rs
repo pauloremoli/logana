@@ -725,11 +725,9 @@ pub fn prepare_log_panel(
                         if let Some(parts) = ffs_parser.parse_line(line_bytes) {
                             collector.with_priority(500);
                             for ffs in &field_filter_styles {
-                                if let Some(val) = crate::field_filter::resolve_field(
-                                    &ffs.field_filter.field,
-                                    &parts,
-                                )
-                                .filter(|v| v.contains(ffs.field_filter.pattern.as_str()))
+                                if let Some(val) =
+                                    crate::filters::resolve_field(&ffs.field_filter.field, &parts)
+                                        .filter(|v| v.contains(ffs.field_filter.pattern.as_str()))
                                 {
                                     if ffs.match_only {
                                         if let Some(pos) = rendered.find(val) {
@@ -931,8 +929,8 @@ mod tests {
     use super::*;
     use crate::config::Keybindings;
     use crate::db::Database;
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
     use crate::theme::Theme;
     use crate::ui::App;
     use ratatui::{Terminal, backend::TestBackend};
@@ -1317,7 +1315,7 @@ mod tests {
     async fn test_log_panel_show_tab_bar_suppresses_title() {
         let mut app = make_app(&["line one"]).await;
         app.tabs[0].log_manager =
-            crate::log_manager::LogManager::new(app.db.clone(), Some("test.log".to_string())).await;
+            crate::db::LogManager::new(app.db.clone(), Some("test.log".to_string())).await;
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }

@@ -279,7 +279,7 @@ impl Search {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_reader::FileReader;
+    use crate::ingestion::FileReader;
     use std::io::Write;
     use tempfile::NamedTempFile;
 

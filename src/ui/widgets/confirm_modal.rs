@@ -243,9 +243,9 @@ impl<'a> Widget for ConfirmOpenDirModal<'a> {
 #[cfg(test)]
 mod tests {
     use crate::config::Keybindings;
+    use crate::db::LogManager;
     use crate::db::{Database, FileContext};
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::ingestion::FileReader;
     use crate::mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode};
     use crate::theme::Theme;
     use crate::ui::App;

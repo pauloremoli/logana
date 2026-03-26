@@ -69,7 +69,7 @@ impl App {
                 // When --field is set, rewrite the pattern as the internal @field: form.
                 let stored_pattern = if field {
                     let (key, value) = parse_key_value(&pattern)?;
-                    format!("{}{}:{}", crate::field_filter::FIELD_PREFIX, key, value)
+                    format!("{}{}:{}", crate::filters::FIELD_PREFIX, key, value)
                 } else {
                     pattern.clone()
                 };
@@ -90,8 +90,8 @@ impl App {
                             && !tab.log_manager.get_filters().iter().any(|f| {
                                 f.enabled
                                     && f.filter_type == FilterType::Include
-                                    && !f.pattern.starts_with(crate::date_filter::DATE_PREFIX)
-                                    && !f.pattern.starts_with(crate::field_filter::FIELD_PREFIX)
+                                    && !f.pattern.starts_with(crate::filters::DATE_PREFIX)
+                                    && !f.pattern.starts_with(crate::filters::FIELD_PREFIX)
                             })
                     };
 
@@ -135,7 +135,7 @@ impl App {
                 // When --field is set, rewrite the pattern as the internal @field: form.
                 let stored_pattern = if field {
                     let (key, value) = parse_key_value(&pattern)?;
-                    format!("{}{}:{}", crate::field_filter::FIELD_PREFIX, key, value)
+                    format!("{}{}:{}", crate::filters::FIELD_PREFIX, key, value)
                 } else {
                     pattern.clone()
                 };
@@ -373,7 +373,7 @@ impl App {
                         Box::new(crate::mode::app_mode::ConfirmOpenDirMode { dir: path, files });
                     return Ok(true);
                 }
-                if crate::archive::detect_archive_type(&path).is_some() {
+                if crate::ingestion::detect_archive_type(&path).is_some() {
                     self.begin_archive_extraction(&path);
                     return Ok(true);
                 }
@@ -581,9 +581,9 @@ impl App {
                 }
                 let expression = expr.join(" ");
                 // Validate the expression parses before storing.
-                crate::date_filter::parse_date_filter(&expression)
+                crate::filters::parse_date_filter(&expression)
                     .map_err(|e| format!("Invalid date filter: {}", e))?;
-                let pattern = format!("{}{}", crate::date_filter::DATE_PREFIX, expression);
+                let pattern = format!("{}{}", crate::filters::DATE_PREFIX, expression);
                 if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
                     self.tabs[self.active_tab]
                         .log_manager
@@ -714,8 +714,8 @@ impl App {
 mod tests {
     use crate::config::Keybindings;
     use crate::db::Database;
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
     use crate::types::FilterType;

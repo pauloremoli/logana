@@ -11,10 +11,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, watch};
 
 use crate::db::FileContext;
-use crate::field_filter::{FieldVote, any_field_exclude_matches, field_include_vote};
-use crate::file_reader::FileReader;
+use crate::db::LogManager;
+use crate::filters::{FieldVote, any_field_exclude_matches, field_include_vote};
 use crate::filters::{FilterDecision, FilterManager};
-use crate::log_manager::LogManager;
+use crate::ingestion::FileReader;
 use crate::mode::normal_mode::NormalMode;
 use crate::parser::{LogFormatParser, detect_format};
 use crate::search::Search;
@@ -156,10 +156,10 @@ pub fn merge_filter_counts(
         if !f.enabled {
             continue;
         }
-        if f.pattern.starts_with(crate::date_filter::DATE_PREFIX) {
+        if f.pattern.starts_with(crate::filters::DATE_PREFIX) {
             out[i] = date.get(di).copied().unwrap_or(0);
             di += 1;
-        } else if f.pattern.starts_with(crate::field_filter::FIELD_PREFIX) {
+        } else if f.pattern.starts_with(crate::filters::FIELD_PREFIX) {
             out[i] = field.get(fi).copied().unwrap_or(0);
             fi += 1;
         } else {
@@ -186,10 +186,10 @@ pub fn merge_filter_counts(
 pub fn line_is_visible(
     text_dec: FilterDecision,
     has_text_includes: bool,
-    date_filters: &[crate::date_filter::DateFilter],
+    date_filters: &[crate::filters::DateFilter],
     date_counts: &mut [usize],
-    inc_ff: &[crate::field_filter::FieldFilter],
-    exc_ff: &[crate::field_filter::FieldFilter],
+    inc_ff: &[crate::filters::FieldFilter],
+    exc_ff: &[crate::filters::FieldFilter],
     parts: Option<&crate::parser::DisplayParts<'_>>,
 ) -> bool {
     // Step 1: text filter result — fast path.
@@ -647,12 +647,11 @@ impl TabState {
             // so that include filters (text and field) combine with OR semantics.
             let (fm, styles, date_filter_styles, field_filter_styles) =
                 self.log_manager.build_filter_manager();
-            let date_filters =
-                crate::date_filter::extract_date_filters(self.log_manager.get_filters());
+            let date_filters = crate::filters::extract_date_filters(self.log_manager.get_filters());
             let (inc_ff, exc_ff) =
-                crate::field_filter::extract_field_filters(self.log_manager.get_filters());
+                crate::filters::extract_field_filters(self.log_manager.get_filters());
             let field_defs =
-                crate::field_filter::extract_field_filters_ordered(self.log_manager.get_filters());
+                crate::filters::extract_field_filters_ordered(self.log_manager.get_filters());
             let all_filter_defs = self.log_manager.get_filters().to_vec();
             let parser = self.display.format.as_deref();
             let field_layout = &self.display.field_layout;
@@ -751,7 +750,7 @@ impl TabState {
                                     }
                                 }
                                 if !field_defs.is_empty() {
-                                    crate::field_filter::count_field_filter_matches(
+                                    crate::filters::count_field_filter_matches(
                                         &field_defs,
                                         parts.as_ref(),
                                         &mut fc,
@@ -1211,11 +1210,11 @@ impl TabState {
 
         let file_reader = self.file_reader.clone();
         let fm_arc = self.filter.manager.clone();
-        let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
+        let date_filters = crate::filters::extract_date_filters(self.log_manager.get_filters());
         let (inc_ff, exc_ff) =
-            crate::field_filter::extract_field_filters(self.log_manager.get_filters());
+            crate::filters::extract_field_filters(self.log_manager.get_filters());
         let field_defs =
-            crate::field_filter::extract_field_filters_ordered(self.log_manager.get_filters());
+            crate::filters::extract_field_filters_ordered(self.log_manager.get_filters());
         let all_filter_defs = self.log_manager.get_filters().to_vec();
         let raw_mode = self.display.raw_mode;
         let parser = if raw_mode {
@@ -1345,7 +1344,7 @@ impl TabState {
                                         }
                                     }
                                     if !field_defs.is_empty() {
-                                        crate::field_filter::count_field_filter_matches(
+                                        crate::filters::count_field_filter_matches(
                                             &field_defs,
                                             parts.as_ref(),
                                             &mut fc,
@@ -1521,9 +1520,9 @@ impl TabState {
             return;
         }
 
-        let date_filters = crate::date_filter::extract_date_filters(self.log_manager.get_filters());
+        let date_filters = crate::filters::extract_date_filters(self.log_manager.get_filters());
         let (inc_ff, exc_ff) =
-            crate::field_filter::extract_field_filters(self.log_manager.get_filters());
+            crate::filters::extract_field_filters(self.log_manager.get_filters());
         let has_text_includes = self.filter.manager.has_include();
         let parser: Option<&dyn crate::parser::LogFormatParser> = if self.display.raw_mode {
             None
@@ -2000,7 +1999,7 @@ impl TabState {
                 continue;
             };
             for name in &names {
-                if let Some(v) = crate::field_filter::resolve_field(name, &parts) {
+                if let Some(v) = crate::filters::resolve_field(name, &parts) {
                     *name_freq.entry(name.clone()).or_insert(0) += 1;
                     let skip = matches!(name.as_str(), "timestamp" | "message");
                     if !skip {
@@ -2066,9 +2065,9 @@ pub struct FileLoadState {
     pub path: String,
     /// Current progress fraction (0.0–1.0); updated by the background task.
     pub progress_rx: tokio::sync::watch::Receiver<f64>,
-    /// Delivers the finished [`crate::file_reader::FileLoadResult`] (or error) when indexing is done.
+    /// Delivers the finished [`crate::ingestion::FileLoadResult`] (or error) when indexing is done.
     pub result_rx:
-        tokio::sync::oneshot::Receiver<std::io::Result<crate::file_reader::FileLoadResult>>,
+        tokio::sync::oneshot::Receiver<std::io::Result<crate::ingestion::FileLoadResult>>,
     pub total_bytes: u64,
     pub on_complete: LoadContext,
     /// Set to `true` to abort the in-flight indexing task early (e.g. on tab close).
@@ -2091,7 +2090,7 @@ pub struct StdinLoadState {
 /// Tracks an in-progress background archive extraction.
 pub struct ArchiveExtractionState {
     pub result_rx:
-        tokio::sync::oneshot::Receiver<Result<Vec<crate::archive::ExtractedFile>, String>>,
+        tokio::sync::oneshot::Receiver<Result<Vec<crate::ingestion::ExtractedFile>, String>>,
 }
 
 /// Per-tab state for watching a file for new appended content.
@@ -2190,7 +2189,7 @@ pub fn docker_connect_fn(container: String) -> ConnectFn {
 pub fn otlp_connect_fn(port: u16) -> ConnectFn {
     Arc::new(move || {
         Box::pin(async move {
-            crate::otlp_receiver::spawn_otlp_http_receiver(port)
+            crate::ingestion::spawn_otlp_http_receiver(port)
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -2200,7 +2199,7 @@ pub fn otlp_connect_fn(port: u16) -> ConnectFn {
 pub fn otlp_grpc_connect_fn(port: u16) -> ConnectFn {
     Arc::new(move || {
         Box::pin(async move {
-            crate::otlp_receiver::spawn_otlp_grpc_receiver(port)
+            crate::ingestion::spawn_otlp_grpc_receiver(port)
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -2284,8 +2283,8 @@ mod tests {
         let files = list_dir_files("/nonexistent/path/xyz123");
         assert!(files.is_empty());
     }
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
     use crate::types::{Comment, FilterType};
     use std::sync::Arc;
 
@@ -2806,8 +2805,8 @@ mod tests {
         use std::sync::Arc;
         let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
         db.save_app_setting("show_mode_bar", "false").await.unwrap();
-        let fr = crate::file_reader::FileReader::from_bytes(b"line\n".to_vec());
-        let lm = crate::log_manager::LogManager::new(db, None).await;
+        let fr = crate::ingestion::FileReader::from_bytes(b"line\n".to_vec());
+        let lm = crate::db::LogManager::new(db, None).await;
         let app = crate::ui::App::new(
             lm,
             fr,
@@ -2833,8 +2832,8 @@ mod tests {
         use std::sync::Arc;
         let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
         db.save_app_setting("wrap", "false").await.unwrap();
-        let fr = crate::file_reader::FileReader::from_bytes(b"line\n".to_vec());
-        let lm = crate::log_manager::LogManager::new(db, None).await;
+        let fr = crate::ingestion::FileReader::from_bytes(b"line\n".to_vec());
+        let lm = crate::db::LogManager::new(db, None).await;
         let app = crate::ui::App::new(
             lm,
             fr,
@@ -2858,7 +2857,7 @@ mod tests {
 
     async fn make_tab_with_date_filter(lines: &[&str], expr: &str) -> TabState {
         let mut tab = make_tab(lines).await;
-        let pattern = format!("{}{}", crate::date_filter::DATE_PREFIX, expr);
+        let pattern = format!("{}{}", crate::filters::DATE_PREFIX, expr);
         tab.log_manager
             .add_filter_with_color(pattern, FilterType::Include, None, None, true)
             .await;
@@ -2885,7 +2884,7 @@ mod tests {
         ];
         let mut tab = make_tab(&lines).await;
         for expr in &["01:00 .. 02:00", "03:00 .. 04:00"] {
-            let pattern = format!("{}{}", crate::date_filter::DATE_PREFIX, expr);
+            let pattern = format!("{}{}", crate::filters::DATE_PREFIX, expr);
             tab.log_manager
                 .add_filter_with_color(pattern, FilterType::Include, None, None, true)
                 .await;
@@ -3312,7 +3311,7 @@ mod tests {
             r#"{"timestamp":"2024-01-01T05:00:00Z","level":"INFO","msg":"out of range"}"#,
         ];
         let mut tab = make_tab(&lines).await;
-        let pattern = format!("{}01:00 .. 02:00", crate::date_filter::DATE_PREFIX);
+        let pattern = format!("{}01:00 .. 02:00", crate::filters::DATE_PREFIX);
         tab.log_manager
             .add_filter_with_color(pattern, FilterType::Include, None, None, true)
             .await;
@@ -3329,7 +3328,7 @@ mod tests {
             r#"{"timestamp":"2024-01-01T05:00:00Z","level":"INFO","msg":"out of range"}"#,
         ];
         let mut tab = make_tab(&lines).await;
-        let pattern = format!("{}01:00 .. 02:00", crate::date_filter::DATE_PREFIX);
+        let pattern = format!("{}01:00 .. 02:00", crate::filters::DATE_PREFIX);
         tab.log_manager
             .add_filter_with_color(pattern, FilterType::Include, None, None, true)
             .await;
@@ -3913,7 +3912,7 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_visible_date_only_clf_fast_path() {
         let mut tab = make_tab(&[CLF_IN, CLF_OUT]).await;
-        let pattern = format!("{}12:00:00 .. 14:00:00", crate::date_filter::DATE_PREFIX);
+        let pattern = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
             .add_filter_with_color(pattern, FilterType::Include, None, None, true)
             .await;
@@ -3925,7 +3924,7 @@ mod tests {
     async fn test_begin_filter_refresh_date_only_clf_fast_path() {
         let lines = [CLF_IN, CLF_OUT];
         let mut tab = make_tab(&lines).await;
-        let pattern = format!("{}12:00:00 .. 14:00:00", crate::date_filter::DATE_PREFIX);
+        let pattern = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
             .add_filter_with_color(pattern, FilterType::Include, None, None, true)
             .await;
@@ -3944,7 +3943,7 @@ mod tests {
     #[tokio::test]
     async fn test_filter_new_lines_date_only_clf_fast_path() {
         let mut tab = make_tab(&[CLF_IN]).await;
-        let pattern = format!("{}12:00:00 .. 14:00:00", crate::date_filter::DATE_PREFIX);
+        let pattern = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
             .add_filter_with_color(pattern, FilterType::Include, None, None, true)
             .await;
@@ -3977,7 +3976,7 @@ mod tests {
     #[tokio::test]
     async fn test_begin_filter_refresh_text_include_with_date_hides_non_matching() {
         let mut tab = make_tab(&[CLF_IN, CLF_IN_RANGE_OTHER]).await;
-        let date_pat = format!("{}12:00:00 .. 14:00:00", crate::date_filter::DATE_PREFIX);
+        let date_pat = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
             .add_filter_with_color(date_pat, FilterType::Include, None, None, true)
             .await;
@@ -4003,7 +4002,7 @@ mod tests {
     #[tokio::test]
     async fn test_begin_filter_refresh_regex_include_with_date_hides_non_matching() {
         let mut tab = make_tab(&[CLF_IN, CLF_IN_RANGE_OTHER]).await;
-        let date_pat = format!("{}12:00:00 .. 14:00:00", crate::date_filter::DATE_PREFIX);
+        let date_pat = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
             .add_filter_with_color(date_pat, FilterType::Include, None, None, true)
             .await;
@@ -4030,7 +4029,7 @@ mod tests {
     #[tokio::test]
     async fn test_filter_new_lines_text_include_with_date_hides_non_matching() {
         let mut tab = make_tab(&[CLF_IN]).await;
-        let date_pat = format!("{}12:00:00 .. 14:00:00", crate::date_filter::DATE_PREFIX);
+        let date_pat = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
             .add_filter_with_color(date_pat, FilterType::Include, None, None, true)
             .await;
@@ -4057,7 +4056,7 @@ mod tests {
     #[tokio::test]
     async fn test_filter_new_lines_regex_include_with_date_hides_non_matching() {
         let mut tab = make_tab(&[CLF_IN]).await;
-        let date_pat = format!("{}12:00:00 .. 14:00:00", crate::date_filter::DATE_PREFIX);
+        let date_pat = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
             .add_filter_with_color(date_pat, FilterType::Include, None, None, true)
             .await;
@@ -4170,7 +4169,7 @@ mod tests {
 
     #[test]
     fn test_line_is_visible_date_filter_match_passes() {
-        use crate::date_filter::parse_date_filter;
+        use crate::filters::parse_date_filter;
         use crate::parser::DisplayParts;
         let df = parse_date_filter("01:00 .. 02:00").unwrap();
         let mut counts = vec![0usize];
@@ -4192,7 +4191,7 @@ mod tests {
 
     #[test]
     fn test_line_is_visible_date_filter_no_match_hidden() {
-        use crate::date_filter::parse_date_filter;
+        use crate::filters::parse_date_filter;
         use crate::parser::DisplayParts;
         let df = parse_date_filter("01:00 .. 02:00").unwrap();
         let mut counts = vec![0usize];
@@ -4214,7 +4213,7 @@ mod tests {
 
     #[test]
     fn test_line_is_visible_date_filter_no_timestamp_passes_through() {
-        use crate::date_filter::parse_date_filter;
+        use crate::filters::parse_date_filter;
         use crate::parser::DisplayParts;
         let df = parse_date_filter("01:00 .. 02:00").unwrap();
         let mut counts = vec![0usize];
@@ -4236,7 +4235,7 @@ mod tests {
 
     #[test]
     fn test_line_is_visible_date_filter_counts_all_matching() {
-        use crate::date_filter::parse_date_filter;
+        use crate::filters::parse_date_filter;
         use crate::parser::DisplayParts;
         let df1 = parse_date_filter("01:00 .. 02:00").unwrap();
         let df2 = parse_date_filter("00:00 .. 03:00").unwrap();
@@ -4260,7 +4259,7 @@ mod tests {
 
     #[test]
     fn test_line_is_visible_field_exclude_hides() {
-        use crate::field_filter::FieldFilter;
+        use crate::filters::FieldFilter;
         use crate::parser::DisplayParts;
         let exc = FieldFilter {
             field: "level".to_string(),
@@ -4284,7 +4283,7 @@ mod tests {
 
     #[test]
     fn test_line_is_visible_field_include_match_visible() {
-        use crate::field_filter::FieldFilter;
+        use crate::filters::FieldFilter;
         use crate::parser::DisplayParts;
         let inc = FieldFilter {
             field: "level".to_string(),
@@ -4308,7 +4307,7 @@ mod tests {
 
     #[test]
     fn test_line_is_visible_field_include_miss_hidden() {
-        use crate::field_filter::FieldFilter;
+        use crate::filters::FieldFilter;
         use crate::parser::DisplayParts;
         let inc = FieldFilter {
             field: "level".to_string(),
@@ -4332,7 +4331,7 @@ mod tests {
 
     #[test]
     fn test_line_is_visible_text_include_beats_field_include_miss() {
-        use crate::field_filter::FieldFilter;
+        use crate::filters::FieldFilter;
         use crate::parser::DisplayParts;
         // Text include matched; field include miss doesn't override.
         let inc = FieldFilter {
@@ -4357,7 +4356,7 @@ mod tests {
 
     #[test]
     fn test_line_is_visible_field_passthrough_when_unparseable() {
-        use crate::field_filter::FieldFilter;
+        use crate::filters::FieldFilter;
         fn make_inc() -> FieldFilter {
             FieldFilter {
                 field: "level".to_string(),

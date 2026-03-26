@@ -122,8 +122,8 @@ impl Mode for DockerSelectMode {
 mod tests {
     use super::*;
     use crate::db::Database;
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
     use std::sync::Arc;
 

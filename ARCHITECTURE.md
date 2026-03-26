@@ -6,12 +6,12 @@ Terminal-based log analysis tool built in Rust with a Ratatui TUI. Filters and U
 
 logana is structured around a strict separation between domain logic and the UI layer. The application is divided into five broad concerns:
 
-**File I/O & Ingestion** — `FileReader` reads regular files and exposes O(1) random line access via a pre-built offset index.
+**File I/O & Ingestion** — `ingestion/` — `FileReader` reads regular files and exposes O(1) random line access via a pre-built offset index.
 - Stdin is handled separately by a background thread that accumulates bytes and publishes snapshots.
 - Streaming sources (DLT TCP, Docker logs, file tailing, OTLP HTTP) deliver chunks through a watch channel that the event loop appends each frame.
 - Binary data formats like DLT are converted to newline-delimited text before entering the line-based pipeline.
-- The OTLP HTTP receiver (`FileReader::spawn_otlp_http_receiver`) listens on a local port (default 4318), accepts `POST /v1/logs` with both `application/json` and `application/x-protobuf` payloads (gzip-compressed variants supported), flattens each `LogRecord` into a newline-delimited JSON line, and feeds it through the existing `OtlpParser`.
-- Compressed and archive files (`.gz`, `.bz2`, `.xz`, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`) are handled by `archive.rs`. Detection is extension-based (`detect_archive_type`). For interactive `:open`, extraction runs on tokio's blocking thread pool (`spawn_blocking`) and is non-blocking to the event loop — `App::pending_archive` holds the `oneshot::Receiver` and `poll_archive_extraction` is called each render frame. Each extracted file is written to a `NamedTempFile` stored in `TabState::archive_temp` (keeping it alive for the tab's lifetime) and loaded as a separate tab. Startup and headless mode use `open_archive_blocking` / `run_headless_archive` which await the spawn_blocking call directly.
+- The OTLP HTTP receiver (`ingestion/otlp_receiver.rs`) listens on a local port (default 4318), accepts `POST /v1/logs` with both `application/json` and `application/x-protobuf` payloads (gzip-compressed variants supported), flattens each `LogRecord` into a newline-delimited JSON line, and feeds it through the existing `OtlpParser`.
+- Compressed and archive files (`.gz`, `.bz2`, `.xz`, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`) are handled by `ingestion/archive.rs`. Detection is extension-based (`detect_archive_type`). For interactive `:open`, extraction runs on tokio's blocking thread pool (`spawn_blocking`) and is non-blocking to the event loop — `App::pending_archive` holds the `oneshot::Receiver` and `poll_archive_extraction` is called each render frame. Each extracted file is written to a `NamedTempFile` stored in `TabState::archive_temp` (keeping it alive for the tab's lifetime) and loaded as a separate tab. Startup and headless mode use `open_archive_blocking` / `run_headless_archive` which await the spawn_blocking call directly.
 
 **Log Parsing** — A format-detection registry (`parser/`) inspects incoming bytes and selects the best `LogFormatParser` implementation (JSON, syslog, journalctl, logfmt, CLF, DLT, etc.).
 - Parsers extract a normalised `DisplayParts` struct (timestamp, level, target, message, extra fields) that the rest of the system consumes uniformly regardless of the original format.
@@ -20,11 +20,11 @@ logana is structured around a strict separation between domain logic and the UI 
 - `collect_field_names()` returns canonical names for all fields: primary slots (`"timestamp"`, `"level"`, `"target"`, `"message"`) and semantic extras (e.g. `"hostname"` for `_HOSTNAME`, `"traceId"` for `trace_id`). Raw key aliases are collapsed to their canonical form.
 - All parsers use `push_field_as(fields, semantic, key, value)` to explicitly tag extra fields with their semantic.
 
-**Filter Pipeline** — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap.
-- The pipeline runs in a background thread so the UI stays responsive during large scans. 
-- For streaming sources, new lines are filtered incrementally. 
+**Filter Pipeline** — `filters/` — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap.
+- The pipeline runs in a background thread so the UI stays responsive during large scans.
+- For streaming sources, new lines are filtered incrementally.
 - Filter definitions are persisted to SQLite and reloaded on startup.
-- Date filters (`@date:` prefix) and field filters (`@field:` prefix) are stored as regular filter entries but applied as separate post-processing steps after text filters run.
+- Date filters (`@date:` prefix, `filters/date_filter.rs`) and field filters (`@field:` prefix, `filters/field_filter.rs`) are stored as regular filter entries but applied as separate post-processing steps after text filters run.
 
 **Mode System** — The UI is vim-inspired: a state machine (`mode/`) where each mode captures keyboard input and handles it independently. Modes return a `KeyResult` that the event loop acts on for effects beyond the mode's scope (closing tabs, clipboard, navigation).
 - **Normal** — default log browsing, scrolling, marks
@@ -38,12 +38,14 @@ logana is structured around a strict separation between domain logic and the UI 
 - **OTLP** — `:otlp [port]` command opens a receiver tab (no interactive picker needed)
 - **UI / Keybindings Help** — settings and shortcut reference
 
-**UI & Rendering** — `ui/` owns the terminal handle and drives the Ratatui render loop. 
-- The renderer reads tab state and produces widgets each frame; it never mutates state. 
-- The event loop dispatches key events to the active mode and acts on the returned result. 
-- Session state (open tabs, filters, marks, scroll position) is persisted to SQLite and restored on reopen. 
+**UI & Rendering** — `ui/` owns the terminal handle and drives the Ratatui render loop. Theme definitions live in `ui/theme.rs` and value/level colour mappings in `ui/value_colors.rs`.
+- The renderer reads tab state and produces widgets each frame; it never mutates state.
+- The event loop dispatches key events to the active mode and acts on the returned result.
+- Session state (open tabs, filters, marks, scroll position) is persisted to SQLite and restored on reopen.
 
-**Headless** - A headless mode bypasses the TUI for scripted filter-and-export workflows.
+**Persistence** — `db/` — `db/sqlite.rs` owns the SQLite connection (`Database`) and schema migrations. `db/log_manager.rs` (`LogManager`) builds `FilterManager` instances from persisted filter definitions and manages session state (marks, comments, scroll position).
+
+**Headless** — A headless mode bypasses the TUI for scripted filter-and-export workflows.
 
 **MCP Server** — An optional embedded [Model Context Protocol](https://modelcontextprotocol.io/) server (`mcp/`) that exposes marks and annotations as MCP resources and accepts tool calls that mutate TUI state.
 - Implemented with the `rmcp` crate using the Streamable HTTP transport, served via `axum` at `/mcp`.

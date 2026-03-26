@@ -16,8 +16,8 @@ use rmcp::{
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::file_reader::FileReader;
-use crate::log_manager::LogManager;
+use crate::db::LogManager;
+use crate::ingestion::FileReader;
 use crate::types::Comment;
 
 #[derive(Default)]
@@ -245,7 +245,7 @@ mod tests {
     use tokio::sync::{RwLock, mpsc};
 
     use crate::db::Database;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
     use crate::types::Comment;
 
     async fn make_reader_and_manager(lines: &[&str]) -> (FileReader, LogManager) {

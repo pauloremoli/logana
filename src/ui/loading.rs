@@ -4,8 +4,8 @@ use std::sync::atomic::AtomicBool;
 
 use crate::config::RestoreSessionPolicy;
 use crate::db::FileContextStore;
-use crate::file_reader::{FileReader, VisibilityPredicate};
-use crate::log_manager::LogManager;
+use crate::db::LogManager;
+use crate::ingestion::{FileReader, VisibilityPredicate};
 use crate::mode::app_mode::ConfirmRestoreMode;
 use crate::mode::normal_mode::NormalMode;
 
@@ -197,7 +197,7 @@ impl App {
         let mut tab = TabState::new(file_reader, log_manager, title);
         self.apply_tab_defaults(&mut tab);
 
-        match crate::otlp_receiver::spawn_otlp_http_receiver(port).await {
+        match crate::ingestion::spawn_otlp_http_receiver(port).await {
             Ok(conn) => {
                 tab.stream.watch = Some(watch_state_from_connection(conn));
             }
@@ -245,7 +245,7 @@ impl App {
         let mut tab = TabState::new(file_reader, log_manager, title);
         self.apply_tab_defaults(&mut tab);
 
-        match crate::otlp_receiver::spawn_otlp_grpc_receiver(port).await {
+        match crate::ingestion::spawn_otlp_grpc_receiver(port).await {
             Ok(conn) => {
                 tab.stream.watch = Some(watch_state_from_connection(conn));
             }
@@ -478,7 +478,7 @@ impl App {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let path_str = path.to_string();
         tokio::task::spawn_blocking(move || {
-            let _ = tx.send(crate::archive::extract(&path_str));
+            let _ = tx.send(crate::ingestion::extract(&path_str));
         });
         self.pending_archive = Some(super::ArchiveExtractionState { result_rx: rx });
         let name = std::path::Path::new(path)
@@ -541,7 +541,7 @@ impl App {
     /// (startup) or in headless mode where there is no UI to keep responsive.
     pub async fn open_archive_blocking(&mut self, path: &str) -> Result<(), String> {
         let path_str = path.to_string();
-        let files = tokio::task::spawn_blocking(move || crate::archive::extract(&path_str))
+        let files = tokio::task::spawn_blocking(move || crate::ingestion::extract(&path_str))
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| format!("Failed to extract '{path}': {e}"))?;
@@ -692,7 +692,7 @@ impl App {
         path: String,
         total_bytes: u64,
         context: LoadContext,
-        result: crate::file_reader::FileLoadResult,
+        result: crate::ingestion::FileLoadResult,
     ) {
         match context {
             LoadContext::ReplaceInitialTab => {
@@ -840,7 +840,7 @@ impl App {
                         .try_extend_from_read()
                         .unwrap_or(false);
                     if !incremental {
-                        match crate::file_reader::FileReader::new(path_str) {
+                        match crate::ingestion::FileReader::new(path_str) {
                             Ok(r) => self.tabs[i].file_reader = r,
                             Err(_) => continue,
                         }
@@ -896,7 +896,7 @@ impl App {
             };
             match rx.try_recv() {
                 Ok(Ok(conn)) => {
-                    tab.file_reader = crate::file_reader::FileReader::from_bytes(vec![]);
+                    tab.file_reader = crate::ingestion::FileReader::from_bytes(vec![]);
                     tab.display.format = None;
                     tab.filter.visible_indices = crate::ui::VisibleLines::default();
                     tab.filter.handle = None;
@@ -1134,8 +1134,8 @@ mod tests {
     use super::*;
     use crate::config::Keybindings;
     use crate::db::Database;
-    use crate::file_reader::{FileLoadResult, FileReader};
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::{FileLoadResult, FileReader};
     use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
     use crate::ui::{FileWatchState, SearchHandle, StdinLoadState, VisibleLines};
@@ -2293,7 +2293,7 @@ mod tests {
         use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
         let filter = SubstringFilter::new("match", FilterDecision::Include, false, 0).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
-        let pred = crate::file_reader::VisibilityPredicate::new(fm);
+        let pred = crate::ingestion::VisibilityPredicate::new(fm);
 
         app.begin_file_load(path, LoadContext::ReplaceInitialTab, Some(pred), false)
             .await;
@@ -3234,7 +3234,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_file_watches_otlp_grpc_shows_lines() {
-        use crate::otlp_receiver::spawn_otlp_grpc_receiver;
+        use crate::ingestion::spawn_otlp_grpc_receiver;
         use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
         use opentelemetry_proto::tonic::collector::logs::v1::logs_service_client::LogsServiceClient;
         use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};

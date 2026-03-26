@@ -1,8 +1,8 @@
 use logana::db::Database;
-use logana::file_reader::FileReader;
+use logana::db::LogManager;
 use logana::filters::FilterManager;
 use logana::headless::run_headless_to_writer;
-use logana::log_manager::LogManager;
+use logana::ingestion::FileReader;
 use logana::types::FilterType;
 use std::io::Write;
 use std::sync::Arc;
@@ -324,7 +324,7 @@ async fn test_single_pass_predicate_matches_compute_visible() {
     let expected = fm.compute_visible(&reader);
 
     // Single-pass path: predicate evaluated during indexing.
-    let pred = logana::file_reader::VisibilityPredicate::new(fm);
+    let pred = logana::ingestion::VisibilityPredicate::new(fm);
     let handle = FileReader::load(
         path,
         Some(pred),

@@ -10,52 +10,58 @@ use std::str::FromStr;
 use crate::auto_complete::fuzzy_match;
 
 static BUNDLED_THEMES: &[(&str, &str)] = &[
-    ("atomic", include_str!("../themes/atomic.json")),
+    ("atomic", include_str!("../../themes/atomic.json")),
     (
         "catppuccin-latte",
-        include_str!("../themes/catppuccin-latte.json"),
+        include_str!("../../themes/catppuccin-latte.json"),
     ),
     (
         "catppuccin-macchiato",
-        include_str!("../themes/catppuccin-macchiato.json"),
+        include_str!("../../themes/catppuccin-macchiato.json"),
     ),
     (
         "catppuccin-mocha",
-        include_str!("../themes/catppuccin-mocha.json"),
+        include_str!("../../themes/catppuccin-mocha.json"),
     ),
-    ("dracula", include_str!("../themes/dracula.json")),
-    ("github-dark", include_str!("../themes/github-dark.json")),
+    ("dracula", include_str!("../../themes/dracula.json")),
+    ("github-dark", include_str!("../../themes/github-dark.json")),
     (
         "github-dark-dimmed",
-        include_str!("../themes/github-dark-dimmed.json"),
+        include_str!("../../themes/github-dark-dimmed.json"),
     ),
-    ("github-light", include_str!("../themes/github-light.json")),
+    (
+        "github-light",
+        include_str!("../../themes/github-light.json"),
+    ),
     (
         "everforest-dark",
-        include_str!("../themes/everforest-dark.json"),
+        include_str!("../../themes/everforest-dark.json"),
     ),
     (
         "everforest-light",
-        include_str!("../themes/everforest-light.json"),
+        include_str!("../../themes/everforest-light.json"),
     ),
-    ("gruvbox-dark", include_str!("../themes/gruvbox-dark.json")),
+    (
+        "gruvbox-dark",
+        include_str!("../../themes/gruvbox-dark.json"),
+    ),
     (
         "jandedobbeleer",
-        include_str!("../themes/jandedobbeleer.json"),
+        include_str!("../../themes/jandedobbeleer.json"),
     ),
-    ("kanagawa", include_str!("../themes/kanagawa.json")),
-    ("monokai", include_str!("../themes/monokai.json")),
-    ("nord", include_str!("../themes/nord.json")),
-    ("onedark", include_str!("../themes/onedark.json")),
-    ("onelight", include_str!("../themes/onelight.json")),
-    ("paradox", include_str!("../themes/paradox.json")),
-    ("rose-pine", include_str!("../themes/rose-pine.json")),
+    ("kanagawa", include_str!("../../themes/kanagawa.json")),
+    ("monokai", include_str!("../../themes/monokai.json")),
+    ("nord", include_str!("../../themes/nord.json")),
+    ("onedark", include_str!("../../themes/onedark.json")),
+    ("onelight", include_str!("../../themes/onelight.json")),
+    ("paradox", include_str!("../../themes/paradox.json")),
+    ("rose-pine", include_str!("../../themes/rose-pine.json")),
     (
         "rose-pine-dawn",
-        include_str!("../themes/rose-pine-dawn.json"),
+        include_str!("../../themes/rose-pine-dawn.json"),
     ),
-    ("solarized", include_str!("../themes/solarized.json")),
-    ("tokyonight", include_str!("../themes/tokyonight.json")),
+    ("solarized", include_str!("../../themes/solarized.json")),
+    ("tokyonight", include_str!("../../themes/tokyonight.json")),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -541,8 +541,8 @@ impl Mode for CommandMode {
 mod tests {
     use super::*;
     use crate::db::Database;
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
     use crate::ui::{KeyResult, TabState};
     use std::sync::Arc;
@@ -906,14 +906,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_tab_open_with_no_path_highlights_completion() {
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
         std::fs::write(path.join("server.log"), b"data").unwrap();
 
         // Tab with a source_file in the temp dir
         let source = path.join("existing.log");
-        let file_reader = crate::file_reader::FileReader::from_bytes(b"line1\n".to_vec());
+        let file_reader = crate::ingestion::FileReader::from_bytes(b"line1\n".to_vec());
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, Some(source.to_str().unwrap().to_string())).await;
         let mut tab = TabState::new(file_reader, log_manager, "existing.log".to_string());
@@ -1069,7 +1069,7 @@ mod tests {
         let json_lines = b"{\"level\":\"info\",\"target\":\"app\",\"message\":\"hello\"}\n\
               {\"level\":\"error\",\"target\":\"db\",\"message\":\"fail\"}\n"
             .to_vec();
-        let file_reader = crate::file_reader::FileReader::from_bytes(json_lines);
+        let file_reader = crate::ingestion::FileReader::from_bytes(json_lines);
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
         TabState::new(file_reader, log_manager, "test.json".to_string())

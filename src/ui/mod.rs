@@ -1,3 +1,8 @@
+pub mod theme;
+pub mod value_colors;
+pub use theme::*;
+pub use value_colors::*;
+
 mod app;
 mod commands;
 pub mod field_layout;

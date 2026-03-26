@@ -5,12 +5,12 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 
-use crate::date_filter::extract_date_filters;
 use crate::db::Database;
-use crate::field_filter::extract_field_filters;
-use crate::file_reader::{FileReader, VisibilityPredicate};
+use crate::db::LogManager;
 use crate::filters::FilterDecision;
-use crate::log_manager::LogManager;
+use crate::filters::extract_date_filters;
+use crate::filters::extract_field_filters;
+use crate::ingestion::{FileReader, VisibilityPredicate};
 use crate::parser::detect_format;
 use crate::types::FilterType;
 
@@ -118,7 +118,7 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
         return Ok(());
     };
 
-    if crate::archive::detect_archive_type(path).is_some() {
+    if crate::ingestion::detect_archive_type(path).is_some() {
         run_headless_archive(path, &log_manager, &mut *writer).await?;
         writer.flush()?;
         finalize_output(tmp_path)?;
@@ -159,7 +159,7 @@ async fn run_headless_archive(
     writer: &mut dyn Write,
 ) -> Result<()> {
     let path_str = path.to_string();
-    let files = tokio::task::spawn_blocking(move || crate::archive::extract(&path_str))
+    let files = tokio::task::spawn_blocking(move || crate::ingestion::extract(&path_str))
         .await
         .map_err(|e| anyhow::anyhow!("Archive extraction task failed: {e}"))?
         .map_err(|e| anyhow::anyhow!("Failed to extract '{path}': {e}"))?;
@@ -241,7 +241,7 @@ async fn apply_inline_filters(
             .map_err(|e| anyhow::anyhow!("Invalid timestamp filter '{}': {}", args_str, e))?;
         if let Some(Commands::DateFilter { expr, .. }) = parsed.command {
             let expression = expr.join(" ");
-            let stored = format!("{}{}", crate::date_filter::DATE_PREFIX, expression);
+            let stored = format!("{}{}", crate::filters::DATE_PREFIX, expression);
             log_manager
                 .add_filter_with_color(stored, FilterType::Include, None, None, true)
                 .await;
@@ -257,7 +257,7 @@ fn build_field_pattern(pattern: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("--field pattern must be 'key=value', got: {}", pattern))?;
     Ok(format!(
         "{}{}:{}",
-        crate::field_filter::FIELD_PREFIX,
+        crate::filters::FIELD_PREFIX,
         &pattern[..eq],
         &pattern[eq + 1..]
     ))

@@ -153,7 +153,7 @@ pub fn get_col(p: &DisplayParts<'_>, name: &str, show_keys: bool) -> Option<Stri
             match n {
                 "timestamp" => {
                     return p.timestamp.map(|s| {
-                        crate::date_filter::canonical_timestamp(s).unwrap_or_else(|| s.to_string())
+                        crate::filters::canonical_timestamp(s).unwrap_or_else(|| s.to_string())
                     });
                 }
                 "level" => {
@@ -257,9 +257,7 @@ pub fn apply_field_layout(
         let msg_hidden = hidden_fields.contains("message");
         let mut cols = Vec::new();
         if !ts_hidden && let Some(ts) = p.timestamp {
-            cols.push(
-                crate::date_filter::canonical_timestamp(ts).unwrap_or_else(|| ts.to_string()),
-            );
+            cols.push(crate::filters::canonical_timestamp(ts).unwrap_or_else(|| ts.to_string()));
         }
         if !lvl_hidden && let Some(lvl) = p.level {
             cols.push(format!("{:<5}", lvl));

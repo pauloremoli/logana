@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 const DOUBLE_CLICK_MS: u128 = 300;
 
 use crate::config::{Keybindings, RestoreSessionPolicy};
+use crate::db::LogManager;
 use crate::db::{AppSettingsStore, FileContext, FileContextStore, SessionStore};
-use crate::file_reader::FileReader;
-use crate::log_manager::LogManager;
+use crate::ingestion::FileReader;
 use crate::mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode};
 use crate::mode::command_mode::CommandMode;
 use crate::mode::filter_mode::FilterManagementMode;
@@ -890,8 +890,8 @@ mod tests {
     use crate::auto_complete::shell_split;
     use crate::config::{Keybindings, RestoreSessionPolicy};
     use crate::db::Database;
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
     use crate::types::FilterType;
     use std::sync::Arc;
 

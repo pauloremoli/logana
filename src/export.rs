@@ -8,7 +8,7 @@ static BUNDLED_TEMPLATES: &[(&str, &str)] = &[
     ("markdown", include_str!("../templates/markdown.txt")),
     ("jira", include_str!("../templates/jira.txt")),
 ];
-use crate::file_reader::FileReader;
+use crate::ingestion::FileReader;
 use crate::parser::LogFormatParser;
 use crate::types::{Comment, FieldLayout};
 use crate::ui::field_layout::apply_field_layout;

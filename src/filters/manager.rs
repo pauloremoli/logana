@@ -757,7 +757,7 @@ impl FilterManager {
 
     /// Compute visible line indices from a `FileReader` using Rayon parallel processing.
     /// The returned indices are in ascending order.
-    pub fn compute_visible(&self, reader: &crate::file_reader::FileReader) -> Vec<usize> {
+    pub fn compute_visible(&self, reader: &crate::ingestion::FileReader) -> Vec<usize> {
         use rayon::prelude::*;
         let count = reader.line_count();
         (0..count)
@@ -1053,7 +1053,7 @@ fn merge_sub_chunk_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_reader::FileReader;
+    use crate::ingestion::FileReader;
     use std::io::Write;
     use tempfile::NamedTempFile;
 

@@ -165,8 +165,7 @@ impl Mode for FilterManagementMode {
             if let Some((id, ft, cc, pattern)) = filter_info {
                 tab.filter.editing_filter_id = Some(id);
                 tab.filter.filter_context = Some(selected);
-                let cmd = if let Some(expr) = pattern.strip_prefix(crate::date_filter::DATE_PREFIX)
-                {
+                let cmd = if let Some(expr) = pattern.strip_prefix(crate::filters::DATE_PREFIX) {
                     let mut c = String::from("date-filter");
                     if let Some(cfg) = &cc {
                         if let Some(fg) = cfg.fg {
@@ -182,7 +181,7 @@ impl Mode for FilterManagementMode {
                     c.push(' ');
                     c.push_str(expr);
                     c
-                } else if let Some(expr) = pattern.strip_prefix(crate::field_filter::FIELD_PREFIX) {
+                } else if let Some(expr) = pattern.strip_prefix(crate::filters::FIELD_PREFIX) {
                     // Convert internal "@field:key:value" → "filter --field [--fg …] [--bg …] [-l] key=value"
                     let mut c = if ft == FilterType::Include {
                         String::from("filter")
@@ -571,8 +570,8 @@ impl Mode for FilterEditMode {
 mod tests {
     use super::*;
     use crate::db::Database;
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
     use crate::ui::{KeyResult, TabState};
     use std::sync::Arc;
 

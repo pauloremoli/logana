@@ -370,8 +370,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_error() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -386,8 +386,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_field_name() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -402,8 +402,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_flag() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -417,8 +417,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_color() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -432,8 +432,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_file_path() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -447,8 +447,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_set_theme() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -462,8 +462,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_hide_field() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -478,8 +478,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_show_field_with_hidden() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -495,8 +495,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_show_field_no_hidden() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -511,8 +511,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_command_help() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -526,8 +526,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_completions_fallback_items() {
         use crate::db::Database;
-        use crate::file_reader::FileReader;
-        use crate::log_manager::LogManager;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
         use crate::ui::TabState;
         use std::sync::Arc;
         let db = Arc::new(Database::in_memory().await.unwrap());

@@ -16,7 +16,7 @@ pub struct FieldFilter {
 }
 
 /// A field filter paired with a [`StyleId`] for value highlighting in the render path.
-/// Parallel to [`crate::date_filter::DateFilterStyle`].
+/// Parallel to [`crate::filters::DateFilterStyle`].
 #[derive(Debug, Clone)]
 pub struct FieldFilterStyle {
     pub field_filter: FieldFilter,

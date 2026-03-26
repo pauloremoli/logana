@@ -826,8 +826,8 @@ mod tests {
     use super::*;
     use crate::config::Keybindings;
     use crate::db::Database;
-    use crate::file_reader::FileReader;
-    use crate::log_manager::LogManager;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
     use crate::mode::app_mode::ConfirmRestoreSessionMode;
     use crate::mode::command_mode::CommandMode;
     use crate::mode::filter_mode::FilterManagementMode;
