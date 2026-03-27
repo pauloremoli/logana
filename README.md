@@ -41,12 +41,12 @@ Download from the [Releases page](https://github.com/pauloremoli/logana/releases
 
 **Linux / macOS**
 ```sh
-curl -fsSL https://github.com/pauloremoli/logana/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/pauloremoli/logana/releases/latest/download/logana-installer.sh | sh
 ```
 
 **Windows (PowerShell)**
 ```powershell
-irm https://github.com/pauloremoli/logana/releases/latest/download/install.ps1 | iex
+irm https://github.com/pauloremoli/logana/releases/latest/download/logana-installer.ps1 | iex
 ```
 
 ### Homebrew (macOS / Linux)
