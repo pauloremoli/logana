@@ -29,8 +29,8 @@ The path depends on the operating system:
   "show_line_numbers": true,
   "wrap": false,
   "preview_bytes": 16777216,
-  "restore_session": "ask",
-  "restore_file_context": "ask",
+  "restore_session": "always",
+  "restore_file_context": "always",
   "dlt_devices": [
     { "name": "my-ecu", "host": "192.168.1.100", "port": 3490 }
   ],
@@ -74,8 +74,8 @@ The path depends on the operating system:
 | `show_line_numbers` | bool | `true` | Show the line number gutter |
 | `wrap` | bool | `false` | Wrap long lines |
 | `preview_bytes` | number | `16777216` | Bytes read for the instant preview shown while the full file index is built in the background (16 MiB) |
-| `restore_session` | string | `"ask"` | Whether to reopen tabs from the previous session (`"ask"`, `"always"`, `"never"`) |
-| `restore_file_context` | string | `"ask"` | Whether to restore per-file state (scroll, marks, search) when reopening a file (`"ask"`, `"always"`, `"never"`) |
+| `restore_session` | string | `"always"` | Whether to reopen tabs from the previous session (`"always"`, `"ask"`, `"never"`) |
+| `restore_file_context` | string | `"always"` | Whether to restore per-file state (scroll, marks, search) when reopening a file (`"always"`, `"ask"`, `"never"`) |
 | `dlt_devices` | array | `[]` | Pre-configured DLT daemon connections; each entry has `name`, `host`, and optional `port` (default `3490`) |
 
 ## Sections

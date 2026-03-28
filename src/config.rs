@@ -1554,10 +1554,10 @@ impl DltDevice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RestoreSessionPolicy {
-    /// Always ask (default).
-    #[default]
+    /// Ask before restoring.
     Ask,
-    /// Restore without asking.
+    /// Restore without asking (default).
+    #[default]
     Always,
     /// Never restore (skip without asking).
     Never,
@@ -2616,8 +2616,8 @@ mod tests {
     // ── RestoreSessionPolicy ─────────────────────────────────────────────
 
     #[test]
-    fn test_restore_session_policy_default_is_ask() {
-        assert_eq!(RestoreSessionPolicy::default(), RestoreSessionPolicy::Ask);
+    fn test_restore_session_policy_default_is_always() {
+        assert_eq!(RestoreSessionPolicy::default(), RestoreSessionPolicy::Always);
     }
 
     #[test]

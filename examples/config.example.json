@@ -6,8 +6,8 @@
   "show_line_numbers": true,
   "wrap": false,
   "preview_bytes": 16777216,
-  "restore_session": "ask",
-  "restore_file_context": "ask",
+  "restore_session": "always",
+  "restore_file_context": "always",
   "dlt_devices": [
     { "name": "my-ecu", "host": "192.168.1.100", "port": 3490 }
   ],
