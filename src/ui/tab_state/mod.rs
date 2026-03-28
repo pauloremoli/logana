@@ -306,6 +306,14 @@ impl VisibleLines {
         (0..len).map(move |i| self.get(i))
     }
 
+    /// Returns `true` if file-line `idx` is in the visible set.
+    pub fn contains(&self, idx: usize) -> bool {
+        match self {
+            Self::All(n) => idx < *n,
+            Self::Filtered(v) => v.binary_search(&idx).is_ok(),
+        }
+    }
+
     /// Binary search for file-line index `target`.
     /// Returns `Ok(pos)` if found, `Err(insert_pos)` otherwise.
     pub fn binary_search(&self, target: usize) -> Result<usize, usize> {
@@ -394,6 +402,57 @@ pub fn display_text_for_line(
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// Build a map from each line index to its "parent" line index — the most
+/// recent preceding line (inclusive) that the parser recognised as a log
+/// entry start.  Continuation lines (e.g. stack-trace frames that have no
+/// timestamp/level) map to their nearest preceding parent; parent lines map
+/// to themselves.
+///
+/// Empty lines are never considered a new parent (they are already hidden by
+/// `compute_unfiltered_visible` when a format is active).
+pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser) -> Vec<usize> {
+    let count = reader.line_count();
+    let mut map = Vec::with_capacity(count);
+    let mut last_parent = 0usize;
+    for i in 0..count {
+        let line = reader.get_line(i);
+        if !line.is_empty() && parser.parse_line(line).is_some() {
+            last_parent = i;
+        }
+        map.push(last_parent);
+    }
+    map
+}
+
+/// Rewrite `visible` so that every continuation line (one whose parent differs
+/// from itself in `cmap`) is visible iff its parent is visible.
+///
+/// Parent lines are unaffected — their filter decision is preserved as-is.
+/// The output remains sorted because we iterate `0..n` in ascending order.
+pub fn apply_continuation_correction(visible: &mut VisibleLines, cmap: &[usize]) {
+    let indices = match visible {
+        VisibleLines::All(_) => return, // all lines visible — nothing to fix
+        VisibleLines::Filtered(v) => v,
+    };
+    let n = cmap.len();
+    // Build a flat boolean lookup: was each line kept by the filter?
+    let mut filter_visible = vec![false; n];
+    for &idx in indices.iter() {
+        if idx < n {
+            filter_visible[idx] = true;
+        }
+    }
+    // Rebuild the list: each line is visible iff its parent is visible.
+    indices.clear();
+    for i in 0..n {
+        let parent = cmap[i];
+        if filter_visible[parent] {
+            indices.push(i);
+        }
+    }
+    // The result is already sorted (we iterate 0..n in order).
+}
+
 pub struct TabState {
     pub file_reader: FileReader,
     pub log_manager: LogManager,
@@ -411,6 +470,10 @@ pub struct TabState {
     /// Some(fraction 0.0–1.0) while this tab's content is being extracted from an archive.
     /// None when waiting for its turn, or after extraction completes.
     pub extraction_progress: Option<f64>,
+    /// Maps each line index to the nearest preceding line index (inclusive)
+    /// that the log-format parser recognised as an entry start.  `None` when
+    /// no format has been detected or raw-mode is active.
+    pub continuation_map: Option<Arc<Vec<usize>>>,
 }
 
 impl TabState {
@@ -427,6 +490,10 @@ impl TabState {
             .map(|fmt: &dyn LogFormatParser| fmt.default_hidden_fields(&sample))
             .unwrap_or_default();
         let fields_hidden_by_default = !default_hidden.is_empty();
+
+        let continuation_map = detected_format
+            .as_deref()
+            .map(|p| Arc::new(build_continuation_map(&file_reader, p)));
 
         let mut tab = TabState {
             file_reader,
@@ -466,6 +533,7 @@ impl TabState {
             load_state: None,
             archive_temp: None,
             extraction_progress: None,
+            continuation_map,
         };
         tab.refresh_visible();
         tab
@@ -1476,6 +1544,22 @@ impl TabState {
             return;
         }
 
+        // Extend the continuation map for the newly-appended lines.
+        if let (Some(cmap), Some(parser)) = (
+            self.continuation_map.as_mut(),
+            self.display.format.as_deref().filter(|_| !self.display.raw_mode),
+        ) {
+            let map = Arc::make_mut(cmap);
+            let mut last_parent = map.last().copied().unwrap_or(0);
+            for i in old_line_count..new_count {
+                let line = self.file_reader.get_line(i);
+                if !line.is_empty() && parser.parse_line(line).is_some() {
+                    last_parent = i;
+                }
+                map.push(last_parent);
+            }
+        }
+
         let has_active_filters =
             self.filter.show_marks_only || self.log_manager.get_filters().iter().any(|f| f.enabled);
 
@@ -1611,6 +1695,25 @@ impl TabState {
             if visible {
                 new_visible.push(i);
             }
+        }
+
+        // Apply continuation semantics: continuation lines inherit their parent's
+        // filter decision. A parent in this batch uses `new_visible`; a parent
+        // from earlier uses `visible_indices`.
+        if let Some(cmap) = self.continuation_map.clone() {
+            let existing = &self.filter.visible_indices;
+            let new_vis_set: std::collections::HashSet<usize> =
+                new_visible.iter().copied().collect();
+            new_visible.retain(|&i| {
+                let parent = cmap.get(i).copied().unwrap_or(i);
+                if parent == i {
+                    true
+                } else if parent >= old_line_count {
+                    new_vis_set.contains(&parent)
+                } else {
+                    existing.contains(parent)
+                }
+            });
         }
 
         match &mut self.filter.visible_indices {
@@ -1847,6 +1950,11 @@ impl TabState {
                 }
             }
             self.display.format = fmt;
+            self.continuation_map = self
+                .display
+                .format
+                .as_deref()
+                .map(|p| Arc::new(build_continuation_map(&self.file_reader, p)));
         }
     }
 

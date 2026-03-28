@@ -616,3 +616,133 @@ fn test_detect_format_does_not_select_dlt_for_non_dlt() {
     let parser = detect_format(&lines).unwrap();
     assert_ne!(parser.name(), "dlt");
 }
+
+// ---------------------------------------------------------------------------
+// Multiline / continuation-line tests
+// ---------------------------------------------------------------------------
+
+/// Build a FileReader from a multiline log string with Java-style stack traces.
+fn make_multiline_log() -> FileReader {
+    // Line 0: ERROR entry with timestamp (parent)
+    // Line 1: stack frame (continuation)
+    // Line 2: stack frame (continuation)
+    // Line 3: INFO entry with timestamp (standalone parent)
+    let data = b"\
+2024-01-15 10:00:00 ERROR com.example.App - NullPointerException\n\
+    at com.example.Foo.bar(Foo.java:42)\n\
+    at com.example.Main.main(Main.java:10)\n\
+2024-01-16 11:00:00 INFO  com.example.App - Application started\n";
+    FileReader::from_bytes(data.to_vec())
+}
+
+#[test]
+fn test_build_continuation_map_basic() {
+    use logana::parser::detect_format;
+    use logana::ui::build_continuation_map;
+
+    let reader = make_multiline_log();
+    let sample: Vec<&[u8]> = (0..reader.line_count()).map(|i| reader.get_line(i)).collect();
+    let parser = detect_format(&sample).expect("format should be detected");
+
+    let cmap = build_continuation_map(&reader, parser.as_ref());
+
+    assert_eq!(cmap.len(), 4);
+    assert_eq!(cmap[0], 0, "line 0 is its own parent");
+    assert_eq!(cmap[1], 0, "line 1 is a continuation of line 0");
+    assert_eq!(cmap[2], 0, "line 2 is a continuation of line 0");
+    assert_eq!(cmap[3], 3, "line 3 is its own parent");
+}
+
+#[test]
+fn test_apply_continuation_correction_hides_orphaned_continuations() {
+    use logana::ui::{VisibleLines, apply_continuation_correction};
+
+    // Simulate: filter kept only line 3 (INFO); lines 0, 1, 2 were filtered.
+    // Without correction, continuation lines 1 and 2 might still be visible.
+    // With correction they must be hidden because their parent (line 0) is hidden.
+    let cmap = vec![0usize, 0, 0, 3]; // lines 1,2 → parent 0; line 3 → parent 3
+    let mut visible = VisibleLines::Filtered(vec![1, 2, 3]); // lines 1 & 2 erroneously visible
+    apply_continuation_correction(&mut visible, &cmap);
+    // line 0 was NOT in visible, so its continuations (1, 2) must be removed.
+    // line 3 is its own parent and was visible → stays.
+    assert_eq!(visible, VisibleLines::Filtered(vec![3]));
+}
+
+#[test]
+fn test_apply_continuation_correction_keeps_continuations_with_parent() {
+    use logana::ui::{VisibleLines, apply_continuation_correction};
+
+    // Simulate: filter kept line 0 (ERROR parent); continuations 1 and 2 also passed.
+    let cmap = vec![0usize, 0, 0, 3];
+    let mut visible = VisibleLines::Filtered(vec![0, 1, 2, 3]);
+    apply_continuation_correction(&mut visible, &cmap);
+    // Parent 0 is visible → continuations 1 and 2 stay visible.
+    assert_eq!(visible, VisibleLines::Filtered(vec![0, 1, 2, 3]));
+}
+
+#[test]
+fn test_apply_continuation_correction_noop_for_all_variant() {
+    use logana::ui::{VisibleLines, apply_continuation_correction};
+
+    let cmap = vec![0usize, 0, 1];
+    let mut visible = VisibleLines::All(3);
+    apply_continuation_correction(&mut visible, &cmap);
+    // All-variant must remain unchanged.
+    assert_eq!(visible, VisibleLines::All(3));
+}
+
+#[tokio::test]
+async fn test_exclude_filter_hides_continuation_lines() {
+    use logana::filters::FilterType;
+    use logana::parser::detect_format;
+    use logana::ui::{VisibleLines, apply_continuation_correction, build_continuation_map};
+
+    let (_db, mut manager) = setup().await;
+    let reader = make_multiline_log();
+    let sample: Vec<&[u8]> = (0..reader.line_count()).map(|i| reader.get_line(i)).collect();
+    let parser = detect_format(&sample).expect("format detected");
+    let cmap = build_continuation_map(&reader, parser.as_ref());
+
+    // Exclude lines containing "ERROR" — should hide line 0 AND its continuations
+    manager
+        .add_filter_with_color("ERROR".into(), FilterType::Exclude, None, None, true)
+        .await;
+    let (fm, _, _, _) = manager.build_filter_manager();
+    let mut visible = VisibleLines::Filtered(fm.compute_visible(&reader));
+    apply_continuation_correction(&mut visible, &cmap);
+
+    // Line 0 (ERROR) excluded; lines 1 & 2 are its continuations → also excluded.
+    // Line 3 (INFO) should be visible.
+    assert!(!visible.contains(0), "ERROR entry should be hidden");
+    assert!(!visible.contains(1), "continuation 1 should be hidden with parent");
+    assert!(!visible.contains(2), "continuation 2 should be hidden with parent");
+    assert!(visible.contains(3), "INFO entry should be visible");
+}
+
+#[tokio::test]
+async fn test_include_filter_shows_continuations_with_parent() {
+    use logana::filters::FilterType;
+    use logana::parser::detect_format;
+    use logana::ui::{VisibleLines, apply_continuation_correction, build_continuation_map};
+
+    let (_db, mut manager) = setup().await;
+    let reader = make_multiline_log();
+    let sample: Vec<&[u8]> = (0..reader.line_count()).map(|i| reader.get_line(i)).collect();
+    let parser = detect_format(&sample).expect("format detected");
+    let cmap = build_continuation_map(&reader, parser.as_ref());
+
+    // Include only lines containing "ERROR" — parent matches; continuations should follow.
+    manager
+        .add_filter_with_color("ERROR".into(), FilterType::Include, None, None, true)
+        .await;
+    let (fm, _, _, _) = manager.build_filter_manager();
+    let mut visible = VisibleLines::Filtered(fm.compute_visible(&reader));
+    apply_continuation_correction(&mut visible, &cmap);
+
+    // Line 0 matches; its continuations (1, 2) should be shown.
+    // Line 3 (INFO) does not match include → hidden.
+    assert!(visible.contains(0), "ERROR entry should be visible");
+    assert!(visible.contains(1), "continuation 1 should follow its visible parent");
+    assert!(visible.contains(2), "continuation 2 should follow its visible parent");
+    assert!(!visible.contains(3), "INFO entry should be hidden (no match)");
+}

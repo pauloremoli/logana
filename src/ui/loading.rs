@@ -1070,6 +1070,16 @@ impl App {
                     tab.filter.match_counts = counts;
                 }
                 if is_last {
+                    // Apply continuation-line grouping: continuation lines
+                    // (those whose parser returned None) inherit their parent's
+                    // filter visibility so they are hidden when the parent is
+                    // hidden (e.g. by a date or exclude filter).
+                    if let Some(cmap) = tab.continuation_map.clone() {
+                        super::apply_continuation_correction(
+                            &mut tab.filter.visible_indices,
+                            &cmap,
+                        );
+                    }
                     if let Some(idx) = scroll_anchor
                         && let Some(pos) = tab.filter.visible_indices.position_of(idx)
                     {

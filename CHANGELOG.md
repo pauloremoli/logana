@@ -7,6 +7,7 @@ All notable changes to logana will be documented in this file.
 ### Added
 - Mouse support
 - Support for compressed and archive files: `.gz`, `.bz2`, `.xz`, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`.
+- Support for multiline log message, previously each line was treated as separate entry.
 
 ### Fixed
 - Show an error in the notification bar on startup when the config file exists but cannot be read or parsed

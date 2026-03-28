@@ -606,7 +606,36 @@ pub fn prepare_log_panel(
             let level = cached
                 .and_then(|c| c.level.as_deref())
                 .map(LogLevel::parse_level)
-                .unwrap_or_else(|| LogLevel::detect_from_bytes(line_bytes));
+                .unwrap_or_else(|| {
+                    // For continuation lines (parse_line returned None), inherit
+                    // the parent entry's level so the whole multiline block gets
+                    // the same color (e.g. a stack trace stays red under ERROR).
+                    if let Some(cmap) = &tab.continuation_map {
+                        let parent = cmap.get(line_idx).copied().unwrap_or(line_idx);
+                        if parent != line_idx {
+                            // Try the parent's cache entry first.
+                            if let Some(lvl) = tab
+                                .cache
+                                .parse
+                                .get(&parent)
+                                .filter(|(g, _)| *g == parse_gen)
+                                .and_then(|(_, c)| c.level.as_deref())
+                            {
+                                return LogLevel::parse_level(lvl);
+                            }
+                            // Parent not cached (outside viewport) — parse just
+                            // the level from its raw bytes without full layout.
+                            if let Some(parser) = tab.display.format.as_deref() {
+                                if let Some(parts) = parser.parse_line(tab.file_reader.get_line(parent)) {
+                                    if let Some(lvl) = parts.level {
+                                        return LogLevel::parse_level(lvl);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    LogLevel::detect_from_bytes(line_bytes)
+                });
             match level {
                 LogLevel::Trace if !level_colors_disabled.contains("trace") => {
                     base_style = base_style.fg(theme.trace_fg)
