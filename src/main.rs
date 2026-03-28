@@ -264,12 +264,14 @@ async fn apply_cli_args_to_app(app: &mut App, args: &Args) {
         app.execute_command_str(format!("exclude {}", args_str))
             .await;
     }
+    // Set before applying timestamp filters so cmd_date_filter can skip the
+    // format check — format is not yet detected at startup.
+    app.startup_filters = args.filters.is_some() || has_inline_filters;
+
     for args_str in &args.timestamp_filters {
         app.execute_command_str(format!("date-filter {}", args_str))
             .await;
     }
-
-    app.startup_filters = args.filters.is_some() || has_inline_filters;
 
     if let Some(port) = args.mcp {
         let p = app.mcp_port.unwrap_or(port);

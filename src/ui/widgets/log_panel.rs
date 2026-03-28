@@ -1467,5 +1467,4 @@ mod tests {
             "expected progress bar characters in rendered output"
         );
     }
-
 }

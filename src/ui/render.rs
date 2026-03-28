@@ -283,10 +283,10 @@ impl App {
 
         if self.decompression_message.is_none()
             && let Some(set_at) = self.tabs[self.active_tab].interaction.notification_set_at
-                && set_at.elapsed() > std::time::Duration::from_secs(10)
-            {
-                self.tabs[self.active_tab].clear_notification();
-            }
+            && set_at.elapsed() > std::time::Duration::from_secs(10)
+        {
+            self.tabs[self.active_tab].clear_notification();
+        }
         let notification = self
             .decompression_message
             .clone()

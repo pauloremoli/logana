@@ -57,7 +57,7 @@ impl App {
         line_mode: bool,
     ) -> Result<bool, String> {
         let tab = &self.tabs[self.active_tab];
-        if tab.display.format.is_none() {
+        if tab.display.format.is_none() && !self.startup_filters {
             return Err(
                 "No log format detected — date filter requires structured timestamps".to_string(),
             );

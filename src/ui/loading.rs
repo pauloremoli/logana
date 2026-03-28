@@ -551,11 +551,12 @@ impl App {
                         t.file_reader.line_count() == 0
                             && t.load_state.is_none()
                             && t.archive_temp.is_none()
-                    }) {
-                        self.tabs.remove(idx);
-                        self.active_tab = self.active_tab.saturating_sub(1);
-                        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
-                    }
+                    })
+                {
+                    self.tabs.remove(idx);
+                    self.active_tab = self.active_tab.saturating_sub(1);
+                    self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+                }
                 let first_new_tab_idx = self.tabs.len();
                 for file in files {
                     let tab_idx = self.tabs.len();
