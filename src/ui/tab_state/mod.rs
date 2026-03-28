@@ -408,6 +408,9 @@ pub struct TabState {
     pub load_state: Option<FileLoadState>,
     /// Keeps extracted archive temp file alive for the lifetime of this tab.
     pub archive_temp: Option<tempfile::NamedTempFile>,
+    /// Some(fraction 0.0–1.0) while this tab's content is being extracted from an archive.
+    /// None when waiting for its turn, or after extraction completes.
+    pub extraction_progress: Option<f64>,
 }
 
 impl TabState {
@@ -462,6 +465,7 @@ impl TabState {
             },
             load_state: None,
             archive_temp: None,
+            extraction_progress: None,
         };
         tab.refresh_visible();
         tab
@@ -2090,6 +2094,9 @@ pub struct StdinLoadState {
 
 /// Tracks an in-progress background archive extraction.
 pub struct ArchiveExtractionState {
+    /// Per-file extraction progress updates.
+    pub progress_rx: tokio::sync::watch::Receiver<crate::ingestion::ArchiveExtractionProgress>,
+    /// Delivers all `ExtractedFile`s (or error) when extraction finishes.
     pub result_rx:
         tokio::sync::oneshot::Receiver<Result<Vec<crate::ingestion::ExtractedFile>, String>>,
 }

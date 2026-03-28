@@ -2617,7 +2617,10 @@ mod tests {
 
     #[test]
     fn test_restore_session_policy_default_is_always() {
-        assert_eq!(RestoreSessionPolicy::default(), RestoreSessionPolicy::Always);
+        assert_eq!(
+            RestoreSessionPolicy::default(),
+            RestoreSessionPolicy::Always
+        );
     }
 
     #[test]

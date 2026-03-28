@@ -406,6 +406,8 @@ pub struct LogPanelData {
     pub wrap: bool,
     pub theme_border: Color,
     pub theme_border_title: Color,
+    pub extraction_progress: Option<f64>,
+    pub archive_name: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -864,6 +866,8 @@ pub fn prepare_log_panel(
         wrap,
         theme_border: theme.border,
         theme_border_title: theme.border_title,
+        extraction_progress: tab.extraction_progress,
+        archive_name: tab.title.clone(),
     }
 }
 
@@ -913,6 +917,28 @@ impl<'a> Widget for LogPanel<'a> {
         }
 
         paragraph.render(area, buf);
+
+        let inner = if d.show_borders {
+            area.inner(ratatui::layout::Margin {
+                horizontal: 1,
+                vertical: 1,
+            })
+        } else {
+            area
+        };
+        if let Some(fraction) = d.extraction_progress {
+            let (bar, pct) = crate::ui::render::progress_bar_str(fraction);
+            let text = format!("{}\n{bar}  {pct}%", d.archive_name);
+            let overlay = Paragraph::new(text).alignment(Alignment::Center);
+            let mid_y = (inner.y + inner.height / 2).saturating_sub(1);
+            let overlay_area = Rect {
+                x: inner.x,
+                y: mid_y,
+                width: inner.width,
+                height: 2,
+            };
+            overlay.render(overlay_area, buf);
+        }
 
         if d.num_visible > 0 {
             let max_scroll = d.num_visible.saturating_sub(d.visible_height);
@@ -1159,6 +1185,8 @@ mod tests {
             wrap: false,
             theme_border: Color::Gray,
             theme_border_title: Color::White,
+            extraction_progress: None,
+            archive_name: String::new(),
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
         terminal
@@ -1180,6 +1208,8 @@ mod tests {
             wrap: false,
             theme_border: Color::Gray,
             theme_border_title: Color::White,
+            extraction_progress: None,
+            archive_name: String::new(),
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
         terminal
@@ -1201,6 +1231,8 @@ mod tests {
             wrap: true,
             theme_border: Color::Gray,
             theme_border_title: Color::White,
+            extraction_progress: None,
+            archive_name: String::new(),
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
         terminal
@@ -1222,6 +1254,8 @@ mod tests {
             wrap: false,
             theme_border: Color::Gray,
             theme_border_title: Color::Cyan,
+            extraction_progress: None,
+            archive_name: String::new(),
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
         terminal
@@ -1390,10 +1424,48 @@ mod tests {
             wrap: true,
             theme_border: Color::Gray,
             theme_border_title: Color::White,
+            extraction_progress: None,
+            archive_name: String::new(),
         };
         let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
         terminal
             .draw(|f| f.render_widget(LogPanel { data: &data }, f.area()))
             .unwrap();
     }
+
+    #[test]
+    fn test_log_panel_renders_extraction_progress_overlay() {
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let data = LogPanelData {
+            log_lines: vec![],
+            num_visible: 0,
+            visible_height: 8,
+            start: 0,
+            horizontal_scroll: 0,
+            logs_title: String::new(),
+            show_borders: false,
+            show_tab_bar: false,
+            wrap: false,
+            theme_border: ratatui::style::Color::White,
+            theme_border_title: ratatui::style::Color::White,
+            extraction_progress: Some(0.5),
+            archive_name: "logs.tar.gz".to_string(),
+        };
+        terminal
+            .draw(|frame| {
+                frame.render_widget(LogPanel { data: &data }, frame.area());
+            })
+            .unwrap();
+        let rendered = terminal.backend().buffer().clone();
+        let has_progress = rendered
+            .content()
+            .iter()
+            .any(|c| c.symbol() == "\u{2588}" || c.symbol() == "\u{2591}");
+        assert!(
+            has_progress,
+            "expected progress bar characters in rendered output"
+        );
+    }
+
 }

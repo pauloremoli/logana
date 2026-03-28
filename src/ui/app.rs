@@ -107,6 +107,8 @@ pub struct App {
     pub scrollbar_dragging: bool,
     /// In-progress background archive extraction.
     pub pending_archive: Option<crate::ui::ArchiveExtractionState>,
+    /// App-level decompression progress message shown while an archive is being extracted.
+    pub decompression_message: Option<String>,
 }
 
 impl std::fmt::Debug for App {
@@ -234,6 +236,7 @@ impl App {
             last_click: None,
             scrollbar_dragging: false,
             pending_archive: None,
+            decompression_message: None,
         }
     }
 
@@ -263,10 +266,13 @@ impl App {
     }
 
     pub(super) async fn save_all_contexts(&self) {
+        let tmp_dir = std::env::temp_dir();
         let source_files: Vec<String> = self
             .tabs
             .iter()
             .filter_map(|t| t.log_manager.source_file().map(|s| s.to_string()))
+            .filter(|p| !std::path::Path::new(p).starts_with(&tmp_dir))
+            .filter(|p| crate::ingestion::detect_archive_type(p).is_none())
             .collect();
 
         let contexts: Vec<FileContext> = self

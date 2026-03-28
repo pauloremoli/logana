@@ -329,6 +329,10 @@ impl App {
                 self.restore_otlp_grpc_tab(&next).await;
                 continue;
             }
+            // Skip archive files — they are never directly readable and must be explicitly extracted.
+            if crate::ingestion::detect_archive_type(&next).is_some() {
+                continue;
+            }
             // Regular file — create a preview tab immediately, then load the full index in the background.
             let preview = FileReader::from_file_head(&next, self.preview_bytes)
                 .await
@@ -472,37 +476,89 @@ impl App {
     }
 
     /// Spawn archive extraction in the background (non-blocking).
-    /// Shows an "Extracting…" notification on the active tab.
+    /// Shows a notification on the active tab while extraction is in progress.
     /// Call [`Self::poll_archive_extraction`] each frame to check for completion.
-    pub fn begin_archive_extraction(&mut self, path: &str) {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+    pub async fn begin_archive_extraction(&mut self, path: &str) {
+        let Some(archive_type) = crate::ingestion::detect_archive_type(path) else {
+            self.tabs[self.active_tab]
+                .set_notification(format!("Not a recognised archive: {path}"));
+            return;
+        };
+
+        let is_streaming = crate::ingestion::uses_streaming_path(&archive_type);
+        if !is_streaming {
+            match crate::ingestion::list_archive_files(path) {
+                Ok(names) if names.is_empty() => {
+                    self.tabs[self.active_tab].set_notification("Archive contains no files.");
+                    return;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    self.tabs[self.active_tab]
+                        .set_notification(format!("Failed to read archive: {e}"));
+                    return;
+                }
+            }
+        }
+
+        let (progress_tx, progress_rx) =
+            tokio::sync::watch::channel(crate::ingestion::ArchiveExtractionProgress {
+                file_index: 0,
+                fraction: 0.0,
+            });
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+
+        self.decompression_message = Some("Decompressing archive\u{2026}".to_string());
+
         let path_str = path.to_string();
         tokio::task::spawn_blocking(move || {
-            let _ = tx.send(crate::ingestion::extract(&path_str));
+            let result = crate::ingestion::extract_with_progress(&path_str, progress_tx, None);
+            let _ = result_tx.send(result);
         });
-        self.pending_archive = Some(super::ArchiveExtractionState { result_rx: rx });
-        let name = std::path::Path::new(path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(path)
-            .to_string();
-        self.tabs[self.active_tab].set_notification(format!("Extracting '{name}'…"));
+
+        self.pending_archive = Some(super::ArchiveExtractionState {
+            progress_rx,
+            result_rx,
+        });
     }
 
     /// Poll the pending archive extraction each frame.  When the background task
-    /// finishes, opens one tab per extracted file and clears `pending_archive`.
+    /// finishes, pushes extracted tabs and clears `pending_archive`.
     pub async fn poll_archive_extraction(&mut self) {
         let Some(ref mut state) = self.pending_archive else {
             return;
         };
+
+        {
+            let progress = *state.progress_rx.borrow();
+            let pct = (progress.fraction * 100.0) as u32;
+            self.decompression_message = Some(format!("Decompressing archive\u{2026} {pct}%"));
+        }
+
         match state.result_rx.try_recv() {
             Ok(Ok(files)) => {
                 self.pending_archive = None;
+                self.decompression_message = None;
                 if files.is_empty() {
                     self.tabs[self.active_tab].set_notification("Archive contains no files.");
                     return;
                 }
+                // Remove the placeholder tab BEFORE recording tab indices for the
+                // background loads.  If we remove it after, all stored tab_idx values
+                // shift by one and each load replaces the wrong tab.
+                if self.stdin_load_state.is_none()
+                    && let Some(idx) = self.tabs.iter().position(|t| {
+                        t.file_reader.line_count() == 0
+                            && t.load_state.is_none()
+                            && t.archive_temp.is_none()
+                    }) {
+                        self.tabs.remove(idx);
+                        self.active_tab = self.active_tab.saturating_sub(1);
+                        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+                    }
+                let first_new_tab_idx = self.tabs.len();
                 for file in files {
+                    let tab_idx = self.tabs.len();
                     let tmp_path = file.temp_file.path().to_string_lossy().to_string();
                     let preview = FileReader::from_file_head(&tmp_path, self.preview_bytes)
                         .await
@@ -513,8 +569,6 @@ impl App {
                     tab.archive_temp = Some(file.temp_file);
                     self.apply_tab_defaults(&mut tab);
                     self.tabs.push(tab);
-                    self.active_tab = self.tabs.len() - 1;
-                    let tab_idx = self.active_tab;
                     self.begin_file_load(
                         tmp_path,
                         LoadContext::ReplaceTab { tab_idx },
@@ -523,47 +577,20 @@ impl App {
                     )
                     .await;
                 }
+                self.active_tab = first_new_tab_idx;
             }
             Ok(Err(e)) => {
                 self.pending_archive = None;
+                self.decompression_message = None;
                 self.tabs[self.active_tab]
                     .set_notification(format!("Failed to extract archive: {e}"));
             }
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                 self.pending_archive = None;
+                self.decompression_message = None;
             }
         }
-    }
-
-    /// Extract an archive synchronously (blocking on a thread pool) and open each
-    /// contained file as a new tab.  Suitable for use before the event loop starts
-    /// (startup) or in headless mode where there is no UI to keep responsive.
-    pub async fn open_archive_blocking(&mut self, path: &str) -> Result<(), String> {
-        let path_str = path.to_string();
-        let files = tokio::task::spawn_blocking(move || crate::ingestion::extract(&path_str))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("Failed to extract '{path}': {e}"))?;
-        if files.is_empty() {
-            return Err(format!("'{path}' contains no files."));
-        }
-        for file in files {
-            let tmp_path = file.temp_file.path().to_string_lossy().to_string();
-            let preview = FileReader::from_file_head(&tmp_path, self.preview_bytes)
-                .await
-                .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
-            let log_manager = LogManager::new(self.db.clone(), Some(tmp_path.clone())).await;
-            let mut tab = TabState::new(preview, log_manager, file.name);
-            tab.archive_temp = Some(file.temp_file);
-            self.apply_tab_defaults(&mut tab);
-            self.tabs.push(tab);
-            self.active_tab = self.tabs.len() - 1;
-            let tab_idx = self.active_tab;
-            self.begin_file_load(tmp_path, LoadContext::ReplaceTab { tab_idx }, None, false)
-                .await;
-        }
-        Ok(())
     }
 
     /// Poll for new stdin data each frame and apply it to the stdin tab.
@@ -3443,5 +3470,75 @@ mod tests {
         app.skip_or_fail_load(LoadContext::ReplaceTab { tab_idx: 1 })
             .await;
         assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_tab_state_extraction_progress_none_by_default() {
+        let app = make_app(&[]).await;
+        assert!(app.tabs[0].extraction_progress.is_none());
+    }
+
+    fn make_gz(content: &[u8]) -> tempfile::NamedTempFile {
+        use std::io::Write as _;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut enc = flate2::write::GzEncoder::new(&mut tmp, flate2::Compression::default());
+        enc.write_all(content).unwrap();
+        enc.finish().unwrap();
+        tmp
+    }
+
+    #[tokio::test]
+    async fn test_begin_archive_extraction_shows_notification_no_placeholder_tab() {
+        let mut app = make_app(&[]).await;
+        let initial_tab_count = app.tabs.len();
+
+        let content = b"log line\n";
+        let gz_tmp = make_gz(content);
+        let path = gz_tmp.path().to_str().unwrap().to_string() + ".log.gz";
+        std::fs::copy(gz_tmp.path(), &path).unwrap();
+
+        app.begin_archive_extraction(&path).await;
+
+        assert_eq!(
+            app.tabs.len(),
+            initial_tab_count,
+            "no placeholder tabs should be created"
+        );
+        assert!(app.pending_archive.is_some());
+        assert!(
+            app.decompression_message.is_some(),
+            "decompression_message should be set on the app"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_poll_archive_extraction_completes_and_loads_tab() {
+        let mut app = make_app(&[]).await;
+
+        let content = b"hello archive\n";
+        let gz_tmp = make_gz(content);
+        let path = gz_tmp.path().to_str().unwrap().to_string() + ".log.gz";
+        std::fs::copy(gz_tmp.path(), &path).unwrap();
+
+        app.begin_archive_extraction(&path).await;
+
+        for _ in 0..100 {
+            app.poll_archive_extraction().await;
+            if app.pending_archive.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+
+        std::fs::remove_file(&path).ok();
+
+        assert!(
+            app.pending_archive.is_none(),
+            "extraction should have completed"
+        );
+        let last_tab = app.tabs.last().unwrap();
+        assert!(last_tab.file_reader.line_count() > 0 || last_tab.load_state.is_some());
     }
 }

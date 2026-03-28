@@ -134,7 +134,7 @@ impl App {
             return Ok(true);
         }
         if crate::ingestion::detect_archive_type(&path).is_some() {
-            self.begin_archive_extraction(&path);
+            self.begin_archive_extraction(&path).await;
             return Ok(true);
         }
         self.open_file(&path).await?;

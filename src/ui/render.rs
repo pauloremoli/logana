@@ -82,7 +82,11 @@ impl App {
         let size = frame.area();
         frame.render_widget(Block::default().bg(self.theme.root_bg), size);
 
-        let show_tab_bar = !self.tabs.is_empty();
+        let show_tab_bar = !self.tabs.is_empty()
+            && !(self.pending_archive.is_some()
+                && self.tabs.len() == 1
+                && self.tabs[0].file_reader.line_count() == 0
+                && self.tabs[0].load_state.is_none());
         let render_state = self.tabs[self.active_tab].interaction.mode.render_state();
         let show_borders = self.tabs[self.active_tab].display.show_borders;
         let mode_name = if !self.show_mode_bar {
@@ -277,12 +281,16 @@ impl App {
             _ => None,
         };
 
-        if let Some(set_at) = self.tabs[self.active_tab].interaction.notification_set_at
-            && set_at.elapsed() > std::time::Duration::from_secs(10)
-        {
-            self.tabs[self.active_tab].clear_notification();
-        }
-        let notification = self.tabs[self.active_tab].interaction.notification.clone();
+        if self.decompression_message.is_none()
+            && let Some(set_at) = self.tabs[self.active_tab].interaction.notification_set_at
+                && set_at.elapsed() > std::time::Duration::from_secs(10)
+            {
+                self.tabs[self.active_tab].clear_notification();
+            }
+        let notification = self
+            .decompression_message
+            .clone()
+            .or_else(|| self.tabs[self.active_tab].interaction.notification.clone());
         let has_notification = notification.is_some() && !has_input_bar;
 
         UiRenderState {
@@ -816,7 +824,7 @@ impl App {
     }
 }
 
-fn progress_bar_str(progress: f64) -> (String, usize) {
+pub(crate) fn progress_bar_str(progress: f64) -> (String, usize) {
     const BAR_WIDTH: usize = 20;
     let filled = ((progress * BAR_WIDTH as f64) as usize).min(BAR_WIDTH);
     let bar = format!(
