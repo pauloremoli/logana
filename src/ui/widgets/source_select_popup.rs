@@ -25,7 +25,19 @@ impl<'a> Widget for DockerSelectPopup<'a> {
         let content_rows = if self.error.is_some() {
             3u16
         } else {
-            self.containers.len() as u16
+            let inner_w = popup_width.saturating_sub(2) as usize;
+            let name_w = inner_w * 35 / 100;
+            self.containers
+                .iter()
+                .map(|c| {
+                    if name_w == 0 || c.name.is_empty() {
+                        1u16
+                    } else {
+                        ((c.name.chars().count() + name_w - 1) / name_w) as u16
+                    }
+                })
+                .sum::<u16>()
+                .max(1)
         };
         let popup_height = (content_rows + 4)
             .min(area.height * 4 / 5)
@@ -75,42 +87,59 @@ impl<'a> Widget for DockerSelectPopup<'a> {
                 .style(Style::default().bg(self.theme.root_bg))
                 .render(vsplit[0], buf);
         } else {
-            let scroll = if self.selected >= content_h {
-                self.selected - content_h + 1
-            } else {
-                0
-            };
-
             let total_w = vsplit[0].width as usize;
             let name_w = total_w * 35 / 100;
             let image_w = total_w * 35 / 100;
             let status_w = total_w.saturating_sub(name_w + image_w + 2);
 
-            let mut lines: Vec<Line> = Vec::new();
-            for (i, c) in self
+            // Compute how many visual rows each container occupies (name may wrap)
+            let name_row_counts: Vec<usize> = self
                 .containers
                 .iter()
-                .enumerate()
-                .skip(scroll)
-                .take(content_h)
-            {
+                .map(|c| {
+                    if name_w == 0 || c.name.is_empty() {
+                        1
+                    } else {
+                        (c.name.chars().count() + name_w - 1) / name_w
+                    }
+                })
+                .collect();
+
+            let row_starts: Vec<usize> = {
+                let mut v = vec![0usize; self.containers.len() + 1];
+                for i in 0..self.containers.len() {
+                    v[i + 1] = v[i] + name_row_counts[i];
+                }
+                v
+            };
+            let total_visual_rows = *row_starts.last().unwrap_or(&0);
+
+            let selected_visual_row = if self.selected < self.containers.len() {
+                row_starts[self.selected]
+            } else {
+                0
+            };
+            let scroll = if selected_visual_row >= content_h {
+                selected_visual_row - content_h + 1
+            } else {
+                0
+            };
+
+            let mut lines: Vec<Line> = Vec::new();
+            for (i, c) in self.containers.iter().enumerate() {
+                if lines.len() >= content_h {
+                    break;
+                }
+                let container_start = row_starts[i];
+                if container_start + name_row_counts[i] <= scroll {
+                    continue;
+                }
+                if container_start >= scroll + content_h {
+                    break;
+                }
+
                 let is_selected = i == self.selected;
                 let prefix = if is_selected { "> " } else { "  " };
-                let name = if c.name.len() > name_w {
-                    &c.name[..name_w]
-                } else {
-                    &c.name
-                };
-                let image = if c.image.len() > image_w {
-                    &c.image[..image_w]
-                } else {
-                    &c.image
-                };
-                let status = if c.status.len() > status_w {
-                    &c.status[..status_w]
-                } else {
-                    &c.status
-                };
                 let style = if is_selected {
                     Style::default()
                         .fg(self.theme.text_highlight_fg)
@@ -118,18 +147,52 @@ impl<'a> Widget for DockerSelectPopup<'a> {
                 } else {
                     Style::default().fg(self.theme.text)
                 };
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "{}{:<nw$} {:<iw$} {}",
-                        prefix,
-                        name,
-                        image,
-                        status,
-                        nw = name_w,
-                        iw = image_w
-                    ),
-                    style,
-                )));
+
+                let name_chars: Vec<char> = c.name.chars().collect();
+                let name_chunks: Vec<String> = if name_w == 0 || name_chars.is_empty() {
+                    vec![c.name.clone()]
+                } else {
+                    name_chars
+                        .chunks(name_w)
+                        .map(|chunk| chunk.iter().collect::<String>())
+                        .collect()
+                };
+
+                let image: String = c.image.chars().take(image_w).collect();
+                let status: String = c.status.chars().take(status_w).collect();
+
+                let first_visible_chunk = if container_start < scroll {
+                    scroll - container_start
+                } else {
+                    0
+                };
+
+                for (chunk_idx, name_chunk) in
+                    name_chunks.iter().enumerate().skip(first_visible_chunk)
+                {
+                    if lines.len() >= content_h {
+                        break;
+                    }
+                    if chunk_idx == 0 {
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "{}{:<nw$} {:<iw$} {}",
+                                prefix,
+                                name_chunk,
+                                image,
+                                status,
+                                nw = name_w,
+                                iw = image_w
+                            ),
+                            style,
+                        )));
+                    } else {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {:<nw$}", name_chunk, nw = name_w),
+                            style,
+                        )));
+                    }
+                }
             }
 
             while lines.len() < content_h {
@@ -140,10 +203,10 @@ impl<'a> Widget for DockerSelectPopup<'a> {
                 .style(Style::default().bg(self.theme.root_bg))
                 .render(vsplit[0], buf);
 
-            let total = self.containers.len();
-            if total > content_h {
+            if total_visual_rows > content_h {
                 let mut sb_state =
-                    ScrollbarState::new(total.saturating_sub(content_h)).position(scroll);
+                    ScrollbarState::new(total_visual_rows.saturating_sub(content_h))
+                        .position(scroll);
                 StatefulWidget::render(
                     Scrollbar::new(ScrollbarOrientation::VerticalRight)
                         .style(Style::default().fg(self.theme.border)),
