@@ -468,8 +468,14 @@ impl App {
     async fn handle_mouse_event(&mut self, event: crossterm::event::MouseEvent) {
         use crossterm::event::{MouseButton, MouseEventKind};
         match event.kind {
-            MouseEventKind::ScrollUp => self.mouse_scroll(-3),
-            MouseEventKind::ScrollDown => self.mouse_scroll(3),
+            MouseEventKind::ScrollUp => {
+                let h = self.tabs[self.active_tab].scroll.visible_height;
+                self.mouse_scroll(-((h / 2).max(1) as i32));
+            }
+            MouseEventKind::ScrollDown => {
+                let h = self.tabs[self.active_tab].scroll.visible_height;
+                self.mouse_scroll((h / 2).max(1) as i32);
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.hit_test_scrollbar(event.column, event.row).is_some() {
                     self.scrollbar_dragging = true;
@@ -2933,5 +2939,51 @@ mod tests {
         })
         .await;
         assert_eq!(app.tabs[0].scroll.scroll_offset, initial_offset);
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_down_half_page() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        // 20 lines of content, visible_height = 10 → half page = 5
+        let mut app = app_with_areas(20, 10, area, None).await;
+        app.tabs[0].scroll.visible_height = 10;
+        app.tabs[0].scroll.scroll_offset = 0;
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 5);
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_up_half_page() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        // 20 lines of content, visible_height = 10 → half page = 5
+        let mut app = app_with_areas(20, 10, area, None).await;
+        app.tabs[0].scroll.visible_height = 10;
+        app.tabs[0].scroll.scroll_offset = 10;
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 5);
     }
 }
