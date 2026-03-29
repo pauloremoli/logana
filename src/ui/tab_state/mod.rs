@@ -2297,7 +2297,20 @@ pub fn docker_connect_fn(container: String) -> ConnectFn {
     Arc::new(move || {
         let c = container.clone();
         Box::pin(async move {
-            FileReader::spawn_process_stream("docker", &["logs", "-f", &c])
+            FileReader::spawn_process_stream("docker", &["logs", "-f", &c], true)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    })
+}
+
+pub fn run_connect_fn(program: String, args: Vec<String>) -> ConnectFn {
+    Arc::new(move || {
+        let prog = program.clone();
+        let a = args.clone();
+        Box::pin(async move {
+            let a_refs: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
+            FileReader::spawn_process_stream(&prog, &a_refs, true)
                 .await
                 .map_err(|e| e.to_string())
         })

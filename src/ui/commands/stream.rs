@@ -232,4 +232,12 @@ impl App {
         self.tabs[self.active_tab].interaction.notification_set_at =
             Some(std::time::Instant::now());
     }
+
+    pub(super) async fn cmd_run(&mut self, command: Vec<String>) -> Result<bool, String> {
+        if command.is_empty() {
+            return Err(":run requires a command".to_string());
+        }
+        self.open_run_command(command).await;
+        Ok(true)
+    }
 }

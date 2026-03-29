@@ -131,4 +131,13 @@ pub enum Commands {
     },
     /// Stop the embedded MCP server
     DisableMcp,
+    /// Execute a command and stream its output to a new tab.
+    /// Provide the program followed by its arguments.
+    /// Stderr lines are prefixed with "ERROR " for visibility.
+    /// Example: :run docker logs -f mycontainer
+    Run {
+        /// Program and its arguments
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
 }

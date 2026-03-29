@@ -111,6 +111,7 @@ impl App {
             Some(Commands::Otel { http, port }) => return self.cmd_otel(http, port).await,
             Some(Commands::EnableMcp { port }) => return self.cmd_enable_mcp(port).await,
             Some(Commands::DisableMcp) => self.cmd_disable_mcp(),
+            Some(Commands::Run { command }) => return self.cmd_run(command).await,
             None => {}
         }
         Ok(false)

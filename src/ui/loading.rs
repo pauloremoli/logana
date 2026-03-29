@@ -86,27 +86,81 @@ impl App {
         Ok(())
     }
 
-    /// Open a new tab streaming logs from a Docker container.
-    pub(super) async fn open_docker_logs(&mut self, container_id: String, container_name: String) {
+    /// Create a new streaming tab from a pre-spawned `StreamConnection` (or an
+    /// error from the spawn attempt).  Shared by Docker, `:run`, and any future
+    /// process-based streaming source.
+    async fn open_stream_tab(
+        &mut self,
+        title: String,
+        source_label: String,
+        connection: std::io::Result<crate::ui::StreamConnection>,
+        connect_fn: ConnectFn,
+    ) {
         let file_reader = FileReader::from_bytes(vec![]);
-        let source_label = format!("docker:{}", container_name);
         let log_manager = LogManager::new(self.db.clone(), Some(source_label)).await;
-        let title = format!("docker:{}", container_name);
-
         let mut tab = TabState::new(file_reader, log_manager, title);
         self.apply_tab_defaults(&mut tab);
-
-        match FileReader::spawn_process_stream("docker", &["logs", "-f", &container_id]).await {
+        match connection {
             Ok(conn) => {
                 tab.stream.watch = Some(watch_state_from_connection(conn));
             }
             Err(e) => {
-                let err_msg = e.to_string();
-                tab.interaction.command_error = Some(format!("Docker attach failed: {}", err_msg));
-                tab.stream.retry = Some(StreamRetryState::new(
-                    docker_connect_fn(container_id),
-                    err_msg,
-                ));
+                let msg = e.to_string();
+                tab.interaction.command_error = Some(msg.clone());
+                tab.stream.retry = Some(StreamRetryState::new(connect_fn, msg));
+            }
+        }
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    /// Open a new tab streaming logs from a Docker container.
+    pub(super) async fn open_docker_logs(&mut self, container_id: String, container_name: String) {
+        let conn =
+            FileReader::spawn_process_stream("docker", &["logs", "-f", &container_id], true).await;
+        self.open_stream_tab(
+            format!("docker:{}", container_name),
+            format!("docker:{}", container_name),
+            conn,
+            docker_connect_fn(container_id),
+        )
+        .await;
+    }
+
+    /// Open a new tab that executes `tokens[0]` with `tokens[1..]` as
+    /// arguments and streams the output.  Stderr lines are prefixed with
+    /// `"ERROR "`.  No shell is involved — callers that need shell features
+    /// should include `["sh", "-c", "…"]` in `tokens` explicitly.
+    ///
+    /// Unlike Docker/DLT, there is no retry: when the process exits the
+    /// output stays in the tab as static content, and a spawn failure just
+    /// shows an error without reconnecting.
+    pub async fn open_run_command(&mut self, tokens: Vec<String>) {
+        let Some(program) = tokens.first().cloned() else {
+            return;
+        };
+        let args = tokens[1..].to_vec();
+        let full_command = tokens.join(" ");
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+        let file_reader = FileReader::from_bytes(vec![]);
+        let source_label = format!("run:{}", full_command);
+        let log_manager = LogManager::new(self.db.clone(), Some(source_label)).await;
+        let short_title = if full_command.len() > 40 {
+            format!("run:{:.40}…", full_command)
+        } else {
+            format!("run:{}", full_command)
+        };
+        let mut tab = TabState::new(file_reader, log_manager, short_title);
+        self.apply_tab_defaults(&mut tab);
+        tab.stream.no_retry = true;
+
+        match FileReader::spawn_process_stream(&program, &arg_refs, true).await {
+            Ok(conn) => {
+                tab.stream.watch = Some(watch_state_from_connection(conn));
+            }
+            Err(e) => {
+                tab.interaction.command_error = Some(e.to_string());
             }
         }
 
@@ -185,6 +239,13 @@ impl App {
         }
 
         self.tabs.push(tab);
+    }
+
+    /// Re-run a `"run:<command>"` tab on session restore.
+    async fn restore_run_tab(&mut self, source: &str) {
+        let cmd = source.strip_prefix("run:").unwrap_or(source);
+        let tokens: Vec<String> = cmd.split_whitespace().map(str::to_string).collect();
+        self.open_run_command(tokens).await;
     }
 
     /// Open a new tab that listens for OTLP HTTP/JSON log exports on `port`.
@@ -315,6 +376,10 @@ impl App {
             };
             if next.starts_with("docker:") {
                 self.restore_docker_tab(&next).await;
+                continue;
+            }
+            if next.starts_with("run:") {
+                self.restore_run_tab(&next).await;
                 continue;
             }
             if next.starts_with("dlt://") {
@@ -890,6 +955,11 @@ impl App {
                 }
                 Some(Err(_)) => {
                     self.tabs[i].stream.watch = None;
+                    // no_retry means the process exited normally (e.g. :run).
+                    // Leave the output as-is — no error banner, no reconnect.
+                    if self.tabs[i].stream.no_retry {
+                        continue;
+                    }
                     self.tabs[i].interaction.command_error =
                         Some("Disconnected: connection lost".to_string());
                     if let Some(retry) = &mut self.tabs[i].stream.retry {

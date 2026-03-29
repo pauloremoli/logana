@@ -75,6 +75,14 @@ struct Args {
     /// Write output to PATH instead of stdout (requires --headless).
     #[arg(long, value_name = "PATH", requires = "headless")]
     output: Option<std::path::PathBuf>,
+
+    /// Execute a command and stream its output to a tab.
+    /// The value is a quoted command string passed to the program directly
+    /// (no shell); arguments are separated by whitespace.
+    /// Example: logana --run "docker logs -f mycontainer"
+    /// Stderr lines are prefixed with "ERROR " for visibility.
+    #[arg(long, value_name = "COMMAND", conflicts_with = "file")]
+    run: Option<String>,
 }
 
 struct AlternateScreen {
@@ -354,6 +362,11 @@ async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
         &args,
     )
     .await;
+
+    if let Some(cmd) = args.run {
+        let tokens: Vec<String> = cmd.split_whitespace().map(str::to_string).collect();
+        app.open_run_command(tokens).await;
+    }
 
     let result = app.run(&mut screen.terminal).await;
     if let Err(ref err) = result {

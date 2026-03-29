@@ -190,6 +190,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "disable-mcp",
         description: "Stop the embedded MCP server",
     },
+    CommandInfo {
+        name: "run",
+        usage: "run <program> [args...]",
+        description: "Execute a command and stream its output to a new tab. Stderr lines are shown as errors. e.g. run docker logs -f mycontainer, run tail -f /var/log/syslog",
+    },
 ];
 
 /// Commands whose last argument is a file path and should receive path auto-completion.

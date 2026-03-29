@@ -938,14 +938,19 @@ impl FileReader {
         self.storage = Storage::Bytes(std::sync::Arc::new(data));
     }
 
-    /// Spawn a child process and stream its combined stdout+stderr output.
+    /// Spawn a child process and stream its output.
     ///
     /// Appends ANSI-stripped complete lines to a `NamedTempFile` every 500 ms.
     /// Returns a `watch::Receiver<()>` that fires on each flush and the temp
     /// file.  When the process exits the sender is dropped.
+    ///
+    /// When `tag_stderr` is `true`, every stderr line is prefixed with
+    /// `"ERROR "` before being written so that log parsers show it at error
+    /// level.  Stdout lines are written unchanged.
     pub async fn spawn_process_stream(
         program: &str,
         args: &[&str],
+        tag_stderr: bool,
     ) -> io::Result<(watch::Receiver<()>, tempfile::NamedTempFile)> {
         use std::io::Write as _;
         use tokio::process::Command;
@@ -964,9 +969,8 @@ impl FileReader {
         let temp_path = temp_file.path().to_owned();
         let (tx, rx) = watch::channel(());
 
-        // Merge stdout and stderr by spawning a reader task for each,
-        // both writing into a shared mpsc channel.
-        let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+        // Each chunk carries a flag: `true` means it came from stderr.
+        let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<(Vec<u8>, bool)>(64);
 
         if let Some(mut out) = stdout {
             let sender = line_tx.clone();
@@ -977,7 +981,7 @@ impl FileReader {
                     match out.read(&mut buf).await {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            if sender.send(buf[..n].to_vec()).await.is_err() {
+                            if sender.send((buf[..n].to_vec(), false)).await.is_err() {
                                 break;
                             }
                         }
@@ -995,7 +999,7 @@ impl FileReader {
                     match err.read(&mut buf).await {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            if sender.send(buf[..n].to_vec()).await.is_err() {
+                            if sender.send((buf[..n].to_vec(), true)).await.is_err() {
                                 break;
                             }
                         }
@@ -1010,7 +1014,41 @@ impl FileReader {
         spawn(async move {
             use std::time::Duration;
 
-            let mut partial: Vec<u8> = Vec::new();
+            // Prefix every line in `data` with "ERROR ".
+            fn prefix_error_lines(data: &[u8]) -> Vec<u8> {
+                let mut out = Vec::with_capacity(data.len() + 32);
+                for line in data.split_inclusive(|&b| b == b'\n') {
+                    out.extend_from_slice(b"ERROR ");
+                    out.extend_from_slice(line);
+                }
+                out
+            }
+
+            // Flush complete lines (up to the last `\n`) from `partial` into `f`.
+            // Returns true if anything was written.
+            fn flush_partial(
+                partial: &mut Vec<u8>,
+                is_stderr: bool,
+                tag_stderr: bool,
+                f: &mut std::fs::File,
+            ) -> bool {
+                let Some(last_nl) = partial.iter().rposition(|&b| b == b'\n') else {
+                    return false;
+                };
+                let stripped = strip_ansi_escapes(&partial[..=last_nl]);
+                partial.drain(..=last_nl);
+                let to_write = if tag_stderr && is_stderr {
+                    prefix_error_lines(&stripped)
+                } else {
+                    stripped
+                };
+                f.write_all(&to_write).is_ok()
+            }
+
+            // Separate buffers per stream to prevent interleaving at chunk
+            // boundaries from corrupting line-prefix insertion.
+            let mut partial_out: Vec<u8> = Vec::new();
+            let mut partial_err: Vec<u8> = Vec::new();
 
             let mut interval = tokio::time::interval(Duration::from_millis(500));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1020,16 +1058,33 @@ impl FileReader {
                 tokio::select! {
                     chunk = line_rx.recv() => {
                         match chunk {
-                            Some(data) => partial.extend_from_slice(&data),
+                            Some((data, is_stderr)) => {
+                                if is_stderr {
+                                    partial_err.extend_from_slice(&data);
+                                } else {
+                                    partial_out.extend_from_slice(&data);
+                                }
+                            }
                             None => {
-                                // Both readers done — flush remaining.
-                                if !partial.is_empty()
+                                // Both readers done — flush all remaining bytes.
+                                if (!partial_out.is_empty() || !partial_err.is_empty())
                                     && let Ok(mut f) = std::fs::OpenOptions::new()
                                         .append(true)
                                         .open(&temp_path)
                                 {
-                                    let stripped = strip_ansi_escapes(&partial);
-                                    let _ = f.write_all(&stripped);
+                                    if !partial_out.is_empty() {
+                                        let stripped = strip_ansi_escapes(&partial_out);
+                                        let _ = f.write_all(&stripped);
+                                    }
+                                    if !partial_err.is_empty() {
+                                        let stripped = strip_ansi_escapes(&partial_err);
+                                        let to_write = if tag_stderr {
+                                            prefix_error_lines(&stripped)
+                                        } else {
+                                            stripped
+                                        };
+                                        let _ = f.write_all(&to_write);
+                                    }
                                     let _ = f.flush();
                                 }
                                 let _ = tx.send(());
@@ -1038,14 +1093,14 @@ impl FileReader {
                         }
                     }
                     _ = interval.tick() => {
-                        if let Some(last_nl) = partial.iter().rposition(|&b| b == b'\n')
-                            && let Ok(mut f) = std::fs::OpenOptions::new()
-                                .append(true)
-                                .open(&temp_path)
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .append(true)
+                            .open(&temp_path)
                         {
-                            let stripped = strip_ansi_escapes(&partial[..=last_nl]);
-                            partial.drain(..=last_nl);
-                            if f.write_all(&stripped).is_ok() {
+                            let mut wrote = false;
+                            wrote |= flush_partial(&mut partial_out, false, tag_stderr, &mut f);
+                            wrote |= flush_partial(&mut partial_err, true, tag_stderr, &mut f);
+                            if wrote {
                                 let _ = f.flush();
                                 let _ = tx.send(());
                             }
@@ -2205,7 +2260,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_process_stream_basic() {
-        let (mut rx, tmp) = FileReader::spawn_process_stream("echo", &["hello world"])
+        let (mut rx, tmp) = FileReader::spawn_process_stream("echo", &["hello world"], false)
             .await
             .unwrap();
 
@@ -2223,8 +2278,9 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_process_stream_stderr() {
         // Use sh -c to write to stderr
+        // tag_stderr=false: stderr merged as-is (no prefix)
         let (mut rx, tmp) =
-            FileReader::spawn_process_stream("sh", &["-c", "echo error_output >&2"])
+            FileReader::spawn_process_stream("sh", &["-c", "echo error_output >&2"], false)
                 .await
                 .unwrap();
 
@@ -2236,13 +2292,32 @@ mod tests {
             text.contains("error_output"),
             "stderr should be captured, got: {text}"
         );
+        assert!(
+            !text.contains("ERROR "),
+            "tag_stderr=false should not prefix stderr, got: {text}"
+        );
+
+        // tag_stderr=true: each stderr line is prefixed with "ERROR "
+        let (mut rx2, tmp2) =
+            FileReader::spawn_process_stream("sh", &["-c", "echo error_output >&2"], true)
+                .await
+                .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+        rx2.borrow_and_update();
+        let text2 = std::fs::read_to_string(tmp2.path()).unwrap();
+        assert!(
+            text2.contains("ERROR error_output"),
+            "tag_stderr=true should prefix stderr lines, got: {text2}"
+        );
     }
 
     #[tokio::test]
     async fn test_spawn_process_stream_strips_ansi() {
         // printf outputs ANSI codes; they should be stripped
         let (mut rx, tmp) =
-            FileReader::spawn_process_stream("printf", &["\x1b[31mred text\x1b[0m\n"])
+            FileReader::spawn_process_stream("printf", &["\x1b[31mred text\x1b[0m\n"], false)
                 .await
                 .unwrap();
 
