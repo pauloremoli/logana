@@ -16,6 +16,62 @@ A fast terminal log viewer for files of any size — including multi-GB logs. Bu
 
 ---
 
+## Performance
+
+
+### Headless mode
+
+Benchmarked against [lnav](https://lnav.org/) with headless mode filtering a [**3.3 GB web server access log with 10 million+ lines**](https://www.kaggle.com/datasets/eliasdabbas/web-server-access-logs), with a cold disk cache, measured on 10 runs.
+
+**logana**
+```
+$ hyperfine --prepare 'rm filtered.log;sync; echo 3 | sudo tee /proc/sys/vm/drop_caches' \
+  'logana ~/logs/access.log -i food --headless > filtered.log' --runs 10
+
+Benchmark 1: logana ~/logs/access.log -i food --headless > filtered.log
+  Time (mean ± σ):     999.9 ms ±   2.9 ms    [User: 2277.7 ms, System: 3057.0 ms]
+  Range (min … max):   995.2 ms … 1003.6 ms    10 runs
+```
+
+**lnav**
+```
+$ hyperfine --prepare 'rm filtered.log;sync; echo 3 | sudo tee /proc/sys/vm/drop_caches' \
+  'lnav ~/logs/access.log -c ":filter-in food" -n > filtered.log' --runs 10
+
+Benchmark 1: lnav ~/logs/access.log -c ":filter-in food" -n > filtered.log
+  Time (mean ± σ):     11.197 s ±  0.140 s    [User: 14.177 s, System: 1.580 s]
+  Range (min … max):   10.980 s … 11.483 s    10 runs
+```
+
+**logana is ~11× faster than lnav.**
+
+<p align="center">
+  <img src="docs/src/performance.gif" alt="logana performance comparison with lnav" />
+</p>
+
+The headless mode was used for more reliable measurements.
+
+
+### TUI 
+
+Same 3.3GB file with the TUI (filter passed as command argument, quit once data was fully loaded and filter applied):
+
+```
+$ time logana ~/logs/access.log -i food
+logana ~/logs/access.log -i food  5.21s user 3.61s system 197% cpu 4.475 total
+
+$ time lnav ~/logs/access.log -c ":filter-in food"
+lnav ~/logs/access.log -c ":filter-in food"  12.14s user 1.37s system 114% cpu 11.819 total
+```
+
+**~2.6× faster end-to-end with the UI.**
+
+Hardware: AMD Ryzen 9 8945HS · 32 GB DDR5 5600 MHz · PCIe NVMe 4.0 x4
+
+**Note:** lnav is a mature tool with a significantly broader feature set.
+
+---
+
 ## Features
 
 - **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OpenTelemetry, DLT (AUTOSAR), and more
