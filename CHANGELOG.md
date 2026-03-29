@@ -4,6 +4,8 @@ All notable changes to logana will be documented in this file.
 
 
 ## [Unreleased]
+
+## [0.5.0] - 2026-03-29
 ### Added
 - Mouse support
 - Support for compressed and archive files: `.gz`, `.bz2`, `.xz`, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar.xz`/`.txz`.
