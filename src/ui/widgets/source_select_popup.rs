@@ -33,7 +33,7 @@ impl<'a> Widget for DockerSelectPopup<'a> {
                     if name_w == 0 || c.name.is_empty() {
                         1u16
                     } else {
-                        ((c.name.chars().count() + name_w - 1) / name_w) as u16
+                        c.name.chars().count().div_ceil(name_w) as u16
                     }
                 })
                 .sum::<u16>()
@@ -100,7 +100,7 @@ impl<'a> Widget for DockerSelectPopup<'a> {
                     if name_w == 0 || c.name.is_empty() {
                         1
                     } else {
-                        (c.name.chars().count() + name_w - 1) / name_w
+                        c.name.chars().count().div_ceil(name_w)
                     }
                 })
                 .collect();
@@ -161,11 +161,7 @@ impl<'a> Widget for DockerSelectPopup<'a> {
                 let image: String = c.image.chars().take(image_w).collect();
                 let status: String = c.status.chars().take(status_w).collect();
 
-                let first_visible_chunk = if container_start < scroll {
-                    scroll - container_start
-                } else {
-                    0
-                };
+                let first_visible_chunk = scroll.saturating_sub(container_start);
 
                 for (chunk_idx, name_chunk) in
                     name_chunks.iter().enumerate().skip(first_visible_chunk)
@@ -204,9 +200,8 @@ impl<'a> Widget for DockerSelectPopup<'a> {
                 .render(vsplit[0], buf);
 
             if total_visual_rows > content_h {
-                let mut sb_state =
-                    ScrollbarState::new(total_visual_rows.saturating_sub(content_h))
-                        .position(scroll);
+                let mut sb_state = ScrollbarState::new(total_visual_rows.saturating_sub(content_h))
+                    .position(scroll);
                 StatefulWidget::render(
                     Scrollbar::new(ScrollbarOrientation::VerticalRight)
                         .style(Style::default().fg(self.theme.border)),

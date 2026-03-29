@@ -82,8 +82,8 @@ impl App {
         let size = frame.area();
         frame.render_widget(Block::default().bg(self.theme.root_bg), size);
 
-        let show_tab_bar = !self.tabs.is_empty()
-            && !(self.pending_archive.is_some()
+        let show_tab_bar = !(self.tabs.is_empty()
+            || self.pending_archive.is_some()
                 && self.tabs.len() == 1
                 && self.tabs[0].file_reader.line_count() == 0
                 && self.tabs[0].load_state.is_none());

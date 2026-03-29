@@ -215,8 +215,7 @@ pub async fn start_mcp_server(
 
     tokio::spawn(async move {
         let server = LoganaServer::new(snapshot, cmd_tx);
-        let mut config = StreamableHttpServerConfig::default();
-        config.cancellation_token = child_token.clone();
+        let config = StreamableHttpServerConfig { cancellation_token: child_token.clone(), ..Default::default() };
 
         let service: StreamableHttpService<LoganaServer, LocalSessionManager> =
             StreamableHttpService::new(

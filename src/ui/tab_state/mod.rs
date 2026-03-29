@@ -444,8 +444,7 @@ pub fn apply_continuation_correction(visible: &mut VisibleLines, cmap: &[usize])
     }
     // Rebuild the list: each line is visible iff its parent is visible.
     indices.clear();
-    for i in 0..n {
-        let parent = cmap[i];
+    for (i, &parent) in cmap.iter().enumerate().take(n) {
         if filter_visible[parent] {
             indices.push(i);
         }
@@ -1547,7 +1546,10 @@ impl TabState {
         // Extend the continuation map for the newly-appended lines.
         if let (Some(cmap), Some(parser)) = (
             self.continuation_map.as_mut(),
-            self.display.format.as_deref().filter(|_| !self.display.raw_mode),
+            self.display
+                .format
+                .as_deref()
+                .filter(|_| !self.display.raw_mode),
         ) {
             let map = Arc::make_mut(cmap);
             let mut last_parent = map.last().copied().unwrap_or(0);

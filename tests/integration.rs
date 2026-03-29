@@ -641,7 +641,9 @@ fn test_build_continuation_map_basic() {
     use logana::ui::build_continuation_map;
 
     let reader = make_multiline_log();
-    let sample: Vec<&[u8]> = (0..reader.line_count()).map(|i| reader.get_line(i)).collect();
+    let sample: Vec<&[u8]> = (0..reader.line_count())
+        .map(|i| reader.get_line(i))
+        .collect();
     let parser = detect_format(&sample).expect("format should be detected");
 
     let cmap = build_continuation_map(&reader, parser.as_ref());
@@ -699,7 +701,9 @@ async fn test_exclude_filter_hides_continuation_lines() {
 
     let (_db, mut manager) = setup().await;
     let reader = make_multiline_log();
-    let sample: Vec<&[u8]> = (0..reader.line_count()).map(|i| reader.get_line(i)).collect();
+    let sample: Vec<&[u8]> = (0..reader.line_count())
+        .map(|i| reader.get_line(i))
+        .collect();
     let parser = detect_format(&sample).expect("format detected");
     let cmap = build_continuation_map(&reader, parser.as_ref());
 
@@ -714,8 +718,14 @@ async fn test_exclude_filter_hides_continuation_lines() {
     // Line 0 (ERROR) excluded; lines 1 & 2 are its continuations → also excluded.
     // Line 3 (INFO) should be visible.
     assert!(!visible.contains(0), "ERROR entry should be hidden");
-    assert!(!visible.contains(1), "continuation 1 should be hidden with parent");
-    assert!(!visible.contains(2), "continuation 2 should be hidden with parent");
+    assert!(
+        !visible.contains(1),
+        "continuation 1 should be hidden with parent"
+    );
+    assert!(
+        !visible.contains(2),
+        "continuation 2 should be hidden with parent"
+    );
     assert!(visible.contains(3), "INFO entry should be visible");
 }
 
@@ -727,7 +737,9 @@ async fn test_include_filter_shows_continuations_with_parent() {
 
     let (_db, mut manager) = setup().await;
     let reader = make_multiline_log();
-    let sample: Vec<&[u8]> = (0..reader.line_count()).map(|i| reader.get_line(i)).collect();
+    let sample: Vec<&[u8]> = (0..reader.line_count())
+        .map(|i| reader.get_line(i))
+        .collect();
     let parser = detect_format(&sample).expect("format detected");
     let cmap = build_continuation_map(&reader, parser.as_ref());
 
@@ -742,7 +754,16 @@ async fn test_include_filter_shows_continuations_with_parent() {
     // Line 0 matches; its continuations (1, 2) should be shown.
     // Line 3 (INFO) does not match include → hidden.
     assert!(visible.contains(0), "ERROR entry should be visible");
-    assert!(visible.contains(1), "continuation 1 should follow its visible parent");
-    assert!(visible.contains(2), "continuation 2 should follow its visible parent");
-    assert!(!visible.contains(3), "INFO entry should be hidden (no match)");
+    assert!(
+        visible.contains(1),
+        "continuation 1 should follow its visible parent"
+    );
+    assert!(
+        visible.contains(2),
+        "continuation 2 should follow its visible parent"
+    );
+    assert!(
+        !visible.contains(3),
+        "INFO entry should be hidden (no match)"
+    );
 }

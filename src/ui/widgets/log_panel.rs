@@ -625,12 +625,12 @@ pub fn prepare_log_panel(
                             }
                             // Parent not cached (outside viewport) — parse just
                             // the level from its raw bytes without full layout.
-                            if let Some(parser) = tab.display.format.as_deref() {
-                                if let Some(parts) = parser.parse_line(tab.file_reader.get_line(parent)) {
-                                    if let Some(lvl) = parts.level {
-                                        return LogLevel::parse_level(lvl);
-                                    }
-                                }
+                            if let Some(parser) = tab.display.format.as_deref()
+                                && let Some(parts) =
+                                    parser.parse_line(tab.file_reader.get_line(parent))
+                                && let Some(lvl) = parts.level
+                            {
+                                return LogLevel::parse_level(lvl);
                             }
                         }
                     }
