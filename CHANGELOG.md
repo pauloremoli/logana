@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Fixed mouse scroll in tail mode: scroll up pauses following, scroll down to the bottom resumes it.
+
 ## [0.5.0] - 2026-03-29
 ### Added
 - Mouse support

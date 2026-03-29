@@ -564,14 +564,19 @@ impl App {
             .filter
             .visible_indices
             .len()
-            .saturating_sub(tab.scroll.visible_height);
+            .saturating_sub(1);
         if delta < 0 {
+            tab.stream.tail_mode = false;
             tab.scroll.scroll_offset = tab
                 .scroll
                 .scroll_offset
                 .saturating_sub(delta.unsigned_abs() as usize);
         } else {
-            tab.scroll.scroll_offset = (tab.scroll.scroll_offset + delta as usize).min(max_scroll);
+            let new_offset = (tab.scroll.scroll_offset + delta as usize).min(max_scroll);
+            tab.scroll.scroll_offset = new_offset;
+            if new_offset >= max_scroll {
+                tab.stream.tail_mode = true;
+            }
         }
         if matches!(
             tab.interaction.mode.render_state(),
@@ -2609,7 +2614,40 @@ mod tests {
         let mut app = app_with_areas(15, 10, area, None).await;
         app.tabs[0].scroll.scroll_offset = 0;
         app.mouse_scroll(100);
-        assert_eq!(app.tabs[0].scroll.scroll_offset, 5);
+        // max_scroll = 15 - 1 = 14 (scroll_offset is the focused/last-visible line)
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 14);
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_up_disables_tail_mode() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let mut app = app_with_areas(20, 10, area, None).await;
+        app.tabs[0].stream.tail_mode = true;
+        app.tabs[0].scroll.scroll_offset = 10;
+        app.mouse_scroll(-5);
+        assert!(!app.tabs[0].stream.tail_mode, "scroll up should disable tail mode");
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_down_to_bottom_reenables_tail_mode() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        // 20 lines, max_scroll = 20 - 1 = 19 (scroll_offset is the focused/last-visible line)
+        let mut app = app_with_areas(20, 10, area, None).await;
+        app.tabs[0].stream.tail_mode = false;
+        app.tabs[0].scroll.scroll_offset = 0;
+        app.mouse_scroll(100); // large delta → clamps to max_scroll=19
+        assert!(app.tabs[0].stream.tail_mode, "reaching bottom should re-enable tail mode");
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 19);
     }
 
     #[tokio::test]
