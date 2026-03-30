@@ -560,11 +560,7 @@ impl App {
 
     fn mouse_scroll(&mut self, delta: i32) {
         let tab = &mut self.tabs[self.active_tab];
-        let max_scroll = tab
-            .filter
-            .visible_indices
-            .len()
-            .saturating_sub(1);
+        let max_scroll = tab.filter.visible_indices.len().saturating_sub(1);
         if delta < 0 {
             tab.stream.tail_mode = false;
             tab.scroll.scroll_offset = tab
@@ -2630,7 +2626,10 @@ mod tests {
         app.tabs[0].stream.tail_mode = true;
         app.tabs[0].scroll.scroll_offset = 10;
         app.mouse_scroll(-5);
-        assert!(!app.tabs[0].stream.tail_mode, "scroll up should disable tail mode");
+        assert!(
+            !app.tabs[0].stream.tail_mode,
+            "scroll up should disable tail mode"
+        );
     }
 
     #[tokio::test]
@@ -2646,7 +2645,10 @@ mod tests {
         app.tabs[0].stream.tail_mode = false;
         app.tabs[0].scroll.scroll_offset = 0;
         app.mouse_scroll(100); // large delta → clamps to max_scroll=19
-        assert!(app.tabs[0].stream.tail_mode, "reaching bottom should re-enable tail mode");
+        assert!(
+            app.tabs[0].stream.tail_mode,
+            "reaching bottom should re-enable tail mode"
+        );
         assert_eq!(app.tabs[0].scroll.scroll_offset, 19);
     }
 

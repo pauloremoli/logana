@@ -56,6 +56,7 @@ enum Storage {
         path: Arc<std::path::PathBuf>,
         inode: u64,
         device: u64,
+        mtime: Option<std::time::SystemTime>,
     },
     Bytes(Arc<Vec<u8>>),
 }
@@ -165,15 +166,19 @@ impl FileReader {
             });
         }
 
-        // Capture file identity for rotation detection.
+        // Capture file identity for rotation detection, and mtime for year inference.
         #[cfg(unix)]
-        let (inode, device) = {
+        let (inode, device, mtime) = {
             use std::os::unix::fs::MetadataExt;
             let m = file.metadata()?;
-            (m.ino(), m.dev())
+            (m.ino(), m.dev(), m.modified().ok())
         };
         #[cfg(not(unix))]
-        let (inode, device) = (0u64, 0u64);
+        let (inode, device, mtime) = (
+            0u64,
+            0u64,
+            file.metadata().ok().and_then(|m| m.modified().ok()),
+        );
 
         Ok(FileReader {
             storage: Storage::File {
@@ -182,6 +187,7 @@ impl FileReader {
                 path: canonical_path,
                 inode,
                 device,
+                mtime,
             },
             line_starts: std::sync::Arc::new(starts),
             is_dlt: false,
@@ -306,13 +312,14 @@ impl FileReader {
     ///   - file was truncated (`new_size < old_size`) — caller does a full reload.
     ///   - file identity changed (inode/device mismatch) — caller does a full reload.
     pub fn try_extend_from_read(&mut self) -> io::Result<bool> {
-        let (file, data, path, old_size, old_inode, old_device) = match &self.storage {
+        let (file, data, path, old_size, old_inode, old_device, old_mtime) = match &self.storage {
             Storage::File {
                 file,
                 data,
                 path,
                 inode,
                 device,
+                mtime,
             } => (
                 Arc::clone(file),
                 Arc::clone(data),
@@ -320,6 +327,7 @@ impl FileReader {
                 data.len(),
                 *inode,
                 *device,
+                *mtime,
             ),
             Storage::Bytes(_) => return Ok(false),
         };
@@ -393,6 +401,7 @@ impl FileReader {
             path,
             inode: current_inode,
             device: current_device,
+            mtime: old_mtime,
         };
         Ok(true)
     }
@@ -743,13 +752,17 @@ impl FileReader {
             }
 
             #[cfg(unix)]
-            let (inode, device) = {
+            let (inode, device, mtime) = {
                 use std::os::unix::fs::MetadataExt;
                 let m = file.metadata()?;
-                (m.ino(), m.dev())
+                (m.ino(), m.dev(), m.modified().ok())
             };
             #[cfg(not(unix))]
-            let (inode, device) = (0u64, 0u64);
+            let (inode, device, mtime) = (
+                0u64,
+                0u64,
+                file.metadata().ok().and_then(|m| m.modified().ok()),
+            );
 
             FileReader {
                 storage: Storage::File {
@@ -758,6 +771,7 @@ impl FileReader {
                     path: canonical_path,
                     inode,
                     device,
+                    mtime,
                 },
                 line_starts: Arc::new(starts),
                 is_dlt: false,
