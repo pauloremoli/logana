@@ -2,6 +2,7 @@ use std::io::{BufWriter, Write};
 
 use crate::auto_complete::expand_tilde;
 use crate::ui::App;
+use crate::utils::filesystem::list_dir_files;
 
 impl App {
     pub(super) fn cmd_export_marked(&mut self, path: String) -> Result<bool, String> {
@@ -125,7 +126,7 @@ impl App {
     pub(super) async fn cmd_open(&mut self, path: String) -> Result<bool, String> {
         let path = expand_tilde(&path);
         if std::path::Path::new(&path).is_dir() {
-            let files = crate::ui::list_dir_files(&path);
+            let files = list_dir_files(&path);
             if files.is_empty() {
                 return Err(format!("'{}' contains no files.", path));
             }

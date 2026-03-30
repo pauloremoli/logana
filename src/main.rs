@@ -5,13 +5,13 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use logana::config::Config;
 use logana::db::Database;
 use logana::db::LogManager;
 use logana::ingestion::{FileReader, VisibilityPredicate};
 use logana::mode::app_mode::ConfirmOpenDirMode;
 use logana::theme::Theme;
-use logana::ui::{App, LoadContext, list_dir_files};
+use logana::ui::{App, LoadContext};
+use logana::{config::Config, utils::filesystem::list_dir_files};
 use ratatui::prelude::*;
 use std::io::{IsTerminal, stdin, stdout};
 use std::sync::Arc;
@@ -391,7 +391,7 @@ async fn main() -> Result<()> {
 
     if let Some(ref path) = args.file
         && std::path::Path::new(path).is_dir()
-        && logana::ui::list_dir_files(path).is_empty()
+        && list_dir_files(path).is_empty()
     {
         eprintln!("Error: '{}' contains no files.", path);
         std::process::exit(1);
