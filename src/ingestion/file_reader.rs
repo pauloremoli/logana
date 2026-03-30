@@ -2,10 +2,6 @@ use crate::parser::dlt_binary;
 #[cfg(target_os = "linux")]
 use libc;
 use memchr::{memchr_iter, memchr2, memchr3_iter};
-
-fn is_any_dlt_binary(data: &[u8]) -> bool {
-    dlt_binary::is_dlt_binary(data) || dlt_binary::is_dlt_wire_format(data)
-}
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fs::File, io};
@@ -15,6 +11,10 @@ use tokio::{
     sync::{oneshot, watch},
     task::spawn_blocking,
 };
+
+fn is_any_dlt_binary(data: &[u8]) -> bool {
+    dlt_binary::is_dlt_binary(data) || dlt_binary::is_dlt_wire_format(data)
+}
 
 pub struct VisibilityPredicate {
     fm: std::sync::Arc<crate::filters::FilterManager>,
@@ -74,7 +74,7 @@ impl Storage {
 pub struct FileReader {
     storage: Storage,
     line_starts: std::sync::Arc<Vec<usize>>,
-    is_dlt: bool,
+    pub is_binary: bool,
 }
 
 impl FileReader {
@@ -138,7 +138,7 @@ impl FileReader {
         if is_any_dlt_binary(&data) {
             let text = dlt_binary::convert_dlt_binary_to_text(&data);
             let mut reader = Self::from_bytes(text);
-            reader.is_dlt = true;
+            reader.is_binary = true;
             return Ok(reader);
         }
 
@@ -162,7 +162,7 @@ impl FileReader {
             return Ok(FileReader {
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
-                is_dlt: false,
+                is_binary: false,
             });
         }
 
@@ -190,7 +190,7 @@ impl FileReader {
                 mtime,
             },
             line_starts: std::sync::Arc::new(starts),
-            is_dlt: false,
+            is_binary: false,
         })
     }
 
@@ -212,14 +212,14 @@ impl FileReader {
             return FileReader {
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
-                is_dlt: false,
+                is_binary: false,
             };
         }
 
         FileReader {
             storage: Storage::Bytes(std::sync::Arc::new(data)),
             line_starts: std::sync::Arc::new(starts),
-            is_dlt: false,
+            is_binary: false,
         }
     }
 
@@ -240,7 +240,7 @@ impl FileReader {
         // For DLT binary files, read the full file and convert, then take tail lines.
         // We need to peek at the beginning to check for the DLT magic.
         let mut magic_buf = [0u8; 4];
-        let is_dlt = if total_len >= 4 {
+        let is_binary = if total_len >= 4 {
             file.read_exact(&mut magic_buf).await?;
             file.seek(io::SeekFrom::Start(0)).await?;
             is_any_dlt_binary(&magic_buf)
@@ -248,12 +248,12 @@ impl FileReader {
             false
         };
 
-        if is_dlt {
+        if is_binary {
             let mut full_buf = vec![0u8; total_len as usize];
             file.read_exact(&mut full_buf).await?;
             let text = dlt_binary::convert_dlt_binary_to_text(&full_buf);
             let mut reader = Self::from_bytes(text);
-            reader.is_dlt = true;
+            reader.is_binary = true;
             return Ok(reader);
         }
 
@@ -291,7 +291,7 @@ impl FileReader {
         if is_any_dlt_binary(&buf) {
             let text = dlt_binary::convert_dlt_binary_to_text(&buf);
             let mut reader = Self::from_bytes(text);
-            reader.is_dlt = true;
+            reader.is_binary = true;
             return Ok(reader);
         }
 
@@ -586,7 +586,7 @@ impl FileReader {
             drop(file_data);
             let _ = progress_tx.send(1.0);
             let mut reader = Self::from_bytes(text);
-            reader.is_dlt = true;
+            reader.is_binary = true;
 
             let (precomputed_visible, precomputed_text_counts) = if let Some(pred) = predicate {
                 let count = reader.line_count();
@@ -738,7 +738,7 @@ impl FileReader {
             FileReader {
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
-                is_dlt: false,
+                is_binary: false,
             }
         } else {
             // Merge per-chunk newline positions into the final line_starts.
@@ -774,7 +774,7 @@ impl FileReader {
                     mtime,
                 },
                 line_starts: Arc::new(starts),
-                is_dlt: false,
+                is_binary: false,
             }
         };
 
@@ -832,6 +832,14 @@ impl FileReader {
             precomputed_visible,
             precomputed_text_counts,
         })
+    }
+
+    /// File modification time, if available (only for files opened via `new()`).
+    pub fn mtime(&self) -> Option<std::time::SystemTime> {
+        match &self.storage {
+            Storage::File { mtime, .. } => *mtime,
+            _ => None,
+        }
     }
 
     /// Total number of lines (including any final partial line without a trailing newline).
@@ -900,17 +908,6 @@ impl FileReader {
         (0..self.line_count()).map(move |i| (i, self.get_line(i)))
     }
 
-    /// Append pre-stripped bytes to this reader, extending the line index.
-    ///
-    /// The caller is responsible for stripping ANSI escape sequences before
-    /// calling this (e.g. [`FileReader::spawn_file_watcher`] does it automatically).
-    /// Converting an mmap-backed reader to heap-owned bytes on first call is
-    /// unavoidable but cheap relative to the file I/O that precedes it.
-    /// Returns `true` if this reader was constructed from a DLT binary file.
-    pub fn is_dlt(&self) -> bool {
-        self.is_dlt
-    }
-
     pub fn append_bytes(&mut self, new_data: &[u8]) {
         if new_data.is_empty() {
             return;
@@ -918,7 +915,7 @@ impl FileReader {
 
         let effective_data;
         let converted;
-        if self.is_dlt {
+        if self.is_binary {
             converted = dlt_binary::convert_dlt_binary_to_text(new_data);
             effective_data = converted.as_slice();
         } else {
@@ -2875,7 +2872,7 @@ mod tests {
         f.flush().unwrap();
 
         let reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
-        assert!(reader.is_dlt());
+        assert!(reader.is_binary);
         assert_eq!(reader.line_count(), 3);
     }
 
@@ -2887,7 +2884,7 @@ mod tests {
         f.flush().unwrap();
 
         let reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
-        assert!(!reader.is_dlt());
+        assert!(!reader.is_binary);
         assert_eq!(reader.line_count(), 2);
     }
 
@@ -2926,7 +2923,7 @@ mod tests {
         let reader = FileReader::from_file_head(f.path().to_str().unwrap(), 1024 * 1024)
             .await
             .unwrap();
-        assert!(reader.is_dlt());
+        assert!(reader.is_binary);
         assert_eq!(reader.line_count(), 5);
     }
 

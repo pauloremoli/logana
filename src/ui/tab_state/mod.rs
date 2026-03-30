@@ -22,6 +22,7 @@ pub mod interaction_state;
 pub mod scroll_state;
 pub mod search_state;
 pub mod stream_state;
+pub mod year_map;
 
 pub use cache_state::CacheState;
 pub use display_config::DisplayConfig;
@@ -152,6 +153,7 @@ pub fn merge_filter_counts(
 /// Pass-through rules (field filters only):
 /// - If the line cannot be parsed (e.g. a stack-trace continuation) → field filters do not apply.
 /// - If the line was parsed but the named field is absent → treated as Miss (hidden).
+#[allow(clippy::too_many_arguments)]
 pub fn line_is_visible(
     text_dec: FilterDecision,
     has_text_includes: bool,
@@ -160,6 +162,7 @@ pub fn line_is_visible(
     inc_ff: &[crate::filters::FieldFilter],
     exc_ff: &[crate::filters::FieldFilter],
     parts: Option<&crate::parser::DisplayParts<'_>>,
+    year_override: Option<i32>,
 ) -> bool {
     // Step 1: text filter result — fast path.
     if text_dec == FilterDecision::Exclude {
@@ -172,7 +175,7 @@ pub fn line_is_visible(
     {
         let mut any_date_match = false;
         for (df, count) in date_filters.iter().zip(date_counts.iter_mut()) {
-            if df.matches(ts) {
+            if df.matches(ts, year_override) {
                 *count += 1;
                 any_date_match = true;
             }
@@ -361,8 +364,13 @@ pub fn display_text_for_line(
     if let Some(parser) = detected_format
         && let Some(parts) = parser.parse_line(bytes)
     {
-        let cols =
-            super::field_layout::apply_field_layout(&parts, field_layout, hidden_fields, show_keys);
+        let cols = super::field_layout::apply_field_layout(
+            &parts,
+            field_layout,
+            hidden_fields,
+            show_keys,
+            None,
+        );
         if !cols.is_empty() {
             return cols.join(" ");
         }
@@ -441,6 +449,9 @@ pub struct TabState {
     /// that the log-format parser recognised as an entry start.  `None` when
     /// no format has been detected or raw-mode is active.
     pub continuation_map: Option<Arc<Vec<usize>>>,
+    /// Year map for BSD-format timestamps (syslog, journalctl).  `None` when
+    /// no BSD-format timestamps were detected.
+    pub year_map: Option<Arc<year_map::YearMap>>,
 }
 
 impl TabState {
@@ -461,6 +472,14 @@ impl TabState {
         let continuation_map = detected_format
             .as_deref()
             .map(|p| Arc::new(build_continuation_map(&file_reader, p)));
+
+        let year_map = detected_format.as_deref().map(|p| {
+            use crate::filters::system_time_to_date;
+            let start_year = system_time_to_date(file_reader.mtime())
+                .map(|d| d.year())
+                .unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
+            Arc::new(year_map::YearMap::build(&file_reader, p, start_year))
+        });
 
         let mut tab = TabState {
             file_reader,
@@ -501,6 +520,7 @@ impl TabState {
             archive_temp: None,
             extraction_progress: None,
             continuation_map,
+            year_map,
         };
         tab.refresh_visible();
         tab
@@ -699,6 +719,7 @@ impl TabState {
             let show_keys = self.display.show_keys;
             use rayon::prelude::*;
             let file_reader = &self.file_reader;
+            let year_map = self.year_map.as_deref();
             let n_text = fm.filter_count();
             let n_field = field_defs.len();
             let n_date = date_filters.len();
@@ -747,6 +768,7 @@ impl TabState {
                             if parser.is_some() && line.is_empty() {
                                 return (vis, tc, fc, dc);
                             }
+                            let year_override = year_map.map(|ym| ym.year_for_line(idx));
                             let mut text_dec = fm.evaluate_and_count(line, &mut tc);
                             let can_skip = text_dec == FilterDecision::Exclude
                                 || (text_dec == FilterDecision::Neutral
@@ -759,7 +781,7 @@ impl TabState {
                                     .map(|ts| {
                                         let mut any = false;
                                         for (df, cnt) in date_filters.iter().zip(dc.iter_mut()) {
-                                            if df.matches(ts) {
+                                            if df.matches(ts, year_override) {
                                                 *cnt += 1;
                                                 any = true;
                                             }
@@ -782,6 +804,7 @@ impl TabState {
                                         field_layout,
                                         hidden_fields,
                                         show_keys,
+                                        None,
                                     )
                                     .join(" ");
                                     let dec = fm.evaluate_and_count(display.as_bytes(), &mut tc);
@@ -804,6 +827,7 @@ impl TabState {
                                     &inc_ff,
                                     &exc_ff,
                                     parts.as_ref(),
+                                    year_override,
                                 )
                             };
                             if visible {
@@ -1261,6 +1285,7 @@ impl TabState {
         let show_keys = self.display.show_keys;
         let line_count = self.file_reader.line_count();
         let n_text_filters = self.filter.manager.filter_count();
+        let year_map = self.year_map.clone();
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
@@ -1333,6 +1358,8 @@ impl TabState {
                             },
                             |(mut vis, mut tc, mut fc, mut dc), i| {
                                 let line = file_reader.get_line(i);
+                                let year_override =
+                                    year_map.as_deref().map(|ym| ym.year_for_line(i));
                                 let mut text_dec = fm_arc.evaluate_and_count(line, &mut tc);
                                 let can_skip = text_dec == FilterDecision::Exclude
                                     || (text_dec == FilterDecision::Neutral
@@ -1346,7 +1373,7 @@ impl TabState {
                                             let mut any = false;
                                             for (df, cnt) in date_filters.iter().zip(dc.iter_mut())
                                             {
-                                                if df.matches(ts) {
+                                                if df.matches(ts, year_override) {
                                                     *cnt += 1;
                                                     any = true;
                                                 }
@@ -1369,6 +1396,7 @@ impl TabState {
                                             &field_layout,
                                             &hidden_fields,
                                             show_keys,
+                                            None,
                                         )
                                         .join(" ");
                                         let dec =
@@ -1392,6 +1420,7 @@ impl TabState {
                                         &inc_ff,
                                         &exc_ff,
                                         parts.as_ref(),
+                                        year_override,
                                     )
                                 };
                                 if visible {
@@ -1607,13 +1636,14 @@ impl TabState {
                     && has_text_includes
                     && inc_ff.is_empty()
                     && !synthetic_level);
+            let year_override = self.year_map.as_deref().map(|ym| ym.year_for_line(i));
             let visible = if date_only && !can_skip {
                 parser
                     .and_then(|p| p.parse_timestamp(line))
                     .map(|ts| {
                         let mut any = false;
                         for (df, cnt) in date_filters.iter().zip(dummy_date_counts.iter_mut()) {
-                            if df.matches(ts) {
+                            if df.matches(ts, year_override) {
                                 *cnt += 1;
                                 any = true;
                             }
@@ -1636,6 +1666,7 @@ impl TabState {
                         &self.display.field_layout,
                         &self.display.hidden_fields,
                         self.display.show_keys,
+                        None,
                     )
                     .join(" ");
                     let dec = self
@@ -1654,6 +1685,7 @@ impl TabState {
                     &inc_ff,
                     &exc_ff,
                     parts.as_ref(),
+                    year_override,
                 )
             };
             if visible {
@@ -1919,6 +1951,13 @@ impl TabState {
                 .format
                 .as_deref()
                 .map(|p| Arc::new(build_continuation_map(&self.file_reader, p)));
+            self.year_map = self.display.format.as_deref().map(|p| {
+                use crate::filters::system_time_to_date;
+                let start_year = system_time_to_date(self.file_reader.mtime())
+                    .map(|d| d.year())
+                    .unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
+                Arc::new(year_map::YearMap::build(&self.file_reader, p, start_year))
+            });
         }
     }
 
@@ -4152,6 +4191,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         ));
     }
 
@@ -4166,6 +4206,7 @@ mod tests {
             &mut [],
             &[],
             &[],
+            None,
             None,
         ));
     }
@@ -4182,6 +4223,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         ));
     }
 
@@ -4197,6 +4239,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         ));
     }
 
@@ -4209,6 +4252,7 @@ mod tests {
             &mut [],
             &[],
             &[],
+            None,
             None,
         ));
     }
@@ -4231,6 +4275,7 @@ mod tests {
             &[],
             &[],
             Some(&parts),
+            None,
         ));
         assert_eq!(counts[0], 1);
     }
@@ -4253,6 +4298,7 @@ mod tests {
             &[],
             &[],
             Some(&parts),
+            None,
         ));
         assert_eq!(counts[0], 0);
     }
@@ -4276,6 +4322,7 @@ mod tests {
             &[],
             &[],
             Some(&parts),
+            None,
         ));
     }
 
@@ -4298,6 +4345,7 @@ mod tests {
             &[],
             &[],
             Some(&parts),
+            None,
         ));
         assert_eq!(counts[0], 1);
         assert_eq!(counts[1], 1);
@@ -4324,6 +4372,7 @@ mod tests {
             &[],
             &[exc],
             Some(&parts),
+            None,
         ));
     }
 
@@ -4348,6 +4397,7 @@ mod tests {
             &[inc],
             &[],
             Some(&parts),
+            None,
         ));
     }
 
@@ -4372,6 +4422,7 @@ mod tests {
             &[inc],
             &[],
             Some(&parts),
+            None,
         ));
     }
 
@@ -4397,6 +4448,7 @@ mod tests {
             &[inc],
             &[],
             Some(&parts),
+            None,
         ));
     }
 
@@ -4420,6 +4472,7 @@ mod tests {
             &[make_inc()],
             &[],
             None,
+            None,
         ));
         // has_text_includes=true → hidden (include filter present but nothing matched)
         assert!(!line_is_visible(
@@ -4429,6 +4482,7 @@ mod tests {
             &mut [],
             &[make_inc()],
             &[],
+            None,
             None,
         ));
     }

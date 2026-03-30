@@ -20,12 +20,9 @@ pub use journalctl::JournalctlParser;
 pub use json::{
     JsonField, JsonParser, LogLine, build_display_json, parse_json_line, strip_json_prefixes,
 };
-pub use logfmt::LogfmtParser;
+pub use logfmt::{LogfmtParser, SCHEMA_LOGFMT};
 pub use otlp::OtlpParser;
-pub use schema::{
-    LogSchema, SCHEMA_GELF, SCHEMA_GENERIC_JSON, SCHEMA_JOURNALCTL_JSON, SCHEMA_LOGFMT,
-    SCHEMA_TRACING,
-};
+pub use schema::LogSchema;
 pub use syslog::SyslogParser;
 pub use types::LogLevel;
 pub use types::{DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, format_span_col};
@@ -36,46 +33,21 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
         return None;
     }
 
-    let parsers: Vec<Box<dyn LogFormatParser>> = vec![
+    let mut parsers: Vec<Box<dyn LogFormatParser>> = vec![
         // OtlpParser scores up to 1.5 to beat JsonParser on OTLP files
         Box::new(OtlpParser),
         // DltParser scores up to 1.2 — DLT text is highly distinctive
         Box::new(DltParser),
-        // journalctl JSON: detect_keys=["MESSAGE","PRIORITY"], score_weight=1.2
-        Box::new(JsonParser {
-            schema: &SCHEMA_JOURNALCTL_JSON,
-            fields_container: None,
-            span_key: None,
-            score_weight: 1.2,
-        }),
-        // tracing-subscriber JSON: detect_keys=["target","fields"], score_weight=1.1
-        Box::new(JsonParser {
-            schema: &SCHEMA_TRACING,
-            fields_container: Some("fields"),
-            span_key: Some("span"),
-            score_weight: 1.1,
-        }),
-        // GELF: detect_keys=["short_message","version"], score_weight=1.05
-        Box::new(JsonParser {
-            schema: &SCHEMA_GELF,
-            fields_container: None,
-            span_key: None,
-            score_weight: 1.05,
-        }),
-        // Generic JSON catch-all (logrus/zap/bunyan/pino/structlog/syslog-json), score_weight=1.0
-        Box::new(JsonParser {
-            schema: &SCHEMA_GENERIC_JSON,
-            fields_container: None,
-            span_key: None,
-            score_weight: 1.0,
-        }),
-        Box::new(SyslogParser::default()),
+    ];
+    parsers.extend(JsonParser::all_variants());
+    parsers.extend([
+        Box::new(SyslogParser::default()) as Box<dyn LogFormatParser>,
         Box::new(JournalctlParser::default()),
         Box::new(ClfParser),
         Box::new(LogfmtParser::default()),
         // CommonLogParser last — broadest catch-all with 0.95× score penalty
         Box::new(CommonLogParser::default()),
-    ];
+    ]);
 
     let non_empty: Vec<&[u8]> = sample.iter().copied().filter(|l| !l.is_empty()).collect();
     if non_empty.is_empty() {

@@ -1,8 +1,3 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
 use crate::{
     config::Keybindings,
     mode::app_mode::{Mode, ModeRenderState, status_entry},
@@ -12,6 +7,10 @@ use crate::{
     theme::Theme,
     ui::{KeyResult, TabState, field_layout::apply_field_layout},
 };
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 /// A character-search motion waiting for the target character.
 #[derive(Debug, Clone)]
@@ -22,12 +21,6 @@ pub enum PendingMotion {
     TillBackward,
 }
 
-/// Character-level visual mode.
-///
-/// On entry the cursor is placed at col 0 and moves freely.
-/// Pressing `v` anchors the selection at the current cursor position;
-/// subsequent motion keys extend it. Actions (filter/search/yank) work at
-/// any time: without an anchor they operate on the single char under the cursor.
 #[derive(Debug)]
 pub struct VisualMode {
     /// Column where the selection was anchored (None = cursor-only, no active selection).
@@ -364,6 +357,7 @@ pub fn display_line_text(tab: &TabState) -> String {
                 &tab.display.field_layout,
                 &tab.display.hidden_fields,
                 tab.display.show_keys,
+                None,
             )
             .join(" ");
         }

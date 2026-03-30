@@ -1,13 +1,12 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
 use crate::config::Keybindings;
 use crate::mode::app_mode::{Mode, ModeRenderState, status_entry, status_entry_dyn};
 use crate::mode::normal_mode::NormalMode;
 use crate::theme::Theme;
 use crate::ui::{KeyResult, TabState};
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 #[derive(Debug)]
 pub struct UiMode {

@@ -1,0 +1,92 @@
+use crate::filters::bsd_month_from_timestamp;
+use crate::ingestion::FileReader;
+use crate::parser::LogFormatParser;
+
+/// Maps log-file line indices to the correct calendar year for BSD-format
+/// timestamps (e.g. syslog `"Feb 22 10:15:30"`).
+///
+/// Built by a single sequential scan of the file.  When the month number
+/// decreases significantly (Dec→Jan, difference > 3) we infer a year boundary
+/// and increment the year counter.  All subsequent lines belong to the new year.
+///
+/// Year lookups are O(log n) via binary search on the transitions list.
+#[derive(Debug)]
+pub struct YearMap {
+    /// Sorted `(first_line_index, year)` pairs.  The year applies to all lines
+    /// from `first_line_index` up to (but not including) the next transition.
+    transitions: Vec<(usize, i32)>,
+}
+
+impl YearMap {
+    /// Build a `YearMap` by scanning BSD timestamps in file order.
+    ///
+    /// `start_year` should come from the file's mtime; fall back to the current
+    /// year for streaming sources without a known mtime.
+    pub fn build(file_reader: &FileReader, parser: &dyn LogFormatParser, start_year: i32) -> Self {
+        let mut transitions: Vec<(usize, i32)> = vec![(0, start_year)];
+        let mut current_year = start_year;
+        let mut prev_month: u32 = 0;
+
+        for i in 0..file_reader.line_count() {
+            let line = file_reader.get_line(i);
+            if let Some(ts) = parser.parse_timestamp(line)
+                && let Some(month) = bsd_month_from_timestamp(ts)
+            {
+                if prev_month > 0 && month < prev_month && prev_month - month > 3 {
+                    current_year += 1;
+                    transitions.push((i, current_year));
+                }
+                prev_month = month;
+            }
+        }
+
+        YearMap { transitions }
+    }
+
+    /// Return the calendar year for the given line index (O(log n)).
+    pub fn year_for_line(&self, line_idx: usize) -> i32 {
+        match self
+            .transitions
+            .binary_search_by_key(&line_idx, |&(idx, _)| idx)
+        {
+            Ok(pos) => self.transitions[pos].1,
+            Err(0) => self.transitions[0].1,
+            Err(pos) => self.transitions[pos - 1].1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map_from(transitions: Vec<(usize, i32)>) -> YearMap {
+        YearMap { transitions }
+    }
+
+    #[test]
+    fn test_year_for_line_single_year() {
+        let m = map_from(vec![(0, 2024)]);
+        assert_eq!(m.year_for_line(0), 2024);
+        assert_eq!(m.year_for_line(100), 2024);
+        assert_eq!(m.year_for_line(usize::MAX), 2024);
+    }
+
+    #[test]
+    fn test_year_for_line_transition() {
+        let m = map_from(vec![(0, 2023), (50, 2024)]);
+        assert_eq!(m.year_for_line(0), 2023);
+        assert_eq!(m.year_for_line(49), 2023);
+        assert_eq!(m.year_for_line(50), 2024);
+        assert_eq!(m.year_for_line(200), 2024);
+    }
+
+    #[test]
+    fn test_year_for_line_exact_transition_boundary() {
+        let m = map_from(vec![(0, 2022), (10, 2023), (20, 2024)]);
+        assert_eq!(m.year_for_line(9), 2022);
+        assert_eq!(m.year_for_line(10), 2023);
+        assert_eq!(m.year_for_line(19), 2023);
+        assert_eq!(m.year_for_line(20), 2024);
+    }
+}

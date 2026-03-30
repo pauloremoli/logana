@@ -1,12 +1,10 @@
+use crate::filters::{ColorConfig, FilterDef, FilterType};
+use crate::types::Comment;
 use anyhow::Result;
 use async_trait::async_trait;
 use sqlx::Row;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-
 use std::collections::HashSet;
-
-use crate::filters::{ColorConfig, FilterDef, FilterType};
-use crate::types::Comment;
 
 #[async_trait]
 pub trait FilterStore: Send + Sync {

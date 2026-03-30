@@ -1,10 +1,4 @@
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::{Terminal, prelude::*};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-const DOUBLE_CLICK_MS: u128 = 300;
-
+use super::{KeyResult, StdinLoadState, TabState};
 use crate::config::{Keybindings, RestoreSessionPolicy};
 use crate::db::LogManager;
 use crate::db::{AppSettingsStore, FileContext, FileContextStore, SessionStore};
@@ -14,8 +8,12 @@ use crate::mode::command_mode::CommandMode;
 use crate::mode::filter_mode::FilterManagementMode;
 use crate::mode::normal_mode::NormalMode;
 use crate::theme::Theme;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::{Terminal, prelude::*};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use super::{KeyResult, StdinLoadState, TabState};
+const DOUBLE_CLICK_MS: u128 = 300;
 
 async fn resolve_bool_setting(
     db: &crate::db::Database,

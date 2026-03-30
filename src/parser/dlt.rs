@@ -1,13 +1,3 @@
-//! DLT (AUTOSAR Diagnostic Log and Trace) text format parser.
-//!
-//! Parses the text output produced by `dlt-convert -a`. Each line has the form:
-//!
-//! ```text
-//! YYYY/MM/DD HH:MM:SS.ffffff TIMESTAMP ECUID APID CTID TYPE SUBTYPE MODE NOAR PAYLOAD
-//! ```
-//!
-//! Missing fields use `----` as a placeholder.
-
 use super::types::{DisplayParts, LogFormatParser, push_extra_field};
 
 #[derive(Debug)]

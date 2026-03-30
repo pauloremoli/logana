@@ -1,10 +1,6 @@
-//! Common Log Format (CLF) and Combined Log Format parser.
-
-use std::collections::HashSet;
-
-use memchr::memchr;
-
 use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_field_as};
+use memchr::memchr;
+use std::collections::HashSet;
 
 #[derive(Debug)]
 pub struct ClfParser;

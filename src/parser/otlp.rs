@@ -1,10 +1,8 @@
-//! OpenTelemetry (OTLP) log format parser. Handles protobuf-JSON and OTel SDK JSON.
-
-use std::collections::HashSet;
-
 use super::json::parse_json_line;
 use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_extra_field, push_field_as};
+use std::collections::HashSet;
 
+/// OpenTelemetry (OTLP) log format parser. Handles protobuf-JSON and OTel SDK JSON.
 #[derive(Debug)]
 pub struct OtlpParser;
 

@@ -8,11 +8,88 @@
 //! - `json-sse`  `data: {...}`
 //! - `json-seq`  RS (0x1E) + `{...}`
 
-use std::collections::HashSet;
-
 use super::schema::LogSchema;
 use super::types::{
     DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, push_extra_field, push_field_as,
+};
+use std::collections::HashSet;
+
+/// journalctl --output=json / json-sse / json-seq
+pub static SCHEMA_JOURNALCTL_JSON: LogSchema = LogSchema {
+    name: "journalctl-json",
+    detect_keys: &["MESSAGE", "PRIORITY"],
+    timestamp_keys: &["__REALTIME_TIMESTAMP", "_SOURCE_REALTIME_TIMESTAMP"],
+    level_keys: &["PRIORITY"],
+    target_keys: &["SYSLOG_IDENTIFIER", "_COMM"],
+    message_keys: &["MESSAGE"],
+    extra_semantics: &[
+        ("_HOSTNAME", FieldSemantic::Hostname),
+        ("_PID", FieldSemantic::Pid),
+    ],
+    level_transform: Some(priority_to_level),
+    keep_visible_extras: &["hostname", "pid"],
+};
+
+/// tracing-subscriber JSON format (fields container + span object)
+pub static SCHEMA_TRACING: LogSchema = LogSchema {
+    name: "tracing-json",
+    detect_keys: &["target", "fields"],
+    timestamp_keys: &["timestamp"],
+    level_keys: &["level"],
+    target_keys: &["target"],
+    message_keys: &["message"],
+    extra_semantics: &[
+        ("traceId", FieldSemantic::TraceId),
+        ("spanId", FieldSemantic::SpanId),
+    ],
+    level_transform: None,
+    keep_visible_extras: &[],
+};
+
+/// GELF (Graylog Extended Log Format)
+pub static SCHEMA_GELF: LogSchema = LogSchema {
+    name: "gelf",
+    detect_keys: &["short_message", "version"],
+    timestamp_keys: &["timestamp"],
+    level_keys: &["level"],
+    target_keys: &["host", "source"],
+    message_keys: &["short_message", "full_message"],
+    extra_semantics: &[],
+    level_transform: None,
+    keep_visible_extras: &[],
+};
+
+/// Generic JSON: logrus, zap, bunyan, pino, structlog, syslog-json, …
+/// Catch-all with the broadest set of well-known key aliases.
+pub static SCHEMA_GENERIC_JSON: LogSchema = LogSchema {
+    name: "json",
+    detect_keys: &[],
+    timestamp_keys: &["timestamp", "time", "ts", "t", "@timestamp", "datetime"],
+    level_keys: &["level", "lvl", "severity", "log_level"],
+    target_keys: &[
+        "target",
+        "logger",
+        "module",
+        "source",
+        "component",
+        "service",
+        "name",
+        "caller",
+    ],
+    message_keys: &["message", "msg", "log", "text"],
+    extra_semantics: &[
+        ("hostname", FieldSemantic::Hostname),
+        ("pid", FieldSemantic::Pid),
+        ("thread", FieldSemantic::Thread),
+        ("traceId", FieldSemantic::TraceId),
+        ("trace_id", FieldSemantic::TraceId),
+        ("TraceID", FieldSemantic::TraceId),
+        ("spanId", FieldSemantic::SpanId),
+        ("span_id", FieldSemantic::SpanId),
+        ("SpanID", FieldSemantic::SpanId),
+    ],
+    level_transform: None,
+    keep_visible_extras: &[],
 };
 
 #[derive(Debug)]
@@ -121,6 +198,20 @@ pub fn parse_json_line(line: &[u8]) -> Option<Vec<JsonField<'_>>> {
     }
 }
 
+pub fn priority_to_level(value: &str) -> Option<&'static str> {
+    Some(match value {
+        "0" => "EMERG",
+        "1" => "ALERT",
+        "2" => "CRITICAL",
+        "3" => "ERROR",
+        "4" => "WARNING",
+        "5" => "NOTICE",
+        "6" => "INFO",
+        "7" => "DEBUG",
+        _ => return None,
+    })
+}
+
 pub fn build_display_json(
     fields: &[JsonField<'_>],
     hidden_names: &HashSet<String>,
@@ -162,16 +253,50 @@ pub fn strip_json_prefixes(line: &[u8]) -> &[u8] {
 /// Schema-driven JSON parser. One instance per log format in the registry.
 #[derive(Debug)]
 pub struct JsonParser {
-    pub schema: &'static LogSchema,
+    schema: &'static LogSchema,
     /// Key whose object value is unpacked into extra fields (e.g. `"fields"` for tracing-subscriber).
-    pub fields_container: Option<&'static str>,
+    fields_container: Option<&'static str>,
     /// Key whose object value is parsed as a span (e.g. `"span"` for tracing-subscriber).
-    pub span_key: Option<&'static str>,
+    span_key: Option<&'static str>,
     /// Multiplier applied to the base detection score (>1.0 prioritises this parser).
-    pub score_weight: f64,
+    score_weight: f64,
 }
 
 impl JsonParser {
+    /// All JSON format variants in detection-priority order.
+    pub fn all_variants() -> Vec<Box<dyn crate::parser::types::LogFormatParser>> {
+        vec![
+            // journalctl JSON: detect_keys=["MESSAGE","PRIORITY"], score_weight=1.2
+            Box::new(JsonParser {
+                schema: &SCHEMA_JOURNALCTL_JSON,
+                fields_container: None,
+                span_key: None,
+                score_weight: 1.2,
+            }),
+            // tracing-subscriber JSON: detect_keys=["target","fields"], score_weight=1.1
+            Box::new(JsonParser {
+                schema: &SCHEMA_TRACING,
+                fields_container: Some("fields"),
+                span_key: Some("span"),
+                score_weight: 1.1,
+            }),
+            // GELF: detect_keys=["short_message","version"], score_weight=1.05
+            Box::new(JsonParser {
+                schema: &SCHEMA_GELF,
+                fields_container: None,
+                span_key: None,
+                score_weight: 1.05,
+            }),
+            // Generic JSON catch-all (logrus/zap/bunyan/pino/structlog/syslog-json), score_weight=1.0
+            Box::new(JsonParser {
+                schema: &SCHEMA_GENERIC_JSON,
+                fields_container: None,
+                span_key: None,
+                score_weight: 1.0,
+            }),
+        ]
+    }
+
     fn classify_fields<'a>(
         &self,
         fields: &[JsonField<'a>],
@@ -503,9 +628,7 @@ fn read_value<'a>(line: &'a [u8], pos: &mut usize) -> Option<(&'a str, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::schema::{
-        SCHEMA_GELF, SCHEMA_GENERIC_JSON, SCHEMA_JOURNALCTL_JSON, SCHEMA_TRACING,
-    };
+    use super::{SCHEMA_GELF, SCHEMA_GENERIC_JSON, SCHEMA_JOURNALCTL_JSON, SCHEMA_TRACING};
 
     fn generic_parser() -> JsonParser {
         JsonParser {

@@ -1,8 +1,3 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
 use crate::{
     auto_complete::{
         FieldCompletion, complete_color, complete_field_name, complete_field_value,
@@ -19,6 +14,10 @@ use crate::{
     theme::Theme,
     ui::{KeyResult, TabState},
 };
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 /// If the input is `export ... -t <partial>` or `--template <partial>`,
 /// returns the partial template name for completion.

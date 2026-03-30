@@ -579,7 +579,7 @@ fn test_dlt_binary_roundtrip() {
     f.flush().unwrap();
 
     let reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
-    assert!(reader.is_dlt());
+    assert!(reader.is_binary);
     assert_eq!(reader.line_count(), 3);
 
     let parser = DltParser;

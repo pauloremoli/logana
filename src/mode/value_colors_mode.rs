@@ -1,9 +1,3 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use std::collections::HashSet;
-
 use crate::{
     auto_complete::fuzzy_match,
     config::Keybindings,
@@ -12,8 +6,12 @@ use crate::{
     theme::Theme,
     ui::{KeyResult, TabState},
 };
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use std::collections::HashSet;
 
-/// Which kind of colours dialog this mode represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorsDialogKind {
     ValueColors,

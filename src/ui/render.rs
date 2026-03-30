@@ -1824,12 +1824,9 @@ mod tests {
         app.tabs[0].display.show_borders = true;
         app.tabs[0].display.raw_mode = true;
         app.tabs[1].display.show_borders = true;
-        app.tabs[1].display.format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
-            schema: &crate::parser::SCHEMA_GENERIC_JSON,
-            fields_container: None,
-            span_key: None,
-            score_weight: 1.0,
-        }));
+        app.tabs[1].display.format =
+            crate::parser::detect_format(&[br#"{"level":"INFO","msg":"hi"}"#])
+                .map(std::sync::Arc::from);
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -1848,19 +1845,13 @@ mod tests {
         let mut app = make_two_tab_app().await;
         app.tabs[0].title = "myfile.log".to_string();
         app.tabs[0].display.show_borders = true;
-        app.tabs[0].display.format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
-            schema: &crate::parser::SCHEMA_GENERIC_JSON,
-            fields_container: None,
-            span_key: None,
-            score_weight: 1.0,
-        }));
+        app.tabs[0].display.format =
+            crate::parser::detect_format(&[br#"{"level":"INFO","msg":"hi"}"#])
+                .map(std::sync::Arc::from);
         app.tabs[1].display.show_borders = true;
-        app.tabs[1].display.format = Some(std::sync::Arc::from(crate::parser::json::JsonParser {
-            schema: &crate::parser::SCHEMA_GENERIC_JSON,
-            fields_container: None,
-            span_key: None,
-            score_weight: 1.0,
-        }));
+        app.tabs[1].display.format =
+            crate::parser::detect_format(&[br#"{"level":"INFO","msg":"hi"}"#])
+                .map(std::sync::Arc::from);
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

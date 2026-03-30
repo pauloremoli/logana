@@ -1,10 +1,3 @@
-use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
-
-use ratatui::style::Style;
-
 use crate::db::{Database, FilterStore};
 use crate::filters::{ColorConfig, FilterDef, FilterType};
 use crate::filters::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
@@ -13,6 +6,11 @@ use crate::ingestion::FileReader;
 use crate::theme::parse_color;
 use crate::types::Comment;
 use aho_corasick::AhoCorasick;
+use ratatui::style::Style;
+use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 pub struct LogManager {
     pub db: Arc<Database>,
@@ -179,8 +177,6 @@ impl LogManager {
         let _ = self.db.update_filter_pattern(id as i64, &new_pattern).await;
     }
 
-    /// Update an existing filter's pattern, type, and color in-place, preserving its
-    /// position in the filter list.
     pub async fn update_filter(
         &mut self,
         id: usize,
@@ -317,7 +313,6 @@ impl LogManager {
             .collect()
     }
 
-    /// Append a new comment for the given line indices.
     pub fn add_comment(&mut self, text: String, line_indices: Vec<usize>) {
         if !line_indices.is_empty() {
             self.comments.push(Comment { text, line_indices });
@@ -328,7 +323,6 @@ impl LogManager {
         &self.comments
     }
 
-    /// Returns true if `line_idx` belongs to at least one comment.
     pub fn has_comment(&self, line_idx: usize) -> bool {
         self.comments
             .iter()
@@ -339,14 +333,12 @@ impl LogManager {
         self.comments = comments;
     }
 
-    /// Remove a single comment by index.
     pub fn remove_comment(&mut self, index: usize) {
         if index < self.comments.len() {
             self.comments.remove(index);
         }
     }
 
-    /// Clear all marks and comments at once.
     pub fn clear_all_marks_and_comments(&mut self) {
         self.marks.clear();
         self.comments.clear();

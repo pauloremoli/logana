@@ -224,8 +224,6 @@ pub fn find_matching_command(input: &str) -> Option<&'static CommandInfo> {
 mod tests {
     use super::*;
 
-    // ── command_names ────────────────────────────────────────────────────────
-
     #[test]
     fn test_command_names_returns_all_commands() {
         let names = command_names();
@@ -253,8 +251,6 @@ mod tests {
             assert!(names.contains(expected), "missing command: {expected}");
         }
     }
-
-    // ── find_matching_command ────────────────────────────────────────────────
 
     #[test]
     fn test_find_matching_command_exact() {

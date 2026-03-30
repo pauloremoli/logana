@@ -1,8 +1,3 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
 use crate::{
     config::Keybindings,
     mode::app_mode::{Mode, ModeRenderState, status_entry},
@@ -12,14 +7,11 @@ use crate::{
     theme::Theme,
     ui::{KeyResult, TabState, field_layout::apply_field_layout},
 };
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
-/// Visual line selection mode, entered by pressing `V` in NormalMode.
-///
-/// The line under the cursor at the time `V` is pressed becomes the anchor.
-/// Moving up/down with j/k (or arrow keys) extends/shrinks the selection.
-/// Pressing `c` opens `CommentMode` for the selected range.
-/// Pressing `y` yanks (copies) selected lines to the system clipboard.
-/// `Esc` cancels and returns to NormalMode.
 #[derive(Debug)]
 pub struct VisualLineMode {
     /// Index into `visible_indices` that was the cursor when `V` was pressed.
@@ -182,6 +174,7 @@ impl Mode for VisualLineMode {
                             &tab.display.field_layout,
                             &tab.display.hidden_fields,
                             tab.display.show_keys,
+                            None,
                         )
                         .join(" ")
                     })
@@ -274,6 +267,7 @@ fn lo_line_text(tab: &TabState, anchor: usize, scroll_offset: usize) -> String {
             &tab.display.field_layout,
             &tab.display.hidden_fields,
             tab.display.show_keys,
+            None,
         )
         .join(" ");
     }

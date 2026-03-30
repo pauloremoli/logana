@@ -1,10 +1,28 @@
-//! Logfmt `key=value` parser for Go slog, Heroku, Grafana Loki, and 12-factor apps.
-
-use std::collections::HashSet;
-
-use super::schema::{LogSchema, SCHEMA_LOGFMT};
+use super::schema::LogSchema;
 use super::timestamp::normalize_level;
 use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_extra_field, push_field_as};
+use std::collections::HashSet;
+
+pub static SCHEMA_LOGFMT: LogSchema = LogSchema {
+    name: "logfmt",
+    detect_keys: &[],
+    timestamp_keys: &["time", "ts", "t", "timestamp", "@timestamp", "datetime"],
+    level_keys: &["level", "lvl", "severity"],
+    target_keys: &[
+        "source",
+        "module",
+        "logger",
+        "component",
+        "service",
+        "caller",
+        "name",
+        "target",
+    ],
+    message_keys: &["message", "msg", "log", "text"],
+    extra_semantics: &[],
+    level_transform: None,
+    keep_visible_extras: &[],
+};
 
 #[derive(Debug)]
 pub struct LogfmtParser {

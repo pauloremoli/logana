@@ -1,8 +1,3 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
 use crate::{
     config::Keybindings,
     mode::{
@@ -19,6 +14,10 @@ use crate::{
     theme::Theme,
     ui::{KeyResult, TabState, field_layout::apply_field_layout},
 };
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 #[derive(Debug, Default)]
 pub struct NormalMode {
@@ -58,7 +57,6 @@ impl Mode for NormalMode {
             return (self, KeyResult::Handled);
         }
 
-        // ── Global key passthrough ──────────────────────────────────────────
         if kb.global.quit.matches(key, modifiers) {
             self.count = None;
             return (self, KeyResult::Ignored);
@@ -76,8 +74,6 @@ impl Mode for NormalMode {
             self.count = None;
             return (self, KeyResult::Ignored);
         }
-
-        // ── Count-aware motions ─────────────────────────────────────────────
 
         if kb.navigation.half_page_down.matches(key, modifiers) {
             let half = (tab.scroll.visible_height / 2).max(1);
@@ -306,6 +302,7 @@ impl Mode for NormalMode {
                         &tab.display.field_layout,
                         &tab.display.hidden_fields,
                         tab.display.show_keys,
+                        None,
                     )
                     .join(" ")
                 })
@@ -335,6 +332,7 @@ impl Mode for NormalMode {
                                 &tab.display.field_layout,
                                 &tab.display.hidden_fields,
                                 tab.display.show_keys,
+                                None,
                             )
                             .join(" ")
                         })

@@ -1,8 +1,3 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
 use crate::{
     config::Keybindings,
     mode::{
@@ -13,21 +8,11 @@ use crate::{
     types::Comment,
     ui::{KeyResult, TabState},
 };
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
-/// Multi-line comment editor mode.
-///
-/// Opened from `VisualLineMode` when the user presses `c` after selecting
-/// a range of lines.  The comment text is stored line-by-line so the
-/// cursor can be positioned precisely.
-///
-/// Keys:
-///   Char          → insert at cursor
-///   Enter         → split line (insert newline, configurable)
-///   Backspace     → delete char / merge with previous line
-///   Left/Right    → move cursor within / across lines
-///   Up/Down       → move cursor between rows
-///   Ctrl+S        → save comment and return to NormalMode (configurable)
-///   Esc           → cancel, discard text, return to NormalMode
 #[derive(Debug)]
 pub struct CommentMode {
     pub lines: Vec<String>,

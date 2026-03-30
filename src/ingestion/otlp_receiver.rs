@@ -1,6 +1,5 @@
 use std::io;
 use std::sync::Arc;
-
 use tokio::sync::watch;
 
 pub async fn spawn_otlp_http_receiver(

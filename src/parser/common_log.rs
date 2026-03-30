@@ -1,15 +1,14 @@
 //! Catch-all parser for the TIMESTAMP + LEVEL + TARGET + MESSAGE log family.
 //! Covers env_logger, tracing fmt, logback, Spring Boot, Python, loguru, structlog.
 
-use std::collections::HashSet;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
-
 use super::timestamp::{
     is_level_keyword, normalize_level, parse_datetime_timestamp, parse_iso_timestamp,
     parse_nano_timestamp,
 };
 use super::types::{DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, push_field_as};
+use std::collections::HashSet;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Debug, Clone, Copy)]
 enum LineParser {

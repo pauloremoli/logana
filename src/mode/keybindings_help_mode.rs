@@ -1,8 +1,3 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
 use crate::{
     config::Keybindings,
     mode::app_mode::{Mode, ModeRenderState, status_entry},
@@ -10,15 +5,17 @@ use crate::{
     theme::Theme,
     ui::{KeyResult, TabState},
 };
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
-/// A single row in the keybindings popup: section header OR action+key pair.
 #[derive(Clone)]
 pub enum HelpRow {
     Header(String),
     Entry { action: String, keys: String },
 }
 
-/// Build the full list of rows from the current keybindings.
 pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     let nav = &kb.navigation;
     let n = &kb.normal;

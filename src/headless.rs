@@ -366,7 +366,7 @@ pub fn run_headless_to_writer(
                         if date_only && !can_skip {
                             let visible = parser_ref
                                 .and_then(|p| p.parse_timestamp(line))
-                                .map(|ts| date_filters.iter().any(|df| df.matches(ts)))
+                                .map(|ts| date_filters.iter().any(|df| df.matches(ts, None)))
                                 .unwrap_or(true);
                             if visible {
                                 vis.push(idx);
@@ -386,6 +386,7 @@ pub fn run_headless_to_writer(
                                     &crate::ui::FieldLayout::default(),
                                     &std::collections::HashSet::new(),
                                     false,
+                                    None,
                                 )
                                 .join(" ");
                                 let dec = fm.evaluate_text(display.as_bytes());
@@ -401,6 +402,7 @@ pub fn run_headless_to_writer(
                                 &inc_ff,
                                 &exc_ff,
                                 parts.as_ref(),
+                                None,
                             ) {
                                 vis.push(idx);
                             }

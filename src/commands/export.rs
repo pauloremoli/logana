@@ -1,18 +1,17 @@
-use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
-
 use crate::auto_complete::fuzzy_match;
-
-static BUNDLED_TEMPLATES: &[(&str, &str)] = &[
-    ("markdown", include_str!("../../templates/markdown.txt")),
-    ("jira", include_str!("../../templates/jira.txt")),
-];
 use crate::ingestion::FileReader;
 use crate::parser::LogFormatParser;
 use crate::types::Comment;
 use crate::ui::FieldLayout;
 use crate::ui::field_layout::apply_field_layout;
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+
+static BUNDLED_TEMPLATES: &[(&str, &str)] = &[
+    ("markdown", include_str!("../../templates/markdown.txt")),
+    ("jira", include_str!("../../templates/jira.txt")),
+];
 
 #[derive(Debug, Clone)]
 pub struct ExportTemplate {
@@ -263,6 +262,7 @@ fn render_line_content(line_bytes: &[u8], data: &ExportData) -> String {
             data.field_layout,
             data.hidden_fields,
             data.show_keys,
+            None,
         );
         if !cols.is_empty() {
             return cols.join(" ");

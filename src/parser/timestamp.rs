@@ -1,8 +1,6 @@
-//! Shared timestamp parsing and level normalization utilities.
-
 pub const WEEKDAYS: &[&str] = &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-pub const BSD_MONTHS: &[&str] = &[
+pub const MONTHS: &[&str] = &[
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
@@ -34,7 +32,7 @@ pub fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
         return None;
     }
     let month = &s[..3];
-    if !BSD_MONTHS.contains(&month) {
+    if !MONTHS.contains(&month) {
         return None;
     }
     if s.as_bytes()[3] != b' ' {
@@ -223,7 +221,7 @@ pub fn parse_bsd_plain_timestamp(s: &str) -> Option<(&str, usize)> {
         return None;
     }
     let month = &s[..3];
-    if !BSD_MONTHS.contains(&month) {
+    if !MONTHS.contains(&month) {
         return None;
     }
     if s.as_bytes()[3] != b' ' {

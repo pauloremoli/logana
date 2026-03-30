@@ -10,8 +10,7 @@
 //! - `short-unix`        Unix epoch with decimal seconds
 //! - `with-unit`         Like `short` but identifies source by unit name
 //!
-//! Not currently supported (multi-line formats): `verbose`, `export`,
-//! `json-pretty`. Use the JSON parser for `json`, `json-sse`, `json-seq`.
+//! Not supported (multi-line formats): `verbose`, `export`, `json-pretty`.
 
 use std::collections::HashSet;
 use std::sync::OnceLock;

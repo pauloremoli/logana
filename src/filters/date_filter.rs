@@ -1,6 +1,6 @@
 use crate::filters::FilterDef;
 use crate::filters::StyleId;
-use crate::parser::timestamp::BSD_MONTHS;
+use crate::parser::timestamp::MONTHS;
 
 pub const DATE_PREFIX: &str = "@date:";
 
@@ -191,7 +191,7 @@ fn try_parse_time_only(s: &str) -> Option<(u32, Granularity)> {
 }
 
 fn bsd_month_number(abbr: &str) -> Option<u32> {
-    BSD_MONTHS
+    MONTHS
         .iter()
         .position(|&m| m.eq_ignore_ascii_case(abbr))
         .map(|i| i as u32 + 1)
@@ -495,15 +495,44 @@ pub fn parse_date_filter(input: &str) -> Result<DateFilter, String> {
     Ok(DateFilter::Range { mode, lower, upper })
 }
 
+/// Convert an optional `SystemTime` to a `time::Date` (UTC).
+pub(crate) fn system_time_to_date(st: Option<std::time::SystemTime>) -> Option<time::Date> {
+    let secs = st?
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    time::OffsetDateTime::from_unix_timestamp(secs)
+        .ok()
+        .map(|dt| dt.date())
+}
+
+/// Extract the BSD month number (1–12) from a raw timestamp string.
+/// Returns `None` if the timestamp is not BSD-format.
+pub(crate) fn bsd_month_from_timestamp(ts: &str) -> Option<u32> {
+    let s = ts.trim_ascii();
+    if s.len() >= 3 && bsd_month_number(&s[..3]).is_some() {
+        let n = normalize_bsd_ts(s)?;
+        let c = &n.canonical;
+        Some((c[5] - b'0') as u32 * 10 + (c[6] - b'0') as u32)
+    } else {
+        None
+    }
+}
+
 /// Normalize a raw timestamp string (as produced by a log format parser's
 /// `DisplayParts.timestamp`) into a canonical form for comparison.
 ///
+/// If `year_override` is `Some(y)`, it is used in place of the current year
+/// for BSD-format timestamps (those stored with year `0000`).
+/// Pass `None` to fall back to the current year (streaming/stdin behaviour).
+///
 /// Returns `None` for dmesg-style boot-relative timestamps or unparseable input.
-pub fn canonical_timestamp(ts: &str) -> Option<String> {
+pub fn canonical_timestamp(ts: &str, year_override: Option<i32>) -> Option<String> {
     normalize_log_timestamp(ts).map(|n| {
         let mut c = n.canonical;
         if &c[..5] == b"0000-" {
-            let year = time::OffsetDateTime::now_utc().year() as u32;
+            let year =
+                year_override.unwrap_or_else(|| time::OffsetDateTime::now_utc().year()) as u32;
             c[0] = b'0' + (year / 1000) as u8;
             c[1] = b'0' + (year / 100 % 10) as u8;
             c[2] = b'0' + (year / 10 % 10) as u8;
@@ -786,10 +815,23 @@ fn parse_hms_frac(s: &str) -> Option<(u32, u32, u32, u16)> {
     Some((h, m, sec, ms))
 }
 
+/// Fill the year digits (bytes 0–3) of a `CanonicalTs` in place.
+fn fill_year(c: &mut CanonicalTs, year: i32) {
+    let y = year as u32;
+    c[0] = b'0' + (y / 1000) as u8;
+    c[1] = b'0' + (y / 100 % 10) as u8;
+    c[2] = b'0' + (y / 10 % 10) as u8;
+    c[3] = b'0' + (y % 10) as u8;
+}
+
 impl DateFilter {
     /// Check if a raw timestamp string (from a parser's `DisplayParts.timestamp`)
     /// passes this filter.
-    pub fn matches(&self, timestamp: &str) -> bool {
+    ///
+    /// `year_override` provides the correct year for BSD-format timestamps
+    /// (which are stored with year `0000`). Pass `None` to fall back to
+    /// stripping the year prefix for BSD-vs-BSD comparisons (existing behaviour).
+    pub fn matches(&self, timestamp: &str, year_override: Option<i32>) -> bool {
         let norm = match normalize_log_timestamp(timestamp) {
             Some(n) => n,
             None => return true,
@@ -801,16 +843,23 @@ impl DateFilter {
                     t >= lower.time_val.unwrap() && t <= upper.time_val.unwrap()
                 }
                 ComparisonMode::FullDatetime => {
-                    let c = &norm.canonical;
+                    let mut c = norm.canonical;
                     let lo = lower.datetime_val.as_ref().unwrap();
                     let hi = upper.datetime_val.as_ref().unwrap();
-                    // Strip the year prefix when bounds use BSD "0000" year.
-                    let (c_cmp, lo_cmp, hi_cmp): (&[u8], &[u8], &[u8]) = if &lo[..5] == b"0000-" {
-                        (&c[5..], &lo[5..], &hi[5..])
+                    if &lo[..5] == b"0000-" {
+                        // BSD bound: strip year prefix for comparison (year-less filter).
+                        let (c_cmp, lo_cmp, hi_cmp): (&[u8], &[u8], &[u8]) =
+                            (&c[5..], &lo[5..], &hi[5..]);
+                        c_cmp >= lo_cmp && c_cmp <= hi_cmp
                     } else {
-                        (c.as_ref(), lo.as_ref(), hi.as_ref())
-                    };
-                    c_cmp >= lo_cmp && c_cmp <= hi_cmp
+                        // Full-year bound: fill in the correct year for BSD timestamps.
+                        if &c[..5] == b"0000-" {
+                            let y = year_override
+                                .unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
+                            fill_year(&mut c, y);
+                        }
+                        c.as_ref() >= lo.as_ref() && c.as_ref() <= hi.as_ref()
+                    }
                 }
             },
             DateFilter::Comparison { mode, op, bound } => match mode {
@@ -825,20 +874,30 @@ impl DateFilter {
                     }
                 }
                 ComparisonMode::FullDatetime => {
-                    let c = &norm.canonical;
+                    let mut c = norm.canonical;
                     let b = bound.datetime_val.as_ref().unwrap();
-                    // BSD-format bounds have year "0000" (no year in syslog timestamps).
-                    // Strip the year prefix so comparison works correctly.
-                    let (c_cmp, b_cmp): (&[u8], &[u8]) = if &b[..5] == b"0000-" {
-                        (&c[5..], &b[5..])
+                    if &b[..5] == b"0000-" {
+                        // BSD-format bound: strip year prefix (year-less filter).
+                        let (c_cmp, b_cmp): (&[u8], &[u8]) = (&c[5..], &b[5..]);
+                        match op {
+                            ComparisonOp::Gt => c_cmp > b_cmp,
+                            ComparisonOp::Ge => c_cmp >= b_cmp,
+                            ComparisonOp::Lt => c_cmp < b_cmp,
+                            ComparisonOp::Le => c_cmp <= b_cmp,
+                        }
                     } else {
-                        (c.as_ref(), b.as_ref())
-                    };
-                    match op {
-                        ComparisonOp::Gt => c_cmp > b_cmp,
-                        ComparisonOp::Ge => c_cmp >= b_cmp,
-                        ComparisonOp::Lt => c_cmp < b_cmp,
-                        ComparisonOp::Le => c_cmp <= b_cmp,
+                        // Full-year bound: fill in the correct year for BSD timestamps.
+                        if &c[..5] == b"0000-" {
+                            let y = year_override
+                                .unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
+                            fill_year(&mut c, y);
+                        }
+                        match op {
+                            ComparisonOp::Gt => c.as_ref() > b.as_ref(),
+                            ComparisonOp::Ge => c.as_ref() >= b.as_ref(),
+                            ComparisonOp::Lt => c.as_ref() < b.as_ref(),
+                            ComparisonOp::Le => c.as_ref() <= b.as_ref(),
+                        }
                     }
                 }
             },
@@ -1119,21 +1178,21 @@ mod tests {
     #[test]
     fn test_parse_range_numeric_dash_no_spaces() {
         let df = parse_date_filter("03-21..03-25").unwrap();
-        assert!(df.matches("Mar 21 12:00:00"));
-        assert!(df.matches("Mar 25 00:00:00"));
-        assert!(df.matches("Mar 25 23:59:59")); // whole upper day included
-        assert!(!df.matches("Mar 20 23:59:59"));
-        assert!(!df.matches("Mar 26 00:00:00"));
+        assert!(df.matches("Mar 21 12:00:00", None));
+        assert!(df.matches("Mar 25 00:00:00", None));
+        assert!(df.matches("Mar 25 23:59:59", None)); // whole upper day included
+        assert!(!df.matches("Mar 20 23:59:59", None));
+        assert!(!df.matches("Mar 26 00:00:00", None));
     }
 
     #[test]
     fn test_parse_range_numeric_slash_no_spaces() {
         let df = parse_date_filter("03/21..03/25").unwrap();
-        assert!(df.matches("Mar 21 12:00:00"));
-        assert!(df.matches("Mar 25 00:00:00"));
-        assert!(df.matches("Mar 25 23:59:59")); // whole upper day included
-        assert!(!df.matches("Mar 20 23:59:59"));
-        assert!(!df.matches("Mar 26 00:00:00"));
+        assert!(df.matches("Mar 21 12:00:00", None));
+        assert!(df.matches("Mar 25 00:00:00", None));
+        assert!(df.matches("Mar 25 23:59:59", None)); // whole upper day included
+        assert!(!df.matches("Mar 20 23:59:59", None));
+        assert!(!df.matches("Mar 26 00:00:00", None));
     }
 
     #[test]
@@ -1223,28 +1282,28 @@ mod tests {
     #[test]
     fn test_equals_time_hms_matches_exact_second() {
         let df = parse_date_filter("09:00:30").unwrap();
-        assert!(df.matches("2024-01-01T09:00:30Z"));
-        assert!(!df.matches("2024-01-01T09:00:31Z"));
-        assert!(!df.matches("2024-01-01T09:00:29Z"));
+        assert!(df.matches("2024-01-01T09:00:30Z", None));
+        assert!(!df.matches("2024-01-01T09:00:31Z", None));
+        assert!(!df.matches("2024-01-01T09:00:29Z", None));
     }
 
     #[test]
     fn test_equals_time_hm_matches_whole_minute() {
         let df = parse_date_filter("09:00").unwrap();
-        assert!(df.matches("2024-01-01T09:00:00Z"));
-        assert!(df.matches("2024-01-01T09:00:59Z"));
-        assert!(!df.matches("2024-01-01T09:01:00Z"));
-        assert!(!df.matches("2024-01-01T08:59:59Z"));
+        assert!(df.matches("2024-01-01T09:00:00Z", None));
+        assert!(df.matches("2024-01-01T09:00:59Z", None));
+        assert!(!df.matches("2024-01-01T09:01:00Z", None));
+        assert!(!df.matches("2024-01-01T08:59:59Z", None));
     }
 
     #[test]
     fn test_equals_bsd_date_only_matches_whole_day() {
         let df = parse_date_filter("Feb/21").unwrap();
-        assert!(df.matches("Feb 21 00:00:00"));
-        assert!(df.matches("Feb 21 12:30:00"));
-        assert!(df.matches("Feb 21 23:59:59"));
-        assert!(!df.matches("Feb 20 23:59:59"));
-        assert!(!df.matches("Feb 22 00:00:00"));
+        assert!(df.matches("Feb 21 00:00:00", None));
+        assert!(df.matches("Feb 21 12:30:00", None));
+        assert!(df.matches("Feb 21 23:59:59", None));
+        assert!(!df.matches("Feb 20 23:59:59", None));
+        assert!(!df.matches("Feb 22 00:00:00", None));
     }
 
     #[test]
@@ -1253,60 +1312,60 @@ mod tests {
         let df_space = parse_date_filter("Feb 21").unwrap();
         // Both should match the same timestamps
         let ts = "Feb 21 12:00:00";
-        assert_eq!(df_slash.matches(ts), df_space.matches(ts));
+        assert_eq!(df_slash.matches(ts, None), df_space.matches(ts, None));
     }
 
     #[test]
     fn test_equals_numeric_slash_date_matches_whole_day() {
         let df = parse_date_filter("02/21").unwrap();
-        assert!(df.matches("Feb 21 00:00:00"));
-        assert!(df.matches("Feb 21 23:59:59"));
-        assert!(!df.matches("Feb 20 23:59:59"));
-        assert!(!df.matches("Feb 22 00:00:00"));
+        assert!(df.matches("Feb 21 00:00:00", None));
+        assert!(df.matches("Feb 21 23:59:59", None));
+        assert!(!df.matches("Feb 20 23:59:59", None));
+        assert!(!df.matches("Feb 22 00:00:00", None));
     }
 
     #[test]
     fn test_equals_numeric_dash_date_matches_whole_day() {
         let df = parse_date_filter("02-21").unwrap();
-        assert!(df.matches("Feb 21 00:00:00"));
-        assert!(df.matches("Feb 21 23:59:59"));
-        assert!(!df.matches("Feb 20 23:59:59"));
-        assert!(!df.matches("Feb 22 00:00:00"));
+        assert!(df.matches("Feb 21 00:00:00", None));
+        assert!(df.matches("Feb 21 23:59:59", None));
+        assert!(!df.matches("Feb 20 23:59:59", None));
+        assert!(!df.matches("Feb 22 00:00:00", None));
     }
 
     #[test]
     fn test_equals_numeric_slash_with_year_matches_whole_day() {
         let df = parse_date_filter("02/21/2024").unwrap();
-        assert!(df.matches("2024-02-21T00:00:00Z"));
-        assert!(df.matches("2024-02-21T23:59:59Z"));
-        assert!(!df.matches("2024-02-20T23:59:59Z"));
-        assert!(!df.matches("2024-02-22T00:00:00Z"));
+        assert!(df.matches("2024-02-21T00:00:00Z", None));
+        assert!(df.matches("2024-02-21T23:59:59Z", None));
+        assert!(!df.matches("2024-02-20T23:59:59Z", None));
+        assert!(!df.matches("2024-02-22T00:00:00Z", None));
     }
 
     #[test]
     fn test_equals_iso_date_only_matches_whole_day() {
         let df = parse_date_filter("2024-02-22").unwrap();
-        assert!(df.matches("2024-02-22T00:00:00Z"));
-        assert!(df.matches("2024-02-22T23:59:59Z"));
-        assert!(!df.matches("2024-02-21T23:59:59Z"));
-        assert!(!df.matches("2024-02-23T00:00:00Z"));
+        assert!(df.matches("2024-02-22T00:00:00Z", None));
+        assert!(df.matches("2024-02-22T23:59:59Z", None));
+        assert!(!df.matches("2024-02-21T23:59:59Z", None));
+        assert!(!df.matches("2024-02-23T00:00:00Z", None));
     }
 
     #[test]
     fn test_equals_iso_datetime_hm_matches_whole_minute() {
         let df = parse_date_filter("2024-02-22 10:15").unwrap();
-        assert!(df.matches("2024-02-22T10:15:00Z"));
-        assert!(df.matches("2024-02-22T10:15:59Z"));
-        assert!(!df.matches("2024-02-22T10:16:00Z"));
-        assert!(!df.matches("2024-02-22T10:14:59Z"));
+        assert!(df.matches("2024-02-22T10:15:00Z", None));
+        assert!(df.matches("2024-02-22T10:15:59Z", None));
+        assert!(!df.matches("2024-02-22T10:16:00Z", None));
+        assert!(!df.matches("2024-02-22T10:14:59Z", None));
     }
 
     #[test]
     fn test_equals_iso_datetime_hms_matches_exact_second() {
         let df = parse_date_filter("2024-02-22 10:15:30").unwrap();
-        assert!(df.matches("2024-02-22T10:15:30Z"));
-        assert!(!df.matches("2024-02-22T10:15:31Z"));
-        assert!(!df.matches("2024-02-22T10:15:29Z"));
+        assert!(df.matches("2024-02-22T10:15:30Z", None));
+        assert!(!df.matches("2024-02-22T10:15:31Z", None));
+        assert!(!df.matches("2024-02-22T10:15:29Z", None));
     }
 
     // ── normalize_log_timestamp ───────────────────────────────────────
@@ -1414,25 +1473,25 @@ mod tests {
 
     #[test]
     fn test_canonical_timestamp_nanos() {
-        let result = canonical_timestamp("1700046010234000000");
+        let result = canonical_timestamp("1700046010234000000", None);
         assert_eq!(result, Some("2023-11-15 11:00:10.234".to_string()));
     }
 
     #[test]
     fn test_canonical_timestamp_iso() {
-        let result = canonical_timestamp("2024-02-22T10:15:30Z");
+        let result = canonical_timestamp("2024-02-22T10:15:30Z", None);
         assert!(result.is_some());
         assert!(result.unwrap().starts_with("2024-02-22 10:15:30."));
     }
 
     #[test]
     fn test_canonical_timestamp_none() {
-        assert!(canonical_timestamp("not a ts").is_none());
+        assert!(canonical_timestamp("not a ts", None).is_none());
     }
 
     #[test]
     fn test_canonical_timestamp_bsd_uses_current_year() {
-        let result = canonical_timestamp("Feb 14 22:11:26").unwrap();
+        let result = canonical_timestamp("Feb 14 22:11:26", None).unwrap();
         let current_year = time::OffsetDateTime::now_utc().year();
         assert!(result.starts_with(&format!("{:04}-02-14 22:11:26.", current_year)));
     }
@@ -1443,40 +1502,40 @@ mod tests {
     fn test_matches_time_range_inside() {
         let df = parse_date_filter("01:00:00 .. 02:00:00").unwrap();
         // 01:30:00 ISO timestamp
-        assert!(df.matches("2024-02-22T01:30:00Z"));
+        assert!(df.matches("2024-02-22T01:30:00Z", None));
     }
 
     #[test]
     fn test_matches_time_range_at_lower_bound() {
         let df = parse_date_filter("01:00:00 .. 02:00:00").unwrap();
-        assert!(df.matches("2024-02-22T01:00:00Z"));
+        assert!(df.matches("2024-02-22T01:00:00Z", None));
     }
 
     #[test]
     fn test_matches_time_range_at_upper_bound() {
         let df = parse_date_filter("01:00:00 .. 02:00:00").unwrap();
-        assert!(df.matches("2024-02-22T02:00:00Z"));
+        assert!(df.matches("2024-02-22T02:00:00Z", None));
     }
 
     #[test]
     fn test_matches_time_range_outside() {
         let df = parse_date_filter("01:00:00 .. 02:00:00").unwrap();
-        assert!(!df.matches("2024-02-22T03:00:00Z"));
+        assert!(!df.matches("2024-02-22T03:00:00Z", None));
     }
 
     #[test]
     fn test_matches_time_range_no_spaces() {
         let df = parse_date_filter("09:00..10:00").unwrap();
-        assert!(df.matches("2024-01-01T09:30:59Z"));
-        assert!(!df.matches("2024-01-01T10:01:00Z"));
+        assert!(df.matches("2024-01-01T09:30:59Z", None));
+        assert!(!df.matches("2024-01-01T10:01:00Z", None));
     }
 
     #[test]
     fn test_matches_gt_comparison() {
         let df = parse_date_filter("> 2024-02-22").unwrap();
-        assert!(df.matches("2024-02-23T00:00:00Z"));
-        assert!(!df.matches("2024-02-22T00:00:00Z"));
-        assert!(!df.matches("2024-02-21T23:59:59Z"));
+        assert!(df.matches("2024-02-23T00:00:00Z", None));
+        assert!(!df.matches("2024-02-22T00:00:00Z", None));
+        assert!(!df.matches("2024-02-21T23:59:59Z", None));
     }
 
     #[test]
@@ -1484,65 +1543,65 @@ mod tests {
         // BSD bound has year 0000; ISO log timestamps have a real year.
         // "2024-01-20..." must NOT be > "0000-01-23..." (Jan 20 < Jan 23).
         let df = parse_date_filter("> Jan 23").unwrap();
-        assert!(!df.matches("2024-01-20T10:00:00Z")); // before Jan 23
-        assert!(!df.matches("2024-01-23T00:00:00Z")); // exactly Jan 23 (strict >)
-        assert!(df.matches("2024-01-25T10:00:00Z")); // after Jan 23
+        assert!(!df.matches("2024-01-20T10:00:00Z", None)); // before Jan 23
+        assert!(!df.matches("2024-01-23T00:00:00Z", None)); // exactly Jan 23 (strict >)
+        assert!(df.matches("2024-01-25T10:00:00Z", None)); // after Jan 23
     }
 
     #[test]
     fn test_matches_bsd_range_against_iso_timestamps() {
         let df = parse_date_filter("Jan 20 .. Jan 23").unwrap();
-        assert!(!df.matches("2024-01-19T23:59:59Z")); // before range
-        assert!(df.matches("2024-01-20T00:00:00Z")); // lower bound
-        assert!(df.matches("2024-01-21T12:00:00Z")); // inside
-        assert!(df.matches("2024-01-23T00:00:00Z")); // upper bound (start of day)
-        assert!(df.matches("2024-01-23T23:59:59Z")); // upper bound (end of day)
-        assert!(!df.matches("2024-01-24T00:00:00Z")); // after range
+        assert!(!df.matches("2024-01-19T23:59:59Z", None)); // before range
+        assert!(df.matches("2024-01-20T00:00:00Z", None)); // lower bound
+        assert!(df.matches("2024-01-21T12:00:00Z", None)); // inside
+        assert!(df.matches("2024-01-23T00:00:00Z", None)); // upper bound (start of day)
+        assert!(df.matches("2024-01-23T23:59:59Z", None)); // upper bound (end of day)
+        assert!(!df.matches("2024-01-24T00:00:00Z", None)); // after range
     }
 
     #[test]
     fn test_matches_ge_comparison() {
         let df = parse_date_filter(">= 2024-02-22").unwrap();
-        assert!(df.matches("2024-02-22T00:00:00Z"));
-        assert!(df.matches("2024-02-23T00:00:00Z"));
-        assert!(!df.matches("2024-02-21T23:59:59Z"));
+        assert!(df.matches("2024-02-22T00:00:00Z", None));
+        assert!(df.matches("2024-02-23T00:00:00Z", None));
+        assert!(!df.matches("2024-02-21T23:59:59Z", None));
     }
 
     #[test]
     fn test_matches_lt_comparison() {
         let df = parse_date_filter("< 2024-02-22").unwrap();
-        assert!(df.matches("2024-02-21T23:59:59Z"));
-        assert!(!df.matches("2024-02-22T00:00:00Z"));
+        assert!(df.matches("2024-02-21T23:59:59Z", None));
+        assert!(!df.matches("2024-02-22T00:00:00Z", None));
     }
 
     #[test]
     fn test_matches_le_comparison() {
         let df = parse_date_filter("<= 2024-02-22").unwrap();
-        assert!(df.matches("2024-02-22T00:00:00Z"));
-        assert!(!df.matches("2024-02-22T00:00:01Z"));
+        assert!(df.matches("2024-02-22T00:00:00Z", None));
+        assert!(!df.matches("2024-02-22T00:00:01Z", None));
     }
 
     #[test]
     fn test_matches_bsd_date_range() {
         let df = parse_date_filter("Feb 21 .. Feb 22").unwrap();
-        assert!(df.matches("Feb 21 12:00:00"));
-        assert!(df.matches("Feb 22 00:00:00"));
-        assert!(df.matches("Feb 22 23:59:59")); // whole upper day included
-        assert!(!df.matches("Feb 23 00:00:00"));
+        assert!(df.matches("Feb 21 12:00:00", None));
+        assert!(df.matches("Feb 22 00:00:00", None));
+        assert!(df.matches("Feb 22 23:59:59", None)); // whole upper day included
+        assert!(!df.matches("Feb 23 00:00:00", None));
     }
 
     #[test]
     fn test_matches_unparseable_passes_through() {
         let df = parse_date_filter("01:00:00 .. 02:00:00").unwrap();
-        assert!(df.matches("not a timestamp"));
-        assert!(df.matches("[    0.000000]")); // dmesg
+        assert!(df.matches("not a timestamp", None));
+        assert!(df.matches("[    0.000000]", None)); // dmesg
     }
 
     #[test]
     fn test_matches_hm_range() {
         let df = parse_date_filter("13:00 .. 14:00").unwrap();
-        assert!(df.matches("2024-01-01T13:30:00Z"));
-        assert!(!df.matches("2024-01-01T12:30:00Z"));
+        assert!(df.matches("2024-01-01T13:30:00Z", None));
+        assert!(!df.matches("2024-01-01T12:30:00Z", None));
     }
 
     // ── extract_date_filters ──────────────────────────────────────────
@@ -1610,28 +1669,28 @@ mod tests {
     #[test]
     fn test_time_only_midnight_boundary() {
         let df = parse_date_filter("00:00:00 .. 23:59:59").unwrap();
-        assert!(df.matches("2024-01-01T00:00:00Z"));
-        assert!(df.matches("2024-01-01T23:59:59Z"));
+        assert!(df.matches("2024-01-01T00:00:00Z", None));
+        assert!(df.matches("2024-01-01T23:59:59Z", None));
     }
 
     #[test]
     fn test_equal_range_bounds() {
         let df = parse_date_filter("01:00:00 .. 01:00:00").unwrap();
-        assert!(df.matches("2024-01-01T01:00:00Z"));
-        assert!(!df.matches("2024-01-01T01:00:01Z"));
+        assert!(df.matches("2024-01-01T01:00:00Z", None));
+        assert!(!df.matches("2024-01-01T01:00:01Z", None));
     }
 
     #[test]
     fn test_matches_with_datetime_format() {
         let df = parse_date_filter(">= 2024-01-15 10:30:00").unwrap();
-        assert!(df.matches("2024-01-15 10:30:00.123"));
-        assert!(!df.matches("2024-01-15 10:29:59.999"));
+        assert!(df.matches("2024-01-15 10:30:00.123", None));
+        assert!(!df.matches("2024-01-15 10:29:59.999", None));
     }
 
     #[test]
     fn test_matches_with_slash_format() {
         let df = parse_date_filter(">= 2024-01-15").unwrap();
-        assert!(df.matches("2024/01/15 10:30:00"));
+        assert!(df.matches("2024/01/15 10:30:00", None));
     }
 
     #[test]

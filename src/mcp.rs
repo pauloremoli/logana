@@ -215,9 +215,13 @@ pub async fn start_mcp_server(
 
     tokio::spawn(async move {
         let server = LoganaServer::new(snapshot, cmd_tx);
-        let config = StreamableHttpServerConfig {
-            cancellation_token: child_token.clone(),
-            ..Default::default()
+        // `StreamableHttpServerConfig` is `#[non_exhaustive]`, so struct-expression
+        // initialisation is not allowed from outside the defining crate.
+        #[allow(clippy::field_reassign_with_default)]
+        let config = {
+            let mut c = StreamableHttpServerConfig::default();
+            c.cancellation_token = child_token.clone();
+            c
         };
 
         let service: StreamableHttpService<LoganaServer, LocalSessionManager> =

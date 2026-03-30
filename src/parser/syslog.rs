@@ -1,10 +1,9 @@
-//! Syslog parser supporting RFC 3164 (BSD), RFC 5424, and rsyslog ISO format.
+use crate::parser::timestamp::MONTHS;
 
+use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_extra_field, push_field_as};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
-
-use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_extra_field, push_field_as};
 
 #[derive(Debug, Clone, Copy)]
 enum SyslogFormat {
@@ -67,16 +66,12 @@ fn parse_priority(line: &[u8]) -> Option<(u8, usize)> {
     Some((pri, close + 2))
 }
 
-const BSD_MONTHS: &[&str] = &[
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
 fn parse_bsd_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 15 {
         return None;
     }
     let month = &s[..3];
-    if !BSD_MONTHS.contains(&month) {
+    if !MONTHS.contains(&month) {
         return None;
     }
     if s.as_bytes()[3] != b' ' {

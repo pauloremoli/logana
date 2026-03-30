@@ -306,7 +306,15 @@ fn populate_parse_cache(
                 }
                 let line_bytes = tab.file_reader.get_line(line_idx);
                 if let Some(parts) = parser.parse_line(line_bytes) {
-                    let cols = apply_field_layout(&parts, field_layout, hidden_fields, show_keys);
+                    let year_override =
+                        tab.year_map.as_deref().map(|ym| ym.year_for_line(line_idx));
+                    let cols = apply_field_layout(
+                        &parts,
+                        field_layout,
+                        hidden_fields,
+                        show_keys,
+                        year_override,
+                    );
                     let all_cols_hidden = cols.is_empty();
                     let level = parts.level.map(|s| s.to_string());
                     let timestamp = parts.timestamp.map(|s| s.to_string());
@@ -738,7 +746,7 @@ pub fn prepare_log_panel(
                     filter_manager.evaluate_into(&mut collector);
                     if let Some(ts) = c.timestamp.as_deref() {
                         for dfs in &date_filter_styles {
-                            if dfs.filter.matches(ts) {
+                            if dfs.filter.matches(ts, None) {
                                 collector.with_priority(500);
                                 if dfs.match_only {
                                     if let Some(ts_pos) = c.timestamp_offset {

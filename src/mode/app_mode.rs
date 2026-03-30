@@ -1,8 +1,3 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
 use crate::{
     config::{DltDevice, Keybindings},
     db::FileContext,
@@ -14,10 +9,11 @@ use crate::{
     theme::Theme,
     ui::{KeyResult, TabState},
 };
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
-/// Rendering state returned by each mode via `Mode::render_state()`.
-///
-/// Each variant carries exactly the data the rendering layer needs for that mode.
 #[derive(Debug, Clone)]
 pub enum ModeRenderState {
     Normal,

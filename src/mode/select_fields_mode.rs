@@ -1,10 +1,3 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
-use std::collections::HashSet;
-
 use crate::{
     config::Keybindings,
     mode::app_mode::{Mode, ModeRenderState, status_entry},
@@ -12,6 +5,11 @@ use crate::{
     theme::Theme,
     ui::{FieldLayout, KeyResult, TabState},
 };
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use std::collections::HashSet;
 
 #[derive(Debug)]
 pub struct SelectFieldsMode {

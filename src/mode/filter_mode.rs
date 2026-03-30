@@ -1,8 +1,3 @@
-use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
 use crate::config::Keybindings;
 use crate::filters::FilterType;
 use crate::mode::app_mode::{Mode, ModeRenderState, status_entry};
@@ -10,9 +5,12 @@ use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
 use crate::mode::visual_char_mode::quote_for_command;
 use crate::theme::{Theme, color_to_string};
-
 use crate::ui::KeyResult;
 use crate::ui::TabState;
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 #[derive(Debug)]
 pub struct FilterManagementMode {
