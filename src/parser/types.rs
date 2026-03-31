@@ -183,6 +183,13 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
         self.parse_line(line).and_then(|p| p.timestamp)
     }
 
+    /// Returns `false` when this format's timestamps do not include a year
+    /// (e.g. BSD syslog `"Feb 22 10:15:30"`), meaning a `YearMap` must be
+    /// applied to recover the correct year.  Defaults to `true`.
+    fn timestamp_has_year(&self) -> bool {
+        true
+    }
+
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String>;
 
     /// Returns whether this parser considers `line` a match for format-detection

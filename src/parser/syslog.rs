@@ -503,6 +503,10 @@ impl SyslogParser {
 }
 
 impl LogFormatParser for SyslogParser {
+    fn timestamp_has_year(&self) -> bool {
+        !matches!(self.format.get(), Some(SyslogFormat::Rfc3164))
+    }
+
     fn parse_timestamp<'a>(&self, line: &'a [u8]) -> Option<&'a str> {
         let s = std::str::from_utf8(line).ok()?;
         if s.is_empty() {

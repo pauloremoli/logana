@@ -1,7 +1,8 @@
+use rayon::iter::IndexedParallelIterator;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-
 use tokio::sync::{mpsc, watch};
 
 use crate::db::FileContext;
@@ -411,54 +412,83 @@ pub fn display_text_for_line(
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// Build a map from each line index to its "parent" line index — the most
-/// recent preceding line (inclusive) that the parser recognised as a log
-/// entry start.  Continuation lines (e.g. stack-trace frames that have no
-/// timestamp/level) map to their nearest preceding parent; parent lines map
-/// to themselves.
-///
-/// Empty lines are never considered a new parent (they are already hidden by
-/// `compute_unfiltered_visible` when a format is active).
 pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser) -> Vec<usize> {
     let count = reader.line_count();
-    let mut map = Vec::with_capacity(count);
-    let mut last_parent = 0usize;
-    for i in 0..count {
-        let line = reader.get_line(i);
-        if !line.is_empty() && parser.parse_line(line).is_some() {
-            last_parent = i;
+    let chunk_size = 1024;
+
+    // Phase 1: process chunks in parallel
+    let mut chunks: Vec<(Vec<usize>, usize)> = (0..count)
+        .into_par_iter()
+        .step_by(chunk_size)
+        .map(|start| {
+            let end = (start + chunk_size).min(count);
+            let mut local = Vec::with_capacity(end - start);
+            let mut last_parent = start;
+
+            for i in start..end {
+                let line = reader.get_line(i);
+                if !line.is_empty() && parser.parse_line(line).is_some() {
+                    last_parent = i;
+                }
+                local.push(last_parent);
+            }
+
+            (local, last_parent)
+        })
+        .collect();
+
+    // Phase 2: fix dependencies between chunks
+    let mut result = Vec::with_capacity(count);
+    let mut prev_last = 0;
+
+    for (chunk, last) in chunks.iter_mut() {
+        for v in chunk.iter_mut() {
+            if *v < prev_last {
+                *v = prev_last;
+            }
         }
-        map.push(last_parent);
+        prev_last = (*last).max(prev_last);
+        result.extend_from_slice(chunk);
     }
-    map
+
+    result
 }
 
-/// Rewrite `visible` so that every continuation line (one whose parent differs
-/// from itself in `cmap`) is visible iff its parent is visible.
-///
-/// Parent lines are unaffected — their filter decision is preserved as-is.
-/// The output remains sorted because we iterate `0..n` in ascending order.
-pub fn apply_continuation_correction(visible: &mut VisibleLines, cmap: &[usize]) {
+/// `has_include_filters` controls how continuation lines absent from the filter
+/// result are treated:
+/// - `false` (exclude-only): a line absent from `visible` was **explicitly
+///   excluded** — keep it hidden even when the parent is visible.
+/// - `true` (include filters exist): absence may mean the line simply didn't
+///   match an include pattern (not an explicit exclude), so the continuation
+///   still follows its parent's visibility to preserve stack-trace grouping.
+pub fn apply_continuation_correction(
+    visible: &mut VisibleLines,
+    cmap: &[usize],
+    has_include_filters: bool,
+) {
     let indices = match visible {
-        VisibleLines::All(_) => return, // all lines visible — nothing to fix
+        VisibleLines::All(_) => return,
         VisibleLines::Filtered(v) => v,
     };
+
     let n = cmap.len();
-    // Build a flat boolean lookup: was each line kept by the filter?
-    let mut filter_visible = vec![false; n];
+
+    let mut filter_visible = vec![0u8; n];
     for &idx in indices.iter() {
-        if idx < n {
-            filter_visible[idx] = true;
-        }
+        filter_visible[idx] = 1;
     }
-    // Rebuild the list: each line is visible iff its parent is visible.
-    indices.clear();
-    for (i, &parent) in cmap.iter().enumerate().take(n) {
-        if filter_visible[parent] {
-            indices.push(i);
-        }
-    }
-    // The result is already sorted (we iterate 0..n in order).
+
+    // Each line is visible iff its parent is visible AND
+    // (the line itself was not explicitly excluded OR include filters exist).
+    // For parent lines (i == parent) this reduces to filter_visible[i] unchanged.
+    let new_indices: Vec<usize> = (0..n)
+        .into_par_iter()
+        .filter(|&i| {
+            filter_visible[cmap[i]] != 0 && (filter_visible[i] != 0 || has_include_filters)
+        })
+        .collect();
+
+    *indices = new_indices;
 }
 
 pub struct TabState {
@@ -506,12 +536,19 @@ impl TabState {
             .as_deref()
             .map(|p| Arc::new(build_continuation_map(&file_reader, p)));
 
-        let year_map = detected_format.as_deref().map(|p| {
+        let year_map = detected_format.as_deref().and_then(|p| {
+            if p.timestamp_has_year() {
+                return None;
+            }
             use crate::filters::system_time_to_date;
             let start_year = system_time_to_date(file_reader.mtime())
                 .map(|d| d.year())
                 .unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
-            Arc::new(year_map::YearMap::build(&file_reader, p, start_year))
+            Some(Arc::new(year_map::YearMap::build(
+                &file_reader,
+                p,
+                start_year,
+            )))
         });
 
         let mut tab = TabState {
@@ -1988,12 +2025,19 @@ impl TabState {
                 .format
                 .as_deref()
                 .map(|p| Arc::new(build_continuation_map(&self.file_reader, p)));
-            self.year_map = self.display.format.as_deref().map(|p| {
+            self.year_map = self.display.format.as_deref().and_then(|p| {
+                if p.timestamp_has_year() {
+                    return None;
+                }
                 use crate::filters::system_time_to_date;
                 let start_year = system_time_to_date(self.file_reader.mtime())
                     .map(|d| d.year())
                     .unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
-                Arc::new(year_map::YearMap::build(&self.file_reader, p, start_year))
+                Some(Arc::new(year_map::YearMap::build(
+                    &self.file_reader,
+                    p,
+                    start_year,
+                )))
             });
         }
     }
@@ -3892,6 +3936,79 @@ mod tests {
         assert_eq!(visible, vec![1]);
         // The exclude filter matched exactly 1 line.
         assert_eq!(final_counts, Some(vec![1]));
+    }
+
+    /// Regression test: exclude filter must stay excluded after continuation correction.
+    ///
+    /// When a log file has a detected format, lines that the parser cannot parse
+    /// (e.g. access-log lines after structured log lines) are treated as
+    /// "continuation" lines. The old `apply_continuation_correction` logic
+    /// unconditionally set a continuation line's visibility to its parent's —
+    /// so an explicitly-excluded continuation was made visible again if its
+    /// parent was still visible.
+    #[tokio::test]
+    async fn test_continuation_correction_respects_exclude_filter() {
+        // Lines 0–1 parse as generic common-log (ISO timestamp + level).
+        // Lines 2–3 are access-log style: datetime timestamp but no level keyword
+        // → CommonLogParser returns None → they map to parent=1 in the continuation map.
+        let parsed0 = "2024-07-24T10:00:00Z INFO request processed";
+        let parsed1 = "2024-07-24T10:00:01Z INFO another request";
+        let access2 = "2019-01-26 20:29:10.000 5.120.204.67 200 GET / HTTP/1.1";
+        let access3 = "2019-01-26 20:29:11.000 5.120.204.68 200 GET /api HTTP/1.1";
+
+        let mut tab = make_tab(&[parsed0, parsed1, access2, access3]).await;
+
+        // Verify format was detected and continuation map built.
+        assert!(
+            tab.continuation_map.is_some(),
+            "format must be detected for this test to exercise the correction path"
+        );
+        // Lines 2 & 3 must map to parent 1 (the last parseable line before them).
+        {
+            let cmap = tab.continuation_map.as_ref().unwrap();
+            assert_eq!(cmap[2], 1, "access line 2 must map to parsed parent 1");
+            assert_eq!(cmap[3], 1, "access line 3 must map to parsed parent 1");
+        }
+
+        // Add an exclude filter that matches line 2 (the first access-log line).
+        tab.log_manager
+            .add_filter_with_color(
+                "20:29:10.000".to_string(),
+                FilterType::Exclude,
+                None,
+                None,
+                true,
+            )
+            .await;
+
+        // Run the background scan and collect all chunks.
+        tab.begin_filter_refresh();
+        let mut h = tab.filter.handle.take().unwrap();
+        let has_include = tab.filter.manager.has_include();
+        let mut all_visible = Vec::new();
+        while let Some(chunk) = h.result_rx.recv().await {
+            all_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+        tab.filter.visible_indices = VisibleLines::Filtered(all_visible);
+
+        // Apply continuation correction — this is what advance_filter_computation does.
+        let cmap = tab.continuation_map.clone().unwrap();
+        apply_continuation_correction(&mut tab.filter.visible_indices, &cmap, has_include);
+
+        // Line 2 was explicitly excluded and must remain excluded even though its
+        // parent (line 1) is visible.
+        let visible: Vec<usize> = tab.filter.visible_indices.iter().collect();
+        assert!(
+            !visible.contains(&2),
+            "explicitly excluded line 2 must not be restored by continuation correction; got {visible:?}"
+        );
+        // Lines 0, 1, 3 must be visible.
+        assert!(visible.contains(&0), "line 0 must be visible");
+        assert!(visible.contains(&1), "line 1 must be visible");
+        assert!(visible.contains(&3), "line 3 must be visible");
     }
 
     #[tokio::test]
