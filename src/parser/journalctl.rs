@@ -194,6 +194,13 @@ impl JournalctlParser {
 }
 
 impl LogFormatParser for JournalctlParser {
+    fn timestamp_has_year(&self) -> bool {
+        !matches!(
+            self.format.get(),
+            Some(JournalFormat::BsdPrecise | JournalFormat::BsdPlain)
+        )
+    }
+
     fn parse_timestamp<'a>(&self, line: &'a [u8]) -> Option<&'a str> {
         let s = std::str::from_utf8(line).ok()?;
         if s.is_empty() || s.starts_with("-- ") {

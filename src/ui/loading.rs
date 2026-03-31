@@ -1148,6 +1148,7 @@ impl App {
                         super::apply_continuation_correction(
                             &mut tab.filter.visible_indices,
                             &cmap,
+                            tab.filter.manager.has_include(),
                         );
                     }
                     tab.restore_scroll_to_line(scroll_anchor);

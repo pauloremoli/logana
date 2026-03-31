@@ -664,7 +664,7 @@ fn test_apply_continuation_correction_hides_orphaned_continuations() {
     // With correction they must be hidden because their parent (line 0) is hidden.
     let cmap = vec![0usize, 0, 0, 3]; // lines 1,2 → parent 0; line 3 → parent 3
     let mut visible = VisibleLines::Filtered(vec![1, 2, 3]); // lines 1 & 2 erroneously visible
-    apply_continuation_correction(&mut visible, &cmap);
+    apply_continuation_correction(&mut visible, &cmap, false);
     // line 0 was NOT in visible, so its continuations (1, 2) must be removed.
     // line 3 is its own parent and was visible → stays.
     assert_eq!(visible, VisibleLines::Filtered(vec![3]));
@@ -677,7 +677,7 @@ fn test_apply_continuation_correction_keeps_continuations_with_parent() {
     // Simulate: filter kept line 0 (ERROR parent); continuations 1 and 2 also passed.
     let cmap = vec![0usize, 0, 0, 3];
     let mut visible = VisibleLines::Filtered(vec![0, 1, 2, 3]);
-    apply_continuation_correction(&mut visible, &cmap);
+    apply_continuation_correction(&mut visible, &cmap, false);
     // Parent 0 is visible → continuations 1 and 2 stay visible.
     assert_eq!(visible, VisibleLines::Filtered(vec![0, 1, 2, 3]));
 }
@@ -688,7 +688,7 @@ fn test_apply_continuation_correction_noop_for_all_variant() {
 
     let cmap = vec![0usize, 0, 1];
     let mut visible = VisibleLines::All(3);
-    apply_continuation_correction(&mut visible, &cmap);
+    apply_continuation_correction(&mut visible, &cmap, false);
     // All-variant must remain unchanged.
     assert_eq!(visible, VisibleLines::All(3));
 }
@@ -713,7 +713,7 @@ async fn test_exclude_filter_hides_continuation_lines() {
         .await;
     let (fm, _, _, _) = manager.build_filter_manager();
     let mut visible = VisibleLines::Filtered(fm.compute_visible(&reader));
-    apply_continuation_correction(&mut visible, &cmap);
+    apply_continuation_correction(&mut visible, &cmap, fm.has_include());
 
     // Line 0 (ERROR) excluded; lines 1 & 2 are its continuations → also excluded.
     // Line 3 (INFO) should be visible.
@@ -749,7 +749,7 @@ async fn test_include_filter_shows_continuations_with_parent() {
         .await;
     let (fm, _, _, _) = manager.build_filter_manager();
     let mut visible = VisibleLines::Filtered(fm.compute_visible(&reader));
-    apply_continuation_correction(&mut visible, &cmap);
+    apply_continuation_correction(&mut visible, &cmap, fm.has_include());
 
     // Line 0 matches; its continuations (1, 2) should be shown.
     // Line 3 (INFO) does not match include → hidden.

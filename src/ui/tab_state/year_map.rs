@@ -1,3 +1,5 @@
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
 use crate::filters::bsd_month_from_timestamp;
 use crate::ingestion::FileReader;
 use crate::parser::LogFormatParser;
@@ -18,24 +20,40 @@ pub struct YearMap {
 }
 
 impl YearMap {
-    /// Build a `YearMap` by scanning BSD timestamps in file order.
-    ///
-    /// `start_year` should come from the file's mtime; fall back to the current
-    /// year for streaming sources without a known mtime.
-    pub fn build(file_reader: &FileReader, parser: &dyn LogFormatParser, start_year: i32) -> Self {
-        let mut transitions: Vec<(usize, i32)> = vec![(0, start_year)];
-        let mut current_year = start_year;
-        let mut prev_month: u32 = 0;
+    pub fn build<P: LogFormatParser + ?Sized>(
+        file_reader: &FileReader,
+        parser: &P,
+        start_year: i32,
+    ) -> Self {
+        let count = file_reader.line_count();
 
-        for i in 0..file_reader.line_count() {
-            let line = file_reader.get_line(i);
-            if let Some(ts) = parser.parse_timestamp(line)
-                && let Some(month) = bsd_month_from_timestamp(ts)
-            {
+        // Phase 1: parallel extraction
+        let months: Vec<Option<u32>> = (0..count)
+            .into_par_iter()
+            .map(|i| {
+                let line = file_reader.get_line(i);
+                parser
+                    .parse_timestamp(line)
+                    .and_then(bsd_month_from_timestamp)
+            })
+            .collect();
+
+        // Phase 2: sequential transitions
+        let mut transitions = Vec::with_capacity(16);
+        transitions.push((0, start_year));
+
+        let mut current_year = start_year;
+        let mut prev_month = 0;
+
+        for (i, month_opt) in months.iter().enumerate() {
+            if let Some(month) = month_opt {
+                let month = *month;
+
                 if prev_month > 0 && month < prev_month && prev_month - month > 3 {
                     current_year += 1;
                     transitions.push((i, current_year));
                 }
+
                 prev_month = month;
             }
         }
