@@ -1,5 +1,5 @@
 use super::types::{DisplayParts, FieldSemantic, LogFormatParser, push_field_as};
-use memchr::memchr;
+use memchr::{memchr, memchr2};
 use std::collections::HashSet;
 
 #[derive(Debug)]
@@ -142,36 +142,66 @@ fn validate_clf_date(date: &str) -> bool {
     true
 }
 
+#[inline(always)]
 fn next_token(s: &str, pos: usize) -> Option<(&str, usize)> {
-    let start = skip_spaces(s, pos);
-    if start >= s.len() {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+
+    // Skip leading spaces
+    let mut start = pos;
+    while start < len && bytes[start] == b' ' {
+        start += 1;
+    }
+
+    if start >= len {
         return None;
     }
-    let end = s[start..].find(' ').map(|p| p + start).unwrap_or(s.len());
-    let after = skip_spaces(s, end);
+
+    // Find end of token (next space)
+    let end = match memchr(b' ', &bytes[start..]) {
+        Some(rel) => start + rel,
+        None => len,
+    };
+
+    // Skip trailing spaces
+    let mut after = end;
+    while after < len && bytes[after] == b' ' {
+        after += 1;
+    }
+
     Some((&s[start..end], after))
 }
 
+#[inline(always)]
 fn read_quoted(s: &str, pos: usize) -> Option<(&str, usize)> {
-    if pos >= s.len() || s.as_bytes()[pos] != b'"' {
+    let bytes = s.as_bytes();
+
+    if pos >= bytes.len() || bytes[pos] != b'"' {
         return None;
     }
-    let start = pos + 1;
-    let mut end = start;
-    let bytes = s.as_bytes();
-    while end < bytes.len() {
-        if bytes[end] == b'\\' && end + 1 < bytes.len() {
-            end += 2;
-        } else if bytes[end] == b'"' {
-            break;
-        } else {
-            end += 1;
+
+    let mut i = pos + 1;
+    let start = i;
+
+    while i < bytes.len() {
+        // Find next '\' or '"'
+        let rel = memchr2(b'\\', b'"', &bytes[i..])?;
+        i += rel;
+
+        match bytes[i] {
+            b'\\' => {
+                // Skip escaped character
+                i += 2;
+            }
+            b'"' => {
+                // Found closing quote
+                return Some((&s[start..i], i + 1));
+            }
+            _ => unreachable!(),
         }
     }
-    if end >= bytes.len() {
-        return None;
-    }
-    Some((&s[start..end], end + 1))
+
+    None
 }
 
 fn skip_spaces(s: &str, mut pos: usize) -> usize {
