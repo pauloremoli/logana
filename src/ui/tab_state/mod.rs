@@ -271,6 +271,39 @@ impl VisibleLines {
         }
     }
 
+    /// Visible position of the nearest visible line to `line_idx`.
+    /// Returns `None` only when the visible set is empty.
+    pub fn nearest_position_of(&self, line_idx: usize) -> Option<usize> {
+        if self.is_empty() {
+            return None;
+        }
+        Some(match self.binary_search(line_idx) {
+            Ok(pos) => pos,
+            Err(insert_pos) => {
+                let before = if insert_pos > 0 {
+                    Some(insert_pos - 1)
+                } else {
+                    None
+                };
+                let after = if insert_pos < self.len() {
+                    Some(insert_pos)
+                } else {
+                    None
+                };
+                match (before, after) {
+                    (Some(b), Some(a)) => {
+                        let dist_b = line_idx - self.get(b);
+                        let dist_a = self.get(a) - line_idx;
+                        if dist_b <= dist_a { b } else { a }
+                    }
+                    (Some(b), None) => b,
+                    (None, Some(a)) => a,
+                    (None, None) => unreachable!(),
+                }
+            }
+        })
+    }
+
     /// Iterate file-line indices for all visible positions in order.
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         let len = self.len();
@@ -1797,6 +1830,10 @@ impl TabState {
     ) {
         use crate::filters::{MatchCollector, build_filter};
         use rayon::prelude::*;
+        let current_line = self
+            .filter
+            .visible_indices
+            .get_opt(self.scroll.scroll_offset);
         if let Some(filter) = build_filter(pattern, decision, true, 0) {
             let file_reader = &self.file_reader;
             let indices: Vec<usize> = self.filter.visible_indices.iter().collect();
@@ -1814,7 +1851,7 @@ impl TabState {
         self.rebuild_filter_manager_cache();
         self.cache.parse_gen = self.cache.parse_gen.wrapping_add(1);
         self.cache.parse.clear();
-        self.clamp_scroll_offset();
+        self.restore_scroll_to_line(current_line);
         self.begin_filter_refresh();
     }
 
@@ -1853,12 +1890,12 @@ impl TabState {
         self.filter.field_styles = field_filter_styles;
     }
 
-    /// Try to restore `scroll_offset` to the position of `line_idx` in the
-    /// (potentially changed) visible set; fall back to clamping.
+    /// Try to restore `scroll_offset` to the nearest visible position to `line_idx`.
+    /// Falls back to clamping when `line_idx` is `None` or the visible set is empty.
     #[inline]
     pub fn restore_scroll_to_line(&mut self, line_idx: Option<usize>) {
         if let Some(idx) = line_idx
-            && let Some(pos) = self.filter.visible_indices.position_of(idx)
+            && let Some(pos) = self.filter.visible_indices.nearest_position_of(idx)
         {
             self.scroll.scroll_offset = pos;
         } else {
@@ -3111,6 +3148,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_apply_incremental_exclude_regex_pattern_with_dot() {
+        // Pattern contains '.' which triggers regex mode; the regex should still
+        // match the literal substring in the log line.
+        let line0 = "2019-01-26 20:29:10.000 5.120.204.67 19642 200 GET / HTTP/1.1";
+        let line1 = "2019-01-26 20:29:12.000 5.120.204.67 4120 200 GET /other HTTP/1.1";
+        let mut tab = make_tab(&[line0, line1]).await;
+        assert_eq!(tab.filter.visible_indices.len(), 2);
+        tab.log_manager
+            .add_filter_with_color(
+                "20:29:10.000".to_string(),
+                FilterType::Exclude,
+                None,
+                None,
+                true,
+            )
+            .await;
+        tab.apply_incremental_exclude("20:29:10.000");
+        // Line 0 contains "20:29:10.000" and must be excluded; line 1 must remain.
+        assert_eq!(tab.filter.visible_indices.len(), 1);
+        assert_eq!(tab.filter.visible_indices.get(0), 1);
+    }
+
+    #[tokio::test]
     async fn test_apply_incremental_exclude_updates_filter_cache() {
         let mut tab = make_tab(&["line a", "line b"]).await;
         tab.log_manager
@@ -3800,6 +3860,38 @@ mod tests {
         let counts = final_counts.expect("counts must be Some");
         // "ERROR" matches 2 lines; "DEBUG" matches 1 line (counted independently).
         assert_eq!(counts, vec![2, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_exclude_regex_dot_pattern() {
+        let line0 = "2019-01-26 20:29:10.000 5.120.204.67 200 GET / HTTP/1.1";
+        let line1 = "2019-01-26 20:29:12.000 5.120.204.67 200 GET /other HTTP/1.1";
+        let mut tab = make_tab(&[line0, line1]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "20:29:10.000".to_string(),
+                FilterType::Exclude,
+                None,
+                None,
+                true,
+            )
+            .await;
+        tab.begin_filter_refresh();
+        assert!(tab.filter.handle.is_some());
+        let mut h = tab.filter.handle.take().unwrap();
+        let mut visible = Vec::new();
+        let mut final_counts = None;
+        while let Some(chunk) = h.result_rx.recv().await {
+            visible.extend(chunk.visible);
+            if chunk.is_last {
+                final_counts = chunk.filter_match_counts;
+                break;
+            }
+        }
+        // Line 0 contains "20:29:10.000" and must be excluded.
+        assert_eq!(visible, vec![1]);
+        // The exclude filter matched exactly 1 line.
+        assert_eq!(final_counts, Some(vec![1]));
     }
 
     #[tokio::test]

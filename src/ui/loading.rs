@@ -1150,18 +1150,7 @@ impl App {
                             &cmap,
                         );
                     }
-                    if let Some(idx) = scroll_anchor
-                        && let Some(pos) = tab.filter.visible_indices.position_of(idx)
-                    {
-                        tab.scroll.scroll_offset = pos;
-                    } else if tab.filter.visible_indices.is_empty() {
-                        tab.scroll.scroll_offset = 0;
-                    } else {
-                        tab.scroll.scroll_offset = tab
-                            .scroll
-                            .scroll_offset
-                            .min(tab.filter.visible_indices.len() - 1);
-                    }
+                    tab.restore_scroll_to_line(scroll_anchor);
                 } else if tab.filter.visible_indices.is_empty() {
                     tab.scroll.scroll_offset = 0;
                 } else {

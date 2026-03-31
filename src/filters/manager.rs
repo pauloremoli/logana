@@ -431,10 +431,8 @@ impl Filter for RegexFilter {
     }
 
     fn evaluate(&self, line: &[u8], collector: &mut MatchCollector) -> FilterDecision {
-        let text = match std::str::from_utf8(line) {
-            Ok(s) => s,
-            Err(_) => return FilterDecision::Neutral,
-        };
+        let cow = String::from_utf8_lossy(line);
+        let text = cow.as_ref();
         let mut found = false;
         for mat in self.re.find_iter(text) {
             found = true;
@@ -453,11 +451,8 @@ impl Filter for RegexFilter {
     }
 
     fn matches(&self, line: &[u8]) -> FilterDecision {
-        let text = match std::str::from_utf8(line) {
-            Ok(s) => s,
-            Err(_) => return FilterDecision::Neutral,
-        };
-        if self.re.is_match(text) {
+        let cow = String::from_utf8_lossy(line);
+        if self.re.is_match(cow.as_ref()) {
             self.decision
         } else {
             FilterDecision::Neutral

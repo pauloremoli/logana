@@ -57,7 +57,6 @@ impl App {
                     !line_mode,
                 )
                 .await;
-            self.tabs[self.active_tab].scroll.scroll_offset = 0;
             if was_new && can_incremental {
                 self.tabs[self.active_tab].apply_incremental_include(&stored_pattern);
             } else {
@@ -65,7 +64,6 @@ impl App {
             }
             return Ok(false);
         }
-        self.tabs[self.active_tab].scroll.scroll_offset = 0;
         self.tabs[self.active_tab].begin_filter_refresh();
         Ok(false)
     }
@@ -94,7 +92,6 @@ impl App {
                     true,
                 )
                 .await;
-            self.tabs[self.active_tab].scroll.scroll_offset = 0;
             self.tabs[self.active_tab].begin_filter_refresh();
         } else {
             let was_new = self.tabs[self.active_tab]
@@ -107,7 +104,6 @@ impl App {
                     true,
                 )
                 .await;
-            self.tabs[self.active_tab].scroll.scroll_offset = 0;
             if was_new {
                 if field {
                     self.tabs[self.active_tab].begin_filter_refresh();

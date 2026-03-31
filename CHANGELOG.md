@@ -5,8 +5,13 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Infer year from file metadata for timestamp formats without year e.g. syslog/journalctl.
+- Keep the selected line when filters change.
+
 ### Fixed
 - Fixed mouse scroll in tail mode: scroll up pauses following, scroll down to the bottom resumes it.
+- Filter for timestamp for formats without year.
 
 ## [0.5.0] - 2026-03-29
 ### Added

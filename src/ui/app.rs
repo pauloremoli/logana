@@ -925,20 +925,7 @@ mod tests {
                 if let Some(counts) = final_counts {
                     tab.filter.match_counts = counts;
                 }
-                if let Some(line_idx) = scroll_anchor {
-                    if let Some(pos) = tab.filter.visible_indices.position_of(line_idx) {
-                        tab.scroll.scroll_offset = pos;
-                        continue;
-                    }
-                }
-                if tab.filter.visible_indices.is_empty() {
-                    tab.scroll.scroll_offset = 0;
-                } else {
-                    tab.scroll.scroll_offset = tab
-                        .scroll
-                        .scroll_offset
-                        .min(tab.filter.visible_indices.len() - 1);
-                }
+                tab.restore_scroll_to_line(scroll_anchor);
             }
         }
     }
