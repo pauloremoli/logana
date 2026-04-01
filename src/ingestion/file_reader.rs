@@ -79,8 +79,6 @@ pub struct FileReader {
 
 impl FileReader {
     pub fn new(path: &str) -> io::Result<Self> {
-        use rayon::prelude::*;
-
         let canonical_path = Arc::new(
             std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path)),
         );
@@ -90,6 +88,7 @@ impl FileReader {
         // Parallel pread + MADV_POPULATE_WRITE, same as index_chunked.
         #[cfg(unix)]
         let data: Vec<u8> = {
+            use rayon::prelude::*;
             use std::os::unix::fs::FileExt;
             let mut v = vec![0u8; size];
             // SAFETY: `v.as_mut_ptr()` is a valid, writable mapping of exactly
@@ -374,9 +373,9 @@ impl FileReader {
         let starts = Arc::make_mut(&mut self.line_starts);
 
         // Read only the new bytes via pread and append them to the buffer.
-        let extra = new_size - old_size;
         #[cfg(unix)]
         {
+            let extra = new_size - old_size;
             use std::os::unix::fs::FileExt;
             let mut buf = vec![0u8; extra];
             file.read_at(&mut buf, old_size as u64)?;
@@ -572,7 +571,7 @@ impl FileReader {
             v
         };
         #[cfg(not(unix))]
-        let mut file_data: Vec<u8> = {
+        let file_data: Vec<u8> = {
             use std::io::Read;
             let mut v = Vec::with_capacity(size);
             (&*file).read_to_end(&mut v)?;
@@ -1303,6 +1302,7 @@ impl FileReader {
                 })
                 .await;
 
+                #[allow(unused_variables)]
                 if let Ok(Ok((current_size, ino, dev))) = result {
                     // Detect rotation-by-rename: inode changed under the path.
                     #[cfg(unix)]
