@@ -937,6 +937,16 @@ impl TabState {
             self.filter.date_styles = date_filter_styles;
             self.filter.field_styles = field_filter_styles;
             self.filter.visible_indices = VisibleLines::Filtered(visible);
+            // Apply continuation-line grouping: continuation lines (those whose
+            // parser returned None) inherit their parent's filter visibility so
+            // they are hidden when the parent is hidden by a date or exclude filter.
+            if let Some(cmap) = self.continuation_map.as_deref() {
+                apply_continuation_correction(
+                    &mut self.filter.visible_indices,
+                    cmap,
+                    has_text_includes,
+                );
+            }
         }
 
         self.restore_scroll_to_line(current_line);

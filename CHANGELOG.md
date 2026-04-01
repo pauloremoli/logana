@@ -14,6 +14,7 @@ All notable changes to logana will be documented in this file.
 ### Fixed
 - Fixed mouse scroll in tail mode: scroll up pauses following, scroll down to the bottom resumes it.
 - Filter for timestamp for formats without year.
+- Parsing of unix epoch timestamp for syslog/journalctl.
 
 ### Changed
 - Performance improvements on CLF parser

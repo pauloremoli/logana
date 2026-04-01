@@ -555,7 +555,11 @@ fn normalize_log_timestamp(ts: &str) -> Option<NormalizedTimestamp> {
 
     // Unix epoch: 10-digit seconds, 13-digit milliseconds, 16-digit microseconds
     // (journalctl JSON __REALTIME_TIMESTAMP), or decimal seconds (journalctl short-unix)
-    if s.as_bytes().first().map(|b| b.is_ascii_digit()).unwrap_or(false) {
+    if s.as_bytes()
+        .first()
+        .map(|b| b.is_ascii_digit())
+        .unwrap_or(false)
+    {
         if let Some(n) = normalize_epoch_ts(s) {
             return Some(n);
         }
