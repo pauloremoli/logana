@@ -15,6 +15,9 @@ All notable changes to logana will be documented in this file.
 - Fixed mouse scroll in tail mode: scroll up pauses following, scroll down to the bottom resumes it.
 - Filter for timestamp for formats without year.
 
+### Changed
+- Performance improvements on CLF parser
+
 ## [0.5.0] - 2026-03-29
 ### Added
 - Mouse support
