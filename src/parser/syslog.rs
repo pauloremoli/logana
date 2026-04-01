@@ -12,6 +12,9 @@ enum SyslogFormat {
     /// rsyslog RSYSLOG_FileFormat: `ISO-timestamp hostname tag[pid]: message`
     /// (ISO 8601 timestamp with no `<PRI>` prefix).
     RsyslogIso,
+    /// rsyslog with Unix epoch timestamp: `1436735381.000000 hostname tag[pid]: message`
+    /// (no `<PRI>` prefix).
+    Unix,
 }
 
 impl SyslogFormat {
@@ -23,7 +26,8 @@ impl SyslogFormat {
         match i {
             0 => Self::Rfc3164,
             1 => Self::Rfc5424,
-            _ => Self::RsyslogIso,
+            2 => Self::RsyslogIso,
+            _ => Self::Unix,
         }
     }
 }
@@ -33,7 +37,7 @@ const MIN_SAMPLES: u32 = 50;
 #[derive(Debug, Default)]
 pub struct SyslogParser {
     format: OnceLock<SyslogFormat>,
-    fmt_counts: [AtomicU32; 3],
+    fmt_counts: [AtomicU32; 4],
     fmt_total: AtomicU32,
 }
 
@@ -455,6 +459,8 @@ fn detect_syslog_timestamp<'a>(s: &'a str, line: &'a [u8]) -> Option<(SyslogForm
             }
         } else if let Some((ts, _)) = super::timestamp::parse_iso_timestamp(body) {
             return Some((SyslogFormat::RsyslogIso, ts));
+        } else if let Some((ts, _)) = super::timestamp::parse_unix_timestamp(body) {
+            return Some((SyslogFormat::Unix, ts));
         }
     }
     None
@@ -489,12 +495,45 @@ fn extract_syslog_timestamp_rsyslog_iso(s: &str) -> Option<&str> {
     super::timestamp::parse_iso_timestamp(s).map(|(ts, _)| ts)
 }
 
+fn extract_syslog_timestamp_unix(s: &str) -> Option<&str> {
+    super::timestamp::parse_unix_timestamp(s).map(|(ts, _)| ts)
+}
+
+/// Parse rsyslog with Unix epoch timestamp: `1436735381.000000 hostname tag[pid]: message`.
+/// No `<PRI>` prefix.
+fn parse_rsyslog_unix_inner<'a>(s: &'a str) -> Option<DisplayParts<'a>> {
+    let (timestamp, ts_end) = super::timestamp::parse_unix_timestamp(s)?;
+    let rest = s[ts_end..].strip_prefix(' ')?;
+
+    let mut parts = DisplayParts {
+        timestamp: Some(timestamp),
+        ..Default::default()
+    };
+
+    if rest.is_empty() {
+        return Some(parts);
+    }
+
+    let (hostname, rest) = next_token(rest)?;
+    if !is_valid_syslog_hostname(hostname) {
+        return None;
+    }
+    push_field_as(&mut parts.extra_fields, FieldSemantic::Hostname, hostname);
+
+    if rest.is_empty() {
+        return Some(parts);
+    }
+
+    extract_tag_and_message(rest, &mut parts);
+    Some(parts)
+}
+
 impl SyslogParser {
     fn record_format(&self, fmt: SyslogFormat) {
         self.fmt_counts[fmt.index()].fetch_add(1, Ordering::Relaxed);
         let total = self.fmt_total.fetch_add(1, Ordering::Relaxed) + 1;
         if total >= MIN_SAMPLES && self.format.get().is_none() {
-            let winner = (0..3)
+            let winner = (0..4)
                 .max_by_key(|&i| self.fmt_counts[i].load(Ordering::Relaxed))
                 .unwrap_or(0);
             let _ = self.format.set(SyslogFormat::from_index(winner));
@@ -517,6 +556,7 @@ impl LogFormatParser for SyslogParser {
                 SyslogFormat::Rfc3164 => extract_syslog_timestamp_rfc3164(s, line),
                 SyslogFormat::Rfc5424 => extract_syslog_timestamp_rfc5424(s, line),
                 SyslogFormat::RsyslogIso => extract_syslog_timestamp_rsyslog_iso(s),
+                SyslogFormat::Unix => extract_syslog_timestamp_unix(s),
             };
         }
         let (fmt, ts) = detect_syslog_timestamp(s, line)?;
@@ -544,6 +584,7 @@ impl LogFormatParser for SyslogParser {
                     }
                 }
                 SyslogFormat::RsyslogIso => parse_rsyslog_iso_inner(s),
+                SyslogFormat::Unix => parse_rsyslog_unix_inner(s),
             };
             if result.is_some() {
                 return result;
@@ -569,6 +610,11 @@ impl LogFormatParser for SyslogParser {
 
         if let Some(parts) = parse_rsyslog_iso_inner(s) {
             self.record_format(SyslogFormat::RsyslogIso);
+            return Some(parts);
+        }
+
+        if let Some(parts) = parse_rsyslog_unix_inner(s) {
+            self.record_format(SyslogFormat::Unix);
             return Some(parts);
         }
 
@@ -608,7 +654,7 @@ impl LogFormatParser for SyslogParser {
     ///   • ISO timestamp (`YYYY-MM-DDTHH:MM:SS…`) — rsyslog RSYSLOG_FileFormat
     ///
     /// Plain BSD lines without a priority prefix (`Oct 11 22:14:15 host tag: msg`)
-    /// are shared with journalctl `--output short` and are intentionally **not**
+    /// and Unix epoch lines are shared with journalctl and are intentionally **not**
     /// claimed here so that piped `journalctl` output is still detected as
     /// journalctl.  Those lines can still be *parsed* by `parse_line` once the
     /// format is locked by other lines in the sample.
@@ -1028,5 +1074,41 @@ mod tests {
         assert_eq!(before.timestamp, after.timestamp);
         assert_eq!(before.level, after.level);
         assert_eq!(before.target, after.target);
+    }
+
+    // ── Unix epoch (rsyslog custom template) ─────────────────────────
+
+    #[test]
+    fn test_unix_epoch_basic() {
+        let line = b"1436735381.000000 myhost sshd[1234]: Connection closed";
+        let parser = SyslogParser::default();
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.timestamp, Some("1436735381.000000"));
+        assert_eq!(parts.target, Some("sshd"));
+        assert_eq!(parts.message, Some("Connection closed"));
+        assert!(
+            parts
+                .extra_fields
+                .iter()
+                .any(|(_, k, v)| *k == "hostname" && *v == "myhost")
+        );
+    }
+
+    #[test]
+    fn test_unix_epoch_parse_timestamp() {
+        let line = b"1700000000.123456 myhost systemd[1]: Started service";
+        let parser = SyslogParser::default();
+        let ts = parser.parse_timestamp(line).unwrap();
+        assert_eq!(ts, "1700000000.123456");
+    }
+
+    #[test]
+    fn test_unix_epoch_timestamp_has_year() {
+        let parser = SyslogParser::default();
+        let line = b"1436735381.000000 myhost sshd[1234]: Connection closed";
+        for _ in 0..MIN_SAMPLES {
+            parser.parse_line(line).unwrap();
+        }
+        assert!(parser.timestamp_has_year());
     }
 }

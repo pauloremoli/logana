@@ -553,6 +553,14 @@ fn normalize_log_timestamp(ts: &str) -> Option<NormalizedTimestamp> {
         return normalize_nanos_ts(s);
     }
 
+    // Unix epoch: 10-digit seconds, 13-digit milliseconds, 16-digit microseconds
+    // (journalctl JSON __REALTIME_TIMESTAMP), or decimal seconds (journalctl short-unix)
+    if s.as_bytes().first().map(|b| b.is_ascii_digit()).unwrap_or(false) {
+        if let Some(n) = normalize_epoch_ts(s) {
+            return Some(n);
+        }
+    }
+
     // Handle bracket-prefixed timestamps
     if s.starts_with('[') {
         // dmesg: [  seconds.usecs] — digits/spaces/dots only inside brackets
@@ -717,8 +725,7 @@ fn normalize_bsd_ts(s: &str) -> Option<NormalizedTimestamp> {
     })
 }
 
-fn normalize_nanos_ts(s: &str) -> Option<NormalizedTimestamp> {
-    let nanos: i128 = s.parse().ok()?;
+fn nanos_to_normalized(nanos: i128) -> Option<NormalizedTimestamp> {
     let dt = time::OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()?;
     let ms = ((nanos.unsigned_abs() % 1_000_000_000) / 1_000_000) as u16;
     let year = dt.year() as u32;
@@ -731,6 +738,46 @@ fn normalize_nanos_ts(s: &str) -> Option<NormalizedTimestamp> {
         time_of_day: h * 3600 + m * 60 + sec,
         canonical: write_canonical(year, month, day, h, m, sec, ms),
     })
+}
+
+fn normalize_nanos_ts(s: &str) -> Option<NormalizedTimestamp> {
+    let nanos: i128 = s.parse().ok()?;
+    nanos_to_normalized(nanos)
+}
+
+/// Handle Unix epoch timestamps in integer and decimal forms:
+/// - 10 digits: seconds          (e.g. `1436735381`)
+/// - 13 digits: milliseconds     (e.g. `1436735381000`)
+/// - 16 digits: microseconds     (e.g. `1699999999000000`, journalctl JSON)
+/// - decimal:   seconds.fraction (e.g. `1436735381.000000`, journalctl short-unix)
+fn normalize_epoch_ts(s: &str) -> Option<NormalizedTimestamp> {
+    if s.bytes().all(|b| b.is_ascii_digit()) {
+        let nanos = match s.len() {
+            10 => s.parse::<i128>().ok()? * 1_000_000_000,
+            13 => s.parse::<i128>().ok()? * 1_000_000,
+            16 => s.parse::<i128>().ok()? * 1_000,
+            _ => return None,
+        };
+        return nanos_to_normalized(nanos);
+    }
+    // Decimal seconds: integer part must be at least 9 digits (epoch ≥ ~2001)
+    if let Some(dot) = s.find('.') {
+        let int_part = &s[..dot];
+        let frac_part = &s[dot + 1..];
+        if int_part.len() >= 9
+            && int_part.bytes().all(|b| b.is_ascii_digit())
+            && !frac_part.is_empty()
+            && frac_part.bytes().all(|b| b.is_ascii_digit())
+        {
+            let secs: i64 = int_part.parse().ok()?;
+            let frac_len = frac_part.len().min(9);
+            let frac_digits: i128 = frac_part[..frac_len].parse().ok()?;
+            let frac_nanos = frac_digits * 10i128.pow((9 - frac_len) as u32);
+            let nanos = secs as i128 * 1_000_000_000 + frac_nanos;
+            return nanos_to_normalized(nanos);
+        }
+    }
+    None
 }
 
 fn normalize_apache_error_ts(s: &str) -> Option<NormalizedTimestamp> {
@@ -1469,6 +1516,49 @@ mod tests {
     fn test_normalize_nanos_not_19_digits() {
         // 18 digits → not treated as nano epoch
         assert!(normalize_log_timestamp("170004601023400000").is_none());
+    }
+
+    // ── Unix epoch (seconds / milliseconds / microseconds / decimal) ──
+
+    #[test]
+    fn test_normalize_epoch_micros_journalctl_json() {
+        // journalctl JSON __REALTIME_TIMESTAMP (16 digits = microseconds)
+        let n = normalize_log_timestamp("1700046010234000").unwrap();
+        assert_eq!(buf_as_str(&n.canonical), "2023-11-15 11:00:10.234");
+    }
+
+    #[test]
+    fn test_normalize_epoch_millis() {
+        // 13-digit millisecond epoch (Pino, Bunyan, etc.)
+        let n = normalize_log_timestamp("1700046010234").unwrap();
+        assert_eq!(buf_as_str(&n.canonical), "2023-11-15 11:00:10.234");
+    }
+
+    #[test]
+    fn test_normalize_epoch_secs() {
+        // 10-digit second epoch
+        let n = normalize_log_timestamp("1700046010").unwrap();
+        assert_eq!(buf_as_str(&n.canonical), "2023-11-15 11:00:10.000");
+    }
+
+    #[test]
+    fn test_normalize_epoch_decimal_secs() {
+        // Decimal seconds (journalctl short-unix, syslog unix)
+        let n = normalize_log_timestamp("1700046010.234000").unwrap();
+        assert_eq!(buf_as_str(&n.canonical), "2023-11-15 11:00:10.234");
+    }
+
+    #[test]
+    fn test_normalize_epoch_decimal_short_frac() {
+        // Fewer fractional digits
+        let n = normalize_log_timestamp("1700046010.5").unwrap();
+        assert_eq!(buf_as_str(&n.canonical), "2023-11-15 11:00:10.500");
+    }
+
+    #[test]
+    fn test_normalize_epoch_decimal_rejects_short_integer() {
+        // Integer part < 9 digits → not an epoch
+        assert!(normalize_log_timestamp("12345678.000000").is_none());
     }
 
     #[test]
