@@ -559,11 +559,9 @@ fn normalize_log_timestamp(ts: &str) -> Option<NormalizedTimestamp> {
         .first()
         .map(|b| b.is_ascii_digit())
         .unwrap_or(false)
-    {
-        if let Some(n) = normalize_epoch_ts(s) {
+        && let Some(n) = normalize_epoch_ts(s) {
             return Some(n);
         }
-    }
 
     // Handle bracket-prefixed timestamps
     if s.starts_with('[') {
