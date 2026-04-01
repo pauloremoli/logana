@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-01
+
 ### Added
 - Infer year from file metadata for timestamp formats without year e.g. syslog/journalctl.
 - Keep the selected line when filters change.
