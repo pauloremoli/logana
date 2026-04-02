@@ -7,6 +7,7 @@ use logana::filters::FilterManager;
 use logana::filters::{FilterOptions, FilterType};
 use logana::headless::run_headless_to_writer;
 use logana::ingestion::FileReader;
+use logana::ui::SidebarSide;
 use std::io::Write;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
@@ -646,6 +647,29 @@ async fn test_regex_filter_with_space_in_pattern() {
     assert!(result.contains("404 123"));
     assert!(result.contains("200 1"));
     assert!(!result.contains("connection established"));
+}
+
+#[test]
+fn test_sidebar_position_parses_left() {
+    let args = CommandLine::parse_from(shell_split("sidebar-position left"));
+    match args.command.unwrap() {
+        Commands::SidebarPosition { side } => assert_eq!(side, SidebarSide::Left),
+        other => panic!("expected SidebarPosition, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_sidebar_position_parses_right() {
+    let args = CommandLine::parse_from(shell_split("sidebar-position right"));
+    match args.command.unwrap() {
+        Commands::SidebarPosition { side } => assert_eq!(side, SidebarSide::Right),
+        other => panic!("expected SidebarPosition, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_sidebar_position_rejects_invalid() {
+    assert!(CommandLine::try_parse_from(shell_split("sidebar-position top")).is_err());
 }
 
 fn build_dlt_storage_header(secs: u32, usecs: u32, ecu: &[u8; 4]) -> Vec<u8> {

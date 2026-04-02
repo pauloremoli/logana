@@ -205,8 +205,8 @@ impl App {
         Ok(true)
     }
 
-    pub(super) async fn cmd_enable_mcp(&mut self, port: u16) -> Result<bool, String> {
-        let p = self.mcp_port.unwrap_or(port);
+    pub(super) async fn cmd_enable_mcp(&mut self, port: Option<u16>) -> Result<bool, String> {
+        let p = port.unwrap_or_else(|| self.mcp_port.unwrap_or(9876));
         match self.start_mcp(p).await {
             Ok(()) => {
                 self.tabs[self.active_tab].interaction.notification =

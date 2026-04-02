@@ -8,6 +8,7 @@
   "preview_bytes": 16777216,
   "restore_session": "always",
   "restore_file_context": "always",
+  "mcp_port": 9876,
   "dlt_devices": [
     { "name": "my-ecu", "host": "192.168.1.100", "port": 3490 }
   ],

@@ -176,19 +176,13 @@ mod tests {
         let file_reader = FileReader::from_bytes(data);
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
-        App::new(
+        App::builder(
             log_manager,
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .build()
         .await
     }
 
@@ -1059,19 +1053,13 @@ mod tests {
         let file_reader = FileReader::new(&path).unwrap();
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, Some(path)).await;
-        App::new(
+        App::builder(
             log_manager,
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .build()
         .await
     }
 

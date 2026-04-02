@@ -2988,19 +2988,14 @@ mod tests {
         db.save_app_setting("show_mode_bar", "false").await.unwrap();
         let fr = crate::ingestion::FileReader::from_bytes(b"line\n".to_vec());
         let lm = crate::db::LogManager::new(db, None).await;
-        let app = crate::ui::App::new(
+        let app = crate::ui::App::builder(
             lm,
             fr,
             crate::theme::Theme::default(),
             Arc::new(crate::config::Keybindings::default()),
-            None,
-            None,
-            Some(true),
-            None,
-            None,
-            None,
-            None,
         )
+        .show_mode_bar(Some(true))
+        .build()
         .await;
         assert!(
             app.show_mode_bar,
@@ -3015,19 +3010,14 @@ mod tests {
         db.save_app_setting("wrap", "false").await.unwrap();
         let fr = crate::ingestion::FileReader::from_bytes(b"line\n".to_vec());
         let lm = crate::db::LogManager::new(db, None).await;
-        let app = crate::ui::App::new(
+        let app = crate::ui::App::builder(
             lm,
             fr,
             crate::theme::Theme::default(),
             Arc::new(crate::config::Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(true),
         )
+        .wrap(Some(true))
+        .build()
         .await;
         assert!(app.wrap, "config Some(true) should override DB false");
     }

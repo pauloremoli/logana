@@ -10,6 +10,7 @@ homepage = "https://github.com/pauloremoli/logana"
 keywords = ["log", "tui", "viewer", "terminal", "analyzer"]
 categories = ["command-line-utilities", "development-tools::debugging"]
 exclude = [".github", "pkg", "docs"]
+default-run = "logana"
 
 [package.metadata.wix]
 upgrade-guid = "40A718EC-7645-458F-A8AB-6DE8BC5A8183"
@@ -51,11 +52,13 @@ prost = { version = "0.14", default-features = false }
 tonic = { version = "0.14", default-features = false, features = ["transport", "router"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
 strum = { version = "0.28.0", features = ["derive"] }
+schemars = { version = "0.8", default-features = false, features = ["derive", "preserve_order"] }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["rayon", "html_reports"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http = "1"
+jsonschema = { version = "0.28", default-features = false }
 
 [[bench]]
 name = "file_reader"

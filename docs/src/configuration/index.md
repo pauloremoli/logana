@@ -8,6 +8,19 @@ logana never writes to the config file. Any settings defined there are applied o
 
 Many settings can also be changed at runtime — UI toggles via the UI options menu (`u`) and display commands (`:wrap`, `:line-numbers`, `:set-theme`, `:sidebar-position`). When changed at runtime the new value is saved to the database and restored on the next session, unless the setting is also defined in the config file, in which case the config file value always wins.
 
+## Schema Validation
+
+logana publishes a JSON Schema for `config.json`. Add a `$schema` line to enable validation and autocomplete in VS Code and other JSON-aware editors:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/pauloremoli/logana/main/schema/config.schema.json",
+  "theme": "dracula"
+}
+```
+
+VS Code will highlight unknown fields, suggest valid values for enums such as `restore_session`, and show inline documentation for each option.
+
 ## Config File Location
 
 The path depends on the operating system:
@@ -28,10 +41,11 @@ The path depends on the operating system:
   "show_sidebar": true,
   "show_line_numbers": true,
   "wrap": false,
-  "sidebar_left": false,
+  "sidebar_side": "right",
   "preview_bytes": 16777216,
   "restore_session": "always",
   "restore_file_context": "always",
+  "mcp_port": 9876,
   "dlt_devices": [
     { "name": "my-ecu", "host": "192.168.1.100", "port": 3490 }
   ],
@@ -45,14 +59,14 @@ The path depends on the operating system:
       "page_up": "PageUp"
     },
     "normal": {
-      "add_include_filter": "i",
-      "add_exclude_filter": "o",
-      "open_filter_manager": "f",
-      "toggle_filters": "F",
+      "filter_include": "i",
+      "filter_exclude": "o",
+      "filter_mode": "f",
+      "toggle_filtering": "F",
       "mark_line": "m",
-      "toggle_marks_view": "M",
-      "enter_visual_mode": "V",
-      "open_ui_options": "u",
+      "toggle_marks_only": "M",
+      "visual_mode": "V",
+      "enter_ui_mode": "u",
       "show_keybindings": "F1",
       "scroll_left": "h",
       "scroll_right": "l"
@@ -74,10 +88,11 @@ The path depends on the operating system:
 | `show_sidebar` | bool | `true` | Show the filter sidebar on startup |
 | `show_line_numbers` | bool | `true` | Show the line number gutter |
 | `wrap` | bool | `false` | Wrap long lines |
-| `sidebar_left` | bool | `false` | Place the filter sidebar to the left of the log panel instead of the right |
+| `sidebar_side` | string | `"right"` | Pin the filter sidebar to `"left"` or `"right"` of the log panel |
 | `preview_bytes` | number | `16777216` | Bytes read for the instant preview shown while the full file index is built in the background (16 MiB) |
 | `restore_session` | string | `"always"` | Whether to reopen tabs from the previous session (`"always"`, `"ask"`, `"never"`) |
 | `restore_file_context` | string | `"always"` | Whether to restore per-file state (scroll, marks, search) when reopening a file (`"always"`, `"ask"`, `"never"`) |
+| `mcp_port` | number | `9876` | Default port for the embedded MCP server when started via `:enable-mcp` |
 | `dlt_devices` | array | `[]` | Pre-configured DLT daemon connections; each entry has `name`, `host`, and optional `port` (default `3490`) |
 
 ## Sections

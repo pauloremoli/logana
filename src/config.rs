@@ -167,6 +167,32 @@ impl<'de> Deserialize<'de> for KeyBinding {
     }
 }
 
+impl schemars::JsonSchema for KeyBinding {
+    fn schema_name() -> String {
+        "KeyBinding".to_string()
+    }
+    fn json_schema(_g: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            metadata: Some(Box::new(schemars::schema::Metadata {
+                description: Some(
+                    "A key combination string, e.g. \"Ctrl+d\", \"Shift+Tab\", \"F1\", \"j\""
+                        .into(),
+                ),
+                examples: vec![
+                    serde_json::json!("j"),
+                    serde_json::json!("Ctrl+d"),
+                    serde_json::json!("Shift+Tab"),
+                    serde_json::json!("F1"),
+                ],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct KeyBindings(pub Vec<KeyBinding>);
 
@@ -221,6 +247,30 @@ impl<'de> Deserialize<'de> for KeyBindings {
         }
 
         deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl schemars::JsonSchema for KeyBindings {
+    fn schema_name() -> String {
+        "KeyBindings".to_string()
+    }
+    fn json_schema(g: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        let str_schema = g.subschema_for::<String>();
+        let arr_schema = g.subschema_for::<Vec<String>>();
+        schemars::schema::SchemaObject {
+            subschemas: Some(Box::new(schemars::schema::SubschemaValidation {
+                one_of: Some(vec![str_schema, arr_schema]),
+                ..Default::default()
+            })),
+            metadata: Some(Box::new(schemars::schema::Metadata {
+                description: Some(
+                    "One key binding string or an array of alternatives, e.g. \"j\" or [\"j\", \"Down\"]".into(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
     }
 }
 
@@ -366,7 +416,7 @@ fn default_clear_search() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NavigationKeybindings {
     #[serde(default = "default_scroll_down")]
     pub scroll_down: KeyBindings,
@@ -395,7 +445,7 @@ impl Default for NavigationKeybindings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NormalKeybindings {
     #[serde(default = "default_scroll_left")]
     pub scroll_left: KeyBindings,
@@ -545,7 +595,7 @@ fn default_filter_sidebar_shrink() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('<'), KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FilterKeybindings {
     #[serde(default = "default_filter_toggle")]
     pub toggle_filter: KeyBindings,
@@ -614,7 +664,7 @@ fn default_new_tab() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('t'), KeyModifiers::CONTROL)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GlobalKeybindings {
     #[serde(default = "default_quit")]
     pub quit: KeyBindings,
@@ -653,7 +703,7 @@ fn default_comment_delete() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('d'), KeyModifiers::CONTROL)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CommentKeybindings {
     /// Key to save the comment and return to Normal mode (default: Enter).
     #[serde(default = "default_comment_save")]
@@ -696,7 +746,7 @@ fn default_visual_line_search() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('/'), KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct VisualLineKeybindings {
     #[serde(default = "default_visual_comment")]
     pub comment: KeyBindings,
@@ -798,7 +848,7 @@ fn default_vc_exit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct VisualKeybindings {
     #[serde(default = "default_vc_move_left")]
     pub move_left: KeyBindings,
@@ -885,7 +935,7 @@ fn default_search_confirm() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SearchKeybindings {
     #[serde(default = "default_search_cancel")]
     pub cancel: KeyBindings,
@@ -909,7 +959,7 @@ fn default_filter_edit_confirm() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FilterEditKeybindings {
     #[serde(default = "default_filter_edit_cancel")]
     pub cancel: KeyBindings,
@@ -933,7 +983,7 @@ fn default_command_confirm() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CommandModeKeybindings {
     #[serde(default = "default_command_cancel")]
     pub cancel: KeyBindings,
@@ -957,7 +1007,7 @@ fn default_docker_cancel() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DockerSelectKeybindings {
     #[serde(default = "default_docker_confirm")]
     pub confirm: KeyBindings,
@@ -990,7 +1040,7 @@ fn default_dlt_backtab() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::BackTab, KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DltSelectKeybindings {
     #[serde(default = "default_dlt_confirm")]
     pub confirm: KeyBindings,
@@ -1032,7 +1082,7 @@ fn default_vc_cancel() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ValueColorsKeybindings {
     #[serde(default = "default_vc_toggle")]
     pub toggle: KeyBindings,
@@ -1080,7 +1130,7 @@ fn default_sf_cancel() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SelectFieldsKeybindings {
     #[serde(default = "default_sf_toggle")]
     pub toggle: KeyBindings,
@@ -1119,7 +1169,7 @@ fn default_help_close() -> KeyBindings {
     ])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HelpKeybindings {
     #[serde(default = "default_help_close")]
     pub close: KeyBindings,
@@ -1152,7 +1202,7 @@ fn default_confirm_never() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('N'), KeyModifiers::SHIFT)])
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ConfirmKeybindings {
     #[serde(default = "default_confirm_yes")]
     pub yes: KeyBindings,
@@ -1175,7 +1225,7 @@ impl Default for ConfirmKeybindings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiKeybindings {
     #[serde(default = "default_toggle_sidebar")]
     pub toggle_sidebar: KeyBindings,
@@ -1201,7 +1251,7 @@ impl Default for UiKeybindings {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Keybindings {
     #[serde(default)]
     pub navigation: NavigationKeybindings,
@@ -1481,7 +1531,7 @@ fn default_dlt_port() -> u16 {
     3490
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct DltDevice {
     pub name: String,
     pub host: String,
@@ -1551,7 +1601,9 @@ impl DltDevice {
 }
 
 /// Controls whether logana asks before restoring a previous session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum RestoreSessionPolicy {
     /// Ask before restoring.
@@ -1563,9 +1615,13 @@ pub enum RestoreSessionPolicy {
     Never,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// JSON Schema URL — accepted and ignored so editors can include a `$schema` line.
+    #[serde(rename = "$schema", default, skip_serializing)]
+    #[schemars(skip)]
+    pub schema_url: Option<String>,
     /// Theme name (without `.json` extension) to load on startup.
     pub theme: Option<String>,
     #[serde(default)]
@@ -1595,6 +1651,9 @@ pub struct Config {
     /// When `Some`, overrides the DB-stored wrap runtime setting.
     #[serde(default)]
     pub wrap: Option<bool>,
+    /// When `Some`, pins the filter sidebar to the given side, overriding the DB-stored value.
+    #[serde(default)]
+    pub sidebar_side: Option<crate::ui::SidebarSide>,
     #[serde(default)]
     pub dlt_devices: Vec<DltDevice>,
     /// Default port for the embedded MCP server. Used when `:enable-mcp` is invoked without
@@ -1606,6 +1665,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            schema_url: None,
             theme: None,
             keybindings: Keybindings::default(),
             show_mode_bar: None,
@@ -1616,6 +1676,7 @@ impl Default for Config {
             show_sidebar: None,
             show_line_numbers: None,
             wrap: None,
+            sidebar_side: None,
             dlt_devices: vec![],
             mcp_port: None,
         }
@@ -3087,5 +3148,25 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err();
         assert!(msg.contains("Could not parse config file"));
+    }
+
+    #[test]
+    fn example_config_validates_against_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/config.schema.json")).unwrap();
+        let example: serde_json::Value =
+            serde_json::from_str(include_str!("../examples/config.example.json")).unwrap();
+
+        let validator = jsonschema::validator_for(&schema).expect("invalid schema");
+        let errors: Vec<String> = validator
+            .iter_errors(&example)
+            .map(|e| format!("{} (path: {})", e, e.instance_path))
+            .collect();
+
+        assert!(
+            errors.is_empty(),
+            "example config failed schema validation:\n{}",
+            errors.join("\n")
+        );
     }
 }

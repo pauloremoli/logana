@@ -223,13 +223,16 @@ async fn run_headless_mode(args: Args) -> Result<()> {
 }
 
 async fn build_app(log_manager: LogManager, config: Config) -> App {
-    let theme_name = log_manager
-        .db
-        .load_app_setting("theme")
-        .await
-        .ok()
-        .flatten()
-        .or_else(|| config.theme.clone());
+    let theme_name = if config.theme.is_some() {
+        config.theme.clone()
+    } else {
+        log_manager
+            .db
+            .load_app_setting("theme")
+            .await
+            .ok()
+            .flatten()
+    };
     let theme = theme_name
         .as_deref()
         .and_then(|name| Theme::from_file(format!("{}.json", name)).ok())
@@ -237,19 +240,21 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
     let keybinding_conflicts: Vec<String> = config.keybindings.validate();
     let keybindings = Arc::new(config.keybindings);
 
-    let mut app = App::new(
+    let mut app = App::builder(
         log_manager,
         FileReader::from_bytes(vec![]),
         theme,
         keybindings,
-        config.restore_session,
-        config.restore_file_context,
-        config.show_mode_bar,
-        config.show_borders,
-        config.show_line_numbers,
-        config.show_sidebar,
-        config.wrap,
     )
+    .restore_policy(config.restore_session)
+    .restore_file_policy(config.restore_file_context)
+    .show_mode_bar(config.show_mode_bar)
+    .show_borders(config.show_borders)
+    .show_line_numbers(config.show_line_numbers)
+    .show_sidebar(config.show_sidebar)
+    .wrap(config.wrap)
+    .sidebar_side(config.sidebar_side)
+    .build()
     .await;
     app.preview_bytes = config.preview_bytes;
     app.dlt_devices = config.dlt_devices;

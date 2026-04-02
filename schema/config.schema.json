@@ -1,0 +1,1796 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Config",
+  "type": "object",
+  "properties": {
+    "theme": {
+      "description": "Theme name (without `.json` extension) to load on startup.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "keybindings": {
+      "default": {
+        "command": {
+          "cancel": "Esc",
+          "confirm": "Enter"
+        },
+        "comment": {
+          "cancel": "Esc",
+          "delete": "Ctrl+d",
+          "newline": "Enter",
+          "save": "Ctrl+s"
+        },
+        "confirm": {
+          "always": "Shift+Y",
+          "never": "Shift+N",
+          "no": [
+            "n",
+            "Esc"
+          ],
+          "yes": [
+            "y",
+            "Enter"
+          ]
+        },
+        "dlt_select": {
+          "cancel": "Esc",
+          "confirm": "Enter",
+          "delete": "d",
+          "next_field": "Tab",
+          "prev_field": "Shift+Tab"
+        },
+        "docker_select": {
+          "cancel": "Esc",
+          "confirm": "Enter"
+        },
+        "filter": {
+          "add_date_filter": "t",
+          "add_exclude_filter": "o",
+          "add_include_filter": "i",
+          "clear_all_filters": "C",
+          "delete_filter": "d",
+          "edit_filter": "e",
+          "exit_mode": "Esc",
+          "move_filter_down": "J",
+          "move_filter_up": "K",
+          "set_color": "c",
+          "sidebar_grow": ">",
+          "sidebar_shrink": "<",
+          "toggle_all_filters": "A",
+          "toggle_filter": "Space"
+        },
+        "filter_edit": {
+          "cancel": "Esc",
+          "confirm": "Enter"
+        },
+        "global": {
+          "close_tab": "Ctrl+w",
+          "new_tab": "Ctrl+t",
+          "next_tab": "Tab",
+          "prev_tab": "Shift+Tab",
+          "quit": "q"
+        },
+        "help": {
+          "close": [
+            "q",
+            "Esc"
+          ]
+        },
+        "navigation": {
+          "half_page_down": "Ctrl+d",
+          "half_page_up": "Ctrl+u",
+          "page_down": "PageDown",
+          "page_up": "PageUp",
+          "scroll_down": [
+            "j",
+            "Down"
+          ],
+          "scroll_up": [
+            "k",
+            "Up"
+          ]
+        },
+        "normal": {
+          "clear_all": "C",
+          "clear_search": "Esc",
+          "command_mode": ":",
+          "comment_line": "c",
+          "delete_comment": "d",
+          "edit_comment": "r",
+          "end_of_line": "$",
+          "enter_ui_mode": "u",
+          "filter_exclude": "o",
+          "filter_include": "i",
+          "filter_mode": "f",
+          "go_to_bottom": "G",
+          "go_to_top_chord": "g",
+          "mark_line": "m",
+          "next_error": "e",
+          "next_match": "n",
+          "next_warning": "w",
+          "prev_error": "E",
+          "prev_match": "N",
+          "prev_warning": "W",
+          "scroll_left": [
+            "h",
+            "Left"
+          ],
+          "scroll_right": [
+            "l",
+            "Right"
+          ],
+          "search_backward": "?",
+          "search_forward": "/",
+          "show_keybindings": "F1",
+          "start_of_line": "0",
+          "toggle_filtering": "F",
+          "toggle_marks_only": "M",
+          "visual_char": "v",
+          "visual_mode": "V",
+          "yank_line": "y",
+          "yank_marked": "Y"
+        },
+        "search": {
+          "cancel": "Esc",
+          "confirm": "Enter"
+        },
+        "select_fields": {
+          "all": "a",
+          "apply": "Enter",
+          "cancel": "Esc",
+          "move_down": "J",
+          "move_up": "K",
+          "none": "n",
+          "toggle": "Space"
+        },
+        "ui": {
+          "exit": "Esc",
+          "toggle_borders": "B",
+          "toggle_mode_bar": "b",
+          "toggle_sidebar": "s",
+          "toggle_wrap": "w"
+        },
+        "value_colors": {
+          "all": "a",
+          "apply": "Enter",
+          "cancel": "Esc",
+          "none": "n",
+          "toggle": "Space"
+        },
+        "visual": {
+          "end_of_line": "$",
+          "exit": "Esc",
+          "filter_exclude": "o",
+          "filter_include": "i",
+          "find_backward": "F",
+          "find_forward": "f",
+          "first_nonblank": "^",
+          "move_left": [
+            "h",
+            "Left"
+          ],
+          "move_right": [
+            "l",
+            "Right"
+          ],
+          "repeat_motion": ";",
+          "repeat_motion_rev": ",",
+          "search": "/",
+          "start_of_line": "0",
+          "start_selection": "v",
+          "till_backward": "T",
+          "till_forward": "t",
+          "word_backward": "b",
+          "word_backward_big": "B",
+          "word_end": "e",
+          "word_end_big": "E",
+          "word_forward": "w",
+          "word_forward_big": "W",
+          "yank": "y"
+        },
+        "visual_line": {
+          "comment": "c",
+          "exit": "Esc",
+          "mark": "m",
+          "search": "/",
+          "yank": "y"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/Keybindings"
+        }
+      ]
+    },
+    "show_mode_bar": {
+      "description": "When `Some`, overrides the DB-stored show_mode_bar runtime setting.",
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "show_borders": {
+      "description": "When `Some`, overrides the DB-stored show_borders runtime setting.",
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "preview_bytes": {
+      "description": "Number of bytes to read for the instant preview shown while the full file index is being built in the background (default: 16 MiB).",
+      "default": 16777216,
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "restore_session": {
+      "description": "When `Some`, overrides the DB-stored restore_session runtime setting.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RestoreSessionPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "restore_file_context": {
+      "description": "When `Some`, overrides the DB-stored restore_file_context runtime setting.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RestoreSessionPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "show_sidebar": {
+      "description": "When `Some`, overrides the DB-stored show_sidebar runtime setting.",
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "show_line_numbers": {
+      "description": "When `Some`, overrides the DB-stored show_line_numbers runtime setting.",
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "wrap": {
+      "description": "When `Some`, overrides the DB-stored wrap runtime setting.",
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "sidebar_side": {
+      "description": "When `Some`, pins the filter sidebar to the given side, overriding the DB-stored value.",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SidebarSide"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dlt_devices": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DltDevice"
+      }
+    },
+    "mcp_port": {
+      "description": "Default port for the embedded MCP server. Used when `:enable-mcp` is invoked without an explicit `--port` argument. When `None`, falls back to the built-in default (9876).",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint16",
+      "minimum": 0.0
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "Keybindings": {
+      "type": "object",
+      "properties": {
+        "navigation": {
+          "default": {
+            "half_page_down": "Ctrl+d",
+            "half_page_up": "Ctrl+u",
+            "page_down": "PageDown",
+            "page_up": "PageUp",
+            "scroll_down": [
+              "j",
+              "Down"
+            ],
+            "scroll_up": [
+              "k",
+              "Up"
+            ]
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/NavigationKeybindings"
+            }
+          ]
+        },
+        "normal": {
+          "default": {
+            "clear_all": "C",
+            "clear_search": "Esc",
+            "command_mode": ":",
+            "comment_line": "c",
+            "delete_comment": "d",
+            "edit_comment": "r",
+            "end_of_line": "$",
+            "enter_ui_mode": "u",
+            "filter_exclude": "o",
+            "filter_include": "i",
+            "filter_mode": "f",
+            "go_to_bottom": "G",
+            "go_to_top_chord": "g",
+            "mark_line": "m",
+            "next_error": "e",
+            "next_match": "n",
+            "next_warning": "w",
+            "prev_error": "E",
+            "prev_match": "N",
+            "prev_warning": "W",
+            "scroll_left": [
+              "h",
+              "Left"
+            ],
+            "scroll_right": [
+              "l",
+              "Right"
+            ],
+            "search_backward": "?",
+            "search_forward": "/",
+            "show_keybindings": "F1",
+            "start_of_line": "0",
+            "toggle_filtering": "F",
+            "toggle_marks_only": "M",
+            "visual_char": "v",
+            "visual_mode": "V",
+            "yank_line": "y",
+            "yank_marked": "Y"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/NormalKeybindings"
+            }
+          ]
+        },
+        "filter": {
+          "default": {
+            "add_date_filter": "t",
+            "add_exclude_filter": "o",
+            "add_include_filter": "i",
+            "clear_all_filters": "C",
+            "delete_filter": "d",
+            "edit_filter": "e",
+            "exit_mode": "Esc",
+            "move_filter_down": "J",
+            "move_filter_up": "K",
+            "set_color": "c",
+            "sidebar_grow": ">",
+            "sidebar_shrink": "<",
+            "toggle_all_filters": "A",
+            "toggle_filter": "Space"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/FilterKeybindings"
+            }
+          ]
+        },
+        "global": {
+          "default": {
+            "close_tab": "Ctrl+w",
+            "new_tab": "Ctrl+t",
+            "next_tab": "Tab",
+            "prev_tab": "Shift+Tab",
+            "quit": "q"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/GlobalKeybindings"
+            }
+          ]
+        },
+        "comment": {
+          "default": {
+            "cancel": "Esc",
+            "delete": "Ctrl+d",
+            "newline": "Enter",
+            "save": "Ctrl+s"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/CommentKeybindings"
+            }
+          ]
+        },
+        "visual_line": {
+          "default": {
+            "comment": "c",
+            "exit": "Esc",
+            "mark": "m",
+            "search": "/",
+            "yank": "y"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/VisualLineKeybindings"
+            }
+          ]
+        },
+        "visual": {
+          "default": {
+            "end_of_line": "$",
+            "exit": "Esc",
+            "filter_exclude": "o",
+            "filter_include": "i",
+            "find_backward": "F",
+            "find_forward": "f",
+            "first_nonblank": "^",
+            "move_left": [
+              "h",
+              "Left"
+            ],
+            "move_right": [
+              "l",
+              "Right"
+            ],
+            "repeat_motion": ";",
+            "repeat_motion_rev": ",",
+            "search": "/",
+            "start_of_line": "0",
+            "start_selection": "v",
+            "till_backward": "T",
+            "till_forward": "t",
+            "word_backward": "b",
+            "word_backward_big": "B",
+            "word_end": "e",
+            "word_end_big": "E",
+            "word_forward": "w",
+            "word_forward_big": "W",
+            "yank": "y"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/VisualKeybindings"
+            }
+          ]
+        },
+        "search": {
+          "default": {
+            "cancel": "Esc",
+            "confirm": "Enter"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/SearchKeybindings"
+            }
+          ]
+        },
+        "filter_edit": {
+          "default": {
+            "cancel": "Esc",
+            "confirm": "Enter"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/FilterEditKeybindings"
+            }
+          ]
+        },
+        "command": {
+          "default": {
+            "cancel": "Esc",
+            "confirm": "Enter"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/CommandModeKeybindings"
+            }
+          ]
+        },
+        "docker_select": {
+          "default": {
+            "cancel": "Esc",
+            "confirm": "Enter"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/DockerSelectKeybindings"
+            }
+          ]
+        },
+        "dlt_select": {
+          "default": {
+            "cancel": "Esc",
+            "confirm": "Enter",
+            "delete": "d",
+            "next_field": "Tab",
+            "prev_field": "Shift+Tab"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/DltSelectKeybindings"
+            }
+          ]
+        },
+        "value_colors": {
+          "default": {
+            "all": "a",
+            "apply": "Enter",
+            "cancel": "Esc",
+            "none": "n",
+            "toggle": "Space"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ValueColorsKeybindings"
+            }
+          ]
+        },
+        "select_fields": {
+          "default": {
+            "all": "a",
+            "apply": "Enter",
+            "cancel": "Esc",
+            "move_down": "J",
+            "move_up": "K",
+            "none": "n",
+            "toggle": "Space"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/SelectFieldsKeybindings"
+            }
+          ]
+        },
+        "help": {
+          "default": {
+            "close": [
+              "q",
+              "Esc"
+            ]
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/HelpKeybindings"
+            }
+          ]
+        },
+        "confirm": {
+          "default": {
+            "always": "Shift+Y",
+            "never": "Shift+N",
+            "no": [
+              "n",
+              "Esc"
+            ],
+            "yes": [
+              "y",
+              "Enter"
+            ]
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ConfirmKeybindings"
+            }
+          ]
+        },
+        "ui": {
+          "default": {
+            "exit": "Esc",
+            "toggle_borders": "B",
+            "toggle_mode_bar": "b",
+            "toggle_sidebar": "s",
+            "toggle_wrap": "w"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/UiKeybindings"
+            }
+          ]
+        }
+      }
+    },
+    "NavigationKeybindings": {
+      "type": "object",
+      "properties": {
+        "scroll_down": {
+          "default": [
+            "j",
+            "Down"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "scroll_up": {
+          "default": [
+            "k",
+            "Up"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "half_page_down": {
+          "default": "Ctrl+d",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "half_page_up": {
+          "default": "Ctrl+u",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "page_down": {
+          "default": "PageDown",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "page_up": {
+          "default": "PageUp",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "KeyBindings": {
+      "description": "One key binding string or an array of alternatives, e.g. \"j\" or [\"j\", \"Down\"]",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "NormalKeybindings": {
+      "type": "object",
+      "properties": {
+        "scroll_left": {
+          "default": [
+            "h",
+            "Left"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "scroll_right": {
+          "default": [
+            "l",
+            "Right"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "start_of_line": {
+          "default": "0",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "end_of_line": {
+          "default": "$",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "command_mode": {
+          "default": ":",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "filter_mode": {
+          "default": "f",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "toggle_filtering": {
+          "default": "F",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "go_to_top_chord": {
+          "default": "g",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "go_to_bottom": {
+          "default": "G",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "mark_line": {
+          "default": "m",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search_forward": {
+          "default": "/",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search_backward": {
+          "default": "?",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "next_match": {
+          "default": "n",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "prev_match": {
+          "default": "N",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "visual_mode": {
+          "default": "V",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "visual_char": {
+          "default": "v",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "toggle_marks_only": {
+          "default": "M",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "yank_line": {
+          "default": "y",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "yank_marked": {
+          "default": "Y",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "show_keybindings": {
+          "default": "F1",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "clear_all": {
+          "default": "C",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "edit_comment": {
+          "default": "r",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "delete_comment": {
+          "default": "d",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "comment_line": {
+          "default": "c",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "next_error": {
+          "default": "e",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "prev_error": {
+          "default": "E",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "next_warning": {
+          "default": "w",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "prev_warning": {
+          "default": "W",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "filter_include": {
+          "default": "i",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "filter_exclude": {
+          "default": "o",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "enter_ui_mode": {
+          "default": "u",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "clear_search": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "FilterKeybindings": {
+      "type": "object",
+      "properties": {
+        "toggle_filter": {
+          "default": "Space",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "delete_filter": {
+          "default": "d",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "move_filter_up": {
+          "default": "K",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "move_filter_down": {
+          "default": "J",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "edit_filter": {
+          "default": "e",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "set_color": {
+          "default": "c",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "toggle_all_filters": {
+          "default": "A",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "clear_all_filters": {
+          "default": "C",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "add_include_filter": {
+          "default": "i",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "add_exclude_filter": {
+          "default": "o",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "add_date_filter": {
+          "default": "t",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "exit_mode": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "sidebar_grow": {
+          "default": ">",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "sidebar_shrink": {
+          "default": "<",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "GlobalKeybindings": {
+      "type": "object",
+      "properties": {
+        "quit": {
+          "default": "q",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "next_tab": {
+          "default": "Tab",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "prev_tab": {
+          "default": "Shift+Tab",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "close_tab": {
+          "default": "Ctrl+w",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "new_tab": {
+          "default": "Ctrl+t",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "CommentKeybindings": {
+      "type": "object",
+      "properties": {
+        "save": {
+          "description": "Key to save the comment and return to Normal mode (default: Enter).",
+          "default": "Ctrl+s",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "newline": {
+          "description": "Key to insert a newline inside the comment (default: Shift+Enter).",
+          "default": "Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "cancel": {
+          "description": "Key to cancel the comment and return to Normal mode.",
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "delete": {
+          "description": "Key to delete the comment being edited (only in edit mode).",
+          "default": "Ctrl+d",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "VisualLineKeybindings": {
+      "type": "object",
+      "properties": {
+        "comment": {
+          "default": "c",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "yank": {
+          "default": "y",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "mark": {
+          "default": "m",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search": {
+          "default": "/",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "exit": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "VisualKeybindings": {
+      "type": "object",
+      "properties": {
+        "move_left": {
+          "default": [
+            "h",
+            "Left"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "move_right": {
+          "default": [
+            "l",
+            "Right"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "word_forward": {
+          "default": "w",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "word_backward": {
+          "default": "b",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "word_end": {
+          "default": "e",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "word_forward_big": {
+          "default": "W",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "word_backward_big": {
+          "default": "B",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "word_end_big": {
+          "default": "E",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "start_of_line": {
+          "default": "0",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "first_nonblank": {
+          "default": "^",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "end_of_line": {
+          "default": "$",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "find_forward": {
+          "default": "f",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "find_backward": {
+          "default": "F",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "till_forward": {
+          "default": "t",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "till_backward": {
+          "default": "T",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "repeat_motion": {
+          "default": ";",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "repeat_motion_rev": {
+          "default": ",",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "filter_include": {
+          "default": "i",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "filter_exclude": {
+          "default": "o",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search": {
+          "default": "/",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "start_selection": {
+          "default": "v",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "yank": {
+          "default": "y",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "exit": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "SearchKeybindings": {
+      "type": "object",
+      "properties": {
+        "cancel": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "confirm": {
+          "default": "Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "FilterEditKeybindings": {
+      "type": "object",
+      "properties": {
+        "cancel": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "confirm": {
+          "default": "Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "CommandModeKeybindings": {
+      "type": "object",
+      "properties": {
+        "cancel": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "confirm": {
+          "default": "Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "DockerSelectKeybindings": {
+      "type": "object",
+      "properties": {
+        "confirm": {
+          "default": "Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "cancel": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "DltSelectKeybindings": {
+      "type": "object",
+      "properties": {
+        "confirm": {
+          "default": "Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "cancel": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "delete": {
+          "default": "d",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "next_field": {
+          "default": "Tab",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "prev_field": {
+          "default": "Shift+Tab",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "ValueColorsKeybindings": {
+      "type": "object",
+      "properties": {
+        "toggle": {
+          "default": "Space",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "all": {
+          "default": "a",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "none": {
+          "default": "n",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "apply": {
+          "default": "Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "cancel": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "SelectFieldsKeybindings": {
+      "type": "object",
+      "properties": {
+        "toggle": {
+          "default": "Space",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "move_up": {
+          "default": "K",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "move_down": {
+          "default": "J",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "all": {
+          "default": "a",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "none": {
+          "default": "n",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "apply": {
+          "default": "Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "cancel": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "HelpKeybindings": {
+      "type": "object",
+      "properties": {
+        "close": {
+          "default": [
+            "q",
+            "Esc"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "ConfirmKeybindings": {
+      "type": "object",
+      "properties": {
+        "yes": {
+          "default": [
+            "y",
+            "Enter"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "no": {
+          "default": [
+            "n",
+            "Esc"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "always": {
+          "default": "Shift+Y",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "never": {
+          "default": "Shift+N",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "UiKeybindings": {
+      "type": "object",
+      "properties": {
+        "toggle_sidebar": {
+          "default": "s",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "toggle_mode_bar": {
+          "default": "b",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "toggle_borders": {
+          "default": "B",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "toggle_wrap": {
+          "default": "w",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "exit": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "RestoreSessionPolicy": {
+      "description": "Controls whether logana asks before restoring a previous session.",
+      "oneOf": [
+        {
+          "description": "Ask before restoring.",
+          "type": "string",
+          "enum": [
+            "ask"
+          ]
+        },
+        {
+          "description": "Restore without asking (default).",
+          "type": "string",
+          "enum": [
+            "always"
+          ]
+        },
+        {
+          "description": "Never restore (skip without asking).",
+          "type": "string",
+          "enum": [
+            "never"
+          ]
+        }
+      ]
+    },
+    "SidebarSide": {
+      "type": "string",
+      "enum": [
+        "right",
+        "left"
+      ]
+    },
+    "DltDevice": {
+      "type": "object",
+      "required": [
+        "host",
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "default": 3490,
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        }
+      }
+    }
+  }
+}

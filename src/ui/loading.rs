@@ -1281,19 +1281,13 @@ mod tests {
         let file_reader = FileReader::from_bytes(data);
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
-        App::new(
+        App::builder(
             log_manager,
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .build()
         .await
     }
 
@@ -1393,19 +1387,13 @@ mod tests {
         let file_reader = FileReader::from_bytes(data);
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, Some("test.log".to_string())).await;
-        let mut app = App::new(
+        let mut app = App::builder(
             log_manager,
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .build()
         .await;
 
         assert_eq!(app.tabs.len(), 1);
@@ -1575,19 +1563,13 @@ mod tests {
         let file_reader = FileReader::from_bytes(data);
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
-        let mut app = App::new(
+        let mut app = App::builder(
             log_manager,
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .build()
         .await;
 
         app.tabs[0].stream.tail_mode = false;

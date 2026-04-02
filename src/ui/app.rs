@@ -46,7 +46,7 @@ async fn resolve_policy_setting(
             _ => RestoreSessionPolicy::Ask,
         };
     }
-    RestoreSessionPolicy::Ask
+    RestoreSessionPolicy::Always
 }
 
 struct StartupOverrides {
@@ -55,6 +55,7 @@ struct StartupOverrides {
     show_line_numbers: Option<bool>,
     show_sidebar: Option<bool>,
     wrap: Option<bool>,
+    sidebar_side: Option<SidebarSide>,
     restore_policy: Option<RestoreSessionPolicy>,
     restore_file_policy: Option<RestoreSessionPolicy>,
 }
@@ -74,7 +75,9 @@ async fn resolve_startup_settings(
     db: &crate::db::Database,
     ov: StartupOverrides,
 ) -> StartupSettings {
-    let sidebar_side = if let Ok(Some(val)) = db.load_app_setting("sidebar_left").await {
+    let sidebar_side = if let Some(s) = ov.sidebar_side {
+        s
+    } else if let Ok(Some(val)) = db.load_app_setting("sidebar_left").await {
         if val == "true" {
             SidebarSide::Left
         } else {
@@ -179,36 +182,58 @@ impl std::fmt::Debug for App {
     }
 }
 
-impl App {
-    #[allow(clippy::too_many_arguments)]
-    pub async fn new(
-        log_manager: LogManager,
-        file_reader: FileReader,
-        theme: Theme,
-        keybindings: Arc<Keybindings>,
-        restore_policy: Option<RestoreSessionPolicy>,
-        restore_file_policy: Option<RestoreSessionPolicy>,
-        show_mode_bar: Option<bool>,
-        show_borders: Option<bool>,
-        show_line_numbers: Option<bool>,
-        show_sidebar: Option<bool>,
-        wrap: Option<bool>,
-    ) -> App {
-        let db = log_manager.db.clone();
+pub struct AppBuilder {
+    log_manager: LogManager,
+    file_reader: FileReader,
+    theme: Theme,
+    keybindings: Arc<Keybindings>,
+    overrides: StartupOverrides,
+}
 
-        let settings = resolve_startup_settings(
-            &db,
-            StartupOverrides {
-                show_mode_bar,
-                show_borders,
-                show_line_numbers,
-                show_sidebar,
-                wrap,
-                restore_policy,
-                restore_file_policy,
-            },
-        )
-        .await;
+impl AppBuilder {
+    pub fn restore_policy(mut self, v: Option<RestoreSessionPolicy>) -> Self {
+        self.overrides.restore_policy = v;
+        self
+    }
+
+    pub fn restore_file_policy(mut self, v: Option<RestoreSessionPolicy>) -> Self {
+        self.overrides.restore_file_policy = v;
+        self
+    }
+
+    pub fn show_mode_bar(mut self, v: Option<bool>) -> Self {
+        self.overrides.show_mode_bar = v;
+        self
+    }
+
+    pub fn show_borders(mut self, v: Option<bool>) -> Self {
+        self.overrides.show_borders = v;
+        self
+    }
+
+    pub fn show_line_numbers(mut self, v: Option<bool>) -> Self {
+        self.overrides.show_line_numbers = v;
+        self
+    }
+
+    pub fn show_sidebar(mut self, v: Option<bool>) -> Self {
+        self.overrides.show_sidebar = v;
+        self
+    }
+
+    pub fn wrap(mut self, v: Option<bool>) -> Self {
+        self.overrides.wrap = v;
+        self
+    }
+
+    pub fn sidebar_side(mut self, v: Option<SidebarSide>) -> Self {
+        self.overrides.sidebar_side = v;
+        self
+    }
+
+    pub async fn build(self) -> App {
+        let db = self.log_manager.db.clone();
+        let settings = resolve_startup_settings(&db, self.overrides).await;
         let StartupSettings {
             restore_policy,
             restore_file_policy,
@@ -220,7 +245,8 @@ impl App {
             sidebar_side,
         } = settings;
 
-        let title = log_manager
+        let title = self
+            .log_manager
             .source_file()
             .map(|s| {
                 std::path::Path::new(s)
@@ -231,11 +257,11 @@ impl App {
             })
             .unwrap_or_else(|| "stdin".to_string());
 
-        let no_source = log_manager.source_file().is_none();
-        let no_data = file_reader.line_count() == 0;
+        let no_source = self.log_manager.source_file().is_none();
+        let no_data = self.file_reader.line_count() == 0;
 
-        let mut tab = TabState::new(file_reader, log_manager, title);
-        tab.interaction.keybindings = keybindings.clone();
+        let mut tab = TabState::new(self.file_reader, self.log_manager, title);
+        tab.interaction.keybindings = self.keybindings.clone();
         tab.display.show_mode_bar = show_mode_bar;
         tab.display.show_borders = show_borders_default;
         tab.display.show_line_numbers = show_line_numbers;
@@ -279,11 +305,11 @@ impl App {
         App {
             tabs: vec![tab],
             active_tab: 0,
-            theme,
+            theme: self.theme,
             db,
             should_quit: false,
             stdin_load_state: None,
-            keybindings,
+            keybindings: self.keybindings,
             clipboard: None,
             show_mode_bar,
             show_borders_default,
@@ -311,6 +337,32 @@ impl App {
             scrollbar_dragging: false,
             pending_archive: None,
             decompression_message: None,
+        }
+    }
+}
+
+impl App {
+    pub fn builder(
+        log_manager: LogManager,
+        file_reader: FileReader,
+        theme: Theme,
+        keybindings: Arc<Keybindings>,
+    ) -> AppBuilder {
+        AppBuilder {
+            log_manager,
+            file_reader,
+            theme,
+            keybindings,
+            overrides: StartupOverrides {
+                show_mode_bar: None,
+                show_borders: None,
+                show_line_numbers: None,
+                show_sidebar: None,
+                wrap: None,
+                sidebar_side: None,
+                restore_policy: None,
+                restore_file_policy: None,
+            },
         }
     }
 
@@ -1063,19 +1115,13 @@ mod tests {
 
     async fn make_app(lines: &[&str]) -> App {
         let (file_reader, log_manager) = make_tab(lines).await;
-        App::new(
+        App::builder(
             log_manager,
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .build()
         .await
     }
 
@@ -1142,19 +1188,13 @@ mod tests {
     async fn test_filter_reduces_visible() {
         let lines = vec!["INFO something", "WARN warning", "ERROR error"];
         let (file_reader, log_manager) = make_tab(&lines).await;
-        let mut app = App::new(
+        let mut app = App::builder(
             log_manager,
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .build()
         .await;
 
         assert_eq!(app.tab().filter.visible_indices.len(), 3);
@@ -1168,19 +1208,13 @@ mod tests {
     async fn test_mark_toggle() {
         let lines = vec!["line0", "line1", "line2"];
         let (file_reader, log_manager) = make_tab(&lines).await;
-        let mut app = App::new(
+        let mut app = App::builder(
             log_manager,
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .build()
         .await;
 
         app.tab_mut().scroll.scroll_offset = 0;
@@ -1197,19 +1231,13 @@ mod tests {
     async fn test_scroll_g_key() {
         let lines: Vec<&str> = (0..20).map(|_| "line").collect();
         let (file_reader, log_manager) = make_tab(&lines).await;
-        let mut app = App::new(
+        let mut app = App::builder(
             log_manager,
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .build()
         .await;
 
         // 'G' goes to end
@@ -1599,20 +1627,9 @@ mod tests {
         let data: Vec<u8> = b"hello\nworld\n".to_vec();
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(db.clone(), Some("test.log".to_string())).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
         let tab = &app.tabs[0];
         app.save_tab_context(tab).await;
         // Verify it was saved
@@ -1626,20 +1643,9 @@ mod tests {
         let data: Vec<u8> = b"hello\n".to_vec();
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(db.clone(), Some("test.log".to_string())).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
         app.save_all_contexts().await;
         // Session should be saved
         let files = db.load_session().await.unwrap();
@@ -1708,20 +1714,9 @@ mod tests {
         let data: Vec<u8> = b"hello\nworld\n".to_vec();
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(db, Some("/tmp/test.log".to_string())).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
         assert_eq!(app.tab().title, "test.log");
     }
 
@@ -1755,7 +1750,7 @@ mod tests {
             .await;
 
         assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Always);
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Ask);
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
 
         let file_setting = app
             .db
@@ -1779,7 +1774,7 @@ mod tests {
             .await;
 
         assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Never);
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Ask);
+        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
 
         let file_setting = app
             .db
@@ -1795,19 +1790,20 @@ mod tests {
     #[tokio::test]
     async fn test_app_new_with_config_overrides() {
         let (file_reader, log_manager) = make_tab(&["line"]).await;
-        let app = App::new(
+        let app = App::builder(
             log_manager,
             file_reader,
             Theme::default(),
             Arc::new(Keybindings::default()),
-            Some(RestoreSessionPolicy::Always),
-            Some(RestoreSessionPolicy::Never),
-            Some(false),
-            Some(true),
-            Some(false),
-            Some(false),
-            Some(true),
         )
+        .restore_policy(Some(RestoreSessionPolicy::Always))
+        .restore_file_policy(Some(RestoreSessionPolicy::Never))
+        .show_mode_bar(Some(false))
+        .show_borders(Some(true))
+        .show_line_numbers(Some(false))
+        .show_sidebar(Some(false))
+        .wrap(Some(true))
+        .build()
         .await;
         assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
         assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Never);
@@ -1830,20 +1826,9 @@ mod tests {
         db.save_app_setting("show_mode_bar", "false").await.unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
         assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
         assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Never);
         assert!(!app.show_mode_bar);
@@ -1973,20 +1958,9 @@ mod tests {
             .unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
         assert_eq!(app.restore_policy, RestoreSessionPolicy::Never);
         assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Ask);
     }
@@ -2002,20 +1976,9 @@ mod tests {
             .unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
         assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
         assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Always);
     }
@@ -2028,20 +1991,9 @@ mod tests {
             .unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
         assert_eq!(app.restore_policy, RestoreSessionPolicy::Ask);
     }
 
@@ -2056,20 +2008,9 @@ mod tests {
         db.save_app_setting("wrap", "true").await.unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
         assert!(app.show_borders_default);
         assert!(!app.show_line_numbers);
         assert!(!app.show_sidebar);
@@ -2099,20 +2040,10 @@ mod tests {
         let data: Vec<u8> = b"line0\nline1\nline2\n".to_vec();
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(db, Some("/tmp/ctx_always.log".to_string())).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            Some(RestoreSessionPolicy::Always),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .restore_file_policy(Some(RestoreSessionPolicy::Always))
+            .build()
+            .await;
         assert_eq!(app.tab().scroll.scroll_offset, 5);
     }
 
@@ -2139,20 +2070,10 @@ mod tests {
         let data: Vec<u8> = b"line0\nline1\n".to_vec();
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(db, Some("/tmp/ctx_never.log".to_string())).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            Some(RestoreSessionPolicy::Never),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .restore_file_policy(Some(RestoreSessionPolicy::Never))
+            .build()
+            .await;
         assert_eq!(app.tab().scroll.scroll_offset, 0);
     }
 
@@ -2180,20 +2101,10 @@ mod tests {
         let data: Vec<u8> = b"line0\nline1\n".to_vec();
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(db, Some("/tmp/ctx_ask.log".to_string())).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            None,
-            Some(RestoreSessionPolicy::Ask),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .restore_file_policy(Some(RestoreSessionPolicy::Ask))
+            .build()
+            .await;
         assert!(matches!(
             app.tab().interaction.mode.render_state(),
             ModeRenderState::ConfirmRestore
@@ -2206,20 +2117,10 @@ mod tests {
         db.save_session(&["/tmp/a.log".to_string()]).await.unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            Some(RestoreSessionPolicy::Always),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .restore_policy(Some(RestoreSessionPolicy::Always))
+            .build()
+            .await;
         assert!(app.pending_session_restore.is_some());
     }
 
@@ -2230,20 +2131,10 @@ mod tests {
         db.save_session(&["/tmp/b.log".to_string()]).await.unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            Some(RestoreSessionPolicy::Ask),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .restore_policy(Some(RestoreSessionPolicy::Ask))
+            .build()
+            .await;
         assert!(matches!(
             app.tab().interaction.mode.render_state(),
             ModeRenderState::ConfirmRestoreSession { .. }
@@ -2256,20 +2147,10 @@ mod tests {
         db.save_session(&["/tmp/c.log".to_string()]).await.unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
-        let app = App::new(
-            lm,
-            fr,
-            Theme::default(),
-            Arc::new(Keybindings::default()),
-            Some(RestoreSessionPolicy::Never),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .restore_policy(Some(RestoreSessionPolicy::Never))
+            .build()
+            .await;
         assert!(app.pending_session_restore.is_none());
     }
 
@@ -2458,19 +2339,13 @@ mod tests {
             .collect::<String>()
             .into_bytes();
         let file_reader = FileReader::from_bytes(data);
-        let mut app = App::new(
+        let mut app = App::builder(
             log_manager,
             file_reader,
             crate::theme::Theme::default(),
             Arc::new(crate::config::Keybindings::default()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .build()
         .await;
         app.log_panel_area = log_area;
         app.sidebar_area = sidebar_area;

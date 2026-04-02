@@ -1116,7 +1116,7 @@ mod tests {
         use clap::Parser;
         let cmd = CommandLine::try_parse_from(shell_split("enable-mcp")).unwrap();
         match cmd.command {
-            Some(Commands::EnableMcp { port }) => assert_eq!(port, 9876),
+            Some(Commands::EnableMcp { port }) => assert_eq!(port, None),
             _ => panic!("expected EnableMcp"),
         }
     }
@@ -1127,7 +1127,7 @@ mod tests {
         use clap::Parser;
         let cmd = CommandLine::try_parse_from(shell_split("enable-mcp --port 8080")).unwrap();
         match cmd.command {
-            Some(Commands::EnableMcp { port }) => assert_eq!(port, 8080),
+            Some(Commands::EnableMcp { port }) => assert_eq!(port, Some(8080)),
             _ => panic!("expected EnableMcp"),
         }
     }

@@ -4,8 +4,20 @@ use std::sync::Arc;
 use crate::parser::LogFormatParser;
 use crate::ui::FieldLayout;
 
-#[derive(Debug, Clone, Copy, PartialEq, Default, strum::EnumString, strum::Display)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Default,
+    strum::EnumString,
+    strum::Display,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum SidebarSide {
     #[default]
     Right,
@@ -15,6 +27,40 @@ pub enum SidebarSide {
 impl SidebarSide {
     pub fn is_left(self) -> bool {
         self == SidebarSide::Left
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn sidebar_side_parses_left() {
+        assert_eq!(SidebarSide::from_str("left").unwrap(), SidebarSide::Left);
+    }
+
+    #[test]
+    fn sidebar_side_parses_right() {
+        assert_eq!(SidebarSide::from_str("right").unwrap(), SidebarSide::Right);
+    }
+
+    #[test]
+    fn sidebar_side_displays_lowercase() {
+        assert_eq!(SidebarSide::Left.to_string(), "left");
+        assert_eq!(SidebarSide::Right.to_string(), "right");
+    }
+
+    #[test]
+    fn sidebar_side_rejects_invalid() {
+        assert!(SidebarSide::from_str("top").is_err());
+        assert!(SidebarSide::from_str("Left").is_err());
+    }
+
+    #[test]
+    fn sidebar_side_is_left() {
+        assert!(SidebarSide::Left.is_left());
+        assert!(!SidebarSide::Right.is_left());
     }
 }
 

@@ -136,8 +136,8 @@ pub enum Commands {
     },
     /// Start the embedded MCP server on the given port
     EnableMcp {
-        #[arg(long, default_value = "9876")]
-        port: u16,
+        #[arg(long)]
+        port: Option<u16>,
     },
     /// Stop the embedded MCP server
     DisableMcp,
