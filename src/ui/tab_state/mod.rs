@@ -2069,12 +2069,7 @@ impl TabState {
                 .visible_indices
                 .get_opt(self.scroll.scroll_offset)
                 .unwrap_or(self.scroll.scroll_offset),
-            search_query: self
-                .search
-                .query
-                .get_pattern()
-                .unwrap_or_default()
-                .to_string(),
+            search_query: String::new(),
             level_colors_disabled: self.display.level_colors_disabled.clone(),
             horizontal_scroll: self.scroll.horizontal_scroll,
             marked_lines,
@@ -2122,16 +2117,6 @@ impl TabState {
         }
         if !ctx.comments.is_empty() {
             self.log_manager.set_comments(ctx.comments.clone());
-        }
-        if !ctx.search_query.is_empty() {
-            let visible = self.filter.visible_indices.clone();
-            let texts = self.collect_display_texts(visible.iter());
-            let _ = self
-                .search
-                .query
-                .search(&ctx.search_query, visible.iter(), |li| {
-                    texts.get(&li).cloned()
-                });
         }
     }
 
