@@ -89,12 +89,11 @@ Benchmarked against [lnav](https://lnav.org/) filtering a [**3.3 GB web server a
 
 **logana**
 ```
-$ hyperfine --prepare 'rm filtered.log;sync; echo 3 | sudo tee /proc/sys/vm/drop_caches' \
-  'logana ~/logs/access.log -i food --headless > filtered.log' --runs 10
 
+hyperfine --prepare 'rm filtered.log;sync; echo 3 | sudo tee /proc/sys/vm/drop_caches' 'logana ~/logs/access.log -i food --headless > filtered.log' --runs 10
 Benchmark 1: logana ~/logs/access.log -i food --headless > filtered.log
-  Time (mean ± σ):     999.9 ms ±   2.9 ms    [User: 2277.7 ms, System: 3057.0 ms]
-  Range (min … max):   995.2 ms … 1003.6 ms    10 runs
+  Time (mean ± σ):     994.1 ms ±   6.2 ms    [User: 2629.3 ms, System: 3059.8 ms]
+  Range (min … max):   982.6 ms … 1003.6 ms    10 runs
 ```
 
 **lnav**
@@ -113,13 +112,13 @@ Benchmark 1: lnav ~/logs/access.log -c ":filter-in food" -n > filtered.log
 
 ```
 $ time logana ~/logs/access.log -i food
-logana ~/logs/access.log -i food  5.21s user 3.61s system 197% cpu 4.475 total
+logana ~/logs/access.log -i food  4.70s user 3.01s system 421% cpu 1.827 total
 
 $ time lnav ~/logs/access.log -c ":filter-in food"
 lnav ~/logs/access.log -c ":filter-in food"  12.14s user 1.37s system 114% cpu 11.819 total
 ```
 
-**2.6× faster end-to-end with the full UI.**
+**logana opens, filters, and renders the full TUI in 1.8 s — 6.5× faster than lnav end-to-end.**
 
 > **Note:** lnav provides additional features beyond filtering that may account for part of the difference. This comparison covers filtering performance only.
 
