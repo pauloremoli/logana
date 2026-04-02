@@ -14,27 +14,33 @@ Text filters match against the raw content of each log line.
 :exclude <pattern>      # hide lines matching pattern
 ```
 
-## Pattern Matching
+## Text Search
 
-logana uses two matching strategies, selected explicitly:
-
-**Literal matching** (default) — fast multi-pattern scanning via Aho-Corasick. Case-sensitive.
-
-**Regex matching** — opt-in via `--regex` / `-r`. Uses the `regex` crate with full regex syntax.
+The default mode. Fast multi-pattern scanning. Case-sensitive. Multi-word patterns work without quotes.
 
 ```sh
-:filter ERROR                       # literal — fast
-:filter connection refused          # multi-word literal (no quotes needed)
-:filter -r "ERR(OR)?"               # regex — matches ERR or ERROR
-:filter -r "\d{3} \d+"             # regex — HTTP status + bytes
-:filter -r "^2024-"                 # regex — lines starting with date
+:filter ERROR
+:filter connection refused
+:filter 500 Internal Server Error
+:filter database connection pool exhausted
 ```
 
-> **Flag ordering:** Options like `--regex`, `--fg`, `--bg`, and `-l` must be placed **before** the pattern. Everything after the first pattern word is treated as part of the pattern.
+## Regex Filters
+
+Opt in with `--regex` / `-r`. Supports full regex syntax. Words after `-r` are joined, so spaces in the pattern do not need quoting.
+
+```sh
+:filter -r (ERROR|WARN)                      # errors and warnings together
+:filter -r (timeout|connection refused)      # any connectivity failure
+:filter -r authentication failed.*user       # auth failures with user context
+:filter -r response time: [5-9]\d{3}ms      # slow responses over 5 seconds
+```
+
+> **Flag ordering:** Options (`-r`, `--fg`, `--bg`, `-l`, `--field`) must appear **before** the pattern. Everything after the first pattern word is part of the pattern.
 >
 > ```sh
-> :filter --fg red -r "timeout.*retry"   # correct
-> :filter "timeout.*retry" --fg red      # incorrect — "--fg" becomes part of the pattern
+> :filter --fg red -r timeout.*retry   # correct
+> :filter timeout.*retry --fg red      # wrong — "--fg" becomes part of the pattern
 > ```
 
 ## Multiple Filters

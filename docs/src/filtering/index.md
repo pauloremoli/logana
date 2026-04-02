@@ -20,8 +20,8 @@ Filters are the primary way to narrow the log view. They are layered: include pa
 **No filters:** All lines are shown.
 
 Both filter types support:
-- **Literal strings** — fast multi-pattern matching via Aho-Corasick
-- **Regular expressions** — full regex syntax via the `regex` crate, opt-in with `--regex` / `-r`
+- **Text search** — fast multi-pattern matching
+- **Regular expressions** — full regex syntax, opt-in with `--regex` / `-r`
 
 ## Filter Persistence
 

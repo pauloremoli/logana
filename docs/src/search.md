@@ -20,13 +20,13 @@ Press `/` or `?` to open the search bar at the bottom of the screen. Type your q
 
 ## Pattern Syntax
 
-Search uses full regex syntax (via the `regex` crate). Examples:
+Search uses full regex syntax. Examples:
 
 ```
-/ERROR                  plain literal
-/connection.*refused    regex
-/\d{3} \d+              HTTP status + bytes
-/^2024-03               lines starting with date prefix
+/NullPointerException              plain text
+/user 42 .* failed                 regex — activity for a specific user
+/POST /api/orders.* 5\d\d          regex — failed order requests
+/^2024-06-15T14                    lines from a specific hour
 ```
 
 ## Case Sensitivity

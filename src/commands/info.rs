@@ -7,13 +7,13 @@ pub struct CommandInfo {
 pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "filter",
-        usage: "filter [--field] [-l] [--fg <color>] [--bg <color>] <pattern>",
-        description: "Add an include filter. With --field, pattern is key=value scoped to a parsed field. e.g. filter --fg Red error, filter --field level=error, filter --field component=auth",
+        usage: "filter [-r] [-l] [--fg <color>] [--bg <color>] [--field <key>=<value>] <pattern>",
+        description: "Add an include filter. e.g. filter ERROR, filter connection refused, filter -r \"ERR(OR)?\", filter --field level=error",
     },
     CommandInfo {
         name: "exclude",
-        usage: "exclude [--field] <pattern>",
-        description: "Add an exclude filter. With --field, pattern is key=value scoped to a parsed field. e.g. exclude debug, exclude --field level=debug",
+        usage: "exclude [-r] [--field <key>=<value>] <pattern>",
+        description: "Add an exclude filter. e.g. exclude debug, exclude connection refused, exclude -r \"health.?check\", exclude --field level=debug",
     },
     CommandInfo {
         name: "set-color",
