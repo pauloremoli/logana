@@ -1,4 +1,4 @@
-use crate::filters::FilterType;
+use crate::filters::{FilterOptions, FilterType};
 use crate::ui::App;
 
 impl App {
@@ -9,6 +9,7 @@ impl App {
         bg: Option<String>,
         line_mode: bool,
         field: bool,
+        regex: bool,
     ) -> Result<bool, String> {
         let stored_pattern = if field {
             let (key, value) = super::parse_key_value(&pattern)?;
@@ -17,7 +18,22 @@ impl App {
             pattern.clone()
         };
 
+        let mut opts = FilterOptions::default();
+        if line_mode {
+            opts = opts.line_mode();
+        }
+        if regex {
+            opts = opts.regex();
+        }
+        if let Some(ref c) = fg {
+            opts = opts.fg(c);
+        }
+        if let Some(ref c) = bg {
+            opts = opts.bg(c);
+        }
+
         let can_incremental = !field
+            && !regex
             && self.tabs[self.active_tab]
                 .filter
                 .editing_filter_id
@@ -37,25 +53,12 @@ impl App {
         if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
             self.tabs[self.active_tab]
                 .log_manager
-                .update_filter(
-                    old_id,
-                    stored_pattern.clone(),
-                    FilterType::Include,
-                    fg.as_deref(),
-                    bg.as_deref(),
-                    !line_mode,
-                )
+                .update_filter(old_id, stored_pattern.clone(), FilterType::Include, opts)
                 .await;
         } else {
             let was_new = self.tabs[self.active_tab]
                 .log_manager
-                .add_filter_with_color(
-                    stored_pattern.clone(),
-                    FilterType::Include,
-                    fg.as_deref(),
-                    bg.as_deref(),
-                    !line_mode,
-                )
+                .add_filter_with_color(stored_pattern.clone(), FilterType::Include, opts)
                 .await;
             if was_new && can_incremental {
                 self.tabs[self.active_tab].apply_incremental_include(&stored_pattern);
@@ -72,6 +75,7 @@ impl App {
         &mut self,
         pattern: String,
         field: bool,
+        regex: bool,
     ) -> Result<bool, String> {
         let stored_pattern = if field {
             let (key, value) = super::parse_key_value(&pattern)?;
@@ -80,29 +84,21 @@ impl App {
             pattern.clone()
         };
 
+        let mut opts = FilterOptions::default();
+        if regex {
+            opts = opts.regex();
+        }
+
         if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
             self.tabs[self.active_tab]
                 .log_manager
-                .update_filter(
-                    old_id,
-                    stored_pattern,
-                    FilterType::Exclude,
-                    None,
-                    None,
-                    true,
-                )
+                .update_filter(old_id, stored_pattern, FilterType::Exclude, opts)
                 .await;
             self.tabs[self.active_tab].begin_filter_refresh();
         } else {
             let was_new = self.tabs[self.active_tab]
                 .log_manager
-                .add_filter_with_color(
-                    stored_pattern.clone(),
-                    FilterType::Exclude,
-                    None,
-                    None,
-                    true,
-                )
+                .add_filter_with_color(stored_pattern.clone(), FilterType::Exclude, opts)
                 .await;
             if was_new {
                 if field {

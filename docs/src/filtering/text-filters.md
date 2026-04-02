@@ -16,20 +16,26 @@ Text filters match against the raw content of each log line.
 
 ## Pattern Matching
 
-logana automatically selects the fastest matching strategy based on your pattern:
+logana uses two matching strategies, selected explicitly:
 
-**Literal matching** (default) — used when the pattern contains no regex metacharacters. Uses Aho-Corasick for O(n) multi-pattern scanning. Case-sensitive.
+**Literal matching** (default) — fast multi-pattern scanning via Aho-Corasick. Case-sensitive.
 
-**Regex matching** — activated automatically when the pattern contains any of: `. * + ? ( ) [ ] { } ^ $ | \`. Uses the `regex` crate.
+**Regex matching** — opt-in via `--regex` / `-r`. Uses the `regex` crate with full regex syntax.
 
-Examples:
 ```sh
-:filter ERROR               # literal — fast
-:filter "connection refused"  # literal with spaces
-:filter "ERR(OR)?"          # regex — matches ERR or ERROR
-:filter "\d{3} \d+"         # regex — HTTP status + bytes
-:filter "^2024-"            # regex — lines starting with date
+:filter ERROR                       # literal — fast
+:filter connection refused          # multi-word literal (no quotes needed)
+:filter -r "ERR(OR)?"               # regex — matches ERR or ERROR
+:filter -r "\d{3} \d+"             # regex — HTTP status + bytes
+:filter -r "^2024-"                 # regex — lines starting with date
 ```
+
+> **Flag ordering:** Options like `--regex`, `--fg`, `--bg`, and `-l` must be placed **before** the pattern. Everything after the first pattern word is treated as part of the pattern.
+>
+> ```sh
+> :filter --fg red -r "timeout.*retry"   # correct
+> :filter "timeout.*retry" --fg red      # incorrect — "--fg" becomes part of the pattern
+> ```
 
 ## Multiple Filters
 
@@ -57,7 +63,14 @@ To set a color for the currently selected filter in the filter manager, press `c
 :set-color --fg "#FF5555" --bg "#44475A"
 ```
 
-By default, only the matched portion of the line is colored (`match_only = true`). To highlight the entire line instead, use the `-l` flag when adding the filter (not yet exposed via UI — set via `:set-color` after adding).
+By default, only the matched portion of the line is colored. To highlight the entire line instead, pass `-l` when adding the filter:
+
+```sh
+:filter -l ERROR            # highlight the full line for every ERROR match
+:filter --fg red -l ERROR   # full-line red highlight
+```
+
+The `-l` flag can also be applied later with `:set-color -l` from the filter manager.
 
 When multiple filters overlap on the same span, their `fg` and `bg` are composed: one filter can contribute the foreground color while another contributes the background. Automatic value colors (HTTP methods, status codes, IPs, UUIDs) apply only to spans not already colored by a filter, and log-level colors are the lowest-priority fallback.
 

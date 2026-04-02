@@ -11,7 +11,8 @@ pub struct CommandLine {
 pub enum Commands {
     /// Add an include filter
     Filter {
-        pattern: String,
+        #[arg(trailing_var_arg = true)]
+        pattern: Vec<String>,
         #[arg(long)]
         fg: Option<String>,
         #[arg(long)]
@@ -22,13 +23,20 @@ pub enum Commands {
         /// Treat pattern as key=value and match against the named parsed field
         #[arg(long = "field", short = 'f')]
         field: bool,
+        /// Treat pattern as a regular expression instead of a literal string
+        #[arg(long = "regex", short = 'r')]
+        regex: bool,
     },
     /// Add an exclude filter
     Exclude {
-        pattern: String,
+        #[arg(trailing_var_arg = true)]
+        pattern: Vec<String>,
         /// Treat pattern as key=value and match against the named parsed field
         #[arg(long = "field", short = 'f')]
         field: bool,
+        /// Treat pattern as a regular expression instead of a literal string
+        #[arg(long = "regex", short = 'r')]
+        regex: bool,
     },
     /// Set color for the selected filter
     SetColor {

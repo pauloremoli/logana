@@ -2153,9 +2153,7 @@ mod tests {
             .add_filter_with_color(
                 "ERROR".into(),
                 crate::filters::FilterType::Include,
-                None,
-                None,
-                true,
+                crate::filters::FilterOptions::default(),
             )
             .await;
 
@@ -3053,11 +3051,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_filter_computation_saves_cached_scan_result() {
-        use crate::filters::FilterType;
+        use crate::filters::{FilterOptions, FilterType};
         let mut app = make_app(&["error line", "info line", "error again"]).await;
         app.tabs[0]
             .log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         app.tabs[0].begin_filter_refresh();
         assert!(app.tabs[0].filter.handle.is_some());

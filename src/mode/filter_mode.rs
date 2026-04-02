@@ -1,9 +1,8 @@
 use crate::config::Keybindings;
-use crate::filters::FilterType;
+use crate::filters::{ColorConfig, FilterType};
 use crate::mode::app_mode::{Mode, ModeRenderState, status_entry};
 use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
-use crate::mode::visual_char_mode::quote_for_command;
 use crate::theme::{Theme, color_to_string};
 use crate::ui::KeyResult;
 use crate::ui::TabState;
@@ -17,6 +16,260 @@ pub struct FilterManagementMode {
     pub selected_filter_index: usize,
 }
 
+fn stay_at(idx: usize) -> (Box<dyn Mode>, KeyResult) {
+    (
+        Box::new(FilterManagementMode {
+            selected_filter_index: idx,
+        }),
+        KeyResult::Handled,
+    )
+}
+
+fn open_command(tab: &mut TabState, cmd: String) -> (Box<dyn Mode>, KeyResult) {
+    let len = cmd.len();
+    let history = tab.interaction.command_history.clone();
+    tab.interaction.command_error = None;
+    (
+        Box::new(CommandMode::with_history(cmd, len, history)),
+        KeyResult::Handled,
+    )
+}
+
+fn build_edit_command(
+    ft: &FilterType,
+    cc: &Option<ColorConfig>,
+    pattern: &str,
+    use_regex: bool,
+) -> String {
+    if let Some(expr) = pattern.strip_prefix(crate::filters::DATE_PREFIX) {
+        build_date_filter_command(cc, expr)
+    } else if let Some(expr) = pattern.strip_prefix(crate::filters::FIELD_PREFIX) {
+        build_field_filter_command(ft, cc, expr)
+    } else {
+        build_text_filter_command(ft, cc, pattern, use_regex)
+    }
+}
+
+fn build_date_filter_command(cc: &Option<ColorConfig>, expr: &str) -> String {
+    let mut c = String::from("date-filter");
+    append_color_flags(&mut c, cc, true);
+    c.push(' ');
+    c.push_str(expr);
+    c
+}
+
+fn build_field_filter_command(ft: &FilterType, cc: &Option<ColorConfig>, expr: &str) -> String {
+    let mut c = filter_or_exclude_prefix(ft);
+    if *ft == FilterType::Include {
+        append_color_flags(&mut c, cc, true);
+    }
+    c.push_str(" --field ");
+    if let Some(colon) = expr.find(':') {
+        c.push_str(&expr[..colon]);
+        c.push('=');
+        c.push_str(&expr[colon + 1..]);
+    } else {
+        c.push_str(expr);
+    }
+    c
+}
+
+fn build_text_filter_command(
+    ft: &FilterType,
+    cc: &Option<ColorConfig>,
+    pattern: &str,
+    use_regex: bool,
+) -> String {
+    let mut c = filter_or_exclude_prefix(ft);
+    if use_regex {
+        c.push_str(" --regex");
+    }
+    if *ft == FilterType::Include {
+        append_color_flags(&mut c, cc, true);
+    }
+    c.push(' ');
+    c.push_str(pattern);
+    c
+}
+
+fn build_color_command(cc: Option<ColorConfig>) -> String {
+    let mut cmd = String::from("set-color");
+    if let Some(cfg) = cc {
+        append_color_flags(&mut cmd, &Some(cfg), true);
+    }
+    cmd
+}
+
+fn filter_or_exclude_prefix(ft: &FilterType) -> String {
+    if *ft == FilterType::Include {
+        String::from("filter")
+    } else {
+        String::from("exclude")
+    }
+}
+
+fn append_color_flags(cmd: &mut String, cc: &Option<ColorConfig>, include_line_flag: bool) {
+    if let Some(cfg) = cc {
+        if let Some(fg) = cfg.fg {
+            cmd.push_str(&format!(" --fg {}", color_to_string(fg)));
+        }
+        if let Some(bg) = cfg.bg {
+            cmd.push_str(&format!(" --bg {}", color_to_string(bg)));
+        }
+        if include_line_flag && !cfg.match_only {
+            cmd.push_str(" -l");
+        }
+    }
+}
+
+impl FilterManagementMode {
+    fn scroll_up(&self) -> (Box<dyn Mode>, KeyResult) {
+        stay_at(self.selected_filter_index.saturating_sub(1))
+    }
+
+    fn scroll_down(&self, tab: &TabState) -> (Box<dyn Mode>, KeyResult) {
+        let num_filters = tab.log_manager.get_filters().len();
+        let new_idx = if num_filters > 0 {
+            (self.selected_filter_index + 1).min(num_filters - 1)
+        } else {
+            0
+        };
+        stay_at(new_idx)
+    }
+
+    async fn toggle_filter(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        let selected = self.selected_filter_index;
+        let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
+        if let Some(id) = filter_id {
+            tab.log_manager.toggle_filter(id).await;
+            tab.begin_filter_refresh();
+        }
+        stay_at(selected)
+    }
+
+    async fn delete_filter(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        let selected = self.selected_filter_index;
+        let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
+        if let Some(id) = filter_id {
+            tab.log_manager.remove_filter(id).await;
+            tab.begin_filter_refresh();
+            let remaining_len = tab.log_manager.get_filters().len();
+            let new_idx = if remaining_len > 0 && selected >= remaining_len {
+                remaining_len - 1
+            } else {
+                selected
+            };
+            return stay_at(new_idx);
+        }
+        stay_at(selected)
+    }
+
+    async fn move_filter_up(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        let selected = self.selected_filter_index;
+        let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
+        if let Some(id) = filter_id {
+            tab.log_manager.move_filter_up(id).await;
+            tab.begin_filter_refresh();
+            return stay_at(selected.saturating_sub(1));
+        }
+        stay_at(selected)
+    }
+
+    async fn move_filter_down(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        let selected = self.selected_filter_index;
+        let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
+        if let Some(id) = filter_id {
+            tab.log_manager.move_filter_down(id).await;
+            tab.begin_filter_refresh();
+            let total = tab.log_manager.get_filters().len();
+            let new_idx = if selected + 1 < total {
+                selected + 1
+            } else {
+                selected
+            };
+            return stay_at(new_idx);
+        }
+        stay_at(selected)
+    }
+
+    fn edit_filter(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        let selected = self.selected_filter_index;
+        let filter_info = tab.log_manager.get_filters().get(selected).map(|f| {
+            (
+                f.id,
+                f.filter_type.clone(),
+                f.color_config.clone(),
+                f.pattern.clone(),
+                f.use_regex,
+            )
+        });
+        if let Some((id, ft, cc, pattern, use_regex)) = filter_info {
+            tab.filter.editing_filter_id = Some(id);
+            tab.filter.filter_context = Some(selected);
+            let cmd = build_edit_command(&ft, &cc, &pattern, use_regex);
+            return open_command(tab, cmd);
+        }
+        stay_at(selected)
+    }
+
+    fn set_color(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        let selected = self.selected_filter_index;
+        let color_config = tab
+            .log_manager
+            .get_filters()
+            .get(selected)
+            .and_then(|f| f.color_config.clone());
+        tab.filter.filter_context = Some(selected);
+        let cmd = build_color_command(color_config);
+        open_command(tab, cmd)
+    }
+
+    fn toggle_filtering(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        tab.filter.enabled = !tab.filter.enabled;
+        tab.begin_filter_refresh();
+        stay_at(self.selected_filter_index)
+    }
+
+    async fn toggle_all_filters(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        let any_enabled = tab.log_manager.get_filters().iter().any(|f| f.enabled);
+        if any_enabled {
+            tab.log_manager.disable_all_filters().await;
+        } else {
+            tab.log_manager.enable_all_filters().await;
+        }
+        tab.begin_filter_refresh();
+        stay_at(self.selected_filter_index)
+    }
+
+    async fn clear_all_filters(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        tab.log_manager.clear_filters().await;
+        tab.begin_filter_refresh();
+        stay_at(0)
+    }
+
+    fn add_include_filter(tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        open_command(tab, "filter ".to_string())
+    }
+
+    fn add_exclude_filter(tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        open_command(tab, "exclude ".to_string())
+    }
+
+    fn add_date_filter(tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        open_command(tab, "date-filter ".to_string())
+    }
+
+    fn sidebar_grow(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        tab.display.sidebar_width = tab.display.sidebar_width.saturating_add(2);
+        stay_at(self.selected_filter_index)
+    }
+
+    fn sidebar_shrink(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        tab.display.sidebar_width = tab.display.sidebar_width.saturating_sub(2).max(10);
+        stay_at(self.selected_filter_index)
+    }
+}
+
 #[async_trait]
 impl Mode for FilterManagementMode {
     async fn handle_key(
@@ -25,353 +278,68 @@ impl Mode for FilterManagementMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
-        // Clone the Arc so we can mutate `tab` freely below.
         let kb = tab.interaction.keybindings.clone();
 
-        // Tab / Shift+Tab always pass through to the global handler.
         if kb.global.next_tab.matches(key, modifiers) || kb.global.prev_tab.matches(key, modifiers)
         {
             return (self, KeyResult::Ignored);
         }
 
-        let selected = self.selected_filter_index;
-
         if kb.filter.exit_mode.matches(key, modifiers) {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
-
         if kb.navigation.scroll_up.matches(key, modifiers) {
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: selected.saturating_sub(1),
-                }),
-                KeyResult::Handled,
-            );
+            return self.scroll_up();
         }
-
         if kb.navigation.scroll_down.matches(key, modifiers) {
-            let num_filters = tab.log_manager.get_filters().len();
-            let new_idx = if num_filters > 0 {
-                (selected + 1).min(num_filters - 1)
-            } else {
-                0
-            };
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: new_idx,
-                }),
-                KeyResult::Handled,
-            );
+            return self.scroll_down(tab);
         }
-
         if kb.filter.toggle_filter.matches(key, modifiers) {
-            let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
-            if let Some(id) = filter_id {
-                tab.log_manager.toggle_filter(id).await;
-                tab.begin_filter_refresh();
-            }
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: selected,
-                }),
-                KeyResult::Handled,
-            );
+            return self.toggle_filter(tab).await;
         }
-
         if kb.filter.delete_filter.matches(key, modifiers) {
-            let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
-            if let Some(id) = filter_id {
-                tab.log_manager.remove_filter(id).await;
-                tab.begin_filter_refresh();
-                let remaining_len = tab.log_manager.get_filters().len();
-                let new_idx = if remaining_len > 0 && selected >= remaining_len {
-                    remaining_len - 1
-                } else {
-                    selected
-                };
-                return (
-                    Box::new(FilterManagementMode {
-                        selected_filter_index: new_idx,
-                    }),
-                    KeyResult::Handled,
-                );
-            }
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: selected,
-                }),
-                KeyResult::Handled,
-            );
+            return self.delete_filter(tab).await;
         }
-
         if kb.filter.move_filter_up.matches(key, modifiers) {
-            let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
-            if let Some(id) = filter_id {
-                tab.log_manager.move_filter_up(id).await;
-                tab.begin_filter_refresh();
-                let new_idx = selected.saturating_sub(1);
-                return (
-                    Box::new(FilterManagementMode {
-                        selected_filter_index: new_idx,
-                    }),
-                    KeyResult::Handled,
-                );
-            }
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: selected,
-                }),
-                KeyResult::Handled,
-            );
+            return self.move_filter_up(tab).await;
         }
-
         if kb.filter.move_filter_down.matches(key, modifiers) {
-            let filter_id = tab.log_manager.get_filters().get(selected).map(|f| f.id);
-            if let Some(id) = filter_id {
-                tab.log_manager.move_filter_down(id).await;
-                tab.begin_filter_refresh();
-                let total = tab.log_manager.get_filters().len();
-                let new_idx = if selected + 1 < total {
-                    selected + 1
-                } else {
-                    selected
-                };
-                return (
-                    Box::new(FilterManagementMode {
-                        selected_filter_index: new_idx,
-                    }),
-                    KeyResult::Handled,
-                );
-            }
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: selected,
-                }),
-                KeyResult::Handled,
-            );
+            return self.move_filter_down(tab).await;
         }
-
         if kb.filter.edit_filter.matches(key, modifiers) {
-            let filter_info = tab.log_manager.get_filters().get(selected).map(|f| {
-                (
-                    f.id,
-                    f.filter_type.clone(),
-                    f.color_config.clone(),
-                    f.pattern.clone(),
-                )
-            });
-            if let Some((id, ft, cc, pattern)) = filter_info {
-                tab.filter.editing_filter_id = Some(id);
-                tab.filter.filter_context = Some(selected);
-                let cmd = if let Some(expr) = pattern.strip_prefix(crate::filters::DATE_PREFIX) {
-                    let mut c = String::from("date-filter");
-                    if let Some(cfg) = &cc {
-                        if let Some(fg) = cfg.fg {
-                            c.push_str(&format!(" --fg {}", color_to_string(fg)));
-                        }
-                        if let Some(bg) = cfg.bg {
-                            c.push_str(&format!(" --bg {}", color_to_string(bg)));
-                        }
-                        if !cfg.match_only {
-                            c.push_str(" -l");
-                        }
-                    }
-                    c.push(' ');
-                    c.push_str(expr);
-                    c
-                } else if let Some(expr) = pattern.strip_prefix(crate::filters::FIELD_PREFIX) {
-                    // Convert internal "@field:key:value" → "filter --field [--fg …] [--bg …] [-l] key=value"
-                    let mut c = if ft == FilterType::Include {
-                        String::from("filter")
-                    } else {
-                        String::from("exclude")
-                    };
-                    if ft == FilterType::Include
-                        && let Some(cfg) = &cc
-                    {
-                        if let Some(fg) = cfg.fg {
-                            c.push_str(&format!(" --fg {}", color_to_string(fg)));
-                        }
-                        if let Some(bg) = cfg.bg {
-                            c.push_str(&format!(" --bg {}", color_to_string(bg)));
-                        }
-                        if !cfg.match_only {
-                            c.push_str(" -l");
-                        }
-                    }
-                    c.push_str(" --field ");
-                    if let Some(colon) = expr.find(':') {
-                        c.push_str(&expr[..colon]);
-                        c.push('=');
-                        c.push_str(&expr[colon + 1..]);
-                    } else {
-                        c.push_str(expr);
-                    }
-                    c
-                } else {
-                    let mut c = if ft == FilterType::Include {
-                        String::from("filter")
-                    } else {
-                        String::from("exclude")
-                    };
-                    if ft == FilterType::Include
-                        && let Some(cfg) = &cc
-                    {
-                        if let Some(fg) = cfg.fg {
-                            c.push_str(&format!(" --fg {}", color_to_string(fg)));
-                        }
-                        if let Some(bg) = cfg.bg {
-                            c.push_str(&format!(" --bg {}", color_to_string(bg)));
-                        }
-                        if !cfg.match_only {
-                            c.push_str(" -l");
-                        }
-                    }
-                    c.push(' ');
-                    c.push_str(&quote_for_command(&pattern));
-                    c
-                };
-                let len = cmd.len();
-                let history = tab.interaction.command_history.clone();
-                tab.interaction.command_error = None;
-                return (
-                    Box::new(CommandMode::with_history(cmd, len, history)),
-                    KeyResult::Handled,
-                );
-            }
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: selected,
-                }),
-                KeyResult::Handled,
-            );
+            return self.edit_filter(tab);
         }
-
         if kb.filter.set_color.matches(key, modifiers) {
-            let color_config = tab
-                .log_manager
-                .get_filters()
-                .get(selected)
-                .and_then(|f| f.color_config.clone());
-            tab.filter.filter_context = Some(selected);
-            let mut cmd = String::from("set-color");
-            if let Some(cfg) = color_config {
-                if let Some(fg) = cfg.fg {
-                    cmd.push_str(&format!(" --fg {}", color_to_string(fg)));
-                }
-                if let Some(bg) = cfg.bg {
-                    cmd.push_str(&format!(" --bg {}", color_to_string(bg)));
-                }
-                if !cfg.match_only {
-                    cmd.push_str(" -l");
-                }
-            }
-            let len = cmd.len();
-            let history = tab.interaction.command_history.clone();
-            tab.interaction.command_error = None;
-            return (
-                Box::new(CommandMode::with_history(cmd, len, history)),
-                KeyResult::Handled,
-            );
+            return self.set_color(tab);
         }
-
         if kb.normal.toggle_filtering.matches(key, modifiers) {
-            tab.filter.enabled = !tab.filter.enabled;
-            tab.begin_filter_refresh();
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: selected,
-                }),
-                KeyResult::Handled,
-            );
+            return self.toggle_filtering(tab);
         }
-
         if kb.filter.toggle_all_filters.matches(key, modifiers) {
-            let any_enabled = tab.log_manager.get_filters().iter().any(|f| f.enabled);
-            if any_enabled {
-                tab.log_manager.disable_all_filters().await;
-            } else {
-                tab.log_manager.enable_all_filters().await;
-            }
-            tab.begin_filter_refresh();
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: selected,
-                }),
-                KeyResult::Handled,
-            );
+            return self.toggle_all_filters(tab).await;
         }
-
         if kb.filter.clear_all_filters.matches(key, modifiers) {
-            tab.log_manager.clear_filters().await;
-            tab.begin_filter_refresh();
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: 0,
-                }),
-                KeyResult::Handled,
-            );
+            return self.clear_all_filters(tab).await;
         }
-
         if kb.filter.add_include_filter.matches(key, modifiers) {
-            let history = tab.interaction.command_history.clone();
-            tab.interaction.command_error = None;
-            return (
-                Box::new(CommandMode::with_history("filter ".to_string(), 7, history)),
-                KeyResult::Handled,
-            );
+            return Self::add_include_filter(tab);
         }
-
         if kb.filter.add_exclude_filter.matches(key, modifiers) {
-            let history = tab.interaction.command_history.clone();
-            tab.interaction.command_error = None;
-            return (
-                Box::new(CommandMode::with_history(
-                    "exclude ".to_string(),
-                    8,
-                    history,
-                )),
-                KeyResult::Handled,
-            );
+            return Self::add_exclude_filter(tab);
         }
-
         if kb.filter.add_date_filter.matches(key, modifiers) {
-            let history = tab.interaction.command_history.clone();
-            tab.interaction.command_error = None;
-            return (
-                Box::new(CommandMode::with_history(
-                    "date-filter ".to_string(),
-                    12,
-                    history,
-                )),
-                KeyResult::Handled,
-            );
+            return Self::add_date_filter(tab);
         }
-
         if kb.filter.sidebar_grow.matches(key, modifiers) {
-            tab.display.sidebar_width = tab.display.sidebar_width.saturating_add(2);
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: selected,
-                }),
-                KeyResult::Handled,
-            );
+            return self.sidebar_grow(tab);
         }
-
         if kb.filter.sidebar_shrink.matches(key, modifiers) {
-            tab.display.sidebar_width = tab.display.sidebar_width.saturating_sub(2).max(10);
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: selected,
-                }),
-                KeyResult::Handled,
-            );
+            return self.sidebar_shrink(tab);
         }
 
-        // Unrecognised key — pass through to global handler.
         (
             Box::new(FilterManagementMode {
-                selected_filter_index: selected,
+                selected_filter_index: self.selected_filter_index,
             }),
             KeyResult::Ignored,
         )
@@ -476,10 +444,6 @@ impl Mode for FilterManagementMode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// FilterEditMode
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub struct FilterEditMode {
     pub filter_id: Option<usize>,
@@ -569,6 +533,7 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::db::LogManager;
+    use crate::filters::FilterOptions;
     use crate::ingestion::FileReader;
     use crate::ui::{KeyResult, TabState};
     use std::sync::Arc;
@@ -583,7 +548,7 @@ mod tests {
 
     async fn add_filter(tab: &mut TabState, pattern: &str, filter_type: FilterType) {
         tab.log_manager
-            .add_filter_with_color(pattern.to_string(), filter_type, None, None, true)
+            .add_filter_with_color(pattern.to_string(), filter_type, FilterOptions::default())
             .await;
         tab.refresh_visible();
     }
@@ -740,418 +705,5 @@ mod tests {
             }
             other => panic!("expected Command, got {:?}", other),
         }
-    }
-
-    #[tokio::test]
-    async fn test_capital_k_moves_filter_up() {
-        let mut tab = make_tab(&["a", "b"]).await;
-        add_filter(&mut tab, "first", FilterType::Include).await;
-        add_filter(&mut tab, "second", FilterType::Include).await;
-        let (mode, result) = press(filter_mode(1), &mut tab, KeyCode::Char('K')).await;
-        assert!(matches!(result, KeyResult::Handled));
-        match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
-            other => panic!("expected FilterManagement, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_capital_j_moves_filter_down() {
-        let mut tab = make_tab(&["a", "b"]).await;
-        add_filter(&mut tab, "first", FilterType::Include).await;
-        add_filter(&mut tab, "second", FilterType::Include).await;
-        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('J')).await;
-        assert!(matches!(result, KeyResult::Handled));
-        match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 1),
-            other => panic!("expected FilterManagement, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_capital_f_toggles_filtering_enabled() {
-        let mut tab = make_tab(&["a", "b"]).await;
-        assert!(tab.filter.enabled);
-        press(filter_mode(0), &mut tab, KeyCode::Char('F')).await;
-        assert!(!tab.filter.enabled);
-        press(filter_mode(0), &mut tab, KeyCode::Char('F')).await;
-        assert!(tab.filter.enabled);
-    }
-
-    #[tokio::test]
-    async fn test_capital_f_stays_in_filter_mode() {
-        let mut tab = make_tab(&["line"]).await;
-        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('F')).await;
-        assert!(matches!(result, KeyResult::Handled));
-        assert!(matches!(
-            mode.render_state(),
-            ModeRenderState::FilterManagement { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_capital_a_disables_all_when_some_enabled() {
-        let mut tab = make_tab(&["error", "warn"]).await;
-        add_filter(&mut tab, "error", FilterType::Include).await;
-        add_filter(&mut tab, "warn", FilterType::Include).await;
-        assert!(tab.log_manager.get_filters().iter().all(|f| f.enabled));
-
-        press(filter_mode(0), &mut tab, KeyCode::Char('A')).await;
-        assert!(tab.log_manager.get_filters().iter().all(|f| !f.enabled));
-    }
-
-    #[tokio::test]
-    async fn test_capital_a_enables_all_when_all_disabled() {
-        let mut tab = make_tab(&["error", "warn"]).await;
-        add_filter(&mut tab, "error", FilterType::Include).await;
-        add_filter(&mut tab, "warn", FilterType::Include).await;
-        tab.log_manager.disable_all_filters().await;
-        assert!(tab.log_manager.get_filters().iter().all(|f| !f.enabled));
-
-        press(filter_mode(0), &mut tab, KeyCode::Char('A')).await;
-        assert!(tab.log_manager.get_filters().iter().all(|f| f.enabled));
-    }
-
-    #[tokio::test]
-    async fn test_capital_c_clears_all_filters() {
-        let mut tab = make_tab(&["error", "warn"]).await;
-        add_filter(&mut tab, "error", FilterType::Include).await;
-        add_filter(&mut tab, "warn", FilterType::Include).await;
-        assert_eq!(tab.log_manager.get_filters().len(), 2);
-
-        press(filter_mode(0), &mut tab, KeyCode::Char('C')).await;
-        assert!(tab.log_manager.get_filters().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_capital_c_resets_selected_index_to_zero() {
-        let mut tab = make_tab(&["error", "warn"]).await;
-        add_filter(&mut tab, "error", FilterType::Include).await;
-        add_filter(&mut tab, "warn", FilterType::Include).await;
-
-        let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Char('C')).await;
-        match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
-            other => panic!("expected FilterManagement, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_i_opens_filter_include_command() {
-        let mut tab = make_tab(&["line"]).await;
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('i')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => assert!(input.starts_with("filter ")),
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_o_opens_filter_exclude_command() {
-        let mut tab = make_tab(&["line"]).await;
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('o')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => assert!(input.starts_with("exclude ")),
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_command_error_cleared_on_filter_include_shortcut() {
-        let mut tab = make_tab(&["line"]).await;
-        tab.interaction.command_error = Some("previous error".to_string());
-        press(filter_mode(0), &mut tab, KeyCode::Char('i')).await;
-        assert!(tab.interaction.command_error.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_command_error_cleared_on_filter_exclude_shortcut() {
-        let mut tab = make_tab(&["line"]).await;
-        tab.interaction.command_error = Some("previous error".to_string());
-        press(filter_mode(0), &mut tab, KeyCode::Char('o')).await;
-        assert!(tab.interaction.command_error.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_command_error_cleared_on_date_filter_shortcut() {
-        let mut tab = make_tab(&["line"]).await;
-        tab.interaction.command_error = Some("previous error".to_string());
-        press(filter_mode(0), &mut tab, KeyCode::Char('t')).await;
-        assert!(tab.interaction.command_error.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_edit_filter_with_spaces_wraps_in_quotes() {
-        let mut tab = make_tab(&["hello world"]).await;
-        add_filter(&mut tab, "hello world", FilterType::Include).await;
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert_eq!(input, r#"filter "hello world""#, "got: {input}");
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_edit_exclude_with_spaces_wraps_in_quotes() {
-        let mut tab = make_tab(&["foo bar"]).await;
-        add_filter(&mut tab, "foo bar", FilterType::Exclude).await;
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert_eq!(input, r#"exclude "foo bar""#, "got: {input}");
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_edit_filter_no_spaces_no_quotes() {
-        let mut tab = make_tab(&["error"]).await;
-        add_filter(&mut tab, "error", FilterType::Include).await;
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert_eq!(input, "filter error", "got: {input}");
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_edit_filter_embedded_quote_escaped() {
-        let mut tab = make_tab(&["line"]).await;
-        add_filter(&mut tab, r#"say "hi" now"#, FilterType::Include).await;
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert_eq!(input, r#"filter "say \"hi\" now""#, "got: {input}");
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_edit_field_filter_include_formats_as_field_flag() {
-        let mut tab = make_tab(&["line"]).await;
-        add_filter(&mut tab, "@field:lvl:INFO", FilterType::Include).await;
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert_eq!(input, "filter --field lvl=INFO", "got: {input}");
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_edit_field_filter_exclude_formats_as_field_flag() {
-        let mut tab = make_tab(&["line"]).await;
-        add_filter(&mut tab, "@field:level:debug", FilterType::Exclude).await;
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert_eq!(input, "exclude --field level=debug", "got: {input}");
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_command_error_cleared_on_edit_filter() {
-        let mut tab = make_tab(&["line"]).await;
-        add_filter(&mut tab, "error", FilterType::Include).await;
-        tab.interaction.command_error = Some("previous error".to_string());
-        press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        assert!(tab.interaction.command_error.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_mode_bar_content_contains_filter() {
-        assert!(matches!(
-            filter_mode(0).render_state(),
-            ModeRenderState::FilterManagement { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_selected_filter_index_returns_current() {
-        let mode = filter_mode(3);
-        match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 3),
-            other => panic!("expected FilterManagement, got {:?}", other),
-        }
-    }
-
-    // FilterEditMode tests
-
-    fn edit_mode(filter_id: Option<usize>, input: &str) -> FilterEditMode {
-        FilterEditMode {
-            filter_id,
-            filter_input: input.to_string(),
-        }
-    }
-
-    async fn press_edit(
-        mode: FilterEditMode,
-        tab: &mut TabState,
-        code: KeyCode,
-    ) -> (Box<dyn Mode>, KeyResult) {
-        Box::new(mode)
-            .handle_key(tab, code, KeyModifiers::NONE)
-            .await
-    }
-
-    #[tokio::test]
-    async fn test_edit_char_appends_to_input() {
-        let mut tab = make_tab(&["line"]).await;
-        let mode = edit_mode(None, "err");
-        let (mode2, _) = press_edit(mode, &mut tab, KeyCode::Char('o')).await;
-        assert!(matches!(mode2.render_state(), ModeRenderState::FilterEdit));
-    }
-
-    #[tokio::test]
-    async fn test_edit_backspace_removes_char() {
-        let mut tab = make_tab(&["line"]).await;
-        let mode = edit_mode(None, "error");
-        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Backspace).await;
-        assert!(matches!(result, KeyResult::Handled));
-        // Mode should still be FilterEditMode
-        assert!(matches!(mode2.render_state(), ModeRenderState::FilterEdit));
-    }
-
-    #[tokio::test]
-    async fn test_edit_esc_transitions_to_filter_mode() {
-        let mut tab = make_tab(&["line"]).await;
-        let mode = edit_mode(None, "error");
-        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Esc).await;
-        assert!(matches!(result, KeyResult::Handled));
-        assert!(matches!(
-            mode2.render_state(),
-            ModeRenderState::FilterManagement { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_edit_tab_returns_ignored() {
-        let mut tab = make_tab(&["line"]).await;
-        let mode = edit_mode(None, "err");
-        let (_, result) = press_edit(mode, &mut tab, KeyCode::Tab).await;
-        assert!(matches!(result, KeyResult::Ignored));
-    }
-
-    #[tokio::test]
-    async fn test_edit_enter_applies_filter_change() {
-        let mut tab = make_tab(&["warn", "error"]).await;
-        add_filter(&mut tab, "warn", FilterType::Include).await;
-        let id = tab.log_manager.get_filters()[0].id;
-        let mode = edit_mode(Some(id), "error");
-        let (mode2, result) = press_edit(mode, &mut tab, KeyCode::Enter).await;
-        assert!(matches!(result, KeyResult::Handled));
-        // Should transition to FilterManagementMode
-        assert!(matches!(
-            mode2.render_state(),
-            ModeRenderState::FilterManagement { .. }
-        ));
-        assert_eq!(tab.log_manager.get_filters()[0].pattern, "error");
-    }
-
-    #[tokio::test]
-    async fn test_edit_field_filter_with_fg_color_includes_color_flags() {
-        let mut tab = make_tab(&["line"]).await;
-        tab.log_manager
-            .add_filter_with_color(
-                "@field:level:error".to_string(),
-                FilterType::Include,
-                Some("[255,0,0]"),
-                None,
-                false,
-            )
-            .await;
-        tab.refresh_visible();
-
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert!(
-                    input.contains("--fg"),
-                    "edit command should include --fg flag, got: {input}"
-                );
-                assert!(
-                    input.contains("--field"),
-                    "edit command should include --field flag, got: {input}"
-                );
-                assert!(
-                    input.contains("level=error"),
-                    "edit command should include field expression, got: {input}"
-                );
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_edit_field_filter_without_color_omits_color_flags() {
-        let mut tab = make_tab(&["line"]).await;
-        add_filter(&mut tab, "@field:level:warn", FilterType::Include).await;
-
-        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
-        match mode.render_state() {
-            ModeRenderState::Command { input, .. } => {
-                assert!(
-                    !input.contains("--fg"),
-                    "edit command must not include --fg when no color set, got: {input}"
-                );
-                assert!(
-                    !input.contains("--bg"),
-                    "edit command must not include --bg when no color set, got: {input}"
-                );
-                assert_eq!(input, "filter --field level=warn", "got: {input}");
-            }
-            other => panic!("expected Command, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_greater_than_grows_sidebar() {
-        let mut tab = make_tab(&["line"]).await;
-        let initial = tab.display.sidebar_width;
-        press(filter_mode(0), &mut tab, KeyCode::Char('>')).await;
-        assert_eq!(tab.display.sidebar_width, initial + 2);
-    }
-
-    #[tokio::test]
-    async fn test_less_than_shrinks_sidebar() {
-        let mut tab = make_tab(&["line"]).await;
-        tab.display.sidebar_width = 20;
-        press(filter_mode(0), &mut tab, KeyCode::Char('<')).await;
-        assert_eq!(tab.display.sidebar_width, 18);
-    }
-
-    #[tokio::test]
-    async fn test_shrink_does_not_go_below_minimum() {
-        let mut tab = make_tab(&["line"]).await;
-        tab.display.sidebar_width = 10;
-        press(filter_mode(0), &mut tab, KeyCode::Char('<')).await;
-        assert_eq!(tab.display.sidebar_width, 10);
-    }
-
-    #[tokio::test]
-    async fn test_resize_stays_in_filter_mode() {
-        let mut tab = make_tab(&["line"]).await;
-        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('>')).await;
-        assert!(matches!(result, KeyResult::Handled));
-        assert!(matches!(
-            mode.render_state(),
-            ModeRenderState::FilterManagement { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_unrecognized_key_returns_ignored() {
-        let mut tab = make_tab(&["line"]).await;
-        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::F(2)).await;
-        assert!(matches!(result, KeyResult::Ignored));
     }
 }

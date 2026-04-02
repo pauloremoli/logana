@@ -460,14 +460,17 @@ impl Filter for RegexFilter {
     }
 }
 
-/// Builds a `Box<dyn Filter>` from a pattern, choosing Aho-Corasick vs Regex automatically.
+/// Builds a `Box<dyn Filter>` from a pattern.
+/// When `use_regex` is true, compiles the pattern as a regular expression;
+/// otherwise uses Aho-Corasick for fast literal substring matching.
 pub fn build_filter(
     pattern: &str,
     decision: FilterDecision,
     match_only: bool,
     style_id: StyleId,
+    use_regex: bool,
 ) -> Option<Box<dyn Filter>> {
-    if is_regex_pattern(pattern) {
+    if use_regex {
         RegexFilter::new(pattern, decision, match_only, style_id)
             .map(|f| Box::new(f) as Box<dyn Filter>)
     } else {
@@ -1074,6 +1077,95 @@ pub struct ColorConfig {
     pub match_only: bool,
 }
 
+/// Options for creating or updating a filter. Use the builder methods to set non-default values.
+///
+/// Defaults: `match_only = true` (highlight matched text only), `use_regex = false` (literal).
+#[derive(Debug, Clone)]
+pub struct FilterOptions {
+    pub fg: Option<String>,
+    pub bg: Option<String>,
+    /// When `true` (default) only the matched substring is highlighted;
+    /// when `false` the entire line is highlighted.
+    pub match_only: bool,
+    /// When `true` the pattern is compiled as a regex; when `false` (default) it is a literal.
+    pub use_regex: bool,
+}
+
+impl Default for FilterOptions {
+    fn default() -> Self {
+        Self {
+            fg: None,
+            bg: None,
+            match_only: true,
+            use_regex: false,
+        }
+    }
+}
+
+impl FilterOptions {
+    pub fn fg(mut self, fg: &str) -> Self {
+        self.fg = Some(fg.to_string());
+        self
+    }
+
+    pub fn bg(mut self, bg: &str) -> Self {
+        self.bg = Some(bg.to_string());
+        self
+    }
+
+    /// Highlight the entire line instead of only the matched text.
+    pub fn line_mode(mut self) -> Self {
+        self.match_only = false;
+        self
+    }
+
+    /// Treat the pattern as a regular expression.
+    pub fn regex(mut self) -> Self {
+        self.use_regex = true;
+        self
+    }
+}
+
+/// Options for the low-level `FilterStore::insert_filter` call.
+///
+/// Defaults: `enabled = true`, no color, no source file, `use_regex = false`.
+#[derive(Debug, Default, Clone)]
+pub struct FilterInsertOptions {
+    pub enabled: bool,
+    pub color_config: Option<ColorConfig>,
+    pub source_file: Option<String>,
+    pub use_regex: bool,
+}
+
+impl FilterInsertOptions {
+    pub fn new() -> Self {
+        Self {
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+
+    pub fn color(mut self, cc: ColorConfig) -> Self {
+        self.color_config = Some(cc);
+        self
+    }
+
+    pub fn source(mut self, s: impl Into<String>) -> Self {
+        self.source_file = Some(s.into());
+        self
+    }
+
+    pub fn regex(mut self) -> Self {
+        self.use_regex = true;
+        self
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FilterDef {
     pub id: usize,
@@ -1081,6 +1173,8 @@ pub struct FilterDef {
     pub filter_type: FilterType,
     pub enabled: bool,
     pub color_config: Option<ColorConfig>,
+    #[serde(default)]
+    pub use_regex: bool,
 }
 
 #[cfg(test)]
@@ -1154,15 +1248,15 @@ mod tests {
 
     #[test]
     fn test_build_filter_selects_substring_for_literal() {
-        // Pure literal — should work (no panic)
-        let f = build_filter("error", FilterDecision::Include, false, 0);
+        // Literal mode (use_regex = false)
+        let f = build_filter("error", FilterDecision::Include, false, 0, false);
         assert!(f.is_some());
     }
 
     #[test]
     fn test_build_filter_selects_regex_for_pattern() {
-        // Has regex chars — should use RegexFilter
-        let f = build_filter(r"error\d+", FilterDecision::Include, false, 0);
+        // Explicit regex mode (use_regex = true)
+        let f = build_filter(r"error\d+", FilterDecision::Include, false, 0, true);
         assert!(f.is_some());
     }
 

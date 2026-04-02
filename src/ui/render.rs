@@ -981,9 +981,7 @@ mod tests {
             .add_filter_with_color(
                 "INFO".to_string(),
                 crate::filters::FilterType::Include,
-                None,
-                None,
-                false,
+                crate::filters::FilterOptions::default().line_mode(),
             )
             .await;
         app.tabs[0]
@@ -991,9 +989,7 @@ mod tests {
             .add_filter_with_color(
                 "ERROR".to_string(),
                 crate::filters::FilterType::Include,
-                None,
-                None,
-                false,
+                crate::filters::FilterOptions::default().line_mode(),
             )
             .await;
         app.tabs[0].refresh_visible();
@@ -1955,9 +1951,9 @@ mod tests {
             .add_filter_with_color(
                 "log".to_string(),
                 FilterType::Include,
-                Some("[255,0,0]"),
-                None,
-                false,
+                crate::filters::FilterOptions::default()
+                    .fg("[255,0,0]")
+                    .line_mode(),
             )
             .await;
         app.tabs[0].refresh_visible();
@@ -2011,9 +2007,7 @@ mod tests {
             .add_filter_with_color(
                 "log".to_string(),
                 FilterType::Include,
-                Some("[255,0,0]"),
-                None,
-                true,
+                crate::filters::FilterOptions::default().fg("[255,0,0]"),
             )
             .await;
         app.tabs[0].refresh_visible();
@@ -2046,9 +2040,9 @@ mod tests {
             .add_filter_with_color(
                 "5.120.204.67".to_string(),
                 FilterType::Include,
-                Some("Black"),
-                Some("Salmon"),
-                true,
+                crate::filters::FilterOptions::default()
+                    .fg("Black")
+                    .bg("Salmon"),
             )
             .await;
         app.tabs[0].refresh_visible();
@@ -2084,9 +2078,9 @@ mod tests {
             .add_filter_with_color(
                 "5.120.204.67".to_string(),
                 FilterType::Include,
-                Some("Black"),
-                Some("Salmon"),
-                true,
+                crate::filters::FilterOptions::default()
+                    .fg("Black")
+                    .bg("Salmon"),
             )
             .await;
         app.tabs[0].begin_filter_refresh();
@@ -2120,9 +2114,9 @@ mod tests {
             .add_filter_with_color(
                 "5.120.204.67".to_string(),
                 FilterType::Include,
-                Some("Black"),
-                Some("Salmon"),
-                true,
+                crate::filters::FilterOptions::default()
+                    .fg("Black")
+                    .bg("Salmon"),
             )
             .await;
         app.tabs[0].apply_incremental_include("5.120.204.67");
@@ -2154,9 +2148,9 @@ mod tests {
             .add_filter_with_color(
                 "5.120.204.67".to_string(),
                 FilterType::Include,
-                Some("Black"),
-                Some("Salmon"),
-                true,
+                crate::filters::FilterOptions::default()
+                    .fg("Black")
+                    .bg("Salmon"),
             )
             .await;
         app.tabs[0].refresh_visible();

@@ -21,7 +21,7 @@ Filters are the primary way to narrow the log view. They are layered: include pa
 
 Both filter types support:
 - **Literal strings** — fast multi-pattern matching via Aho-Corasick
-- **Regular expressions** — full regex syntax via the `regex` crate (activated automatically when the pattern contains metacharacters)
+- **Regular expressions** — full regex syntax via the `regex` crate, opt-in with `--regex` / `-r`
 
 ## Filter Persistence
 
@@ -95,8 +95,8 @@ logana app.log -i error -o debug
 # Field-scoped filter
 logana app.log -i "--field level=ERROR"
 
-# Include filter with highlight color
-logana app.log -i "--bg Red error"
+# Include filter with highlight color (flags before pattern)
+logana app.log -i "--bg red error"
 
 # Date range filter
 logana app.log -t "> 2024-02-21"

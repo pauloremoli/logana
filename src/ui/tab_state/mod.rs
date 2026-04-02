@@ -1881,7 +1881,7 @@ impl TabState {
             .filter
             .visible_indices
             .get_opt(self.scroll.scroll_offset);
-        if let Some(filter) = build_filter(pattern, decision, true, 0) {
+        if let Some(filter) = build_filter(pattern, decision, true, 0, false) {
             let file_reader = &self.file_reader;
             let indices: Vec<usize> = self.filter.visible_indices.iter().collect();
             let new_visible: Vec<usize> = indices
@@ -2444,7 +2444,7 @@ mod tests {
     use super::*;
     use crate::db::LogManager;
     use crate::db::{AppSettingsStore, Database, FileContext};
-    use crate::filters::FilterType;
+    use crate::filters::{FilterOptions, FilterType};
     use crate::ingestion::FileReader;
     use crate::types::Comment;
     use std::sync::Arc;
@@ -2528,7 +2528,11 @@ mod tests {
     async fn test_refresh_visible_filtering_disabled() {
         let mut tab = make_tab(&["line1", "line2", "line3", "line4", "line5"]).await;
         tab.log_manager
-            .add_filter_with_color("line1".to_string(), FilterType::Include, None, None, false)
+            .add_filter_with_color(
+                "line1".to_string(),
+                FilterType::Include,
+                FilterOptions::default().line_mode(),
+            )
             .await;
         tab.filter.enabled = false;
         tab.refresh_visible();
@@ -2539,7 +2543,11 @@ mod tests {
     async fn test_filtering_disabled_keeps_selected_line() {
         let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
         tab.log_manager
-            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, false)
+            .add_filter_with_color(
+                "line".to_string(),
+                FilterType::Include,
+                FilterOptions::default().line_mode(),
+            )
             .await;
         tab.refresh_visible();
         tab.scroll.scroll_offset = 3;
@@ -2553,7 +2561,11 @@ mod tests {
     async fn test_filtering_reenabled_keeps_selected_line_if_visible() {
         let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
         tab.log_manager
-            .add_filter_with_color("line2".to_string(), FilterType::Include, None, None, false)
+            .add_filter_with_color(
+                "line2".to_string(),
+                FilterType::Include,
+                FilterOptions::default().line_mode(),
+            )
             .await;
         tab.filter.enabled = false;
         tab.refresh_visible();
@@ -2568,7 +2580,11 @@ mod tests {
     async fn test_filtering_reenabled_clamps_when_selected_line_hidden() {
         let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
         tab.log_manager
-            .add_filter_with_color("line4".to_string(), FilterType::Include, None, None, false)
+            .add_filter_with_color(
+                "line4".to_string(),
+                FilterType::Include,
+                FilterOptions::default().line_mode(),
+            )
             .await;
         tab.filter.enabled = false;
         tab.refresh_visible();
@@ -3020,7 +3036,7 @@ mod tests {
         let mut tab = make_tab(lines).await;
         let pattern = format!("{}{}", crate::filters::DATE_PREFIX, expr);
         tab.log_manager
-            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
             .await;
         tab.refresh_visible();
         tab
@@ -3047,7 +3063,7 @@ mod tests {
         for expr in &["01:00 .. 02:00", "03:00 .. 04:00"] {
             let pattern = format!("{}{}", crate::filters::DATE_PREFIX, expr);
             tab.log_manager
-                .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+                .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
                 .await;
         }
         tab.refresh_visible();
@@ -3090,7 +3106,11 @@ mod tests {
     async fn test_refresh_visible_populates_filter_cache() {
         let mut tab = make_tab(&["error line", "info line", "error again"]).await;
         tab.log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.refresh_visible();
         // Cache is set and reflects the filter.
@@ -3102,7 +3122,11 @@ mod tests {
     async fn test_filtering_disabled_cache_is_empty_manager() {
         let mut tab = make_tab(&["error line", "info line"]).await;
         tab.log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.filter.enabled = false;
         tab.refresh_visible();
@@ -3115,7 +3139,11 @@ mod tests {
     async fn test_refresh_visible_increments_parse_cache_gen() {
         let mut tab = make_tab(&["line"]).await;
         tab.log_manager
-            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "line".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         let old_gen = tab.cache.parse_gen;
         tab.refresh_visible();
@@ -3136,7 +3164,11 @@ mod tests {
         let mut tab = make_tab(&["error line", "info line", "error again", "debug line"]).await;
         assert_eq!(tab.filter.visible_indices.len(), 4);
         tab.log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         // Only lines containing "error" should remain.
         tab.apply_incremental_include("error");
@@ -3149,7 +3181,11 @@ mod tests {
     async fn test_apply_incremental_include_updates_filter_cache() {
         let mut tab = make_tab(&["line a", "line b"]).await;
         tab.log_manager
-            .add_filter_with_color("line a".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "line a".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         let old_gen = tab.cache.parse_gen;
         tab.apply_incremental_include("line a");
@@ -3163,7 +3199,11 @@ mod tests {
     async fn test_apply_incremental_include_no_match_empty() {
         let mut tab = make_tab(&["error line", "info line"]).await;
         tab.log_manager
-            .add_filter_with_color("NOMATCH".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "NOMATCH".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.apply_incremental_include("NOMATCH");
         assert!(tab.filter.visible_indices.is_empty());
@@ -3176,7 +3216,11 @@ mod tests {
         // Start with all lines visible.
         assert_eq!(tab.filter.visible_indices.len(), 4);
         tab.log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Exclude, None, None, true)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Exclude,
+                FilterOptions::default(),
+            )
             .await;
         // Apply incremental exclude for "error" — removes lines 0 and 2.
         tab.apply_incremental_exclude("error");
@@ -3198,9 +3242,7 @@ mod tests {
             .add_filter_with_color(
                 "20:29:10.000".to_string(),
                 FilterType::Exclude,
-                None,
-                None,
-                true,
+                FilterOptions::default(),
             )
             .await;
         tab.apply_incremental_exclude("20:29:10.000");
@@ -3213,7 +3255,11 @@ mod tests {
     async fn test_apply_incremental_exclude_updates_filter_cache() {
         let mut tab = make_tab(&["line a", "line b"]).await;
         tab.log_manager
-            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "line".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.refresh_visible();
         let old_gen = tab.cache.parse_gen;
@@ -3228,7 +3274,11 @@ mod tests {
     async fn test_refresh_visible_bumps_render_cache_gen() {
         let mut tab = make_tab(&["line"]).await;
         tab.log_manager
-            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "line".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         let old = tab.cache.render_gen;
         tab.refresh_visible();
@@ -3254,7 +3304,11 @@ mod tests {
         // on the first call, but the toggle-off should NOT re-run it.
         let mut tab = make_tab(&["hello", "world", "hello world"]).await;
         tab.log_manager
-            .add_filter_with_color("hello".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "hello".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.filter.enabled = true;
         tab.refresh_visible();
@@ -3284,7 +3338,11 @@ mod tests {
         // the saved view must be cleared (it would be stale).
         let mut tab = make_tab(&["hello", "world"]).await;
         tab.log_manager
-            .add_filter_with_color("hello".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "hello".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.filter.enabled = true;
         tab.refresh_visible();
@@ -3312,7 +3370,11 @@ mod tests {
     async fn test_refresh_filter_colors_updates_styles_without_rescan() {
         let mut tab = make_tab(&["INFO hello", "WARN world"]).await;
         tab.log_manager
-            .add_filter_with_color("INFO".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "INFO".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.refresh_visible();
         let old_parse_gen = tab.cache.parse_gen;
@@ -3497,7 +3559,7 @@ mod tests {
         let mut tab = make_tab(&lines).await;
         let pattern = format!("{}01:00 .. 02:00", crate::filters::DATE_PREFIX);
         tab.log_manager
-            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
             .await;
         tab.filter.enabled = false;
         tab.refresh_visible();
@@ -3514,7 +3576,7 @@ mod tests {
         let mut tab = make_tab(&lines).await;
         let pattern = format!("{}01:00 .. 02:00", crate::filters::DATE_PREFIX);
         tab.log_manager
-            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
             .await;
         // Mark both lines, including the one outside the date range.
         tab.log_manager.toggle_mark(0);
@@ -3542,15 +3604,17 @@ mod tests {
 
         // Add text include for "ERROR" and field include for level=error.
         tab.log_manager
-            .add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "ERROR".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.log_manager
             .add_filter_with_color(
                 "@field:level:error".to_string(),
                 FilterType::Include,
-                None,
-                None,
-                true,
+                FilterOptions::default(),
             )
             .await;
         tab.filter.enabled = true;
@@ -3575,15 +3639,17 @@ mod tests {
         let mut tab = make_tab(&lines).await;
 
         tab.log_manager
-            .add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "ERROR".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.log_manager
             .add_filter_with_color(
                 "@field:level:debug".to_string(),
                 FilterType::Exclude,
-                None,
-                None,
-                true,
+                FilterOptions::default(),
             )
             .await;
         tab.filter.enabled = true;
@@ -3609,7 +3675,11 @@ mod tests {
     async fn test_begin_filter_refresh_fast_path_filtering_disabled() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
         tab.log_manager
-            .add_filter_with_color("a".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "a".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.filter.enabled = false;
         tab.begin_filter_refresh();
@@ -3637,7 +3707,11 @@ mod tests {
     async fn test_begin_filter_refresh_spawns_background_for_active_filters() {
         let mut tab = make_tab(&["error line", "info line", "error again"]).await;
         tab.log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.begin_filter_refresh();
         // Slow path: background handle is present.
@@ -3658,7 +3732,11 @@ mod tests {
     async fn test_begin_filter_refresh_cancels_previous_handle() {
         let mut tab = make_tab(&["x", "y", "z"]).await;
         tab.log_manager
-            .add_filter_with_color("x".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "x".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.begin_filter_refresh();
         let cancel_1 = tab.filter.handle.as_ref().unwrap().cancel.clone();
@@ -3675,7 +3753,11 @@ mod tests {
         let mut tab = make_tab(&["error line", "info line", "error again"]).await;
         let filter_id = tab
             .log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         // Seed the cache as if a completed scan had run.
         let fingerprint: Vec<crate::filters::FilterDef> = tab
@@ -3713,7 +3795,11 @@ mod tests {
     async fn test_begin_filter_refresh_cache_miss_on_line_count_change() {
         let mut tab = make_tab(&["error line", "info line"]).await;
         tab.log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         let fingerprint: Vec<crate::filters::FilterDef> = tab
             .log_manager
@@ -3745,7 +3831,11 @@ mod tests {
     async fn test_begin_filter_refresh_cache_miss_on_filter_change() {
         let mut tab = make_tab(&["error line", "info line"]).await;
         tab.log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         // Cache built for a different enabled filter.
         let stale_filter = crate::filters::FilterDef {
@@ -3754,6 +3844,7 @@ mod tests {
             filter_type: FilterType::Include,
             enabled: true,
             color_config: None,
+            use_regex: false,
         };
         tab.filter.cached_scan = Some(CachedScanResult {
             filter_fingerprint: vec![stale_filter],
@@ -3776,7 +3867,11 @@ mod tests {
     async fn test_begin_filter_refresh_cache_miss_on_raw_mode_change() {
         let mut tab = make_tab(&["error line", "info line"]).await;
         tab.log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         let fingerprint: Vec<crate::filters::FilterDef> = tab
             .log_manager
@@ -3807,7 +3902,11 @@ mod tests {
     async fn test_advance_filter_computation_applies_result() {
         let mut tab = make_tab(&["foo bar", "baz", "foo baz"]).await;
         tab.log_manager
-            .add_filter_with_color("foo".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "foo".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.begin_filter_refresh();
         assert!(tab.filter.handle.is_some());
@@ -3881,10 +3980,18 @@ mod tests {
         ])
         .await;
         tab.log_manager
-            .add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "ERROR".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.log_manager
-            .add_filter_with_color("DEBUG".to_string(), FilterType::Exclude, None, None, true)
+            .add_filter_with_color(
+                "DEBUG".to_string(),
+                FilterType::Exclude,
+                FilterOptions::default(),
+            )
             .await;
         tab.begin_filter_refresh();
         assert!(tab.filter.handle.is_some());
@@ -3910,9 +4017,7 @@ mod tests {
             .add_filter_with_color(
                 "20:29:10.000".to_string(),
                 FilterType::Exclude,
-                None,
-                None,
-                true,
+                FilterOptions::default(),
             )
             .await;
         tab.begin_filter_refresh();
@@ -3970,9 +4075,7 @@ mod tests {
             .add_filter_with_color(
                 "20:29:10.000".to_string(),
                 FilterType::Exclude,
-                None,
-                None,
-                true,
+                FilterOptions::default(),
             )
             .await;
 
@@ -4010,7 +4113,11 @@ mod tests {
     async fn test_filter_match_counts_updated_via_advance() {
         let mut tab = make_tab(&["ERROR line", "INFO line", "ERROR again"]).await;
         tab.log_manager
-            .add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "ERROR".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.begin_filter_refresh();
         let mut h = tab.filter.handle.take().unwrap();
@@ -4032,9 +4139,7 @@ mod tests {
             .add_filter_with_color(
                 "@field:level:error".to_string(),
                 FilterType::Include,
-                None,
-                None,
-                true,
+                FilterOptions::default(),
             )
             .await;
         tab.begin_filter_refresh();
@@ -4073,9 +4178,7 @@ mod tests {
             .add_filter_with_color(
                 "@date:01:00:00 .. 02:00:00".to_string(),
                 FilterType::Include,
-                None,
-                None,
-                true,
+                FilterOptions::default(),
             )
             .await;
         tab.begin_filter_refresh();
@@ -4144,15 +4247,17 @@ mod tests {
         ];
         let mut tab = make_tab(&lines).await;
         tab.log_manager
-            .add_filter_with_color("GET".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "GET".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.log_manager
             .add_filter_with_color(
                 "@date:00:00:00 .. 23:59:59".to_string(),
                 FilterType::Include,
-                None,
-                None,
-                true,
+                FilterOptions::default(),
             )
             .await;
         tab.refresh_visible();
@@ -4166,7 +4271,11 @@ mod tests {
         let lines = ["DEBUG: verbose", "INFO: keep", "DEBUG: more noise"];
         let mut tab = make_tab(&lines).await;
         tab.log_manager
-            .add_filter_with_color("DEBUG".to_string(), FilterType::Exclude, None, None, true)
+            .add_filter_with_color(
+                "DEBUG".to_string(),
+                FilterType::Exclude,
+                FilterOptions::default(),
+            )
             .await;
         tab.refresh_visible();
         assert_eq!(tab.filter.visible_indices.len(), 1);
@@ -4179,7 +4288,11 @@ mod tests {
         let lines = ["DEBUG: verbose", "INFO: keep", "DEBUG: more noise"];
         let mut tab = make_tab(&lines).await;
         tab.log_manager
-            .add_filter_with_color("DEBUG".to_string(), FilterType::Exclude, None, None, true)
+            .add_filter_with_color(
+                "DEBUG".to_string(),
+                FilterType::Exclude,
+                FilterOptions::default(),
+            )
             .await;
         tab.begin_filter_refresh();
         let mut h = tab.filter.handle.take().unwrap();
@@ -4203,7 +4316,7 @@ mod tests {
         let mut tab = make_tab(&[CLF_IN, CLF_OUT]).await;
         let pattern = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
-            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
             .await;
         tab.refresh_visible();
         assert_eq!(tab.filter.visible_indices, VisibleLines::Filtered(vec![0]));
@@ -4215,7 +4328,7 @@ mod tests {
         let mut tab = make_tab(&lines).await;
         let pattern = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
-            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
             .await;
         tab.begin_filter_refresh();
         let mut h = tab.filter.handle.take().unwrap();
@@ -4234,7 +4347,7 @@ mod tests {
         let mut tab = make_tab(&[CLF_IN]).await;
         let pattern = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
-            .add_filter_with_color(pattern, FilterType::Include, None, None, true)
+            .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
             .await;
         tab.refresh_visible();
         assert_eq!(
@@ -4267,10 +4380,14 @@ mod tests {
         let mut tab = make_tab(&[CLF_IN, CLF_IN_RANGE_OTHER]).await;
         let date_pat = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
-            .add_filter_with_color(date_pat, FilterType::Include, None, None, true)
+            .add_filter_with_color(date_pat, FilterType::Include, FilterOptions::default())
             .await;
         tab.log_manager
-            .add_filter_with_color("/a".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "/a".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.begin_filter_refresh();
         let mut h = tab.filter.handle.take().unwrap();
@@ -4293,11 +4410,15 @@ mod tests {
         let mut tab = make_tab(&[CLF_IN, CLF_IN_RANGE_OTHER]).await;
         let date_pat = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
-            .add_filter_with_color(date_pat, FilterType::Include, None, None, true)
+            .add_filter_with_color(date_pat, FilterType::Include, FilterOptions::default())
             .await;
         // regex pattern: matches "/a" but not "/other"
         tab.log_manager
-            .add_filter_with_color(r"/a\b".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                r"/a\b".to_string(),
+                FilterType::Include,
+                FilterOptions::default().regex(),
+            )
             .await;
         tab.begin_filter_refresh();
         let mut h = tab.filter.handle.take().unwrap();
@@ -4320,10 +4441,14 @@ mod tests {
         let mut tab = make_tab(&[CLF_IN]).await;
         let date_pat = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
-            .add_filter_with_color(date_pat, FilterType::Include, None, None, true)
+            .add_filter_with_color(date_pat, FilterType::Include, FilterOptions::default())
             .await;
         tab.log_manager
-            .add_filter_with_color("/a".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "/a".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.refresh_visible();
         assert_eq!(tab.filter.visible_indices, VisibleLines::Filtered(vec![0]));
@@ -4347,10 +4472,14 @@ mod tests {
         let mut tab = make_tab(&[CLF_IN]).await;
         let date_pat = format!("{}12:00:00 .. 14:00:00", crate::filters::DATE_PREFIX);
         tab.log_manager
-            .add_filter_with_color(date_pat, FilterType::Include, None, None, true)
+            .add_filter_with_color(date_pat, FilterType::Include, FilterOptions::default())
             .await;
         tab.log_manager
-            .add_filter_with_color(r"/a\b".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                r"/a\b".to_string(),
+                FilterType::Include,
+                FilterOptions::default().regex(),
+            )
             .await;
         tab.refresh_visible();
         assert_eq!(tab.filter.visible_indices, VisibleLines::Filtered(vec![0]));
@@ -4716,7 +4845,11 @@ mod tests {
         let log_manager = LogManager::new(db, None).await;
         let mut tab = TabState::new(file_reader, log_manager, "test".to_string());
         tab.log_manager
-            .add_filter_with_color("INFO".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "INFO".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.begin_filter_refresh();
         let mut h = tab.filter.handle.take().unwrap();
@@ -4770,7 +4903,11 @@ mod tests {
         let log_manager = LogManager::new(db, None).await;
         let mut tab = TabState::new(file_reader, log_manager, "test".to_string());
         tab.log_manager
-            .add_filter_with_color("a".to_string(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "a".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         tab.filter.enabled = false;
         let old = tab.file_reader.line_count();

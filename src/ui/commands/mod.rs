@@ -65,9 +65,18 @@ impl App {
                 bg,
                 line_mode,
                 field,
-            }) => return self.cmd_filter(pattern, fg, bg, line_mode, field).await,
-            Some(Commands::Exclude { pattern, field }) => {
-                return self.cmd_exclude(pattern, field).await;
+                regex,
+            }) => {
+                return self
+                    .cmd_filter(pattern.join(" "), fg, bg, line_mode, field, regex)
+                    .await;
+            }
+            Some(Commands::Exclude {
+                pattern,
+                field,
+                regex,
+            }) => {
+                return self.cmd_exclude(pattern.join(" "), field, regex).await;
             }
             Some(Commands::SetColor { fg, bg, line_mode }) => {
                 return self.cmd_set_color(fg, bg, line_mode).await;

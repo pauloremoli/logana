@@ -508,6 +508,7 @@ mod tests {
             filter_type,
             enabled,
             color_config: None,
+            use_regex: false,
         }
     }
 

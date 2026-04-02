@@ -182,6 +182,7 @@ mod tests {
             enabled,
             filter_type,
             color_config: None,
+            use_regex: false,
         }
     }
 

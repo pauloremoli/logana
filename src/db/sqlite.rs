@@ -1,4 +1,4 @@
-use crate::filters::{ColorConfig, FilterDef, FilterType};
+use crate::filters::{ColorConfig, FilterDef, FilterInsertOptions, FilterType};
 use crate::types::Comment;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -12,9 +12,7 @@ pub trait FilterStore: Send + Sync {
         &self,
         pattern: &str,
         filter_type: &FilterType,
-        enabled: bool,
-        color_config: Option<&ColorConfig>,
-        source_file: Option<&str>,
+        options: FilterInsertOptions,
     ) -> Result<i64>;
     async fn get_filters(&self) -> Result<Vec<FilterDef>>;
     async fn get_filters_for_source(&self, source_file: &str) -> Result<Vec<FilterDef>>;
@@ -26,6 +24,7 @@ pub trait FilterStore: Send + Sync {
         pattern: &str,
         filter_type: &FilterType,
         color_config: Option<&ColorConfig>,
+        use_regex: bool,
     ) -> Result<()>;
     async fn delete_filter(&self, id: i64) -> Result<()>;
     async fn toggle_filter(&self, id: i64) -> Result<()>;
@@ -221,6 +220,13 @@ impl Database {
                 .await?;
         }
 
+        if version < 10 {
+            self.migrate_to_v10().await?;
+            sqlx::query("PRAGMA user_version = 10")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -369,6 +375,14 @@ impl Database {
         Ok(())
     }
 
+    async fn migrate_to_v10(&self) -> Result<()> {
+        sqlx::query("ALTER TABLE filters ADD COLUMN use_regex INTEGER NOT NULL DEFAULT 0")
+            .execute(&self.pool)
+            .await
+            .ok();
+        Ok(())
+    }
+
     pub async fn reset_all(&self) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM filters").execute(&mut *tx).await?;
@@ -420,6 +434,7 @@ fn row_to_filter_def(row: &sqlx::sqlite::SqliteRow) -> FilterDef {
         filter_type: str_to_filter_type(row.get::<&str, _>("filter_type")),
         enabled: row.get::<i32, _>("enabled") != 0,
         color_config,
+        use_regex: row.try_get::<i32, _>("use_regex").unwrap_or(0) != 0,
     }
 }
 
@@ -429,11 +444,9 @@ impl FilterStore for Database {
         &self,
         pattern: &str,
         filter_type: &FilterType,
-        enabled: bool,
-        color_config: Option<&ColorConfig>,
-        source_file: Option<&str>,
+        options: FilterInsertOptions,
     ) -> Result<i64> {
-        let source = source_file.unwrap_or("");
+        let source = options.source_file.as_deref().unwrap_or("");
         let max_order: Option<i64> = sqlx::query(
             "SELECT MAX(display_order) as max_order FROM filters WHERE source_file = ?",
         )
@@ -444,7 +457,7 @@ impl FilterStore for Database {
 
         let next_order = max_order.unwrap_or(0) + 1;
 
-        let (fg, bg, match_only) = match color_config {
+        let (fg, bg, match_only) = match &options.color_config {
             Some(cc) => (
                 cc.fg.map(|c| c.to_string()),
                 cc.bg.map(|c| c.to_string()),
@@ -454,17 +467,18 @@ impl FilterStore for Database {
         };
 
         let result = sqlx::query(
-            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(pattern)
         .bind(filter_type_to_str(filter_type))
-        .bind(enabled as i32)
+        .bind(options.enabled as i32)
         .bind(&fg)
         .bind(&bg)
         .bind(next_order)
         .bind(source)
         .bind(match_only as i32)
+        .bind(options.use_regex as i32)
         .execute(&self.pool)
         .await?;
 
@@ -521,6 +535,7 @@ impl FilterStore for Database {
         pattern: &str,
         filter_type: &FilterType,
         color_config: Option<&ColorConfig>,
+        use_regex: bool,
     ) -> Result<()> {
         let (fg, bg, match_only) = match color_config {
             Some(cc) => (
@@ -531,13 +546,14 @@ impl FilterStore for Database {
             None => (None, None, true),
         };
         sqlx::query(
-            "UPDATE filters SET pattern = ?, filter_type = ?, fg_color = ?, bg_color = ?, match_only = ? WHERE id = ?",
+            "UPDATE filters SET pattern = ?, filter_type = ?, fg_color = ?, bg_color = ?, match_only = ?, use_regex = ? WHERE id = ?",
         )
         .bind(pattern)
         .bind(filter_type_to_str(filter_type))
         .bind(&fg)
         .bind(&bg)
         .bind(match_only as i32)
+        .bind(use_regex as i32)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -635,8 +651,8 @@ impl FilterStore for Database {
             };
 
             sqlx::query(
-                "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&filter.pattern)
             .bind(filter_type_to_str(&filter.filter_type))
@@ -646,6 +662,7 @@ impl FilterStore for Database {
             .bind(order as i64)
             .bind(source)
             .bind(match_only as i32)
+            .bind(filter.use_regex as i32)
             .execute(&mut *tx)
             .await?;
         }
@@ -842,11 +859,11 @@ mod tests {
         let db = setup_db().await;
 
         let id1 = db
-            .insert_filter("error", &FilterType::Include, true, None, None)
+            .insert_filter("error", &FilterType::Include, FilterInsertOptions::new())
             .await
             .unwrap();
         let id2 = db
-            .insert_filter("debug", &FilterType::Exclude, true, None, None)
+            .insert_filter("debug", &FilterType::Exclude, FilterInsertOptions::new())
             .await
             .unwrap();
 
@@ -893,9 +910,13 @@ mod tests {
             match_only: false,
         };
 
-        db.insert_filter("error", &FilterType::Include, true, Some(&color), None)
-            .await
-            .unwrap();
+        db.insert_filter(
+            "error",
+            &FilterType::Include,
+            FilterInsertOptions::new().color(color),
+        )
+        .await
+        .unwrap();
 
         let filters = db.get_filters().await.unwrap();
         assert_eq!(filters.len(), 1);
@@ -908,7 +929,7 @@ mod tests {
     async fn test_update_filter_color() {
         let db = setup_db().await;
         let id = db
-            .insert_filter("error", &FilterType::Include, true, None, None)
+            .insert_filter("error", &FilterType::Include, FilterInsertOptions::new())
             .await
             .unwrap();
 
@@ -929,11 +950,11 @@ mod tests {
     async fn test_swap_filter_order() {
         let db = setup_db().await;
         let id1 = db
-            .insert_filter("first", &FilterType::Include, true, None, None)
+            .insert_filter("first", &FilterType::Include, FilterInsertOptions::new())
             .await
             .unwrap();
         let id2 = db
-            .insert_filter("second", &FilterType::Exclude, true, None, None)
+            .insert_filter("second", &FilterType::Exclude, FilterInsertOptions::new())
             .await
             .unwrap();
 
@@ -951,10 +972,10 @@ mod tests {
     #[tokio::test]
     async fn test_replace_all_filters() {
         let db = setup_db().await;
-        db.insert_filter("old1", &FilterType::Include, true, None, None)
+        db.insert_filter("old1", &FilterType::Include, FilterInsertOptions::new())
             .await
             .unwrap();
-        db.insert_filter("old2", &FilterType::Exclude, true, None, None)
+        db.insert_filter("old2", &FilterType::Exclude, FilterInsertOptions::new())
             .await
             .unwrap();
 
@@ -965,6 +986,7 @@ mod tests {
                 filter_type: FilterType::Include,
                 enabled: true,
                 color_config: None,
+                use_regex: false,
             },
             FilterDef {
                 id: 0,
@@ -972,6 +994,7 @@ mod tests {
                 filter_type: FilterType::Exclude,
                 enabled: false,
                 color_config: None,
+                use_regex: false,
             },
         ];
 
@@ -986,15 +1009,13 @@ mod tests {
     #[tokio::test]
     async fn test_clear_filters_for_source() {
         let db = setup_db().await;
-        db.insert_filter("global", &FilterType::Include, true, None, None)
+        db.insert_filter("global", &FilterType::Include, FilterInsertOptions::new())
             .await
             .unwrap();
         db.insert_filter(
             "file-specific",
             &FilterType::Include,
-            true,
-            None,
-            Some("test.log"),
+            FilterInsertOptions::new().source("test.log"),
         )
         .await
         .unwrap();
@@ -1009,24 +1030,20 @@ mod tests {
     #[tokio::test]
     async fn test_get_filters_for_source() {
         let db = setup_db().await;
-        db.insert_filter("global", &FilterType::Include, true, None, None)
+        db.insert_filter("global", &FilterType::Include, FilterInsertOptions::new())
             .await
             .unwrap();
         db.insert_filter(
             "file1",
             &FilterType::Exclude,
-            true,
-            None,
-            Some("/var/log/syslog"),
+            FilterInsertOptions::new().source("/var/log/syslog"),
         )
         .await
         .unwrap();
         db.insert_filter(
             "file2",
             &FilterType::Include,
-            true,
-            None,
-            Some("/var/log/syslog"),
+            FilterInsertOptions::new().source("/var/log/syslog"),
         )
         .await
         .unwrap();
@@ -1417,10 +1434,14 @@ mod tests {
     async fn test_reset_all_clears_all_tables() {
         let db = setup_db().await;
 
-        db.insert_filter("error", &FilterType::Include, true, None, Some("app.log"))
-            .await
-            .unwrap();
-        db.insert_filter("debug", &FilterType::Exclude, true, None, None)
+        db.insert_filter(
+            "error",
+            &FilterType::Include,
+            FilterInsertOptions::new().source("app.log"),
+        )
+        .await
+        .unwrap();
+        db.insert_filter("debug", &FilterType::Exclude, FilterInsertOptions::new())
             .await
             .unwrap();
 

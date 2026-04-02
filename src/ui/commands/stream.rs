@@ -1,4 +1,4 @@
-use crate::filters::FilterType;
+use crate::filters::{FilterOptions, FilterType};
 use crate::ui::App;
 
 impl App {
@@ -66,28 +66,25 @@ impl App {
         crate::filters::parse_date_filter(&expression)
             .map_err(|e| format!("Invalid date filter: {}", e))?;
         let pattern = format!("{}{}", crate::filters::DATE_PREFIX, expression);
+        let mut opts = FilterOptions::default();
+        if line_mode {
+            opts = opts.line_mode();
+        }
+        if let Some(ref c) = fg {
+            opts = opts.fg(c);
+        }
+        if let Some(ref c) = bg {
+            opts = opts.bg(c);
+        }
         if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
             self.tabs[self.active_tab]
                 .log_manager
-                .update_filter(
-                    old_id,
-                    pattern,
-                    FilterType::Include,
-                    fg.as_deref(),
-                    bg.as_deref(),
-                    !line_mode,
-                )
+                .update_filter(old_id, pattern, FilterType::Include, opts)
                 .await;
         } else {
             self.tabs[self.active_tab]
                 .log_manager
-                .add_filter_with_color(
-                    pattern,
-                    FilterType::Include,
-                    fg.as_deref(),
-                    bg.as_deref(),
-                    !line_mode,
-                )
+                .add_filter_with_color(pattern, FilterType::Include, opts)
                 .await;
         }
         self.tabs[self.active_tab].begin_filter_refresh();

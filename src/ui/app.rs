@@ -1219,7 +1219,7 @@ mod tests {
     async fn test_set_color_preserves_match_only() {
         let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
         // Create a filter with full-line mode (-l → match_only=false).
-        app.execute_command_str("filter INFO --fg red -l".to_string())
+        app.execute_command_str("filter --fg red -l INFO".to_string())
             .await;
         let filters = app.tab().log_manager.get_filters();
         assert!(!filters[0].color_config.as_ref().unwrap().match_only);

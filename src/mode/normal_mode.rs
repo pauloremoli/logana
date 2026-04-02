@@ -1121,9 +1121,7 @@ mod tests {
             .add_filter_with_color(
                 "error".to_string(),
                 crate::filters::FilterType::Include,
-                None,
-                None,
-                false,
+                crate::filters::FilterOptions::default().line_mode(),
             )
             .await;
         tab.refresh_visible();

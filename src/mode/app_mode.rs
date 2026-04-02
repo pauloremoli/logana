@@ -377,7 +377,7 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::db::LogManager;
-    use crate::filters::FilterType;
+    use crate::filters::{FilterOptions, FilterType};
     use crate::ingestion::FileReader;
     use crate::ui::{KeyResult, TabState};
     use std::sync::Arc;
@@ -458,7 +458,11 @@ mod tests {
     async fn test_confirm_restore_n_clears_filters_and_returns_normal() {
         let mut tab = make_tab(&["error", "warn"]).await;
         tab.log_manager
-            .add_filter_with_color("error".to_string(), FilterType::Include, None, None, false)
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default().line_mode(),
+            )
             .await;
         tab.refresh_visible();
         assert_eq!(tab.log_manager.get_filters().len(), 1);
@@ -499,7 +503,11 @@ mod tests {
     async fn test_confirm_restore_esc_clears_filters_and_returns_normal() {
         let mut tab = make_tab(&["line"]).await;
         tab.log_manager
-            .add_filter_with_color("line".to_string(), FilterType::Include, None, None, false)
+            .add_filter_with_color(
+                "line".to_string(),
+                FilterType::Include,
+                FilterOptions::default().line_mode(),
+            )
             .await;
         tab.refresh_visible();
 

@@ -8,6 +8,7 @@ use anyhow::Result;
 use crate::db::Database;
 use crate::db::LogManager;
 use crate::filters::FilterDecision;
+use crate::filters::FilterOptions;
 use crate::filters::FilterType;
 use crate::filters::extract_date_filters;
 use crate::filters::extract_field_filters;
@@ -208,13 +209,14 @@ async fn apply_inline_filters(
         let parsed = CommandLine::try_parse_from(shell_split(&cmd))
             .map_err(|e| anyhow::anyhow!("Invalid include filter '{}': {}", args_str, e))?;
         if let Some(Commands::Filter { pattern, field, .. }) = parsed.command {
+            let pattern = pattern.join(" ");
             let stored = if field {
                 build_field_pattern(&pattern)?
             } else {
                 pattern
             };
             log_manager
-                .add_filter_with_color(stored, FilterType::Include, None, None, true)
+                .add_filter_with_color(stored, FilterType::Include, FilterOptions::default())
                 .await;
         }
     }
@@ -223,14 +225,24 @@ async fn apply_inline_filters(
         let cmd = format!("exclude {}", args_str);
         let parsed = CommandLine::try_parse_from(shell_split(&cmd))
             .map_err(|e| anyhow::anyhow!("Invalid exclude filter '{}': {}", args_str, e))?;
-        if let Some(Commands::Exclude { pattern, field }) = parsed.command {
+        if let Some(Commands::Exclude {
+            pattern,
+            field,
+            regex,
+        }) = parsed.command
+        {
+            let pattern = pattern.join(" ");
             let stored = if field {
                 build_field_pattern(&pattern)?
             } else {
                 pattern
             };
+            let mut opts = FilterOptions::default();
+            if regex {
+                opts = opts.regex();
+            }
             log_manager
-                .add_filter_with_color(stored, FilterType::Exclude, None, None, true)
+                .add_filter_with_color(stored, FilterType::Exclude, opts)
                 .await;
         }
     }
@@ -243,7 +255,7 @@ async fn apply_inline_filters(
             let expression = expr.join(" ");
             let stored = format!("{}{}", crate::filters::DATE_PREFIX, expression);
             log_manager
-                .add_filter_with_color(stored, FilterType::Include, None, None, true)
+                .add_filter_with_color(stored, FilterType::Include, FilterOptions::default())
                 .await;
         }
     }
@@ -434,6 +446,7 @@ pub fn run_headless_to_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filters::FilterInsertOptions;
 
     async fn make_log_manager() -> LogManager {
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -479,8 +492,12 @@ mod tests {
         std::fs::copy(gz_tmp.path(), &path).unwrap();
 
         let mut lm = make_log_manager().await;
-        lm.add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
-            .await;
+        lm.add_filter_with_color(
+            "ERROR".to_string(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
+        .await;
         let mut out = Vec::new();
         run_headless_archive(&path, &lm, &mut out).await.unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -499,8 +516,12 @@ mod tests {
         std::fs::copy(tar_tmp.path(), &path).unwrap();
 
         let mut lm = make_log_manager().await;
-        lm.add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
-            .await;
+        lm.add_filter_with_color(
+            "ERROR".to_string(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
+        .await;
         let mut out = Vec::new();
         run_headless_archive(&path, &lm, &mut out).await.unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -557,8 +578,12 @@ mod tests {
     #[tokio::test]
     async fn test_headless_include_filter() {
         let mut lm = make_log_manager().await;
-        lm.add_filter_with_color("ERROR".to_string(), FilterType::Include, None, None, true)
-            .await;
+        lm.add_filter_with_color(
+            "ERROR".to_string(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
+        .await;
         let reader = make_reader(&["INFO foo", "ERROR bar", "INFO baz"]);
         let mut out = Vec::new();
         run_headless_to_writer(reader, &lm, &mut out).unwrap();
@@ -569,8 +594,12 @@ mod tests {
     #[tokio::test]
     async fn test_headless_exclude_filter() {
         let mut lm = make_log_manager().await;
-        lm.add_filter_with_color("DEBUG".to_string(), FilterType::Exclude, None, None, true)
-            .await;
+        lm.add_filter_with_color(
+            "DEBUG".to_string(),
+            FilterType::Exclude,
+            FilterOptions::default(),
+        )
+        .await;
         let reader = make_reader(&["INFO foo", "DEBUG bar", "ERROR baz"]);
         let mut out = Vec::new();
         run_headless_to_writer(reader, &lm, &mut out).unwrap();
@@ -592,8 +621,12 @@ mod tests {
         let data = b"alpha\nbeta\ngamma".to_vec();
         let reader = FileReader::from_bytes(data);
         let mut lm = make_log_manager().await;
-        lm.add_filter_with_color("beta".to_string(), FilterType::Include, None, None, true)
-            .await;
+        lm.add_filter_with_color(
+            "beta".to_string(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
+        .await;
         let mut out = Vec::new();
         run_headless_to_writer(reader, &lm, &mut out).unwrap();
         let result = String::from_utf8(out).unwrap();
@@ -640,9 +673,7 @@ mod tests {
             .insert_filter(
                 "ERROR",
                 &FilterType::Include,
-                true,
-                None,
-                Some("some-source"),
+                FilterInsertOptions::new().source("some-source"),
             )
             .await
             .unwrap();
@@ -711,8 +742,12 @@ mod tests {
         let error_line = b"<11>Mar 23 10:00:01 host myapp: something failed";
 
         let mut lm = make_log_manager().await;
-        lm.add_filter_with_color("INFO".to_string(), FilterType::Include, None, None, true)
-            .await;
+        lm.add_filter_with_color(
+            "INFO".to_string(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
+        .await;
 
         let data = [info_line.as_ref(), b"\n", error_line.as_ref(), b"\n"].concat();
         let reader = FileReader::from_bytes(data);
@@ -736,9 +771,7 @@ mod tests {
         lm.add_filter_with_color(
             r"ERROR.*failed".to_string(),
             FilterType::Include,
-            None,
-            None,
-            true,
+            FilterOptions::default().regex(),
         )
         .await;
 
@@ -759,8 +792,12 @@ mod tests {
         let error_line = b"<11>Mar 23 10:00:01 host myapp: something failed";
 
         let mut lm = make_log_manager().await;
-        lm.add_filter_with_color("INFO".to_string(), FilterType::Exclude, None, None, true)
-            .await;
+        lm.add_filter_with_color(
+            "INFO".to_string(),
+            FilterType::Exclude,
+            FilterOptions::default(),
+        )
+        .await;
 
         let data = [info_line.as_ref(), b"\n", error_line.as_ref(), b"\n"].concat();
         let reader = FileReader::from_bytes(data);

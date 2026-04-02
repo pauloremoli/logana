@@ -24,14 +24,16 @@ Press `:` in normal mode to open command mode. Tab completes commands, flags, co
 
 | Command | Description |
 |---|---|
-| `:filter <pattern>` | Add an include filter (show only matching lines) |
+| `:filter [--regex\|-r] [-l] [--fg COLOR] [--bg COLOR] <pattern>` | Add an include filter (show only matching lines) |
 | `:filter --field <key>=<value>` | Add a field-scoped include filter (e.g. `level=error`) |
-| `:exclude <pattern>` | Add an exclude filter (hide matching lines) |
+| `:exclude [--regex\|-r] <pattern>` | Add an exclude filter (hide matching lines) |
 | `:exclude --field <key>=<value>` | Add a field-scoped exclude filter (e.g. `level=debug`) |
 | `:date-filter <expr>` | Add a date/time range filter |
 | `:set-color [--fg COLOR] [--bg COLOR]` | Set highlight color for the selected filter |
 | `:save-filters <file>` | Save current filters to a JSON file |
 | `:load-filters <file>` | Load filters from a JSON file |
+
+> **Flag ordering:** All options (`--regex`, `--fg`, `--bg`, `-l`, `--field`) must appear **before** the pattern. Everything after the first pattern word is treated as part of the pattern text.
 
 See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filters.md), and [Field Filters](filtering/field-filters.md) for full details.
 

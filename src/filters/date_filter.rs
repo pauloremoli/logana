@@ -559,9 +559,10 @@ fn normalize_log_timestamp(ts: &str) -> Option<NormalizedTimestamp> {
         .first()
         .map(|b| b.is_ascii_digit())
         .unwrap_or(false)
-        && let Some(n) = normalize_epoch_ts(s) {
-            return Some(n);
-        }
+        && let Some(n) = normalize_epoch_ts(s)
+    {
+        return Some(n);
+    }
 
     // Handle bracket-prefixed timestamps
     if s.starts_with('[') {
@@ -1712,6 +1713,7 @@ mod tests {
             filter_type: crate::filters::FilterType::Include,
             enabled: true,
             color_config: None,
+            use_regex: false,
         }];
         let filters = extract_date_filters(&defs);
         assert!(filters.is_empty());
@@ -1725,6 +1727,7 @@ mod tests {
             filter_type: crate::filters::FilterType::Include,
             enabled: true,
             color_config: None,
+            use_regex: false,
         }];
         let filters = extract_date_filters(&defs);
         assert_eq!(filters.len(), 1);
@@ -1738,6 +1741,7 @@ mod tests {
             filter_type: crate::filters::FilterType::Include,
             enabled: false,
             color_config: None,
+            use_regex: false,
         }];
         let filters = extract_date_filters(&defs);
         assert!(filters.is_empty());
@@ -1751,6 +1755,7 @@ mod tests {
             filter_type: crate::filters::FilterType::Include,
             enabled: true,
             color_config: None,
+            use_regex: false,
         }];
         let filters = extract_date_filters(&defs);
         assert!(filters.is_empty());

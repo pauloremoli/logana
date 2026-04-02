@@ -1,7 +1,10 @@
+use clap::Parser;
+use logana::auto_complete::shell_split;
+use logana::commands::{CommandLine, Commands};
 use logana::db::Database;
 use logana::db::LogManager;
 use logana::filters::FilterManager;
-use logana::filters::FilterType;
+use logana::filters::{FilterOptions, FilterType};
 use logana::headless::run_headless_to_writer;
 use logana::ingestion::FileReader;
 use std::io::Write;
@@ -91,7 +94,11 @@ async fn test_filter_include_reduces_visible() {
 
     // Include only lines containing "Connection"
     manager
-        .add_filter_with_color("Connection".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "Connection".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
     let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
@@ -110,7 +117,7 @@ async fn test_filter_exclude_removes_lines() {
 
     // Exclude lines containing "INFO"
     manager
-        .add_filter_with_color("INFO".into(), FilterType::Exclude, None, None, true)
+        .add_filter_with_color("INFO".into(), FilterType::Exclude, FilterOptions::default())
         .await;
     let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
@@ -132,10 +139,18 @@ async fn test_filter_include_and_exclude() {
     // With oldest-first ordering, "Connection" Include is at index 0 (highest precedence).
     // First-match-wins: "Connection failed" matches the Include first → visible.
     manager
-        .add_filter_with_color("Connection".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "Connection".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
     manager
-        .add_filter_with_color("failed".into(), FilterType::Exclude, None, None, true)
+        .add_filter_with_color(
+            "failed".into(),
+            FilterType::Exclude,
+            FilterOptions::default(),
+        )
         .await;
     let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
@@ -155,7 +170,7 @@ async fn test_disabled_filter_is_ignored() {
     let reader = FileReader::new(path).unwrap();
 
     manager
-        .add_filter_with_color("INFO".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color("INFO".into(), FilterType::Include, FilterOptions::default())
         .await;
     let id = manager.get_filters()[0].id;
     manager.toggle_filter(id).await; // disable it
@@ -219,10 +234,18 @@ async fn test_add_and_remove_filters() {
     let (_db, mut manager) = setup().await;
 
     manager
-        .add_filter_with_color("error".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
     manager
-        .add_filter_with_color("debug".into(), FilterType::Exclude, None, None, true)
+        .add_filter_with_color(
+            "debug".into(),
+            FilterType::Exclude,
+            FilterOptions::default(),
+        )
         .await;
     assert_eq!(manager.get_filters().len(), 2);
 
@@ -238,13 +261,25 @@ async fn test_move_filter_up_down() {
     let (_db, mut manager) = setup().await;
 
     manager
-        .add_filter_with_color("first".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "first".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
     manager
-        .add_filter_with_color("second".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "second".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
     manager
-        .add_filter_with_color("third".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "third".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
 
     // After three inserts (oldest first): ["first", "second", "third"]
@@ -268,7 +303,11 @@ async fn test_filter_regex_pattern() {
 
     // Regex pattern matching either INFO or ERROR
     manager
-        .add_filter_with_color("INFO|ERROR".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "INFO|ERROR".into(),
+            FilterType::Include,
+            FilterOptions::default().regex(),
+        )
         .await;
     let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
@@ -294,10 +333,18 @@ fn test_file_reader_from_bytes() {
 async fn test_clear_filters() {
     let (_db, mut manager) = setup().await;
     manager
-        .add_filter_with_color("error".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
     manager
-        .add_filter_with_color("debug".into(), FilterType::Exclude, None, None, true)
+        .add_filter_with_color(
+            "debug".into(),
+            FilterType::Exclude,
+            FilterOptions::default(),
+        )
         .await;
     assert_eq!(manager.get_filters().len(), 2);
 
@@ -315,7 +362,7 @@ async fn test_single_pass_predicate_matches_compute_visible() {
     let path = file.path().to_str().unwrap().to_string();
 
     manager
-        .add_filter_with_color("INFO".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color("INFO".into(), FilterType::Include, FilterOptions::default())
         .await;
     let (fm, _, _, _) = manager.build_filter_manager();
 
@@ -351,7 +398,7 @@ async fn test_search_on_visible_lines() {
 
     // Include only INFO lines
     manager
-        .add_filter_with_color("INFO".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color("INFO".into(), FilterType::Include, FilterOptions::default())
         .await;
     let (fm, _, _, _) = manager.build_filter_manager();
     let visible = fm.compute_visible(&reader);
@@ -376,9 +423,7 @@ async fn test_field_filter_level_include() {
         .add_filter_with_color(
             "@field:level:error".into(),
             FilterType::Include,
-            None,
-            None,
-            true,
+            FilterOptions::default(),
         )
         .await;
 
@@ -403,9 +448,7 @@ async fn test_field_filter_level_exclude() {
         .add_filter_with_color(
             "@field:level:debug".into(),
             FilterType::Exclude,
-            None,
-            None,
-            true,
+            FilterOptions::default(),
         )
         .await;
 
@@ -427,10 +470,18 @@ async fn test_field_filter_level_exclude() {
 async fn test_headless_multiple_includes_or_semantics() {
     let (_db, mut manager) = setup().await;
     manager
-        .add_filter_with_color("ERROR".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "ERROR".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
     manager
-        .add_filter_with_color("WARNING".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "WARNING".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
 
     let file = create_sample_log_file();
@@ -448,7 +499,11 @@ async fn test_headless_multiple_includes_or_semantics() {
 async fn test_headless_regex_filter() {
     let (_db, mut manager) = setup().await;
     manager
-        .add_filter_with_color("INFO|ERROR".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "INFO|ERROR".into(),
+            FilterType::Include,
+            FilterOptions::default().regex(),
+        )
         .await;
 
     let file = create_sample_log_file();
@@ -472,7 +527,11 @@ async fn test_headless_regex_filter() {
 async fn test_headless_no_matching_lines() {
     let (_db, mut manager) = setup().await;
     manager
-        .add_filter_with_color("CRITICAL".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "CRITICAL".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
 
     let reader = FileReader::from_bytes(b"INFO foo\nDEBUG bar\nERROR baz\n".to_vec());
@@ -486,10 +545,18 @@ async fn test_headless_exclude_before_include() {
     // Exclude added first → wins over include for overlapping lines (first-match-wins).
     let (_db, mut manager) = setup().await;
     manager
-        .add_filter_with_color("established".into(), FilterType::Exclude, None, None, true)
+        .add_filter_with_color(
+            "established".into(),
+            FilterType::Exclude,
+            FilterOptions::default(),
+        )
         .await;
     manager
-        .add_filter_with_color("Connection".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "Connection".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
 
     let file = create_sample_log_file();
@@ -509,10 +576,18 @@ async fn test_headless_filter_file_roundtrip() {
     {
         let (_db, mut manager) = setup().await;
         manager
-            .add_filter_with_color("ERROR".into(), FilterType::Include, None, None, true)
+            .add_filter_with_color(
+                "ERROR".into(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
             .await;
         manager
-            .add_filter_with_color("DEBUG".into(), FilterType::Exclude, None, None, true)
+            .add_filter_with_color(
+                "DEBUG".into(),
+                FilterType::Exclude,
+                FilterOptions::default(),
+            )
             .await;
         manager.save_filters(&filter_path).unwrap();
     }
@@ -525,6 +600,52 @@ async fn test_headless_filter_file_roundtrip() {
     run_headless_to_writer(reader, &manager, &mut out).unwrap();
     let result = String::from_utf8(out).unwrap();
     assert_eq!(result, "ERROR line\n");
+}
+
+#[test]
+fn test_filter_regex_spaced_pattern_parses() {
+    let args = CommandLine::parse_from(shell_split("filter -r \\d{3} \\d+"));
+    match args.command.unwrap() {
+        Commands::Filter { pattern, regex, .. } => {
+            assert!(regex);
+            assert_eq!(pattern.join(" "), r"\d{3} \d+");
+        }
+        other => panic!("expected Filter, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_exclude_regex_spaced_pattern_parses() {
+    let args = CommandLine::parse_from(shell_split("exclude -r \\d{3} \\d+"));
+    match args.command.unwrap() {
+        Commands::Exclude { pattern, regex, .. } => {
+            assert!(regex);
+            assert_eq!(pattern.join(" "), r"\d{3} \d+");
+        }
+        other => panic!("expected Exclude, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_regex_filter_with_space_in_pattern() {
+    let (_db, mut manager) = setup().await;
+    manager
+        .add_filter_with_color(
+            r"\d{3} \d+".into(),
+            FilterType::Include,
+            FilterOptions::default().regex(),
+        )
+        .await;
+
+    let reader = FileReader::from_bytes(
+        b"error 404 123 not found\nconnection established\nstatus 200 1 ok\n".to_vec(),
+    );
+    let mut out = Vec::new();
+    run_headless_to_writer(reader, &manager, &mut out).unwrap();
+    let result = String::from_utf8(out).unwrap();
+    assert!(result.contains("404 123"));
+    assert!(result.contains("200 1"));
+    assert!(!result.contains("connection established"));
 }
 
 fn build_dlt_storage_header(secs: u32, usecs: u32, ecu: &[u8; 4]) -> Vec<u8> {
@@ -709,7 +830,11 @@ async fn test_exclude_filter_hides_continuation_lines() {
 
     // Exclude lines containing "ERROR" — should hide line 0 AND its continuations
     manager
-        .add_filter_with_color("ERROR".into(), FilterType::Exclude, None, None, true)
+        .add_filter_with_color(
+            "ERROR".into(),
+            FilterType::Exclude,
+            FilterOptions::default(),
+        )
         .await;
     let (fm, _, _, _) = manager.build_filter_manager();
     let mut visible = VisibleLines::Filtered(fm.compute_visible(&reader));
@@ -745,7 +870,11 @@ async fn test_include_filter_shows_continuations_with_parent() {
 
     // Include only lines containing "ERROR" — parent matches; continuations should follow.
     manager
-        .add_filter_with_color("ERROR".into(), FilterType::Include, None, None, true)
+        .add_filter_with_color(
+            "ERROR".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
         .await;
     let (fm, _, _, _) = manager.build_filter_manager();
     let mut visible = VisibleLines::Filtered(fm.compute_visible(&reader));
