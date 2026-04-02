@@ -42,23 +42,19 @@ impl Mode for UiMode {
         }
 
         if kb.ui.toggle_sidebar.matches(key, modifiers) {
-            tab.display.show_sidebar = !tab.display.show_sidebar;
-            return (Box::new(NormalMode::default()), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::ToggleSidebar);
         }
 
         if kb.ui.toggle_mode_bar.matches(key, modifiers) {
-            // ToggleModeBar is handled at App level so all tabs stay in sync.
             return (Box::new(NormalMode::default()), KeyResult::ToggleModeBar);
         }
 
         if kb.ui.toggle_borders.matches(key, modifiers) {
-            tab.display.show_borders = !tab.display.show_borders;
-            return (Box::new(NormalMode::default()), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::ToggleBorders);
         }
 
         if kb.ui.toggle_wrap.matches(key, modifiers) {
-            tab.display.wrap = !tab.display.wrap;
-            return (Box::new(NormalMode::default()), KeyResult::Handled);
+            return (Box::new(NormalMode::default()), KeyResult::ToggleWrap);
         }
 
         // Pass global keys (quit, tab switch) through to App.
@@ -143,13 +139,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_s_toggles_sidebar() {
+    async fn test_s_returns_toggle_sidebar() {
         let mut tab = make_tab().await;
-        let initial = tab.display.show_sidebar;
-        press(&mut tab, KeyCode::Char('s'), KeyModifiers::NONE).await;
-        assert_eq!(tab.display.show_sidebar, !initial);
-        press(&mut tab, KeyCode::Char('s'), KeyModifiers::NONE).await;
-        assert_eq!(tab.display.show_sidebar, initial);
+        let (_, result) = press(&mut tab, KeyCode::Char('s'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::ToggleSidebar));
     }
 
     #[tokio::test]
@@ -160,21 +153,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_capital_b_toggles_borders() {
+    async fn test_capital_b_returns_toggle_borders() {
         let mut tab = make_tab().await;
-        let initial = tab.display.show_borders;
-        press(&mut tab, KeyCode::Char('B'), KeyModifiers::NONE).await;
-        assert_eq!(tab.display.show_borders, !initial);
+        let (_, result) = press(&mut tab, KeyCode::Char('B'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::ToggleBorders));
     }
 
     #[tokio::test]
-    async fn test_w_toggles_wrap() {
+    async fn test_w_returns_toggle_wrap() {
         let mut tab = make_tab().await;
-        let initial = tab.display.wrap;
-        press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
-        assert_eq!(tab.display.wrap, !initial);
-        press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
-        assert_eq!(tab.display.wrap, initial);
+        let (_, result) = press(&mut tab, KeyCode::Char('w'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::ToggleWrap));
     }
 
     #[tokio::test]

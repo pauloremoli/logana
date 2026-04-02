@@ -8,6 +8,7 @@ use crate::mode::command_mode::CommandMode;
 use crate::mode::filter_mode::FilterManagementMode;
 use crate::mode::normal_mode::NormalMode;
 use crate::theme::Theme;
+use crate::ui::SidebarSide;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{Terminal, prelude::*};
 use std::sync::Arc;
@@ -48,6 +49,64 @@ async fn resolve_policy_setting(
     RestoreSessionPolicy::Ask
 }
 
+struct StartupOverrides {
+    show_mode_bar: Option<bool>,
+    show_borders: Option<bool>,
+    show_line_numbers: Option<bool>,
+    show_sidebar: Option<bool>,
+    wrap: Option<bool>,
+    restore_policy: Option<RestoreSessionPolicy>,
+    restore_file_policy: Option<RestoreSessionPolicy>,
+}
+
+struct StartupSettings {
+    restore_policy: RestoreSessionPolicy,
+    restore_file_policy: RestoreSessionPolicy,
+    show_mode_bar: bool,
+    show_borders_default: bool,
+    show_line_numbers: bool,
+    show_sidebar: bool,
+    wrap: bool,
+    sidebar_side: SidebarSide,
+}
+
+async fn resolve_startup_settings(
+    db: &crate::db::Database,
+    ov: StartupOverrides,
+) -> StartupSettings {
+    let sidebar_side = if let Ok(Some(val)) = db.load_app_setting("sidebar_left").await {
+        if val == "true" {
+            SidebarSide::Left
+        } else {
+            SidebarSide::Right
+        }
+    } else {
+        SidebarSide::Right
+    };
+    StartupSettings {
+        restore_policy: resolve_policy_setting(db, "restore_session", ov.restore_policy).await,
+        restore_file_policy: resolve_policy_setting(
+            db,
+            "restore_file_context",
+            ov.restore_file_policy,
+        )
+        .await,
+        show_mode_bar: resolve_bool_setting(db, "show_mode_bar", ov.show_mode_bar, true).await,
+        show_borders_default: resolve_bool_setting(db, "show_borders", ov.show_borders, false)
+            .await,
+        show_line_numbers: resolve_bool_setting(
+            db,
+            "show_line_numbers",
+            ov.show_line_numbers,
+            true,
+        )
+        .await,
+        show_sidebar: resolve_bool_setting(db, "show_sidebar", ov.show_sidebar, true).await,
+        wrap: resolve_bool_setting(db, "wrap", ov.wrap, false).await,
+        sidebar_side,
+    }
+}
+
 pub struct App {
     pub tabs: Vec<TabState>,
     pub active_tab: usize,
@@ -70,6 +129,8 @@ pub struct App {
     pub show_sidebar: bool,
     /// Default wrap value applied to new tabs.
     pub wrap: bool,
+    /// Which side the filter sidebar sits on.
+    pub sidebar_side: SidebarSide,
     /// When true, the initial file tab starts in tail mode (set by `--tail`).
     pub startup_tail: bool,
     /// When true, filters were supplied via `--filters` and the previous-session
@@ -135,16 +196,29 @@ impl App {
     ) -> App {
         let db = log_manager.db.clone();
 
-        let restore_policy = resolve_policy_setting(&db, "restore_session", restore_policy).await;
-        let restore_file_policy =
-            resolve_policy_setting(&db, "restore_file_context", restore_file_policy).await;
-        let show_mode_bar = resolve_bool_setting(&db, "show_mode_bar", show_mode_bar, true).await;
-        let show_borders_default =
-            resolve_bool_setting(&db, "show_borders", show_borders, false).await;
-        let show_line_numbers =
-            resolve_bool_setting(&db, "show_line_numbers", show_line_numbers, true).await;
-        let show_sidebar = resolve_bool_setting(&db, "show_sidebar", show_sidebar, true).await;
-        let wrap = resolve_bool_setting(&db, "wrap", wrap, false).await;
+        let settings = resolve_startup_settings(
+            &db,
+            StartupOverrides {
+                show_mode_bar,
+                show_borders,
+                show_line_numbers,
+                show_sidebar,
+                wrap,
+                restore_policy,
+                restore_file_policy,
+            },
+        )
+        .await;
+        let StartupSettings {
+            restore_policy,
+            restore_file_policy,
+            show_mode_bar,
+            show_borders_default,
+            show_line_numbers,
+            show_sidebar,
+            wrap,
+            sidebar_side,
+        } = settings;
 
         let title = log_manager
             .source_file()
@@ -167,6 +241,7 @@ impl App {
         tab.display.show_line_numbers = show_line_numbers;
         tab.display.show_sidebar = show_sidebar;
         tab.display.wrap = wrap;
+        tab.display.sidebar_side = sidebar_side;
         let mut pending_session_restore: Option<Vec<String>> = None;
 
         // Check for saved context only when we have real data (not a placeholder
@@ -215,6 +290,7 @@ impl App {
             show_line_numbers,
             show_sidebar,
             wrap,
+            sidebar_side,
             startup_tail: false,
             startup_filters: false,
             preview_bytes: 16 * 1024 * 1024,
@@ -247,6 +323,7 @@ impl App {
         tab.display.show_line_numbers = self.show_line_numbers;
         tab.display.show_sidebar = self.show_sidebar;
         tab.display.wrap = self.wrap;
+        tab.display.sidebar_side = self.sidebar_side;
     }
 
     pub fn tab(&self) -> &TabState {
@@ -718,6 +795,74 @@ impl App {
         }
     }
 
+    async fn save_app_bool(&self, key: &str, value: bool) {
+        let _ = self
+            .db
+            .save_app_setting(key, if value { "true" } else { "false" })
+            .await;
+    }
+
+    async fn handle_toggle_mode_bar(&mut self) {
+        self.show_mode_bar = !self.show_mode_bar;
+        for tab in &mut self.tabs {
+            tab.display.show_mode_bar = self.show_mode_bar;
+        }
+        self.save_app_bool("show_mode_bar", self.show_mode_bar)
+            .await;
+    }
+
+    async fn handle_toggle_sidebar(&mut self) {
+        self.show_sidebar = !self.show_sidebar;
+        for tab in &mut self.tabs {
+            tab.display.show_sidebar = self.show_sidebar;
+        }
+        self.save_app_bool("show_sidebar", self.show_sidebar).await;
+    }
+
+    async fn handle_toggle_borders(&mut self) {
+        self.show_borders_default = !self.show_borders_default;
+        for tab in &mut self.tabs {
+            tab.display.show_borders = self.show_borders_default;
+        }
+        self.save_app_bool("show_borders", self.show_borders_default)
+            .await;
+    }
+
+    async fn handle_toggle_wrap(&mut self) {
+        self.wrap = !self.wrap;
+        for tab in &mut self.tabs {
+            tab.display.wrap = self.wrap;
+        }
+        self.save_app_bool("wrap", self.wrap).await;
+    }
+
+    async fn handle_toggle_line_numbers(&mut self) {
+        self.show_line_numbers = !self.show_line_numbers;
+        for tab in &mut self.tabs {
+            tab.display.show_line_numbers = self.show_line_numbers;
+        }
+        self.save_app_bool("show_line_numbers", self.show_line_numbers)
+            .await;
+    }
+
+    async fn handle_apply_value_colors(&mut self, disabled: std::collections::HashSet<String>) {
+        self.theme.value_colors.disabled = disabled;
+        for tab in &mut self.tabs {
+            tab.cache.render_gen = tab.cache.render_gen.wrapping_add(1);
+            tab.cache.render_line.clear();
+        }
+    }
+
+    async fn handle_open_files(&mut self, paths: Vec<String>) {
+        for path in paths {
+            if let Err(e) = self.open_file(&path).await {
+                self.tabs[self.active_tab].interaction.command_error = Some(e);
+                break;
+            }
+        }
+        self.remove_empty_placeholder();
+    }
+
     async fn dispatch_key_result(
         &mut self,
         result: KeyResult,
@@ -731,39 +876,17 @@ impl App {
             KeyResult::RestoreSession(files) => self.restore_session(files).await,
             KeyResult::DockerAttach(id, name) => self.open_docker_logs(id, name).await,
             KeyResult::DltAttach(host, port, name) => self.open_dlt_stream(host, port, name).await,
-            KeyResult::ApplyValueColors(disabled) => {
-                self.theme.value_colors.disabled = disabled;
-                for tab in &mut self.tabs {
-                    tab.cache.render_gen = tab.cache.render_gen.wrapping_add(1);
-                    tab.cache.render_line.clear();
-                }
-            }
+            KeyResult::ApplyValueColors(disabled) => self.handle_apply_value_colors(disabled).await,
             KeyResult::ApplyLevelColors(disabled) => {
                 self.tabs[self.active_tab].display.level_colors_disabled = disabled;
             }
             KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
-            KeyResult::ToggleModeBar => {
-                self.show_mode_bar = !self.show_mode_bar;
-                for tab in &mut self.tabs {
-                    tab.display.show_mode_bar = self.show_mode_bar;
-                }
-                let _ = self
-                    .db
-                    .save_app_setting(
-                        "show_mode_bar",
-                        if self.show_mode_bar { "true" } else { "false" },
-                    )
-                    .await;
-            }
-            KeyResult::OpenFiles(paths) => {
-                for path in paths {
-                    if let Err(e) = self.open_file(&path).await {
-                        self.tabs[self.active_tab].interaction.command_error = Some(e);
-                        break;
-                    }
-                }
-                self.remove_empty_placeholder();
-            }
+            KeyResult::ToggleModeBar => self.handle_toggle_mode_bar().await,
+            KeyResult::ToggleSidebar => self.handle_toggle_sidebar().await,
+            KeyResult::ToggleBorders => self.handle_toggle_borders().await,
+            KeyResult::ToggleWrap => self.handle_toggle_wrap().await,
+            KeyResult::ToggleLineNumbers => self.handle_toggle_line_numbers().await,
+            KeyResult::OpenFiles(paths) => self.handle_open_files(paths).await,
             KeyResult::AlwaysRestoreFile(_) => {
                 self.restore_file_policy = RestoreSessionPolicy::Always;
                 let _ = self

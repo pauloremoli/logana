@@ -5,6 +5,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use logana::db::AppSettingsStore;
 use logana::db::Database;
 use logana::db::LogManager;
 use logana::ingestion::{FileReader, VisibilityPredicate};
@@ -222,8 +223,14 @@ async fn run_headless_mode(args: Args) -> Result<()> {
 }
 
 async fn build_app(log_manager: LogManager, config: Config) -> App {
-    let theme = config
-        .theme
+    let theme_name = log_manager
+        .db
+        .load_app_setting("theme")
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| config.theme.clone());
+    let theme = theme_name
         .as_deref()
         .and_then(|name| Theme::from_file(format!("{}.json", name)).ok())
         .unwrap_or_default();

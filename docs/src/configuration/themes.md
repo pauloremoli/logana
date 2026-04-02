@@ -8,7 +8,9 @@ logana ships with 22 bundled themes and supports fully custom themes via JSON fi
 :set-theme catppuccin-mocha
 ```
 
-Tab completes theme names. To set the default, add it to `~/.config/logana/config.json`:
+Tab completes theme names. The chosen theme is persisted to the database and restored on the next session.
+
+To pin a theme permanently (overriding any runtime changes), add it to `~/.config/logana/config.json`:
 
 ```json
 { "theme": "catppuccin-mocha" }

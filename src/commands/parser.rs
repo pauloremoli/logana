@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 
+use crate::ui::SidebarSide;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, no_binary_name = true)]
 pub struct CommandLine {
@@ -139,6 +141,8 @@ pub enum Commands {
     },
     /// Stop the embedded MCP server
     DisableMcp,
+    /// Set the filter sidebar position relative to the log panel (left or right)
+    SidebarPosition { side: SidebarSide },
     /// Execute a command and stream its output to a new tab.
     /// Provide the program followed by its arguments.
     /// Stderr lines are prefixed with "ERROR " for visibility.

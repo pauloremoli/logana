@@ -91,6 +91,15 @@ pub fn resolve_completions(
             .collect();
         return CompletionSource::Items(completions);
     }
+    if let Some(partial_raw) = query_text.trim_start().strip_prefix("sidebar-position ") {
+        let partial = partial_raw.trim_start();
+        let completions = ["left", "right"]
+            .iter()
+            .filter(|s| fuzzy_match(partial, s))
+            .map(|s| s.to_string())
+            .collect();
+        return CompletionSource::Items(completions);
+    }
     if completion_index.is_none()
         && let Some(cmd) = find_matching_command(query_text)
     {

@@ -54,12 +54,14 @@ See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filter
 
 | Command | Description |
 |---|---|
-| `:wrap` | Toggle line wrap on/off |
+| `:wrap` | Toggle line wrap on/off (persisted across sessions) |
+| `:line-numbers` | Toggle the line number gutter on/off (persisted across sessions) |
 | `:tail` | Toggle tail mode (auto-scroll on new content) |
 | `:raw` | Toggle raw mode — bypass the format parser and show unformatted log lines; title shows `[RAW]` when active |
 | `:level-colors` | Open the level colors dialog — toggle coloring per level (TRACE, DEBUG, INFO, NOTICE, WARNING, ERROR, FATAL); INFO/TRACE/DEBUG/NOTICE are off by default |
 | `:value-colors` | Open the value colors dialog — toggle coloring for HTTP methods, status codes, IPs, UUIDs, and process/logger names |
-| `:set-theme <name>` | Switch the color theme |
+| `:set-theme <name>` | Switch the color theme (persisted across sessions) |
+| `:sidebar-position left\|right` | Move the filter sidebar to the left or right of the log panel (persisted across sessions) |
 
 ## OTel Collector
 

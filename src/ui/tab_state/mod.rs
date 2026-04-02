@@ -26,7 +26,7 @@ pub mod stream_state;
 pub mod year_map;
 
 pub use cache_state::CacheState;
-pub use display_config::DisplayConfig;
+pub use display_config::{DisplayConfig, SidebarSide};
 pub use filter_state::{FilterState, FilterViewSnapshot};
 pub use interaction_state::InteractionState;
 pub use scroll_state::ScrollState;
@@ -46,6 +46,10 @@ pub enum KeyResult {
     CopyToClipboard(String),
     OpenFiles(Vec<String>),
     ToggleModeBar,
+    ToggleSidebar,
+    ToggleBorders,
+    ToggleWrap,
+    ToggleLineNumbers,
     AlwaysRestoreFile(Box<crate::db::FileContext>),
     NeverRestoreFile,
     AlwaysRestoreSession(Vec<String>),

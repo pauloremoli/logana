@@ -365,15 +365,24 @@ impl App {
     ) -> (Rect, Option<Rect>) {
         let tab = &self.tabs[self.active_tab];
         let sidebar_width = tab.display.sidebar_width;
+        let sidebar_left = tab.display.sidebar_side.is_left();
+
         if !tab.display.show_sidebar {
             return (main_chunk, None);
         }
+
         if show_borders {
+            let constraints = if sidebar_left {
+                [Constraint::Length(sidebar_width), Constraint::Min(1)]
+            } else {
+                [Constraint::Min(1), Constraint::Length(sidebar_width)]
+            };
             let horizontal = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
+                .constraints(constraints)
                 .split(main_chunk);
-            let raw_sidebar = horizontal[1];
+            let (logs_idx, sidebar_idx) = if sidebar_left { (1, 0) } else { (0, 1) };
+            let raw_sidebar = horizontal[sidebar_idx];
             let sidebar = if show_tab_bar {
                 Rect {
                     y: raw_sidebar.y.saturating_sub(1),
@@ -383,17 +392,27 @@ impl App {
             } else {
                 raw_sidebar
             };
-            (horizontal[0], Some(sidebar))
+            (horizontal[logs_idx], Some(sidebar))
         } else {
-            let horizontal = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
+            let constraints = if sidebar_left {
+                [
+                    Constraint::Length(sidebar_width),
+                    Constraint::Length(1),
+                    Constraint::Min(1),
+                ]
+            } else {
+                [
                     Constraint::Min(1),
                     Constraint::Length(1),
                     Constraint::Length(sidebar_width),
-                ])
+                ]
+            };
+            let horizontal = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(constraints)
                 .split(main_chunk);
-            (horizontal[0], Some(horizontal[2]))
+            let (logs_idx, sidebar_idx) = if sidebar_left { (2, 0) } else { (0, 2) };
+            (horizontal[logs_idx], Some(horizontal[sidebar_idx]))
         }
     }
 

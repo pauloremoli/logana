@@ -5,9 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
-## [0.5.1] - 2026-04-01
-
 ### Added
+- `:sidebar-position left|right` command to move the filter sidebar to either side of the log panel. Persisted across sessions.
+- `:line-numbers` command to toggle the line number gutter.
 - Infer year from file metadata for timestamp formats without year e.g. syslog/journalctl.
 - Keep the selected line when filters change.
 
@@ -18,6 +18,9 @@ All notable changes to logana will be documented in this file.
 
 ### Changed
 - Performance improvements on CLF parser
+- Theme, sidebar visibility, borders, wrap, and line numbers are now persisted to the database when changed at runtime via commands or the UI options menu (`u`). Previously only `show_mode_bar` was persisted.
+- Regex patterns with spaces (e.g. `filter -r \d{3} \d+`) are now accepted — words after the pattern flag are joined instead of being rejected as extra arguments.
+- Editing a filter from the filter manager no longer wraps the pattern in quotes.
 
 ## [0.5.0] - 2026-03-29
 ### Added

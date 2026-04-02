@@ -86,10 +86,13 @@ impl App {
             Some(Commands::Export { path, template }) => return self.cmd_export(path, template),
             Some(Commands::SaveFilters { path }) => return self.cmd_save_filters(path),
             Some(Commands::LoadFilters { path }) => return self.cmd_load_filters(path).await,
-            Some(Commands::Wrap) => self.cmd_wrap(),
-            Some(Commands::LineNumbers) => self.cmd_line_numbers(),
+            Some(Commands::Wrap) => self.cmd_wrap().await,
+            Some(Commands::LineNumbers) => self.cmd_line_numbers().await,
             Some(Commands::LevelColors) => return self.cmd_level_colors(),
-            Some(Commands::SetTheme { theme_name }) => return self.cmd_set_theme(theme_name),
+            Some(Commands::SetTheme { theme_name }) => return self.cmd_set_theme(theme_name).await,
+            Some(Commands::SidebarPosition { side }) => {
+                return self.cmd_sidebar_position(side).await;
+            }
             Some(Commands::Open { path }) => return self.cmd_open(path).await,
             Some(Commands::CloseTab) => return self.cmd_close_tab(),
             Some(Commands::ClearFilters) => return self.cmd_clear_filters().await,

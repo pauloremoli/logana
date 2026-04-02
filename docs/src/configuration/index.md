@@ -6,7 +6,7 @@ logana is configured via a `config.json` file. The file is entirely optional —
 
 logana never writes to the config file. Any settings defined there are applied on startup and take precedence over the values stored in the database.
 
-Some settings (UI toggles like `show_mode_bar`, `show_borders`, `show_sidebar`, `show_line_numbers`, and `wrap`) can also be changed at runtime via the UI options menu (`u`). When changed at runtime, the new value is saved to the database and restored on the next session — unless the setting is explicitly defined in the config file, in which case the config file value always wins.
+Many settings can also be changed at runtime — UI toggles via the UI options menu (`u`) and display commands (`:wrap`, `:line-numbers`, `:set-theme`, `:sidebar-position`). When changed at runtime the new value is saved to the database and restored on the next session, unless the setting is also defined in the config file, in which case the config file value always wins.
 
 ## Config File Location
 
@@ -28,6 +28,7 @@ The path depends on the operating system:
   "show_sidebar": true,
   "show_line_numbers": true,
   "wrap": false,
+  "sidebar_left": false,
   "preview_bytes": 16777216,
   "restore_session": "always",
   "restore_file_context": "always",
@@ -73,6 +74,7 @@ The path depends on the operating system:
 | `show_sidebar` | bool | `true` | Show the filter sidebar on startup |
 | `show_line_numbers` | bool | `true` | Show the line number gutter |
 | `wrap` | bool | `false` | Wrap long lines |
+| `sidebar_left` | bool | `false` | Place the filter sidebar to the left of the log panel instead of the right |
 | `preview_bytes` | number | `16777216` | Bytes read for the instant preview shown while the full file index is built in the background (16 MiB) |
 | `restore_session` | string | `"always"` | Whether to reopen tabs from the previous session (`"always"`, `"ask"`, `"never"`) |
 | `restore_file_context` | string | `"always"` | Whether to restore per-file state (scroll, marks, search) when reopening a file (`"always"`, `"ask"`, `"never"`) |

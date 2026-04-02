@@ -1,14 +1,36 @@
+use crate::db::AppSettingsStore;
 use crate::theme::Theme;
 use crate::ui::App;
+use crate::ui::SidebarSide;
 
 impl App {
-    pub(super) fn cmd_wrap(&mut self) {
-        self.tabs[self.active_tab].display.wrap = !self.tabs[self.active_tab].display.wrap;
+    pub(super) async fn cmd_wrap(&mut self) {
+        self.wrap = !self.wrap;
+        for tab in &mut self.tabs {
+            tab.display.wrap = self.wrap;
+        }
+        let _ = self
+            .db
+            .save_app_setting("wrap", if self.wrap { "true" } else { "false" })
+            .await;
     }
 
-    pub(super) fn cmd_line_numbers(&mut self) {
-        self.tabs[self.active_tab].display.show_line_numbers =
-            !self.tabs[self.active_tab].display.show_line_numbers;
+    pub(super) async fn cmd_line_numbers(&mut self) {
+        self.show_line_numbers = !self.show_line_numbers;
+        for tab in &mut self.tabs {
+            tab.display.show_line_numbers = self.show_line_numbers;
+        }
+        let _ = self
+            .db
+            .save_app_setting(
+                "show_line_numbers",
+                if self.show_line_numbers {
+                    "true"
+                } else {
+                    "false"
+                },
+            )
+            .await;
     }
 
     pub(super) fn cmd_level_colors(&mut self) -> Result<bool, String> {
@@ -43,7 +65,7 @@ impl App {
         Ok(true)
     }
 
-    pub(super) fn cmd_set_theme(&mut self, theme_name: String) -> Result<bool, String> {
+    pub(super) async fn cmd_set_theme(&mut self, theme_name: String) -> Result<bool, String> {
         let theme_filename = format!("{}.json", theme_name.to_lowercase());
         self.theme = Theme::from_file(&theme_filename)
             .map_err(|e| format!("Failed to load theme '{}': {}", theme_name, e))?;
@@ -51,6 +73,22 @@ impl App {
             tab.cache.render_gen = tab.cache.render_gen.wrapping_add(1);
             tab.cache.render_line.clear();
         }
+        let _ = self.db.save_app_setting("theme", &theme_name).await;
+        Ok(false)
+    }
+
+    pub(super) async fn cmd_sidebar_position(&mut self, side: SidebarSide) -> Result<bool, String> {
+        self.sidebar_side = side;
+        for tab in &mut self.tabs {
+            tab.display.sidebar_side = side;
+        }
+        let _ = self
+            .db
+            .save_app_setting(
+                "sidebar_left",
+                if side.is_left() { "true" } else { "false" },
+            )
+            .await;
         Ok(false)
     }
 
