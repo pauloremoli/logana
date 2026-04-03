@@ -5,3 +5,4 @@ tarpaulin-report.html
 docs/book/
 perf.data*
 report.txt
+.worktrees/
