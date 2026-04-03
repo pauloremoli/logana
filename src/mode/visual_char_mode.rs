@@ -172,6 +172,7 @@ impl Mode for VisualMode {
             let selected = regex::escape(&self.selected_text());
             return (
                 Box::new(SearchMode {
+                    cursor: selected.len(),
                     input: selected,
                     forward: true,
                 }),
@@ -1096,7 +1097,7 @@ mod tests {
         mode.cursor_col = 4; // selected = "hello"
         let (m, _) = press(mode, &mut tab, KeyCode::Char('/')).await;
         match m.render_state() {
-            ModeRenderState::Search { query, forward } => {
+            ModeRenderState::Search { query, forward, .. } => {
                 assert!(query.contains("hello"), "got: {query}");
                 assert!(forward);
             }
@@ -1112,7 +1113,7 @@ mod tests {
         mode.cursor_col = 18; // selected = "/api/v1?foo=bar"
         let (m, _) = press(mode, &mut tab, KeyCode::Char('/')).await;
         match m.render_state() {
-            ModeRenderState::Search { query, forward } => {
+            ModeRenderState::Search { query, forward, .. } => {
                 assert_eq!(query, r"/api/v1\?foo=bar", "got: {query}");
                 assert!(forward);
             }

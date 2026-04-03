@@ -26,6 +26,7 @@ pub enum ModeRenderState {
     },
     Search {
         query: String,
+        cursor: usize,
         forward: bool,
     },
     FilterManagement {
@@ -818,6 +819,7 @@ mod tests {
         assert_eq!(
             ModeRenderState::Search {
                 query: String::new(),
+                cursor: 0,
                 forward: true
             }
             .mode_name(),
@@ -826,6 +828,7 @@ mod tests {
         assert_eq!(
             ModeRenderState::Search {
                 query: String::new(),
+                cursor: 0,
                 forward: false
             }
             .mode_name(),

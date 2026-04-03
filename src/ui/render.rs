@@ -32,7 +32,7 @@ struct UiRenderState {
     command_input: Option<(String, usize)>,
     completion_index: Option<usize>,
     completion_query: Option<String>,
-    search_input: Option<(String, bool, bool)>,
+    search_input: Option<(String, usize, bool, bool)>,
     is_confirm_restore: bool,
     session_files: Option<Vec<String>>,
     selected_filter_idx: usize,
@@ -184,9 +184,16 @@ impl App {
             } => completion_query.clone(),
             _ => None,
         };
-        let search_input: Option<(String, bool, bool)> = match render_state {
-            ModeRenderState::Search { query, forward } => Some((query.clone(), *forward, true)),
-            _ => persistent_pattern.map(|p| (p, true, false)),
+        let search_input: Option<(String, usize, bool, bool)> = match render_state {
+            ModeRenderState::Search {
+                query,
+                cursor,
+                forward,
+            } => Some((query.clone(), *cursor, *forward, true)),
+            _ => persistent_pattern.map(|p| {
+                let len = p.len();
+                (p, len, true, false)
+            }),
         };
         let is_confirm_restore = matches!(render_state, ModeRenderState::ConfirmRestore);
         let session_files: Option<Vec<String>> = match render_state {
@@ -588,7 +595,7 @@ impl App {
         chunk_idx: usize,
         state: &UiRenderState,
     ) {
-        if let Some((input_str, forward, is_active)) = state.search_input.clone() {
+        if let Some((input_str, cursor_pos, forward, is_active)) = state.search_input.clone() {
             let input_area = chunks[chunk_idx];
             let hint_area = chunks[chunk_idx + 1];
             let total = self.tabs[self.active_tab]
@@ -606,6 +613,7 @@ impl App {
                 .map(|h| progress_bar_str(*h.progress_rx.borrow()));
             let bar = InputBar {
                 query: &input_str,
+                cursor_pos,
                 forward,
                 is_active,
                 total_matches: total,
@@ -958,6 +966,7 @@ mod tests {
         let mut app = make_app(&["hello world", "test line"]).await;
         app.tabs[0].interaction.mode = Box::new(SearchMode {
             input: "test".to_string(),
+            cursor: 4,
             forward: true,
         });
         let mut terminal = make_terminal();
@@ -969,6 +978,7 @@ mod tests {
         let mut app = make_app(&["hello world", "test line"]).await;
         app.tabs[0].interaction.mode = Box::new(SearchMode {
             input: "test".to_string(),
+            cursor: 4,
             forward: false,
         });
         let mut terminal = make_terminal();
@@ -980,6 +990,7 @@ mod tests {
         let mut app = make_app(&["hello world"]).await;
         app.tabs[0].interaction.mode = Box::new(SearchMode {
             input: String::new(),
+            cursor: 0,
             forward: true,
         });
         let mut terminal = make_terminal();
@@ -1616,6 +1627,7 @@ mod tests {
         app_with_bar.tabs[0].display.show_mode_bar = false;
         app_with_bar.tabs[0].interaction.mode = Box::new(SearchMode {
             input: String::new(),
+            cursor: 0,
             forward: true,
         });
         let mut terminal2 = make_terminal();

@@ -190,6 +190,7 @@ impl Mode for VisualLineMode {
             let text = regex::escape(&lo_line_text(tab, self.anchor, tab.scroll.scroll_offset));
             return (
                 Box::new(SearchMode {
+                    cursor: text.len(),
                     input: text,
                     forward: true,
                 }),
@@ -634,7 +635,7 @@ mod tests {
         };
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('/')).await;
         match mode2.render_state() {
-            ModeRenderState::Search { query, forward } => {
+            ModeRenderState::Search { query, forward, .. } => {
                 assert!(query.contains("foo"), "expected lo-line text, got: {query}");
                 assert!(forward);
             }
@@ -652,7 +653,7 @@ mod tests {
         };
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('/')).await;
         match mode2.render_state() {
-            ModeRenderState::Search { query, forward } => {
+            ModeRenderState::Search { query, forward, .. } => {
                 assert!(
                     query.contains(r"GET /api/v2\?limit=10"),
                     "? must be escaped, got: {query}"

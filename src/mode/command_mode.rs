@@ -269,6 +269,17 @@ impl Mode for CommandMode {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
         match key {
+            KeyCode::Delete => {
+                if let Some(query) = self.completion_query.take() {
+                    self.input = query;
+                    self.cursor = self.input.len();
+                    self.completion_index = None;
+                }
+                if self.cursor < self.input.len() {
+                    self.input.remove(self.cursor);
+                    self.completion_index = None;
+                }
+            }
             KeyCode::Backspace => {
                 if let Some(query) = self.completion_query.take() {
                     self.input = query;

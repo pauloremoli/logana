@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 #[derive(Debug)]
 pub struct SearchMode {
     pub input: String,
+    pub cursor: usize,
     pub forward: bool,
 }
 
@@ -69,8 +70,44 @@ impl Mode for SearchMode {
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else {
             match key {
+                KeyCode::Left => {
+                    if self.cursor > 0 {
+                        self.cursor -= 1;
+                        while !self.input.is_char_boundary(self.cursor) {
+                            self.cursor -= 1;
+                        }
+                    }
+                    (self, KeyResult::Handled)
+                }
+                KeyCode::Right => {
+                    if self.cursor < self.input.len() {
+                        self.cursor += 1;
+                        while !self.input.is_char_boundary(self.cursor) {
+                            self.cursor += 1;
+                        }
+                    }
+                    (self, KeyResult::Handled)
+                }
+                KeyCode::Delete => {
+                    if self.cursor < self.input.len() {
+                        self.input.remove(self.cursor);
+                    }
+                    if self.input.is_empty() {
+                        tab.cancel_search();
+                    } else {
+                        tab.begin_search(&self.input, self.forward, false);
+                    }
+                    (self, KeyResult::Handled)
+                }
                 KeyCode::Backspace => {
-                    self.input.pop();
+                    if self.cursor > 0 {
+                        let mut new_cursor = self.cursor - 1;
+                        while !self.input.is_char_boundary(new_cursor) {
+                            new_cursor -= 1;
+                        }
+                        self.input.remove(new_cursor);
+                        self.cursor = new_cursor;
+                    }
                     if self.input.is_empty() {
                         tab.cancel_search();
                     } else {
@@ -79,7 +116,8 @@ impl Mode for SearchMode {
                     (self, KeyResult::Handled)
                 }
                 KeyCode::Char(c) => {
-                    self.input.push(c);
+                    self.input.insert(self.cursor, c);
+                    self.cursor += c.len_utf8();
                     tab.begin_search(&self.input, self.forward, false);
                     (self, KeyResult::Handled)
                 }
@@ -103,6 +141,7 @@ impl Mode for SearchMode {
     fn render_state(&self) -> ModeRenderState {
         ModeRenderState::Search {
             query: self.input.clone(),
+            cursor: self.cursor,
             forward: self.forward,
         }
     }
@@ -152,6 +191,7 @@ mod tests {
 
     fn forward_mode(input: &str) -> SearchMode {
         SearchMode {
+            cursor: input.len(),
             input: input.to_string(),
             forward: true,
         }
@@ -159,6 +199,7 @@ mod tests {
 
     fn backward_mode(input: &str) -> SearchMode {
         SearchMode {
+            cursor: input.len(),
             input: input.to_string(),
             forward: false,
         }
@@ -293,7 +334,7 @@ mod tests {
     fn test_search_state_forward_true() {
         let mode = forward_mode("test");
         match mode.render_state() {
-            ModeRenderState::Search { query, forward } => {
+            ModeRenderState::Search { query, forward, .. } => {
                 assert_eq!(query, "test");
                 assert!(forward);
             }
@@ -305,7 +346,7 @@ mod tests {
     fn test_search_state_forward_false() {
         let mode = backward_mode("warn");
         match mode.render_state() {
-            ModeRenderState::Search { query, forward } => {
+            ModeRenderState::Search { query, forward, .. } => {
                 assert_eq!(query, "warn");
                 assert!(!forward);
             }

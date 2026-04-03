@@ -372,6 +372,7 @@ impl Mode for NormalMode {
             return (
                 Box::new(SearchMode {
                     input: String::new(),
+                    cursor: 0,
                     forward: true,
                 }),
                 KeyResult::Handled,
@@ -384,6 +385,7 @@ impl Mode for NormalMode {
             return (
                 Box::new(SearchMode {
                     input: String::new(),
+                    cursor: 0,
                     forward: false,
                 }),
                 KeyResult::Handled,

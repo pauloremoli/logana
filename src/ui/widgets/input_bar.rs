@@ -7,6 +7,7 @@ use crate::theme::Theme;
 
 pub struct InputBar<'a> {
     pub query: &'a str,
+    pub cursor_pos: usize,
     pub forward: bool,
     pub is_active: bool,
     pub total_matches: usize,
@@ -20,7 +21,7 @@ impl<'a> InputBar<'a> {
         if !self.is_active {
             return None;
         }
-        let cursor_x = input_area.x + 1 + self.query.len() as u16;
+        let cursor_x = input_area.x + 1 + self.cursor_pos as u16;
         if cursor_x < input_area.x + input_area.width {
             Some((cursor_x, input_area.y))
         } else {
@@ -94,6 +95,7 @@ mod tests {
     fn make_bar<'a>(query: &'a str, is_active: bool, theme: &'a Theme) -> InputBar<'a> {
         InputBar {
             query,
+            cursor_pos: query.len(),
             forward: true,
             is_active,
             total_matches: 5,
@@ -108,6 +110,7 @@ mod tests {
         let theme = Theme::default();
         let bar = InputBar {
             query: "hello",
+            cursor_pos: 5,
             forward: true,
             is_active: true,
             total_matches: 3,
@@ -124,6 +127,7 @@ mod tests {
         let theme = Theme::default();
         let bar = InputBar {
             query: "world",
+            cursor_pos: 5,
             forward: false,
             is_active: false,
             total_matches: 2,
@@ -140,6 +144,7 @@ mod tests {
         let theme = Theme::default();
         let bar = InputBar {
             query: "abc",
+            cursor_pos: 3,
             forward: true,
             is_active: true,
             total_matches: 1,
@@ -157,6 +162,7 @@ mod tests {
         let theme = Theme::default();
         let bar = InputBar {
             query: "abc",
+            cursor_pos: 3,
             forward: true,
             is_active: false,
             total_matches: 1,
@@ -173,6 +179,7 @@ mod tests {
         let theme = Theme::default();
         let bar = InputBar {
             query: "x",
+            cursor_pos: 1,
             forward: true,
             is_active: true,
             total_matches: 7,
@@ -188,6 +195,7 @@ mod tests {
         let theme = Theme::default();
         let bar = InputBar {
             query: "x",
+            cursor_pos: 1,
             forward: true,
             is_active: false,
             total_matches: 0,
@@ -203,6 +211,7 @@ mod tests {
         let theme = Theme::default();
         let bar = InputBar {
             query: "x",
+            cursor_pos: 1,
             forward: true,
             is_active: false,
             total_matches: 10,
