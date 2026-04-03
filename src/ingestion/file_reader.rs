@@ -44,6 +44,15 @@ pub struct FileLoadHandle {
     pub total_bytes: u64,
 }
 
+/// One line in a merged sorted view.  The `sort_key` is a 23-byte canonical
+/// timestamp (`"YYYY-MM-DD HH:MM:SS.fff"`) used for lexicographic ordering.
+#[derive(Clone)]
+pub struct MergedEntry {
+    pub sort_key: crate::filters::CanonicalTs,
+    pub source_idx: usize,
+    pub line_idx: usize,
+}
+
 #[derive(Clone)]
 enum Storage {
     /// Heap-owned file content.  The `File` handle is kept open so that
@@ -59,6 +68,12 @@ enum Storage {
         mtime: Option<std::time::SystemTime>,
     },
     Bytes(Arc<Vec<u8>>),
+    /// Virtual storage for a merged view: line access is delegated to one of
+    /// the backing `sources` readers using the positional index into `entries`.
+    Merged {
+        entries: Arc<Vec<MergedEntry>>,
+        sources: Arc<Vec<FileReader>>,
+    },
 }
 
 impl Storage {
@@ -66,6 +81,7 @@ impl Storage {
         match self {
             Storage::File { data, .. } => data.as_slice(),
             Storage::Bytes(v) => v.as_slice(),
+            Storage::Merged { .. } => &[],
         }
     }
 }
@@ -222,6 +238,19 @@ impl FileReader {
         }
     }
 
+    /// Build a `FileReader` backed by a merged sorted index over multiple sources.
+    ///
+    /// Line access is delegated to the appropriate source reader via the compound
+    /// key stored in each `MergedEntry`.
+    pub fn from_merged(entries: Arc<Vec<MergedEntry>>, sources: Arc<Vec<FileReader>>) -> Self {
+        let line_count = entries.len();
+        FileReader {
+            storage: Storage::Merged { entries, sources },
+            line_starts: Arc::new((0..=line_count).collect()),
+            is_binary: false,
+        }
+    }
+
     /// Read the last `preview_bytes` of `path` synchronously and return a
     /// `FileReader` containing only those lines.
     ///
@@ -328,7 +357,7 @@ impl FileReader {
                 *device,
                 *mtime,
             ),
-            Storage::Bytes(_) => return Ok(false),
+            Storage::Bytes(_) | Storage::Merged { .. } => return Ok(false),
         };
 
         // Stat the path (not the fd) so rotation-by-rename is detectable:
@@ -843,6 +872,9 @@ impl FileReader {
 
     /// Total number of lines (including any final partial line without a trailing newline).
     pub fn line_count(&self) -> usize {
+        if let Storage::Merged { entries, .. } = &self.storage {
+            return entries.len();
+        }
         let data = self.storage.as_bytes();
         if data.is_empty() {
             return 0;
@@ -858,11 +890,27 @@ impl FileReader {
         }
     }
 
+    /// If this is a merged reader, return the Arc to the sorted entries; otherwise `None`.
+    pub fn merged_entries(&self) -> Option<&Arc<Vec<MergedEntry>>> {
+        if let Storage::Merged { entries, .. } = &self.storage {
+            Some(entries)
+        } else {
+            None
+        }
+    }
+
     /// Return the raw bytes of line `idx` (without the trailing newline).
+    ///
+    /// For `Storage::Merged`, `idx` is interpreted as a compound key
+    /// `source_idx << SOURCE_IDX_SHIFT | line_idx`.
     ///
     /// # Panics
     /// Panics if `idx >= line_count()`.
     pub fn get_line(&self, idx: usize) -> &[u8] {
+        if let Storage::Merged { entries, sources } = &self.storage {
+            let entry = &entries[idx];
+            return sources[entry.source_idx].get_line(entry.line_idx);
+        }
         let data = self.storage.as_bytes();
         let start = self.line_starts[idx];
         let end = if idx + 1 < self.line_starts.len() {
@@ -934,6 +982,7 @@ impl FileReader {
             Storage::File { data, .. } => {
                 std::sync::Arc::try_unwrap(data).unwrap_or_else(|arc| (*arc).clone())
             }
+            Storage::Merged { .. } => return,
         };
         let offset = data.len();
         data.extend_from_slice(effective_data);

@@ -291,80 +291,155 @@ fn populate_parse_cache(
 ) {
     let cache_gen = tab.cache.parse_gen;
     let mut new_entries: Vec<(usize, CachedParsedLine)> = Vec::new();
-    {
-        if !raw_mode && let Some(parser) = tab.display.format.as_deref() {
-            for vi in start..end {
-                let line_idx = tab.filter.visible_indices.get(vi);
-                if tab
-                    .cache
-                    .parse
-                    .get(&line_idx)
-                    .map(|(g, _)| *g == cache_gen)
-                    .unwrap_or(false)
-                {
-                    continue;
+
+    // For merged tabs, resolve per-source parsers and source labels.
+    let merged_entries_arc: Option<Arc<Vec<crate::ingestion::MergedEntry>>> =
+        tab.file_reader.merged_entries().cloned();
+    let merged_parsers: Option<Vec<Option<Arc<dyn crate::parser::LogFormatParser>>>> =
+        tab.merged.as_ref().map(|m| m.source_parsers.clone());
+    let merged_labels: Option<Vec<String>> = tab.merged.as_ref().map(|m| m.source_labels.clone());
+    let label_col_width: usize = tab.merged.as_ref().map(|m| m.label_col_width).unwrap_or(0);
+    let source_hidden = hidden_fields.contains("source");
+    let has_any_parser = merged_parsers.is_some() || tab.display.format.is_some();
+    let is_merged = merged_entries_arc.is_some();
+
+    if raw_mode {
+        return;
+    }
+
+    for vi in start..end {
+        let line_idx = tab.filter.visible_indices.get(vi);
+        if tab
+            .cache
+            .parse
+            .get(&line_idx)
+            .map(|(g, _)| *g == cache_gen)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        let line_bytes = tab.file_reader.get_line(line_idx);
+
+        // Source prefix to prepend for merged tabs (empty string if hidden or not merged).
+        // Padded to label_col_width so all log content starts at the same column.
+        let source_prefix: String = if !source_hidden
+            && let Some(entries) = merged_entries_arc.as_ref()
+            && let Some(labels) = merged_labels.as_ref()
+            && let Some(entry) = entries.get(line_idx)
+            && let Some(label) = labels.get(entry.source_idx)
+        {
+            format!("{:<width$}", label, width = label_col_width)
+        } else {
+            String::new()
+        };
+
+        let parser: Option<&dyn crate::parser::LogFormatParser> =
+            if let (Some(entries), Some(parsers)) =
+                (merged_entries_arc.as_ref(), merged_parsers.as_ref())
+            {
+                entries
+                    .get(line_idx)
+                    .and_then(|e| parsers.get(e.source_idx))
+                    .and_then(|p| p.as_deref())
+            } else {
+                tab.display.format.as_deref()
+            };
+        let year_override = if is_merged {
+            None
+        } else {
+            tab.year_map.as_deref().map(|ym| ym.year_for_line(line_idx))
+        };
+
+        if has_any_parser
+            && let Some(parser) = parser
+            && let Some(parts) = parser.parse_line(line_bytes)
+        {
+            let cols = apply_field_layout(
+                &parts,
+                field_layout,
+                hidden_fields,
+                show_keys,
+                year_override,
+            );
+            let all_cols_hidden = source_prefix.is_empty() && cols.is_empty();
+            let level = parts.level.map(|s| s.to_string());
+            let timestamp = parts.timestamp.map(|s| s.to_string());
+            let target = parts.target.map(|s| s.to_string());
+            let pid = parts
+                .extra_fields
+                .iter()
+                .find(|(_, k, _)| *k == "pid")
+                .map(|(_, _, v)| v.to_string());
+            let rendered = if all_cols_hidden {
+                String::new()
+            } else {
+                let col_bytes: usize = cols.iter().map(|c| c.len()).sum();
+                let cap = source_prefix.len()
+                    + if source_prefix.is_empty() { 0 } else { 1 }
+                    + col_bytes
+                    + cols.len();
+                let mut buf = String::with_capacity(cap);
+                if !source_prefix.is_empty() {
+                    buf.push_str(&source_prefix);
+                    if !cols.is_empty() {
+                        buf.push(' ');
+                    }
                 }
-                let line_bytes = tab.file_reader.get_line(line_idx);
-                if let Some(parts) = parser.parse_line(line_bytes) {
-                    let year_override =
-                        tab.year_map.as_deref().map(|ym| ym.year_for_line(line_idx));
-                    let cols = apply_field_layout(
-                        &parts,
-                        field_layout,
-                        hidden_fields,
-                        show_keys,
-                        year_override,
-                    );
-                    let all_cols_hidden = cols.is_empty();
-                    let level = parts.level.map(|s| s.to_string());
-                    let timestamp = parts.timestamp.map(|s| s.to_string());
-                    let target = parts.target.map(|s| s.to_string());
-                    let pid = parts
-                        .extra_fields
-                        .iter()
-                        .find(|(_, k, _)| *k == "pid")
-                        .map(|(_, _, v)| v.to_string());
-                    let rendered = if all_cols_hidden {
-                        String::new()
-                    } else {
-                        let cap: usize = cols.iter().map(|c| c.len()).sum::<usize>() + cols.len();
-                        let mut buf = String::with_capacity(cap);
-                        for (i, col) in cols.iter().enumerate() {
-                            if i > 0 {
-                                buf.push(' ');
-                            }
-                            buf.push_str(col);
-                        }
-                        buf
-                    };
-                    let target_offset = target
-                        .as_deref()
-                        .filter(|t| !t.is_empty())
-                        .and_then(|t| find_token_offset(&rendered, t));
-                    let pid_offset = pid
-                        .as_deref()
-                        .filter(|p| !p.is_empty())
-                        .and_then(|p| find_token_offset(&rendered, p));
-                    let timestamp_offset = timestamp
-                        .as_deref()
-                        .filter(|ts| !ts.is_empty())
-                        .and_then(|ts| rendered.find(ts));
-                    new_entries.push((
-                        line_idx,
-                        CachedParsedLine {
-                            rendered,
-                            level,
-                            timestamp,
-                            target,
-                            pid,
-                            all_cols_hidden,
-                            target_offset,
-                            pid_offset,
-                            timestamp_offset,
-                        },
-                    ));
+                for (i, col) in cols.iter().enumerate() {
+                    if i > 0 {
+                        buf.push(' ');
+                    }
+                    buf.push_str(col);
                 }
-            }
+                buf
+            };
+            let target_offset = target
+                .as_deref()
+                .filter(|t| !t.is_empty())
+                .and_then(|t| find_token_offset(&rendered, t));
+            let pid_offset = pid
+                .as_deref()
+                .filter(|p| !p.is_empty())
+                .and_then(|p| find_token_offset(&rendered, p));
+            let timestamp_offset = timestamp
+                .as_deref()
+                .filter(|ts| !ts.is_empty())
+                .and_then(|ts| rendered.find(ts));
+            new_entries.push((
+                line_idx,
+                CachedParsedLine {
+                    rendered,
+                    level,
+                    timestamp,
+                    target,
+                    pid,
+                    all_cols_hidden,
+                    target_offset,
+                    pid_offset,
+                    timestamp_offset,
+                },
+            ));
+        } else if !source_prefix.is_empty() {
+            // Raw/unparsed line in a merged tab with a visible source label.
+            // Create a minimal cache entry so the source prefix is part of the
+            // content (not a separate span), keeping char-selection offsets correct.
+            let raw_text = std::str::from_utf8(line_bytes).unwrap_or_default();
+            let rendered = format!("{} {}", source_prefix, raw_text);
+            new_entries.push((
+                line_idx,
+                CachedParsedLine {
+                    rendered,
+                    level: None,
+                    timestamp: None,
+                    target: None,
+                    pid: None,
+                    all_cols_hidden: false,
+                    target_offset: None,
+                    pid_offset: None,
+                    timestamp_offset: None,
+                },
+            ));
         }
     }
     for (line_idx, entry) in new_entries {

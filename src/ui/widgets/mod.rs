@@ -4,6 +4,7 @@ pub mod confirm_modal;
 pub mod input_bar;
 pub mod keybindings_help_popup;
 pub mod log_panel;
+pub mod merge_select_popup;
 pub mod mode_bar;
 pub mod select_fields_popup;
 pub mod sidebar;
@@ -17,6 +18,7 @@ pub use confirm_modal::{ConfirmOpenDirModal, ConfirmRestoreModal, ConfirmRestore
 pub use input_bar::InputBar;
 pub use keybindings_help_popup::KeybindingsHelpPopup;
 pub use log_panel::{LogPanel, prepare_log_panel};
+pub use merge_select_popup::MergeSelectPopup;
 pub use mode_bar::ModeBar;
 pub use select_fields_popup::SelectFieldsPopup;
 pub use sidebar::Sidebar;

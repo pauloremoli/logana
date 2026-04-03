@@ -42,6 +42,26 @@ Each tab maintains completely independent state:
 
 When you close logana and reopen it without arguments, it prompts to restore the previous session — reopening all tabs that were open at exit, with their per-tab state restored. Docker tabs are re-attached by container name.
 
+## Merged View
+
+`:merge` opens a source-selection popup where you can choose any combination of open tabs. Confirming creates a new `merged(N)` tab that interleaves all selected sources sorted by timestamp — no data is copied.
+
+```sh
+:merge    # open source-selection popup
+```
+
+In the merged tab each line is prefixed with the title of the tab it came from.
+
+The merged tab stays live: as the source tabs receive new lines, the merged index is extended and re-sorted automatically. You can pause or stop updates with the usual commands:
+
+```sh
+:pause   # pause live updates for the merged tab
+:resume  # resume live updates
+:stop    # stop live updates permanently for the merged tab
+```
+
+Filters, search, marks, and annotations all work the same as on any other tab.
+
 ## Tail Mode Per Tab
 
 Each tab can independently have tail mode enabled or disabled:

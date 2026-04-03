@@ -111,6 +111,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Open a modal to select which fields to display and their order",
     },
     CommandInfo {
+        name: "merge",
+        usage: "merge",
+        description: "Open a popup to select tabs and create a new interleaved view sorted by timestamp",
+    },
+    CommandInfo {
         name: "docker",
         usage: "docker",
         description: "List running Docker containers and stream logs from the selected one",

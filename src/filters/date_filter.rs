@@ -527,6 +527,21 @@ pub(crate) fn bsd_month_from_timestamp(ts: &str) -> Option<u32> {
 /// Pass `None` to fall back to the current year (streaming/stdin behaviour).
 ///
 /// Returns `None` for dmesg-style boot-relative timestamps or unparseable input.
+/// Return the raw `CanonicalTs` bytes for `ts`, filling in the year when
+/// the source format omits it (BSD syslog, etc.).
+pub fn timestamp_to_canonical(ts: &str, year_override: Option<i32>) -> Option<CanonicalTs> {
+    normalize_log_timestamp(ts).map(|n| {
+        let mut c = n.canonical;
+        if &c[..5] == b"0000-" {
+            fill_year(
+                &mut c,
+                year_override.unwrap_or_else(|| time::OffsetDateTime::now_utc().year()),
+            );
+        }
+        c
+    })
+}
+
 pub fn canonical_timestamp(ts: &str, year_override: Option<i32>) -> Option<String> {
     normalize_log_timestamp(ts).map(|n| {
         let mut c = n.canonical;

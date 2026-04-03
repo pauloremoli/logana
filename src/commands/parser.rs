@@ -86,6 +86,8 @@ pub enum Commands {
     ShowAllFields,
     /// Open a modal to select which JSON fields to display
     SelectFields,
+    /// Open a popup to merge multiple tabs into a new interleaved view
+    Merge,
     /// List running Docker containers and attach to one
     Docker,
     /// Toggle value-based color coding (HTTP methods, status codes, IPs, UUIDs)

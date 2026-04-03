@@ -20,6 +20,7 @@ pub mod cache_state;
 pub mod display_config;
 pub mod filter_state;
 pub mod interaction_state;
+pub mod merged;
 pub mod scroll_state;
 pub mod search_state;
 pub mod stream_state;
@@ -29,6 +30,7 @@ pub use cache_state::CacheState;
 pub use display_config::{DisplayConfig, SidebarSide};
 pub use filter_state::{FilterState, FilterViewSnapshot};
 pub use interaction_state::InteractionState;
+pub use merged::MergedState;
 pub use scroll_state::ScrollState;
 pub use search_state::SearchState;
 pub use stream_state::StreamState;
@@ -54,6 +56,8 @@ pub enum KeyResult {
     NeverRestoreFile,
     AlwaysRestoreSession(Vec<String>),
     NeverRestoreSession,
+    OpenMergeSelect,
+    OpenMergedView { source_tab_indices: Vec<usize> },
 }
 
 /// Handle for a background search task spawned by [`TabState::begin_search`].
@@ -519,6 +523,8 @@ pub struct TabState {
     /// Year map for BSD-format timestamps (syslog, journalctl).  `None` when
     /// no BSD-format timestamps were detected.
     pub year_map: Option<Arc<year_map::YearMap>>,
+    /// State for a merged (interleaved) view tab.  `None` for regular tabs.
+    pub merged: Option<merged::MergedState>,
 }
 
 impl TabState {
@@ -595,6 +601,7 @@ impl TabState {
             extraction_progress: None,
             continuation_map,
             year_map,
+            merged: None,
         };
         tab.refresh_visible();
         tab
@@ -1370,6 +1377,7 @@ impl TabState {
         let line_count = self.file_reader.line_count();
         let n_text_filters = self.filter.manager.filter_count();
         let year_map = self.year_map.clone();
+        let is_merged_reader = self.merged.is_some();
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
@@ -1394,7 +1402,9 @@ impl TabState {
             // Whole-file AC scan: single contiguous pass per chunk instead of
             // per-line iterator calls.  Used when only text filters are active
             // and a combined Aho-Corasick automaton is available.
-            let use_wholefile = !needs_parse && fm_arc.has_combined_ac();
+            // Disabled for merged readers: their data() is empty and line_starts
+            // are dummy sequential indices, not byte offsets.
+            let use_wholefile = !needs_parse && fm_arc.has_combined_ac() && !is_merged_reader;
 
             let mut total_text_counts = vec![0usize; n_text];
             let mut total_field_counts = vec![0usize; n_field];
@@ -2144,19 +2154,23 @@ impl TabState {
     }
 
     fn compute_field_names(&self) -> Vec<String> {
-        let parser = match &self.display.format {
-            Some(p) => p,
-            None => return Vec::new(),
+        let mut names = if let Some(parser) = &self.display.format {
+            const SAMPLE_LIMIT: usize = 200;
+            let limit = self.filter.visible_indices.len().min(SAMPLE_LIMIT);
+            let lines: Vec<&[u8]> = (0..limit)
+                .map(|i| {
+                    self.file_reader
+                        .get_line(self.filter.visible_indices.get(i))
+                })
+                .collect();
+            parser.collect_field_names(&lines)
+        } else {
+            Vec::new()
         };
-        const SAMPLE_LIMIT: usize = 200;
-        let limit = self.filter.visible_indices.len().min(SAMPLE_LIMIT);
-        let lines: Vec<&[u8]> = (0..limit)
-            .map(|i| {
-                self.file_reader
-                    .get_line(self.filter.visible_indices.get(i))
-            })
-            .collect();
-        parser.collect_field_names(&lines)
+        if self.merged.is_some() {
+            names.insert(0, "source".to_string());
+        }
+        names
     }
 
     /// Collect unique field names and their observed values from raw file lines for autocomplete.

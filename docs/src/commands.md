@@ -105,6 +105,14 @@ These commands control how the current tab handles incoming data from a file wat
 | `:show-keys` | Show field keys alongside values (e.g. `method=GET`) |
 | `:hide-keys` | Show only values, hiding field keys (default) |
 
+## Merged View
+
+| Command | Description |
+|---|---|
+| `:merge` | Open a source-selection popup, then create a new tab interleaving the selected tabs sorted by timestamp |
+
+See [Multi-Tab](multi-tab.md#merged-view) for full details.
+
 ## Export and Streaming
 
 | Command | Description |

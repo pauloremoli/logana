@@ -350,7 +350,17 @@ async fn begin_initial_load(
     }
 }
 
+fn install_panic_hook() {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        original_hook(panic_info);
+    }));
+}
+
 async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
+    install_panic_hook();
     let stdin_is_piped = args.file.is_none() && !stdin().is_terminal();
     let (source_path, background_file_load) = resolve_source(&args.file);
 

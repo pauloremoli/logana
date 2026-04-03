@@ -1,4 +1,4 @@
-use super::{KeyResult, StdinLoadState, TabState};
+use super::{KeyResult, StdinLoadState, TabState, VisibleLines};
 use crate::config::{Keybindings, RestoreSessionPolicy};
 use crate::db::LogManager;
 use crate::db::{AppSettingsStore, FileContext, FileContextStore, SessionStore};
@@ -528,6 +528,7 @@ impl App {
             self.advance_file_load().await;
             self.advance_stdin_load().await;
             self.advance_file_watches();
+            self.advance_merged_tabs();
             self.advance_stream_retries();
             self.advance_search();
             self.advance_filter_computation();
@@ -962,6 +963,10 @@ impl App {
                 self.restore_policy = RestoreSessionPolicy::Never;
                 let _ = self.db.save_app_setting("restore_session", "never").await;
             }
+            KeyResult::OpenMergeSelect => self.handle_open_merge_select(),
+            KeyResult::OpenMergedView { source_tab_indices } => {
+                self.open_merge_tab(source_tab_indices).await;
+            }
         }
     }
 
@@ -1067,6 +1072,81 @@ impl App {
                 self.refresh_mcp_snapshot();
             }
         }
+    }
+
+    pub(super) fn handle_open_merge_select(&mut self) {
+        use crate::mode::merge_select_mode::MergeSelectMode;
+        let (tabs, tab_indices): (Vec<(String, bool)>, Vec<usize>) = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.merged.is_none())
+            .map(|(i, t)| ((t.title.clone(), i == self.active_tab), i))
+            .unzip();
+        if tabs.len() < 2 {
+            self.tabs[self.active_tab].interaction.command_error =
+                Some("No other tabs to merge".to_string());
+            return;
+        }
+        self.tabs[self.active_tab].interaction.mode =
+            Box::new(MergeSelectMode::new(tabs, tab_indices));
+    }
+
+    pub(crate) async fn open_merge_tab(&mut self, source_tab_indices: Vec<usize>) {
+        use crate::ui::tab_state::merged::{MergedState, build_merged_index};
+
+        let sources: Vec<crate::ingestion::FileReader> = source_tab_indices
+            .iter()
+            .map(|&i| self.tabs[i].file_reader.clone())
+            .collect();
+        let parsers: Vec<Option<std::sync::Arc<dyn crate::parser::LogFormatParser>>> =
+            source_tab_indices
+                .iter()
+                .map(|&i| self.tabs[i].display.format.clone())
+                .collect();
+        let year_maps: Vec<Option<std::sync::Arc<crate::ui::tab_state::year_map::YearMap>>> =
+            source_tab_indices
+                .iter()
+                .map(|&i| self.tabs[i].year_map.clone())
+                .collect();
+        let continuation_maps: Vec<Option<std::sync::Arc<Vec<usize>>>> = source_tab_indices
+            .iter()
+            .map(|&i| self.tabs[i].continuation_map.clone())
+            .collect();
+        let source_labels: Vec<String> = source_tab_indices
+            .iter()
+            .map(|&i| self.tabs[i].title.clone())
+            .collect();
+
+        let entries = build_merged_index(&sources, &parsers, &year_maps, &continuation_maps);
+        let source_line_counts: Vec<usize> = sources.iter().map(|s| s.line_count()).collect();
+        let label_col_width = source_labels.iter().map(|l| l.len()).max().unwrap_or(0);
+
+        let visible_count = entries.len();
+        let entries_arc = std::sync::Arc::new(entries);
+        let sources_arc = std::sync::Arc::new(sources);
+        let file_reader = crate::ingestion::FileReader::from_merged(entries_arc, sources_arc);
+
+        let title = format!("merged({})", source_tab_indices.len());
+        let log_manager = LogManager::new(self.db.clone(), None).await;
+        let mut tab = TabState::new(file_reader, log_manager, title);
+        // Merged tabs use per-source parsers from MergedState, not a single detected format.
+        tab.display.format = None;
+        tab.continuation_map = None;
+        tab.filter.visible_indices = VisibleLines::Filtered((0..visible_count).collect());
+        tab.display.show_line_numbers = false;
+        tab.merged = Some(MergedState {
+            source_tab_indices,
+            source_parsers: parsers,
+            source_labels,
+            source_line_counts,
+            label_col_width,
+            stopped: false,
+        });
+        self.apply_tab_defaults(&mut tab);
+
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
     }
 }
 

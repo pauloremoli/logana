@@ -84,6 +84,10 @@ pub enum ModeRenderState {
         dir: String,
         files: Vec<String>,
     },
+    MergeSelect {
+        tabs: Vec<(String, bool)>,
+        selected: usize,
+    },
     Ui,
 }
 
@@ -111,6 +115,7 @@ impl ModeRenderState {
             ModeRenderState::ConfirmRestore
             | ModeRenderState::ConfirmRestoreSession { .. }
             | ModeRenderState::ConfirmOpenDir { .. } => "CONFIRM",
+            ModeRenderState::MergeSelect { .. } => "MERGE",
         }
     }
 }

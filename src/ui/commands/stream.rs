@@ -13,7 +13,12 @@ impl App {
 
     pub(super) fn cmd_stop(&mut self) {
         self.stdin_load_state = None;
-        self.tabs[self.active_tab].stream.watch = None;
+        let tab = &mut self.tabs[self.active_tab];
+        if let Some(merged) = &mut tab.merged {
+            merged.stopped = true;
+        } else {
+            tab.stream.watch = None;
+        }
     }
 
     pub(super) fn cmd_pause(&mut self) {

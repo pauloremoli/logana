@@ -981,6 +981,84 @@ impl App {
         }
     }
 
+    /// For each merged tab, check if any source tab has grown and extend the merged index.
+    pub(super) fn advance_merged_tabs(&mut self) {
+        use crate::ui::tab_state::merged::extend_merged_index;
+
+        let n = self.tabs.len();
+        for mi in 0..n {
+            if self.tabs[mi].stream.paused {
+                continue;
+            }
+            let src_indices = match &self.tabs[mi].merged {
+                Some(m) if !m.stopped => m.source_tab_indices.clone(),
+                _ => continue,
+            };
+
+            let mut any_grew = false;
+            for (si, &src_tab_idx) in src_indices.iter().enumerate() {
+                if src_tab_idx >= n {
+                    continue;
+                }
+                let new_count = self.tabs[src_tab_idx].file_reader.line_count();
+                let old_count = self.tabs[mi].merged.as_ref().unwrap().source_line_counts[si];
+                if new_count <= old_count {
+                    continue;
+                }
+
+                let src_reader = self.tabs[src_tab_idx].file_reader.clone();
+                let parser = self.tabs[mi]
+                    .merged
+                    .as_ref()
+                    .unwrap()
+                    .source_parsers
+                    .get(si)
+                    .and_then(|p| p.clone());
+                let year_map = self.tabs[src_tab_idx].year_map.clone();
+                let continuation_map = self.tabs[src_tab_idx].continuation_map.clone();
+
+                // Clone current entries then extend with new lines from this source.
+                let mut entries: Vec<crate::ingestion::MergedEntry> = self.tabs[mi]
+                    .file_reader
+                    .merged_entries()
+                    .map(|arc| arc.as_ref().clone())
+                    .unwrap_or_default();
+                extend_merged_index(
+                    &mut entries,
+                    &src_reader,
+                    parser.as_deref(),
+                    year_map.as_deref(),
+                    continuation_map.as_deref(),
+                    si,
+                    old_count,
+                );
+
+                let sources: Vec<crate::ingestion::FileReader> = src_indices
+                    .iter()
+                    .map(|&idx| self.tabs[idx].file_reader.clone())
+                    .collect();
+
+                let entries_arc = std::sync::Arc::new(entries);
+                let sources_arc = std::sync::Arc::new(sources);
+                self.tabs[mi].file_reader =
+                    crate::ingestion::FileReader::from_merged(entries_arc, sources_arc);
+                self.tabs[mi].merged.as_mut().unwrap().source_line_counts[si] = new_count;
+                any_grew = true;
+            }
+
+            if any_grew {
+                // Re-derive visible indices: no active filter → fast path (All(N));
+                // active filter → cancel stale scan and spawn a fresh one.
+                self.tabs[mi].begin_filter_refresh();
+
+                if self.tabs[mi].stream.tail_mode {
+                    let new_count = self.tabs[mi].filter.visible_indices.len();
+                    self.tabs[mi].scroll.scroll_offset = new_count.saturating_sub(1);
+                }
+            }
+        }
+    }
+
     /// Poll DLT retry channels for reconnection results.
     pub(super) fn advance_stream_retries(&mut self) {
         for tab in &mut self.tabs {
@@ -3595,5 +3673,115 @@ mod tests {
         );
         let last_tab = app.tabs.last().unwrap();
         assert!(last_tab.file_reader.line_count() > 0 || last_tab.load_state.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_open_merge_tab_clears_format_and_continuation_map() {
+        let mut app = make_app(&["2024-01-01 10:00:00.000 source-a line1"]).await;
+        app.open_merge_tab(vec![0]).await;
+        let merged_tab = app.tabs.last().unwrap();
+        assert!(
+            merged_tab.display.format.is_none(),
+            "merged tab must not inherit a detected format"
+        );
+        assert!(
+            merged_tab.continuation_map.is_none(),
+            "merged tab must not have a continuation_map"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_advance_merged_tabs_stopped_skips_update() {
+        let mut app = make_app(&["2024-01-01 10:00:00.000 line1"]).await;
+        app.open_merge_tab(vec![0]).await;
+
+        let mi = app.tabs.len() - 1;
+        app.tabs[mi].merged.as_mut().unwrap().stopped = true;
+        let count_before = app.tabs[mi].file_reader.line_count();
+
+        // Simulate source tab growing.
+        let new_data = b"2024-01-01 10:00:00.000 line1\n2024-01-01 10:00:01.000 line2\n";
+        let (tx, state) = make_watch_state(new_data);
+        app.tabs[0].stream.watch = Some(state);
+        tx.send(()).unwrap();
+        app.advance_file_watches();
+
+        app.advance_merged_tabs();
+
+        assert_eq!(
+            app.tabs[mi].file_reader.line_count(),
+            count_before,
+            "stopped merged tab must not receive new entries"
+        );
+        drop(tx);
+    }
+
+    #[tokio::test]
+    async fn test_advance_merged_tabs_paused_skips_update() {
+        let mut app = make_app(&["2024-01-01 10:00:00.000 line1"]).await;
+        app.open_merge_tab(vec![0]).await;
+
+        let mi = app.tabs.len() - 1;
+        app.tabs[mi].stream.paused = true;
+        let count_before = app.tabs[mi].file_reader.line_count();
+
+        let new_data = b"2024-01-01 10:00:00.000 line1\n2024-01-01 10:00:01.000 line2\n";
+        let (tx, state) = make_watch_state(new_data);
+        app.tabs[0].stream.watch = Some(state);
+        tx.send(()).unwrap();
+        app.advance_file_watches();
+
+        app.advance_merged_tabs();
+
+        assert_eq!(
+            app.tabs[mi].file_reader.line_count(),
+            count_before,
+            "paused merged tab must not receive new entries"
+        );
+        drop(tx);
+    }
+
+    #[tokio::test]
+    async fn test_advance_merged_tabs_active_filter_triggers_refresh_not_reset() {
+        let mut app = make_app(&["2024-01-01 10:00:00.000 keep"]).await;
+        app.open_merge_tab(vec![0]).await;
+
+        let mi = app.tabs.len() - 1;
+        app.active_tab = mi;
+
+        // Add a filter — this causes visible_indices to be a subset.
+        app.execute_command_str("filter keep".to_string()).await;
+        // Wait for the background filter computation to finish.
+        if let Some(mut h) = app.tabs[mi].filter.handle.take() {
+            let mut all_visible = Vec::new();
+            while let Some(chunk) = h.result_rx.recv().await {
+                all_visible.extend(chunk.visible);
+                if chunk.is_last {
+                    break;
+                }
+            }
+            app.tabs[mi].filter.visible_indices = VisibleLines::Filtered(all_visible);
+        }
+        let filtered_count = app.tabs[mi].filter.visible_indices.len();
+
+        // Now grow the source tab with a line that matches the filter.
+        let new_data = b"2024-01-01 10:00:00.000 keep\n2024-01-01 10:00:01.000 keep\n";
+        let (tx, state) = make_watch_state(new_data);
+        app.tabs[0].stream.watch = Some(state);
+        tx.send(()).unwrap();
+        app.advance_file_watches();
+
+        app.advance_merged_tabs();
+
+        // begin_filter_refresh was called: visible_indices is no longer the old
+        // all-lines reset (0..N), so the filtered count is not destroyed.
+        // Either a new scan was spawned (handle is Some) or visible already grew.
+        let handle_spawned = app.tabs[mi].filter.handle.is_some();
+        let visible_grew = app.tabs[mi].filter.visible_indices.len() > filtered_count;
+        assert!(
+            handle_spawned || visible_grew,
+            "advance_merged_tabs must call begin_filter_refresh, not reset visible_indices"
+        );
+        drop(tx);
     }
 }

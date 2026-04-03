@@ -12,7 +12,7 @@ logana is structured around a strict separation between domain logic and the UI 
 
 **Filter Pipeline** (`filters/`) — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap. The pipeline runs in a background thread. Filter definitions are persisted to SQLite and reloaded on startup.
 
-**Mode System** (`mode/`) — Modal UI where each mode owns keyboard input and returns a `KeyResult` for effects that cross mode boundaries. Modes: Normal, Command, Search, Filter, Visual, Comment, Select Fields, DLT Select, Docker Select, Keybindings Help.
+**Mode System** (`mode/`) — Modal UI where each mode owns keyboard input and returns a `KeyResult` for effects that cross mode boundaries. Modes: Normal, Command, Search, Filter, Visual, Comment, Select Fields, DLT Select, Docker Select, Merge Select, Keybindings Help.
 
 **UI & Rendering** (`ui/`) — The renderer reads tab state and produces widgets each frame; it never mutates state. The event loop dispatches key events to the active mode. Session state is persisted to SQLite and restored on reopen.
 
@@ -45,9 +45,29 @@ graph TD
 
 `TabState` is decomposed into focused sub-structs (`ScrollState`, `FilterState`, `SearchState`, `CacheState`, `StreamState`, `DisplayConfig`, `InteractionState`). All `impl TabState` methods remain on `TabState` to avoid cross-cutting borrow complexity.
 
+## Merged View
+
+The `:merge` command opens a source-selection popup, then creates a new tab interleaving lines from the selected source tabs sorted by timestamp. No data is copied — the merged tab holds `Arc` references to the source `FileReader` instances.
+
+```mermaid
+graph TD
+    Cmd[:merge] --> Popup[MergeSelectMode popup]
+    Popup -->|source_tab_indices| Open[open_merge_tab]
+    Open -->|build_merged_index| Index[Vec&lt;MergedEntry&gt; sorted by CanonicalTs]
+    Index -->|FileReader::from_merged| MergedReader[FileReader - Merged storage]
+    MergedReader -->|positional idx → entries[idx] → sources[source_idx].get_line| Lines[Source line bytes]
+    Open --> MergedState[MergedState on TabState]
+    MergedState -->|source_tab_indices| Advance[advance_merged_tabs each frame]
+    Advance -->|extend_merged_index + begin_filter_refresh| MergedReader
+```
+
+`MergedEntry` holds a 23-byte `CanonicalTs` sort key, a `source_idx`, and a `line_idx`. The merged `FileReader` uses `Storage::Merged { entries, sources }` — `get_line(pos)` decodes `entries[pos]` and delegates to `sources[source_idx].get_line(line_idx)`. This makes the entire rendering pipeline work without modification.
+
+Live updates are driven by `advance_merged_tabs`, which compares per-source line counts stored in `MergedState` against the current source tab `FileReader` sizes on every tick. When a source grows, new entries are appended to the sorted index and `begin_filter_refresh` is called so any active filter is re-evaluated. Updates stop when `MergedState::stopped` is `true` (set by `:stop`) or `StreamState::paused` is `true` (set by `:pause`).
+
 ## Commands
 
-`src/commands/` contains clap-derived command definitions shared across layers. `src/ui/commands/` contains the handlers that execute `:` commands, split into `filter.rs`, `io.rs`, `display.rs`, and `stream.rs`.
+`src/commands/` contains clap-derived command definitions shared across layers. `src/ui/commands/` contains the handlers that execute `:` commands, split into `filter.rs`, `io.rs`, `display.rs`, `stream.rs`, and `merge.rs`.
 
 ## MCP Server
 

@@ -41,6 +41,7 @@ struct UiRenderState {
     comment_popup: Option<(Vec<String>, usize, usize, usize)>,
     help_state: Option<(usize, String)>,
     select_fields_state: Option<(Vec<(String, bool)>, usize)>,
+    merge_select_state: Option<(Vec<(String, bool)>, usize)>,
     docker_select: Option<(
         Vec<crate::mode::docker_select_mode::DockerContainer>,
         usize,
@@ -249,6 +250,10 @@ impl App {
             ModeRenderState::SelectFields { fields, selected } => Some((fields.clone(), *selected)),
             _ => None,
         };
+        let merge_select_state: Option<(Vec<(String, bool)>, usize)> = match render_state {
+            ModeRenderState::MergeSelect { tabs, selected } => Some((tabs.clone(), *selected)),
+            _ => None,
+        };
         let docker_select: Option<(
             Vec<crate::mode::docker_select_mode::DockerContainer>,
             usize,
@@ -314,6 +319,7 @@ impl App {
             comment_popup,
             help_state,
             select_fields_state,
+            merge_select_state,
             docker_select,
             dlt_select,
             value_colors_state,
@@ -755,6 +761,18 @@ impl App {
                     theme: &self.theme,
                     keybindings: &self.keybindings,
                     fields,
+                    selected: *selected,
+                },
+                frame_area,
+            );
+        }
+
+        if let Some((tabs, selected)) = &state.merge_select_state {
+            frame.render_widget(
+                super::widgets::MergeSelectPopup {
+                    theme: &self.theme,
+                    keybindings: &self.keybindings,
+                    tabs,
                     selected: *selected,
                 },
                 frame_area,

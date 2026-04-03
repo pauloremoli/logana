@@ -5,6 +5,7 @@ pub mod dlt_select_mode;
 pub mod docker_select_mode;
 pub mod filter_mode;
 pub mod keybindings_help_mode;
+pub mod merge_select_mode;
 pub mod normal_mode;
 pub mod search_mode;
 pub mod select_fields_mode;

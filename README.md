@@ -24,7 +24,7 @@
 - **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OpenTelemetry, DLT (AUTOSAR), and more
 - **Compressed & archive files** — open `.gz`, `.bz2`, `.xz`, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, and `.tar.xz`/`.txz` directly; no manual extraction needed
 - **OTel collector** — receive OpenTelemetry logs in real time over gRPC or HTTP/JSON; compatible with any OTel SDK
-- **Multi-tab** — open multiple files, Docker streams, DLT daemon connections, or OTel collector tabs
+- **Multi-tab** — open multiple files, Docker streams, DLT daemon connections, or OTel collector tabs; use `:merge` to interleave selected tabs into a single chronological view
 
 **Filtering & search**
 - **Filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters; add filters from the command line with `-i`/`-o`/`-t`

@@ -103,6 +103,7 @@ impl App {
             Some(Commands::ShowField { field }) => self.cmd_show_field(field),
             Some(Commands::ShowAllFields) => self.cmd_show_all_fields(),
             Some(Commands::SelectFields) => return self.cmd_select_fields(),
+            Some(Commands::Merge) => return self.cmd_merge(),
             Some(Commands::Docker) => return self.cmd_docker(),
             Some(Commands::ValueColors) => return self.cmd_value_colors(),
             Some(Commands::DateFilter {

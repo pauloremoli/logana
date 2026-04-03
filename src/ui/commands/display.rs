@@ -154,6 +154,11 @@ impl App {
         Ok(true)
     }
 
+    pub(super) fn cmd_merge(&mut self) -> Result<bool, String> {
+        self.handle_open_merge_select();
+        Ok(true)
+    }
+
     pub(super) fn cmd_show_keys(&mut self) {
         let tab = &mut self.tabs[self.active_tab];
         tab.display.show_keys = true;
