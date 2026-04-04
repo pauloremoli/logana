@@ -406,16 +406,15 @@ pub fn run_headless_to_writer(
                                     text_dec = dec;
                                 }
                             }
-                            if crate::ui::line_is_visible(
-                                text_dec,
+                            let mut ctx = crate::ui::FilterEvalContext::new(
                                 has_text_includes,
                                 &date_filters,
                                 &mut dc,
                                 &inc_ff,
                                 &exc_ff,
-                                parts.as_ref(),
                                 None,
-                            ) {
+                            );
+                            if crate::ui::line_is_visible(text_dec, &mut ctx, parts.as_ref()) {
                                 vis.push(idx);
                             }
                         }

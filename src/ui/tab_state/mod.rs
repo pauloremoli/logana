@@ -149,6 +149,41 @@ pub fn merge_filter_counts(
     out
 }
 
+/// Per-scan filter context passed to [`line_is_visible`].
+///
+/// Groups the parameters that are constant for an entire filter scan so they
+/// do not need to be repeated at every call site.  Each parallel worker
+/// constructs its own instance with its own `date_counts` accumulator.
+pub struct FilterEvalContext<'a> {
+    pub has_text_includes: bool,
+    pub date_filters: &'a [crate::filters::DateFilter],
+    /// Accumulates per-date-filter match counts across lines; indexed parallel to `date_filters`.
+    pub date_counts: &'a mut [usize],
+    pub inc_ff: &'a [crate::filters::FieldFilter],
+    pub exc_ff: &'a [crate::filters::FieldFilter],
+    pub year_override: Option<i32>,
+}
+
+impl<'a> FilterEvalContext<'a> {
+    pub fn new(
+        has_text_includes: bool,
+        date_filters: &'a [crate::filters::DateFilter],
+        date_counts: &'a mut [usize],
+        inc_ff: &'a [crate::filters::FieldFilter],
+        exc_ff: &'a [crate::filters::FieldFilter],
+        year_override: Option<i32>,
+    ) -> Self {
+        Self {
+            has_text_includes,
+            date_filters,
+            date_counts,
+            inc_ff,
+            exc_ff,
+            year_override,
+        }
+    }
+}
+
 /// Decide whether a single log line should be visible given the full set of active filters.
 ///
 /// Accepts a pre-computed `text_dec` (from [`FilterManager::evaluate_and_count`] or
@@ -162,16 +197,10 @@ pub fn merge_filter_counts(
 /// Pass-through rules (field filters only):
 /// - If the line cannot be parsed (e.g. a stack-trace continuation) → field filters do not apply.
 /// - If the line was parsed but the named field is absent → treated as Miss (hidden).
-#[allow(clippy::too_many_arguments)]
 pub fn line_is_visible(
     text_dec: FilterDecision,
-    has_text_includes: bool,
-    date_filters: &[crate::filters::DateFilter],
-    date_counts: &mut [usize],
-    inc_ff: &[crate::filters::FieldFilter],
-    exc_ff: &[crate::filters::FieldFilter],
+    ctx: &mut FilterEvalContext<'_>,
     parts: Option<&crate::parser::DisplayParts<'_>>,
-    year_override: Option<i32>,
 ) -> bool {
     // Step 1: text filter result — fast path.
     if text_dec == FilterDecision::Exclude {
@@ -179,12 +208,12 @@ pub fn line_is_visible(
     }
 
     // Step 2: date filter — AND constraint; count and check visibility in one pass.
-    if !date_filters.is_empty()
+    if !ctx.date_filters.is_empty()
         && let Some(ts) = parts.and_then(|p| p.timestamp)
     {
         let mut any_date_match = false;
-        for (df, count) in date_filters.iter().zip(date_counts.iter_mut()) {
-            if df.matches(ts, year_override) {
+        for (df, count) in ctx.date_filters.iter().zip(ctx.date_counts.iter_mut()) {
+            if df.matches(ts, ctx.year_override) {
                 *count += 1;
                 any_date_match = true;
             }
@@ -195,7 +224,7 @@ pub fn line_is_visible(
     }
 
     // Step 3: field exclude — hides the line if any matching exclude is found.
-    if any_field_exclude_matches(exc_ff, parts) {
+    if any_field_exclude_matches(ctx.exc_ff, parts) {
         return false;
     }
 
@@ -205,18 +234,18 @@ pub fn line_is_visible(
     }
 
     // text_dec is Neutral; check field includes.
-    if !inc_ff.is_empty() {
-        return match field_include_vote(inc_ff, parts) {
+    if !ctx.inc_ff.is_empty() {
+        return match field_include_vote(ctx.inc_ff, parts) {
             FieldVote::Match => true,
             FieldVote::Miss => false,
             // Pass-through: field filters don't apply to this line; fall back to
             // text-filter-only logic (visible iff there are no text include filters).
-            FieldVote::PassThrough => !has_text_includes,
+            FieldVote::PassThrough => !ctx.has_text_includes,
         };
     }
 
     // No field includes; visible iff no text include filters exist.
-    !has_text_includes
+    !ctx.has_text_includes
 }
 
 /// Efficient representation of which file lines are currently visible.
@@ -895,16 +924,15 @@ impl TabState {
                                         &mut fc,
                                     );
                                 }
-                                line_is_visible(
-                                    text_dec,
+                                let mut ctx = FilterEvalContext::new(
                                     has_text_includes,
                                     &date_filters,
                                     &mut dc,
                                     &inc_ff,
                                     &exc_ff,
-                                    parts.as_ref(),
                                     year_override,
-                                )
+                                );
+                                line_is_visible(text_dec, &mut ctx, parts.as_ref())
                             };
                             if visible {
                                 vis.push(idx);
@@ -1501,16 +1529,15 @@ impl TabState {
                                             &mut fc,
                                         );
                                     }
-                                    line_is_visible(
-                                        text_dec,
+                                    let mut ctx = FilterEvalContext::new(
                                         has_text_includes,
                                         &date_filters,
                                         &mut dc,
                                         &inc_ff,
                                         &exc_ff,
-                                        parts.as_ref(),
                                         year_override,
-                                    )
+                                    );
+                                    line_is_visible(text_dec, &mut ctx, parts.as_ref())
                                 };
                                 if visible {
                                     vis.push(i);
@@ -1766,16 +1793,15 @@ impl TabState {
                         text_dec = dec;
                     }
                 }
-                line_is_visible(
-                    text_dec,
+                let mut ctx = FilterEvalContext::new(
                     has_text_includes,
                     &date_filters,
                     &mut dummy_date_counts,
                     &inc_ff,
                     &exc_ff,
-                    parts.as_ref(),
                     year_override,
-                )
+                );
+                line_is_visible(text_dec, &mut ctx, parts.as_ref())
             };
             if visible {
                 new_visible.push(i);
@@ -4505,8 +4531,6 @@ mod tests {
         }
     }
 
-    // ── line_is_visible ──────────────────────────────────────────────────────
-
     fn make_fm_include(pattern: &str) -> FilterManager {
         let f = crate::filters::SubstringFilter::new(pattern, FilterDecision::Include, false, 0)
             .unwrap();
@@ -4525,12 +4549,7 @@ mod tests {
         let dec = fm.evaluate_text(b"ERROR: bad");
         assert!(line_is_visible(
             dec,
-            fm.has_include(),
-            &[],
-            &mut [],
-            &[],
-            &[],
-            None,
+            &mut FilterEvalContext::new(fm.has_include(), &[], &mut [], &[], &[], None),
             None,
         ));
     }
@@ -4541,12 +4560,7 @@ mod tests {
         let dec = fm.evaluate_text(b"INFO: fine");
         assert!(!line_is_visible(
             dec,
-            fm.has_include(),
-            &[],
-            &mut [],
-            &[],
-            &[],
-            None,
+            &mut FilterEvalContext::new(fm.has_include(), &[], &mut [], &[], &[], None),
             None,
         ));
     }
@@ -4557,12 +4571,7 @@ mod tests {
         let dec = fm.evaluate_text(b"DEBUG: noisy");
         assert!(!line_is_visible(
             dec,
-            fm.has_include(),
-            &[],
-            &mut [],
-            &[],
-            &[],
-            None,
+            &mut FilterEvalContext::new(fm.has_include(), &[], &mut [], &[], &[], None),
             None,
         ));
     }
@@ -4573,12 +4582,7 @@ mod tests {
         let dec = fm.evaluate_text(b"INFO: keep");
         assert!(line_is_visible(
             dec,
-            fm.has_include(),
-            &[],
-            &mut [],
-            &[],
-            &[],
-            None,
+            &mut FilterEvalContext::new(fm.has_include(), &[], &mut [], &[], &[], None),
             None,
         ));
     }
@@ -4587,12 +4591,7 @@ mod tests {
     fn test_line_is_visible_no_filters_always_visible() {
         assert!(line_is_visible(
             FilterDecision::Neutral,
-            false,
-            &[],
-            &mut [],
-            &[],
-            &[],
-            None,
+            &mut FilterEvalContext::new(false, &[], &mut [], &[], &[], None),
             None,
         ));
     }
@@ -4607,15 +4606,12 @@ mod tests {
             timestamp: Some("2024-01-01T01:30:00Z"),
             ..Default::default()
         };
+        let dfs = [df];
+        let mut ctx = FilterEvalContext::new(false, &dfs, &mut counts, &[], &[], None);
         assert!(line_is_visible(
             FilterDecision::Neutral,
-            false,
-            &[df],
-            &mut counts,
-            &[],
-            &[],
-            Some(&parts),
-            None,
+            &mut ctx,
+            Some(&parts)
         ));
         assert_eq!(counts[0], 1);
     }
@@ -4630,15 +4626,12 @@ mod tests {
             timestamp: Some("2024-01-01T03:00:00Z"),
             ..Default::default()
         };
+        let dfs = [df];
+        let mut ctx = FilterEvalContext::new(false, &dfs, &mut counts, &[], &[], None);
         assert!(!line_is_visible(
             FilterDecision::Neutral,
-            false,
-            &[df],
-            &mut counts,
-            &[],
-            &[],
-            Some(&parts),
-            None,
+            &mut ctx,
+            Some(&parts)
         ));
         assert_eq!(counts[0], 0);
     }
@@ -4654,15 +4647,12 @@ mod tests {
             ..Default::default()
         };
         // No timestamp → date filter does not apply → line passes through.
+        let dfs = [df];
+        let mut ctx = FilterEvalContext::new(false, &dfs, &mut counts, &[], &[], None);
         assert!(line_is_visible(
             FilterDecision::Neutral,
-            false,
-            &[df],
-            &mut counts,
-            &[],
-            &[],
-            Some(&parts),
-            None,
+            &mut ctx,
+            Some(&parts)
         ));
     }
 
@@ -4677,15 +4667,12 @@ mod tests {
             timestamp: Some("2024-01-01T01:30:00Z"),
             ..Default::default()
         };
+        let dfs = [df1, df2];
+        let mut ctx = FilterEvalContext::new(false, &dfs, &mut counts, &[], &[], None);
         assert!(line_is_visible(
             FilterDecision::Neutral,
-            false,
-            &[df1, df2],
-            &mut counts,
-            &[],
-            &[],
-            Some(&parts),
-            None,
+            &mut ctx,
+            Some(&parts)
         ));
         assert_eq!(counts[0], 1);
         assert_eq!(counts[1], 1);
@@ -4706,13 +4693,8 @@ mod tests {
         };
         assert!(!line_is_visible(
             FilterDecision::Neutral,
-            false,
-            &[],
-            &mut [],
-            &[],
-            &[exc],
+            &mut FilterEvalContext::new(false, &[], &mut [], &[], &[exc], None),
             Some(&parts),
-            None,
         ));
     }
 
@@ -4731,13 +4713,8 @@ mod tests {
         };
         assert!(line_is_visible(
             FilterDecision::Neutral,
-            false,
-            &[],
-            &mut [],
-            &[inc],
-            &[],
+            &mut FilterEvalContext::new(false, &[], &mut [], &[inc], &[], None),
             Some(&parts),
-            None,
         ));
     }
 
@@ -4756,13 +4733,8 @@ mod tests {
         };
         assert!(!line_is_visible(
             FilterDecision::Neutral,
-            false,
-            &[],
-            &mut [],
-            &[inc],
-            &[],
+            &mut FilterEvalContext::new(false, &[], &mut [], &[inc], &[], None),
             Some(&parts),
-            None,
         ));
     }
 
@@ -4782,13 +4754,8 @@ mod tests {
         };
         assert!(line_is_visible(
             FilterDecision::Include,
-            true,
-            &[],
-            &mut [],
-            &[inc],
-            &[],
+            &mut FilterEvalContext::new(true, &[], &mut [], &[inc], &[], None),
             Some(&parts),
-            None,
         ));
     }
 
@@ -4806,23 +4773,13 @@ mod tests {
         // has_text_includes=false → visible (no include filter applies)
         assert!(line_is_visible(
             FilterDecision::Neutral,
-            false,
-            &[],
-            &mut [],
-            &[make_inc()],
-            &[],
-            None,
+            &mut FilterEvalContext::new(false, &[], &mut [], &[make_inc()], &[], None),
             None,
         ));
         // has_text_includes=true → hidden (include filter present but nothing matched)
         assert!(!line_is_visible(
             FilterDecision::Neutral,
-            true,
-            &[],
-            &mut [],
-            &[make_inc()],
-            &[],
-            None,
+            &mut FilterEvalContext::new(true, &[], &mut [], &[make_inc()], &[], None),
             None,
         ));
     }
