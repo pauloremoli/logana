@@ -1,4 +1,4 @@
-use crate::db::AppSettingsStore;
+use crate::db::{AppSettingsStore, SettingsKey};
 use crate::theme::Theme;
 use crate::ui::App;
 use crate::ui::SidebarSide;
@@ -11,7 +11,7 @@ impl App {
         }
         let _ = self
             .db
-            .save_app_setting("wrap", if self.wrap { "true" } else { "false" })
+            .save_app_setting(SettingsKey::Wrap, if self.wrap { "true" } else { "false" })
             .await;
     }
 
@@ -23,7 +23,7 @@ impl App {
         let _ = self
             .db
             .save_app_setting(
-                "show_line_numbers",
+                SettingsKey::ShowLineNumbers,
                 if self.show_line_numbers {
                     "true"
                 } else {
@@ -73,7 +73,10 @@ impl App {
             tab.cache.render_gen = tab.cache.render_gen.wrapping_add(1);
             tab.cache.render_line.clear();
         }
-        let _ = self.db.save_app_setting("theme", &theme_name).await;
+        let _ = self
+            .db
+            .save_app_setting(SettingsKey::Theme, &theme_name)
+            .await;
         Ok(false)
     }
 
@@ -85,7 +88,7 @@ impl App {
         let _ = self
             .db
             .save_app_setting(
-                "sidebar_left",
+                SettingsKey::SidebarLeft,
                 if side.is_left() { "true" } else { "false" },
             )
             .await;

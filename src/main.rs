@@ -5,9 +5,9 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use logana::db::AppSettingsStore;
 use logana::db::Database;
 use logana::db::LogManager;
+use logana::db::{AppSettingsStore, SettingsKey};
 use logana::ingestion::{FileReader, VisibilityPredicate};
 use logana::mode::app_mode::ConfirmOpenDirMode;
 use logana::theme::Theme;
@@ -228,7 +228,7 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
     } else {
         log_manager
             .db
-            .load_app_setting("theme")
+            .load_app_setting(SettingsKey::Theme)
             .await
             .ok()
             .flatten()

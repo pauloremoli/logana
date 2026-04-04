@@ -1392,10 +1392,6 @@ impl FileReader {
     }
 }
 
-// ---------------------------------------------------------------------------
-// strip_ansi_escapes
-// ---------------------------------------------------------------------------
-
 /// Strip ANSI/VT escape sequences and bare `\r` characters from `input`.
 ///
 /// Handles:
@@ -1458,10 +1454,6 @@ fn strip_ansi_escapes(input: &[u8]) -> Vec<u8> {
     }
     out
 }
-
-// ---------------------------------------------------------------------------
-// strip_ansi_and_index
-// ---------------------------------------------------------------------------
 
 /// Strip ANSI escape sequences from `input` and collect line-start offsets in
 /// one pass — eliminating the separate [`compute_line_starts`] scan over the
@@ -1543,10 +1535,6 @@ fn strip_ansi_and_index(input: &[u8]) -> (Vec<u8>, Vec<usize>) {
 
     (out, starts)
 }
-
-// ---------------------------------------------------------------------------
-// compute_line_starts (test reference implementation)
-// ---------------------------------------------------------------------------
 
 /// Computes the byte offsets of the start of every line in `data`.
 /// The first element is always `0`.  The last element points one past the

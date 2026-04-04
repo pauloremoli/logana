@@ -1,7 +1,7 @@
 use super::{KeyResult, StdinLoadState, TabState, VisibleLines};
 use crate::config::{Keybindings, RestoreSessionPolicy};
 use crate::db::LogManager;
-use crate::db::{AppSettingsStore, FileContext, FileContextStore, SessionStore};
+use crate::db::{AppSettingsStore, FileContext, FileContextStore, SessionStore, SettingsKey};
 use crate::ingestion::FileReader;
 use crate::mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode};
 use crate::mode::command_mode::CommandMode;
@@ -18,7 +18,7 @@ const DOUBLE_CLICK_MS: u128 = 300;
 
 async fn resolve_bool_setting(
     db: &crate::db::Database,
-    key: &str,
+    key: SettingsKey,
     config_override: Option<bool>,
     default: bool,
 ) -> bool {
@@ -33,18 +33,14 @@ async fn resolve_bool_setting(
 
 async fn resolve_policy_setting(
     db: &crate::db::Database,
-    key: &str,
+    key: SettingsKey,
     config_override: Option<RestoreSessionPolicy>,
 ) -> RestoreSessionPolicy {
     if let Some(v) = config_override {
         return v;
     }
     if let Ok(Some(val)) = db.load_app_setting(key).await {
-        return match val.as_str() {
-            "always" => RestoreSessionPolicy::Always,
-            "never" => RestoreSessionPolicy::Never,
-            _ => RestoreSessionPolicy::Ask,
-        };
+        return val.parse().unwrap_or(RestoreSessionPolicy::Ask);
     }
     RestoreSessionPolicy::Always
 }
@@ -77,7 +73,7 @@ async fn resolve_startup_settings(
 ) -> StartupSettings {
     let sidebar_side = if let Some(s) = ov.sidebar_side {
         s
-    } else if let Ok(Some(val)) = db.load_app_setting("sidebar_left").await {
+    } else if let Ok(Some(val)) = db.load_app_setting(SettingsKey::SidebarLeft).await {
         if val == "true" {
             SidebarSide::Left
         } else {
@@ -87,25 +83,33 @@ async fn resolve_startup_settings(
         SidebarSide::Right
     };
     StartupSettings {
-        restore_policy: resolve_policy_setting(db, "restore_session", ov.restore_policy).await,
+        restore_policy: resolve_policy_setting(db, SettingsKey::RestoreSession, ov.restore_policy)
+            .await,
         restore_file_policy: resolve_policy_setting(
             db,
-            "restore_file_context",
+            SettingsKey::RestoreFileContext,
             ov.restore_file_policy,
         )
         .await,
-        show_mode_bar: resolve_bool_setting(db, "show_mode_bar", ov.show_mode_bar, true).await,
-        show_borders_default: resolve_bool_setting(db, "show_borders", ov.show_borders, false)
+        show_mode_bar: resolve_bool_setting(db, SettingsKey::ShowModeBar, ov.show_mode_bar, true)
             .await,
+        show_borders_default: resolve_bool_setting(
+            db,
+            SettingsKey::ShowBorders,
+            ov.show_borders,
+            false,
+        )
+        .await,
         show_line_numbers: resolve_bool_setting(
             db,
-            "show_line_numbers",
+            SettingsKey::ShowLineNumbers,
             ov.show_line_numbers,
             true,
         )
         .await,
-        show_sidebar: resolve_bool_setting(db, "show_sidebar", ov.show_sidebar, true).await,
-        wrap: resolve_bool_setting(db, "wrap", ov.wrap, false).await,
+        show_sidebar: resolve_bool_setting(db, SettingsKey::ShowSidebar, ov.show_sidebar, true)
+            .await,
+        wrap: resolve_bool_setting(db, SettingsKey::Wrap, ov.wrap, false).await,
         sidebar_side,
     }
 }
@@ -848,7 +852,7 @@ impl App {
         }
     }
 
-    async fn save_app_bool(&self, key: &str, value: bool) {
+    async fn save_app_bool(&self, key: SettingsKey, value: bool) {
         let _ = self
             .db
             .save_app_setting(key, if value { "true" } else { "false" })
@@ -860,7 +864,7 @@ impl App {
         for tab in &mut self.tabs {
             tab.display.show_mode_bar = self.show_mode_bar;
         }
-        self.save_app_bool("show_mode_bar", self.show_mode_bar)
+        self.save_app_bool(SettingsKey::ShowModeBar, self.show_mode_bar)
             .await;
     }
 
@@ -869,7 +873,8 @@ impl App {
         for tab in &mut self.tabs {
             tab.display.show_sidebar = self.show_sidebar;
         }
-        self.save_app_bool("show_sidebar", self.show_sidebar).await;
+        self.save_app_bool(SettingsKey::ShowSidebar, self.show_sidebar)
+            .await;
     }
 
     async fn handle_toggle_borders(&mut self) {
@@ -877,7 +882,7 @@ impl App {
         for tab in &mut self.tabs {
             tab.display.show_borders = self.show_borders_default;
         }
-        self.save_app_bool("show_borders", self.show_borders_default)
+        self.save_app_bool(SettingsKey::ShowBorders, self.show_borders_default)
             .await;
     }
 
@@ -886,7 +891,7 @@ impl App {
         for tab in &mut self.tabs {
             tab.display.wrap = self.wrap;
         }
-        self.save_app_bool("wrap", self.wrap).await;
+        self.save_app_bool(SettingsKey::Wrap, self.wrap).await;
     }
 
     async fn handle_toggle_line_numbers(&mut self) {
@@ -894,7 +899,7 @@ impl App {
         for tab in &mut self.tabs {
             tab.display.show_line_numbers = self.show_line_numbers;
         }
-        self.save_app_bool("show_line_numbers", self.show_line_numbers)
+        self.save_app_bool(SettingsKey::ShowLineNumbers, self.show_line_numbers)
             .await;
     }
 
@@ -944,24 +949,42 @@ impl App {
                 self.restore_file_policy = RestoreSessionPolicy::Always;
                 let _ = self
                     .db
-                    .save_app_setting("restore_file_context", "always")
+                    .save_app_setting(
+                        SettingsKey::RestoreFileContext,
+                        &RestoreSessionPolicy::Always.to_string(),
+                    )
                     .await;
             }
             KeyResult::NeverRestoreFile => {
                 self.restore_file_policy = RestoreSessionPolicy::Never;
                 let _ = self
                     .db
-                    .save_app_setting("restore_file_context", "never")
+                    .save_app_setting(
+                        SettingsKey::RestoreFileContext,
+                        &RestoreSessionPolicy::Never.to_string(),
+                    )
                     .await;
             }
             KeyResult::AlwaysRestoreSession(files) => {
                 self.restore_policy = RestoreSessionPolicy::Always;
-                let _ = self.db.save_app_setting("restore_session", "always").await;
+                let _ = self
+                    .db
+                    .save_app_setting(
+                        SettingsKey::RestoreSession,
+                        &RestoreSessionPolicy::Always.to_string(),
+                    )
+                    .await;
                 self.restore_session(files).await;
             }
             KeyResult::NeverRestoreSession => {
                 self.restore_policy = RestoreSessionPolicy::Never;
-                let _ = self.db.save_app_setting("restore_session", "never").await;
+                let _ = self
+                    .db
+                    .save_app_setting(
+                        SettingsKey::RestoreSession,
+                        &RestoreSessionPolicy::Never.to_string(),
+                    )
+                    .await;
             }
             KeyResult::OpenMergeSelect => self.handle_open_merge_select(),
             KeyResult::OpenMergedView { source_tab_indices } => {
@@ -1834,11 +1857,18 @@ mod tests {
 
         let file_setting = app
             .db
-            .load_app_setting("restore_file_context")
+            .load_app_setting(SettingsKey::RestoreFileContext)
             .await
             .unwrap();
-        let session_setting = app.db.load_app_setting("restore_session").await.unwrap();
-        assert_eq!(file_setting.as_deref(), Some("always"));
+        let session_setting = app
+            .db
+            .load_app_setting(SettingsKey::RestoreSession)
+            .await
+            .unwrap();
+        assert_eq!(
+            file_setting.as_deref(),
+            Some(RestoreSessionPolicy::Always.to_string().as_str())
+        );
         // session policy not touched by the file-context key press
         assert!(session_setting.is_none());
     }
@@ -1858,11 +1888,18 @@ mod tests {
 
         let file_setting = app
             .db
-            .load_app_setting("restore_file_context")
+            .load_app_setting(SettingsKey::RestoreFileContext)
             .await
             .unwrap();
-        let session_setting = app.db.load_app_setting("restore_session").await.unwrap();
-        assert_eq!(file_setting.as_deref(), Some("never"));
+        let session_setting = app
+            .db
+            .load_app_setting(SettingsKey::RestoreSession)
+            .await
+            .unwrap();
+        assert_eq!(
+            file_setting.as_deref(),
+            Some(RestoreSessionPolicy::Never.to_string().as_str())
+        );
         // session policy not touched by the file-context key press
         assert!(session_setting.is_none());
     }
@@ -1897,13 +1934,21 @@ mod tests {
     #[tokio::test]
     async fn test_app_new_settings_from_db() {
         let db = Arc::new(Database::in_memory().await.unwrap());
-        db.save_app_setting("restore_session", "always")
+        db.save_app_setting(
+            SettingsKey::RestoreSession,
+            &RestoreSessionPolicy::Always.to_string(),
+        )
+        .await
+        .unwrap();
+        db.save_app_setting(
+            SettingsKey::RestoreFileContext,
+            &RestoreSessionPolicy::Never.to_string(),
+        )
+        .await
+        .unwrap();
+        db.save_app_setting(SettingsKey::ShowModeBar, "false")
             .await
             .unwrap();
-        db.save_app_setting("restore_file_context", "never")
-            .await
-            .unwrap();
-        db.save_app_setting("show_mode_bar", "false").await.unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
         let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
@@ -1979,8 +2024,15 @@ mod tests {
         )
         .await;
         assert_eq!(app.restore_policy, RestoreSessionPolicy::Never);
-        let setting = app.db.load_app_setting("restore_session").await.unwrap();
-        assert_eq!(setting.as_deref(), Some("never"));
+        let setting = app
+            .db
+            .load_app_setting(SettingsKey::RestoreSession)
+            .await
+            .unwrap();
+        assert_eq!(
+            setting.as_deref(),
+            Some(RestoreSessionPolicy::Never.to_string().as_str())
+        );
     }
 
     #[tokio::test]
@@ -1992,8 +2044,15 @@ mod tests {
         app.handle_key_event_with_modifiers(KeyCode::Char('Y'), KeyModifiers::SHIFT)
             .await;
         assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
-        let setting = app.db.load_app_setting("restore_session").await.unwrap();
-        assert_eq!(setting.as_deref(), Some("always"));
+        let setting = app
+            .db
+            .load_app_setting(SettingsKey::RestoreSession)
+            .await
+            .unwrap();
+        assert_eq!(
+            setting.as_deref(),
+            Some(RestoreSessionPolicy::Always.to_string().as_str())
+        );
     }
 
     #[tokio::test]
@@ -2030,12 +2089,18 @@ mod tests {
     #[tokio::test]
     async fn test_app_new_restore_policy_from_db_never() {
         let db = Arc::new(Database::in_memory().await.unwrap());
-        db.save_app_setting("restore_session", "never")
-            .await
-            .unwrap();
-        db.save_app_setting("restore_file_context", "ask")
-            .await
-            .unwrap();
+        db.save_app_setting(
+            SettingsKey::RestoreSession,
+            &RestoreSessionPolicy::Never.to_string(),
+        )
+        .await
+        .unwrap();
+        db.save_app_setting(
+            SettingsKey::RestoreFileContext,
+            &RestoreSessionPolicy::Ask.to_string(),
+        )
+        .await
+        .unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
         let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
@@ -2048,12 +2113,18 @@ mod tests {
     #[tokio::test]
     async fn test_app_new_restore_policy_db_always() {
         let db = Arc::new(Database::in_memory().await.unwrap());
-        db.save_app_setting("restore_session", "always")
-            .await
-            .unwrap();
-        db.save_app_setting("restore_file_context", "always")
-            .await
-            .unwrap();
+        db.save_app_setting(
+            SettingsKey::RestoreSession,
+            &RestoreSessionPolicy::Always.to_string(),
+        )
+        .await
+        .unwrap();
+        db.save_app_setting(
+            SettingsKey::RestoreFileContext,
+            &RestoreSessionPolicy::Always.to_string(),
+        )
+        .await
+        .unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
         let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
@@ -2066,7 +2137,7 @@ mod tests {
     #[tokio::test]
     async fn test_app_new_restore_session_policy_default() {
         let db = Arc::new(Database::in_memory().await.unwrap());
-        db.save_app_setting("restore_session", "other_unknown")
+        db.save_app_setting(SettingsKey::RestoreSession, "other_unknown")
             .await
             .unwrap();
         let fr = FileReader::from_bytes(vec![]);
@@ -2080,12 +2151,18 @@ mod tests {
     #[tokio::test]
     async fn test_app_new_bool_settings_from_db() {
         let db = Arc::new(Database::in_memory().await.unwrap());
-        db.save_app_setting("show_borders", "true").await.unwrap();
-        db.save_app_setting("show_line_numbers", "false")
+        db.save_app_setting(SettingsKey::ShowBorders, "true")
             .await
             .unwrap();
-        db.save_app_setting("show_sidebar", "false").await.unwrap();
-        db.save_app_setting("wrap", "true").await.unwrap();
+        db.save_app_setting(SettingsKey::ShowLineNumbers, "false")
+            .await
+            .unwrap();
+        db.save_app_setting(SettingsKey::ShowSidebar, "false")
+            .await
+            .unwrap();
+        db.save_app_setting(SettingsKey::Wrap, "true")
+            .await
+            .unwrap();
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(db, None).await;
         let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
@@ -2300,8 +2377,15 @@ mod tests {
         )
         .await;
         assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
-        let setting = app.db.load_app_setting("restore_session").await.unwrap();
-        assert_eq!(setting.as_deref(), Some("always"));
+        let setting = app
+            .db
+            .load_app_setting(SettingsKey::RestoreSession)
+            .await
+            .unwrap();
+        assert_eq!(
+            setting.as_deref(),
+            Some(RestoreSessionPolicy::Always.to_string().as_str())
+        );
     }
 
     #[tokio::test]

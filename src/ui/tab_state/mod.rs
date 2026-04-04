@@ -276,7 +276,7 @@ impl VisibleLines {
                     None
                 }
             }
-            Self::Filtered(v) => v.iter().position(|&i| i == line_idx),
+            Self::Filtered(v) => v.binary_search(&line_idx).ok(),
         }
     }
 
@@ -388,11 +388,6 @@ pub struct CachedParsedLine {
     /// Byte offset of `timestamp` within `rendered`; avoids repeated `str::find` on render misses.
     pub timestamp_offset: Option<usize>,
 }
-
-// ---------------------------------------------------------------------------
-// Display text helper (used by both TabState::get_display_text and the
-// background search task, which cannot hold a &TabState across await points).
-// ---------------------------------------------------------------------------
 
 pub fn display_text_for_line(
     line_idx: usize,
@@ -2999,7 +2994,9 @@ mod tests {
     async fn test_config_priority_show_mode_bar_overrides_db() {
         use std::sync::Arc;
         let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
-        db.save_app_setting("show_mode_bar", "false").await.unwrap();
+        db.save_app_setting(crate::db::SettingsKey::ShowModeBar, "false")
+            .await
+            .unwrap();
         let fr = crate::ingestion::FileReader::from_bytes(b"line\n".to_vec());
         let lm = crate::db::LogManager::new(db, None).await;
         let app = crate::ui::App::builder(
@@ -3021,7 +3018,9 @@ mod tests {
     async fn test_config_priority_wrap_overrides_db() {
         use std::sync::Arc;
         let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
-        db.save_app_setting("wrap", "false").await.unwrap();
+        db.save_app_setting(crate::db::SettingsKey::Wrap, "false")
+            .await
+            .unwrap();
         let fr = crate::ingestion::FileReader::from_bytes(b"line\n".to_vec());
         let lm = crate::db::LogManager::new(db, None).await;
         let app = crate::ui::App::builder(

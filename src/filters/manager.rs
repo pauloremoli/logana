@@ -66,28 +66,33 @@ fn slice_to_string(bytes: &[u8]) -> String {
     std::str::from_utf8(bytes).unwrap_or("").to_string()
 }
 
-/// Drain set bits from a u64 bitset into a mutable counts slice.
+/// Drain set bits from a u64 bitset, calling `on_bit` with each set bit index.
 #[inline]
-fn flush_bitset_counts(mut bits: u64, counts: &mut [usize]) {
+fn drain_bitset(mut bits: u64, mut on_bit: impl FnMut(usize)) {
     while bits != 0 {
-        let bit = bits.trailing_zeros() as usize;
-        if let Some(c) = counts.get_mut(bit) {
-            *c += 1;
-        }
+        on_bit(bits.trailing_zeros() as usize);
         bits &= bits - 1;
     }
 }
 
+/// Drain set bits from a u64 bitset into a mutable counts slice.
+#[inline]
+fn flush_bitset_counts(bits: u64, counts: &mut [usize]) {
+    drain_bitset(bits, |bit| {
+        if let Some(c) = counts.get_mut(bit) {
+            *c += 1;
+        }
+    });
+}
+
 /// Drain set bits from a u64 bitset into an atomic counts slice.
 #[inline]
-fn flush_bitset_counts_atomic(mut bits: u64, counts: &[std::sync::atomic::AtomicUsize]) {
-    while bits != 0 {
-        let bit = bits.trailing_zeros() as usize;
+fn flush_bitset_counts_atomic(bits: u64, counts: &[std::sync::atomic::AtomicUsize]) {
+    drain_bitset(bits, |bit| {
         if let Some(c) = counts.get(bit) {
             c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        bits &= bits - 1;
-    }
+    });
 }
 
 /// Extract line bytes at `global` index from a contiguous data buffer.
@@ -1098,6 +1103,24 @@ impl Default for FilterOptions {
             bg: None,
             match_only: true,
             use_regex: false,
+        }
+    }
+}
+
+impl TryFrom<&FilterOptions> for ColorConfig {
+    type Error = ();
+
+    fn try_from(options: &FilterOptions) -> Result<Self, Self::Error> {
+        let fg = options.fg.as_deref().and_then(crate::theme::parse_color);
+        let bg = options.bg.as_deref().and_then(crate::theme::parse_color);
+        if fg.is_some() || bg.is_some() || !options.match_only {
+            Ok(ColorConfig {
+                fg,
+                bg,
+                match_only: options.match_only,
+            })
+        } else {
+            Err(())
         }
     }
 }

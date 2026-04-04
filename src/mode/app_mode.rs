@@ -251,10 +251,6 @@ impl Mode for ConfirmRestoreMode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ConfirmRestoreSessionMode
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub struct ConfirmRestoreSessionMode {
     pub files: Vec<String>,
@@ -315,10 +311,6 @@ impl Mode for ConfirmRestoreSessionMode {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// ConfirmOpenDirMode
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct ConfirmOpenDirMode {

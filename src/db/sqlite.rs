@@ -28,6 +28,7 @@ pub trait FilterStore: Send + Sync {
     ) -> Result<()>;
     async fn delete_filter(&self, id: i64) -> Result<()>;
     async fn toggle_filter(&self, id: i64) -> Result<()>;
+    async fn set_all_filters_enabled(&self, enabled: bool) -> Result<()>;
     async fn swap_filter_order(&self, id1: i64, id2: i64) -> Result<()>;
     async fn clear_filters(&self) -> Result<()>;
     async fn clear_filters_for_source(&self, source_file: &str) -> Result<()>;
@@ -77,12 +78,47 @@ pub trait SessionStore: Send + Sync {
     async fn load_session(&self) -> Result<Vec<String>>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsKey {
+    RestoreSession,
+    RestoreFileContext,
+    Theme,
+    Wrap,
+    ShowModeBar,
+    ShowBorders,
+    ShowLineNumbers,
+    ShowSidebar,
+    SidebarLeft,
+}
+
+impl SettingsKey {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RestoreSession => "restore_session",
+            Self::RestoreFileContext => "restore_file_context",
+            Self::Theme => "theme",
+            Self::Wrap => "wrap",
+            Self::ShowModeBar => "show_mode_bar",
+            Self::ShowBorders => "show_borders",
+            Self::ShowLineNumbers => "show_line_numbers",
+            Self::ShowSidebar => "show_sidebar",
+            Self::SidebarLeft => "sidebar_left",
+        }
+    }
+}
+
+impl std::fmt::Display for SettingsKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[async_trait]
 pub trait AppSettingsStore: Send + Sync {
     /// Persist a named application setting value.
-    async fn save_app_setting(&self, key: &str, value: &str) -> Result<()>;
+    async fn save_app_setting(&self, key: SettingsKey, value: &str) -> Result<()>;
     /// Load a named application setting, returning `None` if not set.
-    async fn load_app_setting(&self, key: &str) -> Result<Option<String>>;
+    async fn load_app_setting(&self, key: SettingsKey) -> Result<Option<String>>;
 }
 
 pub struct Database {
@@ -578,6 +614,14 @@ impl FilterStore for Database {
         Ok(())
     }
 
+    async fn set_all_filters_enabled(&self, enabled: bool) -> Result<()> {
+        sqlx::query("UPDATE filters SET enabled = ?")
+            .bind(enabled)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn swap_filter_order(&self, id1: i64, id2: i64) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
@@ -825,21 +869,21 @@ impl SessionStore for Database {
 
 #[async_trait]
 impl AppSettingsStore for Database {
-    async fn save_app_setting(&self, key: &str, value: &str) -> Result<()> {
+    async fn save_app_setting(&self, key: SettingsKey, value: &str) -> Result<()> {
         sqlx::query(
             "INSERT INTO app_settings (key, value) VALUES (?, ?)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         )
-        .bind(key)
+        .bind(key.as_str())
         .bind(value)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    async fn load_app_setting(&self, key: &str) -> Result<Option<String>> {
+    async fn load_app_setting(&self, key: SettingsKey) -> Result<Option<String>> {
         let row = sqlx::query("SELECT value FROM app_settings WHERE key = ?")
-            .bind(key)
+            .bind(key.as_str())
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(|r| r.get::<String, _>("value")))
@@ -849,6 +893,7 @@ impl AppSettingsStore for Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RestoreSessionPolicy;
 
     async fn setup_db() -> Database {
         Database::in_memory().await.unwrap()
@@ -884,6 +929,16 @@ mod tests {
         db.toggle_filter(id1).await.unwrap();
         let filters = db.get_filters().await.unwrap();
         assert!(filters[0].enabled);
+
+        // Bulk disable
+        db.set_all_filters_enabled(false).await.unwrap();
+        let filters = db.get_filters().await.unwrap();
+        assert!(filters.iter().all(|f| !f.enabled));
+
+        // Bulk enable
+        db.set_all_filters_enabled(true).await.unwrap();
+        let filters = db.get_filters().await.unwrap();
+        assert!(filters.iter().all(|f| f.enabled));
 
         // Update pattern of id1 ("error" → "warning", still at index 0)
         db.update_filter_pattern(id1, "warning").await.unwrap();
@@ -1379,54 +1434,102 @@ mod tests {
     #[tokio::test]
     async fn test_app_setting_load_returns_none_when_not_set() {
         let db = setup_db().await;
-        let result = db.load_app_setting("restore_session").await.unwrap();
+        let result = db
+            .load_app_setting(SettingsKey::RestoreSession)
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_app_setting_save_and_load() {
         let db = setup_db().await;
-        db.save_app_setting("restore_session", "always")
+        db.save_app_setting(
+            SettingsKey::RestoreSession,
+            &RestoreSessionPolicy::Always.to_string(),
+        )
+        .await
+        .unwrap();
+        let value = db
+            .load_app_setting(SettingsKey::RestoreSession)
             .await
             .unwrap();
-        let value = db.load_app_setting("restore_session").await.unwrap();
-        assert_eq!(value.as_deref(), Some("always"));
+        assert_eq!(
+            value.as_deref(),
+            Some(RestoreSessionPolicy::Always.to_string().as_str())
+        );
     }
 
     #[tokio::test]
     async fn test_app_setting_save_overwrites() {
         let db = setup_db().await;
-        db.save_app_setting("restore_session", "always")
+        db.save_app_setting(
+            SettingsKey::RestoreSession,
+            &RestoreSessionPolicy::Always.to_string(),
+        )
+        .await
+        .unwrap();
+        db.save_app_setting(
+            SettingsKey::RestoreSession,
+            &RestoreSessionPolicy::Never.to_string(),
+        )
+        .await
+        .unwrap();
+        let value = db
+            .load_app_setting(SettingsKey::RestoreSession)
             .await
             .unwrap();
-        db.save_app_setting("restore_session", "never")
-            .await
-            .unwrap();
-        let value = db.load_app_setting("restore_session").await.unwrap();
-        assert_eq!(value.as_deref(), Some("never"));
+        assert_eq!(
+            value.as_deref(),
+            Some(RestoreSessionPolicy::Never.to_string().as_str())
+        );
     }
 
     #[tokio::test]
     async fn test_app_setting_file_policy_independent_of_session_policy() {
         let db = setup_db().await;
-        db.save_app_setting("restore_file_context", "never")
+        db.save_app_setting(
+            SettingsKey::RestoreFileContext,
+            &RestoreSessionPolicy::Never.to_string(),
+        )
+        .await
+        .unwrap();
+        let session = db
+            .load_app_setting(SettingsKey::RestoreSession)
             .await
             .unwrap();
-        let session = db.load_app_setting("restore_session").await.unwrap();
-        let file = db.load_app_setting("restore_file_context").await.unwrap();
+        let file = db
+            .load_app_setting(SettingsKey::RestoreFileContext)
+            .await
+            .unwrap();
         assert!(session.is_none());
-        assert_eq!(file.as_deref(), Some("never"));
+        assert_eq!(
+            file.as_deref(),
+            Some(RestoreSessionPolicy::Never.to_string().as_str())
+        );
     }
 
     #[tokio::test]
     async fn test_app_setting_session_policy_independent_of_file_policy() {
         let db = setup_db().await;
-        db.save_app_setting("restore_session", "always")
+        db.save_app_setting(
+            SettingsKey::RestoreSession,
+            &RestoreSessionPolicy::Always.to_string(),
+        )
+        .await
+        .unwrap();
+        let session = db
+            .load_app_setting(SettingsKey::RestoreSession)
             .await
             .unwrap();
-        let session = db.load_app_setting("restore_session").await.unwrap();
-        let file = db.load_app_setting("restore_file_context").await.unwrap();
-        assert_eq!(session.as_deref(), Some("always"));
+        let file = db
+            .load_app_setting(SettingsKey::RestoreFileContext)
+            .await
+            .unwrap();
+        assert_eq!(
+            session.as_deref(),
+            Some(RestoreSessionPolicy::Always.to_string().as_str())
+        );
         assert!(file.is_none());
     }
 
@@ -1468,9 +1571,12 @@ mod tests {
             .await
             .unwrap();
 
-        db.save_app_setting("restore_session", "always")
-            .await
-            .unwrap();
+        db.save_app_setting(
+            SettingsKey::RestoreSession,
+            &RestoreSessionPolicy::Always.to_string(),
+        )
+        .await
+        .unwrap();
 
         db.reset_all().await.unwrap();
 
@@ -1478,7 +1584,7 @@ mod tests {
         assert!(db.load_file_context("app.log").await.unwrap().is_none());
         assert!(db.load_session().await.unwrap().is_empty());
         assert!(
-            db.load_app_setting("restore_session")
+            db.load_app_setting(SettingsKey::RestoreSession)
                 .await
                 .unwrap()
                 .is_none()

@@ -1602,9 +1602,20 @@ impl DltDevice {
 
 /// Controls whether logana asks before restoring a previous session.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    strum::Display,
+    strum::EnumString,
 )]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum RestoreSessionPolicy {
     /// Ask before restoring.
     Ask,

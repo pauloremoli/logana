@@ -121,10 +121,6 @@ pub fn effective_row_count(
     line_row_count(line_bytes, inner_width)
 }
 
-// ---------------------------------------------------------------------------
-// Structured field layout helpers
-// ---------------------------------------------------------------------------
-
 pub fn get_col(
     p: &DisplayParts<'_>,
     name: &str,

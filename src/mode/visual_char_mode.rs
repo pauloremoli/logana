@@ -78,10 +78,6 @@ impl VisualMode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mode impl
-// ---------------------------------------------------------------------------
-
 #[async_trait]
 impl Mode for VisualMode {
     async fn handle_key(
@@ -328,10 +324,6 @@ impl Mode for VisualMode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared helper — also used by normal_mode to capture the line text on entry
-// ---------------------------------------------------------------------------
-
 /// Wraps `pattern` in double quotes when it contains whitespace, escaping
 /// any embedded `"` as `\"` so that `shell_split` reconstructs the original
 /// pattern correctly.
@@ -367,10 +359,6 @@ pub fn display_line_text(tab: &TabState) -> String {
         String::new()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Motion helpers
-// ---------------------------------------------------------------------------
 
 fn apply_char_motion(text: &str, col: usize, motion: &PendingMotion, c: char) -> usize {
     match motion {

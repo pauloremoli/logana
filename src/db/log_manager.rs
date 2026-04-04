@@ -52,21 +52,9 @@ impl LogManager {
         filter_type: FilterType,
         options: FilterOptions,
     ) -> bool {
-        let color_config = if filter_type == FilterType::Include {
-            let fg_color = options.fg.as_deref().and_then(parse_color);
-            let bg_color = options.bg.as_deref().and_then(parse_color);
-            if fg_color.is_some() || bg_color.is_some() || !options.match_only {
-                Some(ColorConfig {
-                    fg: fg_color,
-                    bg: bg_color,
-                    match_only: options.match_only,
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let color_config = (filter_type == FilterType::Include)
+            .then(|| ColorConfig::try_from(&options).ok())
+            .flatten();
 
         if let Some(pos) = self
             .filter_defs
@@ -133,34 +121,17 @@ impl LogManager {
     }
 
     pub async fn disable_all_filters(&mut self) {
-        let ids_to_disable: Vec<usize> = self
-            .filter_defs
-            .iter()
-            .filter(|f| f.enabled)
-            .map(|f| f.id)
-            .collect();
         for f in self.filter_defs.iter_mut() {
             f.enabled = false;
         }
-        let db = self.db.clone();
-        for id in ids_to_disable {
-            let _ = db.toggle_filter(id as i64).await;
-        }
+        let _ = self.db.set_all_filters_enabled(false).await;
     }
 
     pub async fn enable_all_filters(&mut self) {
-        let ids_to_enable: Vec<usize> = self
-            .filter_defs
-            .iter()
-            .filter(|f| !f.enabled)
-            .map(|f| f.id)
-            .collect();
         for f in self.filter_defs.iter_mut() {
             f.enabled = true;
         }
-        for id in ids_to_enable {
-            let _ = self.db.toggle_filter(id as i64).await;
-        }
+        let _ = self.db.set_all_filters_enabled(true).await;
     }
 
     pub async fn clear_filters(&mut self) {
@@ -187,21 +158,9 @@ impl LogManager {
         filter_type: FilterType,
         options: FilterOptions,
     ) {
-        let color_config = if filter_type == FilterType::Include {
-            let fg_color = options.fg.as_deref().and_then(parse_color);
-            let bg_color = options.bg.as_deref().and_then(parse_color);
-            if fg_color.is_some() || bg_color.is_some() || !options.match_only {
-                Some(ColorConfig {
-                    fg: fg_color,
-                    bg: bg_color,
-                    match_only: options.match_only,
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let color_config = (filter_type == FilterType::Include)
+            .then(|| ColorConfig::try_from(&options).ok())
+            .flatten();
         if let Some(f) = self.filter_defs.iter_mut().find(|f| f.id == id) {
             f.pattern = pattern.clone();
             f.filter_type = filter_type.clone();
