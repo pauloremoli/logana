@@ -1326,7 +1326,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let mut app = make_app(&["line"]).await;
-        app.mcp_port = Some(port);
+        app.mcp.port = Some(port);
         let result = app.run_command("enable-mcp").await;
         assert!(result.is_ok(), "enable-mcp should return Ok: {:?}", result);
         assert_eq!(result.unwrap(), false);

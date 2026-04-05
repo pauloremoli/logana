@@ -127,8 +127,8 @@ impl App {
 
         let (logs_area, sidebar_area) =
             self.compute_main_areas(main_chunk, show_tab_bar, show_borders);
-        self.log_panel_area = logs_area;
-        self.sidebar_area = sidebar_area;
+        self.mouse.log_panel_area = logs_area;
+        self.mouse.sidebar_area = sidebar_area;
         self.render_log_panel(frame, logs_area, show_tab_bar, mode_name, &state);
         if let Some(sa) = sidebar_area {
             let is_filter_mode = matches!(
@@ -215,8 +215,8 @@ impl App {
             .mode
             .mode_bar_content(&keybindings, &self.theme);
         let show_mode_bar = self.show_mode_bar;
-        let has_warnings = !self.startup_warnings.is_empty();
-        let warnings_height = self.startup_warnings.len().min(10) as u16;
+        let has_warnings = !self.session.startup_warnings.is_empty();
+        let warnings_height = self.session.startup_warnings.len().min(10) as u16;
         let visual_anchor: Option<usize> = match render_state {
             ModeRenderState::VisualLine { anchor } => Some(*anchor),
             _ => None,
@@ -672,10 +672,11 @@ impl App {
         if let Some(idx) = warnings_chunk_idx {
             let warnings_area = chunks[idx];
             let lines: Vec<Line> = self
+                .session
                 .startup_warnings
                 .iter()
                 .take(10)
-                .map(|w| {
+                .map(|w: &String| {
                     Line::from(vec![
                         Span::styled("Warning: ", Style::default().fg(Color::Red)),
                         Span::raw(w.clone()),
@@ -2231,7 +2232,7 @@ mod tests {
     async fn test_startup_warnings_shown_above_mode_bar() {
         let mut app = make_app(&["line 0"]).await;
         app.show_mode_bar = true;
-        app.startup_warnings = vec![
+        app.session.startup_warnings = vec![
             "keybinding conflict: j".to_string(),
             "keybinding conflict: k".to_string(),
         ];
@@ -2258,7 +2259,7 @@ mod tests {
     #[tokio::test]
     async fn test_startup_warnings_capped_at_10_rows() {
         let mut app = make_app(&["line 0"]).await;
-        app.startup_warnings = (0..15).map(|i| format!("conflict {i}")).collect();
+        app.session.startup_warnings = (0..15).map(|i| format!("conflict {i}")).collect();
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2312,10 +2313,10 @@ mod tests {
     #[tokio::test]
     async fn test_startup_warnings_cleared_on_keypress() {
         let mut app = make_app(&["line 0"]).await;
-        app.startup_warnings = vec!["conflict".to_string()];
+        app.session.startup_warnings = vec!["conflict".to_string()];
         app.handle_key_event(crossterm::event::KeyCode::Esc).await;
         assert!(
-            app.startup_warnings.is_empty(),
+            app.session.startup_warnings.is_empty(),
             "startup_warnings should be cleared after a keypress"
         );
     }

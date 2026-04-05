@@ -40,8 +40,8 @@ impl App {
         self.show_line_numbers = true;
         self.show_sidebar = true;
         self.wrap = false;
-        self.restore_policy = crate::config::RestoreSessionPolicy::Ask;
-        self.restore_file_policy = crate::config::RestoreSessionPolicy::Ask;
+        self.session.restore_policy = crate::config::RestoreSessionPolicy::Ask;
+        self.session.restore_file_policy = crate::config::RestoreSessionPolicy::Ask;
 
         for tab in &mut self.tabs {
             tab.display.show_mode_bar = true;
@@ -62,7 +62,7 @@ impl App {
         line_mode: bool,
     ) -> Result<bool, String> {
         let tab = &self.tabs[self.active_tab];
-        if tab.display.format.is_none() && !self.startup_filters {
+        if tab.display.format.is_none() && !self.session.startup_filters {
             return Err(
                 "No log format detected — date filter requires structured timestamps".to_string(),
             );
@@ -211,7 +211,7 @@ impl App {
     }
 
     pub(super) async fn cmd_enable_mcp(&mut self, port: Option<u16>) -> Result<bool, String> {
-        let p = port.unwrap_or_else(|| self.mcp_port.unwrap_or(9876));
+        let p = port.unwrap_or_else(|| self.mcp.port.unwrap_or(9876));
         match self.start_mcp(p).await {
             Ok(()) => {
                 self.tabs[self.active_tab].interaction.notification =

@@ -66,7 +66,7 @@ impl App {
         self.apply_tab_defaults(&mut tab);
 
         if let Ok(Some(ctx)) = self.db.load_file_context(&abs_path).await {
-            match self.restore_file_policy {
+            match self.session.restore_file_policy {
                 RestoreSessionPolicy::Always => {
                     tab.apply_file_context(&ctx);
                 }
@@ -803,10 +803,10 @@ impl App {
                 if let Some(visible) = result.precomputed_visible {
                     self.tabs[0].filter.visible_indices = VisibleLines::Filtered(visible);
                 }
-                if !self.startup_filters
+                if !self.session.startup_filters
                     && let Ok(Some(ctx)) = self.db.load_file_context(&path).await
                 {
-                    match self.restore_file_policy {
+                    match self.session.restore_file_policy {
                         RestoreSessionPolicy::Always => {
                             self.tabs[0].apply_file_context(&ctx);
                         }
@@ -842,7 +842,7 @@ impl App {
                     self.tabs[0].begin_filter_refresh();
                 }
                 // Apply startup tail: jump to the last visible line and enable tail mode.
-                if self.startup_tail {
+                if self.session.startup_tail {
                     self.tabs[0].stream.tail_mode = true;
                     self.tabs[0].scroll.scroll_offset =
                         self.tabs[0].filter.visible_indices.len().saturating_sub(1);
@@ -2062,7 +2062,7 @@ mod tests {
         app.db.save_file_context(&ctx).await.unwrap();
 
         // With startup_filters=true the restore prompt must be suppressed.
-        app.startup_filters = true;
+        app.session.startup_filters = true;
         app.begin_file_load(path.clone(), LoadContext::ReplaceInitialTab, None, false)
             .await;
         app.advance_file_load().await;
@@ -3467,7 +3467,7 @@ mod tests {
             .to_string();
 
         let mut app = make_app(&[]).await;
-        app.restore_file_policy = RestoreSessionPolicy::Always;
+        app.session.restore_file_policy = RestoreSessionPolicy::Always;
 
         let ctx = FileContext {
             source_file: abs_path.clone(),
@@ -3507,7 +3507,7 @@ mod tests {
             .to_string();
 
         let mut app = make_app(&[]).await;
-        app.restore_file_policy = RestoreSessionPolicy::Never;
+        app.session.restore_file_policy = RestoreSessionPolicy::Never;
 
         let ctx = FileContext {
             source_file: abs_path.clone(),
@@ -3548,7 +3548,7 @@ mod tests {
             .to_string();
 
         let mut app = make_app(&[]).await;
-        app.restore_file_policy = RestoreSessionPolicy::Ask;
+        app.session.restore_file_policy = RestoreSessionPolicy::Ask;
 
         let ctx = FileContext {
             source_file: abs_path.clone(),

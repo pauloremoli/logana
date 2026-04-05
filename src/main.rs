@@ -258,8 +258,8 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
     .await;
     app.preview_bytes = config.preview_bytes;
     app.dlt_devices = config.dlt_devices;
-    app.mcp_port = config.mcp_port;
-    app.startup_warnings = keybinding_conflicts;
+    app.mcp.port = config.mcp_port;
+    app.session.startup_warnings = keybinding_conflicts;
     app
 }
 
@@ -270,7 +270,7 @@ async fn apply_cli_args_to_app(app: &mut App, args: &Args) {
         eprintln!("Warning: could not load filters from '{}': {}", fpath, e);
     }
 
-    app.startup_tail = args.tail;
+    app.session.startup_tail = args.tail;
 
     let has_inline_filters = !args.include_filters.is_empty()
         || !args.exclude_filters.is_empty()
@@ -286,7 +286,7 @@ async fn apply_cli_args_to_app(app: &mut App, args: &Args) {
     }
     // Set before applying timestamp filters so cmd_date_filter can skip the
     // format check — format is not yet detected at startup.
-    app.startup_filters = args.filters.is_some() || has_inline_filters;
+    app.session.startup_filters = args.filters.is_some() || has_inline_filters;
 
     for args_str in &args.timestamp_filters {
         app.execute_command_str(format!("date-filter {}", args_str))
@@ -294,9 +294,10 @@ async fn apply_cli_args_to_app(app: &mut App, args: &Args) {
     }
 
     if let Some(port) = args.mcp {
-        let p = app.mcp_port.unwrap_or(port);
+        let p = app.mcp.port.unwrap_or(port);
         if let Err(e) = app.start_mcp(p).await {
-            app.startup_warnings
+            app.session
+                .startup_warnings
                 .push(format!("Failed to start MCP server on port {p}: {e}"));
         }
     }
@@ -373,7 +374,7 @@ async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
     let mut screen = AlternateScreen::new()?;
     let mut app = build_app(log_manager, config).await;
     if let Some(err) = config_error {
-        app.startup_warnings.push(err);
+        app.session.startup_warnings.push(err);
     }
     apply_cli_args_to_app(&mut app, &args).await;
     begin_initial_load(

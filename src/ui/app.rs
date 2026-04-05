@@ -114,6 +114,44 @@ async fn resolve_startup_settings(
     }
 }
 
+pub struct McpState {
+    /// Default MCP server port (used when `:enable-mcp` has no `--port`).
+    pub port: Option<u16>,
+    /// Shared snapshot of filtered lines, marks, and annotations exposed to the MCP server.
+    pub snapshot: std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpSnapshot>>,
+    /// Receiver for commands sent by the MCP server tools back to the TUI.
+    pub cmd_rx: Option<tokio::sync::mpsc::Receiver<crate::mcp::McpCommand>>,
+    /// Handle to the running MCP server, if one is active.
+    pub server_handle: Option<crate::mcp::McpServerHandle>,
+}
+
+pub struct MouseState {
+    /// Log panel area captured during the last render frame, used for mouse hit-testing.
+    pub log_panel_area: Rect,
+    /// Filter sidebar area captured during the last render frame, used for mouse hit-testing.
+    pub sidebar_area: Option<Rect>,
+    /// Time and screen position of the last left-button down event, for double-click detection.
+    pub last_click: Option<(std::time::Instant, u16, u16)>,
+    /// Whether the user is currently dragging the scrollbar thumb.
+    pub scrollbar_dragging: bool,
+}
+
+pub struct SessionConfig {
+    /// Restore session policy from config — controls whether to skip the whole-session prompt.
+    pub restore_policy: RestoreSessionPolicy,
+    /// Restore file-context policy from config — controls whether to skip the per-file prompt.
+    pub restore_file_policy: RestoreSessionPolicy,
+    /// Session files to restore automatically (set when policy is Always and session exists).
+    pub pending_session_restore: Option<Vec<String>>,
+    /// When true, the initial file tab starts in tail mode (set by `--tail`).
+    pub startup_tail: bool,
+    /// When true, filters were supplied via `--filters` and the previous-session
+    /// restore prompt must be suppressed so it cannot overwrite them.
+    pub startup_filters: bool,
+    /// Keybinding conflict warnings shown in the status bar on startup. Cleared on first keypress.
+    pub startup_warnings: Vec<String>,
+}
+
 pub struct App {
     pub tabs: Vec<TabState>,
     pub active_tab: usize,
@@ -138,39 +176,13 @@ pub struct App {
     pub wrap: bool,
     /// Which side the filter sidebar sits on.
     pub sidebar_side: SidebarSide,
-    /// When true, the initial file tab starts in tail mode (set by `--tail`).
-    pub startup_tail: bool,
-    /// When true, filters were supplied via `--filters` and the previous-session
-    /// restore prompt must be suppressed so it cannot overwrite them.
-    pub startup_filters: bool,
     /// Number of bytes to read for the instant preview (from config `preview_bytes`).
     pub preview_bytes: u64,
-    /// Restore session policy from config — controls whether to skip the whole-session prompt.
-    pub restore_policy: RestoreSessionPolicy,
-    /// Restore file-context policy from config — controls whether to skip the per-file prompt.
-    pub restore_file_policy: RestoreSessionPolicy,
-    /// Session files to restore automatically (set when policy is Always and session exists).
-    pub pending_session_restore: Option<Vec<String>>,
-    /// Keybinding conflict warnings shown in the status bar on startup. Cleared on first keypress.
-    pub startup_warnings: Vec<String>,
     /// Configured DLT devices from config.json.
     pub dlt_devices: Vec<crate::config::DltDevice>,
-    /// Default MCP server port from config (used when `:enable-mcp` has no `--port`).
-    pub mcp_port: Option<u16>,
-    /// Shared snapshot of filtered lines, marks, and annotations exposed to the MCP server.
-    pub mcp_snapshot: std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpSnapshot>>,
-    /// Receiver for commands sent by the MCP server tools back to the TUI.
-    pub mcp_cmd_rx: Option<tokio::sync::mpsc::Receiver<crate::mcp::McpCommand>>,
-    /// Handle to the running MCP server, if one is active.
-    pub mcp_server_handle: Option<crate::mcp::McpServerHandle>,
-    /// Log panel area captured during the last render frame, used for mouse hit-testing.
-    pub log_panel_area: Rect,
-    /// Filter sidebar area captured during the last render frame, used for mouse hit-testing.
-    pub sidebar_area: Option<Rect>,
-    /// Time and screen position of the last left-button down event, for double-click detection.
-    pub last_click: Option<(std::time::Instant, u16, u16)>,
-    /// Whether the user is currently dragging the scrollbar thumb.
-    pub scrollbar_dragging: bool,
+    pub mcp: McpState,
+    pub mouse: MouseState,
+    pub session: SessionConfig,
     /// In-progress background archive extraction.
     pub pending_archive: Option<crate::ui::ArchiveExtractionState>,
     /// App-level decompression progress message shown while an archive is being extracted.
@@ -323,24 +335,30 @@ impl AppBuilder {
             show_sidebar,
             wrap,
             sidebar_side,
-            startup_tail: false,
-            startup_filters: false,
             preview_bytes: 16 * 1024 * 1024,
-            restore_policy,
-            restore_file_policy,
-            pending_session_restore,
-            startup_warnings: vec![],
             dlt_devices: vec![],
-            mcp_port: None,
-            mcp_snapshot: std::sync::Arc::new(tokio::sync::RwLock::new(
-                crate::mcp::McpSnapshot::default(),
-            )),
-            mcp_cmd_rx: None,
-            mcp_server_handle: None,
-            log_panel_area: Rect::default(),
-            sidebar_area: None,
-            last_click: None,
-            scrollbar_dragging: false,
+            mcp: McpState {
+                port: None,
+                snapshot: std::sync::Arc::new(tokio::sync::RwLock::new(
+                    crate::mcp::McpSnapshot::default(),
+                )),
+                cmd_rx: None,
+                server_handle: None,
+            },
+            mouse: MouseState {
+                log_panel_area: Rect::default(),
+                sidebar_area: None,
+                last_click: None,
+                scrollbar_dragging: false,
+            },
+            session: SessionConfig {
+                restore_policy,
+                restore_file_policy,
+                pending_session_restore,
+                startup_tail: false,
+                startup_filters: false,
+                startup_warnings: vec![],
+            },
             pending_archive: None,
             decompression_message: None,
         }
@@ -520,7 +538,7 @@ impl App {
     where
         <B as Backend>::Error: Send + Sync + 'static,
     {
-        if let Some(files) = self.pending_session_restore.take() {
+        if let Some(files) = self.session.pending_session_restore.take() {
             self.restore_session(files).await;
         }
 
@@ -543,7 +561,7 @@ impl App {
             let mut poll_timeout = tick_rate
                 .checked_sub(last_tick.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
-            if let Some((t, _, _)) = self.last_click {
+            if let Some((t, _, _)) = self.mouse.last_click {
                 let remaining =
                     Duration::from_millis(DOUBLE_CLICK_MS as u64).saturating_sub(t.elapsed());
                 poll_timeout = poll_timeout.min(remaining);
@@ -554,7 +572,7 @@ impl App {
                     crossterm::event::Event::Key(key)
                         if key.kind == crossterm::event::KeyEventKind::Press =>
                     {
-                        self.startup_warnings.clear();
+                        self.session.startup_warnings.clear();
                         let tab = &mut self.tabs[self.active_tab];
                         let mode = std::mem::replace(
                             &mut tab.interaction.mode,
@@ -597,7 +615,7 @@ impl App {
         key_code: KeyCode,
         modifiers: KeyModifiers,
     ) {
-        self.startup_warnings.clear();
+        self.session.startup_warnings.clear();
         let tab = &mut self.tabs[self.active_tab];
         let mode = std::mem::replace(&mut tab.interaction.mode, Box::new(NormalMode::default()));
         let (next_mode, result) = mode.handle_key(tab, key_code, modifiers).await;
@@ -618,12 +636,12 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.hit_test_scrollbar(event.column, event.row).is_some() {
-                    self.scrollbar_dragging = true;
+                    self.mouse.scrollbar_dragging = true;
                 }
                 self.handle_left_down(event.column, event.row).await;
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if self.scrollbar_dragging {
+                if self.mouse.scrollbar_dragging {
                     let scroll_pos = self.hit_test_scrollbar(event.column, event.row);
                     if let Some(pos) = scroll_pos {
                         self.tabs[self.active_tab].scroll.scroll_offset = pos;
@@ -631,7 +649,7 @@ impl App {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                self.scrollbar_dragging = false;
+                self.mouse.scrollbar_dragging = false;
             }
             _ => {}
         }
@@ -639,7 +657,7 @@ impl App {
 
     async fn handle_left_down(&mut self, col: u16, row: u16) {
         let now = Instant::now();
-        if let Some((t, c, r)) = self.last_click.take() {
+        if let Some((t, c, r)) = self.mouse.last_click.take() {
             if t.elapsed().as_millis() < DOUBLE_CLICK_MS && c == col && r == row {
                 self.handle_double_click(col, row);
                 return;
@@ -647,18 +665,18 @@ impl App {
             self.handle_left_click(c, r).await;
         }
         if self.hit_test_log_panel(col, row).is_some() {
-            self.last_click = Some((now, col, row));
+            self.mouse.last_click = Some((now, col, row));
         } else {
             self.handle_left_click(col, row).await;
         }
     }
 
     async fn flush_pending_click(&mut self) {
-        if let Some((t, c, r)) = self.last_click {
+        if let Some((t, c, r)) = self.mouse.last_click {
             if t.elapsed().as_millis() < DOUBLE_CLICK_MS {
                 return;
             }
-            self.last_click = None;
+            self.mouse.last_click = None;
             self.handle_left_click(c, r).await;
         }
     }
@@ -680,7 +698,7 @@ impl App {
     }
 
     fn col_to_char_offset(&self, col: u16) -> usize {
-        let area = self.log_panel_area;
+        let area = self.mouse.log_panel_area;
         let tab = &self.tabs[self.active_tab];
         let x_off: u16 = if tab.display.show_borders { 1 } else { 0 };
         let total_lines = tab.file_reader.line_count();
@@ -720,7 +738,7 @@ impl App {
     }
 
     fn hit_test_scrollbar(&self, col: u16, row: u16) -> Option<usize> {
-        let area = self.log_panel_area;
+        let area = self.mouse.log_panel_area;
         if row < area.y || row >= area.y + area.height {
             return None;
         }
@@ -742,7 +760,7 @@ impl App {
     }
 
     fn hit_test_sidebar(&self, col: u16, row: u16) -> Option<usize> {
-        let area = self.sidebar_area?;
+        let area = self.mouse.sidebar_area?;
         if !area.contains(Position::new(col, row)) {
             return None;
         }
@@ -776,7 +794,7 @@ impl App {
     }
 
     fn hit_test_log_panel(&self, col: u16, row: u16) -> Option<usize> {
-        let area = self.log_panel_area;
+        let area = self.mouse.log_panel_area;
         let tab = &self.tabs[self.active_tab];
         let show_borders = tab.display.show_borders;
         let show_tab_bar = !self.tabs.is_empty();
@@ -948,7 +966,7 @@ impl App {
             KeyResult::ToggleLineNumbers => self.handle_toggle_line_numbers().await,
             KeyResult::OpenFiles(paths) => self.handle_open_files(paths).await,
             KeyResult::AlwaysRestoreFile(_) => {
-                self.restore_file_policy = RestoreSessionPolicy::Always;
+                self.session.restore_file_policy = RestoreSessionPolicy::Always;
                 let _ = self
                     .db
                     .save_app_setting(
@@ -958,7 +976,7 @@ impl App {
                     .await;
             }
             KeyResult::NeverRestoreFile => {
-                self.restore_file_policy = RestoreSessionPolicy::Never;
+                self.session.restore_file_policy = RestoreSessionPolicy::Never;
                 let _ = self
                     .db
                     .save_app_setting(
@@ -968,7 +986,7 @@ impl App {
                     .await;
             }
             KeyResult::AlwaysRestoreSession(files) => {
-                self.restore_policy = RestoreSessionPolicy::Always;
+                self.session.restore_policy = RestoreSessionPolicy::Always;
                 let _ = self
                     .db
                     .save_app_setting(
@@ -979,7 +997,7 @@ impl App {
                 self.restore_session(files).await;
             }
             KeyResult::NeverRestoreSession => {
-                self.restore_policy = RestoreSessionPolicy::Never;
+                self.session.restore_policy = RestoreSessionPolicy::Never;
                 let _ = self
                     .db
                     .save_app_setting(
@@ -1029,21 +1047,21 @@ impl App {
         self.stop_mcp();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         self.refresh_mcp_snapshot();
-        let handle = crate::mcp::start_mcp_server(port, self.mcp_snapshot.clone(), tx).await?;
-        self.mcp_server_handle = Some(handle);
-        self.mcp_cmd_rx = Some(rx);
+        let handle = crate::mcp::start_mcp_server(port, self.mcp.snapshot.clone(), tx).await?;
+        self.mcp.server_handle = Some(handle);
+        self.mcp.cmd_rx = Some(rx);
         Ok(())
     }
 
     pub fn stop_mcp(&mut self) {
-        if let Some(handle) = self.mcp_server_handle.take() {
+        if let Some(handle) = self.mcp.server_handle.take() {
             handle.cancel.cancel();
         }
-        self.mcp_cmd_rx = None;
+        self.mcp.cmd_rx = None;
     }
 
     pub fn refresh_mcp_snapshot(&mut self) {
-        if self.mcp_server_handle.is_none() {
+        if self.mcp.server_handle.is_none() {
             return;
         }
         if let Some(tab) = self.tabs.get(self.active_tab) {
@@ -1051,7 +1069,7 @@ impl App {
                 marked_lines: crate::mcp::build_marked_lines(&tab.file_reader, &tab.log_manager),
                 annotations: crate::mcp::build_annotations(&tab.log_manager),
             };
-            let arc = self.mcp_snapshot.clone();
+            let arc = self.mcp.snapshot.clone();
             tokio::spawn(async move {
                 *arc.write().await = snapshot;
             });
@@ -1059,11 +1077,11 @@ impl App {
     }
 
     pub async fn poll_mcp_commands(&mut self) {
-        if self.mcp_cmd_rx.is_none() {
+        if self.mcp.cmd_rx.is_none() {
             return;
         }
         let mut cmds = Vec::new();
-        if let Some(rx) = &mut self.mcp_cmd_rx {
+        if let Some(rx) = &mut self.mcp.cmd_rx {
             while let Ok(cmd) = rx.try_recv() {
                 cmds.push(cmd);
             }
@@ -1854,8 +1872,11 @@ mod tests {
         app.handle_key_event_with_modifiers(KeyCode::Char('Y'), KeyModifiers::NONE)
             .await;
 
-        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Always);
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
+        assert_eq!(
+            app.session.restore_file_policy,
+            RestoreSessionPolicy::Always
+        );
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Always);
 
         let file_setting = app
             .db
@@ -1885,8 +1906,8 @@ mod tests {
         app.handle_key_event_with_modifiers(KeyCode::Char('N'), KeyModifiers::NONE)
             .await;
 
-        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Never);
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
+        assert_eq!(app.session.restore_file_policy, RestoreSessionPolicy::Never);
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Always);
 
         let file_setting = app
             .db
@@ -1924,8 +1945,8 @@ mod tests {
         .wrap(Some(true))
         .build()
         .await;
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
-        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Never);
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Always);
+        assert_eq!(app.session.restore_file_policy, RestoreSessionPolicy::Never);
         assert!(!app.show_mode_bar);
         assert!(app.show_borders_default);
         assert!(!app.show_line_numbers);
@@ -1956,8 +1977,8 @@ mod tests {
         let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
             .build()
             .await;
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
-        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Never);
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Always);
+        assert_eq!(app.session.restore_file_policy, RestoreSessionPolicy::Never);
         assert!(!app.show_mode_bar);
     }
 
@@ -2025,7 +2046,7 @@ mod tests {
             KeyModifiers::NONE,
         )
         .await;
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Never);
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Never);
         let setting = app
             .db
             .load_app_setting(SettingsKey::RestoreSession)
@@ -2045,7 +2066,7 @@ mod tests {
         });
         app.handle_key_event_with_modifiers(KeyCode::Char('Y'), KeyModifiers::SHIFT)
             .await;
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Always);
         let setting = app
             .db
             .load_app_setting(SettingsKey::RestoreSession)
@@ -2065,7 +2086,7 @@ mod tests {
         });
         app.handle_key_event_with_modifiers(KeyCode::Char('N'), KeyModifiers::SHIFT)
             .await;
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Never);
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Never);
     }
 
     #[tokio::test]
@@ -2108,8 +2129,8 @@ mod tests {
         let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
             .build()
             .await;
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Never);
-        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Ask);
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Never);
+        assert_eq!(app.session.restore_file_policy, RestoreSessionPolicy::Ask);
     }
 
     #[tokio::test]
@@ -2132,8 +2153,11 @@ mod tests {
         let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
             .build()
             .await;
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
-        assert_eq!(app.restore_file_policy, RestoreSessionPolicy::Always);
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Always);
+        assert_eq!(
+            app.session.restore_file_policy,
+            RestoreSessionPolicy::Always
+        );
     }
 
     #[tokio::test]
@@ -2147,7 +2171,7 @@ mod tests {
         let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
             .build()
             .await;
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Ask);
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Ask);
     }
 
     #[tokio::test]
@@ -2280,7 +2304,7 @@ mod tests {
             .restore_policy(Some(RestoreSessionPolicy::Always))
             .build()
             .await;
-        assert!(app.pending_session_restore.is_some());
+        assert!(app.session.pending_session_restore.is_some());
     }
 
     #[tokio::test]
@@ -2310,7 +2334,7 @@ mod tests {
             .restore_policy(Some(RestoreSessionPolicy::Never))
             .build()
             .await;
-        assert!(app.pending_session_restore.is_none());
+        assert!(app.session.pending_session_restore.is_none());
     }
 
     #[tokio::test]
@@ -2378,7 +2402,7 @@ mod tests {
             KeyModifiers::NONE,
         )
         .await;
-        assert_eq!(app.restore_policy, RestoreSessionPolicy::Always);
+        assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Always);
         let setting = app
             .db
             .load_app_setting(SettingsKey::RestoreSession)
@@ -2394,21 +2418,21 @@ mod tests {
     async fn test_stop_mcp_clears_handle() {
         let mut app = make_app(&["line"]).await;
         app.stop_mcp();
-        assert!(app.mcp_server_handle.is_none());
-        assert!(app.mcp_cmd_rx.is_none());
+        assert!(app.mcp.server_handle.is_none());
+        assert!(app.mcp.cmd_rx.is_none());
     }
 
     #[tokio::test]
     async fn test_refresh_mcp_snapshot_no_server_is_noop() {
         let mut app = make_app(&["line"]).await;
-        assert!(app.mcp_server_handle.is_none());
+        assert!(app.mcp.server_handle.is_none());
         app.refresh_mcp_snapshot();
     }
 
     #[tokio::test]
     async fn test_poll_mcp_commands_no_receiver_is_noop() {
         let mut app = make_app(&["line"]).await;
-        assert!(app.mcp_cmd_rx.is_none());
+        assert!(app.mcp.cmd_rx.is_none());
         app.poll_mcp_commands().await;
     }
 
@@ -2416,7 +2440,7 @@ mod tests {
     async fn test_poll_mcp_commands_with_empty_channel() {
         let mut app = make_app(&["line"]).await;
         let (_tx, rx) = tokio::sync::mpsc::channel::<crate::mcp::McpCommand>(8);
-        app.mcp_cmd_rx = Some(rx);
+        app.mcp.cmd_rx = Some(rx);
         app.poll_mcp_commands().await;
     }
 
@@ -2425,7 +2449,7 @@ mod tests {
         let mut app = make_app(&["line0", "line1"]).await;
         assert!(!app.tabs[0].log_manager.is_marked(0));
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        app.mcp_cmd_rx = Some(rx);
+        app.mcp.cmd_rx = Some(rx);
         tx.send(crate::mcp::McpCommand::ToggleMark(0))
             .await
             .unwrap();
@@ -2437,7 +2461,7 @@ mod tests {
     async fn test_handle_mcp_command_add_annotation() {
         let mut app = make_app(&["line0", "line1"]).await;
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        app.mcp_cmd_rx = Some(rx);
+        app.mcp.cmd_rx = Some(rx);
         tx.send(crate::mcp::McpCommand::AddAnnotation {
             text: "note".to_string(),
             line_indices: vec![0],
@@ -2456,7 +2480,7 @@ mod tests {
             .add_comment("test note".to_string(), vec![0]);
         assert_eq!(app.tabs[0].log_manager.get_comments().len(), 1);
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        app.mcp_cmd_rx = Some(rx);
+        app.mcp.cmd_rx = Some(rx);
         tx.send(crate::mcp::McpCommand::RemoveAnnotation(0))
             .await
             .unwrap();
@@ -2487,9 +2511,9 @@ mod tests {
     #[tokio::test]
     async fn test_startup_warnings_cleared_on_key_event() {
         let mut app = make_app(&["line"]).await;
-        app.startup_warnings = vec!["warning 1".to_string(), "warning 2".to_string()];
+        app.session.startup_warnings = vec!["warning 1".to_string(), "warning 2".to_string()];
         app.handle_key_event(KeyCode::Char('j')).await;
-        assert!(app.startup_warnings.is_empty());
+        assert!(app.session.startup_warnings.is_empty());
     }
 
     async fn app_with_areas(
@@ -2513,8 +2537,8 @@ mod tests {
         )
         .build()
         .await;
-        app.log_panel_area = log_area;
-        app.sidebar_area = sidebar_area;
+        app.mouse.log_panel_area = log_area;
+        app.mouse.sidebar_area = sidebar_area;
         app.tabs[0].scroll.visible_height = visible_height;
         app
     }
@@ -2997,15 +3021,15 @@ mod tests {
         app.handle_left_down(10, 7).await;
         // click is deferred: scroll_offset unchanged
         assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
-        assert!(app.last_click.is_some());
+        assert!(app.mouse.last_click.is_some());
         // flush before timeout: still deferred
         app.flush_pending_click().await;
         assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
         // simulate timeout by backdating the pending click
-        app.last_click = Some((Instant::now() - Duration::from_millis(400), 10, 7));
+        app.mouse.last_click = Some((Instant::now() - Duration::from_millis(400), 10, 7));
         app.flush_pending_click().await;
         assert_eq!(app.tabs[0].scroll.scroll_offset, 7);
-        assert!(app.last_click.is_none());
+        assert!(app.mouse.last_click.is_none());
     }
 
     #[tokio::test]
@@ -3022,10 +3046,10 @@ mod tests {
         app.tabs[0].display.show_line_numbers = false;
         // first click defers
         app.handle_left_down(3, 0).await;
-        assert!(app.last_click.is_some());
+        assert!(app.mouse.last_click.is_some());
         // second click at same position within window → double-click, no single-click
         app.handle_left_down(3, 0).await;
-        assert!(app.last_click.is_none());
+        assert!(app.mouse.last_click.is_none());
         // should be in Visual or VisualLine mode, not Normal
         assert!(!matches!(
             app.tabs[0].interaction.mode.render_state(),
@@ -3052,7 +3076,7 @@ mod tests {
         app.execute_command_str("filter foo".to_string()).await;
         // sidebar click should take effect immediately, not be deferred
         app.handle_left_down(65, 1).await;
-        assert!(app.last_click.is_none());
+        assert!(app.mouse.last_click.is_none());
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::FilterManagement { .. }
@@ -3080,7 +3104,7 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::NONE,
         })
         .await;
-        assert!(app.scrollbar_dragging);
+        assert!(app.mouse.scrollbar_dragging);
         // drag to halfway down the bar
         app.handle_mouse_event(MouseEvent {
             kind: MouseEventKind::Drag(MouseButton::Left),
@@ -3103,7 +3127,7 @@ mod tests {
         };
         let mut app = app_with_areas(50, 10, area, None).await;
         app.tabs[0].display.show_borders = false;
-        app.scrollbar_dragging = true;
+        app.mouse.scrollbar_dragging = true;
         app.handle_mouse_event(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
             column: 19,
@@ -3111,7 +3135,7 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::NONE,
         })
         .await;
-        assert!(!app.scrollbar_dragging);
+        assert!(!app.mouse.scrollbar_dragging);
     }
 
     #[tokio::test]
