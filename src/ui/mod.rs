@@ -19,12 +19,12 @@ mod mcp;
 mod session_manager;
 mod tabs;
 pub use field_layout::FieldLayout;
-mod loading;
 mod render;
 mod tab_state;
 pub mod widgets;
 
 pub use app::App;
+pub use tab_state::merged::extend_merged_index;
 pub use tab_state::{
     ArchiveExtractionState, CacheState, CachedParsedLine, CachedScanResult, ConnectFn,
     DisplayConfig, FileLoadState, FileWatchState, FilterChunk, FilterEvalContext, FilterHandle,

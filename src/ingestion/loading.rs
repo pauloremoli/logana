@@ -9,7 +9,7 @@ use crate::ingestion::{FileReader, VisibilityPredicate};
 use crate::mode::app_mode::ConfirmRestoreMode;
 use crate::mode::normal_mode::NormalMode;
 
-use super::{
+use crate::ui::{
     App, ConnectFn, FileLoadState, LoadContext, StreamRetryState, TabState, VisibleLines,
     dlt_connect_fn, docker_connect_fn, otlp_connect_fn, otlp_grpc_connect_fn,
     watch_state_from_connection, watch_state_from_file,
@@ -115,7 +115,7 @@ impl App {
     }
 
     /// Open a new tab streaming logs from a Docker container.
-    pub(super) async fn open_docker_logs(&mut self, container_id: String, container_name: String) {
+    pub(crate) async fn open_docker_logs(&mut self, container_id: String, container_name: String) {
         let conn =
             FileReader::spawn_process_stream("docker", &["logs", "-f", &container_id], true).await;
         self.open_stream_tab(
@@ -168,7 +168,7 @@ impl App {
         self.active_tab = self.tabs.len() - 1;
     }
 
-    pub(super) async fn open_dlt_stream(&mut self, host: String, port: u16, name: String) {
+    pub(crate) async fn open_dlt_stream(&mut self, host: String, port: u16, name: String) {
         let source_label = format!("dlt://{}:{}", host, port);
         let file_reader = FileReader::from_bytes(vec![]);
         let log_manager = LogManager::new(self.db.clone(), Some(source_label.clone())).await;
@@ -249,7 +249,7 @@ impl App {
     }
 
     /// Open a new tab that listens for OTLP HTTP/JSON log exports on `port`.
-    pub(super) async fn open_otlp_stream(&mut self, port: u16) {
+    pub(crate) async fn open_otlp_stream(&mut self, port: u16) {
         let source_label = format!("otlp://{port}");
         let file_reader = FileReader::from_bytes(vec![]);
         let log_manager = LogManager::new(self.db.clone(), Some(source_label.clone())).await;
@@ -297,7 +297,7 @@ impl App {
         self.tabs.push(tab);
     }
 
-    pub(super) async fn open_otlp_grpc_stream(&mut self, port: u16) {
+    pub(crate) async fn open_otlp_grpc_stream(&mut self, port: u16) {
         let source_label = format!("otlp-grpc://{port}");
         let file_reader = FileReader::from_bytes(vec![]);
         let log_manager = LogManager::new(self.db.clone(), Some(source_label.clone())).await;
@@ -533,7 +533,7 @@ impl App {
     pub async fn begin_stdin_load(&mut self) {
         let (snapshot_rx, temp_file) = FileReader::stream_stdin().await;
         let temp_path = temp_file.path().to_owned();
-        self.stdin_load_state = Some(super::StdinLoadState {
+        self.stdin_load_state = Some(crate::ui::StdinLoadState {
             snapshot_rx,
             temp_path,
             temp_file,
@@ -581,7 +581,7 @@ impl App {
             let _ = result_tx.send(result);
         });
 
-        self.pending_archive = Some(super::ArchiveExtractionState {
+        self.pending_archive = Some(crate::ui::ArchiveExtractionState {
             progress_rx,
             result_rx,
         });
@@ -660,7 +660,7 @@ impl App {
     }
 
     /// Poll for new stdin data each frame and apply it to the stdin tab.
-    pub(super) async fn advance_stdin_load(&mut self) {
+    pub(crate) async fn advance_stdin_load(&mut self) {
         let status = self
             .stdin_load_state
             .as_mut()
@@ -745,7 +745,7 @@ impl App {
         }
     }
 
-    pub(super) fn remove_empty_placeholder(&mut self) {
+    pub(crate) fn remove_empty_placeholder(&mut self) {
         if self.tabs.len() > 1
             && self.stdin_load_state.is_none()
             && let Some(idx) = self.tabs.iter().position(|t| {
@@ -761,7 +761,7 @@ impl App {
     }
 
     /// Poll for completion of background file loads across all tabs (called every frame).
-    pub(super) async fn advance_file_load(&mut self) {
+    pub(crate) async fn advance_file_load(&mut self) {
         let mut completed = Vec::new();
         for tab in &mut self.tabs {
             if let Some(ref mut ls) = tab.load_state
@@ -822,13 +822,12 @@ impl App {
                     self.tabs[0].invalidate_parse_cache();
                     if let Some(text_counts) = result.precomputed_text_counts {
                         let all_filter_defs = self.tabs[0].log_manager.get_filters().to_vec();
-                        self.tabs[0].filter.match_counts =
-                            crate::ui::tab_state::merge_filter_counts(
-                                &all_filter_defs,
-                                &text_counts,
-                                &[],
-                                &[],
-                            );
+                        self.tabs[0].filter.match_counts = crate::ui::merge_filter_counts(
+                            &all_filter_defs,
+                            &text_counts,
+                            &[],
+                            &[],
+                        );
                     } else {
                         self.tabs[0].filter.match_counts = Vec::new();
                     }
@@ -898,7 +897,7 @@ impl App {
     ///
     /// If the user's scroll position is at the last visible line (follow mode),
     /// it is advanced to stay at the new last line after content is appended.
-    pub(super) fn advance_file_watches(&mut self) {
+    pub(crate) fn advance_file_watches(&mut self) {
         for i in 0..self.tabs.len() {
             let status = self.tabs[i]
                 .stream
@@ -982,8 +981,8 @@ impl App {
     }
 
     /// For each merged tab, check if any source tab has grown and extend the merged index.
-    pub(super) fn advance_merged_tabs(&mut self) {
-        use crate::ui::tab_state::merged::extend_merged_index;
+    pub(crate) fn advance_merged_tabs(&mut self) {
+        use crate::ui::extend_merged_index;
 
         let n = self.tabs.len();
         for mi in 0..n {
@@ -1060,7 +1059,7 @@ impl App {
     }
 
     /// Poll DLT retry channels for reconnection results.
-    pub(super) fn advance_stream_retries(&mut self) {
+    pub(crate) fn advance_stream_retries(&mut self) {
         for tab in &mut self.tabs {
             let retry = match &mut tab.stream.retry {
                 Some(r) => r,
@@ -1105,7 +1104,7 @@ impl App {
     /// Called every frame from the event loop (non-blocking: `try_recv`).
     /// On completion, results are written into `tab.search.query` and the view
     /// is scrolled to the first match when `navigate` was set.
-    pub(super) fn advance_search(&mut self) {
+    pub(crate) fn advance_search(&mut self) {
         use tokio::sync::mpsc::error::TryRecvError;
 
         for tab in &mut self.tabs {
@@ -1158,7 +1157,7 @@ impl App {
     /// Called every frame from the event loop (non-blocking: `try_recv`).
     /// Chunks are applied incrementally: the first chunk replaces `visible_indices`,
     /// subsequent chunks extend it.  Scroll and counts are updated on every chunk.
-    pub(super) fn advance_filter_computation(&mut self) {
+    pub(crate) fn advance_filter_computation(&mut self) {
         use tokio::sync::mpsc::error::TryRecvError;
         for tab in &mut self.tabs {
             if tab.filter.handle.is_none() {
@@ -1223,7 +1222,7 @@ impl App {
                     // filter visibility so they are hidden when the parent is
                     // hidden (e.g. by a date or exclude filter).
                     if let Some(cmap) = tab.continuation_map.clone() {
-                        super::apply_continuation_correction(
+                        crate::ui::apply_continuation_correction(
                             &mut tab.filter.visible_indices,
                             &cmap,
                             tab.filter.manager.has_include(),
@@ -1241,7 +1240,7 @@ impl App {
             }
             if done {
                 if let Some(h) = &tab.filter.handle {
-                    tab.filter.cached_scan = Some(super::CachedScanResult {
+                    tab.filter.cached_scan = Some(crate::ui::CachedScanResult {
                         filter_fingerprint: h.scan_fingerprint.clone(),
                         line_count: h.scan_line_count,
                         raw_mode: h.scan_raw_mode,
@@ -1292,7 +1291,7 @@ impl App {
     }
 
     /// Begin a session restore: kick off the first file load (or docker tab).
-    pub(super) async fn restore_session(&mut self, files: Vec<String>) {
+    pub(crate) async fn restore_session(&mut self, files: Vec<String>) {
         if files.is_empty() {
             return;
         }
@@ -1307,14 +1306,18 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::connect_fn_for_source;
     use crate::config::Keybindings;
     use crate::db::Database;
     use crate::db::LogManager;
     use crate::ingestion::{FileLoadResult, FileReader};
     use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
-    use crate::ui::{FileWatchState, SearchHandle, StdinLoadState, VisibleLines};
+    use crate::ui::{
+        App, ConnectFn, FileLoadState, FileWatchState, FilterChunk, FilterHandle, LoadContext,
+        SearchHandle, StdinLoadState, StreamConnection, StreamRetryState, TabState, VisibleLines,
+        watch_state_from_connection, watch_state_from_file,
+    };
     use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -1604,7 +1607,7 @@ mod tests {
 
         // Replace the real watcher with a manual channel watching the original file.
         let (tx, rx) = tokio::sync::watch::channel(());
-        app.tabs[tab_idx].stream.watch = Some(super::watch_state_from_file(rx, path.clone()));
+        app.tabs[tab_idx].stream.watch = Some(crate::ui::watch_state_from_file(rx, path.clone()));
 
         // Append new lines to the original file, then notify.
         use std::io::Write as _;
@@ -2110,7 +2113,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -2147,7 +2150,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -2179,7 +2182,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -2227,7 +2230,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -2264,7 +2267,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -2293,7 +2296,7 @@ mod tests {
             "gone",
         )));
 
-        app.tabs[0].load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
             path: "missing.log".to_string(),
             progress_rx,
             result_rx,
@@ -2489,15 +2492,12 @@ mod tests {
     // ── advance_filter_computation streaming ─────────────────────────────────
 
     fn make_filter_handle_with_chunks(
-        chunks: Vec<super::super::FilterChunk>,
-    ) -> (
-        super::super::FilterHandle,
-        tokio::sync::mpsc::Sender<super::super::FilterChunk>,
-    ) {
+        chunks: Vec<FilterChunk>,
+    ) -> (FilterHandle, tokio::sync::mpsc::Sender<FilterChunk>) {
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
-        let (tx, rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(16);
-        let handle = super::super::FilterHandle {
+        let (tx, rx) = tokio::sync::mpsc::channel::<FilterChunk>(16);
+        let handle = FilterHandle {
             result_rx: rx,
             cancel: Arc::new(AtomicBool::new(false)),
             displayed_progress: 0.0,
@@ -2516,7 +2516,7 @@ mod tests {
     #[tokio::test]
     async fn test_advance_filter_computation_first_chunk_replaces_visible() {
         let mut app = make_app(&["line0", "line1", "line2"]).await;
-        let (handle, _tx) = make_filter_handle_with_chunks(vec![super::super::FilterChunk {
+        let (handle, _tx) = make_filter_handle_with_chunks(vec![FilterChunk {
             visible: vec![0, 2],
             filter_match_counts: None,
             is_last: false,
@@ -2538,13 +2538,13 @@ mod tests {
     async fn test_advance_filter_computation_incremental_accumulates() {
         let mut app = make_app(&["a", "b", "c", "d"]).await;
         let (handle, _tx) = make_filter_handle_with_chunks(vec![
-            super::super::FilterChunk {
+            FilterChunk {
                 visible: vec![0, 1],
                 filter_match_counts: None,
                 is_last: false,
                 progress: 0.5,
             },
-            super::super::FilterChunk {
+            FilterChunk {
                 visible: vec![2, 3],
                 filter_match_counts: Some(vec![4]),
                 is_last: true,
@@ -2568,7 +2568,7 @@ mod tests {
     async fn test_advance_filter_computation_scroll_clamped_on_intermediate() {
         let mut app = make_app(&["a", "b", "c"]).await;
         app.tabs[0].scroll.scroll_offset = 100;
-        let (handle, _tx) = make_filter_handle_with_chunks(vec![super::super::FilterChunk {
+        let (handle, _tx) = make_filter_handle_with_chunks(vec![FilterChunk {
             visible: vec![0],
             filter_match_counts: None,
             is_last: false,
@@ -2587,13 +2587,13 @@ mod tests {
     async fn test_advance_filter_computation_scroll_anchor_on_final() {
         let mut app = make_app(&["a", "b", "c", "d"]).await;
         let (mut handle, _tx) = make_filter_handle_with_chunks(vec![
-            super::super::FilterChunk {
+            FilterChunk {
                 visible: vec![0, 1],
                 filter_match_counts: None,
                 is_last: false,
                 progress: 0.5,
             },
-            super::super::FilterChunk {
+            FilterChunk {
                 visible: vec![2, 3],
                 filter_match_counts: Some(vec![]),
                 is_last: true,
@@ -2612,9 +2612,9 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
         let mut app = make_app(&["a", "b"]).await;
-        let (tx, rx) = tokio::sync::mpsc::channel::<super::super::FilterChunk>(4);
+        let (tx, rx) = tokio::sync::mpsc::channel::<FilterChunk>(4);
         drop(tx);
-        let handle = super::super::FilterHandle {
+        let handle = FilterHandle {
             result_rx: rx,
             cancel: Arc::new(AtomicBool::new(false)),
             displayed_progress: 0.0,
@@ -2676,7 +2676,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
             path: abs_path,
             progress_rx,
             result_rx,
@@ -2699,7 +2699,7 @@ mod tests {
 
     // ── Stream retry ──────────────────────────────────────────────────────────
 
-    fn make_dummy_connect_fn() -> super::super::ConnectFn {
+    fn make_dummy_connect_fn() -> ConnectFn {
         std::sync::Arc::new(|| Box::pin(async { Err("test".to_string()) }))
     }
 
@@ -2708,7 +2708,7 @@ mod tests {
         let mut app = make_app(&["line"]).await;
         let temp_file = tempfile::NamedTempFile::new().unwrap();
         let (tx, rx) = tokio::sync::watch::channel(());
-        let conn: super::super::StreamConnection = (rx, temp_file);
+        let conn: StreamConnection = (rx, temp_file);
 
         let (result_tx, result_rx) = tokio::sync::mpsc::channel(1);
         result_tx.send(Ok(conn)).await.unwrap();
@@ -2984,7 +2984,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(super::FileLoadState {
+        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
             path: "journalctl.json".to_string(),
             progress_rx,
             result_rx,
@@ -3408,7 +3408,7 @@ mod tests {
         let (rx, tmp) = spawn_otlp_grpc_receiver(port).await.unwrap();
 
         let mut app = make_app(&[]).await;
-        let state = super::watch_state_from_connection((rx, tmp));
+        let state = crate::ui::watch_state_from_connection((rx, tmp));
         app.tabs[0].stream.watch = Some(state);
 
         let endpoint = format!("http://127.0.0.1:{port}");

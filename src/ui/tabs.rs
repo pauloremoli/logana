@@ -4,7 +4,7 @@ use super::VisibleLines;
 use crate::db::LogManager;
 
 impl App {
-    pub(super) fn apply_tab_defaults(&self, tab: &mut TabState) {
+    pub(crate) fn apply_tab_defaults(&self, tab: &mut TabState) {
         tab.interaction.keybindings = self.keybindings.clone();
         tab.display.show_mode_bar = self.display.show_mode_bar;
         tab.display.show_borders = self.display.show_borders_default;
