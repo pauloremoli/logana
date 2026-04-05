@@ -80,16 +80,16 @@ impl Mode for CommentMode {
         if comment_kb.save.matches(key, modifiers) {
             let text = self.lines.join("\n");
             if let Some(idx) = self.editing_index {
-                let mut comments = tab.log_manager.get_comments().to_vec();
+                let mut comments = tab.comment_manager.get().to_vec();
                 if idx < comments.len() {
                     comments[idx] = Comment {
                         text,
                         line_indices: self.line_indices,
                     };
-                    tab.log_manager.set_comments(comments);
+                    tab.comment_manager.set(comments);
                 }
             } else {
-                tab.log_manager.add_comment(text, self.line_indices);
+                tab.comment_manager.add(text, self.line_indices);
             }
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
@@ -97,7 +97,7 @@ impl Mode for CommentMode {
         // Delete comment (only when editing, default Ctrl+D)
         if comment_kb.delete.matches(key, modifiers) {
             if let Some(idx) = self.editing_index {
-                tab.log_manager.remove_comment(idx);
+                tab.comment_manager.remove(idx);
             }
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
@@ -318,7 +318,7 @@ mod tests {
             ModeRenderState::Comment { .. }
         ));
         // comment stored
-        let comments = tab.log_manager.get_comments();
+        let comments = tab.comment_manager.get();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].text, "line one\nline two");
         assert_eq!(comments[0].line_indices, vec![0, 1, 2]);
@@ -335,7 +335,7 @@ mod tests {
             mode2.render_state(),
             ModeRenderState::Comment { .. }
         ));
-        assert!(tab.log_manager.get_comments().is_empty());
+        assert!(tab.comment_manager.get().is_empty());
     }
 
     #[tokio::test]
@@ -463,8 +463,8 @@ mod tests {
     #[tokio::test]
     async fn test_save_in_edit_mode_replaces_comment() {
         let mut tab = make_tab().await;
-        tab.log_manager.add_comment("original".into(), vec![0, 1]);
-        tab.log_manager.add_comment("other".into(), vec![2]);
+        tab.comment_manager.add("original".into(), vec![0, 1]);
+        tab.comment_manager.add("other".into(), vec![2]);
 
         let mut mode = CommentMode::edit(0, "original".to_string(), vec![0, 1]);
         mode.lines = vec!["updated text".to_string()];
@@ -476,7 +476,7 @@ mod tests {
             ModeRenderState::Comment { .. }
         ));
 
-        let comments = tab.log_manager.get_comments();
+        let comments = tab.comment_manager.get();
         assert_eq!(comments.len(), 2);
         assert_eq!(comments[0].text, "updated text");
         assert_eq!(comments[1].text, "other");
@@ -485,8 +485,8 @@ mod tests {
     #[tokio::test]
     async fn test_ctrl_d_deletes_comment_in_edit_mode() {
         let mut tab = make_tab().await;
-        tab.log_manager.add_comment("to delete".into(), vec![0]);
-        tab.log_manager.add_comment("keep".into(), vec![1]);
+        tab.comment_manager.add("to delete".into(), vec![0]);
+        tab.comment_manager.add("keep".into(), vec![1]);
 
         let mode = CommentMode::edit(0, "to delete".to_string(), vec![0]);
         let (mode2, result) =
@@ -497,7 +497,7 @@ mod tests {
             ModeRenderState::Comment { .. }
         ));
 
-        let comments = tab.log_manager.get_comments();
+        let comments = tab.comment_manager.get();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].text, "keep");
     }
@@ -515,7 +515,7 @@ mod tests {
             ModeRenderState::Comment { .. }
         ));
         // No comments were deleted (none existed)
-        assert!(tab.log_manager.get_comments().is_empty());
+        assert!(tab.comment_manager.get().is_empty());
     }
 
     #[test]

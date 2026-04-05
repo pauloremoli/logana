@@ -16,7 +16,7 @@ use rmcp::{
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::db::LogManager;
+use crate::db::{CommentManager, MarkManager};
 use crate::ingestion::FileReader;
 use crate::types::Comment;
 
@@ -40,9 +40,9 @@ pub struct McpServerHandle {
     pub port: u16,
 }
 
-pub fn build_marked_lines(reader: &FileReader, log_manager: &LogManager) -> Vec<(usize, String)> {
-    log_manager
-        .get_marked_indices()
+pub fn build_marked_lines(reader: &FileReader, marks: &MarkManager) -> Vec<(usize, String)> {
+    marks
+        .get_indices()
         .into_iter()
         .filter(|&i| i < reader.line_count())
         .map(|i| {
@@ -52,8 +52,8 @@ pub fn build_marked_lines(reader: &FileReader, log_manager: &LogManager) -> Vec<
         .collect()
 }
 
-pub fn build_annotations(log_manager: &LogManager) -> Vec<Comment> {
-    log_manager.get_comments().to_vec()
+pub fn build_annotations(comments: &CommentManager) -> Vec<Comment> {
+    comments.get().to_vec()
 }
 
 pub fn format_marks_resource(snapshot: &McpSnapshot) -> String {
@@ -250,16 +250,11 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::{RwLock, mpsc};
 
-    use crate::db::Database;
-    use crate::db::LogManager;
+    use crate::db::{CommentManager, MarkManager};
     use crate::types::Comment;
 
-    async fn make_reader_and_manager(lines: &[&str]) -> (FileReader, LogManager) {
-        let bytes = lines.join("\n").into_bytes();
-        let reader = FileReader::from_bytes(bytes);
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let lm = LogManager::new(db, None).await;
-        (reader, lm)
+    fn make_reader(lines: &[&str]) -> FileReader {
+        FileReader::from_bytes(lines.join("\n").into_bytes())
     }
 
     fn make_server() -> (LoganaServer, mpsc::Receiver<McpCommand>) {
@@ -271,38 +266,38 @@ mod tests {
 
     // ── build_marked_lines ───────────────────────────────────────────
 
-    #[tokio::test]
-    async fn test_build_marked_lines_empty() {
-        let (reader, lm) = make_reader_and_manager(&["a", "b", "c"]).await;
-        let result = build_marked_lines(&reader, &lm);
+    #[test]
+    fn test_build_marked_lines_empty() {
+        let reader = make_reader(&["a", "b", "c"]);
+        let marks = MarkManager::default();
+        let result = build_marked_lines(&reader, &marks);
         assert!(result.is_empty());
     }
 
-    #[tokio::test]
-    async fn test_build_marked_lines_with_marks() {
-        let (reader, mut lm) = make_reader_and_manager(&["a", "b", "c"]).await;
-        lm.toggle_mark(0);
-        lm.toggle_mark(2);
-        let result = build_marked_lines(&reader, &lm);
+    #[test]
+    fn test_build_marked_lines_with_marks() {
+        let reader = make_reader(&["a", "b", "c"]);
+        let mut marks = MarkManager::default();
+        marks.toggle(0);
+        marks.toggle(2);
+        let result = build_marked_lines(&reader, &marks);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], (1, "a".to_string()));
         assert_eq!(result[1], (3, "c".to_string()));
     }
 
-    // ── build_annotations ────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_build_annotations_empty() {
-        let (_, lm) = make_reader_and_manager(&["a"]).await;
-        let result = build_annotations(&lm);
+    #[test]
+    fn test_build_annotations_empty() {
+        let comments = CommentManager::default();
+        let result = build_annotations(&comments);
         assert!(result.is_empty());
     }
 
-    #[tokio::test]
-    async fn test_build_annotations_with_comments() {
-        let (_, mut lm) = make_reader_and_manager(&["a", "b"]).await;
-        lm.add_comment("note".to_string(), vec![0, 1]);
-        let result = build_annotations(&lm);
+    #[test]
+    fn test_build_annotations_with_comments() {
+        let mut comments = CommentManager::default();
+        comments.add("note".to_string(), vec![0, 1]);
+        let result = build_annotations(&comments);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].text, "note");
         assert_eq!(result[0].line_indices, vec![0, 1]);

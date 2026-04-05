@@ -263,7 +263,7 @@ impl Mode for NormalMode {
 
         if kb.normal.mark_line.matches(key, modifiers) {
             if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
-                tab.log_manager.toggle_mark(line_idx);
+                tab.mark_manager.toggle(line_idx);
             }
             tab.interaction.g_key_pressed = false;
             self.count = None;
@@ -311,7 +311,7 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.yank_marked.matches(key, modifiers) {
-            let marked = tab.log_manager.get_marked_indices();
+            let marked = tab.mark_manager.get_indices();
             tab.interaction.g_key_pressed = false;
             self.count = None;
             if marked.is_empty() {
@@ -423,7 +423,8 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.clear_all.matches(key, modifiers) {
-            tab.log_manager.clear_all_marks_and_comments();
+            tab.mark_manager.clear();
+            tab.comment_manager.clear();
             tab.interaction.command_error = Some("Cleared all marks and comments".to_string());
             tab.begin_filter_refresh();
             tab.interaction.g_key_pressed = false;
@@ -433,7 +434,7 @@ impl Mode for NormalMode {
 
         if kb.normal.edit_comment.matches(key, modifiers) {
             if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
-                let comments = tab.log_manager.get_comments();
+                let comments = tab.comment_manager.get();
                 if let Some(idx) = comments
                     .iter()
                     .position(|c| c.line_indices.contains(&line_idx))
@@ -459,12 +460,12 @@ impl Mode for NormalMode {
 
         if kb.normal.delete_comment.matches(key, modifiers) {
             if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
-                let comments = tab.log_manager.get_comments();
+                let comments = tab.comment_manager.get();
                 if let Some(idx) = comments
                     .iter()
                     .position(|c| c.line_indices.contains(&line_idx))
                 {
-                    tab.log_manager.remove_comment(idx);
+                    tab.comment_manager.remove(idx);
                     tab.begin_filter_refresh();
                     tab.interaction.g_key_pressed = false;
                     self.count = None;
@@ -1085,7 +1086,7 @@ mod tests {
         let mut tab = make_tab(&["line0", "line1"]).await;
         tab.scroll.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('m'), KeyModifiers::NONE).await;
-        assert!(tab.log_manager.get_marked_indices().contains(&0));
+        assert!(tab.mark_manager.get_indices().contains(&0));
     }
 
     #[tokio::test]
@@ -1094,7 +1095,7 @@ mod tests {
         tab.scroll.scroll_offset = 0;
         press(&mut tab, KeyCode::Char('m'), KeyModifiers::NONE).await;
         press(&mut tab, KeyCode::Char('m'), KeyModifiers::NONE).await;
-        assert!(!tab.log_manager.get_marked_indices().contains(&0));
+        assert!(!tab.mark_manager.get_indices().contains(&0));
     }
 
     #[tokio::test]
@@ -1149,8 +1150,8 @@ mod tests {
     async fn test_marks_only_shows_only_marked_lines() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
         // Mark lines 0 and 2
-        tab.log_manager.toggle_mark(0);
-        tab.log_manager.toggle_mark(2);
+        tab.mark_manager.toggle(0);
+        tab.mark_manager.toggle(2);
 
         press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
 
@@ -1163,7 +1164,7 @@ mod tests {
     #[tokio::test]
     async fn test_marks_only_off_restores_all_lines() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
-        tab.log_manager.toggle_mark(1);
+        tab.mark_manager.toggle(1);
         press(&mut tab, KeyCode::Char('M'), KeyModifiers::NONE).await;
         assert_eq!(tab.filter.visible_indices.len(), 1);
 
@@ -1205,8 +1206,8 @@ mod tests {
     #[tokio::test]
     async fn test_capital_y_yanks_marked_lines() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
-        tab.log_manager.toggle_mark(0);
-        tab.log_manager.toggle_mark(2);
+        tab.mark_manager.toggle(0);
+        tab.mark_manager.toggle(2);
         let (_, result) = press(&mut tab, KeyCode::Char('Y'), KeyModifiers::NONE).await;
         match result {
             KeyResult::CopyToClipboard(text) => {
@@ -1394,15 +1395,15 @@ mod tests {
     #[tokio::test]
     async fn test_shift_c_clears_marks_and_comments() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
-        tab.log_manager.toggle_mark(0);
-        tab.log_manager.toggle_mark(2);
-        tab.log_manager.add_comment("note".into(), vec![1]);
-        assert!(!tab.log_manager.get_marked_indices().is_empty());
-        assert!(!tab.log_manager.get_comments().is_empty());
+        tab.mark_manager.toggle(0);
+        tab.mark_manager.toggle(2);
+        tab.comment_manager.add("note".into(), vec![1]);
+        assert!(!tab.mark_manager.get_indices().is_empty());
+        assert!(!tab.comment_manager.get().is_empty());
 
         press(&mut tab, KeyCode::Char('C'), KeyModifiers::NONE).await;
-        assert!(tab.log_manager.get_marked_indices().is_empty());
-        assert!(tab.log_manager.get_comments().is_empty());
+        assert!(tab.mark_manager.get_indices().is_empty());
+        assert!(tab.comment_manager.get().is_empty());
         assert_eq!(
             tab.interaction.command_error.as_deref(),
             Some("Cleared all marks and comments")
@@ -1414,7 +1415,7 @@ mod tests {
     #[tokio::test]
     async fn test_r_on_commented_line_opens_edit_mode() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
-        tab.log_manager.add_comment("my comment".into(), vec![0]);
+        tab.comment_manager.add("my comment".into(), vec![0]);
         tab.scroll.scroll_offset = 0;
 
         let (mode, result) = press(&mut tab, KeyCode::Char('r'), KeyModifiers::NONE).await;
@@ -1446,14 +1447,14 @@ mod tests {
     #[tokio::test]
     async fn test_d_on_commented_line_deletes_comment() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
-        tab.log_manager.add_comment("to delete".into(), vec![0]);
-        tab.log_manager.add_comment("keep".into(), vec![2]);
+        tab.comment_manager.add("to delete".into(), vec![0]);
+        tab.comment_manager.add("keep".into(), vec![2]);
         tab.scroll.scroll_offset = 0;
 
         let (mode, result) = press(&mut tab, KeyCode::Char('d'), KeyModifiers::NONE).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(matches!(mode.render_state(), ModeRenderState::Normal));
-        let comments = tab.log_manager.get_comments();
+        let comments = tab.comment_manager.get();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].text, "keep");
     }
@@ -1469,7 +1470,7 @@ mod tests {
             tab.interaction.command_error.as_deref(),
             Some("No comment on this line")
         );
-        assert!(tab.log_manager.get_comments().is_empty());
+        assert!(tab.comment_manager.get().is_empty());
     }
 
     #[tokio::test]

@@ -5,8 +5,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, watch};
 
+use crate::db::CommentManager;
 use crate::db::FileContext;
 use crate::db::LogManager;
+use crate::db::MarkManager;
 use crate::filters::{FieldVote, any_field_exclude_matches, field_include_vote};
 use crate::filters::{FilterDecision, FilterManager};
 use crate::ingestion::FileReader;
@@ -526,6 +528,8 @@ pub fn apply_continuation_correction(
 pub struct TabState {
     pub file_reader: FileReader,
     pub log_manager: LogManager,
+    pub mark_manager: MarkManager,
+    pub comment_manager: CommentManager,
     pub title: String,
     pub scroll: ScrollState,
     pub filter: FilterState,
@@ -588,6 +592,8 @@ impl TabState {
         let mut tab = TabState {
             file_reader,
             log_manager,
+            mark_manager: MarkManager::default(),
+            comment_manager: CommentManager::default(),
             title,
             scroll: ScrollState::default(),
             filter: FilterState::default(),
@@ -782,7 +788,7 @@ impl TabState {
             } else {
                 self.filter.saved_view = None;
             }
-            let mut indices = self.log_manager.get_marked_indices();
+            let mut indices = self.mark_manager.get_indices();
             indices.retain(|&i| i < self.file_reader.line_count());
             self.filter.visible_indices = VisibleLines::Filtered(indices);
             self.rebuild_filter_manager_cache();
@@ -1287,7 +1293,7 @@ impl TabState {
             } else {
                 self.filter.saved_view = None;
             }
-            let mut indices = self.log_manager.get_marked_indices();
+            let mut indices = self.mark_manager.get_indices();
             indices.retain(|&i| i < self.file_reader.line_count());
             self.filter.visible_indices = VisibleLines::Filtered(indices);
             self.rebuild_filter_manager_cache();
@@ -1712,7 +1718,7 @@ impl TabState {
         }
 
         if self.filter.show_marks_only {
-            let mut indices = self.log_manager.get_marked_indices();
+            let mut indices = self.mark_manager.get_indices();
             indices.retain(|&i| i < new_count);
             self.filter.visible_indices = VisibleLines::Filtered(indices);
             return;
@@ -1996,6 +2002,8 @@ impl TabState {
 
     pub fn reset_tab_state(&mut self) {
         self.log_manager.reset_in_memory();
+        self.mark_manager.clear();
+        self.comment_manager.clear();
         self.scroll.scroll_offset = 0;
         self.scroll.horizontal_scroll = 0;
         self.display.show_sidebar = true;
@@ -2089,8 +2097,8 @@ impl TabState {
 
     pub fn to_file_context(&self) -> Option<FileContext> {
         let source = self.log_manager.source_file()?;
-        let marked_lines = self.log_manager.get_marked_indices();
-        let comments = self.log_manager.get_comments().to_vec();
+        let marked_lines = self.mark_manager.get_indices();
+        let comments = self.comment_manager.get().to_vec();
         let file_hash = LogManager::compute_file_hash(source);
         Some(FileContext {
             source_file: source.to_string(),
@@ -2148,10 +2156,10 @@ impl TabState {
         self.display.field_layout.columns = ctx.field_layout_columns.clone();
         self.filter.enabled = ctx.filtering_enabled;
         if !ctx.marked_lines.is_empty() {
-            self.log_manager.set_marks(ctx.marked_lines.clone());
+            self.mark_manager.set(ctx.marked_lines.clone());
         }
         if !ctx.comments.is_empty() {
-            self.log_manager.set_comments(ctx.comments.clone());
+            self.comment_manager.set(ctx.comments.clone());
         }
     }
 
@@ -2513,8 +2521,8 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_visible_marks_only() {
         let mut tab = make_tab(&["line1", "line2", "line3", "line4", "line5"]).await;
-        tab.log_manager.toggle_mark(0);
-        tab.log_manager.toggle_mark(2);
+        tab.mark_manager.toggle(0);
+        tab.mark_manager.toggle(2);
         tab.filter.show_marks_only = true;
         tab.refresh_visible();
         assert_eq!(
@@ -2526,8 +2534,8 @@ mod tests {
     #[tokio::test]
     async fn test_marks_only_toggle_keeps_selected_marked_line() {
         let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
-        tab.log_manager.toggle_mark(1);
-        tab.log_manager.toggle_mark(3);
+        tab.mark_manager.toggle(1);
+        tab.mark_manager.toggle(3);
         tab.scroll.scroll_offset = 3;
         tab.filter.show_marks_only = true;
         tab.refresh_visible();
@@ -2541,8 +2549,8 @@ mod tests {
     #[tokio::test]
     async fn test_marks_only_toggle_off_keeps_selected_line() {
         let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
-        tab.log_manager.toggle_mark(1);
-        tab.log_manager.toggle_mark(3);
+        tab.mark_manager.toggle(1);
+        tab.mark_manager.toggle(3);
         tab.filter.show_marks_only = true;
         tab.refresh_visible();
         tab.scroll.scroll_offset = 1;
@@ -2555,7 +2563,7 @@ mod tests {
     #[tokio::test]
     async fn test_marks_only_toggle_unselected_line_clamps_offset() {
         let mut tab = make_tab(&["line0", "line1", "line2", "line3", "line4"]).await;
-        tab.log_manager.toggle_mark(4);
+        tab.mark_manager.toggle(4);
         tab.scroll.scroll_offset = 2;
         tab.filter.show_marks_only = true;
         tab.refresh_visible();
@@ -2762,9 +2770,9 @@ mod tests {
         assert_eq!(tab.scroll.scroll_offset, 3);
         assert_eq!(tab.display.level_colors_disabled, all_disabled);
         assert_eq!(tab.scroll.horizontal_scroll, 5);
-        assert!(tab.log_manager.is_marked(0));
-        assert!(tab.log_manager.is_marked(2));
-        assert!(tab.log_manager.has_comment(0));
+        assert!(tab.mark_manager.is_marked(0));
+        assert!(tab.mark_manager.is_marked(2));
+        assert!(tab.comment_manager.has(0));
     }
 
     #[tokio::test]
@@ -2790,8 +2798,8 @@ mod tests {
         assert!(tab.display.level_colors_disabled.is_empty());
         assert_eq!(tab.scroll.scroll_offset, 0);
         assert_eq!(tab.scroll.horizontal_scroll, 0);
-        assert!(!tab.log_manager.is_marked(0));
-        assert!(!tab.log_manager.has_comment(0));
+        assert!(!tab.mark_manager.is_marked(0));
+        assert!(!tab.comment_manager.has(0));
     }
 
     #[tokio::test]
@@ -3612,8 +3620,8 @@ mod tests {
             .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
             .await;
         // Mark both lines, including the one outside the date range.
-        tab.log_manager.toggle_mark(0);
-        tab.log_manager.toggle_mark(1);
+        tab.mark_manager.toggle(0);
+        tab.mark_manager.toggle(1);
         tab.filter.show_marks_only = true;
         tab.refresh_visible();
         // Both marked lines must remain visible regardless of the date filter.
@@ -3724,8 +3732,8 @@ mod tests {
     #[tokio::test]
     async fn test_begin_filter_refresh_fast_path_marks_only() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
-        tab.log_manager.toggle_mark(0);
-        tab.log_manager.toggle_mark(2);
+        tab.mark_manager.toggle(0);
+        tab.mark_manager.toggle(2);
         tab.filter.show_marks_only = true;
         tab.begin_filter_refresh();
         // Marks-only: O(marks) sync, no background handle.

@@ -3,6 +3,7 @@ use logana::auto_complete::shell_split;
 use logana::commands::{CommandLine, Commands};
 use logana::db::Database;
 use logana::db::LogManager;
+use logana::db::MarkManager;
 use logana::filters::FilterManager;
 use logana::filters::{FilterOptions, FilterType};
 use logana::headless::run_headless_to_writer;
@@ -191,40 +192,39 @@ fn test_filter_manager_no_filters_shows_all() {
     assert_eq!(visible, vec![0, 1, 2]);
 }
 
-#[tokio::test]
-async fn test_marks_persistence() {
-    let (_db, mut manager) = setup().await;
+#[test]
+fn test_marks_persistence() {
+    let mut marks = MarkManager::default();
 
-    manager.toggle_mark(0);
-    manager.toggle_mark(2);
-    manager.toggle_mark(5);
+    marks.toggle(0);
+    marks.toggle(2);
+    marks.toggle(5);
 
-    assert!(manager.is_marked(0));
-    assert!(manager.is_marked(2));
-    assert!(manager.is_marked(5));
-    assert!(!manager.is_marked(1));
-    assert!(!manager.is_marked(3));
+    assert!(marks.is_marked(0));
+    assert!(marks.is_marked(2));
+    assert!(marks.is_marked(5));
+    assert!(!marks.is_marked(1));
+    assert!(!marks.is_marked(3));
 
-    let indices = manager.get_marked_indices();
+    let indices = marks.get_indices();
     assert_eq!(indices, vec![0, 2, 5]);
 
     // Toggle off
-    manager.toggle_mark(2);
-    assert!(!manager.is_marked(2));
-    assert_eq!(manager.get_marked_indices(), vec![0, 5]);
+    marks.toggle(2);
+    assert!(!marks.is_marked(2));
+    assert_eq!(marks.get_indices(), vec![0, 5]);
 }
 
-#[tokio::test]
-async fn test_get_marked_lines() {
-    let (_db, mut manager) = setup().await;
-
+#[test]
+fn test_get_marked_lines() {
     let data = b"alpha\nbeta\ngamma\n";
     let reader = FileReader::from_bytes(data.to_vec());
 
-    manager.toggle_mark(0);
-    manager.toggle_mark(2);
+    let mut marks = MarkManager::default();
+    marks.toggle(0);
+    marks.toggle(2);
 
-    let lines = manager.get_marked_lines(&reader);
+    let lines = marks.get_lines(&reader);
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[0], b"alpha");
     assert_eq!(lines[1], b"gamma");

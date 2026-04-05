@@ -279,8 +279,8 @@ mod tests {
     #[tokio::test]
     async fn test_export_marked_writes_file() {
         let mut app = make_app(&["line0", "line1", "line2"]).await;
-        app.tabs[0].log_manager.toggle_mark(0);
-        app.tabs[0].log_manager.toggle_mark(2);
+        app.tabs[0].mark_manager.toggle(0);
+        app.tabs[0].mark_manager.toggle(2);
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
@@ -305,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn test_export_marked_bad_path_returns_error() {
         let mut app = make_app(&["line"]).await;
-        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[0].mark_manager.toggle(0);
         let result = app
             .run_command("export-marked /nonexistent_dir/out.log")
             .await;
@@ -317,7 +317,7 @@ mod tests {
     #[tokio::test]
     async fn test_export_marked_tilde_path_is_expanded() {
         let mut app = make_app(&["line"]).await;
-        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[0].mark_manager.toggle(0);
         // ~/nonexistent_dir/out.log should expand and fail with a write error,
         // not a parse/path error — confirming tilde was expanded.
         let result = app
@@ -753,11 +753,11 @@ mod tests {
     #[tokio::test]
     async fn test_export_writes_file() {
         let mut app = make_app(&["line0", "line1", "line2"]).await;
-        app.tabs[0].log_manager.toggle_mark(0);
-        app.tabs[0].log_manager.toggle_mark(2);
+        app.tabs[0].mark_manager.toggle(0);
+        app.tabs[0].mark_manager.toggle(2);
         app.tabs[0]
-            .log_manager
-            .add_comment("My analysis".to_string(), vec![1]);
+            .comment_manager
+            .add("My analysis".to_string(), vec![1]);
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
@@ -775,8 +775,8 @@ mod tests {
     async fn test_export_jira_template() {
         let mut app = make_app(&["line0", "line1"]).await;
         app.tabs[0]
-            .log_manager
-            .add_comment("Jira note".to_string(), vec![0]);
+            .comment_manager
+            .add("Jira note".to_string(), vec![0]);
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
@@ -1000,7 +1000,7 @@ mod tests {
         let mut app = make_app(&["error line", "debug line", "info line"]).await;
         app.run_command("filter error").await.unwrap();
         await_filter_computations(&mut app).await;
-        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[0].mark_manager.toggle(0);
         app.tabs[0].display.show_line_numbers = false;
         app.show_mode_bar = false;
 
@@ -1008,7 +1008,7 @@ mod tests {
         await_filter_computations(&mut app).await;
 
         assert!(app.tabs[0].log_manager.get_filters().is_empty());
-        assert!(app.tabs[0].log_manager.get_marked_indices().is_empty());
+        assert!(app.tabs[0].mark_manager.get_indices().is_empty());
         assert!(app.tabs[0].display.show_line_numbers);
         assert!(app.show_mode_bar);
         assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
@@ -1026,15 +1026,15 @@ mod tests {
         let tab2 = crate::ui::TabState::new(reader2, lm2, "tab2".into());
         app.tabs.push(tab2);
 
-        app.tabs[0].log_manager.toggle_mark(0);
-        app.tabs[1].log_manager.toggle_mark(1);
+        app.tabs[0].mark_manager.toggle(0);
+        app.tabs[1].mark_manager.toggle(1);
         app.tabs[0].stream.tail_mode = true;
         app.tabs[1].display.raw_mode = true;
 
         app.run_command("reset").await.unwrap();
 
         for tab in &app.tabs {
-            assert!(tab.log_manager.get_marked_indices().is_empty());
+            assert!(tab.mark_manager.get_indices().is_empty());
             assert!(!tab.stream.tail_mode);
             assert!(!tab.display.raw_mode);
         }
@@ -1082,7 +1082,7 @@ mod tests {
     async fn test_export_marked_same_file_as_input_is_rejected() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let mut app = make_app_with_file(&tmp).await;
-        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[0].mark_manager.toggle(0);
         let path = tmp.path().to_str().unwrap().to_string();
         let result = app.run_command(&format!("export-marked {}", path)).await;
         assert!(result.is_err());
@@ -1097,7 +1097,7 @@ mod tests {
     async fn test_export_same_file_as_input_is_rejected() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let mut app = make_app_with_file(&tmp).await;
-        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[0].mark_manager.toggle(0);
         let path = tmp.path().to_str().unwrap().to_string();
         let result = app.run_command(&format!("export {}", path)).await;
         assert!(result.is_err());

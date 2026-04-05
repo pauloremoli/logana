@@ -1060,8 +1060,8 @@ mod tests {
     #[tokio::test]
     async fn test_ui_with_marks() {
         let mut app = make_app(&["line 0", "line 1", "line 2", "line 3"]).await;
-        app.tabs[0].log_manager.toggle_mark(0);
-        app.tabs[0].log_manager.toggle_mark(2);
+        app.tabs[0].mark_manager.toggle(0);
+        app.tabs[0].mark_manager.toggle(2);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1122,8 +1122,8 @@ mod tests {
     async fn test_ui_with_comments() {
         let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
         app.tabs[0]
-            .log_manager
-            .add_comment("test comment".to_string(), vec![0, 1]);
+            .comment_manager
+            .add("test comment".to_string(), vec![0, 1]);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
@@ -1234,7 +1234,7 @@ mod tests {
     #[tokio::test]
     async fn test_ui_marks_only() {
         let mut app = make_app(&["line 0", "line 1", "line 2"]).await;
-        app.tabs[0].log_manager.toggle_mark(1);
+        app.tabs[0].mark_manager.toggle(1);
         app.tabs[0].filter.show_marks_only = true;
         app.tabs[0].refresh_visible();
         let mut terminal = make_terminal();

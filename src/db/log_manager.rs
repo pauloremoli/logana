@@ -2,12 +2,9 @@ use crate::db::{Database, FilterStore};
 use crate::filters::{ColorConfig, FilterDef, FilterInsertOptions, FilterOptions, FilterType};
 use crate::filters::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
 use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter};
-use crate::ingestion::FileReader;
 use crate::theme::parse_color;
-use crate::types::Comment;
 use aho_corasick::AhoCorasick;
 use ratatui::style::Style;
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -16,8 +13,6 @@ pub struct LogManager {
     pub db: Arc<Database>,
     source_file: Option<String>,
     filter_defs: Vec<FilterDef>,
-    marks: HashSet<usize>,
-    comments: Vec<Comment>,
 }
 
 impl LogManager {
@@ -26,8 +21,6 @@ impl LogManager {
             db,
             source_file,
             filter_defs: Vec::new(),
-            marks: HashSet::new(),
-            comments: Vec::new(),
         };
         mgr.reload_filters_from_db().await;
         mgr
@@ -247,74 +240,8 @@ impl LogManager {
         Ok(())
     }
 
-    pub fn toggle_mark(&mut self, line_idx: usize) {
-        if self.marks.contains(&line_idx) {
-            self.marks.remove(&line_idx);
-        } else {
-            self.marks.insert(line_idx);
-        }
-    }
-
-    pub fn is_marked(&self, line_idx: usize) -> bool {
-        self.marks.contains(&line_idx)
-    }
-
-    pub fn get_marked_indices(&self) -> Vec<usize> {
-        let mut v: Vec<usize> = self.marks.iter().copied().collect();
-        v.sort_unstable();
-        v
-    }
-
-    pub fn set_marks(&mut self, indices: Vec<usize>) {
-        self.marks = indices.into_iter().collect();
-    }
-
-    /// Return the raw text of all marked lines.
-    pub fn get_marked_lines<'a>(&self, reader: &'a FileReader) -> Vec<&'a [u8]> {
-        let mut indices: Vec<usize> = self.marks.iter().copied().collect();
-        indices.sort_unstable();
-        indices
-            .into_iter()
-            .filter(|&i| i < reader.line_count())
-            .map(|i| reader.get_line(i))
-            .collect()
-    }
-
-    pub fn add_comment(&mut self, text: String, line_indices: Vec<usize>) {
-        if !line_indices.is_empty() {
-            self.comments.push(Comment { text, line_indices });
-        }
-    }
-
-    pub fn get_comments(&self) -> &[Comment] {
-        &self.comments
-    }
-
-    pub fn has_comment(&self, line_idx: usize) -> bool {
-        self.comments
-            .iter()
-            .any(|a| a.line_indices.contains(&line_idx))
-    }
-
-    pub fn set_comments(&mut self, comments: Vec<Comment>) {
-        self.comments = comments;
-    }
-
-    pub fn remove_comment(&mut self, index: usize) {
-        if index < self.comments.len() {
-            self.comments.remove(index);
-        }
-    }
-
-    pub fn clear_all_marks_and_comments(&mut self) {
-        self.marks.clear();
-        self.comments.clear();
-    }
-
     pub fn reset_in_memory(&mut self) {
         self.filter_defs.clear();
-        self.marks.clear();
-        self.comments.clear();
     }
 
     /// Build a `FilterManager`, its associated `Vec<Style>`, and date filter styles
@@ -658,35 +585,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_marks() {
-        let mut mgr = make_manager().await;
-        assert!(!mgr.is_marked(0));
-        assert!(!mgr.is_marked(5));
-
-        mgr.toggle_mark(0);
-        mgr.toggle_mark(5);
-        assert!(mgr.is_marked(0));
-        assert!(mgr.is_marked(5));
-
-        mgr.toggle_mark(0);
-        assert!(!mgr.is_marked(0));
-        assert!(mgr.is_marked(5));
-
-        let indices = mgr.get_marked_indices();
-        assert_eq!(indices, vec![5]);
-    }
-
-    #[tokio::test]
-    async fn test_set_marks() {
-        let mut mgr = make_manager().await;
-        mgr.set_marks(vec![1, 3, 7]);
-        assert!(mgr.is_marked(1));
-        assert!(mgr.is_marked(3));
-        assert!(mgr.is_marked(7));
-        assert!(!mgr.is_marked(0));
-    }
-
-    #[tokio::test]
     async fn test_build_filter_manager_include() {
         let mut mgr = make_manager().await;
         mgr.add_filter_with_color(
@@ -870,60 +768,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_comment() {
-        let mut mgr = make_manager().await;
-        mgr.add_comment("first".into(), vec![0]);
-        mgr.add_comment("second".into(), vec![1]);
-        assert_eq!(mgr.get_comments().len(), 2);
-
-        mgr.remove_comment(0);
-        assert_eq!(mgr.get_comments().len(), 1);
-        assert_eq!(mgr.get_comments()[0].text, "second");
-    }
-
-    #[tokio::test]
-    async fn test_remove_comment_out_of_bounds() {
-        let mut mgr = make_manager().await;
-        mgr.add_comment("only".into(), vec![0]);
-        mgr.remove_comment(5); // out of bounds, should be a no-op
-        assert_eq!(mgr.get_comments().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_clear_all_marks_and_comments() {
-        let mut mgr = make_manager().await;
-        mgr.toggle_mark(0);
-        mgr.toggle_mark(3);
-        mgr.add_comment("note".into(), vec![1]);
-        mgr.add_comment("another".into(), vec![2]);
-        assert!(!mgr.get_marked_indices().is_empty());
-        assert!(!mgr.get_comments().is_empty());
-
-        mgr.clear_all_marks_and_comments();
-        assert!(mgr.get_marked_indices().is_empty());
-        assert!(mgr.get_comments().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_get_marked_lines() {
-        use std::io::Write;
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(f, "line zero").unwrap();
-        writeln!(f, "line one").unwrap();
-        writeln!(f, "line two").unwrap();
-        let reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
-
-        let mut mgr = make_manager().await;
-        mgr.toggle_mark(0);
-        mgr.toggle_mark(2);
-
-        let lines = mgr.get_marked_lines(&reader);
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], b"line zero");
-        assert_eq!(lines[1], b"line two");
-    }
-
-    #[tokio::test]
     async fn test_add_duplicate_pattern_does_not_insert() {
         let mut mgr = make_manager().await;
         let was_new = mgr
@@ -1039,14 +883,9 @@ mod tests {
             FilterOptions::default(),
         )
         .await;
-        mgr.toggle_mark(5);
-        mgr.toggle_mark(10);
-        mgr.add_comment("note".into(), vec![1, 2]);
 
         mgr.reset_in_memory();
 
         assert!(mgr.get_filters().is_empty());
-        assert!(mgr.get_marked_indices().is_empty());
-        assert!(mgr.get_comments().is_empty());
     }
 }

@@ -640,8 +640,8 @@ pub fn prepare_log_panel(
         .bg(theme.visual_select_bg);
 
     let comments_for_render: Vec<(Vec<usize>, String)> = tab
-        .log_manager
-        .get_comments()
+        .comment_manager
+        .get()
         .iter()
         .map(|a| (a.line_indices.clone(), a.text.clone()))
         .collect();
@@ -672,7 +672,7 @@ pub fn prepare_log_panel(
         let line_idx = tab.filter.visible_indices.get(abs_vis_idx);
         let line_bytes = tab.file_reader.get_line(line_idx);
         let is_current = abs_vis_idx == current_scroll;
-        let is_marked = tab.log_manager.is_marked(line_idx);
+        let is_marked = tab.mark_manager.is_marked(line_idx);
         let is_visual_selected = visual_range
             .map(|(lo, hi)| abs_vis_idx >= lo && abs_vis_idx <= hi)
             .unwrap_or(false);
@@ -1159,7 +1159,7 @@ mod tests {
     #[tokio::test]
     async fn test_log_panel_with_mark() {
         let mut app = make_app(&["line one", "line two", "line three"]).await;
-        app.tabs[0].log_manager.toggle_mark(0);
+        app.tabs[0].mark_manager.toggle(0);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1373,8 +1373,8 @@ mod tests {
     async fn test_log_panel_with_comment_banner() {
         let mut app = make_app(&["line one", "line two", "line three"]).await;
         app.tabs[0]
-            .log_manager
-            .add_comment("my annotation".to_string(), vec![0]);
+            .comment_manager
+            .add("my annotation".to_string(), vec![0]);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -1465,8 +1465,8 @@ mod tests {
     async fn test_log_panel_comment_banner_with_line_numbers() {
         let mut app = make_app(&["line one", "line two", "line three"]).await;
         app.tabs[0]
-            .log_manager
-            .add_comment("note\ncontinuation".to_string(), vec![1]);
+            .comment_manager
+            .add("note\ncontinuation".to_string(), vec![1]);
         app.tabs[0].display.show_line_numbers = true;
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

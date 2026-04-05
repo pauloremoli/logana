@@ -16,7 +16,7 @@ impl App {
                     expanded
                 ));
             }
-            let marked_lines = tab.log_manager.get_marked_lines(&tab.file_reader);
+            let marked_lines = tab.mark_manager.get_lines(&tab.file_reader);
             let file = std::fs::File::create(&expanded)
                 .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
             let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
@@ -78,8 +78,8 @@ impl App {
         let tpl = crate::commands::load_template(&template).map_err(|e| e.to_string())?;
         let data = crate::commands::ExportData {
             filename: tab.log_manager.source_file().unwrap_or("stdin"),
-            comments: tab.log_manager.get_comments(),
-            marked_indices: tab.log_manager.get_marked_indices(),
+            comments: tab.comment_manager.get(),
+            marked_indices: tab.mark_manager.get_indices(),
             file_reader: &tab.file_reader,
             parser: if tab.display.raw_mode {
                 None

@@ -1066,8 +1066,8 @@ impl App {
         }
         if let Some(tab) = self.tabs.get(self.active_tab) {
             let snapshot = crate::mcp::McpSnapshot {
-                marked_lines: crate::mcp::build_marked_lines(&tab.file_reader, &tab.log_manager),
-                annotations: crate::mcp::build_annotations(&tab.log_manager),
+                marked_lines: crate::mcp::build_marked_lines(&tab.file_reader, &tab.mark_manager),
+                annotations: crate::mcp::build_annotations(&tab.comment_manager),
             };
             let arc = self.mcp.snapshot.clone();
             tokio::spawn(async move {
@@ -1098,19 +1098,19 @@ impl App {
         }
         match cmd {
             McpCommand::ToggleMark(idx) => {
-                self.tabs[self.active_tab].log_manager.toggle_mark(idx);
+                self.tabs[self.active_tab].mark_manager.toggle(idx);
                 self.save_tab_context(&self.tabs[self.active_tab]).await;
                 self.refresh_mcp_snapshot();
             }
             McpCommand::AddAnnotation { text, line_indices } => {
                 self.tabs[self.active_tab]
-                    .log_manager
-                    .add_comment(text, line_indices);
+                    .comment_manager
+                    .add(text, line_indices);
                 self.save_tab_context(&self.tabs[self.active_tab]).await;
                 self.refresh_mcp_snapshot();
             }
             McpCommand::RemoveAnnotation(idx) => {
-                self.tabs[self.active_tab].log_manager.remove_comment(idx);
+                self.tabs[self.active_tab].comment_manager.remove(idx);
                 self.save_tab_context(&self.tabs[self.active_tab]).await;
                 self.refresh_mcp_snapshot();
             }
@@ -1343,11 +1343,11 @@ mod tests {
         app.tab_mut().scroll.scroll_offset = 0;
         app.handle_key_event_with_modifiers(KeyCode::Char('m'), KeyModifiers::NONE)
             .await;
-        assert!(app.tab().log_manager.is_marked(0));
+        assert!(app.tab().mark_manager.is_marked(0));
 
         app.handle_key_event_with_modifiers(KeyCode::Char('m'), KeyModifiers::NONE)
             .await;
-        assert!(!app.tab().log_manager.is_marked(0));
+        assert!(!app.tab().mark_manager.is_marked(0));
     }
 
     #[tokio::test]
@@ -2447,14 +2447,14 @@ mod tests {
     #[tokio::test]
     async fn test_handle_mcp_command_toggle_mark() {
         let mut app = make_app(&["line0", "line1"]).await;
-        assert!(!app.tabs[0].log_manager.is_marked(0));
+        assert!(!app.tabs[0].mark_manager.is_marked(0));
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         app.mcp.cmd_rx = Some(rx);
         tx.send(crate::mcp::McpCommand::ToggleMark(0))
             .await
             .unwrap();
         app.poll_mcp_commands().await;
-        assert!(app.tabs[0].log_manager.is_marked(0));
+        assert!(app.tabs[0].mark_manager.is_marked(0));
     }
 
     #[tokio::test]
@@ -2469,23 +2469,23 @@ mod tests {
         .await
         .unwrap();
         app.poll_mcp_commands().await;
-        assert!(!app.tabs[0].log_manager.get_comments().is_empty());
+        assert!(!app.tabs[0].comment_manager.get().is_empty());
     }
 
     #[tokio::test]
     async fn test_handle_mcp_command_remove_annotation() {
         let mut app = make_app(&["line0", "line1"]).await;
         app.tabs[0]
-            .log_manager
-            .add_comment("test note".to_string(), vec![0]);
-        assert_eq!(app.tabs[0].log_manager.get_comments().len(), 1);
+            .comment_manager
+            .add("test note".to_string(), vec![0]);
+        assert_eq!(app.tabs[0].comment_manager.get().len(), 1);
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         app.mcp.cmd_rx = Some(rx);
         tx.send(crate::mcp::McpCommand::RemoveAnnotation(0))
             .await
             .unwrap();
         app.poll_mcp_commands().await;
-        assert!(app.tabs[0].log_manager.get_comments().is_empty());
+        assert!(app.tabs[0].comment_manager.get().is_empty());
     }
 
     #[tokio::test]

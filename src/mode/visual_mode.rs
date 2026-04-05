@@ -134,15 +134,15 @@ impl Mode for VisualLineMode {
                 let lo = self.anchor.min(tab.scroll.scroll_offset).min(max_idx);
                 let hi = self.anchor.max(tab.scroll.scroll_offset).min(max_idx);
                 let line_indices = tab.filter.visible_indices.slice_to_vec(lo, hi);
-                let all_marked = line_indices.iter().all(|&i| tab.log_manager.is_marked(i));
+                let all_marked = line_indices.iter().all(|&i| tab.mark_manager.is_marked(i));
                 if all_marked {
                     for idx in &line_indices {
-                        tab.log_manager.toggle_mark(*idx);
+                        tab.mark_manager.toggle(*idx);
                     }
                 } else {
                     for idx in &line_indices {
-                        if !tab.log_manager.is_marked(*idx) {
-                            tab.log_manager.toggle_mark(*idx);
+                        if !tab.mark_manager.is_marked(*idx) {
+                            tab.mark_manager.toggle(*idx);
                         }
                     }
                 }
@@ -492,18 +492,18 @@ mod tests {
         assert!(matches!(result, KeyResult::Handled));
         assert!(matches!(mode2.render_state(), ModeRenderState::Normal));
         // Lines at visible indices 1, 2, 3 should be marked.
-        assert!(tab.log_manager.is_marked(1));
-        assert!(tab.log_manager.is_marked(2));
-        assert!(tab.log_manager.is_marked(3));
-        assert!(!tab.log_manager.is_marked(0));
+        assert!(tab.mark_manager.is_marked(1));
+        assert!(tab.mark_manager.is_marked(2));
+        assert!(tab.mark_manager.is_marked(3));
+        assert!(!tab.mark_manager.is_marked(0));
     }
 
     #[tokio::test]
     async fn test_m_unmarks_when_all_already_marked() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
-        tab.log_manager.toggle_mark(0);
-        tab.log_manager.toggle_mark(1);
-        tab.log_manager.toggle_mark(2);
+        tab.mark_manager.toggle(0);
+        tab.mark_manager.toggle(1);
+        tab.mark_manager.toggle(2);
         tab.scroll.scroll_offset = 2;
         let mode = VisualLineMode {
             anchor: 0,
@@ -511,15 +511,15 @@ mod tests {
         };
         let (_, _) = press(mode, &mut tab, KeyCode::Char('m')).await;
         // All were marked → all should now be unmarked.
-        assert!(!tab.log_manager.is_marked(0));
-        assert!(!tab.log_manager.is_marked(1));
-        assert!(!tab.log_manager.is_marked(2));
+        assert!(!tab.mark_manager.is_marked(0));
+        assert!(!tab.mark_manager.is_marked(1));
+        assert!(!tab.mark_manager.is_marked(2));
     }
 
     #[tokio::test]
     async fn test_m_marks_all_when_partially_marked() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
-        tab.log_manager.toggle_mark(0); // only first is marked
+        tab.mark_manager.toggle(0); // only first is marked
         tab.scroll.scroll_offset = 2;
         let mode = VisualLineMode {
             anchor: 0,
@@ -527,9 +527,9 @@ mod tests {
         };
         let (_, _) = press(mode, &mut tab, KeyCode::Char('m')).await;
         // Partial marks → mark all.
-        assert!(tab.log_manager.is_marked(0));
-        assert!(tab.log_manager.is_marked(1));
-        assert!(tab.log_manager.is_marked(2));
+        assert!(tab.mark_manager.is_marked(0));
+        assert!(tab.mark_manager.is_marked(1));
+        assert!(tab.mark_manager.is_marked(2));
     }
 
     #[tokio::test]

@@ -210,7 +210,7 @@ impl Mode for ConfirmRestoreMode {
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else if kb.no.matches(key, modifiers) {
             tab.log_manager.clear_filters().await;
-            tab.log_manager.set_comments(vec![]);
+            tab.comment_manager.set(vec![]);
             tab.begin_filter_refresh();
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else if kb.always.matches(key, modifiers) {
@@ -221,7 +221,7 @@ impl Mode for ConfirmRestoreMode {
             )
         } else if kb.never.matches(key, modifiers) {
             tab.log_manager.clear_filters().await;
-            tab.log_manager.set_comments(vec![]);
+            tab.comment_manager.set(vec![]);
             tab.begin_filter_refresh();
             (Box::new(NormalMode::default()), KeyResult::NeverRestoreFile)
         } else {
@@ -479,8 +479,8 @@ mod tests {
     async fn test_confirm_restore_n_preserves_preview_marks() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
         // Simulate user adding a mark during the preview phase.
-        tab.log_manager.toggle_mark(1);
-        assert_eq!(tab.log_manager.get_marked_indices(), vec![1]);
+        tab.mark_manager.toggle(1);
+        assert_eq!(tab.mark_manager.get_indices(), vec![1]);
 
         let mode = ConfirmRestoreMode {
             context: default_context(),
@@ -489,7 +489,7 @@ mod tests {
 
         // Mark added during preview must survive declining the restore.
         assert_eq!(
-            tab.log_manager.get_marked_indices(),
+            tab.mark_manager.get_indices(),
             vec![1],
             "preview marks must not be erased on decline"
         );

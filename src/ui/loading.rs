@@ -2430,7 +2430,7 @@ mod tests {
             "show_keys=true from context should be applied"
         );
         assert_eq!(
-            app.tabs[0].log_manager.get_marked_indices(),
+            app.tabs[0].mark_manager.get_indices(),
             vec![1],
             "marks should be loaded from context"
         );
