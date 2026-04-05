@@ -751,7 +751,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_export_writes_file() {
+    async fn test_export_opens_footer_overlay() {
+        let mut app = make_app(&["line0", "line1", "line2"]).await;
+        app.tabs[0].mark_manager.toggle(0);
+        app.tabs[0]
+            .comment_manager
+            .add("My analysis".to_string(), vec![1]);
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        // Export with default markdown template (has footer fields) — should open overlay
+        let result = app.run_command(&format!("export {}", path)).await.unwrap();
+        assert!(
+            result,
+            "export with footer fields should return true (overlay opened)"
+        );
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            crate::mode::app_mode::ModeRenderState::ExportFooter { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_export_writes_file_after_footer_confirm() {
         let mut app = make_app(&["line0", "line1", "line2"]).await;
         app.tabs[0].mark_manager.toggle(0);
         app.tabs[0].mark_manager.toggle(2);
@@ -761,14 +783,24 @@ mod tests {
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
-        app.run_command(&format!("export {}", path)).await.unwrap();
+        app.cmd_export_with_footer(
+            path.clone(),
+            "markdown".to_string(),
+            vec![
+                ("context".to_string(), "Auth service outage".to_string()),
+                ("conclusion".to_string(), "Root cause found".to_string()),
+                ("next_steps".to_string(), "Fix the bug".to_string()),
+            ],
+        );
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("My analysis"));
         assert!(content.contains("2: line1"));
-        // Orphan marks (0 and 2 not in any comment)
         assert!(content.contains("1: line0"));
         assert!(content.contains("3: line2"));
+        assert!(content.contains("Auth service outage"));
+        assert!(content.contains("Root cause found"));
+        assert!(content.contains("Fix the bug"));
     }
 
     #[tokio::test]
@@ -780,9 +812,8 @@ mod tests {
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
-        app.run_command(&format!("export {} -t jira", path))
-            .await
-            .unwrap();
+        // Simulate confirming the jira footer overlay
+        app.cmd_export_with_footer(path.clone(), "jira".to_string(), vec![]);
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("h1. Log Analysis"));

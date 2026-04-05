@@ -76,6 +76,39 @@ impl App {
             ));
         }
         let tpl = crate::commands::load_template(&template).map_err(|e| e.to_string())?;
+        let fields = crate::commands::extract_user_fields(&tpl);
+        if !fields.is_empty() {
+            self.tab_mut().interaction.mode = Box::new(
+                crate::mode::export_footer_mode::ExportFooterMode::new(path, template, fields),
+            );
+            return Ok(true);
+        }
+        self.write_export(&path, &template, &[])
+    }
+
+    pub(crate) fn cmd_export_with_footer(
+        &mut self,
+        path: String,
+        template_name: String,
+        footer_fields: Vec<(String, String)>,
+    ) {
+        let refs: Vec<(&str, &str)> = footer_fields
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        if let Err(e) = self.write_export(&path, &template_name, &refs) {
+            self.tab_mut().interaction.command_error = Some(e);
+        }
+    }
+
+    fn write_export(
+        &mut self,
+        path: &str,
+        template: &str,
+        footer_fields: &[(&str, &str)],
+    ) -> Result<bool, String> {
+        let tpl = crate::commands::load_template(template).map_err(|e| e.to_string())?;
+        let tab = &self.tabs[self.active_tab];
         let data = crate::commands::ExportData {
             filename: tab.log_manager.source_file().unwrap_or("stdin"),
             comments: tab.comment_manager.get(),
@@ -89,9 +122,10 @@ impl App {
             field_layout: &tab.display.field_layout,
             hidden_fields: &tab.display.hidden_fields,
             show_keys: tab.display.show_keys,
+            footer_fields,
         };
         let output = crate::commands::render_export(&tpl, &data);
-        let file = std::fs::File::create(&path).map_err(|e| format!("Failed to write: {}", e))?;
+        let file = std::fs::File::create(path).map_err(|e| format!("Failed to write: {}", e))?;
         let mut writer = BufWriter::new(file);
         writer
             .write_all(output.as_bytes())

@@ -90,6 +90,14 @@ pub enum ModeRenderState {
         selected: usize,
     },
     Ui,
+    ExportFooter {
+        path: String,
+        template_name: String,
+        fields: Vec<(String, Vec<String>)>,
+        active_idx: usize,
+        cursor_row: usize,
+        cursor_col: usize,
+    },
 }
 
 impl ModeRenderState {
@@ -117,6 +125,7 @@ impl ModeRenderState {
             | ModeRenderState::ConfirmRestoreSession { .. }
             | ModeRenderState::ConfirmOpenDir { .. } => "CONFIRM",
             ModeRenderState::MergeSelect { .. } => "MERGE",
+            ModeRenderState::ExportFooter { .. } => "EXPORT",
         }
     }
 }
@@ -921,5 +930,17 @@ mod tests {
             "CONFIRM"
         );
         assert_eq!(ModeRenderState::Ui.mode_name(), "UI");
+        assert_eq!(
+            ModeRenderState::ExportFooter {
+                path: String::new(),
+                template_name: String::new(),
+                fields: vec![],
+                active_idx: 0,
+                cursor_row: 0,
+                cursor_col: 0,
+            }
+            .mode_name(),
+            "EXPORT"
+        );
     }
 }

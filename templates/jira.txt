@@ -1,20 +1,23 @@
 {{#header}}
-h1. Log Analysis
+h1. Log Analysis: {{filename}}
 
-*File:* {{filename}}
-*Date:* {{date}}
+_{{date}}_
 
-----
+h2. Context
 
-h2. Analysis
+{{context}}
+
 {{/header}}
 {{#comment_group}}
 
-{{commentary}}
+----
 
 {noformat}
 {{lines}}
 {noformat}
+
+{{commentary}}
+
 {{/comment_group}}
 {{#footer}}
 
@@ -22,8 +25,9 @@ h2. Analysis
 
 h2. Conclusion
 
-
+{{conclusion}}
 
 h2. Next Steps
 
+{{next_steps}}
 {{/footer}}

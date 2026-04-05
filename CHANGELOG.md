@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Export window: `:export` now opens an interactive window when the template footer contains `{{placeholder}}` variables. The window renders one editable field per placeholder, so custom templates with any field names work automatically. Both bundled templates (`markdown` and `jira`) ship with `{{conclusion}}` and `{{next_steps}}` in their footer.
+
 ## [0.5.1] - 2026-04-02
 
 ### Added

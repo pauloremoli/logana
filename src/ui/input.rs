@@ -360,6 +360,13 @@ impl App {
             KeyResult::OpenMergedView { source_tab_indices } => {
                 self.open_merge_tab(source_tab_indices).await;
             }
+            KeyResult::ExportWithFooter {
+                path,
+                template_name,
+                footer_fields,
+            } => {
+                self.cmd_export_with_footer(path, template_name, footer_fields);
+            }
         }
     }
 

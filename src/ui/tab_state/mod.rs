@@ -59,7 +59,14 @@ pub enum KeyResult {
     AlwaysRestoreSession(Vec<String>),
     NeverRestoreSession,
     OpenMergeSelect,
-    OpenMergedView { source_tab_indices: Vec<usize> },
+    OpenMergedView {
+        source_tab_indices: Vec<usize>,
+    },
+    ExportWithFooter {
+        path: String,
+        template_name: String,
+        footer_fields: Vec<(String, String)>,
+    },
 }
 
 /// Handle for a background search task spawned by [`TabState::begin_search`].

@@ -30,6 +30,7 @@ pub struct ExportData<'a> {
     pub field_layout: &'a FieldLayout,
     pub hidden_fields: &'a HashSet<String>,
     pub show_keys: bool,
+    pub footer_fields: &'a [(&'a str, &'a str)],
 }
 
 /// Parse raw template text into an `ExportTemplate`.
@@ -126,6 +127,47 @@ pub fn list_templates() -> Vec<String> {
     names
 }
 
+/// Extract unique placeholder names from the template footer, in order of first appearance.
+/// System placeholders that are substituted automatically and should not appear as user fields.
+const SYSTEM_PLACEHOLDERS: &[&str] = &["filename", "date", "lines", "commentary"];
+
+/// Extract user-fillable placeholder names from the template header and footer, in document order.
+///
+/// Scans `{{name}}` tokens in the header first, then the footer, skipping section tags
+/// (`{{#name}}` / `{{/name}}`) and system placeholders. Duplicates are omitted.
+pub fn extract_user_fields(tpl: &ExportTemplate) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let sections: &[&str] = &[&tpl.header, tpl.footer.as_deref().unwrap_or("")];
+    for section in sections {
+        scan_placeholders(section, &mut fields, &mut seen);
+    }
+    fields
+}
+
+fn scan_placeholders(
+    text: &str,
+    fields: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        rest = &rest[start + 2..];
+        if let Some(end) = rest.find("}}") {
+            let name = &rest[..end];
+            if !name.starts_with('#')
+                && !name.starts_with('/')
+                && !name.is_empty()
+                && !SYSTEM_PLACEHOLDERS.contains(&name)
+                && seen.insert(name.to_string())
+            {
+                fields.push(name.to_string());
+            }
+            rest = &rest[end + 2..];
+        }
+    }
+}
+
 /// Complete a partial template name using fuzzy matching.
 pub fn complete_template(partial: &str) -> Vec<String> {
     let templates = list_templates();
@@ -198,10 +240,13 @@ pub fn render_export(template: &ExportTemplate, data: &ExportData) -> String {
     entries.sort_by_key(RenderEntry::first_index);
 
     // Render header.
-    let header = template
+    let mut header = template
         .header
         .replace("{{filename}}", data.filename)
         .replace("{{date}}", &format_date());
+    for (name, value) in data.footer_fields {
+        header = header.replace(&format!("{{{{{}}}}}", name), value);
+    }
     output.push_str(&header);
 
     // Render entries in log order using the comment_group template.
@@ -211,19 +256,20 @@ pub fn render_export(template: &ExportTemplate, data: &ExportData) -> String {
             RenderEntry::MarkedLines { indices } => ("", indices.as_slice()),
         };
         let lines = format_lines(indices, data);
-        let line_numbers = format_line_numbers(indices);
 
         let section = template
             .comment_group
             .replace("{{commentary}}", commentary)
-            .replace("{{lines}}", &lines)
-            .replace("{{line_numbers}}", &line_numbers);
+            .replace("{{lines}}", &lines);
         output.push_str(&section);
     }
 
-    // Render footer.
     if let Some(ref footer) = template.footer {
-        output.push_str(footer);
+        let mut rendered = footer.clone();
+        for (name, value) in data.footer_fields {
+            rendered = rendered.replace(&format!("{{{{{}}}}}", name), value);
+        }
+        output.push_str(&rendered);
     }
 
     output
@@ -286,15 +332,6 @@ fn format_lines(indices: &[usize], data: &ExportData) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Format line indices as a comma-separated list of 1-based numbers.
-fn format_line_numbers(indices: &[usize]) -> String {
-    indices
-        .iter()
-        .map(|idx| (idx + 1).to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// Returns the current date as YYYY-MM-DD.
@@ -374,8 +411,7 @@ mod tests {
     fn simple_template() -> ExportTemplate {
         ExportTemplate {
             header: "File: {{filename}} Date: {{date}}\n".to_string(),
-            comment_group: "Entry: {{commentary}} Lines: {{lines}} Numbers: {{line_numbers}}\n"
-                .to_string(),
+            comment_group: "Entry: {{commentary}} Lines: {{lines}}\n".to_string(),
             marked_lines: None,
             footer: None,
         }
@@ -401,6 +437,7 @@ mod tests {
             field_layout: &DEFAULT_LAYOUT,
             hidden_fields: &EMPTY_HIDDEN,
             show_keys: false,
+            footer_fields: &[],
         }
     }
 
@@ -417,7 +454,6 @@ mod tests {
         assert!(output.contains("Entry: My note"));
         assert!(output.contains("1: alpha"));
         assert!(output.contains("2: beta"));
-        assert!(output.contains("Numbers: 1, 2"));
         // Line 2 (index 2) is marked but not in any comment → rendered as entry with empty commentary
         assert!(output.contains("3: gamma"));
     }
@@ -480,7 +516,6 @@ mod tests {
         let output = render_export(&simple_template(), &data);
         assert!(output.contains("1: zero"));
         assert!(output.contains("3: two"));
-        assert!(output.contains("Numbers: 1, 3"));
     }
 
     #[test]
@@ -510,8 +545,9 @@ mod tests {
         // Two entry groups
         assert_eq!(output.matches("Entry:").count(), 2);
         // First group has lines 1, 2; second group has line 5
-        assert!(output.contains("Numbers: 1, 2"));
-        assert!(output.contains("Numbers: 5"));
+        assert!(output.contains("1: a"));
+        assert!(output.contains("2: b"));
+        assert!(output.contains("5: e"));
     }
 
     #[test]
@@ -582,6 +618,159 @@ mod tests {
     }
 
     #[test]
+    fn test_render_export_substitutes_conclusion() {
+        let tpl = ExportTemplate {
+            header: "H\n".to_string(),
+            comment_group: "C\n".to_string(),
+            marked_lines: None,
+            footer: Some("## Conclusion\n\n{{conclusion}}\n".to_string()),
+        };
+        let reader = make_reader(&["line0"]);
+        let data = ExportData {
+            footer_fields: &[("conclusion", "root cause identified")],
+            ..make_data("f.log", &[], vec![], &reader)
+        };
+        let output = render_export(&tpl, &data);
+        assert!(output.contains("root cause identified"));
+        assert!(!output.contains("{{conclusion}}"));
+    }
+
+    #[test]
+    fn test_render_export_substitutes_next_steps() {
+        let tpl = ExportTemplate {
+            header: "H\n".to_string(),
+            comment_group: "C\n".to_string(),
+            marked_lines: None,
+            footer: Some("## Next Steps\n\n{{next_steps}}\n".to_string()),
+        };
+        let reader = make_reader(&["line0"]);
+        let data = ExportData {
+            footer_fields: &[("next_steps", "fix the bug")],
+            ..make_data("f.log", &[], vec![], &reader)
+        };
+        let output = render_export(&tpl, &data);
+        assert!(output.contains("fix the bug"));
+        assert!(!output.contains("{{next_steps}}"));
+    }
+
+    #[test]
+    fn test_render_export_empty_fields_leave_no_placeholder() {
+        let tpl = ExportTemplate {
+            header: "H\n".to_string(),
+            comment_group: "C\n".to_string(),
+            marked_lines: None,
+            footer: Some("{{conclusion}}\n{{next_steps}}\n".to_string()),
+        };
+        let reader = make_reader(&["line0"]);
+        let data = ExportData {
+            footer_fields: &[("conclusion", ""), ("next_steps", "")],
+            ..make_data("f.log", &[], vec![], &reader)
+        };
+        let output = render_export(&tpl, &data);
+        assert!(!output.contains("{{conclusion}}"));
+        assert!(!output.contains("{{next_steps}}"));
+    }
+
+    #[test]
+    fn test_extract_user_fields_conclusion() {
+        let tpl = ExportTemplate {
+            header: String::new(),
+            comment_group: String::new(),
+            marked_lines: None,
+            footer: Some("## Conclusion\n\n{{conclusion}}\n".to_string()),
+        };
+        assert_eq!(extract_user_fields(&tpl), vec!["conclusion"]);
+    }
+
+    #[test]
+    fn test_extract_user_fields_multiple() {
+        let tpl = ExportTemplate {
+            header: String::new(),
+            comment_group: String::new(),
+            marked_lines: None,
+            footer: Some("{{conclusion}}\n{{next_steps}}\n".to_string()),
+        };
+        assert_eq!(extract_user_fields(&tpl), vec!["conclusion", "next_steps"]);
+    }
+
+    #[test]
+    fn test_extract_user_fields_empty_footer() {
+        let tpl = ExportTemplate {
+            header: String::new(),
+            comment_group: String::new(),
+            marked_lines: None,
+            footer: Some("static footer\n".to_string()),
+        };
+        assert_eq!(extract_user_fields(&tpl), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_extract_user_fields_no_footer() {
+        let tpl = ExportTemplate {
+            header: String::new(),
+            comment_group: String::new(),
+            marked_lines: None,
+            footer: None,
+        };
+        assert_eq!(extract_user_fields(&tpl), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_extract_user_fields_dedup() {
+        let tpl = ExportTemplate {
+            header: String::new(),
+            comment_group: String::new(),
+            marked_lines: None,
+            footer: Some("{{conclusion}}\n{{conclusion}}\n".to_string()),
+        };
+        assert_eq!(extract_user_fields(&tpl), vec!["conclusion"]);
+    }
+
+    #[test]
+    fn test_extract_user_fields_custom_placeholder() {
+        let tpl = ExportTemplate {
+            header: String::new(),
+            comment_group: String::new(),
+            marked_lines: None,
+            footer: Some("{{description}}\n".to_string()),
+        };
+        assert_eq!(extract_user_fields(&tpl), vec!["description"]);
+    }
+
+    #[test]
+    fn test_extract_user_fields_from_header() {
+        let tpl = ExportTemplate {
+            header: "# Report\n{{context}}\n".to_string(),
+            comment_group: String::new(),
+            marked_lines: None,
+            footer: Some("{{conclusion}}\n".to_string()),
+        };
+        assert_eq!(extract_user_fields(&tpl), vec!["context", "conclusion"]);
+    }
+
+    #[test]
+    fn test_extract_user_fields_skips_system_placeholders() {
+        let tpl = ExportTemplate {
+            header: "{{filename}} {{date}} {{context}}\n".to_string(),
+            comment_group: String::new(),
+            marked_lines: None,
+            footer: Some("{{lines}} {{commentary}} {{conclusion}}\n".to_string()),
+        };
+        assert_eq!(extract_user_fields(&tpl), vec!["context", "conclusion"]);
+    }
+
+    #[test]
+    fn test_extract_user_fields_dedup_across_sections() {
+        let tpl = ExportTemplate {
+            header: "{{context}}\n".to_string(),
+            comment_group: String::new(),
+            marked_lines: None,
+            footer: Some("{{context}}\n{{conclusion}}\n".to_string()),
+        };
+        assert_eq!(extract_user_fields(&tpl), vec!["context", "conclusion"]);
+    }
+
+    #[test]
     fn test_render_footer_appended() {
         let tpl = ExportTemplate {
             header: "H\n".to_string(),
@@ -632,6 +821,7 @@ mod tests {
             field_layout: &layout,
             hidden_fields: &hidden,
             show_keys: false,
+            footer_fields: &[],
         };
         let output = render_export(&simple_template(), &data);
         // Should contain the parsed/formatted output, not raw JSON
@@ -677,6 +867,7 @@ mod tests {
             field_layout: &layout,
             hidden_fields: &hidden,
             show_keys: false,
+            footer_fields: &[],
         };
         let output = render_export(&simple_template(), &data);
         // With only level+message columns, timestamp should NOT be in the output
@@ -702,9 +893,17 @@ mod tests {
         assert!(!tpl.header.is_empty());
         assert!(!tpl.comment_group.is_empty());
         assert!(tpl.marked_lines.is_none());
+        assert!(
+            tpl.header.contains("{{context}}"),
+            "header should have context placeholder"
+        );
         assert!(tpl.footer.is_some());
         assert!(tpl.footer.as_ref().unwrap().contains("Conclusion"));
         assert!(tpl.footer.as_ref().unwrap().contains("Next Steps"));
+        assert_eq!(
+            extract_user_fields(&tpl),
+            vec!["context", "conclusion", "next_steps"]
+        );
     }
 
     #[test]
@@ -771,20 +970,12 @@ mod tests {
         assert!(date[8..10].parse::<u32>().is_ok());
     }
 
-    // ── format_lines / format_line_numbers helpers ────────────────────
-
     #[test]
     fn test_format_lines_basic() {
         let reader = make_reader(&["alpha", "beta"]);
         let data = make_data("f.log", &[], vec![], &reader);
         let result = format_lines(&[0, 1], &data);
         assert_eq!(result, "1: alpha\n2: beta");
-    }
-
-    #[test]
-    fn test_format_line_numbers_basic() {
-        let result = format_line_numbers(&[0, 2, 5]);
-        assert_eq!(result, "1, 3, 6");
     }
 
     #[test]

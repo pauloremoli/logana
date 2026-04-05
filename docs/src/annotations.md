@@ -54,6 +54,23 @@ The export includes:
 - Each comment group with the commented log lines and the comment text
 - Any standalone marked lines (without a comment) grouped consecutively
 
+### Export Window
+
+When the selected template's `footer` section contains any `{{placeholder}}` variables, `:export` opens a window before writing the file so you can fill in those sections interactively. Both bundled templates (`markdown` and `jira`) include `{{conclusion}}` and `{{next_steps}}` by default, and any custom placeholder name works the same way.
+
+| Key | Action |
+|---|---|
+| `Tab` / `Shift+Tab` | Switch between Conclusion and Next Steps |
+| `Enter` | Insert a new line |
+| `Backspace` | Delete character before cursor / merge lines |
+| `Delete` | Delete character at cursor / merge next line |
+| `Left` / `Right` | Move cursor (wraps between lines) |
+| `Up` / `Down` | Move between rows |
+| `Ctrl+S` | Write the file |
+| `Esc` | Cancel without writing |
+
+The active field scrolls to keep the cursor visible when content exceeds the window height.
+
 ## Export Templates
 
 Two templates are bundled: `markdown` and `jira`. Custom templates can be placed in `~/.config/logana/templates/`.
@@ -67,7 +84,6 @@ Date: {{date}}
 {{/header}}
 
 {{#comment_group}}
-## Lines {{line_numbers}}
 ```
 {{lines}}
 ```
@@ -82,9 +98,12 @@ Date: {{date}}
 |---|---|
 | `{{filename}}` | Source file name |
 | `{{date}}` | Export date |
-| `{{lines}}` | The raw log lines for this group |
-| `{{line_numbers}}` | Comma-separated 1-based line numbers |
+| `{{lines}}` | The annotated log lines, each prefixed with its 1-based line number |
 | `{{commentary}}` | The comment text |
+| `{{conclusion}}` | Conclusion text (footer) |
+| `{{next_steps}}` | Next steps text (footer) |
+
+Any `{{custom_name}}` placeholder you add to the `footer` section becomes an editable field in the export window. Use underscores for multi-word names (`{{root_cause}}` → "Root Cause").
 
 Template sections: `header` (rendered once), `comment_group` (rendered per annotation/mark group), `footer` (optional, rendered once at the end).
 

@@ -1,6 +1,7 @@
 pub mod command_bar;
 pub mod comment_popup;
 pub mod confirm_modal;
+pub mod export_footer_popup;
 pub mod input_bar;
 pub mod keybindings_help_popup;
 pub mod log_panel;
@@ -15,6 +16,7 @@ pub mod value_colors_popup;
 pub use command_bar::{CommandBar, CompletionSource, file_display_name, resolve_completions};
 pub use comment_popup::CommentPopup;
 pub use confirm_modal::{ConfirmOpenDirModal, ConfirmRestoreModal, ConfirmRestoreSessionModal};
+pub use export_footer_popup::ExportFooterPopup;
 pub use input_bar::InputBar;
 pub use keybindings_help_popup::KeybindingsHelpPopup;
 pub use log_panel::{LogPanel, prepare_log_panel};

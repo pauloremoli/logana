@@ -1,20 +1,23 @@
 {{#header}}
-# Log Analysis
+# Log Analysis: {{filename}}
 
-**File:** {{filename}}
-**Date:** {{date}}
+*{{date}}*
 
----
+## Context
 
-## Analysis
+{{context}}
+
 {{/header}}
 {{#comment_group}}
 
-{{commentary}}
+---
 
 ```
 {{lines}}
 ```
+
+{{commentary}}
+
 {{/comment_group}}
 {{#footer}}
 
@@ -22,8 +25,9 @@
 
 ## Conclusion
 
-
+{{conclusion}}
 
 ## Next Steps
 
+{{next_steps}}
 {{/footer}}

@@ -28,6 +28,8 @@ type ValueColorsData = Option<(
     &'static str,
 )>;
 
+type ExportFooterData = Option<(String, Vec<(String, Vec<String>)>, usize, usize, usize)>;
+
 struct UiRenderState {
     has_input_bar: bool,
     command_input: Option<(String, usize)>,
@@ -51,6 +53,7 @@ struct UiRenderState {
     dlt_select: DltSelectData,
     value_colors_state: ValueColorsData,
     confirm_open_dir: Option<(String, Arc<Vec<String>>)>,
+    export_footer: ExportFooterData,
     notification: Option<String>,
     has_notification: bool,
     has_warnings: bool,
@@ -295,6 +298,23 @@ impl App {
             }
             _ => None,
         };
+        let export_footer: ExportFooterData = match render_state {
+            ModeRenderState::ExportFooter {
+                path,
+                fields,
+                active_idx,
+                cursor_row,
+                cursor_col,
+                ..
+            } => Some((
+                path.clone(),
+                fields.clone(),
+                *active_idx,
+                *cursor_row,
+                *cursor_col,
+            )),
+            _ => None,
+        };
 
         if self.decompression_message.is_none()
             && let Some(set_at) = self.tabs[self.active_tab].interaction.notification_set_at
@@ -327,6 +347,7 @@ impl App {
             dlt_select,
             value_colors_state,
             confirm_open_dir,
+            export_footer,
             notification,
             has_notification,
             has_warnings,
@@ -834,6 +855,22 @@ impl App {
                 },
                 frame_area,
             );
+        }
+
+        if let Some((path, fields, active_idx, cursor_row, cursor_col)) = &state.export_footer {
+            let popup = super::widgets::ExportFooterPopup {
+                theme: &self.theme,
+                keybindings: &self.tabs[self.active_tab].interaction.keybindings,
+                path,
+                fields,
+                active_idx: *active_idx,
+                cursor_row: *cursor_row,
+                cursor_col: *cursor_col,
+            };
+            if let Some((cx, cy)) = popup.cursor_position(frame_area) {
+                frame.set_cursor_position((cx, cy));
+            }
+            frame.render_widget(popup, frame_area);
         }
     }
 
