@@ -1,5 +1,4 @@
 use super::input_handler::InputHandler;
-use super::session_manager::SessionManager;
 use super::{StdinLoadState, TabState};
 use crate::config::{Keybindings, RestoreSessionPolicy};
 use crate::db::LogManager;
@@ -7,6 +6,7 @@ use crate::db::{AppSettingsStore, FileContextStore, SessionStore, SettingsKey};
 use crate::ingestion::FileReader;
 use crate::mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode};
 use crate::mode::normal_mode::NormalMode;
+use crate::session::SessionManager;
 use crate::theme::Theme;
 use crate::ui::SidebarSide;
 use ratatui::{Terminal, prelude::*};
@@ -113,16 +113,7 @@ async fn resolve_startup_settings(
     }
 }
 
-pub struct McpState {
-    /// Default MCP server port (used when `:enable-mcp` has no `--port`).
-    pub port: Option<u16>,
-    /// Shared snapshot of filtered lines, marks, and annotations exposed to the MCP server.
-    pub snapshot: std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpSnapshot>>,
-    /// Receiver for commands sent by the MCP server tools back to the TUI.
-    pub cmd_rx: Option<tokio::sync::mpsc::Receiver<crate::mcp::McpCommand>>,
-    /// Handle to the running MCP server, if one is active.
-    pub server_handle: Option<crate::mcp::McpServerHandle>,
-}
+use crate::mcp::McpState;
 
 pub struct DisplaySettings {
     pub show_mode_bar: bool,
@@ -987,15 +978,6 @@ mod tests {
         ));
     }
 
-    // ── save_all_contexts ───────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_save_all_contexts_no_source_files() {
-        let app = make_app(&["line"]).await;
-        // Should not panic with no source files
-        app.save_all_contexts().await;
-    }
-
     // ── tab() / tab_mut() ───────────────────────────────────────────────
 
     #[tokio::test]
@@ -1030,14 +1012,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_save_tab_context_no_source() {
-        let app = make_app(&["line"]).await;
-        // No source file — save_tab_context should be a no-op (no panic).
-        let tab = &app.tabs[0];
-        app.save_tab_context(tab).await;
-    }
-
-    #[tokio::test]
     async fn test_open_files_key_result_opens_new_tabs() {
         let mut app = make_app(&["line"]).await;
         // Create real temp files so open_file succeeds.
@@ -1055,37 +1029,6 @@ mod tests {
             app.open_file(path).await.unwrap();
         }
         assert_eq!(app.tabs.len(), 3); // initial + 2 new
-    }
-
-    #[tokio::test]
-    async fn test_save_tab_context_with_source() {
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let data: Vec<u8> = b"hello\nworld\n".to_vec();
-        let fr = FileReader::from_bytes(data);
-        let lm = LogManager::new(db.clone(), Some("test.log".to_string())).await;
-        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
-            .build()
-            .await;
-        let tab = &app.tabs[0];
-        app.save_tab_context(tab).await;
-        // Verify it was saved
-        let ctx = db.load_file_context("test.log").await.unwrap();
-        assert!(ctx.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_save_all_contexts_with_source_files() {
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let data: Vec<u8> = b"hello\n".to_vec();
-        let fr = FileReader::from_bytes(data);
-        let lm = LogManager::new(db.clone(), Some("test.log".to_string())).await;
-        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
-            .build()
-            .await;
-        app.save_all_contexts().await;
-        // Session should be saved
-        let files = db.load_session().await.unwrap();
-        assert!(!files.is_empty());
     }
 
     #[tokio::test]
@@ -1725,14 +1668,6 @@ mod tests {
             setting.as_deref(),
             Some(RestoreSessionPolicy::Always.to_string().as_str())
         );
-    }
-
-    #[tokio::test]
-    async fn test_stop_mcp_clears_handle() {
-        let mut app = make_app(&["line"]).await;
-        app.stop_mcp();
-        assert!(app.mcp.server_handle.is_none());
-        assert!(app.mcp.cmd_rx.is_none());
     }
 
     #[tokio::test]

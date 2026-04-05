@@ -15,8 +15,6 @@ mod commands;
 pub mod field_layout;
 mod input;
 mod input_handler;
-mod mcp;
-mod session_manager;
 mod tabs;
 pub use field_layout::FieldLayout;
 mod render;

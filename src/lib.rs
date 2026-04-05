@@ -9,6 +9,7 @@ pub mod mcp;
 pub mod mode;
 pub mod parser;
 pub mod search;
+pub mod session;
 pub mod utils;
 pub use ui::theme;
 pub mod types;

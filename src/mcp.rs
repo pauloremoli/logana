@@ -40,48 +40,6 @@ pub struct McpServerHandle {
     pub port: u16,
 }
 
-pub fn build_marked_lines(reader: &FileReader, marks: &MarkManager) -> Vec<(usize, String)> {
-    marks
-        .get_indices()
-        .into_iter()
-        .filter(|&i| i < reader.line_count())
-        .map(|i| {
-            let text = String::from_utf8_lossy(reader.get_line(i)).into_owned();
-            (i + 1, text)
-        })
-        .collect()
-}
-
-pub fn build_annotations(comments: &CommentManager) -> Vec<Comment> {
-    comments.get().to_vec()
-}
-
-pub fn format_marks_resource(snapshot: &McpSnapshot) -> String {
-    snapshot
-        .marked_lines
-        .iter()
-        .map(|(n, t)| format!("{n}: {t}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-pub fn format_annotations_resource(snapshot: &McpSnapshot) -> String {
-    snapshot
-        .annotations
-        .iter()
-        .map(|a| {
-            let lines = a
-                .line_indices
-                .iter()
-                .map(|&i| i.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("Lines: {lines}\n{}\n---", a.text)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ToggleMarkParams {
     /// 1-based line number to toggle mark on
@@ -244,6 +202,95 @@ pub async fn start_mcp_server(
     Ok(McpServerHandle { cancel, port })
 }
 
+pub struct McpState {
+    /// Default MCP server port (used when `:enable-mcp` has no `--port`).
+    pub port: Option<u16>,
+    /// Shared snapshot of filtered lines, marks, and annotations exposed to the MCP server.
+    pub snapshot: std::sync::Arc<tokio::sync::RwLock<McpSnapshot>>,
+    /// Receiver for commands sent by the MCP server tools back to the TUI.
+    pub cmd_rx: Option<tokio::sync::mpsc::Receiver<McpCommand>>,
+    /// Handle to the running MCP server, if one is active.
+    pub server_handle: Option<McpServerHandle>,
+}
+
+impl McpState {
+    pub fn stop(&mut self) {
+        if let Some(handle) = self.server_handle.take() {
+            handle.cancel.cancel();
+        }
+        self.cmd_rx = None;
+    }
+
+    pub async fn start(&mut self, port: u16, initial_snapshot: McpSnapshot) -> std::io::Result<()> {
+        self.stop();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        *self.snapshot.write().await = initial_snapshot;
+        let handle = start_mcp_server(port, self.snapshot.clone(), tx).await?;
+        self.server_handle = Some(handle);
+        self.cmd_rx = Some(rx);
+        Ok(())
+    }
+
+    pub fn push_snapshot(&self, snapshot: McpSnapshot) {
+        let arc = self.snapshot.clone();
+        tokio::spawn(async move {
+            *arc.write().await = snapshot;
+        });
+    }
+
+    pub fn drain_commands(&mut self) -> Vec<McpCommand> {
+        let mut cmds = Vec::new();
+        if let Some(rx) = &mut self.cmd_rx {
+            while let Ok(cmd) = rx.try_recv() {
+                cmds.push(cmd);
+            }
+        }
+        cmds
+    }
+}
+
+pub fn build_marked_lines(reader: &FileReader, marks: &MarkManager) -> Vec<(usize, String)> {
+    marks
+        .get_indices()
+        .into_iter()
+        .filter(|&i| i < reader.line_count())
+        .map(|i| {
+            let text = String::from_utf8_lossy(reader.get_line(i)).into_owned();
+            (i + 1, text)
+        })
+        .collect()
+}
+
+pub fn build_annotations(comments: &CommentManager) -> Vec<Comment> {
+    comments.get().to_vec()
+}
+
+pub fn format_marks_resource(snapshot: &McpSnapshot) -> String {
+    snapshot
+        .marked_lines
+        .iter()
+        .map(|(n, t)| format!("{n}: {t}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn format_annotations_resource(snapshot: &McpSnapshot) -> String {
+    snapshot
+        .annotations
+        .iter()
+        .map(|a| {
+            let lines = a
+                .line_indices
+                .iter()
+                .map(|&i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("Lines: {lines}\n{}\n---", a.text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +299,21 @@ mod tests {
 
     use crate::db::{CommentManager, MarkManager};
     use crate::types::Comment;
+
+    #[tokio::test]
+    async fn test_stop_clears_handle_and_receiver() {
+        let snapshot = Arc::new(RwLock::new(McpSnapshot::default()));
+        let (_tx, rx) = mpsc::channel::<McpCommand>(8);
+        let mut state = McpState {
+            port: None,
+            snapshot,
+            cmd_rx: Some(rx),
+            server_handle: None,
+        };
+        state.stop();
+        assert!(state.server_handle.is_none());
+        assert!(state.cmd_rx.is_none());
+    }
 
     fn make_reader(lines: &[&str]) -> FileReader {
         FileReader::from_bytes(lines.join("\n").into_bytes())
