@@ -127,8 +127,8 @@ impl App {
 
         let (logs_area, sidebar_area) =
             self.compute_main_areas(main_chunk, show_tab_bar, show_borders);
-        self.mouse.log_panel_area = logs_area;
-        self.mouse.sidebar_area = sidebar_area;
+        self.input.log_panel_area = logs_area;
+        self.input.sidebar_area = sidebar_area;
         self.render_log_panel(frame, logs_area, show_tab_bar, mode_name, &state);
         if let Some(sa) = sidebar_area {
             let is_filter_mode = matches!(

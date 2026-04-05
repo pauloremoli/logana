@@ -1,20 +1,19 @@
-use super::{KeyResult, StdinLoadState, TabState, VisibleLines};
+use super::input_handler::InputHandler;
+use super::session_manager::SessionManager;
+use super::{StdinLoadState, TabState};
 use crate::config::{Keybindings, RestoreSessionPolicy};
 use crate::db::LogManager;
-use crate::db::{AppSettingsStore, FileContext, FileContextStore, SessionStore, SettingsKey};
+use crate::db::{AppSettingsStore, FileContextStore, SessionStore, SettingsKey};
 use crate::ingestion::FileReader;
 use crate::mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode};
-use crate::mode::command_mode::CommandMode;
-use crate::mode::filter_mode::FilterManagementMode;
 use crate::mode::normal_mode::NormalMode;
 use crate::theme::Theme;
 use crate::ui::SidebarSide;
-use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{Terminal, prelude::*};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const DOUBLE_CLICK_MS: u128 = 300;
+pub(super) const DOUBLE_CLICK_MS: u128 = 300;
 
 async fn resolve_bool_setting(
     db: &crate::db::Database,
@@ -125,17 +124,6 @@ pub struct McpState {
     pub server_handle: Option<crate::mcp::McpServerHandle>,
 }
 
-pub struct MouseState {
-    /// Log panel area captured during the last render frame, used for mouse hit-testing.
-    pub log_panel_area: Rect,
-    /// Filter sidebar area captured during the last render frame, used for mouse hit-testing.
-    pub sidebar_area: Option<Rect>,
-    /// Time and screen position of the last left-button down event, for double-click detection.
-    pub last_click: Option<(std::time::Instant, u16, u16)>,
-    /// Whether the user is currently dragging the scrollbar thumb.
-    pub scrollbar_dragging: bool,
-}
-
 pub struct DisplaySettings {
     pub show_mode_bar: bool,
     pub show_borders_default: bool,
@@ -143,22 +131,6 @@ pub struct DisplaySettings {
     pub show_sidebar: bool,
     pub wrap: bool,
     pub sidebar_side: SidebarSide,
-}
-
-pub struct SessionConfig {
-    /// Restore session policy from config — controls whether to skip the whole-session prompt.
-    pub restore_policy: RestoreSessionPolicy,
-    /// Restore file-context policy from config — controls whether to skip the per-file prompt.
-    pub restore_file_policy: RestoreSessionPolicy,
-    /// Session files to restore automatically (set when policy is Always and session exists).
-    pub pending_session_restore: Option<Vec<String>>,
-    /// When true, the initial file tab starts in tail mode (set by `--tail`).
-    pub startup_tail: bool,
-    /// When true, filters were supplied via `--filters` and the previous-session
-    /// restore prompt must be suppressed so it cannot overwrite them.
-    pub startup_filters: bool,
-    /// Keybinding conflict warnings shown in the status bar on startup. Cleared on first keypress.
-    pub startup_warnings: Vec<String>,
 }
 
 pub struct App {
@@ -179,8 +151,8 @@ pub struct App {
     /// Configured DLT devices from config.json.
     pub dlt_devices: Vec<crate::config::DltDevice>,
     pub mcp: McpState,
-    pub mouse: MouseState,
-    pub session: SessionConfig,
+    pub input: InputHandler,
+    pub session: SessionManager,
     /// In-progress background archive extraction.
     pub pending_archive: Option<crate::ui::ArchiveExtractionState>,
     /// App-level decompression progress message shown while an archive is being extracted.
@@ -318,6 +290,7 @@ impl AppBuilder {
             }
         }
 
+        let session_db = db.clone();
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -345,13 +318,14 @@ impl AppBuilder {
                 cmd_rx: None,
                 server_handle: None,
             },
-            mouse: MouseState {
+            input: InputHandler {
                 log_panel_area: Rect::default(),
                 sidebar_area: None,
                 last_click: None,
                 scrollbar_dragging: false,
             },
-            session: SessionConfig {
+            session: SessionManager {
+                db: session_db,
                 restore_policy,
                 restore_file_policy,
                 pending_session_restore,
@@ -390,148 +364,12 @@ impl App {
         }
     }
 
-    /// Apply shared defaults (keybindings, display toggles) to a new tab.
-    #[inline]
-    pub(super) fn apply_tab_defaults(&self, tab: &mut TabState) {
-        tab.interaction.keybindings = self.keybindings.clone();
-        tab.display.show_mode_bar = self.display.show_mode_bar;
-        tab.display.show_borders = self.display.show_borders_default;
-        tab.display.show_line_numbers = self.display.show_line_numbers;
-        tab.display.show_sidebar = self.display.show_sidebar;
-        tab.display.wrap = self.display.wrap;
-        tab.display.sidebar_side = self.display.sidebar_side;
-    }
-
-    pub fn tab(&self) -> &TabState {
-        &self.tabs[self.active_tab]
-    }
-
-    pub fn tab_mut(&mut self) -> &mut TabState {
-        &mut self.tabs[self.active_tab]
-    }
-
     pub(super) async fn save_tab_context(&self, tab: &TabState) {
-        if let Some(ctx) = tab.to_file_context() {
-            let _ = self.db.save_file_context(&ctx).await;
-        }
+        self.session.save_tab_context(tab).await;
     }
 
     pub(super) async fn save_all_contexts(&self) {
-        let tmp_dir = std::env::temp_dir();
-        let source_files: Vec<String> = self
-            .tabs
-            .iter()
-            .filter_map(|t| t.log_manager.source_file().map(|s| s.to_string()))
-            .filter(|p| !std::path::Path::new(p).starts_with(&tmp_dir))
-            .filter(|p| crate::ingestion::detect_archive_type(p).is_none())
-            .collect();
-
-        let contexts: Vec<FileContext> = self
-            .tabs
-            .iter()
-            .filter_map(|t| t.to_file_context())
-            .collect();
-
-        if !source_files.is_empty() {
-            let _ = self.db.save_session(&source_files).await;
-        }
-        for ctx in &contexts {
-            let _ = self.db.save_file_context(ctx).await;
-        }
-    }
-
-    pub async fn close_tab(&mut self) -> bool {
-        use std::sync::atomic::Ordering;
-        self.save_tab_context(&self.tabs[self.active_tab]).await;
-
-        let tab = &self.tabs[self.active_tab];
-        if let Some(ref h) = tab.search.handle {
-            h.cancel.store(true, Ordering::Relaxed);
-        }
-        if let Some(ref h) = tab.filter.handle {
-            h.cancel.store(true, Ordering::Relaxed);
-        }
-
-        if let Some(ref fls) = self.tabs[self.active_tab].load_state {
-            fls.cancel.store(true, Ordering::Relaxed);
-        }
-
-        if self.tabs.len() <= 1 {
-            return true; // signal to quit
-        }
-        self.tabs.remove(self.active_tab);
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        }
-        false
-    }
-
-    pub(super) async fn handle_global_key(&mut self, key: KeyCode, modifiers: KeyModifiers) {
-        let kb = self.keybindings.clone();
-        if kb.global.quit.matches(key, modifiers) {
-            self.save_all_contexts().await;
-            self.should_quit = true;
-        } else if kb.global.next_tab.matches(key, modifiers) {
-            if self.tabs.len() > 1 {
-                self.active_tab = (self.active_tab + 1) % self.tabs.len();
-            }
-        } else if kb.global.prev_tab.matches(key, modifiers) {
-            if self.tabs.len() > 1 {
-                self.active_tab = if self.active_tab == 0 {
-                    self.tabs.len() - 1
-                } else {
-                    self.active_tab - 1
-                };
-            }
-        } else if kb.global.close_tab.matches(key, modifiers) {
-            if self.close_tab().await {
-                self.save_all_contexts().await;
-                self.should_quit = true;
-            }
-        } else if kb.global.new_tab.matches(key, modifiers) {
-            let history = self.tabs[self.active_tab]
-                .interaction
-                .command_history
-                .clone();
-            self.tabs[self.active_tab].interaction.command_error = None;
-            self.tabs[self.active_tab].interaction.mode =
-                Box::new(CommandMode::with_history("open ".to_string(), 5, history));
-        }
-    }
-
-    /// Execute a command string, transitioning mode on success/failure.
-    pub async fn execute_command_str(&mut self, cmd: String) {
-        let result = self.run_command(&cmd).await;
-        let tab = &mut self.tabs[self.active_tab];
-        match result {
-            Ok(mode_was_set) => {
-                if !cmd.trim().is_empty() {
-                    tab.interaction.command_history.push(cmd.trim().to_string());
-                }
-                if !mode_was_set {
-                    if let Some(idx) = tab.filter.filter_context.take() {
-                        tab.interaction.mode = Box::new(FilterManagementMode {
-                            selected_filter_index: idx,
-                        });
-                    } else {
-                        tab.interaction.mode = Box::new(NormalMode::default());
-                    }
-                }
-            }
-            Err(msg) => {
-                tab.interaction.command_error = Some(msg);
-                let history = tab.interaction.command_history.clone();
-                let cmd_len = cmd.len();
-                tab.interaction.mode = Box::new(CommandMode {
-                    input: cmd,
-                    cursor: cmd_len,
-                    history,
-                    history_index: None,
-                    completion_index: None,
-                    completion_query: None,
-                });
-            }
-        }
+        self.session.save_all_contexts(&self.tabs).await;
     }
 
     pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> anyhow::Result<()>
@@ -561,7 +399,7 @@ impl App {
             let mut poll_timeout = tick_rate
                 .checked_sub(last_tick.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
-            if let Some((t, _, _)) = self.mouse.last_click {
+            if let Some((t, _, _)) = self.input.last_click {
                 let remaining =
                     Duration::from_millis(DOUBLE_CLICK_MS as u64).saturating_sub(t.elapsed());
                 poll_timeout = poll_timeout.min(remaining);
@@ -605,489 +443,36 @@ impl App {
         }
     }
 
-    pub async fn handle_key_event(&mut self, key_code: KeyCode) {
-        self.handle_key_event_with_modifiers(key_code, KeyModifiers::NONE)
-            .await;
-    }
-
-    pub async fn handle_key_event_with_modifiers(
-        &mut self,
-        key_code: KeyCode,
-        modifiers: KeyModifiers,
-    ) {
-        self.session.startup_warnings.clear();
-        let tab = &mut self.tabs[self.active_tab];
-        let mode = std::mem::replace(&mut tab.interaction.mode, Box::new(NormalMode::default()));
-        let (next_mode, result) = mode.handle_key(tab, key_code, modifiers).await;
-        tab.interaction.mode = next_mode;
-        self.dispatch_key_result(result, key_code, modifiers).await;
-    }
-
-    async fn handle_mouse_event(&mut self, event: crossterm::event::MouseEvent) {
-        use crossterm::event::{MouseButton, MouseEventKind};
-        match event.kind {
-            MouseEventKind::ScrollUp => {
-                let h = self.tabs[self.active_tab].scroll.visible_height;
-                self.mouse_scroll(-((h / 2).max(1) as i32));
-            }
-            MouseEventKind::ScrollDown => {
-                let h = self.tabs[self.active_tab].scroll.visible_height;
-                self.mouse_scroll((h / 2).max(1) as i32);
-            }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if self.hit_test_scrollbar(event.column, event.row).is_some() {
-                    self.mouse.scrollbar_dragging = true;
-                }
-                self.handle_left_down(event.column, event.row).await;
-            }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if self.mouse.scrollbar_dragging {
-                    let scroll_pos = self.hit_test_scrollbar(event.column, event.row);
-                    if let Some(pos) = scroll_pos {
-                        self.tabs[self.active_tab].scroll.scroll_offset = pos;
-                    }
-                }
-            }
-            MouseEventKind::Up(MouseButton::Left) => {
-                self.mouse.scrollbar_dragging = false;
-            }
-            _ => {}
-        }
-    }
-
-    async fn handle_left_down(&mut self, col: u16, row: u16) {
-        let now = Instant::now();
-        if let Some((t, c, r)) = self.mouse.last_click.take() {
-            if t.elapsed().as_millis() < DOUBLE_CLICK_MS && c == col && r == row {
-                self.handle_double_click(col, row);
-                return;
-            }
-            self.handle_left_click(c, r).await;
-        }
-        if self.hit_test_log_panel(col, row).is_some() {
-            self.mouse.last_click = Some((now, col, row));
-        } else {
-            self.handle_left_click(col, row).await;
-        }
-    }
-
-    async fn flush_pending_click(&mut self) {
-        if let Some((t, c, r)) = self.mouse.last_click {
-            if t.elapsed().as_millis() < DOUBLE_CLICK_MS {
-                return;
-            }
-            self.mouse.last_click = None;
-            self.handle_left_click(c, r).await;
-        }
-    }
-
-    fn handle_double_click(&mut self, col: u16, row: u16) {
-        use crate::mode::visual_char_mode::{VisualMode, display_line_text, word_bounds_at};
-        let Some(visible_idx) = self.hit_test_log_panel(col, row) else {
-            return;
-        };
-        let char_col = self.col_to_char_offset(col);
-        self.tabs[self.active_tab].scroll.scroll_offset = visible_idx;
-        let line_text = display_line_text(&self.tabs[self.active_tab]);
-        if let Some((word_start, word_end)) = word_bounds_at(&line_text, char_col) {
-            let mut mode = VisualMode::new(line_text);
-            mode.anchor_col = Some(word_start);
-            mode.cursor_col = word_end;
-            self.tabs[self.active_tab].interaction.mode = Box::new(mode);
-        }
-    }
-
-    fn col_to_char_offset(&self, col: u16) -> usize {
-        let area = self.mouse.log_panel_area;
-        let tab = &self.tabs[self.active_tab];
-        let x_off: u16 = if tab.display.show_borders { 1 } else { 0 };
-        let total_lines = tab.file_reader.line_count();
-        let ln_prefix: u16 = if tab.display.show_line_numbers {
-            (total_lines.max(1).to_string().len() + 2) as u16
-        } else {
-            0
-        };
-        col.saturating_sub(area.x + x_off + ln_prefix) as usize + tab.scroll.horizontal_scroll
-    }
-
-    fn mouse_scroll(&mut self, delta: i32) {
-        let tab = &mut self.tabs[self.active_tab];
-        let max_scroll = tab.filter.visible_indices.len().saturating_sub(1);
-        if delta < 0 {
-            tab.stream.tail_mode = false;
-            tab.scroll.scroll_offset = tab
-                .scroll
-                .scroll_offset
-                .saturating_sub(delta.unsigned_abs() as usize);
-        } else {
-            let new_offset = (tab.scroll.scroll_offset + delta as usize).min(max_scroll);
-            tab.scroll.scroll_offset = new_offset;
-            if new_offset >= max_scroll {
-                tab.stream.tail_mode = true;
-            }
-        }
-        if matches!(
-            tab.interaction.mode.render_state(),
-            crate::mode::app_mode::ModeRenderState::Visual { .. }
-        ) {
-            let mut mode =
-                std::mem::replace(&mut tab.interaction.mode, Box::new(NormalMode::default()));
-            mode.on_scroll_line_change(tab);
-            tab.interaction.mode = mode;
-        }
-    }
-
-    fn hit_test_scrollbar(&self, col: u16, row: u16) -> Option<usize> {
-        let area = self.mouse.log_panel_area;
-        if row < area.y || row >= area.y + area.height {
-            return None;
-        }
-        let tab = &self.tabs[self.active_tab];
-        let show_borders = tab.display.show_borders;
-        let scrollbar_col = if show_borders {
-            area.right().saturating_sub(2)
-        } else {
-            area.right().saturating_sub(1)
-        };
-        if col != scrollbar_col {
-            return None;
-        }
-        let total_visible = tab.filter.visible_indices.len();
-        let max_scroll = total_visible.saturating_sub(tab.scroll.visible_height);
-        let bar_height = area.height as usize;
-        let pos = (row - area.y) as usize;
-        Some(((pos * max_scroll) / bar_height.max(1)).min(max_scroll))
-    }
-
-    fn hit_test_sidebar(&self, col: u16, row: u16) -> Option<usize> {
-        let area = self.mouse.sidebar_area?;
-        if !area.contains(Position::new(col, row)) {
-            return None;
-        }
-        let tab = &self.tabs[self.active_tab];
-        let item_row = row.saturating_sub(area.y + 1) as usize;
-        let filters = tab.log_manager.get_filters();
-        let num_filters = filters.len();
-        if num_filters == 0 {
-            return None;
-        }
-        let inner_width = if tab.display.show_borders {
-            area.width.saturating_sub(2) as usize
-        } else {
-            area.width.saturating_sub(1) as usize
-        };
-        let mut accumulated = 0usize;
-        for (idx, filter) in filters.iter().enumerate() {
-            let text = super::widgets::sidebar::filter_row_display_text(
-                filter,
-                idx,
-                0,
-                &tab.filter.match_counts,
-            );
-            let rc = super::field_layout::line_row_count(text.as_bytes(), inner_width);
-            if accumulated + rc > item_row {
-                return Some(idx);
-            }
-            accumulated += rc;
-        }
-        Some(num_filters.saturating_sub(1))
-    }
-
-    fn hit_test_log_panel(&self, col: u16, row: u16) -> Option<usize> {
-        let area = self.mouse.log_panel_area;
-        let tab = &self.tabs[self.active_tab];
-        let show_borders = tab.display.show_borders;
-        let show_tab_bar = !self.tabs.is_empty();
-        let x_off: u16 = if show_borders { 1 } else { 0 };
-        let y_off: u16 = if show_borders && !show_tab_bar { 1 } else { 0 };
-        let height_sub: u16 = if show_borders {
-            if show_tab_bar { 1 } else { 2 }
-        } else {
-            0
-        };
-        let inner = Rect {
-            x: area.x + x_off,
-            y: area.y + y_off,
-            width: area.width.saturating_sub(x_off * 2 + 1),
-            height: area.height.saturating_sub(height_sub),
-        };
-        if !inner.contains(Position::new(col, row)) {
-            return None;
-        }
-        let visual_row = (row - inner.y) as usize;
-        if !tab.display.wrap {
-            let visible_idx = tab.scroll.viewport_offset + visual_row;
-            return if visible_idx < tab.filter.visible_indices.len() {
-                Some(visible_idx)
-            } else {
-                None
-            };
-        }
-        // Wrap mode: one logical line may span multiple screen rows.
-        // Walk from viewport_offset accumulating row counts to find which
-        // logical visible-line index the clicked screen row belongs to.
-        let inner_width = tab.scroll.visible_width;
-        let parser = tab.display.format.as_deref();
-        let field_layout = &tab.display.field_layout;
-        let hidden_fields = &tab.display.hidden_fields;
-        let show_keys = tab.display.show_keys;
-        let visible_count = tab.filter.visible_indices.len();
-        let mut accumulated = 0usize;
-        let mut idx = tab.scroll.viewport_offset;
-        while idx < visible_count {
-            let line_bytes = tab
-                .file_reader
-                .get_line(tab.filter.visible_indices.get(idx));
-            let rc = super::field_layout::effective_row_count(
-                line_bytes,
-                inner_width,
-                parser,
-                field_layout,
-                hidden_fields,
-                show_keys,
-            );
-            if accumulated + rc > visual_row {
-                return Some(idx);
-            }
-            accumulated += rc;
-            idx += 1;
-        }
-        None
-    }
-
-    async fn handle_left_click(&mut self, col: u16, row: u16) {
-        if let Some(scroll_pos) = self.hit_test_scrollbar(col, row) {
-            self.tabs[self.active_tab].scroll.scroll_offset = scroll_pos;
-            return;
-        }
-        if let Some(filter_idx) = self.hit_test_sidebar(col, row) {
-            self.tabs[self.active_tab].interaction.mode = Box::new(FilterManagementMode {
-                selected_filter_index: filter_idx,
-            });
-            return;
-        }
-        if let Some(visible_idx) = self.hit_test_log_panel(col, row) {
-            self.tabs[self.active_tab].scroll.scroll_offset = visible_idx;
-            self.tabs[self.active_tab].interaction.mode = Box::new(NormalMode::default());
-        }
-    }
-
-    async fn save_app_bool(&self, key: SettingsKey, value: bool) {
-        let _ = self
-            .db
-            .save_app_setting(key, if value { "true" } else { "false" })
-            .await;
-    }
-
-    async fn handle_toggle_mode_bar(&mut self) {
-        self.display.show_mode_bar = !self.display.show_mode_bar;
-        for tab in &mut self.tabs {
-            tab.display.show_mode_bar = self.display.show_mode_bar;
-        }
-        self.save_app_bool(SettingsKey::ShowModeBar, self.display.show_mode_bar)
-            .await;
-    }
-
-    async fn handle_toggle_sidebar(&mut self) {
-        self.display.show_sidebar = !self.display.show_sidebar;
-        for tab in &mut self.tabs {
-            tab.display.show_sidebar = self.display.show_sidebar;
-        }
-        self.save_app_bool(SettingsKey::ShowSidebar, self.display.show_sidebar)
-            .await;
-    }
-
-    async fn handle_toggle_borders(&mut self) {
-        self.display.show_borders_default = !self.display.show_borders_default;
-        for tab in &mut self.tabs {
-            tab.display.show_borders = self.display.show_borders_default;
-        }
-        self.save_app_bool(SettingsKey::ShowBorders, self.display.show_borders_default)
-            .await;
-    }
-
-    async fn handle_toggle_wrap(&mut self) {
-        self.display.wrap = !self.display.wrap;
-        for tab in &mut self.tabs {
-            tab.display.wrap = self.display.wrap;
-        }
-        self.save_app_bool(SettingsKey::Wrap, self.display.wrap)
-            .await;
-    }
-
-    async fn handle_toggle_line_numbers(&mut self) {
-        self.display.show_line_numbers = !self.display.show_line_numbers;
-        for tab in &mut self.tabs {
-            tab.display.show_line_numbers = self.display.show_line_numbers;
-        }
-        self.save_app_bool(SettingsKey::ShowLineNumbers, self.display.show_line_numbers)
-            .await;
-    }
-
-    async fn handle_apply_value_colors(&mut self, disabled: std::collections::HashSet<String>) {
-        self.theme.value_colors.disabled = disabled;
-        for tab in &mut self.tabs {
-            tab.cache.render_gen = tab.cache.render_gen.wrapping_add(1);
-            tab.cache.render_line.clear();
-        }
-    }
-
-    async fn handle_open_files(&mut self, paths: Vec<String>) {
-        for path in paths {
-            if let Err(e) = self.open_file(&path).await {
-                self.tabs[self.active_tab].interaction.command_error = Some(e);
-                break;
-            }
-        }
-        self.remove_empty_placeholder();
-    }
-
-    async fn dispatch_key_result(
-        &mut self,
-        result: KeyResult,
-        key_code: KeyCode,
-        modifiers: KeyModifiers,
-    ) {
-        match result {
-            KeyResult::Handled => {}
-            KeyResult::Ignored => self.handle_global_key(key_code, modifiers).await,
-            KeyResult::ExecuteCommand(cmd) => self.execute_command_str(cmd).await,
-            KeyResult::RestoreSession(files) => self.restore_session(files).await,
-            KeyResult::DockerAttach(id, name) => self.open_docker_logs(id, name).await,
-            KeyResult::DltAttach(host, port, name) => self.open_dlt_stream(host, port, name).await,
-            KeyResult::ApplyValueColors(disabled) => self.handle_apply_value_colors(disabled).await,
-            KeyResult::ApplyLevelColors(disabled) => {
-                self.tabs[self.active_tab].display.level_colors_disabled = disabled;
-            }
-            KeyResult::CopyToClipboard(text) => self.copy_to_clipboard(text),
-            KeyResult::ToggleModeBar => self.handle_toggle_mode_bar().await,
-            KeyResult::ToggleSidebar => self.handle_toggle_sidebar().await,
-            KeyResult::ToggleBorders => self.handle_toggle_borders().await,
-            KeyResult::ToggleWrap => self.handle_toggle_wrap().await,
-            KeyResult::ToggleLineNumbers => self.handle_toggle_line_numbers().await,
-            KeyResult::OpenFiles(paths) => self.handle_open_files(paths).await,
-            KeyResult::AlwaysRestoreFile(_) => {
-                self.session.restore_file_policy = RestoreSessionPolicy::Always;
-                let _ = self
-                    .db
-                    .save_app_setting(
-                        SettingsKey::RestoreFileContext,
-                        &RestoreSessionPolicy::Always.to_string(),
-                    )
-                    .await;
-            }
-            KeyResult::NeverRestoreFile => {
-                self.session.restore_file_policy = RestoreSessionPolicy::Never;
-                let _ = self
-                    .db
-                    .save_app_setting(
-                        SettingsKey::RestoreFileContext,
-                        &RestoreSessionPolicy::Never.to_string(),
-                    )
-                    .await;
-            }
-            KeyResult::AlwaysRestoreSession(files) => {
-                self.session.restore_policy = RestoreSessionPolicy::Always;
-                let _ = self
-                    .db
-                    .save_app_setting(
-                        SettingsKey::RestoreSession,
-                        &RestoreSessionPolicy::Always.to_string(),
-                    )
-                    .await;
-                self.restore_session(files).await;
-            }
-            KeyResult::NeverRestoreSession => {
-                self.session.restore_policy = RestoreSessionPolicy::Never;
-                let _ = self
-                    .db
-                    .save_app_setting(
-                        SettingsKey::RestoreSession,
-                        &RestoreSessionPolicy::Never.to_string(),
-                    )
-                    .await;
-            }
-            KeyResult::OpenMergeSelect => self.handle_open_merge_select(),
-            KeyResult::OpenMergedView { source_tab_indices } => {
-                self.open_merge_tab(source_tab_indices).await;
-            }
-        }
-    }
-
-    fn copy_to_clipboard(&mut self, text: String) {
-        let tab = &mut self.tabs[self.active_tab];
-        let line_count = text.lines().count();
-
-        // Lazily initialize the clipboard, keeping it alive for the session so
-        // clipboard managers on Linux have time to read the contents.
-        if self.clipboard.is_none() {
-            match arboard::Clipboard::new() {
-                Ok(cb) => self.clipboard = Some(cb),
-                Err(e) => {
-                    tab.interaction.command_error = Some(format!("Failed to copy: {}", e));
-                    return;
-                }
-            }
-        }
-        let cb = self.clipboard.as_mut().unwrap();
-        match cb.set_text(text) {
-            Ok(()) => {
-                tab.interaction.command_error = Some(format!(
-                    "{} line{} copied to clipboard",
-                    line_count,
-                    if line_count == 1 { "" } else { "s" }
-                ));
-            }
-            Err(e) => {
-                tab.interaction.command_error = Some(format!("Failed to copy: {}", e));
-            }
-        }
-    }
-
     pub async fn start_mcp(&mut self, port: u16) -> std::io::Result<()> {
-        self.stop_mcp();
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        self.refresh_mcp_snapshot();
-        let handle = crate::mcp::start_mcp_server(port, self.mcp.snapshot.clone(), tx).await?;
-        self.mcp.server_handle = Some(handle);
-        self.mcp.cmd_rx = Some(rx);
-        Ok(())
+        let snapshot = self.build_mcp_snapshot();
+        self.mcp.start(port, snapshot).await
     }
 
     pub fn stop_mcp(&mut self) {
-        if let Some(handle) = self.mcp.server_handle.take() {
-            handle.cancel.cancel();
+        self.mcp.stop();
+    }
+
+    fn build_mcp_snapshot(&self) -> crate::mcp::McpSnapshot {
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            crate::mcp::McpSnapshot {
+                marked_lines: crate::mcp::build_marked_lines(&tab.file_reader, &tab.mark_manager),
+                annotations: crate::mcp::build_annotations(&tab.comment_manager),
+            }
+        } else {
+            crate::mcp::McpSnapshot::default()
         }
-        self.mcp.cmd_rx = None;
     }
 
     pub fn refresh_mcp_snapshot(&mut self) {
         if self.mcp.server_handle.is_none() {
             return;
         }
-        if let Some(tab) = self.tabs.get(self.active_tab) {
-            let snapshot = crate::mcp::McpSnapshot {
-                marked_lines: crate::mcp::build_marked_lines(&tab.file_reader, &tab.mark_manager),
-                annotations: crate::mcp::build_annotations(&tab.comment_manager),
-            };
-            let arc = self.mcp.snapshot.clone();
-            tokio::spawn(async move {
-                *arc.write().await = snapshot;
-            });
-        }
+        let snapshot = self.build_mcp_snapshot();
+        self.mcp.push_snapshot(snapshot);
     }
 
     pub async fn poll_mcp_commands(&mut self) {
-        if self.mcp.cmd_rx.is_none() {
-            return;
-        }
-        let mut cmds = Vec::new();
-        if let Some(rx) = &mut self.mcp.cmd_rx {
-            while let Ok(cmd) = rx.try_recv() {
-                cmds.push(cmd);
-            }
-        }
-        for cmd in cmds {
+        for cmd in self.mcp.drain_commands() {
             self.handle_mcp_command(cmd).await;
         }
     }
@@ -1117,81 +502,6 @@ impl App {
             }
         }
     }
-
-    pub(super) fn handle_open_merge_select(&mut self) {
-        use crate::mode::merge_select_mode::MergeSelectMode;
-        let (tabs, tab_indices): (Vec<(String, bool)>, Vec<usize>) = self
-            .tabs
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| t.merged.is_none())
-            .map(|(i, t)| ((t.title.clone(), i == self.active_tab), i))
-            .unzip();
-        if tabs.len() < 2 {
-            self.tabs[self.active_tab].interaction.command_error =
-                Some("No other tabs to merge".to_string());
-            return;
-        }
-        self.tabs[self.active_tab].interaction.mode =
-            Box::new(MergeSelectMode::new(tabs, tab_indices));
-    }
-
-    pub(crate) async fn open_merge_tab(&mut self, source_tab_indices: Vec<usize>) {
-        use crate::ui::tab_state::merged::{MergedState, build_merged_index};
-
-        let sources: Vec<crate::ingestion::FileReader> = source_tab_indices
-            .iter()
-            .map(|&i| self.tabs[i].file_reader.clone())
-            .collect();
-        let parsers: Vec<Option<std::sync::Arc<dyn crate::parser::LogFormatParser>>> =
-            source_tab_indices
-                .iter()
-                .map(|&i| self.tabs[i].display.format.clone())
-                .collect();
-        let year_maps: Vec<Option<std::sync::Arc<crate::ui::tab_state::year_map::YearMap>>> =
-            source_tab_indices
-                .iter()
-                .map(|&i| self.tabs[i].year_map.clone())
-                .collect();
-        let continuation_maps: Vec<Option<std::sync::Arc<Vec<usize>>>> = source_tab_indices
-            .iter()
-            .map(|&i| self.tabs[i].continuation_map.clone())
-            .collect();
-        let source_labels: Vec<String> = source_tab_indices
-            .iter()
-            .map(|&i| self.tabs[i].title.clone())
-            .collect();
-
-        let entries = build_merged_index(&sources, &parsers, &year_maps, &continuation_maps);
-        let source_line_counts: Vec<usize> = sources.iter().map(|s| s.line_count()).collect();
-        let label_col_width = source_labels.iter().map(|l| l.len()).max().unwrap_or(0);
-
-        let visible_count = entries.len();
-        let entries_arc = std::sync::Arc::new(entries);
-        let sources_arc = std::sync::Arc::new(sources);
-        let file_reader = crate::ingestion::FileReader::from_merged(entries_arc, sources_arc);
-
-        let title = format!("merged({})", source_tab_indices.len());
-        let log_manager = LogManager::new(self.db.clone(), None).await;
-        let mut tab = TabState::new(file_reader, log_manager, title);
-        // Merged tabs use per-source parsers from MergedState, not a single detected format.
-        tab.display.format = None;
-        tab.continuation_map = None;
-        tab.filter.visible_indices = VisibleLines::Filtered((0..visible_count).collect());
-        tab.display.show_line_numbers = false;
-        tab.merged = Some(MergedState {
-            source_tab_indices,
-            source_parsers: parsers,
-            source_labels,
-            source_line_counts,
-            label_col_width,
-            stopped: false,
-        });
-        self.apply_tab_defaults(&mut tab);
-
-        self.tabs.push(tab);
-        self.active_tab = self.tabs.len() - 1;
-    }
 }
 
 #[cfg(test)]
@@ -1203,6 +513,8 @@ mod tests {
     use crate::db::LogManager;
     use crate::filters::FilterType;
     use crate::ingestion::FileReader;
+    use crate::ui::KeyResult;
+    use crossterm::event::{KeyCode, KeyModifiers};
     use std::sync::Arc;
 
     /// Awaits all pending background filter computations across all tabs.
@@ -2538,54 +1850,10 @@ mod tests {
         )
         .build()
         .await;
-        app.mouse.log_panel_area = log_area;
-        app.mouse.sidebar_area = sidebar_area;
+        app.input.log_panel_area = log_area;
+        app.input.sidebar_area = sidebar_area;
         app.tabs[0].scroll.visible_height = visible_height;
         app
-    }
-
-    #[tokio::test]
-    async fn test_hit_test_scrollbar_correct_column_no_borders() {
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 40,
-        };
-        let app = app_with_areas(200, 40, area, None).await;
-        assert!(app.hit_test_scrollbar(79, 10).is_some());
-        assert!(app.hit_test_scrollbar(78, 10).is_none());
-    }
-
-    #[tokio::test]
-    async fn test_hit_test_scrollbar_out_of_row_range() {
-        let area = Rect {
-            x: 0,
-            y: 5,
-            width: 80,
-            height: 20,
-        };
-        let app = app_with_areas(200, 20, area, None).await;
-        assert!(app.hit_test_scrollbar(79, 4).is_none());
-        assert!(app.hit_test_scrollbar(79, 25).is_none());
-        assert!(app.hit_test_scrollbar(79, 5).is_some());
-        assert!(app.hit_test_scrollbar(79, 24).is_some());
-    }
-
-    #[tokio::test]
-    async fn test_hit_test_scrollbar_proportional_position() {
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 10,
-        };
-        let app = app_with_areas(100, 10, area, None).await;
-        let pos = app.hit_test_scrollbar(79, 5).unwrap();
-        assert_eq!(pos, 45);
-        assert_eq!(app.hit_test_scrollbar(79, 0).unwrap(), 0);
-        let bottom_pos = app.hit_test_scrollbar(79, 9).unwrap();
-        assert!(bottom_pos <= 90);
     }
 
     #[tokio::test]
@@ -2605,45 +1873,11 @@ mod tests {
         let mut app = app_with_areas(10, 10, log_area, Some(sidebar_area)).await;
         app.execute_command_str("filter foo".to_string()).await;
         app.execute_command_str("filter bar".to_string()).await;
-        // title row maps to filter 0 (saturating sub)
-        assert_eq!(app.hit_test_sidebar(65, 0), Some(0));
-        // filter 0 row
-        assert_eq!(app.hit_test_sidebar(65, 1), Some(0));
-        // filter 1 row
-        assert_eq!(app.hit_test_sidebar(65, 2), Some(1));
-        // whitespace below filters clamps to last filter
-        assert_eq!(app.hit_test_sidebar(65, 5), Some(1));
-    }
-
-    #[tokio::test]
-    async fn test_hit_test_sidebar_outside_returns_none() {
-        let log_area = Rect {
-            x: 0,
-            y: 0,
-            width: 60,
-            height: 40,
-        };
-        let sidebar_area = Rect {
-            x: 60,
-            y: 0,
-            width: 20,
-            height: 40,
-        };
-        let app = app_with_areas(10, 10, log_area, Some(sidebar_area)).await;
-        assert!(app.hit_test_sidebar(59, 0).is_none());
-        assert!(app.hit_test_sidebar(80, 0).is_none());
-    }
-
-    #[tokio::test]
-    async fn test_hit_test_sidebar_no_sidebar_returns_none() {
-        let log_area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 40,
-        };
-        let app = app_with_areas(10, 10, log_area, None).await;
-        assert!(app.hit_test_sidebar(70, 5).is_none());
+        let tab = app.tab();
+        assert_eq!(app.input.hit_test_sidebar(65, 0, tab), Some(0));
+        assert_eq!(app.input.hit_test_sidebar(65, 1, tab), Some(0));
+        assert_eq!(app.input.hit_test_sidebar(65, 2, tab), Some(1));
+        assert_eq!(app.input.hit_test_sidebar(65, 5, tab), Some(1));
     }
 
     #[tokio::test]
@@ -2709,68 +1943,6 @@ mod tests {
             app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::FilterManagement { selected_index: 2 }
         ));
-    }
-
-    #[tokio::test]
-    async fn test_hit_test_log_panel_maps_row_to_visible_idx() {
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 20,
-        };
-        let mut app = app_with_areas(50, 20, area, None).await;
-        app.tabs[0].scroll.viewport_offset = 5;
-        assert_eq!(app.hit_test_log_panel(10, 3), Some(8));
-        assert_eq!(app.hit_test_log_panel(10, 0), Some(5));
-    }
-
-    #[tokio::test]
-    async fn test_hit_test_log_panel_with_borders_no_top_border() {
-        // With borders and a tab bar (always present), the log panel renders with
-        // LEFT | RIGHT | BOTTOM only — no top border. Row 0 of the area is the
-        // first log line, not a border row.
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 20,
-        };
-        let mut app = app_with_areas(50, 20, area, None).await;
-        app.tabs[0].display.show_borders = true;
-        app.tabs[0].scroll.viewport_offset = 5;
-        // row 0 is the first content row (no top border)
-        assert_eq!(app.hit_test_log_panel(10, 0), Some(5));
-        assert_eq!(app.hit_test_log_panel(10, 3), Some(8));
-        // row 19 is the bottom border — should not select a line
-        assert_eq!(app.hit_test_log_panel(10, 19), None);
-    }
-
-    #[tokio::test]
-    async fn test_hit_test_log_panel_outside_returns_none() {
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 20,
-        };
-        let app = app_with_areas(50, 20, area, None).await;
-        assert!(app.hit_test_log_panel(79, 5).is_none());
-        assert!(app.hit_test_log_panel(10, 20).is_none());
-    }
-
-    #[tokio::test]
-    async fn test_hit_test_log_panel_beyond_visible_lines_returns_none() {
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 20,
-        };
-        let mut app = app_with_areas(5, 20, area, None).await;
-        app.tabs[0].scroll.scroll_offset = 0;
-        assert!(app.hit_test_log_panel(10, 5).is_none());
-        assert!(app.hit_test_log_panel(10, 4).is_some());
     }
 
     #[tokio::test]
@@ -3022,15 +2194,15 @@ mod tests {
         app.handle_left_down(10, 7).await;
         // click is deferred: scroll_offset unchanged
         assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
-        assert!(app.mouse.last_click.is_some());
+        assert!(app.input.last_click.is_some());
         // flush before timeout: still deferred
         app.flush_pending_click().await;
         assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
         // simulate timeout by backdating the pending click
-        app.mouse.last_click = Some((Instant::now() - Duration::from_millis(400), 10, 7));
+        app.input.last_click = Some((Instant::now() - Duration::from_millis(400), 10, 7));
         app.flush_pending_click().await;
         assert_eq!(app.tabs[0].scroll.scroll_offset, 7);
-        assert!(app.mouse.last_click.is_none());
+        assert!(app.input.last_click.is_none());
     }
 
     #[tokio::test]
@@ -3047,10 +2219,10 @@ mod tests {
         app.tabs[0].display.show_line_numbers = false;
         // first click defers
         app.handle_left_down(3, 0).await;
-        assert!(app.mouse.last_click.is_some());
+        assert!(app.input.last_click.is_some());
         // second click at same position within window → double-click, no single-click
         app.handle_left_down(3, 0).await;
-        assert!(app.mouse.last_click.is_none());
+        assert!(app.input.last_click.is_none());
         // should be in Visual or VisualLine mode, not Normal
         assert!(!matches!(
             app.tabs[0].interaction.mode.render_state(),
@@ -3077,7 +2249,7 @@ mod tests {
         app.execute_command_str("filter foo".to_string()).await;
         // sidebar click should take effect immediately, not be deferred
         app.handle_left_down(65, 1).await;
-        assert!(app.mouse.last_click.is_none());
+        assert!(app.input.last_click.is_none());
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::FilterManagement { .. }
@@ -3105,7 +2277,7 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::NONE,
         })
         .await;
-        assert!(app.mouse.scrollbar_dragging);
+        assert!(app.input.scrollbar_dragging);
         // drag to halfway down the bar
         app.handle_mouse_event(MouseEvent {
             kind: MouseEventKind::Drag(MouseButton::Left),
@@ -3128,7 +2300,7 @@ mod tests {
         };
         let mut app = app_with_areas(50, 10, area, None).await;
         app.tabs[0].display.show_borders = false;
-        app.mouse.scrollbar_dragging = true;
+        app.input.scrollbar_dragging = true;
         app.handle_mouse_event(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
             column: 19,
@@ -3136,7 +2308,7 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::NONE,
         })
         .await;
-        assert!(!app.mouse.scrollbar_dragging);
+        assert!(!app.input.scrollbar_dragging);
     }
 
     #[tokio::test]
