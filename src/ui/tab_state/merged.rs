@@ -5,18 +5,6 @@ use crate::ingestion::{FileReader, MergedEntry};
 use crate::parser::LogFormatParser;
 use crate::ui::tab_state::year_map::YearMap;
 
-/// Upper bits of compound key encode the source index; lower bits encode line index.
-pub const SOURCE_IDX_SHIFT: usize = 24;
-const LINE_IDX_MASK: usize = (1 << SOURCE_IDX_SHIFT) - 1;
-
-pub fn encode_key(source_idx: usize, line_idx: usize) -> usize {
-    (source_idx << SOURCE_IDX_SHIFT) | (line_idx & LINE_IDX_MASK)
-}
-
-pub fn decode_key(key: usize) -> (usize, usize) {
-    (key >> SOURCE_IDX_SHIFT, key & LINE_IDX_MASK)
-}
-
 pub struct MergedState {
     /// Which tab index each source maps to (for live-update polling).
     pub source_tab_indices: Vec<usize>,
