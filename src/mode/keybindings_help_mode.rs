@@ -545,7 +545,7 @@ pub fn filter_rows(rows: &[HelpRow], query: &str) -> Vec<HelpRow> {
     if query.is_empty() {
         return rows.to_vec();
     }
-    use crate::auto_complete::fuzzy_match;
+    use crate::commands::auto_complete::fuzzy_match;
 
     // First pass: collect which entry indices match.
     // Keep a header only if a subsequent entry (before the next header) matches.

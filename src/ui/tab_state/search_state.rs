@@ -1,4 +1,4 @@
-use crate::search::Search;
+use crate::utils::search::Search;
 
 use super::SearchHandle;
 

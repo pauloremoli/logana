@@ -201,7 +201,7 @@ async fn apply_inline_filters(
 ) -> Result<()> {
     use clap::Parser;
 
-    use crate::auto_complete::shell_split;
+    use crate::commands::auto_complete::shell_split;
     use crate::commands::{CommandLine, Commands};
 
     for args_str in include_filters {

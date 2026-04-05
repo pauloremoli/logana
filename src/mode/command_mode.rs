@@ -1,10 +1,10 @@
 use crate::{
-    auto_complete::{
+    commands::FILE_PATH_COMMANDS,
+    commands::auto_complete::{
         FieldCompletion, complete_color, complete_field_name, complete_field_value,
         complete_file_path, complete_flags, extract_color_partial, extract_field_partial,
         extract_flag_partial, find_command_completions, fuzzy_match, shell_split,
     },
-    commands::FILE_PATH_COMMANDS,
     config::Keybindings,
     mode::{
         app_mode::{Mode, ModeRenderState, status_entry},
@@ -1123,7 +1123,7 @@ mod tests {
 
     #[test]
     fn test_parse_enable_mcp_default_port() {
-        use crate::auto_complete::shell_split;
+        use crate::commands::auto_complete::shell_split;
         use clap::Parser;
         let cmd = CommandLine::try_parse_from(shell_split("enable-mcp")).unwrap();
         match cmd.command {
@@ -1134,7 +1134,7 @@ mod tests {
 
     #[test]
     fn test_parse_enable_mcp_custom_port() {
-        use crate::auto_complete::shell_split;
+        use crate::commands::auto_complete::shell_split;
         use clap::Parser;
         let cmd = CommandLine::try_parse_from(shell_split("enable-mcp --port 8080")).unwrap();
         match cmd.command {
@@ -1145,7 +1145,7 @@ mod tests {
 
     #[test]
     fn test_parse_disable_mcp() {
-        use crate::auto_complete::shell_split;
+        use crate::commands::auto_complete::shell_split;
         use clap::Parser;
         let cmd = CommandLine::try_parse_from(shell_split("disable-mcp")).unwrap();
         assert!(matches!(cmd.command, Some(Commands::DisableMcp)));

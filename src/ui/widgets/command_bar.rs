@@ -3,7 +3,7 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-use crate::auto_complete::{
+use crate::commands::auto_complete::{
     FieldCompletion, complete_color, complete_field_name, complete_field_value, complete_file_path,
     complete_flags, extract_color_partial, extract_field_partial, extract_flag_partial,
     find_command_completions, fuzzy_match, shell_split,

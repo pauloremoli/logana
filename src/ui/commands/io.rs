@@ -1,4 +1,4 @@
-use crate::auto_complete::expand_tilde;
+use crate::commands::auto_complete::expand_tilde;
 use crate::ui::App;
 use crate::utils::filesystem::list_dir_files;
 use std::io::{BufWriter, Write};

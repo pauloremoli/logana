@@ -1,4 +1,4 @@
-use crate::types::Comment;
+use crate::db::Comment;
 
 #[derive(Default)]
 pub struct CommentManager {
@@ -88,7 +88,7 @@ mod tests {
     fn test_set_replaces_all() {
         let mut c = CommentManager::default();
         c.add("old".into(), vec![0]);
-        c.set(vec![crate::types::Comment {
+        c.set(vec![crate::db::Comment {
             text: "new".into(),
             line_indices: vec![1],
         }]);

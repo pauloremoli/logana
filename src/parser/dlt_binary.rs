@@ -954,7 +954,7 @@ mod tests {
 
     #[test]
     fn test_wire_message_with_ext_header() {
-        let msin = (0 << 1) | (4 << 4); // log info non-verbose
+        let msin = 4 << 4; // log info non-verbose
         let data = make_two_wire_msgs(
             VERSION_1 | UEH,
             Some((b"APP1", b"CTX1", msin, 0)),
@@ -973,7 +973,7 @@ mod tests {
 
     #[test]
     fn test_wire_multiple_messages() {
-        let msin = (0 << 1) | (4 << 4); // log info non-verbose
+        let msin = 4 << 4; // log info non-verbose
         let mut data = Vec::new();
         for i in 0..3u8 {
             data.extend(build_wire_msg(
@@ -994,7 +994,7 @@ mod tests {
 
     #[test]
     fn test_wire_with_ecu_id() {
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         let data = make_two_wire_msgs(
             VERSION_1 | UEH | WEID,
             Some((b"APP1", b"CTX1", msin, 0)),
@@ -1007,7 +1007,7 @@ mod tests {
 
     #[test]
     fn test_wire_with_timestamp() {
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         let data = make_two_wire_msgs(
             VERSION_1 | UEH | WTMS,
             Some((b"APP1", b"CTX1", msin, 0)),
@@ -1028,7 +1028,7 @@ mod tests {
 
     #[test]
     fn test_wire_parseable_by_dlt_text_parser() {
-        let msin = (0 << 1) | (4 << 4); // log info non-verbose
+        let msin = 4 << 4; // log info non-verbose
         let data = make_two_wire_msgs(
             VERSION_1 | UEH | WEID,
             Some((b"APP1", b"CTX1", msin, 0)),
@@ -1072,7 +1072,7 @@ mod tests {
         payload.extend_from_slice(&(test_str.len() as u16).to_le_bytes());
         payload.extend_from_slice(test_str);
 
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 1)), &payload);
         let text = convert_dlt_binary_to_text(&data);
         let output = std::str::from_utf8(&text).unwrap();
@@ -1247,7 +1247,7 @@ mod tests {
         let msg_len = 4 + 10 + payload.len();
         let mut msg = build_std_header(htyp, 0, msg_len as u16);
 
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         msg.extend_from_slice(&build_ext_header(msin, 0, b"APP1", b"CTX1"));
         msg.extend_from_slice(payload);
         data.extend_from_slice(&msg);
@@ -1275,7 +1275,7 @@ mod tests {
         msg.extend_from_slice(&42u32.to_be_bytes());
         msg.extend_from_slice(&12345u32.to_be_bytes());
 
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         msg.extend_from_slice(&build_ext_header(msin, 0, b"APP1", b"CTX1"));
         msg.extend_from_slice(payload);
         data.extend_from_slice(&msg);
@@ -1299,7 +1299,7 @@ mod tests {
 
         let msg_len = 4 + 10 + payload.len();
         let mut msg = build_std_header(htyp, 0, msg_len as u16);
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         msg.extend_from_slice(&build_ext_header(msin, 1, b"APP1", b"CTX1"));
         msg.extend_from_slice(&payload);
         data.extend_from_slice(&msg);
@@ -1321,7 +1321,7 @@ mod tests {
 
         let msg_len = 4 + 10 + payload.len();
         let mut msg = build_std_header(htyp, 0, msg_len as u16);
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         msg.extend_from_slice(&build_ext_header(msin, 1, b"APP1", b"CTX1"));
         msg.extend_from_slice(&payload);
         data.extend_from_slice(&msg);
@@ -1340,7 +1340,7 @@ mod tests {
 
         let msg_len = 4 + 10 + payload.len();
         let mut msg = build_std_header(htyp, 0, msg_len as u16);
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         msg.extend_from_slice(&build_ext_header(msin, 0, b"APP1", b"CTX1"));
         msg.extend_from_slice(payload);
         data.extend_from_slice(&msg);
@@ -1412,7 +1412,7 @@ mod tests {
 
         let msg_len = 4 + 10 + payload.len();
         let mut msg = build_std_header(htyp, 0, msg_len as u16);
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         msg.extend_from_slice(&build_ext_header(msin, 1, b"APP1", b"CTX1"));
         msg.extend_from_slice(&payload);
         data.extend_from_slice(&msg);
@@ -1482,7 +1482,7 @@ mod tests {
 
     #[test]
     fn test_convert_wire_streaming_full_messages() {
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         let mut data = Vec::new();
         for i in 0..3u8 {
             data.extend(build_wire_msg(
@@ -1503,7 +1503,7 @@ mod tests {
 
     #[test]
     fn test_convert_wire_streaming_partial_message_preserved() {
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         let msg1 = build_wire_msg(
             VERSION_1 | UEH,
             0,
@@ -1537,7 +1537,7 @@ mod tests {
 
     #[test]
     fn test_convert_wire_streaming_single_message() {
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         let data = build_wire_msg(
             VERSION_1 | UEH,
             0,
@@ -1567,7 +1567,7 @@ mod tests {
         payload.extend_from_slice(&(s.len() as u16).to_le_bytes());
         payload.extend_from_slice(s);
 
-        let msin = VERBOSE_BIT | (0 << 1) | (3 << 4); // log warn
+        let msin = VERBOSE_BIT | (3 << 4); // log warn
         let data = make_two_wire_msgs(
             VERSION_1 | UEH,
             Some((b"LOG\0", b"TEST", msin, 2)),
@@ -1590,7 +1590,7 @@ mod tests {
         payload.extend_from_slice(&ti32.to_le_bytes());
         payload.extend_from_slice(&(-42i32).to_le_bytes());
 
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 2)), &payload);
         let text = convert_dlt_binary_to_text(&data);
         let output = std::str::from_utf8(&text).unwrap();
@@ -1605,7 +1605,7 @@ mod tests {
         payload.extend_from_slice(&ti.to_le_bytes());
         payload.push(1);
 
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 1)), &payload);
         let text = convert_dlt_binary_to_text(&data);
         let output = std::str::from_utf8(&text).unwrap();
@@ -1621,7 +1621,7 @@ mod tests {
         payload.extend_from_slice(&(raw_data.len() as u16).to_le_bytes());
         payload.extend_from_slice(raw_data);
 
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 1)), &payload);
         let text = convert_dlt_binary_to_text(&data);
         let output = std::str::from_utf8(&text).unwrap();
@@ -1629,13 +1629,14 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_verbose_floa_f32_arg() {
         let mut payload = Vec::new();
         let ti: u32 = TINFO_FLOA | 3; // TYLE=3 → 4 bytes (f32)
         payload.extend_from_slice(&ti.to_le_bytes());
         payload.extend_from_slice(&3.14f32.to_le_bytes());
 
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 1)), &payload);
         let text = convert_dlt_binary_to_text(&data);
         let output = std::str::from_utf8(&text).unwrap();
@@ -1643,13 +1644,14 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_verbose_floa_f64_arg() {
         let mut payload = Vec::new();
         let ti: u32 = TINFO_FLOA | 4; // TYLE=4 → 8 bytes (f64)
         payload.extend_from_slice(&ti.to_le_bytes());
         payload.extend_from_slice(&2.718281828f64.to_le_bytes());
 
-        let msin = VERBOSE_BIT | (0 << 1) | (4 << 4);
+        let msin = VERBOSE_BIT | (4 << 4);
         let data = make_two_wire_msgs(VERSION_1 | UEH, Some((b"APP1", b"CTX1", msin, 1)), &payload);
         let text = convert_dlt_binary_to_text(&data);
         let output = std::str::from_utf8(&text).unwrap();
@@ -1661,7 +1663,7 @@ mod tests {
     #[test]
     fn test_wire_timestamp_with_wtms() {
         // 10000 in 0.1ms units = 1 second → "00:00:01.000000"
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         let data = build_wire_msg_with_ts(
             VERSION_1 | UEH | WTMS,
             0,
@@ -1676,7 +1678,7 @@ mod tests {
 
     #[test]
     fn test_wire_timestamp_without_wtms() {
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         let mut data = build_wire_msg(
             VERSION_1 | UEH,
             0,
@@ -1697,7 +1699,7 @@ mod tests {
     #[test]
     fn test_wire_timestamp_large_value() {
         // 36_000_000 * 0.1ms = 3_600_000ms = 3600s = 1 hour
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         let data = build_wire_msg_with_ts(
             VERSION_1 | UEH | WTMS,
             0,
@@ -1712,7 +1714,7 @@ mod tests {
 
     #[test]
     fn test_wire_streaming_uses_received_timestamp() {
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         let data = build_wire_msg_with_ts(
             VERSION_1 | UEH | WTMS,
             0,
@@ -1733,7 +1735,7 @@ mod tests {
 
     #[test]
     fn test_wire_streaming_mcnt_in_output() {
-        let msin = (0 << 1) | (4 << 4);
+        let msin = 4 << 4;
         let data = build_wire_msg(
             VERSION_1 | UEH,
             42,

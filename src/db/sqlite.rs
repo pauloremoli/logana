@@ -1,5 +1,5 @@
+use crate::db::Comment;
 use crate::filters::{ColorConfig, FilterDef, FilterInsertOptions, FilterType};
-use crate::types::Comment;
 use anyhow::Result;
 use async_trait::async_trait;
 use sqlx::Row;
@@ -1210,7 +1210,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_context_saves_and_loads_comments() {
-        use crate::types::Comment;
+        use crate::db::Comment;
         let db = setup_db().await;
 
         let ctx = FileContext {

@@ -14,9 +14,9 @@ use crate::filters::{FilterDecision, FilterManager};
 use crate::ingestion::FileReader;
 use crate::mode::normal_mode::NormalMode;
 use crate::parser::{LogFormatParser, detect_format};
-use crate::search::Search;
-use crate::search::SearchResult;
 use crate::ui::FieldLayout;
+use crate::utils::search::Search;
+use crate::utils::search::SearchResult;
 
 pub mod cache_state;
 pub mod display_config;
@@ -2217,11 +2217,11 @@ impl TabState {
     ///   visible set) so that available values are not limited by the current filter state.
     /// - Names are returned sorted by frequency (fields present in the most lines first), with
     ///   ties broken alphabetically, so the most universal fields appear first in autocomplete.
-    pub fn build_field_index(&self) -> crate::auto_complete::FieldIndex {
+    pub fn build_field_index(&self) -> crate::commands::auto_complete::FieldIndex {
         use std::collections::HashSet;
 
         let Some(parser) = &self.display.format else {
-            return crate::auto_complete::FieldIndex::default();
+            return crate::commands::auto_complete::FieldIndex::default();
         };
 
         const SAMPLE_LIMIT: usize = 5_000;
@@ -2273,7 +2273,7 @@ impl TabState {
             values.insert(k, v);
         }
 
-        crate::auto_complete::FieldIndex {
+        crate::commands::auto_complete::FieldIndex {
             names: sorted_names,
             values,
         }
@@ -2496,11 +2496,11 @@ pub fn watch_state_from_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Comment;
     use crate::db::LogManager;
     use crate::db::{AppSettingsStore, Database, FileContext};
     use crate::filters::{FilterOptions, FilterType};
     use crate::ingestion::FileReader;
-    use crate::types::Comment;
     use std::sync::Arc;
 
     async fn make_tab(lines: &[&str]) -> TabState {
@@ -4260,7 +4260,7 @@ mod tests {
             "ts should be normalised to canonical 'timestamp' in field names"
         );
         assert!(
-            index.values.get("timestamp").map_or(true, |v| v.is_empty()),
+            index.values.get("timestamp").is_none_or(|v| v.is_empty()),
             "timestamp should have no sampled values"
         );
         assert!(!index.values.get("level").unwrap_or(&vec![]).is_empty());
@@ -4279,7 +4279,7 @@ mod tests {
             "msg should be normalised to canonical 'message' in field names"
         );
         assert!(
-            index.values.get("message").map_or(true, |v| v.is_empty()),
+            index.values.get("message").is_none_or(|v| v.is_empty()),
             "message should have no sampled values"
         );
         assert!(!index.values.get("level").unwrap_or(&vec![]).is_empty());

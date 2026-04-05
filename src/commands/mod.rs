@@ -1,3 +1,4 @@
+pub mod auto_complete;
 pub mod export;
 pub mod info;
 pub mod parser;

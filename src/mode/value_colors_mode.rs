@@ -1,5 +1,5 @@
 use crate::{
-    auto_complete::fuzzy_match,
+    commands::auto_complete::fuzzy_match,
     config::Keybindings,
     mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,

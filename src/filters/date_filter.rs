@@ -996,7 +996,7 @@ mod tests {
         let (b, mode, gran) = parse_bound("01:30:45").unwrap();
         assert_eq!(mode, ComparisonMode::TimeOnly);
         assert_eq!(gran, Granularity::Second);
-        assert_eq!(b.time_val, Some(1 * 3600 + 30 * 60 + 45));
+        assert_eq!(b.time_val, Some(3600 + 30 * 60 + 45));
     }
 
     #[test]

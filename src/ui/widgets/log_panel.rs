@@ -11,10 +11,10 @@ use ratatui::{
 
 use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
 use crate::parser::LogLevel;
-use crate::search::SearchResult;
 use crate::theme::Theme;
 use crate::ui::field_layout::{apply_field_layout, effective_row_count};
 use crate::ui::{CachedParsedLine, TabState, VisibleLines};
+use crate::utils::search::SearchResult;
 use crate::value_colors::{
     VALUE_STYLE_HTTP_DELETE, VALUE_STYLE_HTTP_GET, VALUE_STYLE_HTTP_OTHER, VALUE_STYLE_HTTP_PATCH,
     VALUE_STYLE_HTTP_POST, VALUE_STYLE_HTTP_PUT, VALUE_STYLE_IP, VALUE_STYLE_STATUS_2XX,

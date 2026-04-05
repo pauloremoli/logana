@@ -30,40 +30,6 @@ impl SidebarSide {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::str::FromStr;
-
-    #[test]
-    fn sidebar_side_parses_left() {
-        assert_eq!(SidebarSide::from_str("left").unwrap(), SidebarSide::Left);
-    }
-
-    #[test]
-    fn sidebar_side_parses_right() {
-        assert_eq!(SidebarSide::from_str("right").unwrap(), SidebarSide::Right);
-    }
-
-    #[test]
-    fn sidebar_side_displays_lowercase() {
-        assert_eq!(SidebarSide::Left.to_string(), "left");
-        assert_eq!(SidebarSide::Right.to_string(), "right");
-    }
-
-    #[test]
-    fn sidebar_side_rejects_invalid() {
-        assert!(SidebarSide::from_str("top").is_err());
-        assert!(SidebarSide::from_str("Left").is_err());
-    }
-
-    #[test]
-    fn sidebar_side_is_left() {
-        assert!(SidebarSide::Left.is_left());
-        assert!(!SidebarSide::Right.is_left());
-    }
-}
-
 pub struct DisplayConfig {
     pub wrap: bool,
     pub show_line_numbers: bool,
@@ -97,5 +63,39 @@ impl Default for DisplayConfig {
             field_layout: FieldLayout::default(),
             level_colors_disabled: HashSet::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn sidebar_side_parses_left() {
+        assert_eq!(SidebarSide::from_str("left").unwrap(), SidebarSide::Left);
+    }
+
+    #[test]
+    fn sidebar_side_parses_right() {
+        assert_eq!(SidebarSide::from_str("right").unwrap(), SidebarSide::Right);
+    }
+
+    #[test]
+    fn sidebar_side_displays_lowercase() {
+        assert_eq!(SidebarSide::Left.to_string(), "left");
+        assert_eq!(SidebarSide::Right.to_string(), "right");
+    }
+
+    #[test]
+    fn sidebar_side_rejects_invalid() {
+        assert!(SidebarSide::from_str("top").is_err());
+        assert!(SidebarSide::from_str("Left").is_err());
+    }
+
+    #[test]
+    fn sidebar_side_is_left() {
+        assert!(SidebarSide::Left.is_left());
+        assert!(!SidebarSide::Right.is_left());
     }
 }

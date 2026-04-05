@@ -1314,9 +1314,8 @@ mod tests {
     use crate::mode::app_mode::ModeRenderState;
     use crate::theme::Theme;
     use crate::ui::{
-        App, ConnectFn, FileLoadState, FileWatchState, FilterChunk, FilterHandle, LoadContext,
-        SearchHandle, StdinLoadState, StreamConnection, StreamRetryState, TabState, VisibleLines,
-        watch_state_from_connection, watch_state_from_file,
+        App, ConnectFn, FileWatchState, FilterChunk, FilterHandle, LoadContext, SearchHandle,
+        StdinLoadState, StreamConnection, StreamRetryState, TabState, VisibleLines,
     };
     use std::collections::VecDeque;
     use std::sync::Arc;
@@ -3140,7 +3139,7 @@ mod tests {
             .expect("cached_scan_result must be set after scan completes");
         assert_eq!(cached.line_count, 3);
         assert!(!cached.filter_fingerprint.is_empty());
-        assert_eq!(cached.raw_mode, false);
+        assert!(!cached.raw_mode);
     }
 
     #[tokio::test]
@@ -3161,7 +3160,7 @@ mod tests {
 
         let tab = &app.tabs[0];
         assert!(
-            tab.filter.visible_indices.len() > 0,
+            !tab.filter.visible_indices.is_empty(),
             "OTLP lines should be visible"
         );
         assert!(
@@ -3260,7 +3259,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_search_accumulates_results() {
-        use crate::search::SearchResult;
+        use crate::utils::search::SearchResult;
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
 
@@ -3292,7 +3291,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_search_done_clears_handle() {
-        use crate::search::SearchResult;
+        use crate::utils::search::SearchResult;
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
 
@@ -3322,7 +3321,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_advance_search_navigate_scrolls_to_match() {
-        use crate::search::SearchResult;
+        use crate::utils::search::SearchResult;
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
 
@@ -3447,7 +3446,7 @@ mod tests {
 
         let tab = &app.tabs[0];
         assert!(
-            tab.filter.visible_indices.len() > 0,
+            !tab.filter.visible_indices.is_empty(),
             "gRPC lines should be visible"
         );
     }

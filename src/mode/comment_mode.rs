@@ -1,11 +1,11 @@
 use crate::{
     config::Keybindings,
+    db::Comment,
     mode::{
         app_mode::{Mode, ModeRenderState, status_entry},
         normal_mode::NormalMode,
     },
     theme::Theme,
-    types::Comment,
     ui::{KeyResult, TabState},
 };
 use async_trait::async_trait;

@@ -2340,10 +2340,8 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
 
         let cursor_row = 1u16;
-        let has_cursor_bg = (0..buf.area.width).any(|x| {
-            buf.cell((x, cursor_row))
-                .map_or(false, |c| c.bg == cursor_bg)
-        });
+        let has_cursor_bg = (0..buf.area.width)
+            .any(|x| buf.cell((x, cursor_row)).is_some_and(|c| c.bg == cursor_bg));
         assert!(!has_cursor_bg, "cursor line should not use cursor_bg color");
     }
 

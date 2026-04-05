@@ -1,9 +1,9 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use logana::db::Database;
-use logana::file_reader::FileReader;
-use logana::filters::FilterType;
+use logana::db::log_manager::LogManager;
+use logana::filters::{FilterOptions, FilterType};
 use logana::headless::run_headless_to_writer;
-use logana::log_manager::LogManager;
+use logana::ingestion::file_reader::FileReader;
 use std::sync::Arc;
 
 fn plain_log_bytes(lines: usize) -> Vec<u8> {
@@ -48,7 +48,7 @@ async fn make_manager_with(filters: &[(&str, FilterType)]) -> LogManager {
     let db = Arc::new(Database::in_memory().await.unwrap());
     let mut lm = LogManager::new(db, None).await;
     for (pattern, ft) in filters {
-        lm.add_filter_with_color((*pattern).to_string(), ft.clone(), None, None, true)
+        lm.add_filter_with_color((*pattern).to_string(), ft.clone(), FilterOptions::default())
             .await;
     }
     lm
@@ -66,7 +66,7 @@ fn bench_headless_no_filters(c: &mut Criterion) {
                 let reader = FileReader::from_bytes(data.clone());
                 let lm = runtime.block_on(make_manager());
                 let mut sink = Vec::new();
-                run_headless_to_writer(reader, lm, &mut sink).unwrap();
+                run_headless_to_writer(reader, &lm, &mut sink).unwrap();
                 sink
             })
         });
@@ -87,7 +87,7 @@ fn bench_headless_one_include(c: &mut Criterion) {
                 let reader = FileReader::from_bytes(data.clone());
                 let lm = runtime.block_on(make_manager_with(&[("ERROR", FilterType::Include)]));
                 let mut sink = Vec::new();
-                run_headless_to_writer(reader, lm, &mut sink).unwrap();
+                run_headless_to_writer(reader, &lm, &mut sink).unwrap();
                 sink
             })
         });
@@ -108,7 +108,7 @@ fn bench_headless_one_exclude(c: &mut Criterion) {
                 let reader = FileReader::from_bytes(data.clone());
                 let lm = runtime.block_on(make_manager_with(&[("INFO", FilterType::Exclude)]));
                 let mut sink = Vec::new();
-                run_headless_to_writer(reader, lm, &mut sink).unwrap();
+                run_headless_to_writer(reader, &lm, &mut sink).unwrap();
                 sink
             })
         });
@@ -132,7 +132,7 @@ fn bench_headless_include_and_exclude(c: &mut Criterion) {
                     ("DEBUG", FilterType::Exclude),
                 ]));
                 let mut sink = Vec::new();
-                run_headless_to_writer(reader, lm, &mut sink).unwrap();
+                run_headless_to_writer(reader, &lm, &mut sink).unwrap();
                 sink
             })
         });
@@ -156,7 +156,7 @@ fn bench_headless_field_filter(c: &mut Criterion) {
                     FilterType::Include,
                 )]));
                 let mut sink = Vec::new();
-                run_headless_to_writer(reader, lm, &mut sink).unwrap();
+                run_headless_to_writer(reader, &lm, &mut sink).unwrap();
                 sink
             })
         });

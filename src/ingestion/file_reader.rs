@@ -2222,7 +2222,7 @@ mod tests {
         use std::io::Write;
 
         let mut f = NamedTempFile::new().unwrap();
-        write!(f, "line1\n").unwrap();
+        writeln!(f, "line1").unwrap();
         f.flush().unwrap();
 
         let mut reader = FileReader::new(f.path().to_str().unwrap()).unwrap();
@@ -2258,7 +2258,7 @@ mod tests {
         use tokio::time::{Duration, sleep};
 
         let mut f = NamedTempFile::new().unwrap();
-        write!(f, "initial\n").unwrap();
+        writeln!(f, "initial").unwrap();
         f.flush().unwrap();
         let initial_size = f.as_file().metadata().unwrap().len();
         let path = f.path().to_str().unwrap().to_string();
@@ -2267,7 +2267,7 @@ mod tests {
 
         // Append new data to the file
         f.seek(SeekFrom::End(0)).unwrap();
-        write!(f, "appended\n").unwrap();
+        writeln!(f, "appended").unwrap();
         f.flush().unwrap();
 
         // Wait for the watcher to detect the change (polls every 50ms)
@@ -2688,7 +2688,7 @@ mod tests {
         use tokio::time::{Duration, sleep};
 
         let mut f = NamedTempFile::new().unwrap();
-        write!(f, "original data that is fairly long\n").unwrap();
+        writeln!(f, "original data that is fairly long").unwrap();
         f.flush().unwrap();
         let initial_size = f.as_file().metadata().unwrap().len();
         let path = f.path().to_str().unwrap().to_string();
@@ -2703,7 +2703,7 @@ mod tests {
         // Step 2: write new data — now the file grows past the reset offset
         // and the watcher picks up the new content.
         f.seek(SeekFrom::Start(0)).unwrap();
-        write!(f, "after truncation\n").unwrap();
+        writeln!(f, "after truncation").unwrap();
         f.flush().unwrap();
         sleep(Duration::from_millis(200)).await;
 
@@ -2891,7 +2891,7 @@ mod tests {
         for i in 0..count {
             data.extend_from_slice(&build_dlt_storage_header(1705312245 + i as u32, 0, b"ECU1"));
             let htyp = 0x01; // UEH
-            let msin = 0x01 | (0 << 1) | (4 << 4); // verbose, log, info
+            let msin = 0x01 | (4 << 4); // verbose, log, info
             let ext = build_dlt_ext_header(msin, 0, b"APP1", b"CTX1");
             let msg_len = (4 + ext.len()) as u16;
             let mut msg = build_dlt_std_header(htyp, i as u8, msg_len);

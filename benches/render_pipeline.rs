@@ -1,11 +1,12 @@
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use logana::file_reader::FileReader;
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use logana::filters::{FilterDecision, FilterManager, MatchCollector, build_filter, render_line};
+use logana::ingestion::file_reader::FileReader;
 use logana::parser::detect_format;
 use logana::theme::ValueColors;
 use logana::ui::VisibleLines;
 use logana::value_colors::collect_value_color_spans;
 use ratatui::style::Style;
+use std::hint::black_box;
 
 fn json_log_bytes(lines: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(lines * 120);
@@ -83,10 +84,10 @@ fn bench_date_filter_timestamp_parse(c: &mut Criterion) {
                     let mut hits = 0usize;
                     for i in 0..lines {
                         let line = reader.get_line(black_box(i));
-                        if let Some(parts) = parser.parse_line(line) {
-                            if parts.timestamp.is_some() {
-                                hits += 1;
-                            }
+                        if let Some(parts) = parser.parse_line(line)
+                            && parts.timestamp.is_some()
+                        {
+                            hits += 1;
                         }
                     }
                     black_box(hits)
@@ -102,18 +103,18 @@ fn bench_date_filter_timestamp_parse(c: &mut Criterion) {
                     let mut hits = 0usize;
                     for i in 0..lines {
                         let line = reader.get_line(black_box(i));
-                        if let Some(parts) = parser.parse_line(line) {
-                            if parts.timestamp.is_some() {
-                                hits += 1;
-                            }
+                        if let Some(parts) = parser.parse_line(line)
+                            && parts.timestamp.is_some()
+                        {
+                            hits += 1;
                         }
                     }
                     for i in 0..lines {
                         let line = reader.get_line(black_box(i));
-                        if let Some(parts) = parser.parse_line(line) {
-                            if parts.timestamp.is_some() {
-                                hits += 1;
-                            }
+                        if let Some(parts) = parser.parse_line(line)
+                            && parts.timestamp.is_some()
+                        {
+                            hits += 1;
                         }
                     }
                     black_box(hits)
@@ -134,22 +135,23 @@ fn bench_incremental_include_vs_full(c: &mut Criterion) {
 
         // Exclude 90 % of lines (INFO), leaving only ERROR lines (~10 %).
         let exclude_fm = FilterManager::new(
-            vec![build_filter("INFO", FilterDecision::Exclude, false, 0).unwrap()],
+            vec![build_filter("INFO", FilterDecision::Exclude, false, 0, false).unwrap()],
             false,
         );
         let pre_filtered: Vec<usize> = exclude_fm.compute_visible(&reader);
         let visible_count = pre_filtered.len();
 
         // Include filter being added.
-        let include_filter = build_filter("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let include_filter =
+            build_filter("ERROR", FilterDecision::Include, false, 0, false).unwrap();
 
         group.throughput(Throughput::Elements(total_lines as u64));
 
         // Full path: compute_visible rebuilds from scratch (scans all N lines).
         let include_fm = FilterManager::new(
             vec![
-                build_filter("INFO", FilterDecision::Exclude, false, 0).unwrap(),
-                build_filter("ERROR", FilterDecision::Include, false, 1).unwrap(),
+                build_filter("INFO", FilterDecision::Exclude, false, 0, false).unwrap(),
+                build_filter("ERROR", FilterDecision::Include, false, 1, false).unwrap(),
             ],
             true,
         );
@@ -210,7 +212,7 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
     });
 
     let fm_one = FilterManager::new(
-        vec![build_filter("ERROR", FilterDecision::Include, false, 0).unwrap()],
+        vec![build_filter("ERROR", FilterDecision::Include, false, 0, false).unwrap()],
         true,
     );
     group.bench_function("one_filter/full_pipeline", |b| {
@@ -224,11 +226,11 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
 
     let fm_five = FilterManager::new(
         vec![
-            build_filter("ERROR", FilterDecision::Include, false, 0).unwrap(),
-            build_filter("WARN", FilterDecision::Include, false, 1).unwrap(),
-            build_filter("myapp", FilterDecision::Include, false, 2).unwrap(),
-            build_filter("debug", FilterDecision::Exclude, false, 3).unwrap(),
-            build_filter("healthcheck", FilterDecision::Exclude, false, 4).unwrap(),
+            build_filter("ERROR", FilterDecision::Include, false, 0, false).unwrap(),
+            build_filter("WARN", FilterDecision::Include, false, 1, false).unwrap(),
+            build_filter("myapp", FilterDecision::Include, false, 2, false).unwrap(),
+            build_filter("debug", FilterDecision::Exclude, false, 3, false).unwrap(),
+            build_filter("healthcheck", FilterDecision::Exclude, false, 4, false).unwrap(),
         ],
         true,
     );

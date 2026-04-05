@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::commands::{COMMANDS, command_names};
+use super::{COMMANDS, command_names};
 
 pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
     ("filter", &["--field", "-f", "--fg", "--bg", "-l"]),

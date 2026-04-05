@@ -1,5 +1,5 @@
 use clap::Parser;
-use logana::auto_complete::shell_split;
+use logana::commands::auto_complete::shell_split;
 use logana::commands::{CommandLine, Commands};
 use logana::db::Database;
 use logana::db::LogManager;
@@ -390,7 +390,7 @@ async fn test_single_pass_predicate_matches_compute_visible() {
 
 #[tokio::test]
 async fn test_search_on_visible_lines() {
-    use logana::search::Search;
+    use logana::utils::search::Search;
 
     let (_db, mut manager) = setup().await;
     let file = create_sample_log_file();
@@ -703,7 +703,7 @@ fn make_dlt_binary_data(count: usize) -> Vec<u8> {
     for i in 0..count {
         data.extend_from_slice(&build_dlt_storage_header(1705312245 + i as u32, 0, b"ECU1"));
         let htyp = 0x01; // UEH
-        let msin = 0x01 | (0 << 1) | (4 << 4); // verbose, log, info
+        let msin = 0x01 | (4 << 4); // verbose, log, info
         let ext = build_dlt_ext_header(msin, 0, b"APP1", b"CTX1");
         let msg_len = (4 + ext.len()) as u16;
         let mut msg = build_dlt_std_header(htyp, i as u8, msg_len);

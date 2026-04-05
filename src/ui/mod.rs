@@ -1,3 +1,4 @@
+pub mod session;
 pub mod theme;
 pub mod value_colors;
 pub use theme::{

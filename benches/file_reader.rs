@@ -1,5 +1,5 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use logana::file_reader::FileReader;
+use logana::ingestion::file_reader::FileReader;
 use std::io::Write as _;
 use tempfile::NamedTempFile;
 
@@ -86,7 +86,7 @@ fn bench_from_bytes_plain(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(lines), &data, |b, data| {
             b.iter_batched(
                 || data.clone(),
-                |bytes| FileReader::from_bytes(bytes),
+                FileReader::from_bytes,
                 BatchSize::LargeInput,
             )
         });
@@ -107,7 +107,7 @@ fn bench_from_bytes_ansi(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(lines), &data, |b, data| {
             b.iter_batched(
                 || data.clone(),
-                |bytes| FileReader::from_bytes(bytes),
+                FileReader::from_bytes,
                 BatchSize::LargeInput,
             )
         });

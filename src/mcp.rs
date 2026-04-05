@@ -16,9 +16,9 @@ use rmcp::{
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::db::Comment;
 use crate::db::{CommentManager, MarkManager};
 use crate::ingestion::FileReader;
-use crate::types::Comment;
 
 #[derive(Default)]
 pub struct McpSnapshot {
@@ -297,8 +297,8 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::{RwLock, mpsc};
 
+    use crate::db::Comment;
     use crate::db::{CommentManager, MarkManager};
-    use crate::types::Comment;
 
     #[tokio::test]
     async fn test_stop_clears_handle_and_receiver() {

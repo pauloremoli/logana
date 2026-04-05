@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::auto_complete::fuzzy_match;
+use crate::commands::auto_complete::fuzzy_match;
 
 static BUNDLED_THEMES: &[(&str, &str)] = &[
     ("atomic", include_str!("../../themes/atomic.json")),
@@ -829,8 +829,10 @@ mod tests {
 
     #[test]
     fn test_grouped_categories_uses_current_colors() {
-        let mut vc = ValueColors::default();
-        vc.http_get = Color::Rgb(1, 2, 3);
+        let vc = ValueColors {
+            http_get: Color::Rgb(1, 2, 3),
+            ..Default::default()
+        };
         let groups = vc.grouped_categories(None);
         assert_eq!(groups[0].children[0].2, Color::Rgb(1, 2, 3));
     }

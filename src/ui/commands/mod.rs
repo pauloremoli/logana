@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use crate::auto_complete::shell_split;
+use crate::commands::auto_complete::shell_split;
 use crate::commands::{CommandLine, Commands};
 
 use super::App;
@@ -1227,8 +1227,8 @@ mod tests {
     async fn test_set_theme_invalidates_render_cache() {
         let mut app = make_app(&["line"]).await;
         let gen_before = app.tabs[0].cache.render_gen;
-        let _ = app.run_command("set-theme dark").await;
-        assert!(app.tabs[0].cache.render_gen != gen_before || true);
+        app.run_command("set-theme dracula").await.unwrap();
+        assert!(app.tabs[0].cache.render_gen != gen_before);
     }
 
     #[tokio::test]
@@ -1360,7 +1360,7 @@ mod tests {
         app.mcp.port = Some(port);
         let result = app.run_command("enable-mcp").await;
         assert!(result.is_ok(), "enable-mcp should return Ok: {:?}", result);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
         app.stop_mcp();
     }
 

@@ -6,9 +6,9 @@ use crate::db::{AppSettingsStore, FileContextStore, SessionStore, SettingsKey};
 use crate::ingestion::FileReader;
 use crate::mode::app_mode::{ConfirmRestoreMode, ConfirmRestoreSessionMode};
 use crate::mode::normal_mode::NormalMode;
-use crate::session::SessionManager;
 use crate::theme::Theme;
 use crate::ui::SidebarSide;
+use crate::ui::session::SessionManager;
 use ratatui::{Terminal, prelude::*};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -498,7 +498,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auto_complete::shell_split;
+    use crate::commands::auto_complete::shell_split;
     use crate::config::{Keybindings, RestoreSessionPolicy};
     use crate::db::Database;
     use crate::db::LogManager;
@@ -1634,7 +1634,7 @@ mod tests {
             KeyModifiers::NONE,
         )
         .await;
-        assert!(app.tabs.len() >= 1);
+        assert!(!app.tabs.is_empty());
     }
 
     #[tokio::test]
@@ -1646,7 +1646,7 @@ mod tests {
             KeyModifiers::NONE,
         )
         .await;
-        assert!(app.tabs.len() >= 1);
+        assert!(!app.tabs.is_empty());
     }
 
     #[tokio::test]

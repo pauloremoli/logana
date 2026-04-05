@@ -1,4 +1,3 @@
-pub mod auto_complete;
 pub mod commands;
 pub mod config;
 pub mod db;
@@ -8,10 +7,7 @@ pub mod ingestion;
 pub mod mcp;
 pub mod mode;
 pub mod parser;
-pub mod search;
-pub mod session;
 pub mod utils;
 pub use ui::theme;
-pub mod types;
 pub mod ui;
 pub use ui::value_colors;

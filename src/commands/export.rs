@@ -1,7 +1,7 @@
-use crate::auto_complete::fuzzy_match;
+use crate::commands::auto_complete::fuzzy_match;
+use crate::db::Comment;
 use crate::ingestion::FileReader;
 use crate::parser::LogFormatParser;
-use crate::types::Comment;
 use crate::ui::FieldLayout;
 use crate::ui::field_layout::apply_field_layout;
 use std::collections::HashSet;

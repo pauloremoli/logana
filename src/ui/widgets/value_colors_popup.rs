@@ -22,7 +22,7 @@ pub struct ValueColorsPopup<'a> {
 
 impl<'a> Widget for ValueColorsPopup<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        use crate::auto_complete::fuzzy_match as fmatch;
+        use crate::commands::auto_complete::fuzzy_match as fmatch;
         use crate::mode::value_colors_mode::ValueColorRow;
 
         let mut vis_rows: Vec<ValueColorRow> = Vec::new();

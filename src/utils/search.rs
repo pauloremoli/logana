@@ -381,7 +381,7 @@ mod tests {
     fn test_search_only_visible() -> anyhow::Result<()> {
         let (_f, reader) = make_reader(&["ERROR: bad", "INFO: good", "ERROR: also bad"]);
         // Only search visible lines (0 and 2 pass the filter)
-        let visible = vec![0usize, 2];
+        let visible = [0usize, 2];
         let mut search = Search::new();
         search.search("bad", visible.iter().copied(), raw_text(&reader))?;
 
