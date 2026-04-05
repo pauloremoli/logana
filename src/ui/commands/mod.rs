@@ -1002,7 +1002,7 @@ mod tests {
         await_filter_computations(&mut app).await;
         app.tabs[0].mark_manager.toggle(0);
         app.tabs[0].display.show_line_numbers = false;
-        app.show_mode_bar = false;
+        app.display.show_mode_bar = false;
 
         app.run_command("reset").await.unwrap();
         await_filter_computations(&mut app).await;
@@ -1010,7 +1010,7 @@ mod tests {
         assert!(app.tabs[0].log_manager.get_filters().is_empty());
         assert!(app.tabs[0].mark_manager.get_indices().is_empty());
         assert!(app.tabs[0].display.show_line_numbers);
-        assert!(app.show_mode_bar);
+        assert!(app.display.show_mode_bar);
         assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
         assert!(app.tabs[0].filter.enabled);
         assert!(!app.tabs[0].filter.show_marks_only);

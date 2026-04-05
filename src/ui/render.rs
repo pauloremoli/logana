@@ -91,7 +91,7 @@ impl App {
                 && self.tabs[0].load_state.is_none());
         let render_state = self.tabs[self.active_tab].interaction.mode.render_state();
         let show_borders = self.tabs[self.active_tab].display.show_borders;
-        let mode_name = if !self.show_mode_bar {
+        let mode_name = if !self.display.show_mode_bar {
             Some(render_state.mode_name())
         } else {
             None
@@ -214,7 +214,7 @@ impl App {
             .interaction
             .mode
             .mode_bar_content(&keybindings, &self.theme);
-        let show_mode_bar = self.show_mode_bar;
+        let show_mode_bar = self.display.show_mode_bar;
         let has_warnings = !self.session.startup_warnings.is_empty();
         let warnings_height = self.session.startup_warnings.len().min(10) as u16;
         let visual_anchor: Option<usize> = match render_state {
@@ -1554,7 +1554,7 @@ mod tests {
     /// Set up an app with a persistent search handle injected at a given progress level.
     async fn make_app_with_search(progress: Option<f64>) -> (App, Terminal<TestBackend>) {
         let mut app = make_app(&["line 0", "line 1"]).await;
-        app.show_mode_bar = false;
+        app.display.show_mode_bar = false;
         app.tabs[0].display.show_mode_bar = false;
 
         let visible = app.tabs[0].filter.visible_indices.clone();
@@ -1638,14 +1638,14 @@ mod tests {
         let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
 
         let mut app_no_bar = make_app(&line_refs).await;
-        app_no_bar.show_mode_bar = false;
+        app_no_bar.display.show_mode_bar = false;
         app_no_bar.tabs[0].display.show_mode_bar = false;
         let mut terminal = make_terminal();
         terminal.draw(|f| app_no_bar.ui(f)).unwrap();
         let height_without_bar = app_no_bar.tabs[0].scroll.visible_height;
 
         let mut app_with_bar = make_app(&line_refs).await;
-        app_with_bar.show_mode_bar = false;
+        app_with_bar.display.show_mode_bar = false;
         app_with_bar.tabs[0].display.show_mode_bar = false;
         app_with_bar.tabs[0].interaction.mode = Box::new(SearchMode {
             input: String::new(),
@@ -1681,7 +1681,7 @@ mod tests {
     #[tokio::test]
     async fn test_tab_bar_shows_mode_when_mode_bar_hidden() {
         let mut app = make_two_tab_app().await;
-        app.show_mode_bar = false;
+        app.display.show_mode_bar = false;
         app.tabs[0].display.show_mode_bar = false;
 
         let mut terminal = make_terminal();
@@ -1699,7 +1699,7 @@ mod tests {
     #[tokio::test]
     async fn test_tab_bar_no_mode_when_mode_bar_visible() {
         let mut app = make_two_tab_app().await;
-        app.show_mode_bar = true;
+        app.display.show_mode_bar = true;
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -1718,7 +1718,7 @@ mod tests {
         use crate::mode::filter_mode::FilterManagementMode;
 
         let mut app = make_two_tab_app().await;
-        app.show_mode_bar = false;
+        app.display.show_mode_bar = false;
         app.tabs[0].display.show_mode_bar = false;
         app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
             selected_filter_index: 0,
@@ -1739,7 +1739,7 @@ mod tests {
     #[tokio::test]
     async fn test_inactive_tab_has_no_mode_prefix() {
         let mut app = make_two_tab_app().await;
-        app.show_mode_bar = false;
+        app.display.show_mode_bar = false;
         app.tabs[0].display.show_mode_bar = false;
 
         let mut terminal = make_terminal();
@@ -1761,7 +1761,7 @@ mod tests {
         let mut app = make_two_tab_app().await;
         let expected_fg = app.theme.text_highlight_fg;
         let expected_bg = app.theme.root_bg;
-        app.show_mode_bar = false;
+        app.display.show_mode_bar = false;
         app.tabs[0].display.show_mode_bar = false;
 
         let mut terminal = make_terminal();
@@ -2231,7 +2231,7 @@ mod tests {
     #[tokio::test]
     async fn test_startup_warnings_shown_above_mode_bar() {
         let mut app = make_app(&["line 0"]).await;
-        app.show_mode_bar = true;
+        app.display.show_mode_bar = true;
         app.session.startup_warnings = vec![
             "keybinding conflict: j".to_string(),
             "keybinding conflict: k".to_string(),

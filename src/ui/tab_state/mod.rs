@@ -3043,7 +3043,7 @@ mod tests {
         .build()
         .await;
         assert!(
-            app.show_mode_bar,
+            app.display.show_mode_bar,
             "config Some(true) should override DB false"
         );
     }
@@ -3066,7 +3066,10 @@ mod tests {
         .wrap(Some(true))
         .build()
         .await;
-        assert!(app.wrap, "config Some(true) should override DB false");
+        assert!(
+            app.display.wrap,
+            "config Some(true) should override DB false"
+        );
     }
 
     // ── date filter integration with refresh_visible ──────────────────

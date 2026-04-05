@@ -136,6 +136,15 @@ pub struct MouseState {
     pub scrollbar_dragging: bool,
 }
 
+pub struct DisplaySettings {
+    pub show_mode_bar: bool,
+    pub show_borders_default: bool,
+    pub show_line_numbers: bool,
+    pub show_sidebar: bool,
+    pub wrap: bool,
+    pub sidebar_side: SidebarSide,
+}
+
 pub struct SessionConfig {
     /// Restore session policy from config — controls whether to skip the whole-session prompt.
     pub restore_policy: RestoreSessionPolicy,
@@ -164,18 +173,7 @@ pub struct App {
     pub keybindings: Arc<Keybindings>,
     /// Persistent clipboard instance — kept alive so clipboard managers can read the contents.
     pub clipboard: Option<arboard::Clipboard>,
-    /// Global mode bar visibility — applies to all tabs uniformly.
-    pub show_mode_bar: bool,
-    /// Default show_borders value applied to new tabs.
-    pub show_borders_default: bool,
-    /// Default show_line_numbers value applied to new tabs.
-    pub show_line_numbers: bool,
-    /// Default show_sidebar value applied to new tabs.
-    pub show_sidebar: bool,
-    /// Default wrap value applied to new tabs.
-    pub wrap: bool,
-    /// Which side the filter sidebar sits on.
-    pub sidebar_side: SidebarSide,
+    pub display: DisplaySettings,
     /// Number of bytes to read for the instant preview (from config `preview_bytes`).
     pub preview_bytes: u64,
     /// Configured DLT devices from config.json.
@@ -329,12 +327,14 @@ impl AppBuilder {
             stdin_load_state: None,
             keybindings: self.keybindings,
             clipboard: None,
-            show_mode_bar,
-            show_borders_default,
-            show_line_numbers,
-            show_sidebar,
-            wrap,
-            sidebar_side,
+            display: DisplaySettings {
+                show_mode_bar,
+                show_borders_default,
+                show_line_numbers,
+                show_sidebar,
+                wrap,
+                sidebar_side,
+            },
             preview_bytes: 16 * 1024 * 1024,
             dlt_devices: vec![],
             mcp: McpState {
@@ -394,12 +394,12 @@ impl App {
     #[inline]
     pub(super) fn apply_tab_defaults(&self, tab: &mut TabState) {
         tab.interaction.keybindings = self.keybindings.clone();
-        tab.display.show_mode_bar = self.show_mode_bar;
-        tab.display.show_borders = self.show_borders_default;
-        tab.display.show_line_numbers = self.show_line_numbers;
-        tab.display.show_sidebar = self.show_sidebar;
-        tab.display.wrap = self.wrap;
-        tab.display.sidebar_side = self.sidebar_side;
+        tab.display.show_mode_bar = self.display.show_mode_bar;
+        tab.display.show_borders = self.display.show_borders_default;
+        tab.display.show_line_numbers = self.display.show_line_numbers;
+        tab.display.show_sidebar = self.display.show_sidebar;
+        tab.display.wrap = self.display.wrap;
+        tab.display.sidebar_side = self.display.sidebar_side;
     }
 
     pub fn tab(&self) -> &TabState {
@@ -880,46 +880,47 @@ impl App {
     }
 
     async fn handle_toggle_mode_bar(&mut self) {
-        self.show_mode_bar = !self.show_mode_bar;
+        self.display.show_mode_bar = !self.display.show_mode_bar;
         for tab in &mut self.tabs {
-            tab.display.show_mode_bar = self.show_mode_bar;
+            tab.display.show_mode_bar = self.display.show_mode_bar;
         }
-        self.save_app_bool(SettingsKey::ShowModeBar, self.show_mode_bar)
+        self.save_app_bool(SettingsKey::ShowModeBar, self.display.show_mode_bar)
             .await;
     }
 
     async fn handle_toggle_sidebar(&mut self) {
-        self.show_sidebar = !self.show_sidebar;
+        self.display.show_sidebar = !self.display.show_sidebar;
         for tab in &mut self.tabs {
-            tab.display.show_sidebar = self.show_sidebar;
+            tab.display.show_sidebar = self.display.show_sidebar;
         }
-        self.save_app_bool(SettingsKey::ShowSidebar, self.show_sidebar)
+        self.save_app_bool(SettingsKey::ShowSidebar, self.display.show_sidebar)
             .await;
     }
 
     async fn handle_toggle_borders(&mut self) {
-        self.show_borders_default = !self.show_borders_default;
+        self.display.show_borders_default = !self.display.show_borders_default;
         for tab in &mut self.tabs {
-            tab.display.show_borders = self.show_borders_default;
+            tab.display.show_borders = self.display.show_borders_default;
         }
-        self.save_app_bool(SettingsKey::ShowBorders, self.show_borders_default)
+        self.save_app_bool(SettingsKey::ShowBorders, self.display.show_borders_default)
             .await;
     }
 
     async fn handle_toggle_wrap(&mut self) {
-        self.wrap = !self.wrap;
+        self.display.wrap = !self.display.wrap;
         for tab in &mut self.tabs {
-            tab.display.wrap = self.wrap;
+            tab.display.wrap = self.display.wrap;
         }
-        self.save_app_bool(SettingsKey::Wrap, self.wrap).await;
+        self.save_app_bool(SettingsKey::Wrap, self.display.wrap)
+            .await;
     }
 
     async fn handle_toggle_line_numbers(&mut self) {
-        self.show_line_numbers = !self.show_line_numbers;
+        self.display.show_line_numbers = !self.display.show_line_numbers;
         for tab in &mut self.tabs {
-            tab.display.show_line_numbers = self.show_line_numbers;
+            tab.display.show_line_numbers = self.display.show_line_numbers;
         }
-        self.save_app_bool(SettingsKey::ShowLineNumbers, self.show_line_numbers)
+        self.save_app_bool(SettingsKey::ShowLineNumbers, self.display.show_line_numbers)
             .await;
     }
 
@@ -1947,11 +1948,11 @@ mod tests {
         .await;
         assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Always);
         assert_eq!(app.session.restore_file_policy, RestoreSessionPolicy::Never);
-        assert!(!app.show_mode_bar);
-        assert!(app.show_borders_default);
-        assert!(!app.show_line_numbers);
-        assert!(!app.show_sidebar);
-        assert!(app.wrap);
+        assert!(!app.display.show_mode_bar);
+        assert!(app.display.show_borders_default);
+        assert!(!app.display.show_line_numbers);
+        assert!(!app.display.show_sidebar);
+        assert!(app.display.wrap);
     }
 
     #[tokio::test]
@@ -1979,7 +1980,7 @@ mod tests {
             .await;
         assert_eq!(app.session.restore_policy, RestoreSessionPolicy::Always);
         assert_eq!(app.session.restore_file_policy, RestoreSessionPolicy::Never);
-        assert!(!app.show_mode_bar);
+        assert!(!app.display.show_mode_bar);
     }
 
     #[tokio::test]
@@ -2015,10 +2016,10 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_toggle_mode_bar() {
         let mut app = make_app(&["line"]).await;
-        let initial = app.show_mode_bar;
+        let initial = app.display.show_mode_bar;
         app.dispatch_key_result(KeyResult::ToggleModeBar, KeyCode::Null, KeyModifiers::NONE)
             .await;
-        assert_eq!(app.show_mode_bar, !initial);
+        assert_eq!(app.display.show_mode_bar, !initial);
         for tab in &app.tabs {
             assert_eq!(tab.display.show_mode_bar, !initial);
         }
@@ -2194,10 +2195,10 @@ mod tests {
         let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
             .build()
             .await;
-        assert!(app.show_borders_default);
-        assert!(!app.show_line_numbers);
-        assert!(!app.show_sidebar);
-        assert!(app.wrap);
+        assert!(app.display.show_borders_default);
+        assert!(!app.display.show_line_numbers);
+        assert!(!app.display.show_sidebar);
+        assert!(app.display.wrap);
     }
 
     #[tokio::test]
@@ -2491,11 +2492,11 @@ mod tests {
     #[tokio::test]
     async fn test_apply_tab_defaults() {
         let mut app = make_app(&["line"]).await;
-        app.show_mode_bar = false;
-        app.show_borders_default = true;
-        app.show_line_numbers = false;
-        app.show_sidebar = false;
-        app.wrap = true;
+        app.display.show_mode_bar = false;
+        app.display.show_borders_default = true;
+        app.display.show_line_numbers = false;
+        app.display.show_sidebar = false;
+        app.display.wrap = true;
         let data: Vec<u8> = b"new\n".to_vec();
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(app.db.clone(), None).await;

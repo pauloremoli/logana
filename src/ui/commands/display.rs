@@ -5,26 +5,29 @@ use crate::ui::SidebarSide;
 
 impl App {
     pub(super) async fn cmd_wrap(&mut self) {
-        self.wrap = !self.wrap;
+        self.display.wrap = !self.display.wrap;
         for tab in &mut self.tabs {
-            tab.display.wrap = self.wrap;
+            tab.display.wrap = self.display.wrap;
         }
         let _ = self
             .db
-            .save_app_setting(SettingsKey::Wrap, if self.wrap { "true" } else { "false" })
+            .save_app_setting(
+                SettingsKey::Wrap,
+                if self.display.wrap { "true" } else { "false" },
+            )
             .await;
     }
 
     pub(super) async fn cmd_line_numbers(&mut self) {
-        self.show_line_numbers = !self.show_line_numbers;
+        self.display.show_line_numbers = !self.display.show_line_numbers;
         for tab in &mut self.tabs {
-            tab.display.show_line_numbers = self.show_line_numbers;
+            tab.display.show_line_numbers = self.display.show_line_numbers;
         }
         let _ = self
             .db
             .save_app_setting(
                 SettingsKey::ShowLineNumbers,
-                if self.show_line_numbers {
+                if self.display.show_line_numbers {
                     "true"
                 } else {
                     "false"
@@ -81,7 +84,7 @@ impl App {
     }
 
     pub(super) async fn cmd_sidebar_position(&mut self, side: SidebarSide) -> Result<bool, String> {
-        self.sidebar_side = side;
+        self.display.sidebar_side = side;
         for tab in &mut self.tabs {
             tab.display.sidebar_side = side;
         }

@@ -35,11 +35,11 @@ impl App {
             .await
             .map_err(|e| format!("Failed to reset database: {e}"))?;
 
-        self.show_mode_bar = true;
-        self.show_borders_default = false;
-        self.show_line_numbers = true;
-        self.show_sidebar = true;
-        self.wrap = false;
+        self.display.show_mode_bar = true;
+        self.display.show_borders_default = false;
+        self.display.show_line_numbers = true;
+        self.display.show_sidebar = true;
+        self.display.wrap = false;
         self.session.restore_policy = crate::config::RestoreSessionPolicy::Ask;
         self.session.restore_file_policy = crate::config::RestoreSessionPolicy::Ask;
 
