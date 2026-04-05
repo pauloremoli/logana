@@ -345,7 +345,7 @@ async fn begin_initial_load(
         let files = list_dir_files(path);
         app.tabs[0].interaction.mode = Box::new(ConfirmOpenDirMode {
             dir: path.clone(),
-            files,
+            files: std::sync::Arc::new(files),
         });
     }
 }

@@ -130,7 +130,10 @@ impl App {
                 return Err(format!("'{}' contains no files.", path));
             }
             self.tabs[self.active_tab].interaction.mode =
-                Box::new(crate::mode::app_mode::ConfirmOpenDirMode { dir: path, files });
+                Box::new(crate::mode::app_mode::ConfirmOpenDirMode {
+                    dir: path,
+                    files: std::sync::Arc::new(files),
+                });
             return Ok(true);
         }
         if crate::ingestion::detect_archive_type(&path).is_some() {

@@ -297,7 +297,9 @@ impl AppBuilder {
                 match restore_policy {
                     RestoreSessionPolicy::Never => {}
                     RestoreSessionPolicy::Ask => {
-                        tab.interaction.mode = Box::new(ConfirmRestoreSessionMode { files });
+                        tab.interaction.mode = Box::new(ConfirmRestoreSessionMode {
+                            files: std::sync::Arc::new(files),
+                        });
                     }
                     RestoreSessionPolicy::Always => {
                         pending_session_restore = Some(files);
@@ -2039,7 +2041,7 @@ mod tests {
     async fn test_always_restore_session_via_key_event() {
         let mut app = make_app(&["line"]).await;
         app.tabs[0].interaction.mode = Box::new(crate::mode::app_mode::ConfirmRestoreSessionMode {
-            files: vec!["/nonexistent/file.log".to_string()],
+            files: std::sync::Arc::new(vec!["/nonexistent/file.log".to_string()]),
         });
         app.handle_key_event_with_modifiers(KeyCode::Char('Y'), KeyModifiers::SHIFT)
             .await;
@@ -2059,7 +2061,7 @@ mod tests {
     async fn test_never_restore_session_via_key_event() {
         let mut app = make_app(&["line"]).await;
         app.tabs[0].interaction.mode = Box::new(crate::mode::app_mode::ConfirmRestoreSessionMode {
-            files: vec!["/nonexistent/file.log".to_string()],
+            files: std::sync::Arc::new(vec!["/nonexistent/file.log".to_string()]),
         });
         app.handle_key_event_with_modifiers(KeyCode::Char('N'), KeyModifiers::SHIFT)
             .await;

@@ -3,6 +3,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Paragraph},
 };
+use std::sync::Arc;
 
 use crate::mode::app_mode::ModeRenderState;
 
@@ -34,7 +35,7 @@ struct UiRenderState {
     completion_query: Option<String>,
     search_input: Option<(String, usize, bool, bool)>,
     is_confirm_restore: bool,
-    session_files: Option<Vec<String>>,
+    session_files: Option<Arc<Vec<String>>>,
     selected_filter_idx: usize,
     visual_anchor: Option<usize>,
     visual_char_selection: Option<(usize, usize)>,
@@ -49,7 +50,7 @@ struct UiRenderState {
     )>,
     dlt_select: DltSelectData,
     value_colors_state: ValueColorsData,
-    confirm_open_dir: Option<(String, Vec<String>)>,
+    confirm_open_dir: Option<(String, Arc<Vec<String>>)>,
     notification: Option<String>,
     has_notification: bool,
     has_warnings: bool,
@@ -197,8 +198,8 @@ impl App {
             }),
         };
         let is_confirm_restore = matches!(render_state, ModeRenderState::ConfirmRestore);
-        let session_files: Option<Vec<String>> = match render_state {
-            ModeRenderState::ConfirmRestoreSession { files } => Some(files.clone()),
+        let session_files: Option<Arc<Vec<String>>> = match render_state {
+            ModeRenderState::ConfirmRestoreSession { files } => Some(Arc::clone(files)),
             _ => None,
         };
         let selected_filter_idx = match render_state {
@@ -288,8 +289,10 @@ impl App {
             } => Some((groups.clone(), search.clone(), *selected, "Level Colors")),
             _ => None,
         };
-        let confirm_open_dir: Option<(String, Vec<String>)> = match render_state {
-            ModeRenderState::ConfirmOpenDir { dir, files } => Some((dir.clone(), files.clone())),
+        let confirm_open_dir: Option<(String, Arc<Vec<String>>)> = match render_state {
+            ModeRenderState::ConfirmOpenDir { dir, files } => {
+                Some((dir.clone(), Arc::clone(files)))
+            }
             _ => None,
         };
 
@@ -1241,7 +1244,7 @@ mod tests {
     async fn test_ui_confirm_restore_session() {
         let mut app = make_app(&[]).await;
         app.tabs[0].interaction.mode = Box::new(ConfirmRestoreSessionMode {
-            files: vec!["file.log".to_string()],
+            files: std::sync::Arc::new(vec!["file.log".to_string()]),
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

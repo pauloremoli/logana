@@ -299,7 +299,7 @@ mod tests {
     async fn test_confirm_restore_session() {
         let mut app = make_app(&["line one", "line two"]).await;
         app.tabs[0].interaction.mode = Box::new(ConfirmRestoreSessionMode {
-            files: vec!["file1.log".to_string(), "file2.log".to_string()],
+            files: std::sync::Arc::new(vec!["file1.log".to_string(), "file2.log".to_string()]),
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -499,7 +499,7 @@ mod tests {
         let mut app = make_app(&["line"]).await;
         app.tabs[0].interaction.mode = Box::new(ConfirmOpenDirMode {
             dir: "/tmp/logs".to_string(),
-            files: vec!["a.log".to_string(), "b.log".to_string()],
+            files: std::sync::Arc::new(vec!["a.log".to_string(), "b.log".to_string()]),
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
