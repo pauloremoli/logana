@@ -12,7 +12,10 @@ use logana::ingestion::{FileReader, VisibilityPredicate};
 use logana::mode::app_mode::ConfirmOpenDirMode;
 use logana::theme::Theme;
 use logana::ui::{App, LoadContext};
-use logana::{config::Config, utils::filesystem::list_dir_files};
+use logana::{
+    config::{Config, DEFAULT_PREVIEW_BYTES},
+    utils::filesystem::list_dir_files,
+};
 use ratatui::prelude::*;
 use std::io::{IsTerminal, stdin, stdout};
 use std::sync::Arc;
@@ -256,7 +259,7 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
     .sidebar_side(config.sidebar_side)
     .build()
     .await;
-    app.preview_bytes = config.preview_bytes;
+    app.preview_bytes = config.preview_bytes.unwrap_or(DEFAULT_PREVIEW_BYTES);
     app.dlt_devices = config.dlt_devices;
     app.mcp.port = config.mcp_port;
     app.session.startup_warnings = keybinding_conflicts;
@@ -399,7 +402,14 @@ async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("Fatal error: {:?}", err);
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     let args = Args::parse();
 
     let db = init_database().await?;

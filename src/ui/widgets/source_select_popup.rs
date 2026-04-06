@@ -6,7 +6,7 @@ use ratatui::{
     },
 };
 
-use crate::config::Keybindings;
+use crate::config::{DEFAULT_DLT_PORT, Keybindings};
 use crate::theme::Theme;
 
 use super::popup_entry;
@@ -463,7 +463,7 @@ impl<'a> Widget for DltSelectPopup<'a> {
                 } else {
                     &dev.name
                 };
-                let host_port = format!("{}:{}", dev.host, dev.port);
+                let host_port = format!("{}:{}", dev.host, dev.port.unwrap_or(DEFAULT_DLT_PORT));
                 let hp_display = if host_port.len() > host_w {
                     &host_port[..host_w]
                 } else {
@@ -731,12 +731,12 @@ mod tests {
             DltDevice {
                 name: "ecu1".to_string(),
                 host: "192.168.1.1".to_string(),
-                port: 3490,
+                port: Some(3490),
             },
             DltDevice {
                 name: "ecu2".to_string(),
                 host: "192.168.1.2".to_string(),
-                port: 3491,
+                port: Some(3491),
             },
         ];
         app.tabs[0].interaction.mode = Box::new(DltSelectMode::new(devices));
@@ -779,7 +779,7 @@ mod tests {
             .map(|i| DltDevice {
                 name: format!("ecu{i}"),
                 host: "127.0.0.1".to_string(),
-                port: 3490 + i as u16,
+                port: Some(3490 + i as u16),
             })
             .collect();
         app.tabs[0].interaction.mode = Box::new(DltSelectMode::new(devices));
@@ -796,12 +796,12 @@ mod tests {
             DltDevice {
                 name: "a".to_string(),
                 host: "127.0.0.1".to_string(),
-                port: 3490,
+                port: Some(3490),
             },
             DltDevice {
                 name: "b".to_string(),
                 host: "127.0.0.2".to_string(),
-                port: 3491,
+                port: Some(3491),
             },
         ];
         let mut mode = DltSelectMode::new(devices);
@@ -819,7 +819,7 @@ mod tests {
         let devices = vec![DltDevice {
             name: "dev1".to_string(),
             host: "127.0.0.1".to_string(),
-            port: 3490,
+            port: Some(3490),
         }];
         let mut mode = DltSelectMode::new(devices);
         mode.selected = 1;
@@ -867,7 +867,7 @@ mod tests {
         let devices = vec![DltDevice {
             name: "a".repeat(60),
             host: "b".repeat(60),
-            port: 9999,
+            port: Some(9999),
         }];
         app.tabs[0].interaction.mode = Box::new(DltSelectMode::new(devices));
         let mut terminal = make_terminal();

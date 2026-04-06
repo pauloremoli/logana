@@ -107,4 +107,55 @@ mod tests {
         assert_eq!(m.year_for_line(19), 2023);
         assert_eq!(m.year_for_line(20), 2024);
     }
+
+    #[test]
+    fn test_build_all_same_month_no_transitions() {
+        let data = b"Dec  1 10:00:00 host sshd: msg\nDec  2 10:00:00 host sshd: msg\nDec  3 10:00:00 host sshd: msg\n";
+        let reader = crate::ingestion::FileReader::from_bytes(data.to_vec());
+        let parser = crate::parser::syslog::SyslogParser::default();
+        let map = YearMap::build(&reader, &parser, 2024);
+        assert_eq!(map.year_for_line(0), 2024);
+        assert_eq!(map.year_for_line(2), 2024);
+    }
+
+    #[test]
+    fn test_build_detects_dec_to_jan_boundary() {
+        let data = b"Dec 31 23:59:59 host sshd: msg\nJan  1 00:00:01 host sshd: msg\n";
+        let reader = crate::ingestion::FileReader::from_bytes(data.to_vec());
+        let parser = crate::parser::syslog::SyslogParser::default();
+        let map = YearMap::build(&reader, &parser, 2024);
+        assert_eq!(map.year_for_line(0), 2024);
+        assert_eq!(map.year_for_line(1), 2025);
+    }
+
+    #[test]
+    fn test_build_empty_file() {
+        let reader = crate::ingestion::FileReader::from_bytes(b"".to_vec());
+        let parser = crate::parser::syslog::SyslogParser::default();
+        let map = YearMap::build(&reader, &parser, 2024);
+        assert_eq!(map.year_for_line(0), 2024);
+    }
+
+    #[test]
+    fn test_build_non_parseable_lines_skipped() {
+        let data =
+            b"Dec 31 23:59:00 host sshd: msg\nnot-a-syslog-line\nJan  1 00:00:01 host sshd: msg\n";
+        let reader = crate::ingestion::FileReader::from_bytes(data.to_vec());
+        let parser = crate::parser::syslog::SyslogParser::default();
+        let map = YearMap::build(&reader, &parser, 2023);
+        assert_eq!(map.year_for_line(0), 2023);
+        assert_eq!(map.year_for_line(2), 2024);
+    }
+
+    #[test]
+    fn test_build_multiple_year_transitions() {
+        let data = b"Dec 31 00:00:00 host a: m\nJan  1 00:00:00 host a: m\nDec 31 00:00:00 host a: m\nJan  1 00:00:00 host a: m\n";
+        let reader = crate::ingestion::FileReader::from_bytes(data.to_vec());
+        let parser = crate::parser::syslog::SyslogParser::default();
+        let map = YearMap::build(&reader, &parser, 2022);
+        assert_eq!(map.year_for_line(0), 2022);
+        assert_eq!(map.year_for_line(1), 2023);
+        assert_eq!(map.year_for_line(2), 2023);
+        assert_eq!(map.year_for_line(3), 2024);
+    }
 }

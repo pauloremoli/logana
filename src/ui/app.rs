@@ -1,6 +1,6 @@
 use super::input_handler::InputHandler;
 use super::{StdinLoadState, TabState};
-use crate::config::{Keybindings, RestoreSessionPolicy};
+use crate::config::{DEFAULT_PREVIEW_BYTES, Keybindings, RestoreSessionPolicy};
 use crate::db::LogManager;
 use crate::db::{AppSettingsStore, FileContextStore, SessionStore, SettingsKey};
 use crate::ingestion::FileReader;
@@ -299,7 +299,7 @@ impl AppBuilder {
                 wrap,
                 sidebar_side,
             },
-            preview_bytes: 16 * 1024 * 1024,
+            preview_bytes: DEFAULT_PREVIEW_BYTES,
             dlt_devices: vec![],
             mcp: McpState {
                 port: None,

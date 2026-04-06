@@ -119,3 +119,211 @@ impl Mode for MergeSelectMode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{Database, LogManager};
+    use crate::ingestion::FileReader;
+    use crate::mode::app_mode::ModeRenderState;
+    use crossterm::event::KeyModifiers;
+    use std::sync::Arc;
+
+    async fn make_tab() -> TabState {
+        let reader = FileReader::from_bytes(b"line1\nline2\n".to_vec());
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let lm = LogManager::new(db, None).await;
+        TabState::new(reader, lm, "test".to_string())
+    }
+
+    fn tabs(n: usize) -> Vec<(String, bool)> {
+        (0..n).map(|i| (format!("tab{i}"), false)).collect()
+    }
+
+    fn indices(n: usize) -> Vec<usize> {
+        (0..n).collect()
+    }
+
+    async fn press(
+        mode: MergeSelectMode,
+        tab: &mut TabState,
+        code: KeyCode,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        Box::new(mode)
+            .handle_key(tab, code, KeyModifiers::NONE)
+            .await
+    }
+
+    fn extract_merge_state(state: ModeRenderState) -> (Vec<(String, bool)>, usize) {
+        match state {
+            ModeRenderState::MergeSelect { tabs, selected } => (tabs, selected),
+            other => panic!("expected MergeSelect, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_render_state_returns_merge_select() {
+        let mode = MergeSelectMode::new(tabs(3), indices(3));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::MergeSelect { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_scroll_down_moves_cursor() {
+        let mut tab = make_tab().await;
+        let mode = MergeSelectMode::new(tabs(3), indices(3));
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Char('j')).await;
+        assert!(matches!(result, KeyResult::Ignored));
+        let (_, selected) = extract_merge_state(mode2.render_state());
+        assert_eq!(selected, 1);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_down_clamped_at_last() {
+        let mut tab = make_tab().await;
+        let mut mode = MergeSelectMode::new(tabs(2), indices(2));
+        mode.selected = 1;
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
+        let (_, selected) = extract_merge_state(mode2.render_state());
+        assert_eq!(selected, 1);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_down_empty_list_is_noop() {
+        let mut tab = make_tab().await;
+        let mode = MergeSelectMode::new(vec![], vec![]);
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Char('j')).await;
+        assert!(matches!(result, KeyResult::Ignored));
+        let (_, selected) = extract_merge_state(mode2.render_state());
+        assert_eq!(selected, 0);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_up_moves_cursor() {
+        let mut tab = make_tab().await;
+        let mut mode = MergeSelectMode::new(tabs(3), indices(3));
+        mode.selected = 2;
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
+        let (_, selected) = extract_merge_state(mode2.render_state());
+        assert_eq!(selected, 1);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_up_clamped_at_zero() {
+        let mut tab = make_tab().await;
+        let mode = MergeSelectMode::new(tabs(3), indices(3));
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
+        let (_, selected) = extract_merge_state(mode2.render_state());
+        assert_eq!(selected, 0);
+    }
+
+    #[tokio::test]
+    async fn test_toggle_enables_selected_tab() {
+        let mut tab = make_tab().await;
+        let mode = MergeSelectMode::new(tabs(3), indices(3));
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char(' ')).await;
+        let (tabs, _) = extract_merge_state(mode2.render_state());
+        assert!(tabs[0].1);
+        assert!(!tabs[1].1);
+    }
+
+    #[tokio::test]
+    async fn test_toggle_disables_enabled_tab() {
+        let mut tab = make_tab().await;
+        let mut mode = MergeSelectMode::new(tabs(3), indices(3));
+        mode.tabs[0].1 = true;
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char(' ')).await;
+        let (tabs, _) = extract_merge_state(mode2.render_state());
+        assert!(!tabs[0].1);
+    }
+
+    #[tokio::test]
+    async fn test_select_all() {
+        let mut tab = make_tab().await;
+        let mode = MergeSelectMode::new(tabs(3), indices(3));
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('a')).await;
+        let (tabs, _) = extract_merge_state(mode2.render_state());
+        assert!(tabs.iter().all(|(_, on)| *on));
+    }
+
+    #[tokio::test]
+    async fn test_select_none() {
+        let mut tab = make_tab().await;
+        let mut mode = MergeSelectMode::new(tabs(3), indices(3));
+        for t in &mut mode.tabs {
+            t.1 = true;
+        }
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('n')).await;
+        let (tabs, _) = extract_merge_state(mode2.render_state());
+        assert!(tabs.iter().all(|(_, on)| !on));
+    }
+
+    #[tokio::test]
+    async fn test_apply_with_fewer_than_two_selected_shows_error() {
+        let mut tab = make_tab().await;
+        let mut mode = MergeSelectMode::new(tabs(3), indices(3));
+        mode.tabs[0].1 = true;
+        let (_, result) = press(mode, &mut tab, KeyCode::Enter).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(tab.interaction.command_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_apply_with_zero_selected_shows_error() {
+        let mut tab = make_tab().await;
+        let mode = MergeSelectMode::new(tabs(3), indices(3));
+        let (_, result) = press(mode, &mut tab, KeyCode::Enter).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(tab.interaction.command_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_apply_with_two_selected_opens_merged_view() {
+        let mut tab = make_tab().await;
+        let mut mode = MergeSelectMode::new(tabs(3), vec![10, 20, 30]);
+        mode.tabs[0].1 = true;
+        mode.tabs[2].1 = true;
+        let (_, result) = press(mode, &mut tab, KeyCode::Enter).await;
+        assert!(matches!(
+            result,
+            KeyResult::OpenMergedView { source_tab_indices }
+                if source_tab_indices == vec![10, 30]
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_cancel_returns_to_normal_mode() {
+        let mut tab = make_tab().await;
+        let mode = MergeSelectMode::new(tabs(3), indices(3));
+        let (_, result) = press(mode, &mut tab, KeyCode::Esc).await;
+        assert!(matches!(result, KeyResult::Handled));
+    }
+
+    #[tokio::test]
+    async fn test_unknown_key_returns_ignored() {
+        let mut tab = make_tab().await;
+        let mode = MergeSelectMode::new(tabs(3), indices(3));
+        let (_, result) = press(mode, &mut tab, KeyCode::F(5)).await;
+        assert!(matches!(result, KeyResult::Ignored));
+    }
+
+    #[test]
+    fn test_mode_bar_content_contains_merge_select_label() {
+        let mode = MergeSelectMode::new(tabs(2), indices(2));
+        let kb = Keybindings::default();
+        let theme = crate::theme::Theme::default();
+        let line = mode.mode_bar_content(&kb, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("MERGE SELECT"));
+    }
+
+    #[test]
+    fn test_new_initializes_selected_at_zero() {
+        let mode = MergeSelectMode::new(tabs(5), indices(5));
+        assert_eq!(mode.selected, 0);
+        assert_eq!(mode.tabs.len(), 5);
+        assert_eq!(mode.tab_indices.len(), 5);
+    }
+}

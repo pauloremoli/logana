@@ -1,5 +1,5 @@
 use crate::{
-    config::{DltDevice, Keybindings},
+    config::{DEFAULT_DLT_PORT, DltDevice, Keybindings},
     mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,
     theme::Theme,
@@ -73,7 +73,7 @@ impl DltSelectMode {
             if self.selected < self.devices.len() {
                 let dev = &self.devices[self.selected];
                 let host = dev.host.clone();
-                let port = dev.port;
+                let port = dev.port.unwrap_or(DEFAULT_DLT_PORT);
                 let name = dev.name.clone();
                 return (
                     Box::new(NormalMode::default()),
@@ -131,7 +131,7 @@ impl DltSelectMode {
             let device = DltDevice {
                 name: name.clone(),
                 host,
-                port,
+                port: Some(port),
             };
             if let Err(e) = DltDevice::save(&device) {
                 self.error = Some(e);
@@ -293,12 +293,12 @@ mod tests {
             DltDevice {
                 name: "ecu1".to_string(),
                 host: "192.168.1.10".to_string(),
-                port: 3490,
+                port: Some(3490),
             },
             DltDevice {
                 name: "ecu2".to_string(),
                 host: "192.168.1.20".to_string(),
-                port: 3491,
+                port: Some(3491),
             },
         ]
     }
