@@ -12,11 +12,11 @@ logana is structured around a strict separation between domain logic and the UI 
 
 **Filter Pipeline** (`filters/`) — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap. The pipeline runs in a background thread. Filter definitions are persisted to SQLite and reloaded on startup.
 
-**Mode System** (`mode/`) — Modal UI where each mode owns keyboard input and returns a `KeyResult` for effects that cross mode boundaries. Modes: Normal, Command, Search, Filter, Visual, Comment, Select Fields, DLT Select, Docker Select, Merge Select, Keybindings Help.
+**Mode System** (`mode/`) — Modal UI where each mode owns keyboard input and returns a `KeyResult` for effects that cross mode boundaries. Example of modes: Normal, Command, Search, Filter, Visual, Comment. Each window is also treated as a mode.
 
 **UI & Rendering** (`ui/`) — The renderer reads tab state and produces widgets each frame; it never mutates state. The event loop dispatches key events to the active mode. Session state is persisted to SQLite and restored on reopen.
 
-**Persistence** (`db/`) — `Database` owns the SQLite connection and schema migrations. `LogManager` builds `FilterManager` instances from persisted filter definitions and manages session state.
+**Persistence** (`db/`) — `Database` owns the SQLite connection and schema migrations. Storage is accessed through four traits: `FilterStore` (filter definitions), `FileContextStore` (per-file scroll/search/display context), `SessionStore` (open file list), and `AppSettingsStore` (runtime toggles keyed by `SettingsKey`). `LogManager` builds `FilterManager` instances from persisted filter definitions. `MarkManager` and `CommentManager` are in-memory managers owned by `TabState`; their state is flushed to SQLite via `FileContext` on tab close/switch. Session save/restore is coordinated by `SessionManager` in `ui/session.rs`.
 
 ## Component Diagram
 
@@ -24,6 +24,7 @@ logana is structured around a strict separation between domain logic and the UI 
 graph TD
     CLI[CLI / main.rs] -->|creates| App[App]
     App -->|owns| Tab[TabState ×N]
+    App -->|owns| Session[SessionManager]
     App -->|renders via| Renderer[Renderer]
     Tab -->|owns| Scroll[ScrollState]
     Tab -->|owns| Filter[FilterState]
@@ -32,11 +33,14 @@ graph TD
     Tab -->|owns| Stream[StreamState]
     Tab -->|owns| Display[DisplayConfig]
     Tab -->|owns| Interaction[InteractionState]
+    Tab -->|owns| Marks[MarkManager]
+    Tab -->|owns| Comments[CommentManager]
     Tab -->|owns| FileReader[FileReader]
     Tab -->|owns| LogManager[LogManager]
     Filter -->|holds| FM[FilterManager]
     Display -->|holds| Parser[LogFormatParser]
-    LogManager -->|queries| DB[(SQLite DB)]
+    LogManager -->|FilterStore| DB[(SQLite DB)]
+    Session -->|FileContextStore / SessionStore / AppSettingsStore| DB
     FileReader -->|reads| Files[(Log files / stdin / streams)]
     Renderer -->|reads| Tab
     App -->|snapshot| MCP[MCP Server]
@@ -67,7 +71,7 @@ Live updates are driven by `advance_merged_tabs`, which compares per-source line
 
 ## Commands
 
-`src/commands/` contains clap-derived command definitions shared across layers. `src/ui/commands/` contains the handlers that execute `:` commands, split into `filter.rs`, `io.rs`, `display.rs`, `stream.rs`, and `merge.rs`.
+`src/commands/` contains clap-derived command definitions shared across layers. `src/ui/commands/` contains the handlers that execute `:` commands.
 
 ## MCP Server
 
@@ -170,18 +174,22 @@ graph TD
 | **ratatui** | TUI rendering |
 | **crossterm** | Terminal I/O, key events |
 | **tokio** | Async runtime |
+| **async-trait** | Async trait methods for the mode system |
 | **memchr** | SIMD byte scanning for line indexing |
 | **aho-corasick** | Literal substring filter matching |
 | **regex** | Regex filter matching |
 | **rayon** | Parallel line indexing and visibility scan |
 | **sqlx** | SQLite async driver |
 | **clap** | CLI argument parsing |
-| **serde / serde_json** | Config and theme serialisation |
+| **serde / serde_json / serde_with** | Config and theme serialisation |
+| **schemars** | JSON Schema generation for config |
+| **strum** | Enum-to-string and string-to-enum derives |
 | **time** | Timestamp parsing for date-range filters |
 | **unicode-width** | Unicode display width for cursor/truncation |
 | **arboard** | Clipboard |
-| **dirs** | XDG data directory for SQLite path |
+| **dirs** | XDG config and data directories |
 | **anyhow** | Error handling |
+| **libc** | Low-level OS interfaces |
 | **tempfile** | Temporary files for archive extraction and stdin streaming |
 | **flate2** | Gzip / deflate decompression |
 | **zip** | ZIP archive parsing |
@@ -190,5 +198,6 @@ graph TD
 | **tar** | Tar archive iteration |
 | **rmcp** | MCP server implementation |
 | **axum** | HTTP transport for MCP |
+| **tonic** | gRPC transport for OTLP receiver |
 | **opentelemetry-proto** | OTLP protobuf types |
 | **prost** | Protobuf decoding |

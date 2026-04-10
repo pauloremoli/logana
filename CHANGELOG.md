@@ -6,7 +6,12 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- Export window: `:export` now opens an interactive window when the template footer contains `{{placeholder}}` variables. The window renders one editable field per placeholder, so custom templates with any field names work automatically. Both bundled templates (`markdown` and `jira`) ship with `{{conclusion}}` and `{{next_steps}}` in their footer.
+- Export windows allows filling the placeholders from the template (e.g. Context, next steps and conclusion).
+- Merge view: merge different source into a single view sorted by timestamp.
+- Generate JSON schema for config file validation.
+
+### Fixed
+- Panic (index out of bounds) when applying a regex filter after the log file grew past the size it had when the continuation map was built.
 
 ## [0.5.1] - 2026-04-02
 

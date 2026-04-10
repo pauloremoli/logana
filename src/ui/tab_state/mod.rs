@@ -514,20 +514,31 @@ pub fn apply_continuation_correction(
 
     let n = cmap.len();
 
+    // Indices beyond the map belong to lines appended after the map was built
+    // (e.g. file grew while the map was stale). Preserve them unchanged.
     let mut filter_visible = vec![0u8; n];
     for &idx in indices.iter() {
-        filter_visible[idx] = 1;
+        if idx < n {
+            filter_visible[idx] = 1;
+        }
     }
 
     // Each line is visible iff its parent is visible AND
     // (the line itself was not explicitly excluded OR include filters exist).
     // For parent lines (i == parent) this reduces to filter_visible[i] unchanged.
-    let new_indices: Vec<usize> = (0..n)
+    let mut new_indices: Vec<usize> = (0..n)
         .into_par_iter()
         .filter(|&i| {
             filter_visible[cmap[i]] != 0 && (filter_visible[i] != 0 || has_include_filters)
         })
         .collect();
+
+    for &idx in indices.iter() {
+        if idx >= n {
+            new_indices.push(idx);
+        }
+    }
+    new_indices.sort_unstable();
 
     *indices = new_indices;
 }
@@ -4158,6 +4169,23 @@ mod tests {
         assert!(visible.contains(&0), "line 0 must be visible");
         assert!(visible.contains(&1), "line 1 must be visible");
         assert!(visible.contains(&3), "line 3 must be visible");
+    }
+
+    /// Regression test: `apply_continuation_correction` must not panic when the
+    /// visible-index list contains indices that lie beyond the continuation map
+    /// (i.e. the file grew after the map was built).
+    #[test]
+    fn test_continuation_correction_indices_beyond_cmap() {
+        // cmap covers 3 lines (indices 0-2); all are their own parent.
+        let cmap = vec![0usize, 1, 2];
+        // visible contains index 3, which is beyond cmap — simulates a file that
+        // gained a new line after the map was built.
+        let mut visible = VisibleLines::Filtered(vec![0, 1, 2, 3]);
+        // Must not panic.
+        apply_continuation_correction(&mut visible, &cmap, false);
+        let result: Vec<usize> = visible.iter().collect();
+        // All four lines should be visible and in order.
+        assert_eq!(result, vec![0, 1, 2, 3]);
     }
 
     #[tokio::test]
