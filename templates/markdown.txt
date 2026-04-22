@@ -1,7 +1,8 @@
 {{#header}}
-# Log Analysis: {{filename}}
+# Log Analysis
 
-*{{date}}*
+File: {{filename}}
+Date: *{{date}}*
 
 ## Context
 
@@ -12,11 +13,11 @@
 
 ---
 
+{{commentary}}
+
 ```
 {{lines}}
 ```
-
-{{commentary}}
 
 {{/comment_group}}
 {{#footer}}

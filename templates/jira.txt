@@ -1,7 +1,8 @@
 {{#header}}
-h1. Log Analysis: {{filename}}
+h1. Log Analysis
 
-_{{date}}_
+File: {{filename}}
+Date: _{{date}}_
 
 h2. Context
 
@@ -12,11 +13,11 @@ h2. Context
 
 ----
 
+{{commentary}}
+
 {noformat}
 {{lines}}
 {noformat}
-
-{{commentary}}
 
 {{/comment_group}}
 {{#footer}}
