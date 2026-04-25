@@ -40,7 +40,7 @@ pub fn build_merged_index(
         let cmap = continuation_maps[source_idx].as_deref();
         append_source_entries(&mut entries, source, parser, year_map, cmap, source_idx, 0);
     }
-    entries.sort_unstable_by(|a, b| a.sort_key.cmp(&b.sort_key));
+    entries.sort_unstable_by_key(|a| a.sort_key);
     entries
 }
 
@@ -64,7 +64,7 @@ pub fn extend_merged_index(
         source_idx,
         from_line,
     );
-    entries.sort_unstable_by(|a, b| a.sort_key.cmp(&b.sort_key));
+    entries.sort_unstable_by_key(|a| a.sort_key);
 }
 
 fn append_source_entries(

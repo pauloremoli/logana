@@ -122,15 +122,13 @@ impl App {
                 }
                 self.handle_left_down(event.column, event.row).await;
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if self.input.scrollbar_dragging {
-                    let scroll_pos = {
-                        let tab = &self.tabs[self.active_tab];
-                        self.input.hit_test_scrollbar(event.column, event.row, tab)
-                    };
-                    if let Some(pos) = scroll_pos {
-                        self.tabs[self.active_tab].scroll.scroll_offset = pos;
-                    }
+            MouseEventKind::Drag(MouseButton::Left) if self.input.scrollbar_dragging => {
+                let scroll_pos = {
+                    let tab = &self.tabs[self.active_tab];
+                    self.input.hit_test_scrollbar(event.column, event.row, tab)
+                };
+                if let Some(pos) = scroll_pos {
+                    self.tabs[self.active_tab].scroll.scroll_offset = pos;
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {

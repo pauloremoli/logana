@@ -308,15 +308,11 @@ impl Mode for CommandMode {
                 tab.interaction.command_error = None;
                 self.history_index = None;
             }
-            KeyCode::Left => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                }
+            KeyCode::Left if self.cursor > 0 => {
+                self.cursor -= 1;
             }
-            KeyCode::Right => {
-                if self.cursor < self.input.len() {
-                    self.cursor += 1;
-                }
+            KeyCode::Right if self.cursor < self.input.len() => {
+                self.cursor += 1;
             }
             KeyCode::Up => {
                 if self.history.is_empty() {

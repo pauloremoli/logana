@@ -53,11 +53,7 @@ impl<'a> ExportFooterPopup<'a> {
         let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
         let inner_h = popup_h.saturating_sub(2);
         let fixed = LayoutParams::fixed_rows(n);
-        let field_h = if n > 0 {
-            inner_h.saturating_sub(fixed) / n
-        } else {
-            0
-        };
+        let field_h = inner_h.saturating_sub(fixed).checked_div(n).unwrap_or(0);
         LayoutParams {
             popup_x: x,
             popup_y: y,

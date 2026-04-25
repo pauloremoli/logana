@@ -145,18 +145,14 @@ impl Mode for CommentMode {
                 }
             }
             // Cursor up — clamp col to new line length
-            KeyCode::Up => {
-                if self.cursor_row > 0 {
-                    self.cursor_row -= 1;
-                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
-                }
+            KeyCode::Up if self.cursor_row > 0 => {
+                self.cursor_row -= 1;
+                self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
             }
             // Cursor down — clamp col to new line length
-            KeyCode::Down => {
-                if self.cursor_row + 1 < self.lines.len() {
-                    self.cursor_row += 1;
-                    self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
-                }
+            KeyCode::Down if self.cursor_row + 1 < self.lines.len() => {
+                self.cursor_row += 1;
+                self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
             }
             _ => {}
         }
