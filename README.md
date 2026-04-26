@@ -27,7 +27,7 @@
 - **Multi-tab** — open multiple files, Docker streams, DLT daemon connections, or OTel collector tabs; use `:merge` to interleave selected tabs into a single chronological view
 
 **Filtering & search**
-- **Filtering** — include/exclude patterns (literal or regex), date-range filters, field-scoped filters; add filters from the command line with `-i`/`-o`/`-t`
+- **Filtering** — include/exclude patterns (literal or regex via `-r`), date-range filters, field-scoped filters; add filters from the command line with `-i`/`-o`/`-t`
 - **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns
 
@@ -154,6 +154,10 @@ logana            # then type :otel
 # Add inline filters on the command line
 logana app.log -i error -o debug
 logana app.log -i "--field level=ERROR" -t "> 2024-02-21"
+
+# Regex filter (opt-in with -r; all flags before the pattern)
+logana app.log -i "-r ERR(OR)?"
+logana app.log -i "-r timeout.*retry"
 
 # Headless — filter without the TUI, output to stdout or a file
 logana app.log --headless -i error -o debug

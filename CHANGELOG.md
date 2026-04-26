@@ -11,7 +11,7 @@ All notable changes to logana will be documented in this file.
 - Generate JSON schema for config file validation.
 
 ### Fixed
-- Panic (index out of bounds) when applying a regex filter after the log file grew past the size it had when the continuation map was built.
+- Fixed crash when applying a regex filter after the log file grew past the size it had when the continuation map was built.
 
 ## [0.5.1] - 2026-04-02
 
@@ -29,7 +29,10 @@ All notable changes to logana will be documented in this file.
 ### Changed
 - Performance improvements on CLF parser
 - Theme, sidebar visibility, borders, wrap, and line numbers are now persisted to the database when changed at runtime via commands or the UI options menu (`u`). Previously only `show_mode_bar` was persisted.
-- Regex patterns with spaces (e.g. `filter -r \d{3} \d+`) are now accepted — words after the pattern flag are joined instead of being rejected as extra arguments.
+- Regex filters now require an explicit `--regex` / `-r` flag
+- Literal filters no longer require quoting or escaping — multi-word patterns are accepted as-is (e.g. `:filter connection refused`).
+- All filter options (`--regex`/`-r`, `--fg`, `--bg`, `-l`, `--field`) must appear before the pattern
+- Regex patterns with spaces work without quoting — words following `-r` are joined (e.g. `:filter -r \d{3} \d+`).
 - Editing a filter from the filter manager no longer wraps the pattern in quotes.
 
 ## [0.5.0] - 2026-03-29
