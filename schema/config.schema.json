@@ -222,8 +222,11 @@
     },
     "preview_bytes": {
       "description": "Number of bytes to read for the instant preview shown while the full file index is being built in the background (default: 16 MiB).",
-      "default": 16777216,
-      "type": "integer",
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
       "format": "uint64",
       "minimum": 0.0
     },
@@ -1785,8 +1788,11 @@
           "type": "string"
         },
         "port": {
-          "default": 3490,
-          "type": "integer",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint16",
           "minimum": 0.0
         }

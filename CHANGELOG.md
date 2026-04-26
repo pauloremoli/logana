@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-26
+
 ### Added
 - Export windows allows filling the placeholders from the template (e.g. Context, next steps and conclusion).
 - Merge view: merge different source into a single view sorted by timestamp.
