@@ -22,9 +22,9 @@
 
 **Formats & input**
 - **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OpenTelemetry, DLT (AUTOSAR), and more
-- **Compressed & archive files** — open `.gz`, `.bz2`, `.xz`, `.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, and `.tar.xz`/`.txz` directly; no manual extraction needed
-- **OTel collector** — receive OpenTelemetry logs in real time over gRPC or HTTP/JSON; compatible with any OTel SDK
-- **Multi-tab** — open multiple files, Docker streams, DLT daemon connections, or OTel collector tabs; use `:merge` to interleave selected tabs into a single chronological view
+- **Compressed & archive files** — open compressed directly; no manual extraction needed.
+- **OTel collector** — receive OpenTelemetry logs in real time over gRPC or HTTP.
+- **Multi-tab** — open multiple files, `:merge` to group multiple sources into a single view sorted by timestamp.
 
 **Filtering & search**
 - **Filtering** — include/exclude patterns (literal or regex via `-r`), date-range filters, field-scoped filters; add filters from the command line with `-i`/`-o`/`-t`
@@ -35,13 +35,13 @@
 - **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search
 - **Error/warning navigation** — jump directly to the next/previous error or warning with `e`/`w`
 - **Mouse support** — click to select, scroll to navigate
-- **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
 
 **Analysis & integrations**
 - **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; configurable restore policy (ask / always / never)
 - **Annotations** — attach comments to log lines; export analysis to Markdown or Jira
 - **MCP server** — embedded Model Context Protocol server; expose marks and annotations to AI assistants
 - **Fully configurable** — all keybindings remappable via a config file
+- **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
 
 ---
 
