@@ -6,6 +6,7 @@ use super::App;
 use super::KeyResult;
 use crate::config::RestoreSessionPolicy;
 use crate::db::SettingsKey;
+use crate::mode::app_mode::ModeRenderState;
 use crate::mode::command_mode::CommandMode;
 use crate::mode::filter_mode::FilterManagementMode;
 use crate::mode::normal_mode::NormalMode;
@@ -103,12 +104,20 @@ impl App {
         use crossterm::event::{MouseButton, MouseEventKind};
         match event.kind {
             MouseEventKind::ScrollUp => {
-                let h = self.tabs[self.active_tab].scroll.visible_height;
-                self.mouse_scroll(-((h / 2).max(1) as i32));
+                if self.is_over_sidebar(event.column, event.row) {
+                    self.filter_sidebar_scroll(-1);
+                } else {
+                    let h = self.tabs[self.active_tab].scroll.visible_height;
+                    self.mouse_scroll(-((h / 2).max(1) as i32));
+                }
             }
             MouseEventKind::ScrollDown => {
-                let h = self.tabs[self.active_tab].scroll.visible_height;
-                self.mouse_scroll((h / 2).max(1) as i32);
+                if self.is_over_sidebar(event.column, event.row) {
+                    self.filter_sidebar_scroll(1);
+                } else {
+                    let h = self.tabs[self.active_tab].scroll.visible_height;
+                    self.mouse_scroll((h / 2).max(1) as i32);
+                }
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let hit_scrollbar = {
@@ -188,6 +197,34 @@ impl App {
             mode.cursor_col = word_end;
             self.tabs[self.active_tab].interaction.mode = Box::new(mode);
         }
+    }
+
+    fn is_over_sidebar(&self, col: u16, row: u16) -> bool {
+        self.input
+            .sidebar_area
+            .is_some_and(|a| a.contains(ratatui::layout::Position::new(col, row)))
+    }
+
+    /// Move the filter-sidebar selection by `delta` (clamped to bounds) and
+    /// switch into `FilterManagementMode`, mirroring keyboard j/k navigation.
+    fn filter_sidebar_scroll(&mut self, delta: i32) {
+        let tab = &mut self.tabs[self.active_tab];
+        let num_filters = tab.log_manager.get_filters().len();
+        if num_filters == 0 {
+            return;
+        }
+        let current = match tab.interaction.mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => selected_index,
+            _ => tab.filter.filter_context.unwrap_or(0),
+        };
+        let new_idx = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs() as usize)
+        } else {
+            (current + delta as usize).min(num_filters - 1)
+        };
+        tab.interaction.mode = Box::new(FilterManagementMode {
+            selected_filter_index: new_idx,
+        });
     }
 
     pub(super) fn mouse_scroll(&mut self, delta: i32) {

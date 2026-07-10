@@ -2292,6 +2292,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_mouse_scroll_over_sidebar_moves_filter_selection_down() {
+        use crate::mode::app_mode::ModeRenderState;
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter foo".to_string()).await;
+        app.execute_command_str("filter bar".to_string()).await;
+        let initial_offset = app.tabs[0].scroll.scroll_offset;
+
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 65,
+            row: 1,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+
+        match app.tabs[0].interaction.mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => {
+                assert_eq!(selected_index, 1);
+            }
+            other => panic!("expected FilterManagement mode, got {other:?}"),
+        }
+        // Scrolling over the sidebar must not scroll the log panel.
+        assert_eq!(app.tabs[0].scroll.scroll_offset, initial_offset);
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_over_sidebar_moves_filter_selection_up() {
+        use crate::mode::app_mode::ModeRenderState;
+        use crate::mode::filter_mode::FilterManagementMode;
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter foo".to_string()).await;
+        app.execute_command_str("filter bar".to_string()).await;
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
+            selected_filter_index: 1,
+        });
+
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 65,
+            row: 1,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+
+        match app.tabs[0].interaction.mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => {
+                assert_eq!(selected_index, 0);
+            }
+            other => panic!("expected FilterManagement mode, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn test_mouse_scroll_up_half_page() {
         use crossterm::event::{MouseEvent, MouseEventKind};
         let area = Rect {
