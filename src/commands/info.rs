@@ -7,13 +7,13 @@ pub struct CommandInfo {
 pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "filter",
-        usage: "filter [-r] [-l] [--fg <color>] [--bg <color>] [--field <key>=<value>] <pattern>",
-        description: "Add an include filter. e.g. filter ERROR, filter connection refused, filter -r \"ERR(OR)?\", filter --field level=error",
+        usage: "filter [-r] [-l] [--fg <color>] [--bg <color>] [--group <name>] [--field <key>=<value>] <pattern>",
+        description: "Add an include filter. e.g. filter ERROR, filter connection refused, filter -r \"ERR(OR)?\", filter --field level=error, filter --group errors ERROR",
     },
     CommandInfo {
         name: "exclude",
-        usage: "exclude [-r] [--field <key>=<value>] <pattern>",
-        description: "Add an exclude filter. e.g. exclude debug, exclude connection refused, exclude -r \"health.?check\", exclude --field level=debug",
+        usage: "exclude [-r] [--group <name>] [--field <key>=<value>] <pattern>",
+        description: "Add an exclude filter. e.g. exclude debug, exclude connection refused, exclude -r \"health.?check\", exclude --field level=debug, exclude --group noise debug",
     },
     CommandInfo {
         name: "set-color",
@@ -84,6 +84,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         name: "enable-filters",
         usage: "enable-filters",
         description: "Enable all disabled filters",
+    },
+    CommandInfo {
+        name: "toggle-group",
+        usage: "toggle-group <name>",
+        description: "Toggle all filters in a named group on/off together. e.g. toggle-group errors",
     },
     CommandInfo {
         name: "filtering",

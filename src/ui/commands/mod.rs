@@ -66,17 +66,29 @@ impl App {
                 line_mode,
                 field,
                 regex,
+                group,
             }) => {
                 return self
-                    .cmd_filter(pattern.join(" "), fg, bg, line_mode, field, regex)
+                    .cmd_filter(filter::FilterArgs {
+                        pattern: pattern.join(" "),
+                        fg,
+                        bg,
+                        line_mode,
+                        field,
+                        regex,
+                        group,
+                    })
                     .await;
             }
             Some(Commands::Exclude {
                 pattern,
                 field,
                 regex,
+                group,
             }) => {
-                return self.cmd_exclude(pattern.join(" "), field, regex).await;
+                return self
+                    .cmd_exclude(pattern.join(" "), field, regex, group)
+                    .await;
             }
             Some(Commands::SetColor { fg, bg, line_mode }) => {
                 return self.cmd_set_color(fg, bg, line_mode).await;
@@ -98,6 +110,7 @@ impl App {
             Some(Commands::ClearFilters) => return self.cmd_clear_filters().await,
             Some(Commands::DisableFilters) => return self.cmd_disable_filters().await,
             Some(Commands::EnableFilters) => return self.cmd_enable_filters().await,
+            Some(Commands::ToggleGroup { name }) => return self.cmd_toggle_group(name).await,
             Some(Commands::Filtering) => self.cmd_filtering(),
             Some(Commands::HideField { field }) => return self.cmd_hide_field(field),
             Some(Commands::ShowField { field }) => self.cmd_show_field(field),
@@ -619,6 +632,76 @@ mod tests {
         assert!(!app.tabs[0].log_manager.get_filters()[0].enabled);
         app.run_command("enable-filters").await.unwrap();
         assert!(app.tabs[0].log_manager.get_filters()[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_group_is_stored() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        app.run_command("filter --group errors line1")
+            .await
+            .unwrap();
+        assert_eq!(
+            app.tabs[0].log_manager.get_filters()[0].group.as_deref(),
+            Some("errors")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_quoted_group_containing_spaces() {
+        let mut app = make_app(&["line1"]).await;
+        app.run_command("filter --group \"my errors\" line1")
+            .await
+            .unwrap();
+        assert_eq!(
+            app.tabs[0].log_manager.get_filters()[0].group.as_deref(),
+            Some("my errors")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exclude_with_group_is_stored() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        app.run_command("exclude --group noise line1")
+            .await
+            .unwrap();
+        assert_eq!(
+            app.tabs[0].log_manager.get_filters()[0].group.as_deref(),
+            Some("noise")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_toggle_group_disables_then_enables() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        app.run_command("filter --group errors line1")
+            .await
+            .unwrap();
+        app.run_command("filter --group errors line2")
+            .await
+            .unwrap();
+        app.run_command("filter other").await.unwrap();
+
+        app.run_command("toggle-group errors").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert!(!filters[0].enabled);
+        assert!(!filters[1].enabled);
+        assert!(filters[2].enabled);
+
+        app.run_command("toggle-group errors").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert!(filters[0].enabled);
+        assert!(filters[1].enabled);
+        assert!(filters[2].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_toggle_group_unknown_name_errors() {
+        let mut app = make_app(&["line1"]).await;
+        app.run_command("filter --group errors line1")
+            .await
+            .unwrap();
+        let result = app.run_command("toggle-group nonexistent").await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

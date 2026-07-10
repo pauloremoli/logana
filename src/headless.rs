@@ -208,15 +208,25 @@ async fn apply_inline_filters(
         let cmd = format!("filter {}", args_str);
         let parsed = CommandLine::try_parse_from(shell_split(&cmd))
             .map_err(|e| anyhow::anyhow!("Invalid include filter '{}': {}", args_str, e))?;
-        if let Some(Commands::Filter { pattern, field, .. }) = parsed.command {
+        if let Some(Commands::Filter {
+            pattern,
+            field,
+            group,
+            ..
+        }) = parsed.command
+        {
             let pattern = pattern.join(" ");
             let stored = if field {
                 build_field_pattern(&pattern)?
             } else {
                 pattern
             };
+            let mut opts = FilterOptions::default();
+            if let Some(g) = group {
+                opts = opts.group(&g);
+            }
             log_manager
-                .add_filter_with_color(stored, FilterType::Include, FilterOptions::default())
+                .add_filter_with_color(stored, FilterType::Include, opts)
                 .await;
         }
     }
@@ -229,6 +239,7 @@ async fn apply_inline_filters(
             pattern,
             field,
             regex,
+            group,
         }) = parsed.command
         {
             let pattern = pattern.join(" ");
@@ -240,6 +251,9 @@ async fn apply_inline_filters(
             let mut opts = FilterOptions::default();
             if regex {
                 opts = opts.regex();
+            }
+            if let Some(g) = group {
+                opts = opts.group(&g);
             }
             log_manager
                 .add_filter_with_color(stored, FilterType::Exclude, opts)

@@ -19,14 +19,16 @@ pub struct Sidebar<'a> {
     pub theme: &'a Theme,
 }
 
-/// Returns the plain display text for a filter row (no styling).
-/// Used both for rendering and for hit-testing wrapped sidebar rows.
-pub fn filter_row_display_text(
+/// Splits a filter row into `(prefix, value, suffix)`, where `value` is the
+/// filter's pattern text (the part the filter's color highlight should apply
+/// to) and `prefix`/`suffix` are the surrounding metadata (checkbox, type,
+/// group tag, field tag, match count).
+fn filter_row_parts(
     filter: &FilterDef,
     idx: usize,
     selected: usize,
     match_counts: &[usize],
-) -> String {
+) -> (String, String, String) {
     let status = if filter.enabled { "[x]" } else { "[ ]" };
     let selected_prefix = if idx == selected { ">" } else { " " };
     let is_date = filter.pattern.starts_with(crate::filters::DATE_PREFIX);
@@ -39,30 +41,51 @@ pub fn filter_row_display_text(
             FilterType::Exclude => "Out",
         }
     };
-    let field_display_buf: String;
     let (display_pattern, field_tag) = if is_date {
-        (&filter.pattern[crate::filters::DATE_PREFIX.len()..], "")
+        (
+            filter.pattern[crate::filters::DATE_PREFIX.len()..].to_string(),
+            "",
+        )
     } else if is_field {
         let expr = &filter.pattern[crate::filters::FIELD_PREFIX.len()..];
-        field_display_buf = if let Some(colon) = expr.find(':') {
+        let value = if let Some(colon) = expr.find(':') {
             format!("{}={}", &expr[..colon], &expr[colon + 1..])
         } else {
             expr.to_string()
         };
-        (field_display_buf.as_str(), " [field]")
+        (value, " [field]")
     } else {
-        (&filter.pattern[..], "")
+        (filter.pattern.clone(), "")
     };
+    let group_tag = filter
+        .group
+        .as_deref()
+        .map(|g| format!("[{g}] "))
+        .unwrap_or_default();
     let count_str = if filter.enabled {
         let count = match_counts.get(idx).copied().unwrap_or(0);
         format!(" ({})", count)
     } else {
         String::new()
     };
-    format!(
-        "{}{} {}: {}{}{}",
-        selected_prefix, status, filter_type_str, display_pattern, field_tag, count_str
-    )
+    let prefix = format!(
+        "{}{} {}: {}",
+        selected_prefix, status, filter_type_str, group_tag
+    );
+    let suffix = format!("{}{}", field_tag, count_str);
+    (prefix, display_pattern, suffix)
+}
+
+/// Returns the plain display text for a filter row (no styling).
+/// Used both for rendering and for hit-testing wrapped sidebar rows.
+pub fn filter_row_display_text(
+    filter: &FilterDef,
+    idx: usize,
+    selected: usize,
+    match_counts: &[usize],
+) -> String {
+    let (prefix, value, suffix) = filter_row_parts(filter, idx, selected, match_counts);
+    format!("{prefix}{value}{suffix}")
 }
 
 fn build_filter_row(
@@ -72,17 +95,22 @@ fn build_filter_row(
     match_counts: &[usize],
     theme: &Theme,
 ) -> Line<'static> {
-    let text = filter_row_display_text(filter, idx, selected, match_counts);
-    let mut style = Style::default().fg(theme.text);
+    let (prefix, value, suffix) = filter_row_parts(filter, idx, selected, match_counts);
+    let default_style = Style::default().fg(theme.text);
+    let mut value_style = default_style;
     if let Some(cfg) = &filter.color_config {
         if let Some(fg) = cfg.fg {
-            style = style.fg(fg);
+            value_style = value_style.fg(fg);
         }
         if let Some(bg) = cfg.bg {
-            style = style.bg(bg);
+            value_style = value_style.bg(bg);
         }
     }
-    Line::from(text).style(style)
+    Line::from(vec![
+        Span::styled(prefix, default_style),
+        Span::styled(value, value_style),
+        Span::styled(suffix, default_style),
+    ])
 }
 
 /// Row offset (in wrapped display rows) so the selected filter's row stays
@@ -219,6 +247,7 @@ mod tests {
             filter_type,
             color_config: None,
             use_regex: false,
+            group: None,
         }
     }
 
@@ -390,6 +419,35 @@ mod tests {
     }
 
     #[test]
+    fn test_build_filter_row_color_applies_only_to_value() {
+        use crate::filters::ColorConfig;
+        let theme = Theme::default();
+        let mut filter = make_filter("hello", true, FilterType::Include);
+        filter.color_config = Some(ColorConfig {
+            fg: Some(ratatui::style::Color::Red),
+            bg: None,
+            match_only: true,
+        });
+        let line = build_filter_row(&filter, 0, 0, &[3], &theme);
+
+        let value_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "hello")
+            .expect("value span present");
+        assert_eq!(value_span.style.fg, Some(ratatui::style::Color::Red));
+
+        for span in line.spans.iter().filter(|s| s.content.as_ref() != "hello") {
+            assert_ne!(
+                span.style.fg,
+                Some(ratatui::style::Color::Red),
+                "non-value span should not be colored: {:?}",
+                span.content
+            );
+        }
+    }
+
+    #[test]
     fn test_build_filter_row_exclude_disabled() {
         let theme = Theme::default();
         let filter = make_filter("noise", false, FilterType::Exclude);
@@ -409,6 +467,21 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("key=val"));
         assert!(text.contains("[field]"));
+    }
+
+    #[test]
+    fn test_filter_row_display_text_shows_group() {
+        let mut filter = make_filter("ERROR", true, FilterType::Include);
+        filter.group = Some("errors".to_string());
+        let text = filter_row_display_text(&filter, 0, 0, &[3]);
+        assert_eq!(text, ">[x] In: [errors] ERROR (3)");
+    }
+
+    #[test]
+    fn test_filter_row_display_text_no_group_omits_tag() {
+        let filter = make_filter("ERROR", true, FilterType::Include);
+        let text = filter_row_display_text(&filter, 0, 0, &[3]);
+        assert_eq!(text, ">[x] In: ERROR (3)");
     }
 
     #[test]

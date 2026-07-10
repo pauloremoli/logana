@@ -55,10 +55,15 @@ impl LogManager {
             .position(|f| f.pattern == pattern && f.filter_type == filter_type)
         {
             self.filter_defs[pos].color_config = color_config.clone();
+            self.filter_defs[pos].group = options.group.clone();
             let id = self.filter_defs[pos].id;
             let _ = self
                 .db
                 .update_filter_color(id as i64, color_config.as_ref())
+                .await;
+            let _ = self
+                .db
+                .update_filter_group(id as i64, options.group.as_deref())
                 .await;
             return false;
         }
@@ -97,6 +102,7 @@ impl LogManager {
             enabled: true,
             color_config,
             use_regex: options.use_regex,
+            group: options.group.clone(),
         });
         true
     }
@@ -159,6 +165,7 @@ impl LogManager {
             f.filter_type = filter_type.clone();
             f.color_config = color_config.clone();
             f.use_regex = options.use_regex;
+            f.group = options.group.clone();
         }
         let _ = self
             .db
@@ -168,8 +175,24 @@ impl LogManager {
                 &filter_type,
                 color_config.as_ref(),
                 options.use_regex,
+                options.group.as_deref(),
             )
             .await;
+    }
+
+    /// Distinct group names among the current filters, sorted alphabetically.
+    pub fn group_names(&self) -> Vec<String> {
+        crate::filters::known_groups(&self.filter_defs)
+    }
+
+    /// Set `enabled` on every filter belonging to `group`.
+    pub async fn set_filters_enabled_by_group(&mut self, group: &str, enabled: bool) {
+        for f in self.filter_defs.iter_mut() {
+            if f.group.as_deref() == Some(group) {
+                f.enabled = enabled;
+            }
+        }
+        let _ = self.db.set_filters_enabled_by_group(group, enabled).await;
     }
 
     pub async fn move_filter_up(&mut self, id: usize) {
@@ -742,6 +765,69 @@ mod tests {
 
         mgr.enable_all_filters().await; // should keep it enabled
         assert!(mgr.get_filters()[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_add_filter_with_color_stores_group() {
+        let mut mgr = make_manager().await;
+        let opts = FilterOptions::default().group("errors");
+        mgr.add_filter_with_color("error".into(), FilterType::Include, opts)
+            .await;
+        assert_eq!(mgr.get_filters()[0].group.as_deref(), Some("errors"));
+    }
+
+    #[tokio::test]
+    async fn test_group_names_sorted_and_deduped() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "a".into(),
+            FilterType::Include,
+            FilterOptions::default().group("zeta"),
+        )
+        .await;
+        mgr.add_filter_with_color(
+            "b".into(),
+            FilterType::Include,
+            FilterOptions::default().group("alpha"),
+        )
+        .await;
+        mgr.add_filter_with_color(
+            "c".into(),
+            FilterType::Include,
+            FilterOptions::default().group("alpha"),
+        )
+        .await;
+        mgr.add_filter_with_color("d".into(), FilterType::Include, FilterOptions::default())
+            .await;
+
+        assert_eq!(
+            mgr.group_names(),
+            vec!["alpha".to_string(), "zeta".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_filters_enabled_by_group() {
+        let mut mgr = make_manager().await;
+        let opts = FilterOptions::default().group("errors");
+        mgr.add_filter_with_color("error".into(), FilterType::Include, opts.clone())
+            .await;
+        mgr.add_filter_with_color("warn".into(), FilterType::Include, opts)
+            .await;
+        mgr.add_filter_with_color(
+            "debug".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
+        .await;
+
+        mgr.set_filters_enabled_by_group("errors", false).await;
+
+        let filters = mgr.get_filters();
+        let by_pattern = |p: &str| filters.iter().find(|f| f.pattern == p).unwrap();
+        assert!(!by_pattern("error").enabled);
+        assert!(!by_pattern("warn").enabled);
+        assert!(by_pattern("debug").enabled);
     }
 
     #[tokio::test]

@@ -3907,6 +3907,7 @@ mod tests {
             enabled: true,
             color_config: None,
             use_regex: false,
+            group: None,
         };
         tab.filter.cached_scan = Some(CachedScanResult {
             filter_fingerprint: vec![stale_filter],

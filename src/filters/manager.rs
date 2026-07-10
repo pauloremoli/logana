@@ -1094,6 +1094,8 @@ pub struct FilterOptions {
     pub match_only: bool,
     /// When `true` the pattern is compiled as a regex; when `false` (default) it is a literal.
     pub use_regex: bool,
+    /// Optional group name, used to toggle several filters on/off together.
+    pub group: Option<String>,
 }
 
 impl Default for FilterOptions {
@@ -1103,6 +1105,7 @@ impl Default for FilterOptions {
             bg: None,
             match_only: true,
             use_regex: false,
+            group: None,
         }
     }
 }
@@ -1147,17 +1150,25 @@ impl FilterOptions {
         self.use_regex = true;
         self
     }
+
+    /// Assign the filter to a named group, so it can be toggled together with
+    /// other filters sharing the same group name.
+    pub fn group(mut self, group: &str) -> Self {
+        self.group = Some(group.to_string());
+        self
+    }
 }
 
 /// Options for the low-level `FilterStore::insert_filter` call.
 ///
-/// Defaults: `enabled = true`, no color, no source file, `use_regex = false`.
+/// Defaults: `enabled = true`, no color, no source file, `use_regex = false`, no group.
 #[derive(Debug, Default, Clone)]
 pub struct FilterInsertOptions {
     pub enabled: bool,
     pub color_config: Option<ColorConfig>,
     pub source_file: Option<String>,
     pub use_regex: bool,
+    pub group: Option<String>,
 }
 
 impl FilterInsertOptions {
@@ -1187,6 +1198,11 @@ impl FilterInsertOptions {
         self.use_regex = true;
         self
     }
+
+    pub fn group(mut self, g: impl Into<String>) -> Self {
+        self.group = Some(g.into());
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1198,6 +1214,18 @@ pub struct FilterDef {
     pub color_config: Option<ColorConfig>,
     #[serde(default)]
     pub use_regex: bool,
+    /// Optional group name; filters sharing a group can be toggled together.
+    pub group: Option<String>,
+}
+
+/// Distinct group names present among `filters`, sorted alphabetically.
+pub fn known_groups(filters: &[FilterDef]) -> Vec<String> {
+    filters
+        .iter()
+        .filter_map(|f| f.group.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]

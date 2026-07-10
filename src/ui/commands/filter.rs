@@ -1,16 +1,28 @@
 use crate::filters::{FilterOptions, FilterType};
 use crate::ui::App;
 
+/// Arguments for `:filter`, bundled to keep `cmd_filter`'s signature small.
+pub(super) struct FilterArgs {
+    pub pattern: String,
+    pub fg: Option<String>,
+    pub bg: Option<String>,
+    pub line_mode: bool,
+    pub field: bool,
+    pub regex: bool,
+    pub group: Option<String>,
+}
+
 impl App {
-    pub(super) async fn cmd_filter(
-        &mut self,
-        pattern: String,
-        fg: Option<String>,
-        bg: Option<String>,
-        line_mode: bool,
-        field: bool,
-        regex: bool,
-    ) -> Result<bool, String> {
+    pub(super) async fn cmd_filter(&mut self, args: FilterArgs) -> Result<bool, String> {
+        let FilterArgs {
+            pattern,
+            fg,
+            bg,
+            line_mode,
+            field,
+            regex,
+            group,
+        } = args;
         let stored_pattern = if field {
             let (key, value) = super::parse_key_value(&pattern)?;
             format!("{}{}:{}", crate::filters::FIELD_PREFIX, key, value)
@@ -30,6 +42,9 @@ impl App {
         }
         if let Some(ref c) = bg {
             opts = opts.bg(c);
+        }
+        if let Some(ref g) = group {
+            opts = opts.group(g);
         }
 
         let can_incremental = !field
@@ -76,6 +91,7 @@ impl App {
         pattern: String,
         field: bool,
         regex: bool,
+        group: Option<String>,
     ) -> Result<bool, String> {
         let stored_pattern = if field {
             let (key, value) = super::parse_key_value(&pattern)?;
@@ -87,6 +103,9 @@ impl App {
         let mut opts = FilterOptions::default();
         if regex {
             opts = opts.regex();
+        }
+        if let Some(ref g) = group {
+            opts = opts.group(g);
         }
 
         if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
@@ -172,5 +191,26 @@ impl App {
         let tab = &mut self.tabs[self.active_tab];
         tab.filter.enabled = !tab.filter.enabled;
         tab.begin_filter_refresh();
+    }
+
+    /// Toggle every filter in `group` on/off together: if any member is
+    /// currently enabled, disable the whole group; otherwise enable it.
+    pub(super) async fn cmd_toggle_group(&mut self, name: String) -> Result<bool, String> {
+        let tab = &mut self.tabs[self.active_tab];
+        let filters = tab.log_manager.get_filters();
+        if !filters
+            .iter()
+            .any(|f| f.group.as_deref() == Some(name.as_str()))
+        {
+            return Err(format!("No such filter group: '{name}'"));
+        }
+        let any_enabled = filters
+            .iter()
+            .any(|f| f.group.as_deref() == Some(name.as_str()) && f.enabled);
+        tab.log_manager
+            .set_filters_enabled_by_group(&name, !any_enabled)
+            .await;
+        tab.begin_filter_refresh();
+        Ok(false)
     }
 }

@@ -58,6 +58,26 @@ Exclude takes priority: a line that satisfies an include filter but also matches
 - Press `F` in normal mode to toggle **all** filtering on/off instantly (useful for comparing filtered vs. unfiltered view).
 - Press `A` in the filter manager to enable/disable all filters at once.
 
+## Filter Groups
+
+Assign a filter to a named group with `--group <name>` when adding it:
+
+```sh
+:filter --group errors ERROR
+:filter --group errors FATAL
+:exclude --group noise health.?check --regex
+```
+
+Toggle every filter in a group on/off together:
+
+```sh
+:toggle-group errors
+```
+
+If any filter in the group is enabled, this disables the whole group; otherwise it enables the whole group. Group names autocomplete from existing filters.
+
+Grouped filters show their group name in brackets in the filter sidebar, e.g. `[x] In: [errors] ERROR (12)`.
+
 ## Highlight Colors
 
 Each include filter highlights its matching byte spans in the log line. The color is configurable per filter. When no color is set, logana uses a default highlight style from the active theme.

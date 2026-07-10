@@ -6,7 +6,7 @@ use ratatui::{
 use crate::commands::auto_complete::{
     FieldCompletion, complete_color, complete_field_name, complete_field_value, complete_file_path,
     complete_flags, extract_color_partial, extract_field_partial, extract_flag_partial,
-    find_command_completions, fuzzy_match, shell_split,
+    extract_group_partial, find_command_completions, fuzzy_match, shell_split,
 };
 use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
 use crate::theme::parse_color;
@@ -59,6 +59,15 @@ pub fn resolve_completions(
                 .collect(),
         );
     }
+    if let Some(partial) = extract_group_partial(query_text.trim_start()) {
+        let groups = tab.log_manager.group_names();
+        return CompletionSource::Items(
+            groups
+                .into_iter()
+                .filter(|g| fuzzy_match(partial, g))
+                .collect(),
+        );
+    }
     let trimmed = query_text.trim();
     let file_cmd = FILE_PATH_COMMANDS
         .iter()
@@ -88,6 +97,16 @@ pub fn resolve_completions(
             .iter()
             .filter(|n| fuzzy_match(partial, n))
             .cloned()
+            .collect();
+        return CompletionSource::Items(completions);
+    }
+    if let Some(partial_raw) = query_text.trim_start().strip_prefix("toggle-group ") {
+        let partial = partial_raw.trim_start();
+        let completions = tab
+            .log_manager
+            .group_names()
+            .into_iter()
+            .filter(|g| fuzzy_match(partial, g))
             .collect();
         return CompletionSource::Items(completions);
     }
@@ -515,6 +534,60 @@ mod tests {
         let mut tab = TabState::new(fr, lm, "test".to_string());
         let result = resolve_completions(&mut tab, "show-field le", None);
         assert!(matches!(result, CompletionSource::Items(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_group_flag_value() {
+        use crate::db::Database;
+        use crate::db::LogManager;
+        use crate::filters::{FilterOptions, FilterType};
+        use crate::ingestion::FileReader;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let mut lm = LogManager::new(db, None).await;
+        lm.add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            FilterOptions::default().group("errors"),
+        )
+        .await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "filter pattern --group er", None);
+        match result {
+            CompletionSource::Items(items) => {
+                assert!(items.contains(&"errors".to_string()), "{items:?}");
+            }
+            _ => panic!("expected Items"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_toggle_group() {
+        use crate::db::Database;
+        use crate::db::LogManager;
+        use crate::filters::{FilterOptions, FilterType};
+        use crate::ingestion::FileReader;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let mut lm = LogManager::new(db, None).await;
+        lm.add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            FilterOptions::default().group("errors"),
+        )
+        .await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "toggle-group er", None);
+        match result {
+            CompletionSource::Items(items) => {
+                assert!(items.contains(&"errors".to_string()), "{items:?}");
+            }
+            _ => panic!("expected Items"),
+        }
     }
 
     #[tokio::test]

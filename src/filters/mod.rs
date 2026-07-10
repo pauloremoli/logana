@@ -15,5 +15,6 @@ pub use field_filter::{
 pub use manager::{
     CURRENT_SEARCH_STYLE_ID, ColorConfig, Filter, FilterDecision, FilterDef, FilterInsertOptions,
     FilterManager, FilterOptions, FilterType, MatchCollector, MatchSpan, RegexFilter,
-    SEARCH_STYLE_ID, StyleId, SubstringFilter, build_filter, is_regex_pattern, render_line,
+    SEARCH_STYLE_ID, StyleId, SubstringFilter, build_filter, is_regex_pattern, known_groups,
+    render_line,
 };

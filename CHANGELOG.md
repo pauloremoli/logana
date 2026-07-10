@@ -5,6 +5,18 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Filters can be assigned to a named group with `--group <name>` on `:filter`/`:exclude`. 
+- Command to toggle every filter in a group on/off together with `:toggle-group <name>`. 
+- User-defined log formats can be provided in schema folder.
+
+### Fixed
+- Make the order of fields in select fields pop-up consistent with the order rendered in log panel.
+
+### Changed
+- Scroll with mouse wheel on filters sidebar. 
+- Filters visual on sidebar is applied only to text.
+
 ## [0.6.0] - 2026-04-26
 
 ### Added

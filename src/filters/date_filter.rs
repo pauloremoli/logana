@@ -1729,6 +1729,7 @@ mod tests {
             enabled: true,
             color_config: None,
             use_regex: false,
+            group: None,
         }];
         let filters = extract_date_filters(&defs);
         assert!(filters.is_empty());
@@ -1743,6 +1744,7 @@ mod tests {
             enabled: true,
             color_config: None,
             use_regex: false,
+            group: None,
         }];
         let filters = extract_date_filters(&defs);
         assert_eq!(filters.len(), 1);
@@ -1757,6 +1759,7 @@ mod tests {
             enabled: false,
             color_config: None,
             use_regex: false,
+            group: None,
         }];
         let filters = extract_date_filters(&defs);
         assert!(filters.is_empty());
@@ -1771,6 +1774,7 @@ mod tests {
             enabled: true,
             color_config: None,
             use_regex: false,
+            group: None,
         }];
         let filters = extract_date_filters(&defs);
         assert!(filters.is_empty());

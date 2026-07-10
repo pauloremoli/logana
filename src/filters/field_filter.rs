@@ -509,6 +509,7 @@ mod tests {
             enabled,
             color_config: None,
             use_regex: false,
+            group: None,
         }
     }
 

@@ -40,13 +40,14 @@ fn build_edit_command(
     cc: &Option<ColorConfig>,
     pattern: &str,
     use_regex: bool,
+    group: &Option<String>,
 ) -> String {
     if let Some(expr) = pattern.strip_prefix(crate::filters::DATE_PREFIX) {
         build_date_filter_command(cc, expr)
     } else if let Some(expr) = pattern.strip_prefix(crate::filters::FIELD_PREFIX) {
-        build_field_filter_command(ft, cc, expr)
+        build_field_filter_command(ft, cc, expr, group)
     } else {
-        build_text_filter_command(ft, cc, pattern, use_regex)
+        build_text_filter_command(ft, cc, pattern, use_regex, group)
     }
 }
 
@@ -58,11 +59,17 @@ fn build_date_filter_command(cc: &Option<ColorConfig>, expr: &str) -> String {
     c
 }
 
-fn build_field_filter_command(ft: &FilterType, cc: &Option<ColorConfig>, expr: &str) -> String {
+fn build_field_filter_command(
+    ft: &FilterType,
+    cc: &Option<ColorConfig>,
+    expr: &str,
+    group: &Option<String>,
+) -> String {
     let mut c = filter_or_exclude_prefix(ft);
     if *ft == FilterType::Include {
         append_color_flags(&mut c, cc, true);
     }
+    append_group_flag(&mut c, group);
     c.push_str(" --field ");
     if let Some(colon) = expr.find(':') {
         c.push_str(&expr[..colon]);
@@ -79,6 +86,7 @@ fn build_text_filter_command(
     cc: &Option<ColorConfig>,
     pattern: &str,
     use_regex: bool,
+    group: &Option<String>,
 ) -> String {
     let mut c = filter_or_exclude_prefix(ft);
     if use_regex {
@@ -87,6 +95,7 @@ fn build_text_filter_command(
     if *ft == FilterType::Include {
         append_color_flags(&mut c, cc, true);
     }
+    append_group_flag(&mut c, group);
     c.push(' ');
     c.push_str(pattern);
     c
@@ -118,6 +127,19 @@ fn append_color_flags(cmd: &mut String, cc: &Option<ColorConfig>, include_line_f
         }
         if include_line_flag && !cfg.match_only {
             cmd.push_str(" -l");
+        }
+    }
+}
+
+/// Append `--group <name>`, quoting the name if it contains whitespace so it
+/// round-trips through `shell_split` as a single token.
+fn append_group_flag(cmd: &mut String, group: &Option<String>) {
+    if let Some(name) = group {
+        if name.contains(char::is_whitespace) {
+            let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+            cmd.push_str(&format!(" --group \"{escaped}\""));
+        } else {
+            cmd.push_str(&format!(" --group {name}"));
         }
     }
 }
@@ -201,12 +223,13 @@ impl FilterManagementMode {
                 f.color_config.clone(),
                 f.pattern.clone(),
                 f.use_regex,
+                f.group.clone(),
             )
         });
-        if let Some((id, ft, cc, pattern, use_regex)) = filter_info {
+        if let Some((id, ft, cc, pattern, use_regex, group)) = filter_info {
             tab.filter.editing_filter_id = Some(id);
             tab.filter.filter_context = Some(selected);
-            let cmd = build_edit_command(&ft, &cc, &pattern, use_regex);
+            let cmd = build_edit_command(&ft, &cc, &pattern, use_regex, &group);
             return open_command(tab, cmd);
         }
         stay_at(selected)
@@ -689,6 +712,46 @@ mod tests {
         match mode.render_state() {
             ModeRenderState::Command { input, .. } => {
                 assert!(input.contains("error"));
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_e_opens_command_mode_preserves_group() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default().group("errors"),
+            )
+            .await;
+        tab.refresh_visible();
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.contains("--group errors"), "{input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_e_opens_command_mode_quotes_group_with_spaces() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default().group("my errors"),
+            )
+            .await;
+        tab.refresh_visible();
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.contains("--group \"my errors\""), "{input}");
             }
             other => panic!("expected Command, got {:?}", other),
         }

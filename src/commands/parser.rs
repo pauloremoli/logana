@@ -28,6 +28,9 @@ pub enum Commands {
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
+        /// Assign the filter to a named group, so it can be toggled together with others
+        #[arg(long)]
+        group: Option<String>,
     },
     /// Add an exclude filter
     Exclude {
@@ -39,6 +42,9 @@ pub enum Commands {
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
+        /// Assign the filter to a named group, so it can be toggled together with others
+        #[arg(long)]
+        group: Option<String>,
     },
     /// Set color for the selected filter
     SetColor {
@@ -76,6 +82,8 @@ pub enum Commands {
     DisableFilters,
     /// Enable all filters
     EnableFilters,
+    /// Toggle all filters in a named group on/off together
+    ToggleGroup { name: String },
     /// Toggle global filtering on/off
     Filtering,
     /// Hide a JSON field by name or 0-based index

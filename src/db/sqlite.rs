@@ -18,6 +18,7 @@ pub trait FilterStore: Send + Sync {
     async fn get_filters_for_source(&self, source_file: &str) -> Result<Vec<FilterDef>>;
     async fn update_filter_pattern(&self, id: i64, new_pattern: &str) -> Result<()>;
     async fn update_filter_color(&self, id: i64, color_config: Option<&ColorConfig>) -> Result<()>;
+    async fn update_filter_group(&self, id: i64, group: Option<&str>) -> Result<()>;
     async fn update_filter(
         &self,
         id: i64,
@@ -25,10 +26,12 @@ pub trait FilterStore: Send + Sync {
         filter_type: &FilterType,
         color_config: Option<&ColorConfig>,
         use_regex: bool,
+        group: Option<&str>,
     ) -> Result<()>;
     async fn delete_filter(&self, id: i64) -> Result<()>;
     async fn toggle_filter(&self, id: i64) -> Result<()>;
     async fn set_all_filters_enabled(&self, enabled: bool) -> Result<()>;
+    async fn set_filters_enabled_by_group(&self, group: &str, enabled: bool) -> Result<()>;
     async fn swap_filter_order(&self, id1: i64, id2: i64) -> Result<()>;
     async fn clear_filters(&self) -> Result<()>;
     async fn clear_filters_for_source(&self, source_file: &str) -> Result<()>;
@@ -263,6 +266,13 @@ impl Database {
                 .await?;
         }
 
+        if version < 11 {
+            self.migrate_to_v11().await?;
+            sqlx::query("PRAGMA user_version = 11")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -419,6 +429,14 @@ impl Database {
         Ok(())
     }
 
+    async fn migrate_to_v11(&self) -> Result<()> {
+        sqlx::query("ALTER TABLE filters ADD COLUMN group_name TEXT")
+            .execute(&self.pool)
+            .await
+            .ok();
+        Ok(())
+    }
+
     pub async fn reset_all(&self) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM filters").execute(&mut *tx).await?;
@@ -471,6 +489,10 @@ fn row_to_filter_def(row: &sqlx::sqlite::SqliteRow) -> FilterDef {
         enabled: row.get::<i32, _>("enabled") != 0,
         color_config,
         use_regex: row.try_get::<i32, _>("use_regex").unwrap_or(0) != 0,
+        group: row
+            .try_get::<Option<String>, _>("group_name")
+            .ok()
+            .flatten(),
     }
 }
 
@@ -503,8 +525,8 @@ impl FilterStore for Database {
         };
 
         let result = sqlx::query(
-            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex, group_name)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(pattern)
         .bind(filter_type_to_str(filter_type))
@@ -515,6 +537,7 @@ impl FilterStore for Database {
         .bind(source)
         .bind(match_only as i32)
         .bind(options.use_regex as i32)
+        .bind(&options.group)
         .execute(&self.pool)
         .await?;
 
@@ -565,6 +588,15 @@ impl FilterStore for Database {
         Ok(())
     }
 
+    async fn update_filter_group(&self, id: i64, group: Option<&str>) -> Result<()> {
+        sqlx::query("UPDATE filters SET group_name = ? WHERE id = ?")
+            .bind(group)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn update_filter(
         &self,
         id: i64,
@@ -572,6 +604,7 @@ impl FilterStore for Database {
         filter_type: &FilterType,
         color_config: Option<&ColorConfig>,
         use_regex: bool,
+        group: Option<&str>,
     ) -> Result<()> {
         let (fg, bg, match_only) = match color_config {
             Some(cc) => (
@@ -582,7 +615,7 @@ impl FilterStore for Database {
             None => (None, None, true),
         };
         sqlx::query(
-            "UPDATE filters SET pattern = ?, filter_type = ?, fg_color = ?, bg_color = ?, match_only = ?, use_regex = ? WHERE id = ?",
+            "UPDATE filters SET pattern = ?, filter_type = ?, fg_color = ?, bg_color = ?, match_only = ?, use_regex = ?, group_name = ? WHERE id = ?",
         )
         .bind(pattern)
         .bind(filter_type_to_str(filter_type))
@@ -590,6 +623,7 @@ impl FilterStore for Database {
         .bind(&bg)
         .bind(match_only as i32)
         .bind(use_regex as i32)
+        .bind(group)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -617,6 +651,15 @@ impl FilterStore for Database {
     async fn set_all_filters_enabled(&self, enabled: bool) -> Result<()> {
         sqlx::query("UPDATE filters SET enabled = ?")
             .bind(enabled)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn set_filters_enabled_by_group(&self, group: &str, enabled: bool) -> Result<()> {
+        sqlx::query("UPDATE filters SET enabled = ? WHERE group_name = ?")
+            .bind(enabled)
+            .bind(group)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -695,8 +738,8 @@ impl FilterStore for Database {
             };
 
             sqlx::query(
-                "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex, group_name)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&filter.pattern)
             .bind(filter_type_to_str(&filter.filter_type))
@@ -707,6 +750,7 @@ impl FilterStore for Database {
             .bind(source)
             .bind(match_only as i32)
             .bind(filter.use_regex as i32)
+            .bind(&filter.group)
             .execute(&mut *tx)
             .await?;
         }
@@ -1002,6 +1046,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_insert_filter_persists_group() {
+        let db = setup_db().await;
+        db.insert_filter(
+            "error",
+            &FilterType::Include,
+            FilterInsertOptions::new().group("errors"),
+        )
+        .await
+        .unwrap();
+        db.insert_filter("debug", &FilterType::Include, FilterInsertOptions::new())
+            .await
+            .unwrap();
+
+        let filters = db.get_filters().await.unwrap();
+        assert_eq!(filters[0].group.as_deref(), Some("errors"));
+        assert_eq!(filters[1].group, None);
+    }
+
+    #[tokio::test]
+    async fn test_update_filter_group() {
+        let db = setup_db().await;
+        let id = db
+            .insert_filter("error", &FilterType::Include, FilterInsertOptions::new())
+            .await
+            .unwrap();
+
+        db.update_filter_group(id, Some("errors")).await.unwrap();
+        let filters = db.get_filters().await.unwrap();
+        assert_eq!(filters[0].group.as_deref(), Some("errors"));
+
+        db.update_filter_group(id, None).await.unwrap();
+        let filters = db.get_filters().await.unwrap();
+        assert_eq!(filters[0].group, None);
+    }
+
+    #[tokio::test]
+    async fn test_update_filter_updates_group() {
+        let db = setup_db().await;
+        let id = db
+            .insert_filter(
+                "error",
+                &FilterType::Include,
+                FilterInsertOptions::new().group("old-group"),
+            )
+            .await
+            .unwrap();
+
+        db.update_filter(
+            id,
+            "error",
+            &FilterType::Include,
+            None,
+            false,
+            Some("new-group"),
+        )
+        .await
+        .unwrap();
+
+        let filters = db.get_filters().await.unwrap();
+        assert_eq!(filters[0].group.as_deref(), Some("new-group"));
+    }
+
+    #[tokio::test]
+    async fn test_set_filters_enabled_by_group() {
+        let db = setup_db().await;
+        db.insert_filter(
+            "error",
+            &FilterType::Include,
+            FilterInsertOptions::new().group("errors"),
+        )
+        .await
+        .unwrap();
+        db.insert_filter(
+            "warn",
+            &FilterType::Include,
+            FilterInsertOptions::new().group("errors"),
+        )
+        .await
+        .unwrap();
+        db.insert_filter(
+            "debug",
+            &FilterType::Include,
+            FilterInsertOptions::new().group("other"),
+        )
+        .await
+        .unwrap();
+
+        db.set_filters_enabled_by_group("errors", false)
+            .await
+            .unwrap();
+
+        let filters = db.get_filters().await.unwrap();
+        let by_pattern = |p: &str| filters.iter().find(|f| f.pattern == p).unwrap();
+        assert!(!by_pattern("error").enabled);
+        assert!(!by_pattern("warn").enabled);
+        assert!(by_pattern("debug").enabled);
+    }
+
+    #[tokio::test]
+    async fn test_replace_all_filters_persists_group() {
+        let db = setup_db().await;
+        let filters = vec![FilterDef {
+            id: 0,
+            pattern: "error".to_string(),
+            filter_type: FilterType::Include,
+            enabled: true,
+            color_config: None,
+            use_regex: false,
+            group: Some("errors".to_string()),
+        }];
+        db.replace_all_filters(&filters, None).await.unwrap();
+
+        let loaded = db.get_filters().await.unwrap();
+        assert_eq!(loaded[0].group.as_deref(), Some("errors"));
+    }
+
+    #[tokio::test]
     async fn test_swap_filter_order() {
         let db = setup_db().await;
         let id1 = db
@@ -1042,6 +1203,7 @@ mod tests {
                 enabled: true,
                 color_config: None,
                 use_regex: false,
+                group: None,
             },
             FilterDef {
                 id: 0,
@@ -1050,6 +1212,7 @@ mod tests {
                 enabled: false,
                 color_config: None,
                 use_regex: false,
+                group: None,
             },
         ];
 

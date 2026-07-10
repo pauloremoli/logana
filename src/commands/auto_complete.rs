@@ -3,8 +3,11 @@ use std::collections::HashMap;
 use super::{COMMANDS, command_names};
 
 pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
-    ("filter", &["--field", "-f", "--fg", "--bg", "-l"]),
-    ("exclude", &["--field", "-f"]),
+    (
+        "filter",
+        &["--field", "-f", "--fg", "--bg", "-l", "--group"],
+    ),
+    ("exclude", &["--field", "-f", "--group"]),
     ("set-color", &["--fg", "--bg", "-l"]),
     ("date-filter", &["--fg", "--bg", "-l"]),
     ("export", &["-t", "--template"]),
@@ -269,6 +272,34 @@ pub fn complete_color(partial: &str) -> Vec<&'static str> {
         .filter(|c| fuzzy_match(partial, c))
         .copied()
         .collect()
+}
+
+/// If the input ends with `--group <partial>`, returns the partial group-name prefix.
+pub fn extract_group_partial(input: &str) -> Option<&str> {
+    let group_commands = ["filter", "exclude"];
+    let trimmed = input.trim();
+    let cmd = trimmed.split_whitespace().next().unwrap_or("");
+    if !group_commands.contains(&cmd) {
+        return None;
+    }
+
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    let last = tokens[tokens.len() - 1];
+    let second_last = tokens[tokens.len() - 2];
+
+    if second_last == "--group" {
+        return Some(last);
+    }
+
+    if last == "--group" && input.ends_with(' ') {
+        return Some("");
+    }
+
+    None
 }
 
 /// Expand a leading `~` to the user's home directory.
@@ -662,6 +693,46 @@ mod tests {
         );
     }
 
+    // ── extract_group_partial ───────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_group_partial_filter_with_partial_value() {
+        assert_eq!(extract_group_partial("filter --group er"), Some("er"));
+    }
+
+    #[test]
+    fn test_extract_group_partial_exclude_with_partial_value() {
+        assert_eq!(extract_group_partial("exclude --group no"), Some("no"));
+    }
+
+    #[test]
+    fn test_extract_group_partial_trailing_space_returns_empty() {
+        assert_eq!(extract_group_partial("filter --group "), Some(""));
+    }
+
+    #[test]
+    fn test_extract_group_partial_without_trailing_space_returns_none() {
+        assert_eq!(extract_group_partial("filter --group"), None);
+    }
+
+    #[test]
+    fn test_extract_group_partial_non_group_command_returns_none() {
+        assert_eq!(extract_group_partial("set-color --group er"), None);
+    }
+
+    #[test]
+    fn test_extract_group_partial_no_flag_returns_none() {
+        assert_eq!(extract_group_partial("filter foo"), None);
+    }
+
+    #[test]
+    fn test_extract_group_partial_with_preceding_args() {
+        assert_eq!(
+            extract_group_partial("filter --fg red --group er"),
+            Some("er")
+        );
+    }
+
     // ── complete_color ───────────────────────────────────────────────────────
 
     #[test]
@@ -1006,12 +1077,13 @@ mod tests {
     #[test]
     fn test_complete_flags_filter_all() {
         let flags = complete_flags("filter", "-");
-        assert_eq!(flags.len(), 5);
+        assert_eq!(flags.len(), 6);
         assert!(flags.contains(&"--field"));
         assert!(flags.contains(&"-f"));
         assert!(flags.contains(&"--fg"));
         assert!(flags.contains(&"--bg"));
         assert!(flags.contains(&"-l"));
+        assert!(flags.contains(&"--group"));
     }
 
     #[test]
