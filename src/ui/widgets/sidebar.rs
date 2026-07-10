@@ -5,6 +5,7 @@ use ratatui::{
 
 use crate::filters::{FilterDef, FilterType};
 use crate::theme::Theme;
+use crate::ui::field_layout::line_row_count;
 
 pub struct Sidebar<'a> {
     pub filters: &'a [FilterDef],
@@ -84,6 +85,31 @@ fn build_filter_row(
     Line::from(text).style(style)
 }
 
+/// Row offset (in wrapped display rows) so the selected filter's row stays
+/// within a viewport of `content_h` rows at wrap width `content_w`.
+fn compute_scroll_offset(
+    filters: &[FilterDef],
+    selected: usize,
+    match_counts: &[usize],
+    content_w: usize,
+    content_h: usize,
+) -> usize {
+    if content_w == 0 || content_h == 0 {
+        return 0;
+    }
+    let mut row = 0usize;
+    let mut selected_end = 0usize;
+    for (i, filter) in filters.iter().enumerate() {
+        let text = filter_row_display_text(filter, i, selected, match_counts);
+        let row_h = line_row_count(text.as_bytes(), content_w);
+        row += row_h;
+        if i == selected {
+            selected_end = row;
+        }
+    }
+    selected_end.saturating_sub(content_h)
+}
+
 fn build_sidebar_title(
     filter_enabled: bool,
     show_marks_only: bool,
@@ -161,8 +187,18 @@ impl<'a> Widget for Sidebar<'a> {
                 .title_style(title_style)
         };
 
+        let inner = sidebar_block.inner(area);
+        let scroll = compute_scroll_offset(
+            self.filters,
+            self.selected_filter_idx,
+            self.match_counts,
+            inner.width as usize,
+            inner.height as usize,
+        );
+
         Paragraph::new(filters_text)
             .wrap(Wrap { trim: false })
+            .scroll((scroll.min(u16::MAX as usize) as u16, 0))
             .block(sidebar_block)
             .render(area, buf);
     }
@@ -225,6 +261,49 @@ mod tests {
         assert!(row_text(0).contains("Filters"), "row 0 should be title");
         assert!(row_text(1).contains("foo"), "filter 0 should be at row 1");
         assert!(row_text(2).contains("bar"), "filter 1 should be at row 2");
+    }
+
+    #[test]
+    fn test_sidebar_scrolls_to_keep_selection_visible() {
+        let theme = Theme::default();
+        let filters: Vec<FilterDef> = (0..30)
+            .map(|i| make_filter(&format!("pattern_{i}"), true, FilterType::Include))
+            .collect();
+        let match_counts = vec![0; filters.len()];
+        // Small terminal: only a handful of rows fit, selection is near the end.
+        let selected = 25;
+        let sidebar = Sidebar {
+            filters: &filters,
+            match_counts: &match_counts,
+            selected_filter_idx: selected,
+            filter_enabled: true,
+            show_marks_only: false,
+            filter_progress: None,
+            show_borders: false,
+            is_filter_mode: false,
+            theme: &theme,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let buf = terminal
+            .draw(|f| f.render_widget(sidebar, f.area()))
+            .unwrap();
+        let screen: String = (0..10u16)
+            .map(|row| {
+                (0..40u16)
+                    .map(|c| {
+                        buf.buffer
+                            .cell(ratatui::prelude::Position::new(c, row))
+                            .unwrap()
+                            .symbol()
+                            .to_string()
+                    })
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(
+            screen.contains(&format!("pattern_{selected}")),
+            "selected filter row must be scrolled into view: {screen:?}"
+        );
     }
 
     #[test]
