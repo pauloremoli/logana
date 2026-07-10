@@ -205,6 +205,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "sidebar-position <left|right>",
         description: "Move the filter sidebar to the left or right of the log panel. e.g. sidebar-position left",
     },
+    CommandInfo {
+        name: "schema",
+        usage: "schema [name]",
+        description: "Show the active parser schema for this tab, or switch to a named schema. e.g. schema, schema telecom",
+    },
 ];
 
 /// Commands whose last argument is a file path and should receive path auto-completion.

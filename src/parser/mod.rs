@@ -2,6 +2,7 @@
 
 pub mod clf;
 pub mod common_log;
+pub mod custom;
 pub mod dlt;
 pub mod dlt_binary;
 pub mod journalctl;
@@ -15,6 +16,7 @@ pub mod types;
 
 pub use clf::ClfParser;
 pub use common_log::CommonLogParser;
+pub use custom::CustomParser;
 pub use dlt::DltParser;
 pub use journalctl::JournalctlParser;
 pub use json::{
@@ -33,12 +35,17 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
         return None;
     }
 
-    let mut parsers: Vec<Box<dyn LogFormatParser>> = vec![
-        // OtlpParser scores up to 1.5 to beat JsonParser on OTLP files
-        Box::new(OtlpParser),
-        // DltParser scores up to 1.2 — DLT text is highly distinctive
-        Box::new(DltParser),
-    ];
+    let mut parsers: Vec<Box<dyn LogFormatParser>> = crate::config::custom_schemas()
+        .iter()
+        .filter_map(|cfg| {
+            CustomParser::from_config(cfg)
+                .map_err(|e| eprintln!("logana: invalid custom schema '{}': {e}", cfg.name))
+                .ok()
+                .map(|p| Box::new(p) as Box<dyn LogFormatParser>)
+        })
+        .collect();
+    parsers.push(Box::new(OtlpParser));
+    parsers.push(Box::new(DltParser));
     parsers.extend(JsonParser::all_variants());
     parsers.extend([
         Box::new(SyslogParser::default()) as Box<dyn LogFormatParser>,

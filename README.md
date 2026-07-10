@@ -22,6 +22,7 @@
 
 **Formats & input**
 - **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OpenTelemetry, DLT (AUTOSAR), and more
+- **Custom schemas** — define your own log format with a simple `{field}` template; drop a `.json` file in `~/.config/logana/schema/` and logana auto-detects it
 - **Compressed & archive files** — open compressed directly; no manual extraction needed.
 - **OTel collector** — receive OpenTelemetry logs in real time over gRPC or HTTP.
 - **Multi-tab** — open multiple files, `:merge` to group multiple sources into a single view sorted by timestamp.
@@ -179,3 +180,4 @@ Full documentation is at **[pauloremoli.github.io/logana](https://pauloremoli.gi
 - [OTel Collector](https://pauloremoli.github.io/logana/otel.html)
 - [MCP Server](https://pauloremoli.github.io/logana/mcp.html)
 - [Log Formats](https://pauloremoli.github.io/logana/log-formats.html)
+- [Custom Schemas](https://pauloremoli.github.io/logana/custom-schemas.html)

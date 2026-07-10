@@ -34,4 +34,5 @@
   - [Keybindings](configuration/keybindings.md)
   - [Themes](configuration/themes.md)
 - [Log Formats](log-formats.md)
+  - [Custom Schemas](custom-schemas.md)
 - [Data Locations](data-locations.md)

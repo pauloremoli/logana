@@ -182,4 +182,33 @@ impl App {
         tab.display.raw_mode = !tab.display.raw_mode;
         tab.invalidate_parse_cache();
     }
+
+    pub(super) async fn cmd_schema(&mut self, name: Option<String>) -> Result<bool, String> {
+        let tab = &self.tabs[self.active_tab];
+        match name {
+            None => {
+                let schema_name = tab
+                    .display
+                    .format
+                    .as_deref()
+                    .map(|f| f.name().to_string())
+                    .unwrap_or_else(|| "none".to_string());
+                return Err(format!("active schema: {schema_name}"));
+            }
+            Some(schema_name) => {
+                let schema = crate::config::custom_schemas()
+                    .iter()
+                    .find(|s| s.name == schema_name)
+                    .cloned();
+                let cfg =
+                    schema.ok_or_else(|| format!("no custom schema named '{schema_name}'"))?;
+                let parser = crate::parser::CustomParser::from_config(&cfg)
+                    .map_err(|e| format!("invalid schema '{schema_name}': {e}"))?;
+                let tab = &mut self.tabs[self.active_tab];
+                tab.display.format = Some(std::sync::Arc::new(parser));
+                tab.invalidate_parse_cache();
+            }
+        }
+        Ok(false)
+    }
 }

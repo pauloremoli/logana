@@ -13,7 +13,7 @@ use logana::mode::app_mode::ConfirmOpenDirMode;
 use logana::theme::Theme;
 use logana::ui::{App, LoadContext};
 use logana::{
-    config::{Config, DEFAULT_PREVIEW_BYTES},
+    config::{Config, DEFAULT_PREVIEW_BYTES, init_schemas},
     utils::filesystem::list_dir_files,
 };
 use ratatui::prelude::*;
@@ -240,6 +240,7 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
         .as_deref()
         .and_then(|name| Theme::from_file(format!("{}.json", name)).ok())
         .unwrap_or_default();
+    init_schemas();
     let keybinding_conflicts: Vec<String> = config.keybindings.validate();
     let keybindings = Arc::new(config.keybindings);
 

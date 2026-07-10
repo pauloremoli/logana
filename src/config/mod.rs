@@ -34,6 +34,19 @@ pub enum RestoreSessionPolicy {
     Never,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CustomSchemaConfig {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub template: Option<String>,
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub fields: std::collections::HashMap<String, String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[derive(Default)]
@@ -113,6 +126,43 @@ impl Config {
         };
         Self::load_from_path(&config_path)
     }
+}
+
+static CUSTOM_SCHEMAS: std::sync::OnceLock<Vec<CustomSchemaConfig>> = std::sync::OnceLock::new();
+
+pub fn init_schemas() {
+    let schemas = schemas_dir().map(|d| load_schemas(&d)).unwrap_or_default();
+    let _ = CUSTOM_SCHEMAS.set(schemas);
+}
+
+pub fn custom_schemas() -> &'static [CustomSchemaConfig] {
+    CUSTOM_SCHEMAS.get().map(Vec::as_slice).unwrap_or_default()
+}
+
+pub fn load_schemas(schemas_dir: &std::path::Path) -> Vec<CustomSchemaConfig> {
+    let entries = match std::fs::read_dir(schemas_dir) {
+        Ok(e) => e,
+        Err(_) => return vec![],
+    };
+    let mut schemas = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        match std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|s| serde_json::from_str::<CustomSchemaConfig>(&s).map_err(|e| e.to_string()))
+        {
+            Ok(schema) => schemas.push(schema),
+            Err(e) => eprintln!("logana: could not load schema '{}': {e}", path.display()),
+        }
+    }
+    schemas
+}
+
+pub fn schemas_dir() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("logana").join("schema"))
 }
 
 #[cfg(test)]
@@ -1524,5 +1574,42 @@ mod tests {
             "example config failed schema validation:\n{}",
             errors.join("\n")
         );
+    }
+
+    #[test]
+    fn test_load_schemas_empty_on_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let schemas = load_schemas(&dir.path().join("nonexistent"));
+        assert!(schemas.is_empty());
+    }
+
+    #[test]
+    fn test_load_schemas_reads_json_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let schema_json = r#"{
+            "name": "telecom",
+            "template": "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}",
+            "fields": {"id": "extra", "service": "target"}
+        }"#;
+        std::fs::write(dir.path().join("telecom.json"), schema_json).unwrap();
+        let schemas = load_schemas(dir.path());
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0].name, "telecom");
+    }
+
+    #[test]
+    fn test_load_schemas_ignores_non_json_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("readme.txt"), "not json").unwrap();
+        let schemas = load_schemas(dir.path());
+        assert!(schemas.is_empty());
+    }
+
+    #[test]
+    fn test_load_schemas_skips_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bad.json"), "{invalid}").unwrap();
+        let schemas = load_schemas(dir.path());
+        assert!(schemas.is_empty());
     }
 }

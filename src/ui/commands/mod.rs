@@ -125,6 +125,7 @@ impl App {
             Some(Commands::EnableMcp { port }) => return self.cmd_enable_mcp(port).await,
             Some(Commands::DisableMcp) => self.cmd_disable_mcp(),
             Some(Commands::Run { command }) => return self.cmd_run(command).await,
+            Some(Commands::Schema { name }) => return self.cmd_schema(name).await,
             None => {}
         }
         Ok(false)

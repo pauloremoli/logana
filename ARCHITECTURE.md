@@ -8,7 +8,7 @@ logana is structured around a strict separation between domain logic and the UI 
 
 **File I/O & Ingestion** (`ingestion/`) — `FileReader` reads files and streaming sources (stdin, Docker, DLT TCP, file tailing, OTLP HTTP). Compressed and archive files are extracted in the background; only the extracted content is opened as tabs.
 
-**Log Parsing** (`parser/`) — A format-detection registry inspects incoming bytes and selects the best `LogFormatParser` (JSON, syslog, journalctl, logfmt, CLF, DLT, etc.). Parsers produce a normalised `DisplayParts` struct consumed uniformly by the rest of the system. Extra fields carry a `FieldSemantic` tag enabling format-agnostic field filtering.
+**Log Parsing** (`parser/`) — A format-detection registry inspects incoming bytes and selects the best `LogFormatParser` (JSON, syslog, journalctl, logfmt, CLF, DLT, user-defined custom schemas, etc.). Parsers produce a normalised `DisplayParts` struct consumed uniformly by the rest of the system. Extra fields carry a `FieldSemantic` tag enabling format-agnostic field filtering.
 
 **Filter Pipeline** (`filters/`) — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap. The pipeline runs in a background thread. Filter definitions are persisted to SQLite and reloaded on startup.
 
@@ -17,6 +17,20 @@ logana is structured around a strict separation between domain logic and the UI 
 **UI & Rendering** (`ui/`) — The renderer reads tab state and produces widgets each frame; it never mutates state. The event loop dispatches key events to the active mode. Session state is persisted to SQLite and restored on reopen.
 
 **Persistence** (`db/`) — `Database` owns the SQLite connection and schema migrations. Storage is accessed through four traits: `FilterStore` (filter definitions), `FileContextStore` (per-file scroll/search/display context), `SessionStore` (open file list), and `AppSettingsStore` (runtime toggles keyed by `SettingsKey`). `LogManager` builds `FilterManager` instances from persisted filter definitions. `MarkManager` and `CommentManager` are in-memory managers owned by `TabState`; their state is flushed to SQLite via `FileContext` on tab close/switch. Session save/restore is coordinated by `SessionManager` in `ui/session.rs`.
+
+## Custom Schema Loading
+
+User-defined schemas are loaded once at startup into a process-level `OnceLock` via `config::init_schemas()`. Every call to `detect_format` reads them from `config::custom_schemas()` without any parameter threading — schemas are automatically available to all code paths (startup, `:open`, streaming sources, Docker, DLT).
+
+```mermaid
+graph LR
+    Dir["~/.config/logana/schema/*.json"] -->|load_schemas| OnceLock["static CUSTOM_SCHEMAS"]
+    OnceLock -->|custom_schemas| detect_format
+    detect_format -->|prepend before built-ins| Parsers["CustomParser ×N + OtlpParser + ..."]
+    Parsers -->|exclusivity-weighted scoring| Winner[LogFormatParser]
+```
+
+`CustomParser` is built from a `CustomSchemaConfig`. The config supports either a **template** (`{field}` placeholders compiled to named-capture regex) or a raw **regex pattern**. Placeholder names that match a canonical `FieldSemantic` name are resolved implicitly; others are mapped via the `fields` override map. The two new semantics added for this feature are `Component` and `Feature`.
 
 ## Component Diagram
 

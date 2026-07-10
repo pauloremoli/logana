@@ -101,6 +101,8 @@ pub enum FieldSemantic {
     HttpUserAgent,
     HttpIdent,
     HttpAuthUser,
+    Component,
+    Feature,
     // Anything not recognised
     Extra,
 }
@@ -127,6 +129,8 @@ impl FieldSemantic {
             FieldSemantic::HttpUserAgent => "user_agent",
             FieldSemantic::HttpIdent => "ident",
             FieldSemantic::HttpAuthUser => "authuser",
+            FieldSemantic::Component => "component",
+            FieldSemantic::Feature => "feature",
             FieldSemantic::Span | FieldSemantic::Extra => "",
         }
     }
@@ -329,6 +333,8 @@ mod tests {
         assert_eq!(FieldSemantic::Thread.canonical_name(), "thread");
         assert_eq!(FieldSemantic::TraceId.canonical_name(), "traceId");
         assert_eq!(FieldSemantic::SpanId.canonical_name(), "spanId");
+        assert_eq!(FieldSemantic::Component.canonical_name(), "component");
+        assert_eq!(FieldSemantic::Feature.canonical_name(), "feature");
         assert_eq!(FieldSemantic::Extra.canonical_name(), "");
         assert_eq!(FieldSemantic::Span.canonical_name(), "");
         // Display delegates to canonical_name

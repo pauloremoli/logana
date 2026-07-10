@@ -19,7 +19,9 @@ logana detects the log format automatically by sampling the first lines of the f
 
 All registered parsers score a confidence value against the first 200 lines of the file. The parser with the highest score above 0.0 is selected. More specific parsers naturally score higher on their format; the common log parser applies a 0.95× penalty to yield to more specific parsers on ties. The OTLP parser scores up to 1.5 (above the 1.0 maximum for plain JSON) so it wins when OpenTelemetry fields are present.
 
-The detected format name is shown in the status bar.
+User-defined schemas (see [Custom Schemas](#custom-schemas) below) are always evaluated first, before any built-in parser.
+
+The detected format name is shown in the status bar. Run `:schema` to display the active schema name, or `:schema <name>` to force a specific schema for the current tab.
 
 ## Format Details
 
@@ -119,6 +121,90 @@ A broad family sharing the `TIMESTAMP LEVEL TARGET MESSAGE` structure, with seve
 - **structlog**: `DATETIME [level] msg key=val...`
 - **tracing-subscriber fmt with spans**: `TIMESTAMP LEVEL  span_name{k=v ...}: target: msg` — span context is parsed and available as the `span` column
 - **Generic fallback**: `TIMESTAMP LEVEL rest-as-message` — any timestamp + level keyword combination
+
+## Custom Schemas
+
+If none of the built-in parsers match your log format, you can define your own schema. Each schema lives in its own JSON file inside a `schema/` directory next to `config.json`:
+
+| OS | Path |
+|---|---|
+| Linux | `~/.config/logana/schema/<name>.json` |
+| macOS | `~/Library/Application Support/logana/schema/<name>.json` |
+| Windows | `%APPDATA%\logana\schema\<name>.json` |
+
+### Template syntax
+
+The easiest way to describe a format is with a **template** — write the literal shape of a log line with `{field}` placeholders where fields appear:
+
+```
+{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}
+```
+
+logana compiles the template to a regex automatically:
+
+- `{name}` — matches non-whitespace characters, stopping at the next literal delimiter or whitespace
+- `{name}` when adjacent to a literal character (e.g. `<{timestamp}>`) — stops at that character
+- The **last placeholder** always captures the rest of the line
+
+Alternatively, supply a raw `pattern` with named capture groups for formats the template language cannot express.
+
+### Field roles
+
+Placeholder names that match a known semantic are mapped automatically:
+
+| Name | Semantic |
+|---|---|
+| `timestamp` | Timestamp column |
+| `level` | Level column (normalized: `INF`→Info, `ERR`→Error, etc.) |
+| `message` | Message column |
+| `target` | Target column |
+| `component` | Component field |
+| `feature` | Feature field |
+| `hostname` | Hostname field |
+| `pid` | PID field |
+| `thread` | Thread field |
+| `facility` | Facility field |
+
+Any other placeholder name defaults to an extra field. Use the `fields` map to assign a different role to a non-standard name.
+
+### Example
+
+Telecom node log line:
+```
+04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: dirtyrfservice::instance1 state=CONNECTED
+```
+
+Schema file at `~/.config/logana/schema/telecom.json`:
+```json
+{
+  "name": "telecom",
+  "description": "Telecom node log format",
+  "template": "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}",
+  "fields": {
+    "id":      "extra",
+    "service": "target"
+  }
+}
+```
+
+`service` (`LINUX-0-syscon`) is mapped to `target` because it identifies the producing service. `id` is mapped to `extra` since no built-in semantic fits a hex sequence number.
+
+### Critical fields
+
+Three fields unlock core logana features. Map them correctly if your format contains them:
+
+| Field | Features that depend on it |
+|---|---|
+| `timestamp` | Date & time filters (`:date-filter`, `-t`) — without a timestamp field, date filters are silently skipped |
+| `level` | Error/warning navigation (`e`/`w`) and level-based coloring — both are disabled when no level field is present |
+| `target` | Field coloring by originating component in the structured view |
+
+### Forcing a schema
+
+```
+:schema             — show the active parser name
+:schema telecom     — force the telecom schema for this tab
+```
 
 ### tracing-subscriber fmt (Rust / Axum)
 

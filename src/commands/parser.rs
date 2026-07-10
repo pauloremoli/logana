@@ -143,6 +143,12 @@ pub enum Commands {
     },
     /// Stop the embedded MCP server
     DisableMcp,
+    /// Show the active parser schema for this tab, or switch to a named schema.
+    #[command(name = "schema")]
+    Schema {
+        /// Schema name to activate. Omit to display the current schema name.
+        name: Option<String>,
+    },
     /// Set the filter sidebar position relative to the log panel (left or right)
     SidebarPosition { side: SidebarSide },
     /// Execute a command and stream its output to a new tab.
