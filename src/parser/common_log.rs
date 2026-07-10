@@ -711,11 +711,11 @@ impl LogFormatParser for CommonLogParser {
         if has_level {
             result.push("level".to_string());
         }
-        if has_span {
-            result.push("span".to_string());
-        }
         if has_target {
             result.push("target".to_string());
+        }
+        if has_span {
+            result.push("span".to_string());
         }
         extras.sort();
         extras.dedup();
@@ -1099,6 +1099,24 @@ mod tests {
         assert!(names.contains(&"level".to_string()));
         assert!(names.contains(&"target".to_string()));
         assert!(names.contains(&"message".to_string()));
+    }
+
+    #[test]
+    fn test_collect_field_names_target_before_span() {
+        // Matches the column order rendered by the default field layout
+        // (timestamp, level, target, span, ...), so the Select Fields popup
+        // shows fields in the same order they're first displayed.
+        let parser = CommonLogParser::default();
+        let lines: Vec<&[u8]> = vec![
+            b"2026-03-05T10:55:16.661990Z DEBUG request{method=GET uri=/api/store-settings version=HTTP/1.1}: tower_http::trace::on_request: started processing request",
+        ];
+        let names = parser.collect_field_names(&lines);
+        let target_pos = names.iter().position(|n| n == "target").unwrap();
+        let span_pos = names.iter().position(|n| n == "span").unwrap();
+        assert!(
+            target_pos < span_pos,
+            "expected target before span, got {names:?}"
+        );
     }
 
     #[test]

@@ -399,6 +399,7 @@ impl LogFormatParser for JsonParser {
         let mut timestamp_seen = false;
         let mut level_seen = false;
         let mut target_seen = false;
+        let mut span_seen = false;
         let mut message_seen = false;
         let mut extras: Vec<String> = Vec::new();
 
@@ -425,6 +426,7 @@ impl LogFormatParser for JsonParser {
 
                     if let Some(span_key) = self.span_key {
                         if key == span_key && !field.value_is_string {
+                            span_seen = true;
                             if let Some(subs) = parse_json_line(field.value.as_bytes()) {
                                 for sub in &subs {
                                     let dotted = format!("{span_key}.{}", sub.key);
@@ -469,6 +471,9 @@ impl LogFormatParser for JsonParser {
         }
         if target_seen {
             result.push("target".to_string());
+        }
+        if span_seen {
+            result.push("span".to_string());
         }
         extras.sort();
         extras.dedup();
@@ -1151,6 +1156,26 @@ mod tests {
         assert!(
             names.contains(&"message".to_string()),
             "msg should be normalised to 'message'"
+        );
+    }
+
+    #[test]
+    fn test_json_parser_collect_field_names_includes_span_before_extras() {
+        // apply_field_layout's default layout renders a single "span" column
+        // right after target (before other extras), so collect_field_names
+        // must expose a standalone "span" entry in the same position —
+        // otherwise there's no way to toggle the whole span column and the
+        // Select Fields popup order won't match what's on screen.
+        let parser = tracing_parser();
+        let line = br#"{"level":"INFO","span":{"name":"request","method":"GET","uri":"/todos"},"fields":{"message":"ok"}}"#;
+        let names = parser.collect_field_names(&[line]);
+        assert!(names.contains(&"span".to_string()), "{names:?}");
+        let target_pos = names.iter().position(|n| n == "level").unwrap();
+        let span_pos = names.iter().position(|n| n == "span").unwrap();
+        let extra_pos = names.iter().position(|n| n == "span.method").unwrap();
+        assert!(
+            target_pos < span_pos && span_pos < extra_pos,
+            "expected level < span < span.method, got {names:?}"
         );
     }
 

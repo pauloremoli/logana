@@ -147,10 +147,14 @@ impl LogFormatParser for DltParser {
     }
 
     fn collect_field_names(&self, _lines: &[&[u8]]) -> Vec<String> {
-        vec![
+        // Matches the column order rendered by the default field layout:
+        // timestamp, level, target, sorted extras, message.
+        let mut result = vec![
             "timestamp".to_string(),
             "level".to_string(),
             "target".to_string(),
+        ];
+        let mut extras = vec![
             "hw_ts".to_string(),
             "mcnt".to_string(),
             "ecu".to_string(),
@@ -158,8 +162,11 @@ impl LogFormatParser for DltParser {
             "type".to_string(),
             "subtype".to_string(),
             "mode".to_string(),
-            "message".to_string(),
-        ]
+        ];
+        extras.sort();
+        result.extend(extras);
+        result.push("message".to_string());
+        result
     }
 
     fn detect_score(&self, sample: &[&[u8]]) -> f64 {
@@ -335,6 +342,8 @@ mod tests {
 
     #[test]
     fn test_collect_field_names() {
+        // Matches the column order rendered by the default field layout:
+        // timestamp, level, target, sorted extras, message.
         let parser = DltParser;
         let names = parser.collect_field_names(&[]);
         assert_eq!(
@@ -343,13 +352,13 @@ mod tests {
                 "timestamp",
                 "level",
                 "target",
+                "ctid",
+                "ecu",
                 "hw_ts",
                 "mcnt",
-                "ecu",
-                "ctid",
-                "type",
-                "subtype",
                 "mode",
+                "subtype",
+                "type",
                 "message"
             ]
         );

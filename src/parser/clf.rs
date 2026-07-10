@@ -249,6 +249,7 @@ impl LogFormatParser for ClfParser {
         }
 
         let mut result = vec!["timestamp".to_string(), "target".to_string()];
+        extras.sort();
         result.extend(extras);
         result.push("message".to_string());
         result
@@ -561,6 +562,28 @@ mod tests {
         let names = parser.collect_field_names(&lines);
         assert!(names.contains(&"referer".to_string()));
         assert!(names.contains(&"user_agent".to_string()));
+    }
+
+    #[test]
+    fn test_collect_field_names_extras_sorted_to_match_render_order() {
+        // apply_field_layout's default layout always renders extras sorted
+        // alphabetically, so collect_field_names must match — otherwise the
+        // Select Fields popup shows a different order than what's on screen.
+        let parser = ClfParser;
+        let lines: Vec<&[u8]> = vec![
+            b"127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] \"GET / HTTP/1.0\" 200 100 \"http://example.com\" \"Mozilla/5.0\"",
+        ];
+        let names = parser.collect_field_names(&lines);
+        let extras: Vec<&String> = names
+            .iter()
+            .filter(|n| !matches!(n.as_str(), "timestamp" | "target" | "message"))
+            .collect();
+        let mut sorted_extras = extras.clone();
+        sorted_extras.sort();
+        assert_eq!(
+            extras, sorted_extras,
+            "extras must be alphabetically sorted: {names:?}"
+        );
     }
 
     // ── name ───────────────────────────────────────────────────────────

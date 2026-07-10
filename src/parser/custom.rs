@@ -255,13 +255,54 @@ impl LogFormatParser for CustomParser {
     }
 
     fn collect_field_names(&self, _lines: &[&[u8]]) -> Vec<String> {
-        self.field_map
-            .iter()
-            .filter(|(_, _, role)| !matches!(role, FieldRoleStored::Ignored))
-            .map(|(_, name, _)| name.to_string())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect()
+        let mut has_timestamp = false;
+        let mut has_level = false;
+        let mut has_target = false;
+        let mut has_message = false;
+        let mut seen = HashSet::new();
+        let mut extras: Vec<String> = Vec::new();
+
+        for (_, group_name, role) in &self.field_map {
+            match role {
+                FieldRoleStored::Semantic(FieldSemantic::Timestamp) => has_timestamp = true,
+                FieldRoleStored::Semantic(FieldSemantic::Level) => has_level = true,
+                FieldRoleStored::Semantic(FieldSemantic::Target) => has_target = true,
+                FieldRoleStored::Semantic(FieldSemantic::Message) => has_message = true,
+                // Other semantic roles are rendered under their canonical name
+                // (see push_field_as), not the raw capture group name.
+                FieldRoleStored::Semantic(other) => {
+                    let name = other.canonical_name().to_string();
+                    if seen.insert(name.clone()) {
+                        extras.push(name);
+                    }
+                }
+                FieldRoleStored::Extra => {
+                    if seen.insert(group_name.to_string()) {
+                        extras.push(group_name.to_string());
+                    }
+                }
+                FieldRoleStored::Ignored => {}
+            }
+        }
+
+        // Matches the column order rendered by the default field layout:
+        // timestamp, level, target, sorted extras, message.
+        let mut result = Vec::new();
+        if has_timestamp {
+            result.push("timestamp".to_string());
+        }
+        if has_level {
+            result.push("level".to_string());
+        }
+        if has_target {
+            result.push("target".to_string());
+        }
+        extras.sort();
+        result.extend(extras);
+        if has_message {
+            result.push("message".to_string());
+        }
+        result
     }
 
     fn matches_for_detection(&self, line: &[u8]) -> bool {
@@ -494,6 +535,55 @@ mod tests {
             parts.extra_fields.is_empty(),
             "ignored field should not appear in extra_fields"
         );
+    }
+
+    #[test]
+    fn test_collect_field_names_matches_render_order() {
+        // Matches the column order rendered by the default field layout
+        // (timestamp, level, target, sorted extras, message), so the Select
+        // Fields popup shows fields in the same order they're first displayed.
+        let parser = CustomParser::from_config(&CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: Some("{timestamp} {level} {target} {zebra} {alpha} {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+        })
+        .unwrap();
+
+        let names = parser.collect_field_names(&[]);
+        assert_eq!(
+            names,
+            vec![
+                "timestamp".to_string(),
+                "level".to_string(),
+                "target".to_string(),
+                "alpha".to_string(),
+                "zebra".to_string(),
+                "message".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_collect_field_names_uses_canonical_name_for_semantic_alias() {
+        // A capture group named "host" with an explicit "hostname" role must
+        // surface as "hostname" — the key actually used in extra_fields at
+        // render time (see push_field_as) — not the raw group name "host".
+        let parser = CustomParser::from_config(&CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: Some("{host} {message}".to_string()),
+            pattern: None,
+            fields: [("host".to_string(), "hostname".to_string())]
+                .into_iter()
+                .collect(),
+        })
+        .unwrap();
+
+        let names = parser.collect_field_names(&[]);
+        assert!(names.contains(&"hostname".to_string()));
+        assert!(!names.contains(&"host".to_string()));
     }
 
     #[test]
