@@ -17,6 +17,9 @@ pub struct FilterState {
     /// at, persisted so it only re-scrolls when the selection leaves the
     /// current viewport instead of re-centering on every render.
     pub sidebar_scroll: usize,
+    /// Persisted sidebar viewport row count, mirrors `ScrollState::visible_height`.
+    /// Set during `render_sidebar`; used by filter-mode half/full-page motions.
+    pub sidebar_visible_height: usize,
     /// Index of the last-highlighted filter in the sidebar, persisted so
     /// leaving and re-entering filter management mode (or just browsing
     /// with the mode bar closed) keeps the same row selected instead of
@@ -54,6 +57,7 @@ impl Default for FilterState {
             filter_context: None,
             editing_filter_id: None,
             sidebar_scroll: 0,
+            sidebar_visible_height: 0,
             last_selected_filter: 0,
             highlight_mode: false,
             manager: Arc::new(FilterManager::empty()),

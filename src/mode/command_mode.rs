@@ -259,12 +259,7 @@ impl Mode for CommandMode {
         if kb.cancel.matches(key, modifiers) {
             tab.filter.editing_filter_id = None;
             if let Some(idx) = tab.filter.filter_context.take() {
-                return (
-                    Box::new(FilterManagementMode {
-                        selected_filter_index: idx,
-                    }),
-                    KeyResult::Handled,
-                );
+                return (Box::new(FilterManagementMode::new(idx)), KeyResult::Handled);
             }
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }

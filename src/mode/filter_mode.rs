@@ -14,15 +14,22 @@ use ratatui::text::{Line, Span};
 #[derive(Debug)]
 pub struct FilterManagementMode {
     pub selected_filter_index: usize,
+    /// Pending count prefix (e.g. the `4` in `4j`), mirrors `NormalMode.count`.
+    pub count: Option<usize>,
+    /// Live typeahead query; non-empty narrows the sidebar to matching filters.
+    pub search: String,
+    /// True while capturing raw text input for `search` (gates all other bound keys).
+    pub searching: bool,
+    /// Selection to restore if search is cancelled with `Esc`.
+    pub pre_search_selected: Option<usize>,
 }
 
-fn stay_at(idx: usize) -> (Box<dyn Mode>, KeyResult) {
-    (
-        Box::new(FilterManagementMode {
-            selected_filter_index: idx,
-        }),
-        KeyResult::Handled,
-    )
+/// Returns to filter mode at `idx`. Resets `g_key_pressed` — every action
+/// that isn't part of an in-progress `gg` chord cancels that chord, matching
+/// `NormalMode`'s discipline.
+fn stay_at(idx: usize, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+    tab.interaction.g_key_pressed = false;
+    (Box::new(FilterManagementMode::new(idx)), KeyResult::Handled)
 }
 
 fn open_command(tab: &mut TabState, cmd: String) -> (Box<dyn Mode>, KeyResult) {
@@ -145,18 +152,109 @@ fn append_group_flag(cmd: &mut String, group: &Option<String>) {
 }
 
 impl FilterManagementMode {
-    fn scroll_up(&self) -> (Box<dyn Mode>, KeyResult) {
-        stay_at(self.selected_filter_index.saturating_sub(1))
+    pub fn new(selected_filter_index: usize) -> Self {
+        Self {
+            selected_filter_index,
+            count: None,
+            search: String::new(),
+            searching: false,
+            pre_search_selected: None,
+        }
     }
 
-    fn scroll_down(&self, tab: &TabState) -> (Box<dyn Mode>, KeyResult) {
-        let num_filters = tab.log_manager.get_filters().len();
-        let new_idx = if num_filters > 0 {
-            (self.selected_filter_index + 1).min(num_filters - 1)
+    /// Returns to filter mode at `idx` while preserving the in-progress
+    /// search — unlike `stay_at`, which always resets back to a non-searching
+    /// mode. Used for navigation (`j`/`k`) within the narrowed list while
+    /// `searching` is active.
+    fn stay_searching(&self, idx: usize) -> (Box<dyn Mode>, KeyResult) {
+        (
+            Box::new(FilterManagementMode {
+                selected_filter_index: idx,
+                count: None,
+                search: self.search.clone(),
+                searching: true,
+                pre_search_selected: self.pre_search_selected,
+            }),
+            KeyResult::Handled,
+        )
+    }
+
+    /// Indices (into the full filter list) of entries matching the current
+    /// search query — everything, when not searching or the query is empty.
+    fn narrowed_indices(&self, tab: &TabState) -> Vec<usize> {
+        crate::ui::widgets::sidebar::narrowed_filter_indices(
+            tab.log_manager.get_filters(),
+            &tab.filter.match_counts,
+            &self.search,
+        )
+    }
+
+    /// Handles a key while `searching` is active: raw text capture for the
+    /// query plus single-step navigation within the narrowed list. No bound
+    /// filter-mode action (`e`, `d`, `i`, ...) is checked here — see the
+    /// module-level notes on why an explicit entry key gates this.
+    fn handle_search_key(
+        mut self: Box<Self>,
+        tab: &mut TabState,
+        kb: &Keybindings,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        if kb.search.confirm.matches(key, modifiers) {
+            let narrowed = self.narrowed_indices(tab);
+            let full_idx = narrowed
+                .get(self.selected_filter_index)
+                .copied()
+                .unwrap_or(0);
+            return stay_at(full_idx, tab);
+        }
+        if kb.search.cancel.matches(key, modifiers) {
+            let restore_idx = self.pre_search_selected.unwrap_or(0);
+            return stay_at(restore_idx, tab);
+        }
+        if kb.navigation.scroll_down.matches(key, modifiers) {
+            let narrowed_len = self.narrowed_indices(tab).len();
+            let new_idx = if narrowed_len > 0 {
+                (self.selected_filter_index + 1).min(narrowed_len - 1)
+            } else {
+                0
+            };
+            return self.stay_searching(new_idx);
+        }
+        if kb.navigation.scroll_up.matches(key, modifiers) {
+            let new_idx = self.selected_filter_index.saturating_sub(1);
+            return self.stay_searching(new_idx);
+        }
+        match key {
+            KeyCode::Backspace => {
+                self.search.pop();
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                self.search.push(c);
+            }
+            _ => return (self, KeyResult::Ignored),
+        }
+        let narrowed_len = self.narrowed_indices(tab).len();
+        self.selected_filter_index = if self.selected_filter_index < narrowed_len {
+            self.selected_filter_index
         } else {
             0
         };
-        stay_at(new_idx)
+        (self, KeyResult::Handled)
+    }
+
+    fn scroll_up(&self, tab: &mut TabState, count: usize) -> (Box<dyn Mode>, KeyResult) {
+        stay_at(self.selected_filter_index.saturating_sub(count), tab)
+    }
+
+    fn scroll_down(&self, tab: &mut TabState, count: usize) -> (Box<dyn Mode>, KeyResult) {
+        let num_filters = tab.log_manager.get_filters().len();
+        let new_idx = if num_filters > 0 {
+            (self.selected_filter_index + count).min(num_filters - 1)
+        } else {
+            0
+        };
+        stay_at(new_idx, tab)
     }
 
     async fn toggle_filter(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
@@ -166,7 +264,7 @@ impl FilterManagementMode {
             tab.log_manager.toggle_filter(id).await;
             tab.begin_filter_refresh();
         }
-        stay_at(selected)
+        stay_at(selected, tab)
     }
 
     async fn delete_filter(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
@@ -181,9 +279,9 @@ impl FilterManagementMode {
             } else {
                 selected
             };
-            return stay_at(new_idx);
+            return stay_at(new_idx, tab);
         }
-        stay_at(selected)
+        stay_at(selected, tab)
     }
 
     async fn move_filter_up(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
@@ -192,9 +290,9 @@ impl FilterManagementMode {
         if let Some(id) = filter_id {
             tab.log_manager.move_filter_up(id).await;
             tab.begin_filter_refresh();
-            return stay_at(selected.saturating_sub(1));
+            return stay_at(selected.saturating_sub(1), tab);
         }
-        stay_at(selected)
+        stay_at(selected, tab)
     }
 
     async fn move_filter_down(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
@@ -209,9 +307,9 @@ impl FilterManagementMode {
             } else {
                 selected
             };
-            return stay_at(new_idx);
+            return stay_at(new_idx, tab);
         }
-        stay_at(selected)
+        stay_at(selected, tab)
     }
 
     fn edit_filter(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
@@ -232,7 +330,7 @@ impl FilterManagementMode {
             let cmd = build_edit_command(&ft, &cc, &pattern, use_regex, &group);
             return open_command(tab, cmd);
         }
-        stay_at(selected)
+        stay_at(selected, tab)
     }
 
     fn set_color(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
@@ -250,7 +348,7 @@ impl FilterManagementMode {
     fn toggle_filtering(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
         tab.filter.enabled = !tab.filter.enabled;
         tab.begin_filter_refresh();
-        stay_at(self.selected_filter_index)
+        stay_at(self.selected_filter_index, tab)
     }
 
     async fn toggle_all_filters(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
@@ -261,13 +359,13 @@ impl FilterManagementMode {
             tab.log_manager.enable_all_filters().await;
         }
         tab.begin_filter_refresh();
-        stay_at(self.selected_filter_index)
+        stay_at(self.selected_filter_index, tab)
     }
 
     async fn clear_all_filters(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
         tab.log_manager.clear_filters().await;
         tab.begin_filter_refresh();
-        stay_at(0)
+        stay_at(0, tab)
     }
 
     fn add_include_filter(tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
@@ -288,38 +386,115 @@ impl FilterManagementMode {
 
     fn sidebar_grow(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
         tab.display.sidebar_width = tab.display.sidebar_width.saturating_add(2);
-        stay_at(self.selected_filter_index)
+        stay_at(self.selected_filter_index, tab)
     }
 
     fn sidebar_shrink(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
         tab.display.sidebar_width = tab.display.sidebar_width.saturating_sub(2).max(10);
-        stay_at(self.selected_filter_index)
+        stay_at(self.selected_filter_index, tab)
     }
 }
 
 #[async_trait]
 impl Mode for FilterManagementMode {
     async fn handle_key(
-        self: Box<Self>,
+        mut self: Box<Self>,
         tab: &mut TabState,
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
         let kb = tab.interaction.keybindings.clone();
 
+        if self.searching {
+            return self.handle_search_key(tab, &kb, key, modifiers);
+        }
+
+        if let KeyCode::Char(c @ '1'..='9') = key
+            && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+        {
+            let digit = (c as u32 - '0' as u32) as usize;
+            let n = self
+                .count
+                .unwrap_or(0)
+                .saturating_mul(10)
+                .saturating_add(digit);
+            self.count = Some(n.min(999_999));
+            return (self, KeyResult::Handled);
+        }
+        if let KeyCode::Char('0') = key
+            && self.count.is_some()
+            && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+        {
+            self.count = Some(self.count.unwrap().saturating_mul(10).min(999_999));
+            return (self, KeyResult::Handled);
+        }
+
         if kb.global.next_tab.matches(key, modifiers) || kb.global.prev_tab.matches(key, modifiers)
         {
+            self.count = None;
+            tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Ignored);
         }
 
         if kb.filter.exit_mode.matches(key, modifiers) {
+            tab.interaction.g_key_pressed = false;
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
+        if kb.filter.search.matches(key, modifiers) {
+            self.pre_search_selected = Some(self.selected_filter_index);
+            self.search = String::new();
+            self.searching = true;
+            self.count = None;
+            tab.interaction.g_key_pressed = false;
+            return (self, KeyResult::Handled);
+        }
         if kb.navigation.scroll_up.matches(key, modifiers) {
-            return self.scroll_up();
+            let count = self.count.take().unwrap_or(1);
+            return self.scroll_up(tab, count);
         }
         if kb.navigation.scroll_down.matches(key, modifiers) {
-            return self.scroll_down(tab);
+            let count = self.count.take().unwrap_or(1);
+            return self.scroll_down(tab, count);
+        }
+        if kb.navigation.half_page_up.matches(key, modifiers) {
+            let half = (tab.filter.sidebar_visible_height / 2).max(1);
+            let count = self.count.take().unwrap_or(1);
+            return self.scroll_up(tab, half.saturating_mul(count));
+        }
+        if kb.navigation.half_page_down.matches(key, modifiers) {
+            let half = (tab.filter.sidebar_visible_height / 2).max(1);
+            let count = self.count.take().unwrap_or(1);
+            return self.scroll_down(tab, half.saturating_mul(count));
+        }
+        if kb.navigation.page_up.matches(key, modifiers) {
+            let page = tab.filter.sidebar_visible_height.max(1);
+            let count = self.count.take().unwrap_or(1);
+            return self.scroll_up(tab, page.saturating_mul(count));
+        }
+        if kb.navigation.page_down.matches(key, modifiers) {
+            let page = tab.filter.sidebar_visible_height.max(1);
+            let count = self.count.take().unwrap_or(1);
+            return self.scroll_down(tab, page.saturating_mul(count));
+        }
+        if kb.normal.go_to_bottom.matches(key, modifiers) {
+            let num_filters = tab.log_manager.get_filters().len();
+            let idx = match self.count.take() {
+                Some(count) => (count.saturating_sub(1)).min(num_filters.saturating_sub(1)),
+                None => num_filters.saturating_sub(1),
+            };
+            return stay_at(idx, tab);
+        }
+        if kb.normal.go_to_top_chord.matches(key, modifiers) {
+            if tab.interaction.g_key_pressed {
+                let num_filters = tab.log_manager.get_filters().len();
+                let idx = match self.count.take() {
+                    Some(count) => (count.saturating_sub(1)).min(num_filters.saturating_sub(1)),
+                    None => 0,
+                };
+                return stay_at(idx, tab);
+            }
+            tab.interaction.g_key_pressed = true;
+            return (self, KeyResult::Handled);
         }
         if kb.filter.toggle_filter.matches(key, modifiers) {
             return self.toggle_filter(tab).await;
@@ -367,12 +542,9 @@ impl Mode for FilterManagementMode {
             return self.sidebar_shrink(tab);
         }
 
-        (
-            Box::new(FilterManagementMode {
-                selected_filter_index: self.selected_filter_index,
-            }),
-            KeyResult::Ignored,
-        )
+        self.count = None;
+        tab.interaction.g_key_pressed = false;
+        (self, KeyResult::Ignored)
     }
 
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
@@ -476,6 +648,8 @@ impl Mode for FilterManagementMode {
     fn render_state(&self) -> ModeRenderState {
         ModeRenderState::FilterManagement {
             selected_index: self.selected_filter_index,
+            search: self.search.clone(),
+            searching: self.searching,
         }
     }
 }
@@ -505,20 +679,10 @@ impl Mode for FilterEditMode {
                 tab.log_manager.edit_filter(id, self.filter_input).await;
                 tab.begin_filter_refresh();
             }
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: 0,
-                }),
-                KeyResult::Handled,
-            );
+            return (Box::new(FilterManagementMode::new(0)), KeyResult::Handled);
         }
         if kb.filter_edit.cancel.matches(key, modifiers) {
-            return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index: 0,
-                }),
-                KeyResult::Handled,
-            );
+            return (Box::new(FilterManagementMode::new(0)), KeyResult::Handled);
         }
         match key {
             KeyCode::Backspace => {
@@ -590,9 +754,7 @@ mod tests {
     }
 
     fn filter_mode(idx: usize) -> FilterManagementMode {
-        FilterManagementMode {
-            selected_filter_index: idx,
-        }
+        FilterManagementMode::new(idx)
     }
 
     async fn press(
@@ -641,7 +803,9 @@ mod tests {
         add_filter(&mut tab, "b", FilterType::Include).await;
         let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Up).await;
         match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 0)
+            }
             other => panic!("expected FilterManagement, got {:?}", other),
         }
     }
@@ -651,7 +815,9 @@ mod tests {
         let mut tab = make_tab(&["a"]).await;
         let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Up).await;
         match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 0)
+            }
             other => panic!("expected FilterManagement, got {:?}", other),
         }
     }
@@ -663,7 +829,9 @@ mod tests {
         add_filter(&mut tab, "b", FilterType::Include).await;
         let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Down).await;
         match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 1),
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 1)
+            }
             other => panic!("expected FilterManagement, got {:?}", other),
         }
     }
@@ -675,9 +843,468 @@ mod tests {
         add_filter(&mut tab, "b", FilterType::Include).await;
         let (mode, _) = press(filter_mode(1), &mut tab, KeyCode::Down).await;
         match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 1),
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 1)
+            }
             other => panic!("expected FilterManagement, got {:?}", other),
         }
+    }
+
+    fn filters(n: usize) -> Vec<&'static str> {
+        vec!["x"; n]
+    }
+
+    async fn add_n_filters(tab: &mut TabState, n: usize) {
+        for i in 0..n {
+            add_filter(tab, &format!("pattern{i}"), FilterType::Include).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_count_4j_moves_down_4() {
+        let mut tab = make_tab(&filters(10)).await;
+        add_n_filters(&mut tab, 10).await;
+        let mut mode = filter_mode(0);
+        mode.count = Some(4);
+        let (mode, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 4)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_count_10k_moves_up_10_clamped() {
+        let mut tab = make_tab(&filters(20)).await;
+        add_n_filters(&mut tab, 20).await;
+        let mut mode = filter_mode(5);
+        mode.count = Some(10);
+        let (mode, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 0)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_digit_accumulation_then_j_moves_down_by_typed_count() {
+        let mut tab = make_tab(&filters(10)).await;
+        add_n_filters(&mut tab, 10).await;
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('4')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 4)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_count_resets_after_being_consumed() {
+        let mut tab = make_tab(&filters(20)).await;
+        add_n_filters(&mut tab, 20).await;
+        let mut mode = filter_mode(0);
+        mode.count = Some(4);
+        let (mode, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
+        // Second 'j' with no new count should move by 1, not reuse the old count of 4.
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 5)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_count_resets_on_unrecognized_key() {
+        let mut tab = make_tab(&filters(10)).await;
+        add_n_filters(&mut tab, 10).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('4')).await;
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::F(5), KeyModifiers::NONE)
+            .await;
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 1)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_d_half_page_down() {
+        let mut tab = make_tab(&filters(20)).await;
+        add_n_filters(&mut tab, 20).await;
+        tab.filter.sidebar_visible_height = 10;
+        let (mode, _) = Box::new(filter_mode(0))
+            .handle_key(&mut tab, KeyCode::Char('d'), KeyModifiers::CONTROL)
+            .await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 5)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_u_half_page_up() {
+        let mut tab = make_tab(&filters(20)).await;
+        add_n_filters(&mut tab, 20).await;
+        tab.filter.sidebar_visible_height = 10;
+        let (mode, _) = Box::new(filter_mode(15))
+            .handle_key(&mut tab, KeyCode::Char('u'), KeyModifiers::CONTROL)
+            .await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 10)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_page_down_moves_by_visible_height() {
+        let mut tab = make_tab(&filters(30)).await;
+        add_n_filters(&mut tab, 30).await;
+        tab.filter.sidebar_visible_height = 10;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::PageDown).await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 10)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_page_up_moves_by_visible_height() {
+        let mut tab = make_tab(&filters(30)).await;
+        add_n_filters(&mut tab, 30).await;
+        tab.filter.sidebar_visible_height = 10;
+        let (mode, _) = press(filter_mode(25), &mut tab, KeyCode::PageUp).await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 15)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_page_down_clamps_at_last_filter() {
+        let mut tab = make_tab(&filters(5)).await;
+        add_n_filters(&mut tab, 5).await;
+        tab.filter.sidebar_visible_height = 10;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::PageDown).await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 4)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_count_2_page_down_moves_by_2_pages() {
+        let mut tab = make_tab(&filters(50)).await;
+        add_n_filters(&mut tab, 50).await;
+        tab.filter.sidebar_visible_height = 10;
+        let mut mode = filter_mode(0);
+        mode.count = Some(2);
+        let (mode, _) = press(mode, &mut tab, KeyCode::PageDown).await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 20)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bare_g_jumps_to_first_filter() {
+        let mut tab = make_tab(&filters(10)).await;
+        add_n_filters(&mut tab, 10).await;
+        let (mode, result) = press(filter_mode(5), &mut tab, KeyCode::Char('g')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(
+            tab.interaction.g_key_pressed,
+            "first 'g' should arm the chord"
+        );
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE)
+            .await;
+        assert!(
+            !tab.interaction.g_key_pressed,
+            "second 'g' should complete and disarm the chord"
+        );
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 0)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bare_shift_g_jumps_to_last_filter() {
+        let mut tab = make_tab(&filters(10)).await;
+        add_n_filters(&mut tab, 10).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('G')).await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 9)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_count_shift_g_jumps_to_index_count_minus_1() {
+        let mut tab = make_tab(&filters(20)).await;
+        add_n_filters(&mut tab, 20).await;
+        let mut mode = filter_mode(0);
+        mode.count = Some(5);
+        let (mode, _) = press(mode, &mut tab, KeyCode::Char('G')).await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 4)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_count_gg_jumps_to_index_count_minus_1() {
+        let mut tab = make_tab(&filters(20)).await;
+        add_n_filters(&mut tab, 20).await;
+        let mut mode = filter_mode(15);
+        mode.count = Some(5);
+        let (mode, _) = press(mode, &mut tab, KeyCode::Char('g')).await;
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE)
+            .await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 4)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_g_then_recognized_key_cancels_chord() {
+        let mut tab = make_tab(&filters(10)).await;
+        add_n_filters(&mut tab, 10).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('g')).await;
+        assert!(tab.interaction.g_key_pressed);
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        assert!(
+            !tab.interaction.g_key_pressed,
+            "a non-'g' key should cancel an armed chord"
+        );
+        // Regular 'j' single-step move, not a 'gg' jump to top.
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 1)
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_g_then_unrecognized_key_cancels_chord() {
+        let mut tab = make_tab(&filters(10)).await;
+        add_n_filters(&mut tab, 10).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('g')).await;
+        assert!(tab.interaction.g_key_pressed);
+        let _ = mode
+            .handle_key(&mut tab, KeyCode::F(5), KeyModifiers::NONE)
+            .await;
+        assert!(
+            !tab.interaction.g_key_pressed,
+            "an unrecognized key falling through to the default branch should cancel an armed chord"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exit_mode_resets_g_key_pressed() {
+        let mut tab = make_tab(&filters(10)).await;
+        add_n_filters(&mut tab, 10).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('g')).await;
+        assert!(tab.interaction.g_key_pressed);
+        let _ = mode
+            .handle_key(&mut tab, KeyCode::Esc, KeyModifiers::NONE)
+            .await;
+        assert!(
+            !tab.interaction.g_key_pressed,
+            "exiting filter mode must not leave an armed chord for normal mode to inherit"
+        );
+    }
+
+    fn extract_search_state(state: ModeRenderState) -> (usize, String) {
+        match state {
+            ModeRenderState::FilterManagement {
+                selected_index,
+                search,
+                ..
+            } => (selected_index, search),
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_slash_enters_search_mode_with_empty_query() {
+        let mut tab = make_tab(&filters(5)).await;
+        add_n_filters(&mut tab, 5).await;
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('/')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        let (_, search) = extract_search_state(mode.render_state());
+        assert_eq!(search, "");
+    }
+
+    #[tokio::test]
+    async fn test_typing_while_searching_appends_to_query() {
+        let mut tab = make_tab(&["a"]).await;
+        add_filter(&mut tab, "errno", FilterType::Include).await;
+        add_filter(&mut tab, "timeout", FilterType::Exclude).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('/')).await;
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE)
+            .await;
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('r'), KeyModifiers::NONE)
+            .await;
+        let (_, search) = extract_search_state(mode.render_state());
+        assert_eq!(search, "er");
+    }
+
+    #[tokio::test]
+    async fn test_action_letter_goes_to_query_while_searching_not_triggered() {
+        let mut tab = make_tab(&["a"]).await;
+        add_filter(&mut tab, "errno", FilterType::Include).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('/')).await;
+        // 'e' is normally bound to edit_filter — while searching it must be
+        // captured as query text instead, not open the edit command bar.
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('e'), KeyModifiers::NONE)
+            .await;
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
+        let (_, search) = extract_search_state(mode.render_state());
+        assert_eq!(search, "e");
+    }
+
+    #[tokio::test]
+    async fn test_backspace_removes_last_search_char() {
+        let mut tab = make_tab(&["a"]).await;
+        add_filter(&mut tab, "errno", FilterType::Include).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('/')).await;
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('a'), KeyModifiers::NONE)
+            .await;
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('b'), KeyModifiers::NONE)
+            .await;
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Backspace, KeyModifiers::NONE)
+            .await;
+        let (_, search) = extract_search_state(mode.render_state());
+        assert_eq!(search, "a");
+    }
+
+    #[tokio::test]
+    async fn test_search_selection_resets_to_zero_when_narrowed_out_of_range() {
+        let mut tab = make_tab(&["a"]).await;
+        add_filter(&mut tab, "aaa", FilterType::Include).await;
+        add_filter(&mut tab, "bbb", FilterType::Include).await;
+        add_filter(&mut tab, "abc", FilterType::Include).await;
+        // Start selected on the narrowed-list's last match (index 2 of 3 matches for "a").
+        let mut mode = filter_mode(2);
+        mode.searching = true;
+        mode.pre_search_selected = Some(2);
+        let (mode, _) = press(mode, &mut tab, KeyCode::Char('a')).await;
+        // Query "a" still matches all 3 filters (aaa, bbb has no 'a'... wait bbb doesn't match).
+        let (selected, search) = extract_search_state(mode.render_state());
+        assert_eq!(search, "a");
+        assert!(
+            selected < 2,
+            "selection must stay within the narrowed range"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_enter_confirms_search_and_translates_to_full_list_index() {
+        let mut tab = make_tab(&["a"]).await;
+        add_filter(&mut tab, "aaa", FilterType::Include).await; // index 0
+        add_filter(&mut tab, "bbb", FilterType::Include).await; // index 1, no 'z'
+        add_filter(&mut tab, "zzz", FilterType::Include).await; // index 2, matches "z"
+        let mut mode = filter_mode(0);
+        mode.searching = true;
+        mode.search = "z".to_string();
+        // Only "zzz" (full-list index 2) matches, so narrowed index 0 == full index 2.
+        let (mode, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        let (selected, search) = extract_search_state(mode.render_state());
+        assert_eq!(selected, 2);
+        assert_eq!(search, "", "confirming search must un-narrow the sidebar");
+    }
+
+    #[tokio::test]
+    async fn test_esc_cancels_search_and_restores_original_selection() {
+        let mut tab = make_tab(&["a"]).await;
+        add_filter(&mut tab, "aaa", FilterType::Include).await;
+        add_filter(&mut tab, "bbb", FilterType::Include).await;
+        add_filter(&mut tab, "ccc", FilterType::Include).await;
+        let mut mode = filter_mode(1);
+        mode.searching = true;
+        mode.pre_search_selected = Some(1);
+        mode.search = "c".to_string();
+        let (mode, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Esc, KeyModifiers::NONE)
+            .await;
+        let (selected, search) = extract_search_state(mode.render_state());
+        assert_eq!(selected, 1, "Esc must restore the pre-search selection");
+        assert_eq!(search, "");
+    }
+
+    #[tokio::test]
+    async fn test_j_navigates_within_narrowed_list_while_searching() {
+        let mut tab = make_tab(&["a"]).await;
+        add_filter(&mut tab, "match1", FilterType::Include).await;
+        add_filter(&mut tab, "nope", FilterType::Include).await;
+        add_filter(&mut tab, "match2", FilterType::Include).await;
+        let mut mode = filter_mode(0);
+        mode.searching = true;
+        mode.search = "match".to_string();
+        let (mode, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        let (selected, search) = extract_search_state(mode.render_state());
+        assert_eq!(
+            selected, 1,
+            "'j' should move to the next match within the narrowed list, not the full list"
+        );
+        assert_eq!(search, "match", "still searching, list stays narrowed");
     }
 
     #[tokio::test]
@@ -737,7 +1364,9 @@ mod tests {
         let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('d')).await;
         assert!(matches!(result, KeyResult::Handled));
         match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => assert_eq!(selected_index, 0),
+            ModeRenderState::FilterManagement { selected_index, .. } => {
+                assert_eq!(selected_index, 0)
+            }
             other => panic!("expected FilterManagement, got {:?}", other),
         }
     }

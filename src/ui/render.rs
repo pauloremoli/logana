@@ -45,6 +45,10 @@ struct UiRenderState {
     is_confirm_restore: bool,
     session_files: Option<Arc<Vec<String>>>,
     selected_filter_idx: usize,
+    /// Live typeahead query narrowing the sidebar; empty when not searching.
+    filter_search: String,
+    /// True while filter search is capturing input — see `ModeRenderState::FilterManagement`.
+    filter_searching: bool,
     visual_anchor: Option<usize>,
     visual_char_selection: Option<(usize, usize)>,
     comment_popup: Option<(Vec<String>, usize, usize, usize)>,
@@ -151,6 +155,8 @@ impl App {
                 show_borders,
                 state.selected_filter_idx,
                 is_filter_mode,
+                &state.filter_search,
+                state.filter_searching,
             );
         }
 
@@ -213,12 +219,23 @@ impl App {
             _ => None,
         };
         let selected_filter_idx = match render_state {
-            ModeRenderState::FilterManagement { selected_index } => {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
                 self.tabs[self.active_tab].filter.last_selected_filter = *selected_index;
                 *selected_index
             }
             _ => self.tabs[self.active_tab].filter.last_selected_filter,
         };
+        let filter_search = match render_state {
+            ModeRenderState::FilterManagement { search, .. } => search.clone(),
+            _ => String::new(),
+        };
+        let filter_searching = matches!(
+            render_state,
+            ModeRenderState::FilterManagement {
+                searching: true,
+                ..
+            }
+        );
         let keybindings = self.tabs[self.active_tab].interaction.keybindings.clone();
         let status_line = self.tabs[self.active_tab]
             .interaction
@@ -352,6 +369,8 @@ impl App {
             is_confirm_restore,
             session_files,
             selected_filter_idx,
+            filter_search,
+            filter_searching,
             visual_anchor,
             visual_char_selection,
             comment_popup,
@@ -566,6 +585,7 @@ impl App {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_sidebar(
         &mut self,
         frame: &mut Frame,
@@ -573,10 +593,25 @@ impl App {
         show_borders: bool,
         selected_filter_idx: usize,
         is_filter_mode: bool,
+        search: &str,
+        searching: bool,
     ) {
         let tab = &mut self.tabs[self.active_tab];
-        let filters = tab.log_manager.get_filters();
-        let match_counts = tab.filter.match_counts.clone();
+        let all_filters = tab.log_manager.get_filters();
+        let all_match_counts = &tab.filter.match_counts;
+        // Narrowing to only the entries matching `search` (everything, when not
+        // searching) is expressed uniformly here rather than branching, since
+        // `narrowed_filter_indices` already returns every index in order for an
+        // empty query.
+        let narrowed =
+            super::widgets::sidebar::narrowed_filter_indices(all_filters, all_match_counts, search);
+        let filters: Vec<crate::filters::FilterDef> =
+            narrowed.iter().map(|&i| all_filters[i].clone()).collect();
+        let match_counts: Vec<usize> = narrowed
+            .iter()
+            .map(|&i| all_match_counts.get(i).copied().unwrap_or(0))
+            .collect();
+        let filters = filters.as_slice();
         let filter_progress: Option<usize> = tab
             .filter
             .handle
@@ -584,6 +619,7 @@ impl App {
             .map(|h| (h.displayed_progress * 100.0) as usize);
         let (content_w, content_h) =
             super::widgets::sidebar::sidebar_inner_dims(sidebar_area, show_borders);
+        tab.filter.sidebar_visible_height = content_h;
         let scroll_offset = super::widgets::sidebar::compute_scroll_offset(
             filters,
             selected_filter_idx,
@@ -605,6 +641,8 @@ impl App {
                 is_filter_mode,
                 scroll_offset,
                 highlight_mode: tab.filter.highlight_mode,
+                search,
+                searching,
                 theme: &self.theme,
             },
             sidebar_area,
@@ -1118,11 +1156,133 @@ mod tests {
             )
             .await;
         app.tabs[0].refresh_visible();
-        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
-            selected_filter_index: 0,
-        });
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode::new(0));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ui_persists_sidebar_visible_height_for_page_motions() {
+        let mut app = make_app(&["INFO something"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "INFO".to_string(),
+                crate::filters::FilterType::Include,
+                crate::filters::FilterOptions::default().line_mode(),
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode::new(0));
+        assert_eq!(app.tabs[0].filter.sidebar_visible_height, 0);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert!(
+            app.tabs[0].filter.sidebar_visible_height > 0,
+            "sidebar_visible_height should be persisted from the sidebar's rendered content height"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ui_search_narrows_sidebar_to_matching_filters() {
+        let mut app = make_app(&["INFO something"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "errno".to_string(),
+                crate::filters::FilterType::Include,
+                crate::filters::FilterOptions::default(),
+            )
+            .await;
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "timeout".to_string(),
+                crate::filters::FilterType::Exclude,
+                crate::filters::FilterOptions::default(),
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+        let mut mode = FilterManagementMode::new(0);
+        mode.searching = true;
+        mode.search = "err".to_string();
+        app.tabs[0].interaction.mode = Box::new(mode);
+
+        let mut terminal = make_terminal();
+        let buf = terminal.draw(|f| app.ui(f)).unwrap().buffer.clone();
+        let rendered: String = (0..buf.area.height).map(|y| row_content(&buf, y)).collect();
+
+        assert!(
+            rendered.contains("errno"),
+            "matching filter should still be shown while searching"
+        );
+        assert!(
+            !rendered.contains("timeout"),
+            "non-matching filter must be hidden from the sidebar while searching: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ui_search_query_shown_in_sidebar_title() {
+        let mut app = make_app(&["INFO something"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "errno".to_string(),
+                crate::filters::FilterType::Include,
+                crate::filters::FilterOptions::default(),
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+        let mut mode = FilterManagementMode::new(0);
+        mode.searching = true;
+        mode.search = "err".to_string();
+        app.tabs[0].interaction.mode = Box::new(mode);
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let filters_row = (0..buf.area.height)
+            .map(|y| row_content(&buf, y))
+            .find(|row| row.contains("Filters"))
+            .expect("a row containing 'Filters' should be rendered");
+        assert!(
+            filters_row.contains("/err"),
+            "sidebar title should show the active search query: {filters_row:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ui_search_marker_shown_immediately_on_empty_query() {
+        // Right after pressing '/', before any character is typed, the title
+        // must already signal that search mode is active — otherwise there's
+        // no visible clue the app is now waiting for search text.
+        let mut app = make_app(&["INFO something"]).await;
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "errno".to_string(),
+                crate::filters::FilterType::Include,
+                crate::filters::FilterOptions::default(),
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+        let mut mode = FilterManagementMode::new(0);
+        mode.searching = true;
+        mode.search = String::new();
+        app.tabs[0].interaction.mode = Box::new(mode);
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let filters_row = (0..buf.area.height)
+            .map(|y| row_content(&buf, y))
+            .find(|row| row.contains("Filters"))
+            .expect("a row containing 'Filters' should be rendered");
+        assert!(
+            filters_row.contains("SEARCH"),
+            "sidebar title must show a [SEARCH] marker even with an empty query: {filters_row:?}"
+        );
     }
 
     #[tokio::test]
@@ -1803,9 +1963,7 @@ mod tests {
         let mut app = make_two_tab_app().await;
         app.display.show_mode_bar = false;
         app.tabs[0].display.show_mode_bar = false;
-        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
-            selected_filter_index: 0,
-        });
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode::new(0));
 
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -2065,9 +2223,7 @@ mod tests {
         let middle = bottom - content_h / 2;
         let top = bottom.saturating_sub(content_h * 2);
 
-        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
-            selected_filter_index: bottom,
-        });
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode::new(bottom));
         terminal.draw(|f| app.ui(f)).unwrap();
         let scroll_after_bottom = app.tabs[0].filter.sidebar_scroll;
         assert!(
@@ -2077,9 +2233,7 @@ mod tests {
 
         // Moving the selection to a filter still inside the visible window
         // must not change the scroll offset.
-        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
-            selected_filter_index: middle,
-        });
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode::new(middle));
         terminal.draw(|f| app.ui(f)).unwrap();
         assert_eq!(
             app.tabs[0].filter.sidebar_scroll, scroll_after_bottom,
@@ -2087,9 +2241,7 @@ mod tests {
         );
 
         // Moving the selection far outside the visible window must scroll.
-        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
-            selected_filter_index: top,
-        });
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode::new(top));
         terminal.draw(|f| app.ui(f)).unwrap();
         assert_eq!(app.tabs[0].filter.sidebar_scroll, top);
     }
@@ -2107,9 +2259,7 @@ mod tests {
         let mut terminal = make_terminal();
 
         // Select a filter far enough down to force the sidebar to scroll.
-        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
-            selected_filter_index: 25,
-        });
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode::new(25));
         terminal.draw(|f| app.ui(f)).unwrap();
         let scroll_in_filter_mode = app.tabs[0].filter.sidebar_scroll;
         assert!(scroll_in_filter_mode > 0);
@@ -2129,7 +2279,7 @@ mod tests {
         app.handle_key_event(crossterm::event::KeyCode::Char('f'))
             .await;
         match app.tabs[0].interaction.mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
                 assert_eq!(selected_index, 25);
             }
             other => panic!("expected FilterManagement, got {other:?}"),

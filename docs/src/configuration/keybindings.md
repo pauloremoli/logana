@@ -94,12 +94,26 @@ Multiple alternatives:
   "set_color": "c",
   "add_date_filter": "t",
   "add_highlight_filter": "h",
+  "search": "/",
   "move_down": "J",
   "move_up": "K",
   "toggle_all": "A",
   "clear_all": "C"
 }
 ```
+
+The filter manager also reuses the shared `navigation` group above (`scroll_down`/`scroll_up`/`half_page_down`/`half_page_up`/`page_down`/`page_up`) and, for jump-to-top/bottom, the `normal.go_to_top_chord`/`normal.go_to_bottom` bindings — no separate fields needed for those.
+
+## Search Confirm/Cancel
+
+```json
+"search": {
+  "confirm": "Enter",
+  "cancel": "Esc"
+}
+```
+
+Shared by both the log panel's `/`/`?` search and the filter manager's `/` search — confirms or cancels whichever one is currently active.
 
 ## Visual Line Mode
 

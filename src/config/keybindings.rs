@@ -674,6 +674,10 @@ fn default_filter_sidebar_grow() -> KeyBindings {
 fn default_filter_sidebar_shrink() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('<'), KeyModifiers::NONE)])
 }
+#[inline(always)]
+fn default_filter_search() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('/'), KeyModifiers::NONE)])
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FilterKeybindings {
@@ -707,6 +711,8 @@ pub struct FilterKeybindings {
     pub sidebar_grow: KeyBindings,
     #[serde(default = "default_filter_sidebar_shrink")]
     pub sidebar_shrink: KeyBindings,
+    #[serde(default = "default_filter_search")]
+    pub search: KeyBindings,
 }
 
 impl Default for FilterKeybindings {
@@ -727,6 +733,7 @@ impl Default for FilterKeybindings {
             exit_mode: default_filter_exit(),
             sidebar_grow: default_filter_sidebar_grow(),
             sidebar_shrink: default_filter_sidebar_shrink(),
+            search: default_filter_search(),
         }
     }
 }
@@ -1503,6 +1510,12 @@ impl Keybindings {
         let filter_actions: &[(&str, &KeyBindings)] = &[
             ("navigation.scroll_down", &nav.scroll_down),
             ("navigation.scroll_up", &nav.scroll_up),
+            ("navigation.half_page_down", &nav.half_page_down),
+            ("navigation.half_page_up", &nav.half_page_up),
+            ("navigation.page_down", &nav.page_down),
+            ("navigation.page_up", &nav.page_up),
+            ("normal.go_to_top_chord", &self.normal.go_to_top_chord),
+            ("normal.go_to_bottom", &self.normal.go_to_bottom),
             ("filter.toggle_filter", &self.filter.toggle_filter),
             ("filter.delete_filter", &self.filter.delete_filter),
             ("filter.move_filter_up", &self.filter.move_filter_up),
@@ -1518,6 +1531,7 @@ impl Keybindings {
                 "filter.add_highlight_filter",
                 &self.filter.add_highlight_filter,
             ),
+            ("filter.search", &self.filter.search),
             ("filter.exit_mode", &self.filter.exit_mode),
             ("global.quit", &self.global.quit),
             ("global.next_tab", &self.global.next_tab),
@@ -1817,6 +1831,34 @@ mod tests {
         assert!(
             !conflicts.is_empty(),
             "rebinding both to the same key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_default_filter_search_is_slash() {
+        let fk = FilterKeybindings::default();
+        assert!(fk.search.matches(KeyCode::Char('/'), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_if_search_binding_collides_with_filter_action() {
+        let mut kb = Keybindings::default();
+        kb.filter.search = kb.filter.edit_filter.clone();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "rebinding filter.search onto an existing filter-mode action's key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_if_search_collides_with_gg_chord() {
+        let mut kb = Keybindings::default();
+        kb.filter.search = kb.normal.go_to_top_chord.clone();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "filter mode now also consumes normal.go_to_top_chord — colliding filter.search with it must be reported"
         );
     }
 

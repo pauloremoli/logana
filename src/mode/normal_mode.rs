@@ -139,9 +139,7 @@ impl Mode for NormalMode {
                 .last_selected_filter
                 .min(num_filters.saturating_sub(1));
             return (
-                Box::new(FilterManagementMode {
-                    selected_filter_index,
-                }),
+                Box::new(FilterManagementMode::new(selected_filter_index)),
                 KeyResult::Handled,
             );
         }
@@ -853,7 +851,7 @@ mod tests {
         tab.filter.last_selected_filter = 2;
         let (mode, _) = press(&mut tab, KeyCode::Char('f'), KeyModifiers::NONE).await;
         match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
                 assert_eq!(selected_index, 2);
             }
             other => panic!("expected FilterManagement, got {:?}", other),
@@ -877,7 +875,7 @@ mod tests {
         tab.filter.last_selected_filter = 9;
         let (mode, _) = press(&mut tab, KeyCode::Char('f'), KeyModifiers::NONE).await;
         match mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
                 assert_eq!(selected_index, 0);
             }
             other => panic!("expected FilterManagement, got {:?}", other),

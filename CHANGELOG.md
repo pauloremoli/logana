@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Filter manager now supports the same navigation as the log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u`, `PageDown`/`PageUp`, `gg`/`G`, and `/` to search the filter list live.
+
 ## [0.7.1] - 2026-07-11
 
 ### Added

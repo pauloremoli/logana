@@ -46,7 +46,7 @@ impl InputHandler {
         let (inner_width, inner_height) =
             super::widgets::sidebar::sidebar_inner_dims(area, tab.display.show_borders);
         let selected = match tab.interaction.mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => selected_index,
+            ModeRenderState::FilterManagement { selected_index, .. } => selected_index,
             _ => tab.filter.last_selected_filter,
         };
         // The sidebar auto-scrolls to keep `selected` in view; replicate that

@@ -3,6 +3,7 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
+use crate::commands::auto_complete::fuzzy_match;
 use crate::filters::{FilterDef, FilterType};
 use crate::theme::Theme;
 use crate::ui::field_layout::line_row_count;
@@ -22,6 +23,14 @@ pub struct Sidebar<'a> {
     /// When true, filters act as pure highlighters (visibility bypassed);
     /// shown as a `[HIGHLIGHT]` marker in the title.
     pub highlight_mode: bool,
+    /// Live typeahead query narrowing `filters`; shown in the title, empty
+    /// when not searching or before anything has been typed.
+    pub search: &'a str,
+    /// True while search is capturing input. Distinct from `!search.is_empty()`
+    /// so the title can show a `[SEARCH]` marker the instant `/` is pressed,
+    /// before any character is typed — otherwise there's no visible cue that
+    /// the app is now waiting for search text.
+    pub searching: bool,
     pub theme: &'a Theme,
 }
 
@@ -93,6 +102,30 @@ pub fn filter_row_display_text(
 ) -> String {
     let (prefix, value, suffix) = filter_row_parts(filter, idx, selected, match_counts);
     format!("{prefix}{value}{suffix}")
+}
+
+/// Indices (into `filters`) of entries whose rendered row text fuzzy-matches
+/// `search`, in original list order. Empty `search` means "everything
+/// matches" — used both to narrow what the sidebar shows while searching,
+/// and by `FilterManagementMode` to interpret navigation keys against the
+/// same narrowed list while searching.
+pub fn narrowed_filter_indices(
+    filters: &[FilterDef],
+    match_counts: &[usize],
+    search: &str,
+) -> Vec<usize> {
+    if search.is_empty() {
+        return (0..filters.len()).collect();
+    }
+    filters
+        .iter()
+        .enumerate()
+        .filter(|(idx, filter)| {
+            let text = filter_row_display_text(filter, *idx, *idx, match_counts);
+            fuzzy_match(search, &text)
+        })
+        .map(|(idx, _)| idx)
+        .collect()
 }
 
 fn build_filter_row(
@@ -191,6 +224,7 @@ pub(crate) fn compute_scroll_offset(
     scroll.min(total_rows.saturating_sub(content_h))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_sidebar_title(
     filter_enabled: bool,
     show_marks_only: bool,
@@ -198,6 +232,8 @@ fn build_sidebar_title(
     filter_progress: Option<usize>,
     active_count: usize,
     total_count: usize,
+    search: &str,
+    searching: bool,
 ) -> String {
     let filter_count_suffix = if total_count > 0 {
         format!(" [{}/{}]", active_count, total_count)
@@ -213,6 +249,18 @@ fn build_sidebar_title(
     };
     let base = if highlight_mode {
         format!("{base} [HIGHLIGHT]")
+    } else {
+        base
+    };
+    // Gate on `searching` rather than `search.is_empty()`: the moment right
+    // after pressing `/` has an empty query but must still show a visible
+    // cue that the app is now capturing search text.
+    let base = if searching {
+        if search.is_empty() {
+            format!("{base} [SEARCH]")
+        } else {
+            format!("{base} /{search}")
+        }
     } else {
         base
     };
@@ -249,6 +297,8 @@ impl<'a> Widget for Sidebar<'a> {
             self.filter_progress,
             active_count,
             total_count,
+            self.search,
+            self.searching,
         );
 
         let title_style = if self.is_filter_mode {
@@ -320,6 +370,8 @@ mod tests {
             is_filter_mode: false,
             scroll_offset: 0,
             highlight_mode: false,
+            search: "",
+            searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -359,6 +411,8 @@ mod tests {
             is_filter_mode: false,
             scroll_offset: 0,
             highlight_mode: true,
+            search: "",
+            searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -416,6 +470,8 @@ mod tests {
             is_filter_mode: false,
             scroll_offset,
             highlight_mode: false,
+            search: "",
+            searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -455,6 +511,8 @@ mod tests {
             is_filter_mode: false,
             scroll_offset: 0,
             highlight_mode: false,
+            search: "",
+            searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -482,6 +540,8 @@ mod tests {
             is_filter_mode: false,
             scroll_offset: 0,
             highlight_mode: false,
+            search: "",
+            searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -492,39 +552,39 @@ mod tests {
 
     #[test]
     fn test_build_sidebar_title_marks_only() {
-        let title = build_sidebar_title(true, true, false, None, 2, 4);
+        let title = build_sidebar_title(true, true, false, None, 2, 4, "", false);
         assert!(title.contains("MARKS ONLY"));
         assert!(title.contains("[2/4]"));
     }
 
     #[test]
     fn test_build_sidebar_title_disabled() {
-        let title = build_sidebar_title(false, false, false, None, 0, 3);
+        let title = build_sidebar_title(false, false, false, None, 0, 3, "", false);
         assert!(title.contains("[OFF]"));
         assert!(title.contains("[0/3]"));
     }
 
     #[test]
     fn test_build_sidebar_title_with_progress() {
-        let title = build_sidebar_title(true, false, false, Some(50), 1, 2);
+        let title = build_sidebar_title(true, false, false, Some(50), 1, 2, "", false);
         assert!(title.contains("50%"));
     }
 
     #[test]
     fn test_build_sidebar_title_indexing_complete() {
-        let title = build_sidebar_title(true, false, false, Some(100), 1, 2);
+        let title = build_sidebar_title(true, false, false, Some(100), 1, 2, "", false);
         assert!(title.contains("Indexing"));
     }
 
     #[test]
     fn test_build_sidebar_title_highlight_mode() {
-        let title = build_sidebar_title(true, false, true, None, 1, 2);
+        let title = build_sidebar_title(true, false, true, None, 1, 2, "", false);
         assert!(title.contains("[HIGHLIGHT]"));
     }
 
     #[test]
     fn test_build_sidebar_title_highlight_mode_with_marks_only() {
-        let title = build_sidebar_title(true, true, true, None, 1, 2);
+        let title = build_sidebar_title(true, true, true, None, 1, 2, "", false);
         assert!(title.contains("MARKS ONLY"));
         assert!(title.contains("[HIGHLIGHT]"));
     }
@@ -652,6 +712,43 @@ mod tests {
     }
 
     #[test]
+    fn test_narrowed_filter_indices_empty_search_returns_all() {
+        let filters = vec![
+            make_filter("ERROR", true, FilterType::Include),
+            make_filter("timeout", true, FilterType::Exclude),
+        ];
+        let indices = narrowed_filter_indices(&filters, &[0, 0], "");
+        assert_eq!(indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_narrowed_filter_indices_matches_pattern_text() {
+        let filters = vec![
+            make_filter("ERROR", true, FilterType::Include),
+            make_filter("timeout", true, FilterType::Exclude),
+            make_filter("errno", true, FilterType::Include),
+        ];
+        let indices = narrowed_filter_indices(&filters, &[0, 0, 0], "err");
+        assert_eq!(indices, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_narrowed_filter_indices_no_match_returns_empty() {
+        let filters = vec![make_filter("ERROR", true, FilterType::Include)];
+        let indices = narrowed_filter_indices(&filters, &[0], "zzz");
+        assert!(indices.is_empty());
+    }
+
+    #[test]
+    fn test_narrowed_filter_indices_matches_group_tag() {
+        let mut filter = make_filter("ERROR", true, FilterType::Include);
+        filter.group = Some("critical".to_string());
+        let filters = vec![filter, make_filter("timeout", true, FilterType::Exclude)];
+        let indices = narrowed_filter_indices(&filters, &[0, 0], "critical");
+        assert_eq!(indices, vec![0]);
+    }
+
+    #[test]
     fn test_sidebar_filter_mode_active_bold_title_bordered() {
         let theme = Theme::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -669,6 +766,8 @@ mod tests {
                         is_filter_mode: true,
                         scroll_offset: 0,
                         highlight_mode: false,
+                        search: "",
+                        searching: false,
                         theme: &theme,
                     },
                     f.area(),
@@ -700,6 +799,8 @@ mod tests {
                         is_filter_mode: false,
                         scroll_offset: 0,
                         highlight_mode: false,
+                        search: "",
+                        searching: false,
                         theme: &theme,
                     },
                     f.area(),
@@ -726,6 +827,8 @@ mod tests {
                         is_filter_mode: true,
                         scroll_offset: 0,
                         highlight_mode: false,
+                        search: "",
+                        searching: false,
                         theme: &theme,
                     },
                     f.area(),

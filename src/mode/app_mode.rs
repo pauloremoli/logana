@@ -32,6 +32,13 @@ pub enum ModeRenderState {
     },
     FilterManagement {
         selected_index: usize,
+        /// Live typeahead query narrowing the sidebar; empty when not searching
+        /// or when search is active but nothing has been typed yet.
+        search: String,
+        /// True while capturing search input — distinct from `search.is_empty()`,
+        /// since the moment right after pressing `/` has an empty query but
+        /// still needs a visible "you're searching now" indicator.
+        searching: bool,
     },
     FilterEdit,
     VisualLine {
@@ -839,7 +846,12 @@ mod tests {
             "SEARCH↑"
         );
         assert_eq!(
-            ModeRenderState::FilterManagement { selected_index: 0 }.mode_name(),
+            ModeRenderState::FilterManagement {
+                selected_index: 0,
+                search: String::new(),
+                searching: false,
+            }
+            .mode_name(),
             "FILTER"
         );
         assert_eq!(ModeRenderState::FilterEdit.mode_name(), "FILTER EDIT");

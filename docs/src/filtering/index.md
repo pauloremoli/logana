@@ -36,20 +36,29 @@ Filters are saved to SQLite and automatically restored the next time you open th
 
 ## Filter Manager
 
-Press `f` to open the filter manager popup, which lists all active filters.
+Press `f` to open the filter manager popup, which lists all active filters. Navigation matches the log panel: count-prefixed motions, page scrolling, jump-to-top/bottom, and search.
 
 | Key | Action |
 |---|---|
-| `j` / `k` | Navigate filters |
+| `j` / `k` | Move selection down / up — accepts a count prefix, e.g. `4j` moves down 4 |
+| `Ctrl+d` / `Ctrl+u` | Half page down / up |
+| `PageDown` / `PageUp` | Full page down / up |
+| `gg` / `G` | Jump to the first / last filter — `{count}gg` or `{count}G` jumps to filter N |
+| `/` | Search the filter list (see below) |
 | `Space` | Toggle selected filter on/off |
 | `e` | Edit selected filter's pattern |
 | `d` | Delete selected filter |
 | `c` | Set highlight color for selected filter |
 | `t` | Add a date/time range filter |
+| `h` | Add a highlight filter |
 | `J` / `K` | Move filter down / up (order affects priority) |
 | `A` | Toggle all filters on/off |
 | `C` | Clear all filters |
 | `Esc` | Close filter manager |
+
+### Searching the Filter List
+
+Press `/` to start typing a search query — the sidebar title immediately shows `[SEARCH]` so it's clear you're now typing a query, even before you've entered any characters. The list narrows live to filters whose type, pattern, or group match what you've typed so far (the same convention used by the Value Colors, Level Colors, and Keybindings Help popups); once you've typed something, the title shows `/query` instead of `[SEARCH]`. `Backspace` edits the query; `j`/`k` move between the narrowed matches. `Enter` confirms your selection and shows the full list again; `Esc` cancels and restores whatever was selected before you started searching. While searching, every key is captured as query text — including letters that are normally shortcuts (`e`, `d`, `i`, …) — so none of the usual filter-manager actions fire until you confirm or cancel.
 
 ## Filter Colors
 

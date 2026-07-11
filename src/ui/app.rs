@@ -1882,9 +1882,7 @@ mod tests {
             app.execute_command_str(format!("filter pattern_{i}")).await;
         }
         // Select a filter near the bottom so the sidebar scrolls down.
-        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
-            selected_filter_index: 25,
-        });
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode::new(25));
         let tab = app.tab();
         // With 9 visible content rows and selection at 25, the sidebar scrolls
         // so filters 17..=25 occupy content rows 0..=8.
@@ -1929,9 +1927,7 @@ mod tests {
         for p in &patterns {
             app.execute_command_str(format!("filter {p}")).await;
         }
-        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
-            selected_filter_index: patterns.len() - 1,
-        });
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode::new(patterns.len() - 1));
 
         let tab = app.tab();
         let filters = tab.log_manager.get_filters();
@@ -1957,6 +1953,8 @@ mod tests {
             is_filter_mode: false,
             scroll_offset,
             highlight_mode: false,
+            search: "",
+            searching: false,
             theme: &app.theme,
         };
         let mut terminal =
@@ -2015,7 +2013,10 @@ mod tests {
         app.handle_left_click(65, 2).await;
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
-            ModeRenderState::FilterManagement { selected_index: 1 }
+            ModeRenderState::FilterManagement {
+                selected_index: 1,
+                ..
+            }
         ));
     }
 
@@ -2042,19 +2043,28 @@ mod tests {
         app.handle_left_click(65, 1).await;
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
-            ModeRenderState::FilterManagement { selected_index: 0 }
+            ModeRenderState::FilterManagement {
+                selected_index: 0,
+                ..
+            }
         ));
         // row 3 = filter 2
         app.handle_left_click(65, 3).await;
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
-            ModeRenderState::FilterManagement { selected_index: 2 }
+            ModeRenderState::FilterManagement {
+                selected_index: 2,
+                ..
+            }
         ));
         // whitespace below all filters clamps to last filter (index 2)
         app.handle_left_click(65, 15).await;
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
-            ModeRenderState::FilterManagement { selected_index: 2 }
+            ModeRenderState::FilterManagement {
+                selected_index: 2,
+                ..
+            }
         ));
     }
 
@@ -2499,7 +2509,7 @@ mod tests {
         .await;
 
         match app.tabs[0].interaction.mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
                 assert_eq!(selected_index, 1);
             }
             other => panic!("expected FilterManagement mode, got {other:?}"),
@@ -2528,9 +2538,7 @@ mod tests {
         let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
         app.execute_command_str("filter foo".to_string()).await;
         app.execute_command_str("filter bar".to_string()).await;
-        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
-            selected_filter_index: 1,
-        });
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode::new(1));
 
         app.handle_mouse_event(MouseEvent {
             kind: MouseEventKind::ScrollUp,
@@ -2541,7 +2549,7 @@ mod tests {
         .await;
 
         match app.tabs[0].interaction.mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => {
+            ModeRenderState::FilterManagement { selected_index, .. } => {
                 assert_eq!(selected_index, 0);
             }
             other => panic!("expected FilterManagement mode, got {other:?}"),

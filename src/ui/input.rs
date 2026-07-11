@@ -58,9 +58,7 @@ impl App {
                 }
                 if !mode_was_set {
                     if let Some(idx) = tab.filter.filter_context.take() {
-                        tab.interaction.mode = Box::new(FilterManagementMode {
-                            selected_filter_index: idx,
-                        });
+                        tab.interaction.mode = Box::new(FilterManagementMode::new(idx));
                     } else {
                         tab.interaction.mode = Box::new(NormalMode::default());
                     }
@@ -214,7 +212,7 @@ impl App {
             return;
         }
         let current = match tab.interaction.mode.render_state() {
-            ModeRenderState::FilterManagement { selected_index } => selected_index,
+            ModeRenderState::FilterManagement { selected_index, .. } => selected_index,
             _ => tab.filter.filter_context.unwrap_or(0),
         };
         let new_idx = if delta < 0 {
@@ -222,9 +220,7 @@ impl App {
         } else {
             (current + delta as usize).min(num_filters - 1)
         };
-        tab.interaction.mode = Box::new(FilterManagementMode {
-            selected_filter_index: new_idx,
-        });
+        tab.interaction.mode = Box::new(FilterManagementMode::new(new_idx));
     }
 
     pub(super) fn mouse_scroll(&mut self, delta: i32) {
@@ -268,9 +264,7 @@ impl App {
             return;
         }
         if let Some(idx) = filter_idx {
-            self.tabs[self.active_tab].interaction.mode = Box::new(FilterManagementMode {
-                selected_filter_index: idx,
-            });
+            self.tabs[self.active_tab].interaction.mode = Box::new(FilterManagementMode::new(idx));
             return;
         }
         if let Some(idx) = visible_idx {
