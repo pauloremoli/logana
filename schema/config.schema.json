@@ -48,6 +48,7 @@
         "filter": {
           "add_date_filter": "t",
           "add_exclude_filter": "o",
+          "add_highlight_filter": "h",
           "add_include_filter": "i",
           "clear_all_filters": "C",
           "delete_filter": "d",
@@ -126,6 +127,7 @@
           "show_keybindings": "F1",
           "start_of_line": "0",
           "toggle_filtering": "F",
+          "toggle_highlight_mode": "H",
           "toggle_marks_only": "M",
           "visual_char": "v",
           "visual_mode": "V",
@@ -369,6 +371,7 @@
             "show_keybindings": "F1",
             "start_of_line": "0",
             "toggle_filtering": "F",
+            "toggle_highlight_mode": "H",
             "toggle_marks_only": "M",
             "visual_char": "v",
             "visual_mode": "V",
@@ -385,6 +388,7 @@
           "default": {
             "add_date_filter": "t",
             "add_exclude_filter": "o",
+            "add_highlight_filter": "h",
             "add_include_filter": "i",
             "clear_all_filters": "C",
             "delete_filter": "d",
@@ -757,6 +761,14 @@
             }
           ]
         },
+        "toggle_highlight_mode": {
+          "default": "H",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
         "go_to_top_chord": {
           "default": "g",
           "allOf": [
@@ -1044,6 +1056,14 @@
         },
         "add_date_filter": {
           "default": "t",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "add_highlight_filter": {
+          "default": "h",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"
