@@ -28,6 +28,7 @@ Press `:` in normal mode to open command mode. Tab completes commands, flags, co
 | `:filter --field <key>=<value>` | Add a field-scoped include filter (e.g. `level=error`) |
 | `:exclude [--regex\|-r] <pattern>` | Add an exclude filter (hide matching lines) |
 | `:exclude --field <key>=<value>` | Add a field-scoped exclude filter (e.g. `level=debug`) |
+| `:highlight [--regex\|-r] [-l] [--fg COLOR] [--bg COLOR] <pattern>` (alias `:h`) | Add a highlight filter — colors matches without affecting visibility |
 | `:date-filter <expr>` | Add a date/time range filter |
 | `:set-color [--fg COLOR] [--bg COLOR]` | Set highlight color for the selected filter |
 | `:save-filters <file>` | Save current filters to a JSON file |
@@ -47,7 +48,7 @@ See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filter
 
 | Command | Description |
 |---|---|
-| `:open <path>` | Open a file or directory |
+| `:open <path>` | Open a file, directory, or compressed/archive file. Archives show a contents picker first — see [Quick Start](quick-start.md#opening-compressed-and-archive-files) |
 | `:close-tab` | Close the current tab |
 
 ## Display

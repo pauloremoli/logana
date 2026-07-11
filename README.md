@@ -23,12 +23,13 @@
 **Formats & input**
 - **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OpenTelemetry, DLT (AUTOSAR), and more
 - **Custom schemas** — define your own log format with a simple `{field}` template; drop a `.json` file in `~/.config/logana/schema/` and logana auto-detects it
-- **Compressed & archive files** — open compressed directly; no manual extraction needed.
+- **Compressed & archive files** — open directly; pick which files to extract from a contents popup, including files nested inside nested archives.
 - **OTel collector** — receive OpenTelemetry logs in real time over gRPC or HTTP.
 - **Multi-tab** — open multiple files, `:merge` to group multiple sources into a single view sorted by timestamp.
 
 **Filtering & search**
 - **Filtering** — include/exclude patterns (literal or regex via `-r`), date-range filters, field-scoped filters; add filters from the command line with `-i`/`-o`/`-t`
+- **Highlight filters & highlight mode** — a `:highlight` filter type marks matches without hiding anything; toggle `H` to see the full log with every filter's colors still applied, for reading the context around the lines you care about
 - **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns
 
@@ -136,7 +137,8 @@ logana app.log
 # Open a directory (each file opens in its own tab)
 logana /var/log/
 
-# Open a compressed or archive file directly
+# Open a compressed or archive file directly — shows a contents popup
+# to pick which files to extract (nested archives are expanded too)
 logana app.log.gz
 logana logs.tar.gz
 

@@ -10,6 +10,7 @@ Filters are the primary way to narrow the log view. They are layered: include pa
 | `o` | Add exclude filter (hide matching lines) |
 | `f` | Open filter manager |
 | `F` | Toggle all filtering on/off |
+| `H` | Toggle highlight mode (see below) |
 
 ## How Filters Work
 
@@ -17,11 +18,17 @@ Filters are the primary way to narrow the log view. They are layered: include pa
 
 **Exclude filters:** Any line matching an enabled exclude filter is hidden, regardless of include filters.
 
+**Highlight filters:** Apply their color styling to matching lines but never affect visibility — every line stays shown. See [Text Filters](text-filters.md#highlight-filters) for details.
+
 **No filters:** All lines are shown.
 
-Both filter types support:
+All filter types support:
 - **Text search** — fast multi-pattern matching
 - **Regular expressions** — full regex syntax, opt-in with `--regex` / `-r`
+
+## Highlight Mode
+
+Press `H` in normal mode to put **all** active filters — include, exclude, and highlight — into highlight mode: every line in the file stays visible, but filter colors still render on their matches. This is for reading the full context around the lines you actually care about — an include/exclude filter narrows the log down to just the matches, but the surrounding lines that explain *why* something happened are often not in the filter at all. Highlight mode gives you the whole log back, with your filters still marking what matters, so you can scroll through real context without losing track of what you were looking for. The sidebar title shows `[HIGHLIGHT]` while it's active. Press `H` again to return to normal filtering.
 
 ## Filter Persistence
 

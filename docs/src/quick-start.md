@@ -30,6 +30,21 @@ logana app.log --tail
 logana app.log --filters my-filters.json --tail
 ```
 
+## Opening Compressed and Archive Files
+
+```sh
+logana app.log.gz
+logana logs.tar.gz
+logana logs.zip
+```
+
+Opening a `.gz`/`.bz2`/`.xz`/`.zip`/`.tar`/`.tar.gz`/`.tar.bz2`/`.tar.xz` file — whether from the command line or with `:open` inside the TUI — shows a popup listing everything inside it as a tree, without extracting anything yet. If an entry is itself an archive (a `.zip` inside a `.tar.gz`, for example), it's expanded recursively so its contents show as nested rows too.
+
+- `Space` toggles the file under the cursor. Toggling a nested archive's own row selects or deselects everything inside it at once.
+- `a` / `n` select or deselect every file.
+- `Enter` extracts only the confirmed selection — one tab per selected file.
+- `Esc` cancels without extracting anything.
+
 ## First Steps
 
 Once logana opens, you'll see the log content with the detected format shown in the title bar.

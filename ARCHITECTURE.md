@@ -10,7 +10,7 @@ logana is structured around a strict separation between domain logic and the UI 
 
 **Log Parsing** (`parser/`) — A format-detection registry inspects incoming bytes and selects the best `LogFormatParser` (JSON, syslog, journalctl, logfmt, CLF, DLT, user-defined custom schemas, etc.). Parsers produce a normalised `DisplayParts` struct consumed uniformly by the rest of the system. Extra fields carry a `FieldSemantic` tag enabling format-agnostic field filtering.
 
-**Filter Pipeline** (`filters/`) — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap. The pipeline runs in a background thread. Filter definitions are persisted to SQLite and reloaded on startup.
+**Filter Pipeline** (`filters/`) — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap. Each filter has a `FilterType` of `Include`, `Exclude`, or `Highlight`; `Highlight` filters apply their styling like `Include` but never contribute to the visibility decision. `FilterState::highlight_mode` (toggled with `H` in normal mode) is a separate, temporary override that makes every active filter — regardless of its own type — apply styling only, bypassing visibility for the whole tab. The pipeline runs in a background thread. Filter definitions are persisted to SQLite and reloaded on startup.
 
 **Mode System** (`mode/`) — Modal UI where each mode owns keyboard input and returns a `KeyResult` for effects that cross mode boundaries. Example of modes: Normal, Command, Search, Filter, Visual, Comment. Each window is also treated as a mode.
 
@@ -141,13 +141,18 @@ graph LR
 
 ## Archive Decompression
 
-Decompression is an app-level operation. No tab is created for the archive itself — only tabs for its extracted contents.
+Opening a compressed or archive file first lists its contents in a picker popup instead of extracting immediately; only the confirmed selection is extracted. No tab is created for the archive itself — only tabs for the extracted files the user selected.
 
 ```mermaid
 graph TD
-    CLI[logana archive.zip] --> BAE[begin_archive_extraction]
-    Cmd[:open archive.zip] --> BAE
-    BAE -->|spawn_blocking| Extract[extract_with_progress]
+    CLI[logana archive.zip] --> BAL[begin_archive_listing]
+    Cmd[:open archive.zip] --> BAL
+    BAL -->|spawn_blocking| List["list_archive_tree\n(archive_tree.rs)"]
+    List -->|result_tx oneshot| PollList[poll_archive_listing\ncalled each frame]
+    PollList -->|ArchiveTree| Picker[ArchivePickerMode\ncontents popup]
+    Picker -->|Space/a/n toggle selection| Picker
+    Picker -->|Enter → KeyResult::ExtractSelectedArchiveFiles| BAS[begin_archive_extraction_selected]
+    BAS -->|spawn_blocking| Extract["extract_selected\n(confirmed files only)"]
     Extract -->|progress_tx watch| Poll[poll_archive_extraction\ncalled each frame]
     Poll -->|decompression_message| Notif[App-level notification bar]
     Extract -->|result_tx oneshot| Poll
@@ -155,6 +160,8 @@ graph TD
     Tabs -->|begin_file_load ×N| Load[Background file load]
     Load -->|ReplaceTab| Tab[TabState with content]
 ```
+
+`ArchiveTree` (`ingestion::archive_tree`) is a flat arena — `Vec<ArchiveNode>` with parent/children indices — rather than a nested recursive enum, so toggling a subtree's selection and resolving a selected leaf's bytes back through its ancestor chain are both cheap index walks. `list_archive_tree` recurses into archives found nested inside other archives (a `.zip` inside a `.tar.gz`, for example) up to a depth/entry-count cap; an entry named like an archive whose content doesn't actually parse as one falls back to a plain selectable `File` node rather than a dead-end row. Entries read from a streaming source (`TarGz`/`TarBz2`/`TarXz`, which must be decompressed sequentially to enumerate) have their bytes cached during listing, up to a byte budget, so `extract_selected` can reuse them instead of decompressing the stream a second time; `Zip`/`Tar` support cheap re-reads and are never cached.
 
 ## Filter Pipeline
 
@@ -180,6 +187,8 @@ graph TD
     Resolve -->|yes + Neutral| Hidden
     Resolve -->|no or Include| Visible
 ```
+
+A `Highlight`-type filter's decision flows through this diagram the same way `Neutral` does — it never decides visibility on its own — but unlike `Neutral`, it still applies its color styling to the match. `FilterState::highlight_mode` short-circuits the whole diagram: every line is `Visible`, styling still applies.
 
 ## Dependencies
 

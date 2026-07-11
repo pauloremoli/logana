@@ -8,10 +8,14 @@ Text filters match against the raw content of each log line.
 - Press `i` to add an include filter (opens command mode pre-filled with `filter `)
 - Press `o` to add an exclude filter (opens command mode pre-filled with `exclude `)
 
+**From the filter manager (`f`):**
+- Press `h` to add a highlight filter (opens command mode pre-filled with `highlight `)
+
 **From command mode:**
 ```sh
 :filter <pattern>       # show only lines matching pattern
 :exclude <pattern>      # hide lines matching pattern
+:highlight <pattern>    # color matching lines without affecting visibility
 ```
 
 ## Text Search
@@ -43,12 +47,27 @@ Opt in with `--regex` / `-r`. Supports full regex syntax. Words after `-r` are j
 > :filter timeout.*retry --fg red      # wrong — "--fg" becomes part of the pattern
 > ```
 
+## Highlight Filters
+
+A third filter kind alongside include/exclude. Highlight filters apply their color styling to matching lines but never hide or reveal anything — every line stays exactly as visible as it would be without the filter.
+
+```sh
+:highlight <pattern>                    # color matches, alias :h
+:highlight -r (ERROR|WARN)              # regex highlight
+:highlight --fg yellow ERROR            # with a color, same flags as :filter
+```
+
+Highlight filters accept the same flags as `:filter` (`--regex`/`-r`, `--fg`, `--bg`, `-l`, `--field`, `--group`) and show up in the filter sidebar with an `H` type tag, e.g. `[x] H: ERROR (12)`. They're for marking the lines you care about while reading the log in full — mark an event, then keep scrolling to see everything around it, without an include/exclude filter narrowing the view down to just the matches.
+
+To put your existing include/exclude filters into the same visible-but-marked state temporarily — for example when you need to see the full context around what they're currently hiding — see [Highlight Mode](index.md#highlight-mode).
+
 ## Multiple Filters
 
 You can add as many filters as you like. They combine as follows:
 
 1. **Include filters** — a line must match at least one enabled include filter to be shown (if any exist).
 2. **Exclude filters** — a line matching any enabled exclude filter is hidden.
+3. **Highlight filters** — never affect which lines are shown, only their styling.
 
 Exclude takes priority: a line that satisfies an include filter but also matches an exclude filter is hidden.
 
