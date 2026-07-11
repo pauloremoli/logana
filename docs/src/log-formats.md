@@ -132,6 +132,8 @@ If none of the built-in parsers match your log format, you can define your own s
 | macOS | `~/Library/Application Support/logana/schema/<name>.json` |
 | Windows | `%APPDATA%\logana\schema\<name>.json` |
 
+On Windows, `%APPDATA%` resolves to `C:\Users\<username>\AppData\Roaming`, e.g. `C:\Users\<username>\AppData\Roaming\logana\schema\<name>.json`.
+
 ### Template syntax
 
 The easiest way to describe a format is with a **template** — write the literal shape of a log line with `{field}` placeholders where fields appear:

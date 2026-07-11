@@ -10,6 +10,9 @@ Paths depend on the operating system:
 | Config file | `~/.config/logana/config.json` | `~/Library/Application Support/logana/config.json` | `%APPDATA%\logana\config.json` |
 | Themes dir | `~/.config/logana/themes/` | `~/Library/Application Support/logana/themes/` | `%APPDATA%\logana\themes\` |
 | Templates dir | `~/.config/logana/templates/` | `~/Library/Application Support/logana/templates/` | `%APPDATA%\logana\templates\` |
+| Schema dir | `~/.config/logana/schema/` | `~/Library/Application Support/logana/schema/` | `%APPDATA%\logana\schema\` |
+
+On Windows, `%APPDATA%` resolves to `C:\Users\<username>\AppData\Roaming`, e.g. `C:\Users\<username>\AppData\Roaming\logana\schema`.
 
 ## Database
 
@@ -34,3 +37,7 @@ Place `.json` files in `~/.config/logana/themes/`. Files here shadow bundled the
 ## Custom Export Templates
 
 Place `.txt` template files in `~/.config/logana/templates/`. Files here shadow bundled templates (`markdown`, `jira`) of the same name. See [Annotations & Export](annotations.md) for the template format.
+
+## Custom Schemas
+
+Place `.json` schema files in `~/.config/logana/schema/`. Each file is loaded automatically and included in format detection — no restart required. See [Log Formats](log-formats.md) for the schema file format.

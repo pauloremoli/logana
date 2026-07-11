@@ -10,6 +10,8 @@ If none of the built-in parsers match your log format, define your own schema. l
 | macOS | `~/Library/Application Support/logana/schema/` |
 | Windows | `%APPDATA%\logana\schema\` |
 
+On Windows, `%APPDATA%` resolves to `C:\Users\<username>\AppData\Roaming`, e.g. `C:\Users\<username>\AppData\Roaming\logana\schema`.
+
 Each file describes one format. The filename is arbitrary; the `name` field inside the JSON is what identifies the schema at runtime.
 
 ## Schema file structure
