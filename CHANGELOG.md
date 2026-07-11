@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-11
+
 ### Added
 - Filters can be assigned to a named group with `--group <name>` on `:filter`/`:exclude`. 
 - Command to toggle every filter in a group on/off together with `:toggle-group <name>`. 
