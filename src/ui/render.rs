@@ -551,14 +551,14 @@ impl App {
     }
 
     fn render_sidebar(
-        &self,
+        &mut self,
         frame: &mut Frame,
         sidebar_area: Rect,
         show_borders: bool,
         selected_filter_idx: usize,
         is_filter_mode: bool,
     ) {
-        let tab = &self.tabs[self.active_tab];
+        let tab = &mut self.tabs[self.active_tab];
         let filters = tab.log_manager.get_filters();
         let match_counts = tab.filter.match_counts.clone();
         let filter_progress: Option<usize> = tab
@@ -566,6 +566,17 @@ impl App {
             .handle
             .as_ref()
             .map(|h| (h.displayed_progress * 100.0) as usize);
+        let (content_w, content_h) =
+            super::widgets::sidebar::sidebar_inner_dims(sidebar_area, show_borders);
+        let scroll_offset = super::widgets::sidebar::compute_scroll_offset(
+            filters,
+            selected_filter_idx,
+            &match_counts,
+            content_w,
+            content_h,
+            tab.filter.sidebar_scroll,
+        );
+        tab.filter.sidebar_scroll = scroll_offset;
         frame.render_widget(
             Sidebar {
                 filters,
@@ -576,6 +587,7 @@ impl App {
                 filter_progress,
                 show_borders,
                 is_filter_mode,
+                scroll_offset,
                 theme: &self.theme,
             },
             sidebar_area,
@@ -1996,6 +2008,56 @@ mod tests {
             "sidebar title must not appear on row 1 (would mean misaligned), got: {:?}",
             row1,
         );
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_does_not_rescroll_when_selection_stays_in_view() {
+        use crate::ui::widgets::sidebar::sidebar_inner_dims;
+
+        let mut app = make_app(&["line 0", "line 1"]).await;
+        app.tabs[0].display.show_borders = false;
+        for i in 0..30 {
+            app.execute_command_str(format!("filter pattern_{i}")).await;
+        }
+        let mut terminal = make_terminal();
+
+        // Render once to learn the sidebar's actual on-screen dimensions,
+        // then pick a selection near the bottom that forces a scroll.
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let sidebar_area = app.input.sidebar_area.expect("sidebar should be visible");
+        let (_content_w, content_h) =
+            sidebar_inner_dims(sidebar_area, app.tabs[0].display.show_borders);
+        let bottom = 29usize;
+        let middle = bottom - content_h / 2;
+        let top = bottom.saturating_sub(content_h * 2);
+
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
+            selected_filter_index: bottom,
+        });
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let scroll_after_bottom = app.tabs[0].filter.sidebar_scroll;
+        assert!(
+            scroll_after_bottom > 0,
+            "selecting the last filter should have scrolled the sidebar down"
+        );
+
+        // Moving the selection to a filter still inside the visible window
+        // must not change the scroll offset.
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
+            selected_filter_index: middle,
+        });
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert_eq!(
+            app.tabs[0].filter.sidebar_scroll, scroll_after_bottom,
+            "selection already visible must not trigger a rescroll"
+        );
+
+        // Moving the selection far outside the visible window must scroll.
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
+            selected_filter_index: top,
+        });
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert_eq!(app.tabs[0].filter.sidebar_scroll, top);
     }
 
     #[tokio::test]

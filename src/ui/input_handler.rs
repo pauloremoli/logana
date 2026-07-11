@@ -43,17 +43,8 @@ impl InputHandler {
         if num_filters == 0 {
             return None;
         }
-        let (inner_width, inner_height) = if tab.display.show_borders {
-            (
-                area.width.saturating_sub(2) as usize,
-                area.height.saturating_sub(2) as usize,
-            )
-        } else {
-            (
-                area.width.saturating_sub(1) as usize,
-                area.height.saturating_sub(1) as usize,
-            )
-        };
+        let (inner_width, inner_height) =
+            super::widgets::sidebar::sidebar_inner_dims(area, tab.display.show_borders);
         let selected = match tab.interaction.mode.render_state() {
             ModeRenderState::FilterManagement { selected_index } => selected_index,
             _ => tab.filter.filter_context.unwrap_or(0),
@@ -67,6 +58,7 @@ impl InputHandler {
             &tab.filter.match_counts,
             inner_width,
             inner_height,
+            tab.filter.sidebar_scroll,
         );
         let target_row = row.saturating_sub(area.y + 1) as usize + scroll;
         let mut accumulated = 0usize;

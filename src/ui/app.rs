@@ -1892,6 +1892,16 @@ mod tests {
         let tab = app.tab();
         let filters = tab.log_manager.get_filters();
         let match_counts = tab.filter.match_counts.clone();
+        let (content_w, content_h) =
+            crate::ui::widgets::sidebar::sidebar_inner_dims(sidebar_area, false);
+        let scroll_offset = crate::ui::widgets::sidebar::compute_scroll_offset(
+            filters,
+            patterns.len() - 1,
+            &match_counts,
+            content_w,
+            content_h,
+            tab.filter.sidebar_scroll,
+        );
         let sidebar = Sidebar {
             filters,
             match_counts: &match_counts,
@@ -1901,6 +1911,7 @@ mod tests {
             filter_progress: None,
             show_borders: false,
             is_filter_mode: false,
+            scroll_offset,
             theme: &app.theme,
         };
         let mut terminal =

@@ -13,6 +13,10 @@ pub struct FilterState {
     pub show_marks_only: bool,
     pub filter_context: Option<usize>,
     pub editing_filter_id: Option<usize>,
+    /// Scroll offset (in wrapped display rows) the sidebar was last drawn
+    /// at, persisted so it only re-scrolls when the selection leaves the
+    /// current viewport instead of re-centering on every render.
+    pub sidebar_scroll: usize,
     pub manager: Arc<FilterManager>,
     pub text_styles: Vec<Style>,
     pub date_styles: Vec<DateFilterStyle>,
@@ -39,6 +43,7 @@ impl Default for FilterState {
             show_marks_only: false,
             filter_context: None,
             editing_filter_id: None,
+            sidebar_scroll: 0,
             manager: Arc::new(FilterManager::empty()),
             text_styles: Vec::new(),
             date_styles: Vec::new(),

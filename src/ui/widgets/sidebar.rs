@@ -16,6 +16,9 @@ pub struct Sidebar<'a> {
     pub filter_progress: Option<usize>,
     pub show_borders: bool,
     pub is_filter_mode: bool,
+    /// Row offset to scroll the filter list by, as computed by
+    /// [`compute_scroll_offset`] and persisted across frames by the caller.
+    pub scroll_offset: usize,
     pub theme: &'a Theme,
 }
 
@@ -113,8 +116,33 @@ fn build_filter_row(
     ])
 }
 
-/// Row offset (in wrapped display rows) so the selected filter's row stays
-/// within a viewport of `content_h` rows at wrap width `content_w`.
+/// Content (width, height) of the sidebar's scrollable area for a given
+/// outer `area`, matching the block layout built by [`Sidebar::render`]
+/// (a title row, plus a 1-cell border or padding gutter on each side).
+///
+/// Shared with [`crate::ui::input_handler::InputHandler::hit_test_sidebar`]
+/// so hit-testing agrees with what was actually rendered.
+pub(crate) fn sidebar_inner_dims(area: Rect, show_borders: bool) -> (usize, usize) {
+    if show_borders {
+        (
+            area.width.saturating_sub(2) as usize,
+            area.height.saturating_sub(2) as usize,
+        )
+    } else {
+        (
+            area.width.saturating_sub(1) as usize,
+            area.height.saturating_sub(1) as usize,
+        )
+    }
+}
+
+/// Row offset (in wrapped display rows) to scroll the filter list by, given
+/// the viewport it was previously scrolled to (`prev_scroll`).
+///
+/// Scrolls just enough to bring the selected filter's rows into a viewport
+/// of `content_h` rows at wrap width `content_w` — if it's already fully
+/// visible at `prev_scroll`, the offset is left unchanged, so moving the
+/// selection within the current view never re-scrolls it.
 ///
 /// Shared with [`crate::ui::input_handler::InputHandler::hit_test_sidebar`],
 /// which must replicate this exact scroll to map a click's screen row back
@@ -125,21 +153,35 @@ pub(crate) fn compute_scroll_offset(
     match_counts: &[usize],
     content_w: usize,
     content_h: usize,
+    prev_scroll: usize,
 ) -> usize {
     if content_w == 0 || content_h == 0 {
         return 0;
     }
     let mut row = 0usize;
+    let mut selected_start = 0usize;
     let mut selected_end = 0usize;
     for (i, filter) in filters.iter().enumerate() {
         let text = filter_row_display_text(filter, i, selected, match_counts);
         let row_h = line_row_count(text.as_bytes(), content_w);
+        if i == selected {
+            selected_start = row;
+        }
         row += row_h;
         if i == selected {
             selected_end = row;
         }
     }
-    selected_end.saturating_sub(content_h)
+    let total_rows = row;
+
+    let scroll = if selected_start < prev_scroll {
+        selected_start
+    } else if selected_end > prev_scroll + content_h {
+        selected_end.saturating_sub(content_h)
+    } else {
+        prev_scroll
+    };
+    scroll.min(total_rows.saturating_sub(content_h))
 }
 
 fn build_sidebar_title(
@@ -219,18 +261,9 @@ impl<'a> Widget for Sidebar<'a> {
                 .title_style(title_style)
         };
 
-        let inner = sidebar_block.inner(area);
-        let scroll = compute_scroll_offset(
-            self.filters,
-            self.selected_filter_idx,
-            self.match_counts,
-            inner.width as usize,
-            inner.height as usize,
-        );
-
         Paragraph::new(filters_text)
             .wrap(Wrap { trim: false })
-            .scroll((scroll.min(u16::MAX as usize) as u16, 0))
+            .scroll((self.scroll_offset.min(u16::MAX as usize) as u16, 0))
             .block(sidebar_block)
             .render(area, buf);
     }
@@ -271,6 +304,7 @@ mod tests {
             filter_progress: None,
             show_borders: false,
             is_filter_mode: false,
+            scroll_offset: 0,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -305,6 +339,17 @@ mod tests {
         let match_counts = vec![0; filters.len()];
         // Small terminal: only a handful of rows fit, selection is near the end.
         let selected = 25;
+        let (content_w, content_h) = sidebar_inner_dims(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 10,
+            },
+            false,
+        );
+        let scroll_offset =
+            compute_scroll_offset(&filters, selected, &match_counts, content_w, content_h, 0);
         let sidebar = Sidebar {
             filters: &filters,
             match_counts: &match_counts,
@@ -314,6 +359,7 @@ mod tests {
             filter_progress: None,
             show_borders: false,
             is_filter_mode: false,
+            scroll_offset,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -351,6 +397,7 @@ mod tests {
             filter_progress: None,
             show_borders: true,
             is_filter_mode: false,
+            scroll_offset: 0,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -376,6 +423,7 @@ mod tests {
             filter_progress: None,
             show_borders: false,
             is_filter_mode: false,
+            scroll_offset: 0,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -504,6 +552,7 @@ mod tests {
                         filter_progress: None,
                         show_borders: true,
                         is_filter_mode: true,
+                        scroll_offset: 0,
                         theme: &theme,
                     },
                     f.area(),
@@ -533,6 +582,7 @@ mod tests {
                         filter_progress: None,
                         show_borders: true,
                         is_filter_mode: false,
+                        scroll_offset: 0,
                         theme: &theme,
                     },
                     f.area(),
@@ -557,6 +607,7 @@ mod tests {
                         filter_progress: None,
                         show_borders: false,
                         is_filter_mode: true,
+                        scroll_offset: 0,
                         theme: &theme,
                     },
                     f.area(),
