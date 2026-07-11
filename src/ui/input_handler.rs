@@ -32,31 +32,53 @@ impl InputHandler {
     }
 
     pub fn hit_test_sidebar(&self, col: u16, row: u16, tab: &TabState) -> Option<usize> {
+        use crate::mode::app_mode::ModeRenderState;
+
         let area = self.sidebar_area?;
         if !area.contains(Position::new(col, row)) {
             return None;
         }
-        let item_row = row.saturating_sub(area.y + 1) as usize;
         let filters = tab.log_manager.get_filters();
         let num_filters = filters.len();
         if num_filters == 0 {
             return None;
         }
-        let inner_width = if tab.display.show_borders {
-            area.width.saturating_sub(2) as usize
+        let (inner_width, inner_height) = if tab.display.show_borders {
+            (
+                area.width.saturating_sub(2) as usize,
+                area.height.saturating_sub(2) as usize,
+            )
         } else {
-            area.width.saturating_sub(1) as usize
+            (
+                area.width.saturating_sub(1) as usize,
+                area.height.saturating_sub(1) as usize,
+            )
         };
+        let selected = match tab.interaction.mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => selected_index,
+            _ => tab.filter.filter_context.unwrap_or(0),
+        };
+        // The sidebar auto-scrolls to keep `selected` in view; replicate that
+        // scroll here so a click's screen row maps to the filter actually
+        // rendered there, not the filter at that row assuming no scroll.
+        let scroll = super::widgets::sidebar::compute_scroll_offset(
+            filters,
+            selected,
+            &tab.filter.match_counts,
+            inner_width,
+            inner_height,
+        );
+        let target_row = row.saturating_sub(area.y + 1) as usize + scroll;
         let mut accumulated = 0usize;
         for (idx, filter) in filters.iter().enumerate() {
             let text = super::widgets::sidebar::filter_row_display_text(
                 filter,
                 idx,
-                0,
+                selected,
                 &tab.filter.match_counts,
             );
             let rc = super::field_layout::line_row_count(text.as_bytes(), inner_width);
-            if accumulated + rc > item_row {
+            if accumulated + rc > target_row {
                 return Some(idx);
             }
             accumulated += rc;

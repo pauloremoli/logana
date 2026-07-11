@@ -1816,6 +1816,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_hit_test_sidebar_accounts_for_scroll_offset() {
+        use crate::mode::filter_mode::FilterManagementMode;
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 40,
+        };
+        // Wide enough that no filter row wraps; only 10 rows tall:
+        // 1 title row + 9 content rows.
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 40,
+            height: 10,
+        };
+        let mut app = app_with_areas(10, 40, log_area, Some(sidebar_area)).await;
+        app.tabs[0].display.show_borders = false;
+        for i in 0..30 {
+            app.execute_command_str(format!("filter pattern_{i}")).await;
+        }
+        // Select a filter near the bottom so the sidebar scrolls down.
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
+            selected_filter_index: 25,
+        });
+        let tab = app.tab();
+        // With 9 visible content rows and selection at 25, the sidebar scrolls
+        // so filters 17..=25 occupy content rows 0..=8.
+        assert_eq!(app.input.hit_test_sidebar(65, 1, tab), Some(17));
+        assert_eq!(app.input.hit_test_sidebar(65, 9, tab), Some(25));
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_sidebar_matches_rendered_rows_when_wrapped_and_scrolled() {
+        use crate::mode::filter_mode::FilterManagementMode;
+        use crate::ui::widgets::Sidebar;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 40,
+        };
+        // Narrow enough that the long filter patterns below wrap onto
+        // multiple lines; short enough that the selection forces scrolling.
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 16,
+            height: 10,
+        };
+        let mut app = app_with_areas(10, 40, log_area, Some(sidebar_area)).await;
+        app.tabs[0].display.show_borders = false;
+        // Each pattern uses a disjoint character so a rendered row can be
+        // attributed to exactly one filter regardless of where it wraps.
+        // 'b' and 'd' patterns are long enough to wrap across several rows.
+        let patterns = [
+            "aaaaaaa".to_string(),
+            "b".repeat(50),
+            "ccccccc".to_string(),
+            "d".repeat(50),
+            "eeeeeee".to_string(),
+            "fffffff".to_string(),
+        ];
+        for p in &patterns {
+            app.execute_command_str(format!("filter {p}")).await;
+        }
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
+            selected_filter_index: patterns.len() - 1,
+        });
+
+        let tab = app.tab();
+        let filters = tab.log_manager.get_filters();
+        let match_counts = tab.filter.match_counts.clone();
+        let sidebar = Sidebar {
+            filters,
+            match_counts: &match_counts,
+            selected_filter_idx: patterns.len() - 1,
+            filter_enabled: tab.filter.enabled,
+            show_marks_only: tab.filter.show_marks_only,
+            filter_progress: None,
+            show_borders: false,
+            is_filter_mode: false,
+            theme: &app.theme,
+        };
+        let mut terminal =
+            Terminal::new(TestBackend::new(sidebar_area.width, sidebar_area.height)).unwrap();
+        let buf = terminal
+            .draw(|f| f.render_widget(sidebar, f.area()))
+            .unwrap();
+
+        let mut checked_rows = 0;
+        for row in 1..sidebar_area.height {
+            let row_text: String = (0..sidebar_area.width)
+                .map(|c| {
+                    buf.buffer
+                        .cell(ratatui::prelude::Position::new(c, row))
+                        .unwrap()
+                        .symbol()
+                        .to_string()
+                })
+                .collect();
+            let Some(expected_idx) = "abcdef".find(|c| row_text.contains(c)) else {
+                continue;
+            };
+            checked_rows += 1;
+            let tab = app.tab();
+            let actual = app
+                .input
+                .hit_test_sidebar(sidebar_area.x, sidebar_area.y + row, tab);
+            assert_eq!(
+                actual,
+                Some(expected_idx),
+                "row {row} shows {row_text:?}, expected filter {expected_idx}"
+            );
+        }
+        assert!(checked_rows > 0, "test should have inspected some rows");
+    }
+
+    #[tokio::test]
     async fn test_click_sidebar_filter_enters_filter_management_mode() {
         use crate::mode::app_mode::ModeRenderState;
         let log_area = Rect {

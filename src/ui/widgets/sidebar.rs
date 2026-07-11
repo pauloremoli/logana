@@ -115,7 +115,11 @@ fn build_filter_row(
 
 /// Row offset (in wrapped display rows) so the selected filter's row stays
 /// within a viewport of `content_h` rows at wrap width `content_w`.
-fn compute_scroll_offset(
+///
+/// Shared with [`crate::ui::input_handler::InputHandler::hit_test_sidebar`],
+/// which must replicate this exact scroll to map a click's screen row back
+/// to a filter index.
+pub(crate) fn compute_scroll_offset(
     filters: &[FilterDef],
     selected: usize,
     match_counts: &[usize],
