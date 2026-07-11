@@ -133,9 +133,14 @@ impl Mode for NormalMode {
         if kb.normal.filter_mode.matches(key, modifiers) {
             tab.interaction.g_key_pressed = false;
             self.count = None;
+            let num_filters = tab.log_manager.get_filters().len();
+            let selected_filter_index = tab
+                .filter
+                .last_selected_filter
+                .min(num_filters.saturating_sub(1));
             return (
                 Box::new(FilterManagementMode {
-                    selected_filter_index: 0,
+                    selected_filter_index,
                 }),
                 KeyResult::Handled,
             );
@@ -815,6 +820,54 @@ mod tests {
             mode.render_state(),
             ModeRenderState::FilterManagement { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_f_restores_last_selected_filter() {
+        use crate::filters::{FilterOptions, FilterType};
+        let mut tab = make_tab(&["line"]).await;
+        for pattern in ["a", "b", "c"] {
+            tab.log_manager
+                .add_filter_with_color(
+                    pattern.to_string(),
+                    FilterType::Include,
+                    FilterOptions::default(),
+                )
+                .await;
+        }
+        tab.refresh_visible();
+        tab.filter.last_selected_filter = 2;
+        let (mode, _) = press(&mut tab, KeyCode::Char('f'), KeyModifiers::NONE).await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => {
+                assert_eq!(selected_index, 2);
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_f_clamps_stale_last_selected_filter_to_available_range() {
+        use crate::filters::{FilterOptions, FilterType};
+        let mut tab = make_tab(&["line"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "a".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.refresh_visible();
+        // Simulate filters having been deleted elsewhere after this index
+        // was last remembered.
+        tab.filter.last_selected_filter = 9;
+        let (mode, _) = press(&mut tab, KeyCode::Char('f'), KeyModifiers::NONE).await;
+        match mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => {
+                assert_eq!(selected_index, 0);
+            }
+            other => panic!("expected FilterManagement, got {:?}", other),
+        }
     }
 
     #[tokio::test]

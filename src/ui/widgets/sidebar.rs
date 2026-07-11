@@ -99,7 +99,10 @@ fn build_filter_row(
     theme: &Theme,
 ) -> Line<'static> {
     let (prefix, value, suffix) = filter_row_parts(filter, idx, selected, match_counts);
-    let default_style = Style::default().fg(theme.text);
+    let mut default_style = Style::default().fg(theme.text);
+    if idx == selected {
+        default_style = default_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    }
     let mut value_style = default_style;
     if let Some(cfg) = &filter.color_config {
         if let Some(fg) = cfg.fg {
@@ -494,6 +497,39 @@ mod tests {
                 span.style.fg,
                 Some(ratatui::style::Color::Red),
                 "non-value span should not be colored: {:?}",
+                span.content
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_filter_row_selected_is_bold_and_underlined() {
+        let theme = Theme::default();
+        let filter = make_filter("hello", true, FilterType::Include);
+        let selected_line = build_filter_row(&filter, 0, 0, &[3], &theme);
+        for span in &selected_line.spans {
+            assert!(
+                span.style.add_modifier.contains(Modifier::BOLD),
+                "selected row span {:?} should be bold",
+                span.content
+            );
+            assert!(
+                span.style.add_modifier.contains(Modifier::UNDERLINED),
+                "selected row span {:?} should be underlined",
+                span.content
+            );
+        }
+
+        let unselected_line = build_filter_row(&filter, 1, 0, &[3], &theme);
+        for span in &unselected_line.spans {
+            assert!(
+                !span.style.add_modifier.contains(Modifier::BOLD),
+                "unselected row span {:?} should not be bold",
+                span.content
+            );
+            assert!(
+                !span.style.add_modifier.contains(Modifier::UNDERLINED),
+                "unselected row span {:?} should not be underlined",
                 span.content
             );
         }

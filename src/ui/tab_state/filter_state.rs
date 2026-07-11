@@ -17,6 +17,11 @@ pub struct FilterState {
     /// at, persisted so it only re-scrolls when the selection leaves the
     /// current viewport instead of re-centering on every render.
     pub sidebar_scroll: usize,
+    /// Index of the last-highlighted filter in the sidebar, persisted so
+    /// leaving and re-entering filter management mode (or just browsing
+    /// with the mode bar closed) keeps the same row selected instead of
+    /// resetting to the top of the list.
+    pub last_selected_filter: usize,
     pub manager: Arc<FilterManager>,
     pub text_styles: Vec<Style>,
     pub date_styles: Vec<DateFilterStyle>,
@@ -44,6 +49,7 @@ impl Default for FilterState {
             filter_context: None,
             editing_filter_id: None,
             sidebar_scroll: 0,
+            last_selected_filter: 0,
             manager: Arc::new(FilterManager::empty()),
             text_styles: Vec::new(),
             date_styles: Vec::new(),

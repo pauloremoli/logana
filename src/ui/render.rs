@@ -206,11 +206,11 @@ impl App {
             _ => None,
         };
         let selected_filter_idx = match render_state {
-            ModeRenderState::FilterManagement { selected_index } => *selected_index,
-            _ => self.tabs[self.active_tab]
-                .filter
-                .filter_context
-                .unwrap_or(0),
+            ModeRenderState::FilterManagement { selected_index } => {
+                self.tabs[self.active_tab].filter.last_selected_filter = *selected_index;
+                *selected_index
+            }
+            _ => self.tabs[self.active_tab].filter.last_selected_filter,
         };
         let keybindings = self.tabs[self.active_tab].interaction.keybindings.clone();
         let status_line = self.tabs[self.active_tab]
@@ -2058,6 +2058,50 @@ mod tests {
         });
         terminal.draw(|f| app.ui(f)).unwrap();
         assert_eq!(app.tabs[0].filter.sidebar_scroll, top);
+    }
+
+    #[tokio::test]
+    async fn test_leaving_and_reentering_filter_mode_restores_selection_and_scroll() {
+        use crate::mode::app_mode::ModeRenderState;
+        use crate::mode::normal_mode::NormalMode;
+
+        let mut app = make_app(&["line 0", "line 1"]).await;
+        app.tabs[0].display.show_borders = false;
+        for i in 0..30 {
+            app.execute_command_str(format!("filter pattern_{i}")).await;
+        }
+        let mut terminal = make_terminal();
+
+        // Select a filter far enough down to force the sidebar to scroll.
+        app.tabs[0].interaction.mode = Box::new(FilterManagementMode {
+            selected_filter_index: 25,
+        });
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let scroll_in_filter_mode = app.tabs[0].filter.sidebar_scroll;
+        assert!(scroll_in_filter_mode > 0);
+
+        // Leaving filter mode (Esc) must not reset the remembered position;
+        // the sidebar keeps showing the same scroll while browsing.
+        app.handle_key_event(crossterm::event::KeyCode::Esc).await;
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::Normal
+        ));
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert_eq!(app.tabs[0].filter.sidebar_scroll, scroll_in_filter_mode);
+
+        // Re-entering filter mode restores the exact same selection.
+        app.tabs[0].interaction.mode = Box::new(NormalMode::default());
+        app.handle_key_event(crossterm::event::KeyCode::Char('f'))
+            .await;
+        match app.tabs[0].interaction.mode.render_state() {
+            ModeRenderState::FilterManagement { selected_index } => {
+                assert_eq!(selected_index, 25);
+            }
+            other => panic!("expected FilterManagement, got {other:?}"),
+        }
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert_eq!(app.tabs[0].filter.sidebar_scroll, scroll_in_filter_mode);
     }
 
     #[tokio::test]
