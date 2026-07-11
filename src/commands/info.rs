@@ -16,6 +16,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Add an exclude filter. e.g. exclude debug, exclude connection refused, exclude -r \"health.?check\", exclude --field level=debug, exclude --group noise debug",
     },
     CommandInfo {
+        name: "highlight",
+        usage: "highlight [-r] [-l] [--fg <color>] [--bg <color>] [--group <name>] [--field <key>=<value>] <pattern>",
+        description: "Add a highlight filter (styling only, does not affect visibility). e.g. highlight ERROR, highlight --field level=error, h ERROR",
+    },
+    CommandInfo {
         name: "set-color",
         usage: "set-color [-l] [--fg <color>] [--bg <color>]",
         description: "Set color for the selected filter. -l colors the whole line. e.g. set-color --fg Green, set-color --fg [0,255,0]",
@@ -282,6 +287,12 @@ mod tests {
     fn test_find_matching_command_with_args() {
         let cmd = find_matching_command("filter --fg Red error").unwrap();
         assert_eq!(cmd.name, "filter");
+    }
+
+    #[test]
+    fn test_find_matching_command_highlight() {
+        let cmd = find_matching_command("highlight").unwrap();
+        assert_eq!(cmd.name, "highlight");
     }
 
     #[test]

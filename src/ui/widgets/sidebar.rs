@@ -19,6 +19,9 @@ pub struct Sidebar<'a> {
     /// Row offset to scroll the filter list by, as computed by
     /// [`compute_scroll_offset`] and persisted across frames by the caller.
     pub scroll_offset: usize,
+    /// When true, filters act as pure highlighters (visibility bypassed);
+    /// shown as a `[HIGHLIGHT]` marker in the title.
+    pub highlight_mode: bool,
     pub theme: &'a Theme,
 }
 
@@ -42,6 +45,7 @@ fn filter_row_parts(
         match filter.filter_type {
             FilterType::Include => "In",
             FilterType::Exclude => "Out",
+            FilterType::Highlight => "H",
         }
     };
     let (display_pattern, field_tag) = if is_date {
@@ -190,6 +194,7 @@ pub(crate) fn compute_scroll_offset(
 fn build_sidebar_title(
     filter_enabled: bool,
     show_marks_only: bool,
+    highlight_mode: bool,
     filter_progress: Option<usize>,
     active_count: usize,
     total_count: usize,
@@ -205,6 +210,11 @@ fn build_sidebar_title(
         format!("Filters{}", filter_count_suffix)
     } else {
         format!("Filters [OFF]{}", filter_count_suffix)
+    };
+    let base = if highlight_mode {
+        format!("{base} [HIGHLIGHT]")
+    } else {
+        base
     };
     match filter_progress {
         Some(pct) if pct < 100 => format!("{} {}%", base, pct),
@@ -235,6 +245,7 @@ impl<'a> Widget for Sidebar<'a> {
         let sidebar_title = build_sidebar_title(
             self.filter_enabled,
             self.show_marks_only,
+            self.highlight_mode,
             self.filter_progress,
             active_count,
             total_count,
@@ -308,6 +319,7 @@ mod tests {
             show_borders: false,
             is_filter_mode: false,
             scroll_offset: 0,
+            highlight_mode: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -331,6 +343,46 @@ mod tests {
         assert!(row_text(0).contains("Filters"), "row 0 should be title");
         assert!(row_text(1).contains("foo"), "filter 0 should be at row 1");
         assert!(row_text(2).contains("bar"), "filter 1 should be at row 2");
+    }
+
+    #[test]
+    fn test_sidebar_renders_highlight_mode_title() {
+        let theme = Theme::default();
+        let sidebar = Sidebar {
+            filters: &[],
+            match_counts: &[],
+            selected_filter_idx: 0,
+            filter_enabled: true,
+            show_marks_only: false,
+            filter_progress: None,
+            show_borders: false,
+            is_filter_mode: false,
+            scroll_offset: 0,
+            highlight_mode: true,
+            theme: &theme,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let buf = terminal
+            .draw(|f| f.render_widget(sidebar, f.area()))
+            .unwrap();
+        let row_text = |row: u16| -> String {
+            (0..40u16)
+                .map(|c| {
+                    buf.buffer
+                        .cell(ratatui::prelude::Position::new(c, row))
+                        .unwrap()
+                        .symbol()
+                        .to_string()
+                })
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        assert!(
+            row_text(0).contains("HIGHLIGHT"),
+            "row 0 should show the highlight-mode marker: {:?}",
+            row_text(0)
+        );
     }
 
     #[test]
@@ -363,6 +415,7 @@ mod tests {
             show_borders: false,
             is_filter_mode: false,
             scroll_offset,
+            highlight_mode: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -401,6 +454,7 @@ mod tests {
             show_borders: true,
             is_filter_mode: false,
             scroll_offset: 0,
+            highlight_mode: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -427,6 +481,7 @@ mod tests {
             show_borders: false,
             is_filter_mode: false,
             scroll_offset: 0,
+            highlight_mode: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -437,28 +492,41 @@ mod tests {
 
     #[test]
     fn test_build_sidebar_title_marks_only() {
-        let title = build_sidebar_title(true, true, None, 2, 4);
+        let title = build_sidebar_title(true, true, false, None, 2, 4);
         assert!(title.contains("MARKS ONLY"));
         assert!(title.contains("[2/4]"));
     }
 
     #[test]
     fn test_build_sidebar_title_disabled() {
-        let title = build_sidebar_title(false, false, None, 0, 3);
+        let title = build_sidebar_title(false, false, false, None, 0, 3);
         assert!(title.contains("[OFF]"));
         assert!(title.contains("[0/3]"));
     }
 
     #[test]
     fn test_build_sidebar_title_with_progress() {
-        let title = build_sidebar_title(true, false, Some(50), 1, 2);
+        let title = build_sidebar_title(true, false, false, Some(50), 1, 2);
         assert!(title.contains("50%"));
     }
 
     #[test]
     fn test_build_sidebar_title_indexing_complete() {
-        let title = build_sidebar_title(true, false, Some(100), 1, 2);
+        let title = build_sidebar_title(true, false, false, Some(100), 1, 2);
         assert!(title.contains("Indexing"));
+    }
+
+    #[test]
+    fn test_build_sidebar_title_highlight_mode() {
+        let title = build_sidebar_title(true, false, true, None, 1, 2);
+        assert!(title.contains("[HIGHLIGHT]"));
+    }
+
+    #[test]
+    fn test_build_sidebar_title_highlight_mode_with_marks_only() {
+        let title = build_sidebar_title(true, true, true, None, 1, 2);
+        assert!(title.contains("MARKS ONLY"));
+        assert!(title.contains("[HIGHLIGHT]"));
     }
 
     #[test]
@@ -469,6 +537,17 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains(">[x]"));
         assert!(text.contains("In"));
+        assert!(text.contains("hello"));
+        assert!(text.contains("(3)"));
+    }
+
+    #[test]
+    fn test_build_filter_row_highlight() {
+        let theme = Theme::default();
+        let filter = make_filter("hello", true, FilterType::Highlight);
+        let line = build_filter_row(&filter, 0, 0, &[3], &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains(">[x] H:"));
         assert!(text.contains("hello"));
         assert!(text.contains("(3)"));
     }
@@ -589,6 +668,7 @@ mod tests {
                         show_borders: true,
                         is_filter_mode: true,
                         scroll_offset: 0,
+                        highlight_mode: false,
                         theme: &theme,
                     },
                     f.area(),
@@ -619,6 +699,7 @@ mod tests {
                         show_borders: true,
                         is_filter_mode: false,
                         scroll_offset: 0,
+                        highlight_mode: false,
                         theme: &theme,
                     },
                     f.area(),
@@ -644,6 +725,7 @@ mod tests {
                         show_borders: false,
                         is_filter_mode: true,
                         scroll_offset: 0,
+                        highlight_mode: false,
                         theme: &theme,
                     },
                     f.area(),

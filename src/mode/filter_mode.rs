@@ -65,8 +65,8 @@ fn build_field_filter_command(
     expr: &str,
     group: &Option<String>,
 ) -> String {
-    let mut c = filter_or_exclude_prefix(ft);
-    if *ft == FilterType::Include {
+    let mut c = filter_command_prefix(ft);
+    if matches!(ft, FilterType::Include | FilterType::Highlight) {
         append_color_flags(&mut c, cc, true);
     }
     append_group_flag(&mut c, group);
@@ -88,11 +88,11 @@ fn build_text_filter_command(
     use_regex: bool,
     group: &Option<String>,
 ) -> String {
-    let mut c = filter_or_exclude_prefix(ft);
+    let mut c = filter_command_prefix(ft);
     if use_regex {
         c.push_str(" --regex");
     }
-    if *ft == FilterType::Include {
+    if matches!(ft, FilterType::Include | FilterType::Highlight) {
         append_color_flags(&mut c, cc, true);
     }
     append_group_flag(&mut c, group);
@@ -109,11 +109,11 @@ fn build_color_command(cc: Option<ColorConfig>) -> String {
     cmd
 }
 
-fn filter_or_exclude_prefix(ft: &FilterType) -> String {
-    if *ft == FilterType::Include {
-        String::from("filter")
-    } else {
-        String::from("exclude")
+fn filter_command_prefix(ft: &FilterType) -> String {
+    match ft {
+        FilterType::Include => String::from("filter"),
+        FilterType::Exclude => String::from("exclude"),
+        FilterType::Highlight => String::from("highlight"),
     }
 }
 
@@ -282,6 +282,10 @@ impl FilterManagementMode {
         open_command(tab, "date-filter ".to_string())
     }
 
+    fn add_highlight_filter(tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        open_command(tab, "highlight ".to_string())
+    }
+
     fn sidebar_grow(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
         tab.display.sidebar_width = tab.display.sidebar_width.saturating_add(2);
         stay_at(self.selected_filter_index)
@@ -353,6 +357,9 @@ impl Mode for FilterManagementMode {
         if kb.filter.add_date_filter.matches(key, modifiers) {
             return Self::add_date_filter(tab);
         }
+        if kb.filter.add_highlight_filter.matches(key, modifiers) {
+            return Self::add_highlight_filter(tab);
+        }
         if kb.filter.sidebar_grow.matches(key, modifiers) {
             return self.sidebar_grow(tab);
         }
@@ -391,6 +398,12 @@ impl Mode for FilterManagementMode {
             &mut spans,
             kb.filter.add_date_filter.display(),
             "date",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.filter.add_highlight_filter.display(),
+            "highlight",
             theme,
         );
         status_entry(
@@ -685,6 +698,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_lowercase_h_opens_command_mode_with_highlight_prefill() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('h')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert_eq!(input, "highlight ");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_shift_h_does_not_toggle_highlight_mode_in_filter_mode() {
+        // The highlight-mode toggle lives in normal mode only (kb.normal.*);
+        // filter management mode must leave 'H' unhandled.
+        let mut tab = make_tab(&["a", "b"]).await;
+        assert!(!tab.filter.highlight_mode);
+        press(filter_mode(0), &mut tab, KeyCode::Char('H')).await;
+        assert!(
+            !tab.filter.highlight_mode,
+            "'H' must not toggle highlight mode from within filter management mode"
+        );
+    }
+
+    #[tokio::test]
     async fn test_d_deletes_filter() {
         let mut tab = make_tab(&["a", "b"]).await;
         add_filter(&mut tab, "a", FilterType::Include).await;
@@ -732,6 +770,65 @@ mod tests {
         match mode.render_state() {
             ModeRenderState::Command { input, .. } => {
                 assert!(input.contains("--group errors"), "{input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_e_opens_command_mode_with_highlight_pattern() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        add_filter(&mut tab, "error", FilterType::Highlight).await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(
+                    input.starts_with("highlight"),
+                    "expected highlight prefix, got {input}"
+                );
+                assert!(input.contains("error"));
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_e_opens_command_mode_preserves_highlight_color() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Highlight,
+                FilterOptions::default().fg("red"),
+            )
+            .await;
+        tab.refresh_visible();
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.starts_with("highlight"), "{input}");
+                assert!(input.contains("--fg Red"), "{input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_e_opens_command_mode_with_field_filter_pattern() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                format!("{}level:error", crate::filters::FIELD_PREFIX),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.refresh_visible();
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.starts_with("filter"), "{input}");
+                assert!(input.contains("--field level=error"), "{input}");
             }
             other => panic!("expected Command, got {:?}", other),
         }

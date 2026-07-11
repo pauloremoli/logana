@@ -130,6 +130,58 @@ impl App {
         Ok(false)
     }
 
+    /// `:highlight` (alias `:h`) — like `:filter` but never affects
+    /// visibility, so unlike `cmd_filter` there is no incremental
+    /// visible-set update to attempt.
+    pub(super) async fn cmd_highlight(&mut self, args: FilterArgs) -> Result<bool, String> {
+        let FilterArgs {
+            pattern,
+            fg,
+            bg,
+            line_mode,
+            field,
+            regex,
+            group,
+        } = args;
+        let stored_pattern = if field {
+            let (key, value) = super::parse_key_value(&pattern)?;
+            format!("{}{}:{}", crate::filters::FIELD_PREFIX, key, value)
+        } else {
+            pattern.clone()
+        };
+
+        let mut opts = FilterOptions::default();
+        if line_mode {
+            opts = opts.line_mode();
+        }
+        if regex {
+            opts = opts.regex();
+        }
+        if let Some(ref c) = fg {
+            opts = opts.fg(c);
+        }
+        if let Some(ref c) = bg {
+            opts = opts.bg(c);
+        }
+        if let Some(ref g) = group {
+            opts = opts.group(g);
+        }
+
+        if let Some(old_id) = self.tabs[self.active_tab].filter.editing_filter_id.take() {
+            self.tabs[self.active_tab]
+                .log_manager
+                .update_filter(old_id, stored_pattern, FilterType::Highlight, opts)
+                .await;
+        } else {
+            self.tabs[self.active_tab]
+                .log_manager
+                .add_filter_with_color(stored_pattern, FilterType::Highlight, opts)
+                .await;
+        }
+        self.tabs[self.active_tab].begin_filter_refresh();
+        Ok(false)
+    }
+
     pub(super) async fn cmd_set_color(
         &mut self,
         fg: Option<String>,
@@ -142,7 +194,10 @@ impl App {
             .unwrap_or(0);
         let filters = self.tabs[self.active_tab].log_manager.get_filters();
         if let Some(filter) = filters.get(selected_filter_index)
-            && filter.filter_type == FilterType::Include
+            && matches!(
+                filter.filter_type,
+                FilterType::Include | FilterType::Highlight
+            )
         {
             let match_only = if line_mode {
                 false

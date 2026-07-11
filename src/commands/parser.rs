@@ -46,6 +46,28 @@ pub enum Commands {
         #[arg(long)]
         group: Option<String>,
     },
+    /// Add a highlight filter (styling only, never affects visibility)
+    #[command(alias = "h")]
+    Highlight {
+        #[arg(trailing_var_arg = true)]
+        pattern: Vec<String>,
+        #[arg(long)]
+        fg: Option<String>,
+        #[arg(long)]
+        bg: Option<String>,
+        /// Apply color to the whole line instead of only the matched text
+        #[arg(short = 'l')]
+        line_mode: bool,
+        /// Treat pattern as key=value and match against the named parsed field
+        #[arg(long = "field", short = 'f')]
+        field: bool,
+        /// Treat pattern as a regular expression instead of a literal string
+        #[arg(long = "regex", short = 'r')]
+        regex: bool,
+        /// Assign the filter to a named group, so it can be toggled together with others
+        #[arg(long)]
+        group: Option<String>,
+    },
     /// Set color for the selected filter
     SetColor {
         #[arg(long)]

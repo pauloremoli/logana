@@ -351,6 +351,10 @@ fn default_toggle_filtering() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('F'), KeyModifiers::NONE)])
 }
 #[inline(always)]
+fn default_toggle_highlight_mode() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('H'), KeyModifiers::NONE)])
+}
+#[inline(always)]
 fn default_toggle_sidebar() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('s'), KeyModifiers::NONE)])
 }
@@ -516,6 +520,8 @@ pub struct NormalKeybindings {
     pub filter_mode: KeyBindings,
     #[serde(default = "default_toggle_filtering")]
     pub toggle_filtering: KeyBindings,
+    #[serde(default = "default_toggle_highlight_mode")]
+    pub toggle_highlight_mode: KeyBindings,
     #[serde(default = "default_go_to_top_chord")]
     pub go_to_top_chord: KeyBindings,
     #[serde(default = "default_go_to_bottom")]
@@ -578,6 +584,7 @@ impl Default for NormalKeybindings {
             command_mode: default_command_mode(),
             filter_mode: default_filter_mode_key(),
             toggle_filtering: default_toggle_filtering(),
+            toggle_highlight_mode: default_toggle_highlight_mode(),
             go_to_top_chord: default_go_to_top_chord(),
             go_to_bottom: default_go_to_bottom(),
             mark_line: default_mark_line(),
@@ -652,6 +659,10 @@ fn default_filter_add_date() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('t'), KeyModifiers::NONE)])
 }
 #[inline(always)]
+fn default_filter_add_highlight() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('h'), KeyModifiers::NONE)])
+}
+#[inline(always)]
 fn default_filter_exit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
@@ -688,6 +699,8 @@ pub struct FilterKeybindings {
     pub add_exclude_filter: KeyBindings,
     #[serde(default = "default_filter_add_date")]
     pub add_date_filter: KeyBindings,
+    #[serde(default = "default_filter_add_highlight")]
+    pub add_highlight_filter: KeyBindings,
     #[serde(default = "default_filter_exit")]
     pub exit_mode: KeyBindings,
     #[serde(default = "default_filter_sidebar_grow")]
@@ -710,6 +723,7 @@ impl Default for FilterKeybindings {
             add_include_filter: default_filter_add_include(),
             add_exclude_filter: default_filter_add_exclude(),
             add_date_filter: default_filter_add_date(),
+            add_highlight_filter: default_filter_add_highlight(),
             exit_mode: default_filter_exit(),
             sidebar_grow: default_filter_sidebar_grow(),
             sidebar_shrink: default_filter_sidebar_shrink(),
@@ -1451,6 +1465,10 @@ impl Keybindings {
             ("normal.command_mode", &self.normal.command_mode),
             ("normal.filter_mode", &self.normal.filter_mode),
             ("normal.toggle_filtering", &self.normal.toggle_filtering),
+            (
+                "normal.toggle_highlight_mode",
+                &self.normal.toggle_highlight_mode,
+            ),
             ("normal.enter_ui_mode", &self.normal.enter_ui_mode),
             ("normal.filter_include", &self.normal.filter_include),
             ("normal.filter_exclude", &self.normal.filter_exclude),
@@ -1496,6 +1514,10 @@ impl Keybindings {
             ("filter.add_include_filter", &self.filter.add_include_filter),
             ("filter.add_exclude_filter", &self.filter.add_exclude_filter),
             ("filter.add_date_filter", &self.filter.add_date_filter),
+            (
+                "filter.add_highlight_filter",
+                &self.filter.add_highlight_filter,
+            ),
             ("filter.exit_mode", &self.filter.exit_mode),
             ("global.quit", &self.global.quit),
             ("global.next_tab", &self.global.next_tab),
@@ -1766,6 +1788,49 @@ mod tests {
             conflicts.is_empty(),
             "Default keybindings have conflicts: {:?}",
             conflicts
+        );
+    }
+
+    #[test]
+    fn test_default_normal_toggle_highlight_mode_is_shift_h() {
+        let nk = NormalKeybindings::default();
+        assert!(
+            nk.toggle_highlight_mode
+                .matches(KeyCode::Char('H'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_default_filter_add_highlight_is_h() {
+        let fk = FilterKeybindings::default();
+        assert!(
+            fk.add_highlight_filter
+                .matches(KeyCode::Char('h'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_if_highlight_bindings_collide() {
+        let mut kb = Keybindings::default();
+        kb.normal.toggle_highlight_mode = kb.filter.add_highlight_filter.clone();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "rebinding both to the same key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_keybindings_deserialize_without_highlight_fields_uses_defaults() {
+        let nk: NormalKeybindings = serde_json::from_str("{}").unwrap();
+        assert!(
+            nk.toggle_highlight_mode
+                .matches(KeyCode::Char('H'), KeyModifiers::NONE)
+        );
+        let fk: FilterKeybindings = serde_json::from_str("{}").unwrap();
+        assert!(
+            fk.add_highlight_filter
+                .matches(KeyCode::Char('h'), KeyModifiers::NONE)
         );
     }
 

@@ -45,7 +45,7 @@ impl LogManager {
         filter_type: FilterType,
         options: FilterOptions,
     ) -> bool {
-        let color_config = (filter_type == FilterType::Include)
+        let color_config = matches!(filter_type, FilterType::Include | FilterType::Highlight)
             .then(|| ColorConfig::try_from(&options).ok())
             .flatten();
 
@@ -157,7 +157,7 @@ impl LogManager {
         filter_type: FilterType,
         options: FilterOptions,
     ) {
-        let color_config = (filter_type == FilterType::Include)
+        let color_config = matches!(filter_type, FilterType::Include | FilterType::Highlight)
             .then(|| ColorConfig::try_from(&options).ok())
             .flatten();
         if let Some(f) = self.filter_defs.iter_mut().find(|f| f.id == id) {
@@ -310,10 +310,10 @@ impl LogManager {
                         s = s.bg(bg);
                     }
                     styles.push(s);
-                    let decision = if def.filter_type == FilterType::Include {
-                        FilterDecision::Include
-                    } else {
-                        FilterDecision::Exclude
+                    let decision = match def.filter_type {
+                        FilterType::Include => FilterDecision::Include,
+                        FilterType::Exclude => FilterDecision::Exclude,
+                        FilterType::Highlight => FilterDecision::Highlight,
                     };
                     field_filter_styles.push(crate::filters::FieldFilterStyle {
                         field_filter: crate::filters::FieldFilter {
@@ -372,11 +372,13 @@ impl LogManager {
 
             styles.push(style);
 
-            let decision = if def.filter_type == FilterType::Include {
-                has_include = true;
-                FilterDecision::Include
-            } else {
-                FilterDecision::Exclude
+            let decision = match def.filter_type {
+                FilterType::Include => {
+                    has_include = true;
+                    FilterDecision::Include
+                }
+                FilterType::Exclude => FilterDecision::Exclude,
+                FilterType::Highlight => FilterDecision::Highlight,
             };
 
             let match_only = def
@@ -936,6 +938,63 @@ mod tests {
             .await;
         assert!(!was_new2);
         assert_eq!(mgr.get_filters().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_add_filter_with_color_highlight_gets_color_config() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "ERROR".into(),
+            FilterType::Highlight,
+            FilterOptions::default().fg("red"),
+        )
+        .await;
+        assert!(mgr.get_filters()[0].color_config.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_build_filter_manager_highlight_does_not_set_has_include() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "ERROR".into(),
+            FilterType::Highlight,
+            FilterOptions::default(),
+        )
+        .await;
+
+        let (fm, _, _, _) = mgr.build_filter_manager();
+        assert!(!fm.has_include());
+        assert!(fm.is_visible(b"ERROR: something bad"));
+        assert!(fm.is_visible(b"INFO: all good"));
+    }
+
+    #[tokio::test]
+    async fn test_build_filter_manager_highlight_produces_style() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "ERROR".into(),
+            FilterType::Highlight,
+            FilterOptions::default().fg("red"),
+        )
+        .await;
+
+        let (_, styles, _, _) = mgr.build_filter_manager();
+        assert_eq!(styles.len(), 1);
+        assert!(styles[0].fg.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_build_filter_manager_field_highlight_produces_field_style() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "@field:level:error".into(),
+            FilterType::Highlight,
+            FilterOptions::default().fg("red"),
+        )
+        .await;
+
+        let (_, _, _, field_styles) = mgr.build_filter_manager();
+        assert_eq!(field_styles.len(), 1);
     }
 
     #[tokio::test]

@@ -154,6 +154,14 @@ impl Mode for NormalMode {
             return (self, KeyResult::Handled);
         }
 
+        if kb.normal.toggle_highlight_mode.matches(key, modifiers) {
+            tab.filter.highlight_mode = !tab.filter.highlight_mode;
+            tab.begin_filter_refresh();
+            tab.interaction.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
         if kb.normal.filter_include.matches(key, modifiers) {
             let history = tab.interaction.command_history.clone();
             tab.interaction.g_key_pressed = false;
@@ -589,6 +597,12 @@ impl Mode for NormalMode {
             &mut spans,
             kb.normal.toggle_filtering.display(),
             "tog.filter",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.normal.toggle_highlight_mode.display(),
+            "tog.highlight",
             theme,
         );
         status_entry(&mut spans, kb.normal.mark_line.display(), "mark", theme);
@@ -1168,6 +1182,16 @@ mod tests {
         assert!(!tab.filter.enabled);
         press(&mut tab, KeyCode::Char('F'), KeyModifiers::NONE).await;
         assert!(tab.filter.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_capital_h_toggles_highlight_mode() {
+        let mut tab = make_tab(&["a", "b", "c"]).await;
+        assert!(!tab.filter.highlight_mode);
+        press(&mut tab, KeyCode::Char('H'), KeyModifiers::NONE).await;
+        assert!(tab.filter.highlight_mode);
+        press(&mut tab, KeyCode::Char('H'), KeyModifiers::NONE).await;
+        assert!(!tab.filter.highlight_mode);
     }
 
     #[tokio::test]

@@ -582,6 +582,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_add_highlight_command() {
+        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
+        app.execute_command_str("highlight foo".to_string()).await;
+        let filters = app.tab().log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].filter_type, FilterType::Highlight);
+        assert_eq!(filters[0].pattern, "foo");
+    }
+
+    #[tokio::test]
+    async fn test_highlight_alias_h_command() {
+        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
+        app.execute_command_str("h foo".to_string()).await;
+        let filters = app.tab().log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].filter_type, FilterType::Highlight);
+        assert_eq!(filters[0].pattern, "foo");
+    }
+
+    #[tokio::test]
+    async fn test_highlight_does_not_reduce_visible_lines() {
+        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
+        app.execute_command_str("highlight ERROR".to_string()).await;
+        await_filter_computations(&mut app).await;
+        assert_eq!(app.tab().filter.visible_indices.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_set_color_applies_to_highlight_filter() {
+        let mut app = make_app(&["INFO something", "WARN warning", "ERROR error"]).await;
+        app.execute_command_str("highlight ERROR".to_string()).await;
+        app.tabs[0].filter.filter_context = Some(0);
+        app.execute_command_str("set-color --fg Red".to_string())
+            .await;
+        let filters = app.tab().log_manager.get_filters();
+        assert!(filters[0].color_config.is_some());
+    }
+
+    #[tokio::test]
     async fn test_shell_split_basic() {
         assert_eq!(shell_split("filter foo"), vec!["filter", "foo"]);
         assert_eq!(shell_split("  filter  foo  "), vec!["filter", "foo"]);
@@ -1609,6 +1648,7 @@ mod tests {
             scan_fingerprint: vec![],
             scan_line_count: 0,
             scan_raw_mode: false,
+            scan_highlight_mode: false,
         });
         app.close_tab().await;
         assert!(cancel.load(Ordering::Relaxed));
@@ -1912,6 +1952,7 @@ mod tests {
             show_borders: false,
             is_filter_mode: false,
             scroll_offset,
+            highlight_mode: false,
             theme: &app.theme,
         };
         let mut terminal =

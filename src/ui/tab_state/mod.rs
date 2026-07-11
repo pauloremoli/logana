@@ -116,6 +116,9 @@ pub struct FilterHandle {
     pub scan_line_count: usize,
     /// `raw_mode` value at scan-start; part of the cache key.
     pub scan_raw_mode: bool,
+    /// `highlight_mode` value at scan-start; part of the cache key so
+    /// toggling it invalidates a cached scan computed under the other mode.
+    pub scan_highlight_mode: bool,
 }
 
 /// Cached result of a completed background filter scan.
@@ -126,6 +129,7 @@ pub struct CachedScanResult {
     pub filter_fingerprint: Vec<crate::filters::FilterDef>,
     pub line_count: usize,
     pub raw_mode: bool,
+    pub highlight_mode: bool,
     pub view: FilterViewSnapshot,
     pub match_counts: Vec<usize>,
 }
@@ -1368,6 +1372,7 @@ impl TabState {
             && cached.filter_fingerprint == desired_fingerprint
             && cached.line_count == current_line_count
             && cached.raw_mode == self.display.raw_mode
+            && cached.highlight_mode == self.filter.highlight_mode
         {
             let current_line = self
                 .filter
@@ -1425,6 +1430,7 @@ impl TabState {
         let n_text_filters = self.filter.manager.filter_count();
         let year_map = self.year_map.clone();
         let is_merged_reader = self.merged.is_some();
+        let highlight_mode = self.filter.highlight_mode;
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
@@ -1482,6 +1488,13 @@ impl TabState {
                         file_reader.line_starts(),
                         chunk_start..chunk_end,
                     );
+                    // Highlight mode bypasses visibility but keeps counts,
+                    // which evaluate_chunk_wholefile already computed accurately.
+                    let vis = if highlight_mode {
+                        (chunk_start..chunk_end).collect()
+                    } else {
+                        vis
+                    };
                     (vis, tc, vec![0usize; n_field], vec![0usize; n_date])
                 } else {
                     // Per-line path: needed for date/field filters or regex-only pipelines.
@@ -1502,11 +1515,16 @@ impl TabState {
                                 let year_override =
                                     year_map.as_deref().map(|ym| ym.year_for_line(i));
                                 let mut text_dec = fm_arc.evaluate_and_count(line, &mut tc);
-                                let can_skip = text_dec == FilterDecision::Exclude
-                                    || (text_dec == FilterDecision::Neutral
-                                        && has_text_includes
-                                        && inc_ff.is_empty()
-                                        && !synthetic_level);
+                                // In highlight mode every line stays visible, so the
+                                // skip-parsing optimization below (which assumes an
+                                // excluded/neutral line's field & date data doesn't
+                                // matter) must not apply — counts still need it.
+                                let can_skip = !highlight_mode
+                                    && (text_dec == FilterDecision::Exclude
+                                        || (text_dec == FilterDecision::Neutral
+                                            && has_text_includes
+                                            && inc_ff.is_empty()
+                                            && !synthetic_level));
                                 let visible = if date_only && !can_skip {
                                     parser_ref
                                         .and_then(|p| p.parse_timestamp(line))
@@ -1563,7 +1581,7 @@ impl TabState {
                                     );
                                     line_is_visible(text_dec, &mut ctx, parts.as_ref())
                                 };
-                                if visible {
+                                if highlight_mode || visible {
                                     vis.push(i);
                                 }
                                 (vis, tc, fc, dc)
@@ -1660,6 +1678,7 @@ impl TabState {
             scan_fingerprint: desired_fingerprint,
             scan_line_count: current_line_count,
             scan_raw_mode: self.display.raw_mode,
+            scan_highlight_mode: self.filter.highlight_mode,
         });
     }
 
@@ -3833,6 +3852,7 @@ mod tests {
             filter_fingerprint: fingerprint,
             line_count: tab.file_reader.line_count(),
             raw_mode: false,
+            highlight_mode: false,
             view: (
                 VisibleLines::Filtered(vec![0, 2]),
                 tab.filter.manager.clone(),
@@ -3875,6 +3895,7 @@ mod tests {
             filter_fingerprint: fingerprint,
             line_count: 999,
             raw_mode: false,
+            highlight_mode: false,
             view: (
                 VisibleLines::Filtered(vec![0]),
                 tab.filter.manager.clone(),
@@ -3913,6 +3934,7 @@ mod tests {
             filter_fingerprint: vec![stale_filter],
             line_count: tab.file_reader.line_count(),
             raw_mode: false,
+            highlight_mode: false,
             view: (
                 VisibleLines::Filtered(vec![]),
                 tab.filter.manager.clone(),
@@ -3948,6 +3970,7 @@ mod tests {
             filter_fingerprint: fingerprint,
             line_count: tab.file_reader.line_count(),
             raw_mode: true,
+            highlight_mode: false,
             view: (
                 VisibleLines::Filtered(vec![0]),
                 tab.filter.manager.clone(),
@@ -3959,6 +3982,169 @@ mod tests {
         });
         tab.begin_filter_refresh();
         assert!(tab.filter.handle.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_cache_miss_on_highlight_mode_change() {
+        let mut tab = make_tab(&["error line", "info line"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        let fingerprint: Vec<crate::filters::FilterDef> = tab
+            .log_manager
+            .get_filters()
+            .iter()
+            .filter(|f| f.enabled)
+            .cloned()
+            .collect();
+        // Cache was built with highlight_mode=false, but tab now has it on.
+        tab.filter.cached_scan = Some(CachedScanResult {
+            filter_fingerprint: fingerprint,
+            line_count: tab.file_reader.line_count(),
+            raw_mode: false,
+            highlight_mode: false,
+            view: (
+                VisibleLines::Filtered(vec![0]),
+                tab.filter.manager.clone(),
+                tab.filter.text_styles.clone(),
+                tab.filter.date_styles.clone(),
+                tab.filter.field_styles.clone(),
+            ),
+            match_counts: vec![1],
+        });
+        tab.filter.highlight_mode = true;
+        tab.begin_filter_refresh();
+        assert!(
+            tab.filter.handle.is_some(),
+            "toggling highlight_mode must invalidate the cached scan"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_highlight_mode_bypasses_visibility_wholefile_path() {
+        let mut tab = make_tab(&["ERROR a", "INFO b", "ERROR c"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "ERROR".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.filter.highlight_mode = true;
+        tab.begin_filter_refresh();
+        let mut h = tab.filter.handle.take().unwrap();
+        let mut all_visible = Vec::new();
+        let mut final_counts = None;
+        while let Some(chunk) = h.result_rx.recv().await {
+            all_visible.extend(chunk.visible);
+            if chunk.is_last {
+                final_counts = chunk.filter_match_counts;
+                break;
+            }
+        }
+        assert_eq!(
+            all_visible,
+            vec![0, 1, 2],
+            "highlight mode must show every line"
+        );
+        assert_eq!(
+            final_counts.expect("counts must be Some"),
+            vec![2],
+            "match counts must stay accurate under highlight mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_highlight_mode_off_filters_normally() {
+        let mut tab = make_tab(&["ERROR a", "INFO b", "ERROR c"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "ERROR".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.begin_filter_refresh();
+        let mut h = tab.filter.handle.take().unwrap();
+        let mut all_visible = Vec::new();
+        while let Some(chunk) = h.result_rx.recv().await {
+            all_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+        assert_eq!(all_visible, vec![0, 2]);
+    }
+
+    #[tokio::test]
+    async fn test_highlight_mode_bypasses_visibility_per_line_path() {
+        let mut tab = make_tab(&["ERROR a", "INFO b", "ERROR c"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "ERROR".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        // A field filter forces the per-line scan path (it never matches
+        // anything here since these lines have no parser, but that's fine —
+        // it's here purely to exercise the `!use_wholefile` branch).
+        tab.log_manager
+            .add_filter_with_color(
+                "@field:level:error".to_string(),
+                FilterType::Exclude,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.filter.highlight_mode = true;
+        tab.begin_filter_refresh();
+        let mut h = tab.filter.handle.take().unwrap();
+        let mut all_visible = Vec::new();
+        while let Some(chunk) = h.result_rx.recv().await {
+            all_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+        assert_eq!(
+            all_visible,
+            vec![0, 1, 2],
+            "highlight mode must show every line on the per-line path too"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_highlight_mode_stacks_with_marks_only() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3"]).await;
+        tab.mark_manager.toggle(1);
+        tab.filter.show_marks_only = true;
+        tab.filter.highlight_mode = true;
+        tab.begin_filter_refresh();
+        assert_eq!(
+            tab.filter.visible_indices,
+            VisibleLines::Filtered(vec![1]),
+            "marks-only must still restrict to marked lines even in highlight mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_highlight_mode_no_effect_when_filtering_disabled() {
+        let mut tab = make_tab(&["ERROR a", "INFO b"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "ERROR".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.filter.enabled = false;
+        tab.filter.highlight_mode = true;
+        tab.begin_filter_refresh();
+        assert_eq!(tab.filter.visible_indices, VisibleLines::All(2));
     }
 
     #[tokio::test]

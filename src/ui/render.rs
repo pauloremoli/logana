@@ -588,6 +588,7 @@ impl App {
                 show_borders,
                 is_filter_mode,
                 scroll_offset,
+                highlight_mode: tab.filter.highlight_mode,
                 theme: &self.theme,
             },
             sidebar_area,
@@ -1376,6 +1377,7 @@ mod tests {
             scan_fingerprint: Vec::new(),
             scan_line_count: 0,
             scan_raw_mode: false,
+            scan_highlight_mode: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -1405,6 +1407,7 @@ mod tests {
             scan_fingerprint: Vec::new(),
             scan_line_count: 0,
             scan_raw_mode: false,
+            scan_highlight_mode: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -1434,6 +1437,7 @@ mod tests {
             scan_fingerprint: Vec::new(),
             scan_line_count: 0,
             scan_raw_mode: false,
+            scan_highlight_mode: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -1459,6 +1463,7 @@ mod tests {
             scan_fingerprint: Vec::new(),
             scan_line_count: 0,
             scan_raw_mode: false,
+            scan_highlight_mode: false,
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

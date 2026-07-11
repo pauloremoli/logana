@@ -91,9 +91,12 @@ pub fn extract_field_filters(filter_defs: &[FilterDef]) -> (Vec<FieldFilter>, Ve
         let Ok((field, pattern)) = parse_field_filter(expr) else {
             continue;
         };
+        // Highlight field filters style matching lines but must never enter
+        // the visibility vote, so they contribute to neither list here.
         let decision = match def.filter_type {
             FilterType::Include => FilterDecision::Include,
             FilterType::Exclude => FilterDecision::Exclude,
+            FilterType::Highlight => continue,
         };
         let ff = FieldFilter {
             field,
@@ -103,6 +106,7 @@ pub fn extract_field_filters(filter_defs: &[FilterDef]) -> (Vec<FieldFilter>, Ve
         match def.filter_type {
             FilterType::Include => includes.push(ff),
             FilterType::Exclude => excludes.push(ff),
+            FilterType::Highlight => unreachable!("skipped above"),
         }
     }
 
@@ -556,7 +560,34 @@ mod tests {
         assert_eq!(exc[0].pattern, "debug");
     }
 
+    #[test]
+    fn test_extract_field_filters_skips_highlight() {
+        let defs = vec![make_def(
+            1,
+            "@field:level:error",
+            FilterType::Highlight,
+            true,
+        )];
+        let (inc, exc) = extract_field_filters(&defs);
+        assert!(inc.is_empty(), "highlight must not join the include vote");
+        assert!(exc.is_empty(), "highlight must not join the exclude vote");
+    }
+
     // ── extract_field_filters_ordered ─────────────────────────────────────────
+
+    #[test]
+    fn test_extract_field_filters_ordered_includes_highlight() {
+        // Contrast with test_extract_field_filters_skips_highlight: counting
+        // stays type-agnostic even though visibility voting excludes Highlight.
+        let defs = vec![make_def(
+            1,
+            "@field:level:error",
+            FilterType::Highlight,
+            true,
+        )];
+        let ordered = extract_field_filters_ordered(&defs);
+        assert_eq!(ordered, vec![("level".to_string(), "error".to_string())]);
+    }
 
     #[test]
     fn test_extract_field_filters_ordered_preserves_order() {

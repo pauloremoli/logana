@@ -22,13 +22,18 @@ pub enum FilterDecision {
     Exclude,
     /// This filter has no opinion about this line.
     Neutral,
+    /// This filter matched and wants to style the line, but must never
+    /// affect visibility (a highlight filter).
+    Highlight,
 }
 
 impl FilterDecision {
-    /// Returns true when this decision is Include or Exclude (not Neutral).
+    /// Returns true when this decision affects visibility (Include or
+    /// Exclude). `Highlight` matches but never decides, exactly like
+    /// `Neutral`.
     #[inline]
     pub fn is_decided(self) -> bool {
-        self != FilterDecision::Neutral
+        matches!(self, FilterDecision::Include | FilterDecision::Exclude)
     }
 
     /// Convert to a visibility boolean given whether include filters exist.
@@ -38,6 +43,7 @@ impl FilterDecision {
             FilterDecision::Include => true,
             FilterDecision::Exclude => false,
             FilterDecision::Neutral => !has_include_filters,
+            FilterDecision::Highlight => !has_include_filters,
         }
     }
 }
@@ -45,7 +51,8 @@ impl FilterDecision {
 pub trait Filter: Send + Sync {
     fn evaluate(&self, line: &[u8], collector: &mut MatchCollector) -> FilterDecision;
 
-    /// The decision this filter produces on a match (Include or Exclude).
+    /// The decision this filter produces on a match (Include, Exclude, or
+    /// Highlight).
     fn decision(&self) -> FilterDecision;
 
     /// Return the filter decision without collecting match spans.
@@ -333,14 +340,14 @@ pub fn is_regex_pattern(pattern: &str) -> bool {
     })
 }
 
-/// Include/exclude filter using Aho-Corasick for efficient literal substring matching.
+/// Include/exclude/highlight filter using Aho-Corasick for efficient literal substring matching.
 pub struct SubstringFilter {
     ac: AhoCorasick,
     decision: FilterDecision,
     style_id: StyleId,
-    /// Precomputed: push individual match spans (Include && match_only).
+    /// Precomputed: push individual match spans (should_style && match_only).
     push_match_spans: bool,
-    /// Precomputed: push a full-line span (Include && !match_only).
+    /// Precomputed: push a full-line span (should_style && !match_only).
     push_full_line: bool,
 }
 
@@ -355,13 +362,16 @@ impl SubstringFilter {
             .ascii_case_insensitive(false)
             .build([pattern])
             .ok()?;
-        let is_include = decision == FilterDecision::Include;
+        let should_style = matches!(
+            decision,
+            FilterDecision::Include | FilterDecision::Highlight
+        );
         Some(SubstringFilter {
             ac,
             decision,
             style_id,
-            push_match_spans: is_include && match_only,
-            push_full_line: is_include && !match_only,
+            push_match_spans: should_style && match_only,
+            push_full_line: should_style && !match_only,
         })
     }
 }
@@ -399,14 +409,14 @@ impl Filter for SubstringFilter {
     }
 }
 
-/// Include/exclude filter using Regex for pattern matching.
+/// Include/exclude/highlight filter using Regex for pattern matching.
 pub struct RegexFilter {
     re: Regex,
     decision: FilterDecision,
     style_id: StyleId,
-    /// Precomputed: push individual match spans (Include && match_only).
+    /// Precomputed: push individual match spans (should_style && match_only).
     push_match_spans: bool,
-    /// Precomputed: push a full-line span (Include && !match_only).
+    /// Precomputed: push a full-line span (should_style && !match_only).
     push_full_line: bool,
 }
 
@@ -418,13 +428,16 @@ impl RegexFilter {
         match_only: bool,
         style_id: StyleId,
     ) -> Option<Self> {
-        let is_include = decision == FilterDecision::Include;
+        let should_style = matches!(
+            decision,
+            FilterDecision::Include | FilterDecision::Highlight
+        );
         Regex::new(pattern).ok().map(|re| RegexFilter {
             re,
             decision,
             style_id,
-            push_match_spans: is_include && match_only,
-            push_full_line: is_include && !match_only,
+            push_match_spans: should_style && match_only,
+            push_full_line: should_style && !match_only,
         })
     }
 }
@@ -566,6 +579,9 @@ impl FilterManager {
 
             for mat in ac.find_iter(line) {
                 let (filter_idx, decision) = self.combined_ac_meta[mat.pattern().as_usize()];
+                if !decision.is_decided() {
+                    continue;
+                }
                 if filter_idx == 0 {
                     return decision;
                 }
@@ -652,7 +668,7 @@ impl FilterManager {
                 let mut seen: u64 = 0;
                 for m in ac.find_iter(line) {
                     let (filter_idx, decision) = self.combined_ac_meta[m.pattern().as_usize()];
-                    if filter_idx < best_idx {
+                    if decision.is_decided() && filter_idx < best_idx {
                         best_idx = filter_idx;
                         best_decision = decision;
                     }
@@ -664,7 +680,7 @@ impl FilterManager {
                     .find_iter(line)
                     .map(|m| {
                         let (filter_idx, decision) = self.combined_ac_meta[m.pattern().as_usize()];
-                        if filter_idx < best_idx {
+                        if decision.is_decided() && filter_idx < best_idx {
                             best_idx = filter_idx;
                             best_decision = decision;
                         }
@@ -683,11 +699,11 @@ impl FilterManager {
             for &fi in &self.regex_filter_indices {
                 if let Some(filter) = self.filters.get(fi) {
                     let d = filter.matches(line);
-                    if d.is_decided() {
+                    if d != FilterDecision::Neutral {
                         if let Some(c) = counts.get_mut(fi) {
                             *c += 1;
                         }
-                        if fi < best_idx {
+                        if d.is_decided() && fi < best_idx {
                             best_idx = fi;
                             best_decision = d;
                         }
@@ -701,11 +717,11 @@ impl FilterManager {
             let mut has_best = false;
             for (i, filter) in self.filters.iter().enumerate() {
                 let d = filter.matches(line);
-                if d.is_decided() {
+                if d != FilterDecision::Neutral {
                     if let Some(c) = counts.get_mut(i) {
                         *c += 1;
                     }
-                    if !has_best {
+                    if !has_best && d.is_decided() {
                         result = d;
                         has_best = true;
                     }
@@ -891,8 +907,8 @@ impl FilterManager {
                 cursor_byte_end = next_line_byte(line_starts, data, sub_start + cursor);
             }
 
-            let (filter_idx, _) = self.combined_ac_meta[mat.pattern().as_usize()];
-            state.record(cursor, filter_idx);
+            let (filter_idx, decision) = self.combined_ac_meta[mat.pattern().as_usize()];
+            state.record(cursor, filter_idx, decision);
             if state.all_saturated() {
                 break;
             }
@@ -916,8 +932,9 @@ impl FilterManager {
             for &fi in &self.regex_filter_indices {
                 if let Some(filter) = self.filters.get(fi) {
                     let lb = line_bytes_at(data, line_starts, global);
-                    if filter.matches(lb).is_decided() {
-                        state.record(local, fi);
+                    let d = filter.matches(lb);
+                    if d != FilterDecision::Neutral {
+                        state.record(local, fi, d);
                     }
                 }
             }
@@ -988,12 +1005,17 @@ impl SubChunkState {
         self.use_bitset && self.all_ac_bits != 0 && self.saturated_count == self.best.len()
     }
 
-    /// Record a filter match for the given local line index.
+    /// Record a filter match for the given local line index. `best` (the
+    /// visibility-decisive filter) only tracks matches whose `decision` is
+    /// decided (Include/Exclude) — a Highlight match still counts (below)
+    /// but must never shadow a lower-precedence decisive match.
     #[inline]
-    fn record(&mut self, local: usize, filter_idx: usize) {
-        let fi8 = filter_idx as u8;
-        if fi8 < self.best[local] {
-            self.best[local] = fi8;
+    fn record(&mut self, local: usize, filter_idx: usize, decision: FilterDecision) {
+        if decision.is_decided() {
+            let fi8 = filter_idx as u8;
+            if fi8 < self.best[local] {
+                self.best[local] = fi8;
+            }
         }
         if self.use_bitset {
             let bit = 1u64 << filter_idx;
@@ -1060,6 +1082,9 @@ fn merge_sub_chunk_results(
 pub enum FilterType {
     Include,
     Exclude,
+    /// Colors matching lines like an Include filter but never affects
+    /// visibility.
+    Highlight,
 }
 
 impl std::fmt::Display for FilterType {
@@ -1067,6 +1092,7 @@ impl std::fmt::Display for FilterType {
         match self {
             FilterType::Include => write!(f, "Include"),
             FilterType::Exclude => write!(f, "Exclude"),
+            FilterType::Highlight => write!(f, "Highlight"),
         }
     }
 }
@@ -1246,6 +1272,36 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_decision_highlight_is_not_decided() {
+        assert!(!FilterDecision::Highlight.is_decided());
+    }
+
+    #[test]
+    fn test_filter_decision_include_exclude_are_decided() {
+        assert!(FilterDecision::Include.is_decided());
+        assert!(FilterDecision::Exclude.is_decided());
+    }
+
+    #[test]
+    fn test_filter_decision_neutral_is_not_decided() {
+        assert!(!FilterDecision::Neutral.is_decided());
+    }
+
+    #[test]
+    fn test_to_visibility_highlight_mirrors_neutral() {
+        assert_eq!(
+            FilterDecision::Highlight.to_visibility(true),
+            FilterDecision::Neutral.to_visibility(true)
+        );
+        assert_eq!(
+            FilterDecision::Highlight.to_visibility(false),
+            FilterDecision::Neutral.to_visibility(false)
+        );
+        assert!(!FilterDecision::Highlight.to_visibility(true));
+        assert!(FilterDecision::Highlight.to_visibility(false));
+    }
+
+    #[test]
     fn test_substring_filter_include() {
         let line = b"ERROR: connection refused";
         let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
@@ -1282,6 +1338,43 @@ mod tests {
     }
 
     #[test]
+    fn test_substring_filter_exclude_pushes_no_spans() {
+        let line = b"DEBUG: verbose output";
+        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, true, 1).unwrap();
+        let mut col = MatchCollector::new(line);
+        f.evaluate(line, &mut col);
+        assert!(col.spans.is_empty(), "exclude filters must not style lines");
+    }
+
+    #[test]
+    fn test_substring_filter_highlight_pushes_match_only_spans() {
+        let line = b"ERROR: something went wrong";
+        let f = SubstringFilter::new("ERROR", FilterDecision::Highlight, true, 1).unwrap();
+        let mut col = MatchCollector::new(line);
+        let dec = f.evaluate(line, &mut col);
+        assert_eq!(col.spans.len(), 1);
+        assert_eq!(col.spans[0].start, 0);
+        assert_eq!(col.spans[0].end, 5);
+        assert_eq!(col.spans[0].style, 1);
+        assert!(
+            !dec.is_decided(),
+            "a highlight match must still never decide visibility"
+        );
+    }
+
+    #[test]
+    fn test_substring_filter_highlight_pushes_full_line_span() {
+        let line = b"ERROR: something went wrong";
+        let f = SubstringFilter::new("ERROR", FilterDecision::Highlight, false, 2).unwrap();
+        let mut col = MatchCollector::new(line);
+        f.evaluate(line, &mut col);
+        assert_eq!(col.spans.len(), 1);
+        assert_eq!(col.spans[0].start, 0);
+        assert_eq!(col.spans[0].end, line.len());
+        assert_eq!(col.spans[0].style, 2);
+    }
+
+    #[test]
     fn test_regex_filter_include() {
         let line = b"GET /api/users 200 OK";
         let f = RegexFilter::new(r"\d{3}", FilterDecision::Include, true, 0).unwrap();
@@ -1290,6 +1383,17 @@ mod tests {
         // Should have a span covering "200"
         assert_eq!(col.spans.len(), 1);
         assert_eq!(&line[col.spans[0].start..col.spans[0].end], b"200");
+    }
+
+    #[test]
+    fn test_regex_filter_highlight_pushes_spans() {
+        let line = b"GET /api/users 200 OK";
+        let f = RegexFilter::new(r"\d{3}", FilterDecision::Highlight, true, 0).unwrap();
+        let mut col = MatchCollector::new(line);
+        let dec = f.evaluate(line, &mut col);
+        assert_eq!(col.spans.len(), 1);
+        assert_eq!(&line[col.spans[0].start..col.spans[0].end], b"200");
+        assert!(!dec.is_decided());
     }
 
     #[test]
@@ -1697,6 +1801,32 @@ mod tests {
     }
 
     #[test]
+    fn test_evaluate_text_highlight_filter_never_wins_visibility_vote() {
+        let fm = make_combined_fm(&[("ERROR", FilterDecision::Highlight)], false);
+        // No include filters exist, so a Highlight-only match must not change
+        // the default "everything visible" outcome.
+        assert!(fm.is_visible(b"ERROR: something bad"));
+        assert!(fm.is_visible(b"INFO: all good"));
+    }
+
+    #[test]
+    fn test_evaluate_text_highlight_does_not_shadow_lower_priority_exclude() {
+        // Filter 0 = Highlight "HL" (lower index, would win a naive
+        // "lowest index" race), Filter 1 = Exclude "BAD". A line matching
+        // both must still be excluded — Highlight must never shadow a real
+        // decision from a lower-precedence filter.
+        let fm = make_combined_fm(
+            &[
+                ("HL", FilterDecision::Highlight),
+                ("BAD", FilterDecision::Exclude),
+            ],
+            false,
+        );
+        assert!(!fm.is_visible(b"HL BAD"));
+        assert!(fm.is_visible(b"HL only"));
+    }
+
+    #[test]
     fn test_combined_ac_compute_visible() {
         let (_f, reader) = make_reader(&[
             "ERROR: bad",
@@ -1828,6 +1958,39 @@ mod tests {
     }
 
     #[test]
+    fn test_evaluate_and_count_counts_highlight_matches() {
+        let f = SubstringFilter::new("ERROR", FilterDecision::Highlight, false, 0).unwrap();
+        let fm = FilterManager::new(vec![Box::new(f)], false);
+        let mut counts = vec![0usize];
+        let dec = fm.evaluate_and_count(b"ERROR: bad", &mut counts);
+        assert_eq!(counts[0], 1, "highlight match must still be counted");
+        assert!(!dec.is_decided(), "highlight must never decide visibility");
+    }
+
+    #[test]
+    fn test_evaluate_and_count_highlight_regex_counted() {
+        // Filter 0 = literal Include "ERROR" (forces a combined_ac to exist),
+        // filter 1 = regex Highlight `\d{3}`, reached via regex_filter_indices.
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Highlight, false, 1)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let ac = AhoCorasick::builder()
+            .ascii_case_insensitive(false)
+            .build(["ERROR"])
+            .ok();
+        let meta = vec![(0, FilterDecision::Include)];
+        let fm = FilterManager::new_with_combined(vec![f_lit, f_re], true, ac, meta, vec![1]);
+        let mut counts = vec![0usize; 2];
+        let dec = fm.evaluate_and_count(b"ERROR 404 not found", &mut counts);
+        assert_eq!(dec, FilterDecision::Include);
+        assert_eq!(counts[0], 1, "literal include filter counted");
+        assert_eq!(counts[1], 1, "regex highlight filter must also be counted");
+    }
+
+    #[test]
     fn test_evaluate_and_count_combined_ac_path() {
         let fm = make_combined_fm(
             &[
@@ -1945,6 +2108,36 @@ mod tests {
     }
 
     #[test]
+    fn test_wholefile_highlight_visible_but_counted() {
+        let fm = make_combined_fm(&[("ERROR", FilterDecision::Highlight)], false);
+        let (data, starts) = make_wholefile_data(&["ERROR: bad", "INFO: ok"]);
+        let (visible, counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..2);
+        assert_eq!(visible, vec![0, 1], "highlight must not hide any line");
+        assert_eq!(counts[0], 1, "highlight match must still be counted");
+    }
+
+    #[test]
+    fn test_wholefile_highlight_does_not_shadow_exclude() {
+        // Filter 0 = Highlight "HL" (lower index), filter 1 = Exclude "BAD".
+        // record() must not let the Highlight match win SubChunkState::best
+        // and hide the real Exclude decision.
+        let fm = make_combined_fm(
+            &[
+                ("HL", FilterDecision::Highlight),
+                ("BAD", FilterDecision::Exclude),
+            ],
+            false,
+        );
+        let (data, starts) = make_wholefile_data(&["HL BAD", "HL only"]);
+        let (visible, _) = fm.evaluate_chunk_wholefile(&data, &starts, 0..2);
+        assert_eq!(
+            visible,
+            vec![1],
+            "line 0 must be excluded, line 1 stays visible"
+        );
+    }
+
+    #[test]
     fn test_wholefile_sub_range() {
         let fm = make_combined_fm(&[("ERROR", FilterDecision::Include)], true);
         let (data, starts) = make_wholefile_data(&[
@@ -1998,6 +2191,7 @@ mod tests {
                 FilterDecision::Include => true,
                 FilterDecision::Exclude => false,
                 FilterDecision::Neutral => !fm.has_include(),
+                FilterDecision::Highlight => !fm.has_include(),
             };
             if vis {
                 pl_visible.push(i);
@@ -2055,6 +2249,64 @@ mod tests {
     }
 
     #[test]
+    fn test_wholefile_regex_highlight_counted() {
+        // Filter 0 = literal Include "ERROR" (forces combined_ac), filter 1 =
+        // regex Highlight `\d{3}`, reached via scan_regex_fallback.
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Highlight, false, 1)
+            .map(|f| Box::new(f) as Box<dyn Filter>)
+            .unwrap();
+        let ac = AhoCorasick::builder()
+            .ascii_case_insensitive(false)
+            .build(["ERROR"])
+            .ok();
+        let meta = vec![(0, FilterDecision::Include)];
+        let fm = FilterManager::new_with_combined(vec![f_lit, f_re], true, ac, meta, vec![1]);
+        let (data, starts) = make_wholefile_data(&["ERROR 404 not found"]);
+        let (visible, counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..1);
+        assert_eq!(visible, vec![0]);
+        assert_eq!(counts[0], 1, "literal include filter counted");
+        assert_eq!(counts[1], 1, "regex highlight filter must also be counted");
+    }
+
+    #[test]
+    fn test_wholefile_consistent_with_per_line_with_highlight() {
+        let fm = make_combined_fm(
+            &[
+                ("ERROR", FilterDecision::Include),
+                ("HL", FilterDecision::Highlight),
+                ("DEBUG", FilterDecision::Exclude),
+            ],
+            true,
+        );
+        let lines = [
+            "ERROR: critical",
+            "HL: informational",
+            "INFO: fine",
+            "DEBUG: noisy",
+            "ERROR HL: both",
+            "HL DEBUG: highlight then exclude",
+        ];
+        let (data, starts) = make_wholefile_data(&lines);
+
+        let (wf_visible, wf_counts) = fm.evaluate_chunk_wholefile(&data, &starts, 0..lines.len());
+
+        let mut pl_counts = vec![0usize; 3];
+        let mut pl_visible = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let dec = fm.evaluate_and_count(line.as_bytes(), &mut pl_counts);
+            if dec.to_visibility(fm.has_include()) {
+                pl_visible.push(i);
+            }
+        }
+
+        assert_eq!(wf_visible, pl_visible, "visibility must match per-line");
+        assert_eq!(wf_counts, pl_counts, "counts must match per-line");
+    }
+
+    #[test]
     fn test_wholefile_consistent_with_per_line_including_regex() {
         let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
             .map(|f| Box::new(f) as Box<dyn Filter>)
@@ -2085,6 +2337,7 @@ mod tests {
                 FilterDecision::Include => true,
                 FilterDecision::Exclude => false,
                 FilterDecision::Neutral => !fm.has_include(),
+                FilterDecision::Highlight => !fm.has_include(),
             };
             if vis {
                 pl_visible.push(i);
@@ -2102,5 +2355,6 @@ mod tests {
     fn test_filter_type_display() {
         assert_eq!(FilterType::Include.to_string(), "Include");
         assert_eq!(FilterType::Exclude.to_string(), "Exclude");
+        assert_eq!(FilterType::Highlight.to_string(), "Highlight");
     }
 }

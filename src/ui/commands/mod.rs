@@ -90,6 +90,27 @@ impl App {
                     .cmd_exclude(pattern.join(" "), field, regex, group)
                     .await;
             }
+            Some(Commands::Highlight {
+                pattern,
+                fg,
+                bg,
+                line_mode,
+                field,
+                regex,
+                group,
+            }) => {
+                return self
+                    .cmd_highlight(filter::FilterArgs {
+                        pattern: pattern.join(" "),
+                        fg,
+                        bg,
+                        line_mode,
+                        field,
+                        regex,
+                        group,
+                    })
+                    .await;
+            }
             Some(Commands::SetColor { fg, bg, line_mode }) => {
                 return self.cmd_set_color(fg, bg, line_mode).await;
             }

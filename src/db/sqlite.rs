@@ -273,6 +273,13 @@ impl Database {
                 .await?;
         }
 
+        if version < 12 {
+            self.migrate_to_v12().await?;
+            sqlx::query("PRAGMA user_version = 12")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -437,6 +444,47 @@ impl Database {
         Ok(())
     }
 
+    /// SQLite can't `ALTER` a `CHECK` constraint, so allowing the new
+    /// `Highlight` filter type requires rebuilding the `filters` table.
+    async fn migrate_to_v12(&self) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "CREATE TABLE filters_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern TEXT NOT NULL,
+                filter_type TEXT NOT NULL CHECK(filter_type IN ('Include', 'Exclude', 'Highlight')),
+                enabled INTEGER NOT NULL DEFAULT 1,
+                fg_color TEXT,
+                bg_color TEXT,
+                display_order INTEGER NOT NULL DEFAULT 0,
+                source_file TEXT NOT NULL DEFAULT '',
+                match_only INTEGER NOT NULL DEFAULT 1,
+                use_regex INTEGER NOT NULL DEFAULT 0,
+                group_name TEXT
+            )",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO filters_new (
+                id, pattern, filter_type, enabled, fg_color, bg_color,
+                display_order, source_file, match_only, use_regex, group_name
+            )
+            SELECT
+                id, pattern, filter_type, enabled, fg_color, bg_color,
+                display_order, source_file, match_only, use_regex, group_name
+            FROM filters",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE filters").execute(&mut *tx).await?;
+        sqlx::query("ALTER TABLE filters_new RENAME TO filters")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn reset_all(&self) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM filters").execute(&mut *tx).await?;
@@ -458,12 +506,14 @@ fn filter_type_to_str(ft: &FilterType) -> &'static str {
     match ft {
         FilterType::Include => "Include",
         FilterType::Exclude => "Exclude",
+        FilterType::Highlight => "Highlight",
     }
 }
 
 fn str_to_filter_type(s: &str) -> FilterType {
     match s {
         "Include" => FilterType::Include,
+        "Highlight" => FilterType::Highlight,
         _ => FilterType::Exclude,
     }
 }
@@ -998,6 +1048,112 @@ mod tests {
         db.clear_filters().await.unwrap();
         let filters = db.get_filters().await.unwrap();
         assert!(filters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_insert_and_load_highlight_filter() {
+        let db = setup_db().await;
+        db.insert_filter("pat", &FilterType::Highlight, FilterInsertOptions::new())
+            .await
+            .unwrap();
+        let filters = db.get_filters().await.unwrap();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].filter_type, FilterType::Highlight);
+    }
+
+    #[tokio::test]
+    async fn test_filter_type_round_trip_all_variants() {
+        let db = setup_db().await;
+        for ft in [
+            FilterType::Include,
+            FilterType::Exclude,
+            FilterType::Highlight,
+        ] {
+            db.insert_filter("pat", &ft, FilterInsertOptions::new())
+                .await
+                .unwrap();
+        }
+        let filters = db.get_filters().await.unwrap();
+        let types: Vec<FilterType> = filters.iter().map(|f| f.filter_type.clone()).collect();
+        assert_eq!(
+            types,
+            vec![
+                FilterType::Include,
+                FilterType::Exclude,
+                FilterType::Highlight
+            ]
+        );
+    }
+
+    /// Simulates a real user upgrading: opens a database file whose schema
+    /// predates the v12 `filters` table rebuild (CHECK constraint without
+    /// 'Highlight', no `use_regex`/`group_name` columns applied yet as
+    /// `ALTER TABLE`s from v10/v11), with existing filters already saved,
+    /// and confirms the migration preserves them and unlocks Highlight.
+    #[tokio::test]
+    async fn test_migrate_to_v12_preserves_pre_existing_filters() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        // Seed a v11-schema database directly, bypassing the app's own
+        // migration runner, then set user_version so run_migrations() only
+        // needs to apply v12.
+        let seed_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("sqlite:{path}?mode=rwc"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE filters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern TEXT NOT NULL,
+                filter_type TEXT NOT NULL CHECK(filter_type IN ('Include', 'Exclude')),
+                enabled INTEGER NOT NULL DEFAULT 1,
+                fg_color TEXT,
+                bg_color TEXT,
+                display_order INTEGER NOT NULL DEFAULT 0,
+                source_file TEXT NOT NULL DEFAULT '',
+                match_only INTEGER NOT NULL DEFAULT 1,
+                use_regex INTEGER NOT NULL DEFAULT 0,
+                group_name TEXT
+            )",
+        )
+        .execute(&seed_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, group_name)
+             VALUES ('ERROR', 'Include', 1, 'Red', 'errors')",
+        )
+        .execute(&seed_pool)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version = 11")
+            .execute(&seed_pool)
+            .await
+            .unwrap();
+        seed_pool.close().await;
+
+        // Now open it the same way the app does — this must run migrate_to_v12
+        // and leave the pre-existing filter intact.
+        let db = Database::new(&path).await.unwrap();
+        let filters = db.get_filters().await.unwrap();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].pattern, "ERROR");
+        assert_eq!(filters[0].filter_type, FilterType::Include);
+        assert_eq!(filters[0].group.as_deref(), Some("errors"));
+
+        // And the CHECK constraint must now accept Highlight.
+        db.insert_filter("WARN", &FilterType::Highlight, FilterInsertOptions::new())
+            .await
+            .unwrap();
+        let filters = db.get_filters().await.unwrap();
+        assert_eq!(filters.len(), 2);
+        assert!(
+            filters
+                .iter()
+                .any(|f| f.filter_type == FilterType::Highlight)
+        );
     }
 
     #[tokio::test]

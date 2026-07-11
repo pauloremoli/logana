@@ -8,6 +8,10 @@ pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
         &["--field", "-f", "--fg", "--bg", "-l", "--group"],
     ),
     ("exclude", &["--field", "-f", "--group"]),
+    (
+        "highlight",
+        &["--field", "-f", "--fg", "--bg", "-l", "--group"],
+    ),
     ("set-color", &["--fg", "--bg", "-l"]),
     ("date-filter", &["--fg", "--bg", "-l"]),
     ("export", &["-t", "--template"]),
@@ -76,7 +80,7 @@ pub enum FieldCompletion {
 /// - `Some(FieldCompletion::Value { field, partial })` when cursor is on the value (after `=`)
 /// - `None` when the input is not a `--field` context or the pattern is complete
 pub fn extract_field_partial(input: &str) -> Option<FieldCompletion> {
-    let field_commands = ["filter", "exclude"];
+    let field_commands = ["filter", "exclude", "highlight"];
     let trimmed = input.trim();
     let cmd = trimmed.split_whitespace().next().unwrap_or("");
     if !field_commands.contains(&cmd) {
@@ -237,7 +241,7 @@ pub const COLOR_NAMES: &[&str] = &[
 
 /// If the input ends with `--fg <partial>` or `--bg <partial>`, returns the partial color prefix.
 pub fn extract_color_partial(input: &str) -> Option<&str> {
-    let color_commands = ["filter", "set-color", "date-filter"];
+    let color_commands = ["filter", "set-color", "date-filter", "highlight"];
     let trimmed = input.trim();
     let cmd = trimmed.split_whitespace().next().unwrap_or("");
     if !color_commands.contains(&cmd) {
@@ -276,7 +280,7 @@ pub fn complete_color(partial: &str) -> Vec<&'static str> {
 
 /// If the input ends with `--group <partial>`, returns the partial group-name prefix.
 pub fn extract_group_partial(input: &str) -> Option<&str> {
-    let group_commands = ["filter", "exclude"];
+    let group_commands = ["filter", "exclude", "highlight"];
     let trimmed = input.trim();
     let cmd = trimmed.split_whitespace().next().unwrap_or("");
     if !group_commands.contains(&cmd) {
@@ -656,6 +660,11 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_color_partial_recognizes_highlight() {
+        assert_eq!(extract_color_partial("highlight --fg Re"), Some("Re"));
+    }
+
+    #[test]
     fn test_extract_color_partial_trailing_space_returns_empty() {
         assert_eq!(extract_color_partial("filter --fg "), Some(""));
         assert_eq!(extract_color_partial("set-color --bg "), Some(""));
@@ -703,6 +712,11 @@ mod tests {
     #[test]
     fn test_extract_group_partial_exclude_with_partial_value() {
         assert_eq!(extract_group_partial("exclude --group no"), Some("no"));
+    }
+
+    #[test]
+    fn test_extract_group_partial_recognizes_highlight() {
+        assert_eq!(extract_group_partial("highlight --group err"), Some("err"));
     }
 
     #[test]
@@ -1096,6 +1110,13 @@ mod tests {
     }
 
     #[test]
+    fn test_complete_flags_highlight_partial() {
+        let flags = complete_flags("highlight", "--f");
+        assert!(flags.contains(&"--field"));
+        assert!(flags.contains(&"--fg"));
+    }
+
+    #[test]
     fn test_complete_flags_set_color() {
         let flags = complete_flags("set-color", "-");
         assert!(flags.contains(&"--fg"));
@@ -1138,6 +1159,14 @@ mod tests {
     fn test_field_partial_name_partial_typed() {
         assert_eq!(
             extract_field_partial("filter --field lev"),
+            Some(FieldCompletion::Name("lev".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_field_partial_recognizes_highlight() {
+        assert_eq!(
+            extract_field_partial("highlight --field lev"),
             Some(FieldCompletion::Name("lev".to_string()))
         );
     }
