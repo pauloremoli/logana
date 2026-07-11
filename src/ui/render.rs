@@ -30,6 +30,12 @@ type ValueColorsData = Option<(
 
 type ExportFooterData = Option<(String, Vec<(String, Vec<String>)>, usize, usize, usize)>;
 
+type ArchivePickerData = Option<(
+    Vec<crate::mode::archive_picker_mode::ArchiveRow>,
+    usize,
+    String,
+)>;
+
 struct UiRenderState {
     has_input_bar: bool,
     command_input: Option<(String, usize)>,
@@ -45,6 +51,7 @@ struct UiRenderState {
     help_state: Option<(usize, String)>,
     select_fields_state: Option<(Vec<(String, bool)>, usize)>,
     merge_select_state: Option<(Vec<(String, bool)>, usize)>,
+    archive_picker_state: ArchivePickerData,
     docker_select: Option<(
         Vec<crate::mode::docker_select_mode::DockerContainer>,
         usize,
@@ -258,6 +265,14 @@ impl App {
             ModeRenderState::MergeSelect { tabs, selected } => Some((tabs.clone(), *selected)),
             _ => None,
         };
+        let archive_picker_state: ArchivePickerData = match render_state {
+            ModeRenderState::ArchivePicker {
+                rows,
+                selected,
+                source_path,
+            } => Some((rows.clone(), *selected, source_path.clone())),
+            _ => None,
+        };
         let docker_select: Option<(
             Vec<crate::mode::docker_select_mode::DockerContainer>,
             usize,
@@ -343,6 +358,7 @@ impl App {
             help_state,
             select_fields_state,
             merge_select_state,
+            archive_picker_state,
             docker_select,
             dlt_select,
             value_colors_state,
@@ -812,6 +828,19 @@ impl App {
                     keybindings: &self.keybindings,
                     tabs,
                     selected: *selected,
+                },
+                frame_area,
+            );
+        }
+
+        if let Some((rows, selected, source_path)) = &state.archive_picker_state {
+            frame.render_widget(
+                super::widgets::ArchivePickerPopup {
+                    theme: &self.theme,
+                    keybindings: &self.keybindings,
+                    rows,
+                    selected: *selected,
+                    source_path,
                 },
                 frame_area,
             );

@@ -540,32 +540,15 @@ impl App {
         });
     }
 
-    /// Spawn archive extraction in the background (non-blocking).
-    /// Shows a notification on the active tab while extraction is in progress.
-    /// Call [`Self::poll_archive_extraction`] each frame to check for completion.
-    pub async fn begin_archive_extraction(&mut self, path: &str) {
-        let Some(archive_type) = crate::ingestion::detect_archive_type(path) else {
-            self.tabs[self.active_tab]
-                .set_notification(format!("Not a recognised archive: {path}"));
-            return;
-        };
-
-        let is_streaming = crate::ingestion::uses_streaming_path(&archive_type);
-        if !is_streaming {
-            match crate::ingestion::list_archive_files(path) {
-                Ok(names) if names.is_empty() => {
-                    self.tabs[self.active_tab].set_notification("Archive contains no files.");
-                    return;
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    self.tabs[self.active_tab]
-                        .set_notification(format!("Failed to read archive: {e}"));
-                    return;
-                }
-            }
-        }
-
+    /// Spawn extraction of just the files the user confirmed in the archive
+    /// picker popup. Reuses the same `pending_archive`/[`Self::poll_archive_extraction`]
+    /// machinery as [`Self::begin_archive_extraction`] — only the extraction
+    /// closure differs (selected files only, instead of everything).
+    pub async fn begin_archive_extraction_selected(
+        &mut self,
+        source_path: String,
+        tree: crate::ingestion::ArchiveTree,
+    ) {
         let (progress_tx, progress_rx) =
             tokio::sync::watch::channel(crate::ingestion::ArchiveExtractionProgress {
                 file_index: 0,
@@ -573,11 +556,10 @@ impl App {
             });
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
 
-        self.decompression_message = Some("Decompressing archive\u{2026}".to_string());
+        self.decompression_message = Some("Extracting selected files\u{2026}".to_string());
 
-        let path_str = path.to_string();
         tokio::task::spawn_blocking(move || {
-            let result = crate::ingestion::extract_with_progress(&path_str, progress_tx, None);
+            let result = crate::ingestion::extract_selected(&source_path, &tree, progress_tx);
             let _ = result_tx.send(result);
         });
 
@@ -654,6 +636,59 @@ impl App {
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                 self.pending_archive = None;
+                self.decompression_message = None;
+            }
+        }
+    }
+
+    /// Spawn a background scan of an archive's contents (without extracting
+    /// anything yet) so the archive picker popup can show a file tree.
+    /// Call [`Self::poll_archive_listing`] each frame to check for completion.
+    pub async fn begin_archive_listing(&mut self, path: &str) {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        self.decompression_message = Some("Reading archive contents\u{2026}".to_string());
+
+        let path_str = path.to_string();
+        tokio::task::spawn_blocking(move || {
+            let result = crate::ingestion::list_archive_tree(&path_str);
+            let _ = result_tx.send(result);
+        });
+
+        self.pending_archive_listing = Some(crate::ui::ArchiveListingState {
+            source_path: path.to_string(),
+            result_rx,
+        });
+    }
+
+    /// Poll the pending archive listing each frame. When the background task
+    /// finishes, opens the archive picker popup on the active tab (or shows
+    /// a notification on error/empty archive) and clears `pending_archive_listing`.
+    pub async fn poll_archive_listing(&mut self) {
+        let Some(ref mut state) = self.pending_archive_listing else {
+            return;
+        };
+
+        match state.result_rx.try_recv() {
+            Ok(Ok(tree)) => {
+                let source_path = state.source_path.clone();
+                self.pending_archive_listing = None;
+                self.decompression_message = None;
+                if tree.nodes.is_empty() {
+                    self.tabs[self.active_tab].set_notification("Archive contains no files.");
+                    return;
+                }
+                self.tabs[self.active_tab].interaction.mode = Box::new(
+                    crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, source_path),
+                );
+            }
+            Ok(Err(e)) => {
+                self.pending_archive_listing = None;
+                self.decompression_message = None;
+                self.tabs[self.active_tab].set_notification(format!("Failed to read archive: {e}"));
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.pending_archive_listing = None;
                 self.decompression_message = None;
             }
         }
@@ -3613,51 +3648,105 @@ mod tests {
         assert!(app.tabs[0].extraction_progress.is_none());
     }
 
-    fn make_gz(content: &[u8]) -> tempfile::NamedTempFile {
-        use std::io::Write as _;
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        let mut enc = flate2::write::GzEncoder::new(&mut tmp, flate2::Compression::default());
-        enc.write_all(content).unwrap();
-        enc.finish().unwrap();
-        tmp
-    }
-
     #[tokio::test]
-    async fn test_begin_archive_extraction_shows_notification_no_placeholder_tab() {
+    async fn test_begin_archive_listing_sets_pending_state_no_placeholder_tab() {
         let mut app = make_app(&[]).await;
         let initial_tab_count = app.tabs.len();
 
-        let content = b"log line\n";
-        let gz_tmp = make_gz(content);
-        let path = gz_tmp.path().to_str().unwrap().to_string() + ".log.gz";
-        std::fs::copy(gz_tmp.path(), &path).unwrap();
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("a.log", b"one"),
+            ("b.log", b"two"),
+        ]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
 
-        app.begin_archive_extraction(&path).await;
+        app.begin_archive_listing(&path).await;
 
         assert_eq!(
             app.tabs.len(),
             initial_tab_count,
             "no placeholder tabs should be created"
         );
-        assert!(app.pending_archive.is_some());
-        assert!(
-            app.decompression_message.is_some(),
-            "decompression_message should be set on the app"
-        );
+        assert!(app.pending_archive_listing.is_some());
+        assert!(app.decompression_message.is_some());
 
         std::fs::remove_file(&path).unwrap();
     }
 
     #[tokio::test]
-    async fn test_poll_archive_extraction_completes_and_loads_tab() {
+    async fn test_poll_archive_listing_completes_and_opens_picker_mode() {
         let mut app = make_app(&[]).await;
 
-        let content = b"hello archive\n";
-        let gz_tmp = make_gz(content);
-        let path = gz_tmp.path().to_str().unwrap().to_string() + ".log.gz";
-        std::fs::copy(gz_tmp.path(), &path).unwrap();
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("a.log", b"one"),
+            ("b.log", b"two"),
+        ]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
 
-        app.begin_archive_extraction(&path).await;
+        app.begin_archive_listing(&path).await;
+
+        for _ in 0..100 {
+            app.poll_archive_listing().await;
+            if app.pending_archive_listing.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(
+            app.pending_archive_listing.is_none(),
+            "listing should have completed"
+        );
+        assert!(matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            ModeRenderState::ArchivePicker { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_poll_archive_listing_shows_notification_on_error() {
+        let mut app = make_app(&[]).await;
+
+        app.begin_archive_listing("/nonexistent/path/archive.zip")
+            .await;
+
+        for _ in 0..100 {
+            app.poll_archive_listing().await;
+            if app.pending_archive_listing.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+
+        assert!(app.pending_archive_listing.is_none());
+        assert!(app.tabs[app.active_tab].interaction.notification.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_begin_archive_extraction_selected_produces_tab_for_selected_file_only() {
+        let mut app = make_app(&[]).await;
+
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("a.log", b"hello"),
+            ("b.log", b"world"),
+        ]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+
+        let mut tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        let a_id = tree
+            .nodes
+            .iter()
+            .find(|n| n.full_path == "a.log")
+            .unwrap()
+            .id;
+        tree.nodes[a_id].selected = true;
+
+        app.begin_archive_extraction_selected(path.clone(), tree)
+            .await;
 
         for _ in 0..100 {
             app.poll_archive_extraction().await;
@@ -3667,14 +3756,96 @@ mod tests {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
 
-        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&path).unwrap();
 
-        assert!(
-            app.pending_archive.is_none(),
-            "extraction should have completed"
-        );
+        assert!(app.pending_archive.is_none());
         let last_tab = app.tabs.last().unwrap();
-        assert!(last_tab.file_reader.line_count() > 0 || last_tab.load_state.is_some());
+        assert_eq!(last_tab.title, "a.log");
+    }
+
+    /// End-to-end: opening a `.tar.gz` with a top-level file and a nested
+    /// `.zip` shows the archive picker; selecting one file from each level
+    /// and confirming extracts exactly those two files, driven through the
+    /// real key-handling pipeline (`App::handle_key_event`), not by poking
+    /// internal state directly.
+    #[tokio::test]
+    async fn test_archive_picker_end_to_end_extracts_confirmed_selection_only() {
+        let mut app = make_app(&[]).await;
+
+        let inner_zip = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("a.log", b"inner-a"),
+            ("b.log", b"inner-b"),
+        ]);
+        let inner_bytes = std::fs::read(inner_zip.path()).unwrap();
+        let outer_tmp = crate::ingestion::archive::test_helpers::make_tar_gz(&[
+            ("top.log", b"top-level"),
+            ("nested/inner.zip", inner_bytes.as_slice()),
+        ]);
+        let path = outer_tmp.path().to_str().unwrap().to_string() + ".tar.gz";
+        std::fs::copy(outer_tmp.path(), &path).unwrap();
+
+        app.begin_archive_listing(&path).await;
+        assert!(app.pending_archive_listing.is_some());
+
+        for _ in 0..100 {
+            app.poll_archive_listing().await;
+            if app.pending_archive_listing.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+        assert!(matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            ModeRenderState::ArchivePicker { .. }
+        ));
+        let rows = match app.tabs[app.active_tab].interaction.mode.render_state() {
+            ModeRenderState::ArchivePicker { rows, .. } => rows,
+            other => panic!("expected ArchivePicker, got {:?}", other),
+        };
+        // Preorder: [0] top.log (file), [1] nested/inner.zip (container), [2] a.log, [3] b.log
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].name, "top.log");
+        assert_eq!(rows[2].name, "a.log");
+
+        // Select "top.log" (row 0, already at cursor 0).
+        app.handle_key_event(crossterm::event::KeyCode::Char(' '))
+            .await;
+        // Move cursor: row 0 -> row 1 (container) -> row 2 ("a.log").
+        app.handle_key_event(crossterm::event::KeyCode::Char('j'))
+            .await;
+        app.handle_key_event(crossterm::event::KeyCode::Char('j'))
+            .await;
+        app.handle_key_event(crossterm::event::KeyCode::Char(' '))
+            .await;
+        // Confirm the selection.
+        app.handle_key_event(crossterm::event::KeyCode::Enter).await;
+
+        assert!(app.pending_archive.is_some());
+        for _ in 0..100 {
+            app.poll_archive_extraction().await;
+            if app.pending_archive.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(app.pending_archive.is_none());
+        assert_eq!(
+            app.tabs.len(),
+            2,
+            "exactly the 2 confirmed files should have been extracted, not b.log"
+        );
+        let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, vec!["top.log", "a.log"]);
+        for tab in &app.tabs {
+            assert!(
+                tab.file_reader.line_count() > 0 || tab.load_state.is_some(),
+                "tab '{}' should have loaded content",
+                tab.title
+            );
+        }
     }
 
     #[tokio::test]

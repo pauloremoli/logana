@@ -5,6 +5,13 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Introduce highligh mode that uses filter styling but without excluding any line.
+- New filter type for highlight for applying custom styling but without affecting log visibility.
+
+### Changed
+- Improve archive handling with pop up to select files to extract.
+
 ## [0.7.0] - 2026-07-11
 
 ### Added

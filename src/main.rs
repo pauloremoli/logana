@@ -329,7 +329,7 @@ async fn begin_initial_load(
     if background_file_load {
         if let Some(path) = source_path {
             if logana::ingestion::detect_archive_type(&path).is_some() {
-                app.begin_archive_extraction(&path).await;
+                app.begin_archive_listing(&path).await;
             } else {
                 app.begin_file_load(
                     path,

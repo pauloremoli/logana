@@ -11,7 +11,7 @@ use crate::db::LogManager;
 use crate::db::MarkManager;
 use crate::filters::{FieldVote, any_field_exclude_matches, field_include_vote};
 use crate::filters::{FilterDecision, FilterManager};
-use crate::ingestion::FileReader;
+use crate::ingestion::{ArchiveTree, FileReader};
 use crate::mode::normal_mode::NormalMode;
 use crate::parser::{LogFormatParser, detect_format};
 use crate::ui::FieldLayout;
@@ -66,6 +66,10 @@ pub enum KeyResult {
         path: String,
         template_name: String,
         footer_fields: Vec<(String, String)>,
+    },
+    ExtractSelectedArchiveFiles {
+        source_path: String,
+        tree: ArchiveTree,
     },
 }
 
@@ -2370,6 +2374,16 @@ pub struct ArchiveExtractionState {
     /// Delivers all `ExtractedFile`s (or error) when extraction finishes.
     pub result_rx:
         tokio::sync::oneshot::Receiver<Result<Vec<crate::ingestion::ExtractedFile>, String>>,
+}
+
+/// Tracks an in-progress background archive *listing* (the pre-extraction
+/// file-tree scan shown in the archive picker popup).
+pub struct ArchiveListingState {
+    /// Path to the archive being listed, carried through to the picker mode
+    /// once listing finishes (extraction later re-opens the same path).
+    pub source_path: String,
+    /// Delivers the listed tree (or error) when listing finishes.
+    pub result_rx: tokio::sync::oneshot::Receiver<Result<ArchiveTree, String>>,
 }
 
 /// Per-tab state for watching a file for new appended content.

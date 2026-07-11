@@ -292,7 +292,7 @@ fn list_tar_names(path: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-fn stem(path: &str) -> String {
+pub(crate) fn stem(path: &str) -> String {
     Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -300,7 +300,10 @@ fn stem(path: &str) -> String {
         .to_string()
 }
 
-fn decompress_to_temp(reader: &mut dyn Read, name: String) -> Result<ExtractedFile, String> {
+pub(crate) fn decompress_to_temp(
+    reader: &mut dyn Read,
+    name: String,
+) -> Result<ExtractedFile, String> {
     let mut tmp = NamedTempFile::new().map_err(|e| e.to_string())?;
     io::copy(reader, &mut tmp).map_err(|e| e.to_string())?;
     tmp.flush().map_err(|e| e.to_string())?;
@@ -310,8 +313,115 @@ fn decompress_to_temp(reader: &mut dyn Read, name: String) -> Result<ExtractedFi
     })
 }
 
+/// Synthetic-archive builders shared by this module's tests and by
+/// `archive_tree`'s tests (which need the same fixtures to test recursion
+/// into nested archives).
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    use super::*;
+    use std::io::Write;
+
+    pub(crate) fn make_gz(content: &[u8]) -> NamedTempFile {
+        let mut tmp = NamedTempFile::new().unwrap();
+        let mut enc = flate2::write::GzEncoder::new(&mut tmp, flate2::Compression::default());
+        enc.write_all(content).unwrap();
+        enc.finish().unwrap();
+        tmp
+    }
+
+    pub(crate) fn make_bz2(content: &[u8]) -> NamedTempFile {
+        let mut tmp = NamedTempFile::new().unwrap();
+        let mut enc = bzip2::write::BzEncoder::new(&mut tmp, bzip2::Compression::default());
+        enc.write_all(content).unwrap();
+        enc.finish().unwrap();
+        tmp
+    }
+
+    pub(crate) fn make_xz(content: &[u8]) -> NamedTempFile {
+        let mut tmp = NamedTempFile::new().unwrap();
+        let mut enc = xz2::write::XzEncoder::new(&mut tmp, 1);
+        enc.write_all(content).unwrap();
+        enc.finish().unwrap();
+        tmp
+    }
+
+    pub(crate) fn make_zip(entries: &[(&str, &[u8])]) -> NamedTempFile {
+        let mut tmp = NamedTempFile::new().unwrap();
+        let mut zip = zip::ZipWriter::new(&mut tmp);
+        for (name, content) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(content).unwrap();
+        }
+        zip.finish().unwrap();
+        tmp
+    }
+
+    pub(crate) fn make_tar(entries: &[(&str, &[u8])]) -> NamedTempFile {
+        let mut tmp = NamedTempFile::new().unwrap();
+        {
+            let mut builder = tar::Builder::new(&mut tmp);
+            for (name, content) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(content.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder.append_data(&mut header, name, *content).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        tmp
+    }
+
+    pub(crate) fn make_tar_gz(entries: &[(&str, &[u8])]) -> NamedTempFile {
+        let mut tmp = NamedTempFile::new().unwrap();
+        let enc = flate2::write::GzEncoder::new(&mut tmp, flate2::Compression::default());
+        let mut builder = tar::Builder::new(enc);
+        for (name, content) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, *content).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        tmp
+    }
+
+    pub(crate) fn make_tar_bz2(entries: &[(&str, &[u8])]) -> NamedTempFile {
+        let mut tmp = NamedTempFile::new().unwrap();
+        let enc = bzip2::write::BzEncoder::new(&mut tmp, bzip2::Compression::default());
+        let mut builder = tar::Builder::new(enc);
+        for (name, content) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, *content).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        tmp
+    }
+
+    pub(crate) fn make_tar_xz(entries: &[(&str, &[u8])]) -> NamedTempFile {
+        let mut tmp = NamedTempFile::new().unwrap();
+        let enc = xz2::write::XzEncoder::new(&mut tmp, 1);
+        let mut builder = tar::Builder::new(enc);
+        for (name, content) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, *content).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        tmp
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_helpers::*;
     use super::*;
     use std::io::{Seek, SeekFrom, Write};
 
@@ -396,103 +506,6 @@ mod tests {
     }
 
     // extract roundtrips
-
-    fn make_gz(content: &[u8]) -> NamedTempFile {
-        let mut tmp = NamedTempFile::new().unwrap();
-        let mut enc = flate2::write::GzEncoder::new(&mut tmp, flate2::Compression::default());
-        enc.write_all(content).unwrap();
-        enc.finish().unwrap();
-        tmp
-    }
-
-    fn make_bz2(content: &[u8]) -> NamedTempFile {
-        let mut tmp = NamedTempFile::new().unwrap();
-        let mut enc = bzip2::write::BzEncoder::new(&mut tmp, bzip2::Compression::default());
-        enc.write_all(content).unwrap();
-        enc.finish().unwrap();
-        tmp
-    }
-
-    fn make_xz(content: &[u8]) -> NamedTempFile {
-        let mut tmp = NamedTempFile::new().unwrap();
-        let mut enc = xz2::write::XzEncoder::new(&mut tmp, 1);
-        enc.write_all(content).unwrap();
-        enc.finish().unwrap();
-        tmp
-    }
-
-    fn make_zip(entries: &[(&str, &[u8])]) -> NamedTempFile {
-        let mut tmp = NamedTempFile::new().unwrap();
-        let mut zip = zip::ZipWriter::new(&mut tmp);
-        for (name, content) in entries {
-            zip.start_file(*name, zip::write::SimpleFileOptions::default())
-                .unwrap();
-            zip.write_all(content).unwrap();
-        }
-        zip.finish().unwrap();
-        tmp
-    }
-
-    fn make_tar(entries: &[(&str, &[u8])]) -> NamedTempFile {
-        let mut tmp = NamedTempFile::new().unwrap();
-        {
-            let mut builder = tar::Builder::new(&mut tmp);
-            for (name, content) in entries {
-                let mut header = tar::Header::new_gnu();
-                header.set_size(content.len() as u64);
-                header.set_mode(0o644);
-                header.set_cksum();
-                builder.append_data(&mut header, name, *content).unwrap();
-            }
-            builder.finish().unwrap();
-        }
-        tmp
-    }
-
-    fn make_tar_gz(entries: &[(&str, &[u8])]) -> NamedTempFile {
-        let mut tmp = NamedTempFile::new().unwrap();
-        let enc = flate2::write::GzEncoder::new(&mut tmp, flate2::Compression::default());
-        let mut builder = tar::Builder::new(enc);
-        for (name, content) in entries {
-            let mut header = tar::Header::new_gnu();
-            header.set_size(content.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder.append_data(&mut header, name, *content).unwrap();
-        }
-        builder.into_inner().unwrap().finish().unwrap();
-        tmp
-    }
-
-    fn make_tar_bz2(entries: &[(&str, &[u8])]) -> NamedTempFile {
-        let mut tmp = NamedTempFile::new().unwrap();
-        let enc = bzip2::write::BzEncoder::new(&mut tmp, bzip2::Compression::default());
-        let mut builder = tar::Builder::new(enc);
-        for (name, content) in entries {
-            let mut header = tar::Header::new_gnu();
-            header.set_size(content.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder.append_data(&mut header, name, *content).unwrap();
-        }
-        builder.into_inner().unwrap().finish().unwrap();
-        tmp
-    }
-
-    fn make_tar_xz(entries: &[(&str, &[u8])]) -> NamedTempFile {
-        let mut tmp = NamedTempFile::new().unwrap();
-        let enc = xz2::write::XzEncoder::new(&mut tmp, 1);
-        let mut builder = tar::Builder::new(enc);
-        for (name, content) in entries {
-            let mut header = tar::Header::new_gnu();
-            header.set_size(content.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder.append_data(&mut header, name, *content).unwrap();
-        }
-        builder.into_inner().unwrap().finish().unwrap();
-        tmp
-    }
 
     #[test]
     fn test_extract_gz_roundtrip() {

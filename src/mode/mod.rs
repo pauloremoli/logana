@@ -1,4 +1,5 @@
 pub mod app_mode;
+pub mod archive_picker_mode;
 pub mod command_mode;
 pub mod comment_mode;
 pub mod dlt_select_mode;

@@ -1,3 +1,4 @@
+pub mod archive_picker_popup;
 pub mod command_bar;
 pub mod comment_popup;
 pub mod confirm_modal;
@@ -13,6 +14,7 @@ pub mod source_select_popup;
 pub mod tab_bar;
 pub mod value_colors_popup;
 
+pub use archive_picker_popup::ArchivePickerPopup;
 pub use command_bar::{CommandBar, CompletionSource, file_display_name, resolve_completions};
 pub use comment_popup::CommentPopup;
 pub use confirm_modal::{ConfirmOpenDirModal, ConfirmRestoreModal, ConfirmRestoreSessionModal};

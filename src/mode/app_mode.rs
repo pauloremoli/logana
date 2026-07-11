@@ -89,6 +89,11 @@ pub enum ModeRenderState {
         tabs: Vec<(String, bool)>,
         selected: usize,
     },
+    ArchivePicker {
+        rows: Vec<crate::mode::archive_picker_mode::ArchiveRow>,
+        selected: usize,
+        source_path: String,
+    },
     Ui,
     ExportFooter {
         path: String,
@@ -125,6 +130,7 @@ impl ModeRenderState {
             | ModeRenderState::ConfirmRestoreSession { .. }
             | ModeRenderState::ConfirmOpenDir { .. } => "CONFIRM",
             ModeRenderState::MergeSelect { .. } => "MERGE",
+            ModeRenderState::ArchivePicker { .. } => "ARCHIVE",
             ModeRenderState::ExportFooter { .. } => "EXPORT",
         }
     }
@@ -930,6 +936,15 @@ mod tests {
             "CONFIRM"
         );
         assert_eq!(ModeRenderState::Ui.mode_name(), "UI");
+        assert_eq!(
+            ModeRenderState::ArchivePicker {
+                rows: vec![],
+                selected: 0,
+                source_path: String::new(),
+            }
+            .mode_name(),
+            "ARCHIVE"
+        );
         assert_eq!(
             ModeRenderState::ExportFooter {
                 path: String::new(),

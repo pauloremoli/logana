@@ -402,6 +402,10 @@ impl App {
             } => {
                 self.cmd_export_with_footer(path, template_name, footer_fields);
             }
+            KeyResult::ExtractSelectedArchiveFiles { source_path, tree } => {
+                self.begin_archive_extraction_selected(source_path, tree)
+                    .await;
+            }
         }
     }
 

@@ -1,0 +1,429 @@
+use crate::{
+    config::Keybindings,
+    ingestion::{ArchiveTree, CheckState, NodeId, NodeKind},
+    mode::app_mode::{Mode, ModeRenderState, status_entry},
+    mode::normal_mode::NormalMode,
+    theme::Theme,
+    ui::{KeyResult, TabState},
+};
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+
+/// A single rendered row of the archive picker popup: enough to draw one
+/// line (name, indentation, checkbox state) without the widget needing to
+/// know anything about the underlying tree structure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArchiveRow {
+    pub name: String,
+    pub depth: usize,
+    pub is_container: bool,
+    pub check_state: CheckState,
+    pub is_error: bool,
+}
+
+#[derive(Debug)]
+pub struct ArchivePickerMode {
+    pub tree: ArchiveTree,
+    pub visible: Vec<NodeId>,
+    pub selected: usize,
+    pub source_path: String,
+}
+
+impl ArchivePickerMode {
+    pub fn new(tree: ArchiveTree, source_path: String) -> Self {
+        let visible = tree.visible_rows();
+        Self {
+            tree,
+            visible,
+            selected: 0,
+            source_path,
+        }
+    }
+
+    fn row_for(&self, id: NodeId) -> ArchiveRow {
+        let node = &self.tree.nodes[id];
+        match &node.kind {
+            NodeKind::File => ArchiveRow {
+                name: node.name.clone(),
+                depth: node.depth,
+                is_container: false,
+                check_state: if node.selected {
+                    CheckState::Checked
+                } else {
+                    CheckState::Unchecked
+                },
+                is_error: false,
+            },
+            NodeKind::Container { .. } => ArchiveRow {
+                name: node.name.clone(),
+                depth: node.depth,
+                is_container: true,
+                check_state: self.tree.container_check_state(id),
+                is_error: false,
+            },
+            NodeKind::UnreadableContainer { error } => ArchiveRow {
+                name: format!("{} ({error})", node.name),
+                depth: node.depth,
+                is_container: false,
+                check_state: CheckState::Unchecked,
+                is_error: true,
+            },
+        }
+    }
+
+    fn any_file_selected(&self) -> bool {
+        self.tree
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, NodeKind::File) && n.selected)
+    }
+
+    fn set_all_files_selected(&mut self, selected: bool) {
+        for node in &mut self.tree.nodes {
+            if matches!(node.kind, NodeKind::File) {
+                node.selected = selected;
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Mode for ArchivePickerMode {
+    async fn handle_key(
+        mut self: Box<Self>,
+        tab: &mut TabState,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        let kb = &tab.interaction.keybindings;
+
+        if kb.select_fields.apply.matches(key, modifiers) {
+            if !self.any_file_selected() {
+                tab.interaction.command_error =
+                    Some("Select at least 1 file to extract".to_string());
+                return (self, KeyResult::Handled);
+            }
+            return (
+                Box::new(NormalMode::default()),
+                KeyResult::ExtractSelectedArchiveFiles {
+                    source_path: self.source_path.clone(),
+                    tree: self.tree.clone(),
+                },
+            );
+        }
+
+        if kb.select_fields.cancel.matches(key, modifiers) {
+            return (Box::new(NormalMode::default()), KeyResult::Handled);
+        }
+
+        if kb.navigation.scroll_down.matches(key, modifiers) {
+            if !self.visible.is_empty() {
+                self.selected = (self.selected + 1).min(self.visible.len() - 1);
+            }
+        } else if kb.navigation.scroll_up.matches(key, modifiers) {
+            self.selected = self.selected.saturating_sub(1);
+        } else if kb.select_fields.toggle.matches(key, modifiers) {
+            if let Some(&id) = self.visible.get(self.selected) {
+                self.tree.toggle_subtree(id);
+            }
+        } else if kb.select_fields.all.matches(key, modifiers) {
+            self.set_all_files_selected(true);
+        } else if kb.select_fields.none.matches(key, modifiers) {
+            self.set_all_files_selected(false);
+        }
+
+        (self, KeyResult::Ignored)
+    }
+
+    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(
+            "[ARCHIVE]  ",
+            Style::default()
+                .fg(theme.text_highlight_fg)
+                .add_modifier(Modifier::BOLD),
+        )];
+        status_entry(
+            &mut spans,
+            kb.select_fields.toggle.display(),
+            "toggle",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.select_fields.apply.display(),
+            "extract",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.select_fields.cancel.display(),
+            "cancel",
+            theme,
+        );
+        status_entry(&mut spans, kb.select_fields.all.display(), "all", theme);
+        status_entry(&mut spans, kb.select_fields.none.display(), "none", theme);
+        Line::from(spans)
+    }
+
+    fn render_state(&self) -> ModeRenderState {
+        ModeRenderState::ArchivePicker {
+            rows: self.visible.iter().map(|&id| self.row_for(id)).collect(),
+            selected: self.selected,
+            source_path: self.source_path.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{Database, LogManager};
+    use crate::ingestion::{ArchiveNode, FileReader};
+    use crate::mode::app_mode::ModeRenderState;
+    use std::sync::Arc;
+
+    async fn make_tab() -> TabState {
+        let reader = FileReader::from_bytes(b"line1\nline2\n".to_vec());
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let lm = LogManager::new(db, None).await;
+        TabState::new(reader, lm, "test".to_string())
+    }
+
+    fn file_node(id: NodeId, parent: Option<NodeId>, name: &str, depth: usize) -> ArchiveNode {
+        ArchiveNode {
+            id,
+            parent,
+            name: name.to_string(),
+            full_path: name.to_string(),
+            depth,
+            kind: NodeKind::File,
+            selected: false,
+            cached_bytes: None,
+        }
+    }
+
+    fn container_node(
+        id: NodeId,
+        parent: Option<NodeId>,
+        name: &str,
+        depth: usize,
+        children: Vec<NodeId>,
+    ) -> ArchiveNode {
+        ArchiveNode {
+            id,
+            parent,
+            name: name.to_string(),
+            full_path: name.to_string(),
+            depth,
+            kind: NodeKind::Container {
+                children,
+                archive_type: crate::ingestion::ArchiveType::Zip,
+            },
+            selected: false,
+            cached_bytes: None,
+        }
+    }
+
+    /// Builds:
+    ///   0: File "a.log"                (root)
+    ///   1: Container "bundle.zip"      (root) -> [2, 3]
+    ///     2: File "inner1.log"
+    ///     3: File "inner2.log"
+    fn build_test_tree() -> ArchiveTree {
+        let nodes = vec![
+            file_node(0, None, "a.log", 0),
+            container_node(1, None, "bundle.zip", 0, vec![2, 3]),
+            file_node(2, Some(1), "inner1.log", 1),
+            file_node(3, Some(1), "inner2.log", 1),
+        ];
+        ArchiveTree {
+            nodes,
+            roots: vec![0, 1],
+        }
+    }
+
+    fn mode() -> ArchivePickerMode {
+        ArchivePickerMode::new(build_test_tree(), "archive.zip".to_string())
+    }
+
+    async fn press(
+        mode: ArchivePickerMode,
+        tab: &mut TabState,
+        code: KeyCode,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        Box::new(mode)
+            .handle_key(tab, code, KeyModifiers::NONE)
+            .await
+    }
+
+    fn extract_state(state: ModeRenderState) -> (Vec<ArchiveRow>, usize, String) {
+        match state {
+            ModeRenderState::ArchivePicker {
+                rows,
+                selected,
+                source_path,
+            } => (rows, selected, source_path),
+            other => panic!("expected ArchivePicker, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_flattens_visible_rows_in_preorder() {
+        let m = mode();
+        assert_eq!(m.visible, vec![0, 1, 2, 3]);
+        assert_eq!(m.selected, 0);
+    }
+
+    #[test]
+    fn test_render_state_returns_archive_picker() {
+        let m = mode();
+        let (rows, selected, source_path) = extract_state(m.render_state());
+        assert_eq!(rows.len(), 4);
+        assert_eq!(selected, 0);
+        assert_eq!(source_path, "archive.zip");
+        assert_eq!(rows[0].name, "a.log");
+        assert!(!rows[0].is_container);
+        assert_eq!(rows[1].name, "bundle.zip");
+        assert!(rows[1].is_container);
+        assert_eq!(rows[2].depth, 1);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_down_moves_cursor() {
+        let mut tab = make_tab().await;
+        let (mode2, result) = press(mode(), &mut tab, KeyCode::Char('j')).await;
+        assert!(matches!(result, KeyResult::Ignored));
+        let (_, selected, _) = extract_state(mode2.render_state());
+        assert_eq!(selected, 1);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_down_clamped_at_last() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 3;
+        let (mode2, _) = press(m, &mut tab, KeyCode::Char('j')).await;
+        let (_, selected, _) = extract_state(mode2.render_state());
+        assert_eq!(selected, 3);
+    }
+
+    #[tokio::test]
+    async fn test_scroll_up_clamped_at_zero() {
+        let mut tab = make_tab().await;
+        let (mode2, _) = press(mode(), &mut tab, KeyCode::Char('k')).await;
+        let (_, selected, _) = extract_state(mode2.render_state());
+        assert_eq!(selected, 0);
+    }
+
+    #[tokio::test]
+    async fn test_toggle_file_row_selects_only_itself() {
+        let mut tab = make_tab().await;
+        let (mode2, _) = press(mode(), &mut tab, KeyCode::Char(' ')).await;
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(rows[0].check_state, CheckState::Checked);
+        assert_eq!(rows[1].check_state, CheckState::Unchecked);
+    }
+
+    #[tokio::test]
+    async fn test_toggle_container_row_selects_all_descendants() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 1; // "bundle.zip"
+        let (mode2, _) = press(m, &mut tab, KeyCode::Char(' ')).await;
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(rows[1].check_state, CheckState::Checked);
+        assert_eq!(rows[2].check_state, CheckState::Checked);
+        assert_eq!(rows[3].check_state, CheckState::Checked);
+    }
+
+    #[tokio::test]
+    async fn test_toggle_descendant_does_not_affect_sibling_row() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 2; // "inner1.log"
+        let (mode2, _) = press(m, &mut tab, KeyCode::Char(' ')).await;
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(rows[2].check_state, CheckState::Checked);
+        assert_eq!(rows[3].check_state, CheckState::Unchecked);
+        assert_eq!(rows[1].check_state, CheckState::Partial);
+    }
+
+    #[tokio::test]
+    async fn test_select_all_selects_every_file_not_just_visible_containers() {
+        let mut tab = make_tab().await;
+        let (mode2, _) = press(mode(), &mut tab, KeyCode::Char('a')).await;
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert!(rows.iter().all(|r| r.check_state == CheckState::Checked));
+    }
+
+    #[tokio::test]
+    async fn test_select_none_deselects_every_file() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.tree.toggle_subtree(1);
+        let (mode2, _) = press(m, &mut tab, KeyCode::Char('n')).await;
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert!(rows.iter().all(|r| r.check_state == CheckState::Unchecked));
+    }
+
+    #[tokio::test]
+    async fn test_apply_with_zero_selected_shows_error_and_stays_in_mode() {
+        let mut tab = make_tab().await;
+        let (_, result) = press(mode(), &mut tab, KeyCode::Enter).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(tab.interaction.command_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_apply_with_selection_returns_extract_key_result() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.tree.nodes[0].selected = true;
+        let (_, result) = press(m, &mut tab, KeyCode::Enter).await;
+        match result {
+            KeyResult::ExtractSelectedArchiveFiles { source_path, tree } => {
+                assert_eq!(source_path, "archive.zip");
+                assert!(tree.nodes[0].selected);
+            }
+            other => panic!("expected ExtractSelectedArchiveFiles, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cancel_returns_to_normal_mode() {
+        let mut tab = make_tab().await;
+        let (_, result) = press(mode(), &mut tab, KeyCode::Esc).await;
+        assert!(matches!(result, KeyResult::Handled));
+    }
+
+    #[tokio::test]
+    async fn test_unknown_key_returns_ignored() {
+        let mut tab = make_tab().await;
+        let (_, result) = press(mode(), &mut tab, KeyCode::F(5)).await;
+        assert!(matches!(result, KeyResult::Ignored));
+    }
+
+    #[test]
+    fn test_mode_bar_content_contains_archive_label() {
+        let m = mode();
+        let kb = Keybindings::default();
+        let theme = crate::theme::Theme::default();
+        let line = m.mode_bar_content(&kb, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("ARCHIVE"));
+    }
+
+    #[test]
+    fn test_row_for_unreadable_container_marks_is_error() {
+        let mut tree = build_test_tree();
+        tree.nodes[1].kind = NodeKind::UnreadableContainer {
+            error: "bad zip".to_string(),
+        };
+        let m = ArchivePickerMode::new(tree, "archive.zip".to_string());
+        let (rows, _, _) = extract_state(m.render_state());
+        assert!(rows[1].is_error);
+        assert!(rows[1].name.contains("bad zip"));
+    }
+}

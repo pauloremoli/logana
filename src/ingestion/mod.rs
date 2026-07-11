@@ -1,4 +1,5 @@
 pub mod archive;
+pub mod archive_tree;
 pub mod file_reader;
 pub mod loading;
 pub mod otlp_receiver;
@@ -6,6 +7,9 @@ pub mod otlp_receiver;
 pub use archive::{
     ArchiveExtractionProgress, ArchiveType, ExtractedFile, detect_archive_type, extract,
     extract_with_progress, list_archive_files, uses_streaming_path,
+};
+pub use archive_tree::{
+    ArchiveNode, ArchiveTree, CheckState, NodeId, NodeKind, extract_selected, list_archive_tree,
 };
 pub use file_reader::{
     FileLoadHandle, FileLoadResult, FileReader, MergedEntry, VisibilityPredicate,
