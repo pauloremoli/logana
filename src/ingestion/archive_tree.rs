@@ -9,7 +9,7 @@ use crate::ingestion::{ArchiveExtractionProgress, ArchiveType, ExtractedFile};
 /// Maximum nesting depth of archives-within-archives before listing stops
 /// descending further (a nested entry past this depth is still shown, as a
 /// non-expandable row, just not parsed).
-pub const MAX_RECURSION_DEPTH: usize = 8;
+pub const MAX_RECURSION_DEPTH: usize = 20;
 /// Maximum total entries (across all nesting levels) a single listing pass
 /// will walk, to bound pathological/zip-bomb-style archives.
 pub const MAX_TOTAL_ENTRIES: usize = 10_000;
