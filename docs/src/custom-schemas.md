@@ -103,7 +103,7 @@ Three fields unlock core logana features. If your format contains them, map them
 | Field | Features that depend on it |
 |---|---|
 | `timestamp` | **Date & time filters** (`:date-filter`, `-t` on the CLI) — without a timestamp field, date filters have nothing to match against and are silently skipped |
-| `level` | **Error/warning navigation** (`e`/`w` keys to jump between errors and warnings) and **level-based field coloring** — without a level field both are disabled for that tab |
+| `level` | **Error/warning navigation** (`e`/`w` keys to jump between errors and warnings) and **level-based field coloring** — without a level field both are disabled for that tab. If your level values aren't `error`/`warn`/etc., see [Level values](#level-values) below to map them. |
 | `target` | **Field coloring by target** — used to color-code log lines by their originating component in the structured view |
 
 If your format uses non-standard names for these fields, always map them explicitly:
@@ -115,6 +115,23 @@ If your format uses non-standard names for these fields, always map them explici
   "subsys":  "target"
 }
 ```
+
+### Level values
+
+`level` is normalized automatically against a built-in set of keywords (`error`/`err`, `warn`/`warning`/`wrn`, `info`/`inf`, …). If your format's level values don't match any of them — e.g. severity codes like `SEV1`/`SEV2` — level coloring and `e`/`w` error/warning navigation won't recognize them by default. Declare which raw values (case-insensitive) mean error and warning with `levels`:
+
+```json
+{
+  "name":     "sev",
+  "template": "{level}: {message}",
+  "levels": {
+    "error":   ["SEV1"],
+    "warning": ["SEV2"]
+  }
+}
+```
+
+A value can only be declared for one of `error`/`warning` — declaring the same value in both is a schema error, reported the same way as an invalid `template`/`pattern` (see the startup warning at the top of this page). Values not covered by `levels` still fall back to the built-in keyword matching.
 
 ## Rendering
 

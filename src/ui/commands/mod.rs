@@ -1372,6 +1372,7 @@ mod tests {
             template: Some("{level}/{component}: {message}".to_string()),
             pattern: None,
             fields: std::collections::HashMap::new(),
+            levels: Default::default(),
         })
         .unwrap()
     }

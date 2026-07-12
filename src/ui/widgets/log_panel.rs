@@ -478,6 +478,15 @@ fn join_source_prefix_and_cols(source_prefix: &str, cols: &[String]) -> String {
     buf
 }
 
+/// Classifies a raw captured `level` value via `parser`'s own mapping (e.g. a
+/// custom schema's error/warning value overrides) when a parser is
+/// available, otherwise via the built-in `LogLevel::parse_level` keywords.
+fn classify_level(parser: Option<&dyn crate::parser::LogFormatParser>, raw: &str) -> LogLevel {
+    parser
+        .map(|p| p.classify_level(raw))
+        .unwrap_or_else(|| LogLevel::parse_level(raw))
+}
+
 fn stable_hash(s: &str) -> usize {
     s.bytes().fold(5381usize, |acc, b| {
         acc.wrapping_mul(33).wrapping_add(b as usize)
@@ -717,9 +726,10 @@ pub fn prepare_log_panel(
 
         let mut base_style = Style::default().fg(theme.text);
         if level_colors_disabled.len() < 7 {
+            let format_parser = tab.display.format.as_deref();
             let level = cached
                 .and_then(|c| c.level.as_deref())
-                .map(LogLevel::parse_level)
+                .map(|lvl| classify_level(format_parser, lvl))
                 .unwrap_or_else(|| {
                     // For continuation lines (parse_line returned None), inherit
                     // the parent entry's level so the whole multiline block gets
@@ -735,16 +745,16 @@ pub fn prepare_log_panel(
                                 .filter(|(g, _)| *g == parse_gen)
                                 .and_then(|(_, c)| c.level.as_deref())
                             {
-                                return LogLevel::parse_level(lvl);
+                                return classify_level(format_parser, lvl);
                             }
                             // Parent not cached (outside viewport) — parse just
                             // the level from its raw bytes without full layout.
-                            if let Some(parser) = tab.display.format.as_deref()
+                            if let Some(parser) = format_parser
                                 && let Some(parts) =
                                     parser.parse_line(tab.file_reader.get_line(parent))
                                 && let Some(lvl) = parts.level
                             {
-                                return LogLevel::parse_level(lvl);
+                                return classify_level(format_parser, lvl);
                             }
                         }
                     }
@@ -1542,6 +1552,7 @@ mod tests {
                 ]
                 .into_iter()
                 .collect(),
+                levels: Default::default(),
             })
             .unwrap(),
         )

@@ -192,6 +192,15 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
         self.parse_line(line).and_then(|p| p.timestamp)
     }
 
+    /// Classifies a raw captured `level` value into a [`LogLevel`], for level
+    /// coloring and the `e`/`w` error/warning navigation keys. Parsers whose
+    /// schema declares its own error/warning values (see `CustomParser`)
+    /// override this to consult that mapping before falling back to the
+    /// built-in keyword matching in `LogLevel::parse_level`.
+    fn classify_level(&self, raw: &str) -> LogLevel {
+        LogLevel::parse_level(raw)
+    }
+
     /// Returns `false` when this format's timestamps do not include a year
     /// (e.g. BSD syslog `"Feb 22 10:15:30"`), meaning a `YearMap` must be
     /// applied to recover the correct year.  Defaults to `true`.

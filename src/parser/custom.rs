@@ -4,7 +4,7 @@ use regex::Regex;
 
 use crate::config::CustomSchemaConfig;
 use crate::parser::types::{
-    DisplayParts, FieldSemantic, LogFormatParser, push_extra_field, push_field_as,
+    DisplayParts, FieldSemantic, LogFormatParser, LogLevel, push_extra_field, push_field_as,
 };
 
 enum FieldRole {
@@ -21,6 +21,15 @@ enum TemplateSegment {
     Field(String),
 }
 
+/// Raw `level` values (lowercased) a schema declares as Error/Warning, built
+/// from `CustomSchemaConfig::levels`. Empty sets are the common case (no
+/// override — fall back to `LogLevel::parse_level`'s built-in keywords).
+#[derive(Debug, Default)]
+struct LevelOverrides {
+    error: HashSet<String>,
+    warning: HashSet<String>,
+}
+
 #[derive(Debug)]
 pub struct CustomParser {
     name: String,
@@ -29,6 +38,7 @@ pub struct CustomParser {
     /// `Some` only when built from a `template` (not a raw `pattern`), since
     /// only a template has a literal skeleton to reconstruct the line from.
     template_segments: Option<Vec<TemplateSegment>>,
+    level_overrides: LevelOverrides,
 }
 
 #[derive(Debug)]
@@ -190,6 +200,26 @@ fn regex_escape_char(c: char) -> String {
     regex::escape(&s)
 }
 
+/// Builds the lowercased error/warning value sets from `cfg.levels`,
+/// rejecting a value declared as both (ambiguous — which would win at
+/// classification time is not something a user should have to guess).
+fn build_level_overrides(cfg: &CustomSchemaConfig) -> Result<LevelOverrides, String> {
+    let error: HashSet<String> = cfg.levels.error.iter().map(|v| v.to_lowercase()).collect();
+    let warning: HashSet<String> = cfg
+        .levels
+        .warning
+        .iter()
+        .map(|v| v.to_lowercase())
+        .collect();
+    if let Some(both) = error.intersection(&warning).next() {
+        return Err(format!(
+            "schema '{}': level value '{both}' is declared as both error and warning",
+            cfg.name
+        ));
+    }
+    Ok(LevelOverrides { error, warning })
+}
+
 impl CustomParser {
     pub fn from_config(cfg: &CustomSchemaConfig) -> Result<Self, String> {
         let mut template_segments = None;
@@ -229,11 +259,14 @@ impl CustomParser {
             field_map.push((capture_idx, static_name, role.into()));
         }
 
+        let level_overrides = build_level_overrides(cfg)?;
+
         Ok(CustomParser {
             name: cfg.name.clone(),
             regex,
             field_map,
             template_segments,
+            level_overrides,
         })
     }
 
@@ -271,6 +304,17 @@ fn named_capture_groups(regex: &Regex) -> Vec<(usize, &str)> {
 impl LogFormatParser for CustomParser {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn classify_level(&self, raw: &str) -> LogLevel {
+        let lower = raw.to_lowercase();
+        if self.level_overrides.error.contains(&lower) {
+            LogLevel::Error
+        } else if self.level_overrides.warning.contains(&lower) {
+            LogLevel::Warning
+        } else {
+            LogLevel::parse_level(raw)
+        }
     }
 
     fn parse_line<'a>(&self, line: &'a [u8]) -> Option<DisplayParts<'a>> {
@@ -397,6 +441,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            levels: Default::default(),
         })
         .unwrap()
     }
@@ -525,6 +570,7 @@ mod tests {
             fields: [("pid".to_string(), "ignored".to_string())]
                 .into_iter()
                 .collect(),
+            levels: Default::default(),
         })
         .unwrap();
         let line = b"1234 INFO started";
@@ -540,6 +586,7 @@ mod tests {
             template: None,
             pattern: Some("^(?P<level>\\w+) (?P<message>.*)$".to_string()),
             fields: Default::default(),
+            levels: Default::default(),
         })
         .unwrap();
         let parts = parser.parse_line(b"INFO started").unwrap();
@@ -561,6 +608,7 @@ mod tests {
             template: None,
             pattern: None,
             fields: Default::default(),
+            levels: Default::default(),
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must specify either"));
@@ -574,6 +622,7 @@ mod tests {
             template: Some("{foo}".to_string()),
             pattern: Some("(?P<foo>.*)".to_string()),
             fields: Default::default(),
+            levels: Default::default(),
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cannot specify both"));
@@ -587,6 +636,7 @@ mod tests {
             template: None,
             pattern: Some("(?P<foo>[invalid".to_string()),
             fields: Default::default(),
+            levels: Default::default(),
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid regex"));
@@ -600,6 +650,7 @@ mod tests {
             template: Some("{level} {component} {unknown_field} {message}".to_string()),
             pattern: None,
             fields: Default::default(),
+            levels: Default::default(),
         })
         .unwrap();
 
@@ -650,6 +701,7 @@ mod tests {
             fields: [("foo".to_string(), "not_a_role".to_string())]
                 .into_iter()
                 .collect(),
+            levels: Default::default(),
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown field role"));
@@ -665,6 +717,71 @@ mod tests {
         assert!(!parser.matches_for_detection(not_matching));
     }
 
+    fn parser_with_level_overrides(error: &[&str], warning: &[&str]) -> CustomParser {
+        CustomParser::from_config(&CustomSchemaConfig {
+            name: "sev".to_string(),
+            description: None,
+            template: Some("{level} {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: crate::config::CustomLevelValues {
+                error: error.iter().map(|s| s.to_string()).collect(),
+                warning: warning.iter().map(|s| s.to_string()).collect(),
+            },
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn test_classify_level_uses_error_override() {
+        let parser = parser_with_level_overrides(&["SEV1"], &["SEV2"]);
+        assert_eq!(parser.classify_level("SEV1"), LogLevel::Error);
+    }
+
+    #[test]
+    fn test_classify_level_uses_warning_override() {
+        let parser = parser_with_level_overrides(&["SEV1"], &["SEV2"]);
+        assert_eq!(parser.classify_level("SEV2"), LogLevel::Warning);
+    }
+
+    #[test]
+    fn test_classify_level_override_is_case_insensitive() {
+        let parser = parser_with_level_overrides(&["SEV1"], &[]);
+        assert_eq!(parser.classify_level("sev1"), LogLevel::Error);
+    }
+
+    #[test]
+    fn test_classify_level_falls_back_to_builtin_keywords() {
+        // No override declared for "ERR" — still classified via the
+        // built-in LogLevel::parse_level keyword table.
+        let parser = parser_with_level_overrides(&["SEV1"], &["SEV2"]);
+        assert_eq!(parser.classify_level("ERR"), LogLevel::Error);
+        assert_eq!(parser.classify_level("WARN"), LogLevel::Warning);
+    }
+
+    #[test]
+    fn test_classify_level_unrecognized_value_without_override_is_unknown() {
+        let parser = parser_with_level_overrides(&[], &[]);
+        assert_eq!(parser.classify_level("SEV1"), LogLevel::Unknown);
+    }
+
+    #[test]
+    fn test_from_config_conflicting_level_override_is_err() {
+        let result = CustomParser::from_config(&CustomSchemaConfig {
+            name: "bad".to_string(),
+            description: None,
+            template: Some("{level} {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: crate::config::CustomLevelValues {
+                error: vec!["SEV1".to_string()],
+                warning: vec!["sev1".to_string()],
+            },
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("both error and warning"));
+    }
+
     #[test]
     fn test_ignored_role() {
         let parser = CustomParser::from_config(&CustomSchemaConfig {
@@ -675,6 +792,7 @@ mod tests {
             fields: [("pid".to_string(), "ignored".to_string())]
                 .into_iter()
                 .collect(),
+            levels: Default::default(),
         })
         .unwrap();
 
@@ -698,6 +816,7 @@ mod tests {
             template: Some("{timestamp} {level} {target} {zebra} {alpha} {message}".to_string()),
             pattern: None,
             fields: Default::default(),
+            levels: Default::default(),
         })
         .unwrap();
 
@@ -728,6 +847,7 @@ mod tests {
             fields: [("host".to_string(), "hostname".to_string())]
                 .into_iter()
                 .collect(),
+            levels: Default::default(),
         })
         .unwrap();
 
@@ -746,6 +866,7 @@ mod tests {
             fields: [("pid".to_string(), "ignored".to_string())]
                 .into_iter()
                 .collect(),
+            levels: Default::default(),
         })
         .unwrap();
 

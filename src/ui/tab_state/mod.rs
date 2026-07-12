@@ -756,9 +756,11 @@ impl TabState {
         let file_idx = self.filter.visible_indices.get(pos);
         let bytes = self.file_reader.get_line(file_idx);
         let level = parser
-            .and_then(|p| p.parse_line(bytes))
-            .and_then(|parts| parts.level)
-            .map(LogLevel::parse_level)
+            .and_then(|p| {
+                p.parse_line(bytes)
+                    .and_then(|parts| parts.level)
+                    .map(|raw| p.classify_level(raw))
+            })
             .unwrap_or_else(|| LogLevel::detect_from_bytes(bytes));
         if errors {
             matches!(level, LogLevel::Error | LogLevel::Fatal)
@@ -4220,6 +4222,46 @@ mod tests {
         let tab = make_tab(&["INFO line", "ERROR oops", "WARN careful", "FATAL crash"]).await;
         assert_eq!(tab.prev_warning_position(3), Some(2));
         assert_eq!(tab.prev_warning_position(2), None);
+    }
+
+    #[tokio::test]
+    async fn test_next_error_position_uses_custom_schema_level_override() {
+        let mut tab = make_tab(&["INFO line", "SEV1 oops", "SEV2 careful"]).await;
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "sev".to_string(),
+            description: None,
+            template: Some("{level} {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: crate::config::CustomLevelValues {
+                error: vec!["SEV1".to_string()],
+                warning: vec!["SEV2".to_string()],
+            },
+        };
+        tab.display.format = Some(std::sync::Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        assert_eq!(tab.next_error_position(0), Some(1));
+        assert_eq!(tab.next_warning_position(0), Some(2));
+    }
+
+    #[tokio::test]
+    async fn test_next_error_position_ignores_unmapped_custom_level() {
+        // Without a declared override, a non-keyword level value like "SEV1"
+        // must not be (mis)matched as an error.
+        let mut tab = make_tab(&["INFO line", "SEV1 oops"]).await;
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "sev".to_string(),
+            description: None,
+            template: Some("{level} {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: Default::default(),
+        };
+        tab.display.format = Some(std::sync::Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        assert_eq!(tab.next_error_position(0), None);
     }
 
     #[tokio::test]

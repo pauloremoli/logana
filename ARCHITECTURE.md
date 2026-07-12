@@ -36,6 +36,8 @@ graph LR
 
 For a `template`-based schema, `CustomParser` also compiles the template into an ordered `Vec<TemplateSegment>` (`Literal(String)` | `Field(String)`) alongside the regex. `parse_line` uses it to populate `DisplayParts::reconstructed_line` — the line rebuilt from the template's own literal separators and each field's captured value — so a schema like `{level}/{component}/{feature}` renders with its `/` separators intact instead of the generic space-joined column layout. `log_panel.rs::populate_parse_cache` only uses `reconstructed_line` when `hidden_fields` is empty and no explicit `FieldLayout::columns` is set (i.e. the default view); otherwise it falls back to `apply_field_layout`, since hiding or reordering a field would leave the template's separators dangling. `pattern`-based schemas have no `TemplateSegment`s and always use the column layout.
 
+`CustomSchemaConfig::levels` (`CustomLevelValues { error: Vec<String>, warning: Vec<String> }`) lets a schema declare raw `level` values that don't match `LogLevel::parse_level`'s built-in keywords (e.g. `SEV1`/`SEV2`). `CustomParser::from_config` lowercases them into a `LevelOverrides { error: HashSet<String>, warning: HashSet<String> }` (rejecting a value declared as both) and implements the `LogFormatParser::classify_level` default-method hook to consult it before falling back to `LogLevel::parse_level`. Both `e`/`w` navigation (`TabState::pos_matches_level`, `src/ui/tab_state/mod.rs`) and level coloring (`log_panel.rs::classify_level`) call `parser.classify_level(raw)` instead of `LogLevel::parse_level` directly, so a schema's overrides drive both consistently.
+
 ## Component Diagram
 
 ```mermaid

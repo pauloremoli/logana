@@ -34,6 +34,19 @@ pub enum RestoreSessionPolicy {
     Never,
 }
 
+/// Raw `level` field values (case-insensitive) that a custom schema wants
+/// classified as Error/Warning, for schemas whose level values (e.g. `SEV1`)
+/// don't match any of the built-in keywords (`error`, `warn`, `fatal`, …)
+/// that `LogLevel::parse_level` recognizes. Drives both level coloring and
+/// the `e`/`w` error/warning navigation keys.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CustomLevelValues {
+    #[serde(default)]
+    pub error: Vec<String>,
+    #[serde(default)]
+    pub warning: Vec<String>,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CustomSchemaConfig {
     pub name: String,
@@ -45,6 +58,8 @@ pub struct CustomSchemaConfig {
     pub pattern: Option<String>,
     #[serde(default)]
     pub fields: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub levels: CustomLevelValues,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
