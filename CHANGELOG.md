@@ -8,6 +8,7 @@ All notable changes to logana will be documented in this file.
 ### Added
 - Filter manager now supports the same navigation as the log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u`, `PageDown`/`PageUp`, `gg`/`G`, and `/` to search the filter list live.
 - Archive file picker now supports `/` to search the file tree live, narrowing to matching files while keeping their containing archive visible for context.
+- A startup warning now appears if a user-provided schema in `~/.config/logana/schema/` fails to load (malformed JSON) or fails to compile (invalid template/pattern), instead of only printing to stderr.
 
 ### Fixed
 - Extracting a selected archive file that is itself a lone compressed file (e.g. a `.gz` nested inside a `.zip`) now decompresses it, instead of opening the raw compressed bytes as an unreadable log.

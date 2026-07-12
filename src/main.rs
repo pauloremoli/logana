@@ -240,7 +240,10 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
         .as_deref()
         .and_then(|name| Theme::from_file(format!("{}.json", name)).ok())
         .unwrap_or_default();
-    init_schemas();
+    let mut schema_warnings = init_schemas();
+    schema_warnings.extend(logana::parser::validate_custom_schemas(
+        logana::config::custom_schemas(),
+    ));
     let keybinding_conflicts: Vec<String> = config.keybindings.validate();
     let keybindings = Arc::new(config.keybindings);
 
@@ -264,6 +267,7 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
     app.dlt_devices = config.dlt_devices;
     app.mcp.port = config.mcp_port;
     app.session.startup_warnings = keybinding_conflicts;
+    app.session.startup_warnings.extend(schema_warnings);
     app
 }
 

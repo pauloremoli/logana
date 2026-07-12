@@ -110,6 +110,22 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
     })
 }
 
+/// Compiles every schema (already valid JSON at this point, per
+/// `config::load_schemas`) as a [`CustomParser`], returning a human-readable
+/// error for each one whose template/pattern doesn't compile — surfaced as a
+/// startup notification so a broken schema doesn't just silently drop out of
+/// [`detect_format`]'s parser list.
+pub fn validate_custom_schemas(schemas: &[crate::config::CustomSchemaConfig]) -> Vec<String> {
+    schemas
+        .iter()
+        .filter_map(|cfg| {
+            CustomParser::from_config(cfg)
+                .err()
+                .map(|e| format!("invalid custom schema '{}': {e}", cfg.name))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +169,49 @@ mod tests {
     fn test_detect_format_empty_sample() {
         let lines: Vec<&[u8]> = vec![];
         assert!(detect_format(&lines).is_none());
+    }
+
+    fn valid_schema_config() -> crate::config::CustomSchemaConfig {
+        crate::config::CustomSchemaConfig {
+            name: "telecom".to_string(),
+            description: None,
+            template: Some(
+                "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"
+                    .to_string(),
+            ),
+            pattern: None,
+            fields: [
+                ("id".to_string(), "extra".to_string()),
+                ("service".to_string(), "target".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    #[test]
+    fn test_validate_custom_schemas_empty_for_valid_schema() {
+        let errors = validate_custom_schemas(&[valid_schema_config()]);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_custom_schemas_reports_error_for_unclosed_placeholder() {
+        let mut bad = valid_schema_config();
+        bad.name = "broken".to_string();
+        bad.template = Some("{id unclosed".to_string());
+        let errors = validate_custom_schemas(&[bad]);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("broken"));
+    }
+
+    #[test]
+    fn test_validate_custom_schemas_only_reports_the_broken_one() {
+        let mut bad = valid_schema_config();
+        bad.name = "broken".to_string();
+        bad.template = Some("{id unclosed".to_string());
+        let errors = validate_custom_schemas(&[valid_schema_config(), bad]);
+        assert_eq!(errors.len(), 1);
     }
 
     #[test]

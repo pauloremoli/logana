@@ -130,21 +130,31 @@ impl Config {
 
 static CUSTOM_SCHEMAS: std::sync::OnceLock<Vec<CustomSchemaConfig>> = std::sync::OnceLock::new();
 
-pub fn init_schemas() {
-    let schemas = schemas_dir().map(|d| load_schemas(&d)).unwrap_or_default();
+/// Loads user-provided schemas from disk and returns any errors encountered
+/// (e.g. malformed JSON) so the caller can surface them to the user — schema
+/// files are meant to be hand-edited, so a typo shouldn't fail silently.
+pub fn init_schemas() -> Vec<String> {
+    let (schemas, errors) = schemas_dir().map(|d| load_schemas(&d)).unwrap_or_default();
     let _ = CUSTOM_SCHEMAS.set(schemas);
+    errors
 }
 
 pub fn custom_schemas() -> &'static [CustomSchemaConfig] {
     CUSTOM_SCHEMAS.get().map(Vec::as_slice).unwrap_or_default()
 }
 
-pub fn load_schemas(schemas_dir: &std::path::Path) -> Vec<CustomSchemaConfig> {
+/// Reads every `*.json` file in `schemas_dir` as a [`CustomSchemaConfig`].
+/// Returns the successfully parsed schemas alongside a human-readable error
+/// for each file that failed to parse — this only catches malformed JSON;
+/// a syntactically valid schema with an invalid template/regex is caught
+/// later by `parser::validate_custom_schemas`.
+pub fn load_schemas(schemas_dir: &std::path::Path) -> (Vec<CustomSchemaConfig>, Vec<String>) {
     let entries = match std::fs::read_dir(schemas_dir) {
         Ok(e) => e,
-        Err(_) => return vec![],
+        Err(_) => return (vec![], vec![]),
     };
     let mut schemas = Vec::new();
+    let mut errors = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -155,10 +165,14 @@ pub fn load_schemas(schemas_dir: &std::path::Path) -> Vec<CustomSchemaConfig> {
             .and_then(|s| serde_json::from_str::<CustomSchemaConfig>(&s).map_err(|e| e.to_string()))
         {
             Ok(schema) => schemas.push(schema),
-            Err(e) => eprintln!("logana: could not load schema '{}': {e}", path.display()),
+            Err(e) => {
+                let msg = format!("could not load schema '{}': {e}", path.display());
+                eprintln!("logana: {msg}");
+                errors.push(msg);
+            }
         }
     }
-    schemas
+    (schemas, errors)
 }
 
 pub fn schemas_dir() -> Option<std::path::PathBuf> {
@@ -1579,8 +1593,9 @@ mod tests {
     #[test]
     fn test_load_schemas_empty_on_missing_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let schemas = load_schemas(&dir.path().join("nonexistent"));
+        let (schemas, errors) = load_schemas(&dir.path().join("nonexistent"));
         assert!(schemas.is_empty());
+        assert!(errors.is_empty());
     }
 
     #[test]
@@ -1592,24 +1607,50 @@ mod tests {
             "fields": {"id": "extra", "service": "target"}
         }"#;
         std::fs::write(dir.path().join("telecom.json"), schema_json).unwrap();
-        let schemas = load_schemas(dir.path());
+        let (schemas, errors) = load_schemas(dir.path());
         assert_eq!(schemas.len(), 1);
         assert_eq!(schemas[0].name, "telecom");
+        assert!(errors.is_empty());
     }
 
     #[test]
     fn test_load_schemas_ignores_non_json_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("readme.txt"), "not json").unwrap();
-        let schemas = load_schemas(dir.path());
+        let (schemas, errors) = load_schemas(dir.path());
         assert!(schemas.is_empty());
+        assert!(errors.is_empty());
     }
 
     #[test]
     fn test_load_schemas_skips_invalid_json() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("bad.json"), "{invalid}").unwrap();
-        let schemas = load_schemas(dir.path());
+        let (schemas, _) = load_schemas(dir.path());
         assert!(schemas.is_empty());
+    }
+
+    #[test]
+    fn test_load_schemas_reports_error_for_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bad.json"), "{invalid}").unwrap();
+        let (_, errors) = load_schemas(dir.path());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("bad.json"));
+    }
+
+    #[test]
+    fn test_load_schemas_reports_one_error_per_bad_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bad1.json"), "{invalid}").unwrap();
+        std::fs::write(dir.path().join("bad2.json"), "not json at all").unwrap();
+        std::fs::write(
+            dir.path().join("good.json"),
+            r#"{"name": "ok", "fields": {}}"#,
+        )
+        .unwrap();
+        let (schemas, errors) = load_schemas(dir.path());
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(errors.len(), 2);
     }
 }

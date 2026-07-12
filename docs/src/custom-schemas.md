@@ -2,6 +2,8 @@
 
 If none of the built-in parsers match your log format, define your own schema. logana loads every `.json` file from the `schema/` directory next to `config.json` and includes them in format detection automatically — no restart required after adding a file.
 
+If a schema file fails to load (malformed JSON) or fails to compile (an invalid `template`/`pattern`), logana shows a startup warning naming the file or schema and the problem, instead of silently dropping it from format detection.
+
 ## Schema directory
 
 | OS | Path |
