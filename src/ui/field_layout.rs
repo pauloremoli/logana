@@ -406,6 +406,7 @@ mod tests {
             }),
             extra_fields: vec![(crate::parser::FieldSemantic::Extra, "count", "42")],
             message: Some("hello world"),
+            reconstructed_line: None,
         }
     }
 
@@ -563,6 +564,7 @@ mod tests {
             span: None,
             extra_fields: vec![],
             message: Some("only message"),
+            reconstructed_line: None,
         };
         let cols = default_cols(&p, false);
         assert_eq!(cols.len(), 1);
@@ -698,6 +700,7 @@ mod tests {
             }),
             extra_fields: vec![],
             message: Some("hello"),
+            reconstructed_line: None,
         };
         let layout = FieldLayout::default();
         let mut hidden = HashSet::new();
@@ -726,6 +729,7 @@ mod tests {
             }),
             extra_fields: vec![],
             message: None,
+            reconstructed_line: None,
         };
         let layout = FieldLayout {
             columns: Some(vec!["span".to_string()]),
@@ -756,6 +760,7 @@ mod tests {
             }),
             extra_fields: vec![],
             message: None,
+            reconstructed_line: None,
         };
         let layout = FieldLayout {
             columns: Some(vec![
@@ -788,6 +793,7 @@ mod tests {
             }),
             extra_fields: vec![],
             message: None,
+            reconstructed_line: None,
         };
         let layout = FieldLayout::default();
         let mut hidden = HashSet::new();

@@ -178,6 +178,11 @@ pub struct DisplayParts<'a> {
     pub span: Option<SpanInfo<'a>>,
     pub extra_fields: Vec<(FieldSemantic, &'a str, &'a str)>,
     pub message: Option<&'a str>,
+    /// The full line rebuilt from the parser's own field order and literal
+    /// separators (e.g. a custom schema's `{level}/{component}/{feature}`
+    /// template), for parsers that support it. `None` for parsers that don't
+    /// (the caller falls back to the generic space-joined column layout).
+    pub reconstructed_line: Option<String>,
 }
 
 pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
@@ -289,6 +294,7 @@ mod tests {
         assert!(p.span.is_none());
         assert!(p.extra_fields.is_empty());
         assert!(p.message.is_none());
+        assert!(p.reconstructed_line.is_none());
     }
 
     #[test]

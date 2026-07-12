@@ -116,6 +116,10 @@ If your format uses non-standard names for these fields, always map them explici
 }
 ```
 
+## Rendering
+
+When a `template`-based schema matches a line and every field is visible (no hidden fields, no custom column order from `:select-fields`), the log panel renders the line using the template's own field order and literal separators — so `{level}/{component}/{feature}` still shows as `INF/Syscon/StartupMgr`, not space-joined columns. Hiding a field or reordering columns falls back to the standard column layout, since the template's separators no longer line up once a field is missing or moved. This only applies to `template`-defined schemas; a `pattern`-defined schema (raw regex) always uses the column layout, since a regex has no literal skeleton to reconstruct from.
+
 ## Detection
 
 Custom schemas are evaluated before all built-in parsers. When a schema matches ≥ 50% of the sampled lines, it wins the detection competition and is used for all subsequent parsing.

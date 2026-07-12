@@ -112,6 +112,7 @@ fn parse_dlt_text_line<'a>(line: &'a [u8]) -> Option<DisplayParts<'a>> {
         span: None,
         extra_fields,
         message,
+        reconstructed_line: None,
     })
 }
 

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
 
@@ -13,11 +13,22 @@ enum FieldRole {
     Ignored,
 }
 
+/// One piece of a compiled `template`: literal text to reproduce verbatim, or
+/// a placeholder to fill with that field's captured value at parse time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TemplateSegment {
+    Literal(String),
+    Field(String),
+}
+
 #[derive(Debug)]
 pub struct CustomParser {
     name: String,
     regex: Regex,
     field_map: Vec<(usize, &'static str, FieldRoleStored)>,
+    /// `Some` only when built from a `template` (not a raw `pattern`), since
+    /// only a template has a literal skeleton to reconstruct the line from.
+    template_segments: Option<Vec<TemplateSegment>>,
 }
 
 #[derive(Debug)]
@@ -115,6 +126,29 @@ pub fn compile_template(template: &str) -> Result<String, String> {
     Ok(format!("^{pattern}$"))
 }
 
+/// Splits `template` into literal runs and `{field}` placeholders, in order,
+/// preserving the template's own separators (see [`TemplateSegment`]).
+fn parse_template_segments(template: &str) -> Vec<TemplateSegment> {
+    let mut segments = Vec::new();
+    let mut remaining = template;
+    while let Some(open) = remaining.find('{') {
+        let literal = &remaining[..open];
+        if !literal.is_empty() {
+            segments.push(TemplateSegment::Literal(literal.to_string()));
+        }
+        let rest = &remaining[open + 1..];
+        let Some(close) = rest.find('}') else {
+            break;
+        };
+        segments.push(TemplateSegment::Field(rest[..close].to_string()));
+        remaining = &rest[close + 1..];
+    }
+    if !remaining.is_empty() {
+        segments.push(TemplateSegment::Literal(remaining.to_string()));
+    }
+    segments
+}
+
 fn collect_placeholder_names(template: &str) -> Vec<&str> {
     let mut names = Vec::new();
     let mut remaining = template;
@@ -158,6 +192,7 @@ fn regex_escape_char(c: char) -> String {
 
 impl CustomParser {
     pub fn from_config(cfg: &CustomSchemaConfig) -> Result<Self, String> {
+        let mut template_segments = None;
         let pattern_str = match (&cfg.template, &cfg.pattern) {
             (Some(_), Some(_)) => {
                 return Err(format!(
@@ -171,7 +206,10 @@ impl CustomParser {
                     cfg.name
                 ));
             }
-            (Some(tmpl), None) => compile_template(tmpl)?,
+            (Some(tmpl), None) => {
+                template_segments = Some(parse_template_segments(tmpl));
+                compile_template(tmpl)?
+            }
             (None, Some(raw)) => raw.clone(),
         };
 
@@ -195,7 +233,30 @@ impl CustomParser {
             name: cfg.name.clone(),
             regex,
             field_map,
+            template_segments,
         })
+    }
+
+    /// Rebuilds the line from `template_segments`, substituting each field's
+    /// captured raw value and reproducing the template's literal separators
+    /// verbatim. `Ignored` fields contribute no value (matching that role's
+    /// "captured but never displayed" contract) but their surrounding literal
+    /// text is still emitted as-is. Returns `None` when this parser was built
+    /// from a raw `pattern` rather than a `template`.
+    fn reconstruct_line(&self, field_values: &HashMap<&str, &str>) -> Option<String> {
+        let segments = self.template_segments.as_ref()?;
+        let mut out = String::new();
+        for seg in segments {
+            match seg {
+                TemplateSegment::Literal(text) => out.push_str(text),
+                TemplateSegment::Field(name) => {
+                    if let Some(val) = field_values.get(name.as_str()) {
+                        out.push_str(val);
+                    }
+                }
+            }
+        }
+        Some(out)
     }
 }
 
@@ -223,6 +284,7 @@ impl LogFormatParser for CustomParser {
         };
 
         let mut parts = DisplayParts::default();
+        let mut field_values: HashMap<&str, &str> = HashMap::new();
         for ((_, group_name, role), range_opt) in self.field_map.iter().zip(byte_ranges.iter()) {
             let val = match range_opt {
                 Some(range) => &s[range.clone()],
@@ -249,7 +311,11 @@ impl LogFormatParser for CustomParser {
                 }
                 FieldRoleStored::Ignored => {}
             }
+            if !matches!(role, FieldRoleStored::Ignored) {
+                field_values.insert(group_name, val);
+            }
         }
+        parts.reconstructed_line = self.reconstruct_line(&field_values);
 
         Some(parts)
     }
@@ -394,6 +460,90 @@ mod tests {
             parts.message,
             Some("dirtyrfservice::instance1 started in 878 ms, and achieved CONNECTED")
         );
+    }
+
+    #[test]
+    fn test_parse_template_segments_telecom() {
+        let template =
+            "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}";
+        let segments = parse_template_segments(template);
+        assert_eq!(
+            segments,
+            vec![
+                TemplateSegment::Field("id".to_string()),
+                TemplateSegment::Literal(" ".to_string()),
+                TemplateSegment::Field("service".to_string()),
+                TemplateSegment::Literal(" <".to_string()),
+                TemplateSegment::Field("timestamp".to_string()),
+                TemplateSegment::Literal("> ".to_string()),
+                TemplateSegment::Field("pid".to_string()),
+                TemplateSegment::Literal(" ".to_string()),
+                TemplateSegment::Field("level".to_string()),
+                TemplateSegment::Literal("/".to_string()),
+                TemplateSegment::Field("component".to_string()),
+                TemplateSegment::Literal("/".to_string()),
+                TemplateSegment::Field("feature".to_string()),
+                TemplateSegment::Literal(", ".to_string()),
+                TemplateSegment::Field("message".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_template_segments_leading_and_trailing_literal() {
+        let segments = parse_template_segments("[{level}] done");
+        assert_eq!(
+            segments,
+            vec![
+                TemplateSegment::Literal("[".to_string()),
+                TemplateSegment::Field("level".to_string()),
+                TemplateSegment::Literal("] done".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reconstructed_line_preserves_template_separators() {
+        // The schema's own "/" and ", " separators must survive in the
+        // reconstructed line instead of being collapsed to plain spaces.
+        let parser = make_telecom_parser();
+        let line = b"04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: dirtyrfservice::instance1 state=CONNECTED";
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(
+            parts.reconstructed_line.as_deref(),
+            Some(std::str::from_utf8(line).unwrap())
+        );
+    }
+
+    #[test]
+    fn test_reconstructed_line_omits_ignored_field_value() {
+        let parser = CustomParser::from_config(&CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: Some("{pid} {level} {message}".to_string()),
+            pattern: None,
+            fields: [("pid".to_string(), "ignored".to_string())]
+                .into_iter()
+                .collect(),
+        })
+        .unwrap();
+        let line = b"1234 INFO started";
+        let parts = parser.parse_line(line).unwrap();
+        assert_eq!(parts.reconstructed_line.as_deref(), Some(" INFO started"));
+    }
+
+    #[test]
+    fn test_reconstructed_line_none_for_raw_pattern_schema() {
+        let parser = CustomParser::from_config(&CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: None,
+            pattern: Some("^(?P<level>\\w+) (?P<message>.*)$".to_string()),
+            fields: Default::default(),
+        })
+        .unwrap();
+        let parts = parser.parse_line(b"INFO started").unwrap();
+        assert!(parts.reconstructed_line.is_none());
     }
 
     #[test]

@@ -355,14 +355,30 @@ fn populate_parse_cache(
             && let Some(parser) = parser
             && let Some(parts) = parser.parse_line(line_bytes)
         {
-            let cols = apply_field_layout(
-                &parts,
-                field_layout,
-                hidden_fields,
-                show_keys,
-                year_override,
-            );
-            let all_cols_hidden = source_prefix.is_empty() && cols.is_empty();
+            // Only use the parser's own field order/separators (e.g. a custom
+            // schema's `{level}/{component}/{feature}` template) when every
+            // field is visible in its default order — hiding or reordering a
+            // field would leave the template's literal separators dangling.
+            let use_reconstructed = field_layout.columns.is_none() && hidden_fields.is_empty();
+            let reconstructed = parts
+                .reconstructed_line
+                .as_deref()
+                .filter(|_| use_reconstructed);
+            let cols = if reconstructed.is_none() {
+                apply_field_layout(
+                    &parts,
+                    field_layout,
+                    hidden_fields,
+                    show_keys,
+                    year_override,
+                )
+            } else {
+                Vec::new()
+            };
+            let all_cols_hidden = source_prefix.is_empty()
+                && reconstructed
+                    .map(str::is_empty)
+                    .unwrap_or_else(|| cols.is_empty());
             let level = parts.level.map(|s| s.to_string());
             let timestamp = parts.timestamp.map(|s| s.to_string());
             let target = parts.target.map(|s| s.to_string());
@@ -373,26 +389,10 @@ fn populate_parse_cache(
                 .map(|(_, _, v)| v.to_string());
             let rendered = if all_cols_hidden {
                 String::new()
+            } else if let Some(recon) = reconstructed {
+                join_source_prefix(&source_prefix, recon)
             } else {
-                let col_bytes: usize = cols.iter().map(|c| c.len()).sum();
-                let cap = source_prefix.len()
-                    + if source_prefix.is_empty() { 0 } else { 1 }
-                    + col_bytes
-                    + cols.len();
-                let mut buf = String::with_capacity(cap);
-                if !source_prefix.is_empty() {
-                    buf.push_str(&source_prefix);
-                    if !cols.is_empty() {
-                        buf.push(' ');
-                    }
-                }
-                for (i, col) in cols.iter().enumerate() {
-                    if i > 0 {
-                        buf.push(' ');
-                    }
-                    buf.push_str(col);
-                }
-                buf
+                join_source_prefix_and_cols(&source_prefix, &cols)
             };
             let target_offset = target
                 .as_deref()
@@ -445,6 +445,37 @@ fn populate_parse_cache(
     for (line_idx, entry) in new_entries {
         tab.cache.parse.insert(line_idx, (cache_gen, entry));
     }
+}
+
+/// `source_prefix` (merged-tab label, or empty) followed by `text`, separated
+/// by a single space when the prefix is non-empty.
+fn join_source_prefix(source_prefix: &str, text: &str) -> String {
+    if source_prefix.is_empty() {
+        text.to_string()
+    } else {
+        format!("{source_prefix} {text}")
+    }
+}
+
+/// `source_prefix` followed by `cols` joined with single spaces.
+fn join_source_prefix_and_cols(source_prefix: &str, cols: &[String]) -> String {
+    let col_bytes: usize = cols.iter().map(|c| c.len()).sum();
+    let cap =
+        source_prefix.len() + if source_prefix.is_empty() { 0 } else { 1 } + col_bytes + cols.len();
+    let mut buf = String::with_capacity(cap);
+    if !source_prefix.is_empty() {
+        buf.push_str(source_prefix);
+        if !cols.is_empty() {
+            buf.push(' ');
+        }
+    }
+    for (i, col) in cols.iter().enumerate() {
+        if i > 0 {
+            buf.push(' ');
+        }
+        buf.push_str(col);
+    }
+    buf
 }
 
 fn stable_hash(s: &str) -> usize {
@@ -1493,6 +1524,61 @@ mod tests {
             .insert("level".to_string());
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    fn telecom_parser() -> Arc<dyn crate::parser::LogFormatParser> {
+        Arc::new(
+            crate::parser::CustomParser::from_config(&crate::config::CustomSchemaConfig {
+                name: "telecom".to_string(),
+                description: None,
+                template: Some(
+                    "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"
+                        .to_string(),
+                ),
+                pattern: None,
+                fields: [
+                    ("id".to_string(), "extra".to_string()),
+                    ("service".to_string(), "target".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            })
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_custom_schema_preserves_template_separators() {
+        let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
+        let mut app = make_app(&[line]).await;
+        app.tabs[0].display.format = Some(telecom_parser());
+        let mut terminal = Terminal::new(TestBackend::new(200, 24)).unwrap();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("INF/Syscon/StartupMgr,"),
+            "expected the schema's own separators in the rendered line: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_custom_schema_hidden_field_falls_back_to_columns() {
+        let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
+        let mut app = make_app(&[line]).await;
+        app.tabs[0].display.format = Some(telecom_parser());
+        app.tabs[0]
+            .display
+            .hidden_fields
+            .insert("component".to_string());
+        let mut terminal = Terminal::new(TestBackend::new(200, 24)).unwrap();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            !content.contains("INF/Syscon/StartupMgr,"),
+            "hiding a field must fall back to column layout, not the template's separators: {content}"
+        );
     }
 
     #[tokio::test]
