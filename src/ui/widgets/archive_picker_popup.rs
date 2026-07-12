@@ -33,8 +33,8 @@ pub struct ArchivePickerPopup<'a> {
     /// when search is active but nothing has been typed yet.
     pub search: &'a str,
     /// True while capturing search input. Distinct from `!search.is_empty()`
-    /// so the search row can show a `[SEARCH]` marker the instant the search
-    /// key is pressed, before any character is typed.
+    /// so the search row can show a "type to search..." placeholder the
+    /// instant the search key is pressed, before any character is typed.
     pub searching: bool,
 }
 
@@ -96,10 +96,10 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
         if let Some(sa) = search_area {
             let search_line = if self.search.is_empty() {
                 Line::from(Span::styled(
-                    " [SEARCH]",
+                    " type to search...",
                     Style::default()
-                        .fg(self.theme.text_highlight_fg)
-                        .add_modifier(Modifier::BOLD),
+                        .fg(self.theme.text)
+                        .add_modifier(Modifier::DIM),
                 ))
             } else {
                 Line::from(vec![
@@ -300,13 +300,13 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         // No search row means the first file row is right under the title,
-        // with no `[SEARCH]`/`/query` line pushed in above it.
+        // with no placeholder/`/query` line pushed in above it.
         assert!(text.contains("a.log"));
-        assert!(!text.contains("SEARCH"));
+        assert!(!text.contains("type to search"));
     }
 
     #[test]
-    fn test_search_marker_shown_immediately_on_empty_query() {
+    fn test_search_placeholder_shown_immediately_on_empty_query() {
         let theme = Theme::default();
         let kb = Keybindings::default();
         let rows = vec![row("a.log")];
@@ -325,7 +325,7 @@ mod tests {
             .map(|y| row_text(buf.buffer, y))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("SEARCH"));
+        assert!(text.contains("type to search..."));
     }
 
     #[test]

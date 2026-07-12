@@ -1293,8 +1293,8 @@ mod tests {
             .find(|row| row.contains("Filters"))
             .expect("a row containing 'Filters' should be rendered");
         assert!(
-            filters_row.contains("SEARCH"),
-            "sidebar title must show a [SEARCH] marker even with an empty query: {filters_row:?}"
+            filters_row.contains("type to search"),
+            "sidebar title must show a placeholder even with an empty query: {filters_row:?}"
         );
     }
 

@@ -27,9 +27,9 @@ pub struct Sidebar<'a> {
     /// when not searching or before anything has been typed.
     pub search: &'a str,
     /// True while search is capturing input. Distinct from `!search.is_empty()`
-    /// so the title can show a `[SEARCH]` marker the instant `/` is pressed,
-    /// before any character is typed — otherwise there's no visible cue that
-    /// the app is now waiting for search text.
+    /// so the title can show a "type to search..." placeholder the instant
+    /// `/` is pressed, before any character is typed — otherwise there's no
+    /// visible cue that the app is now waiting for search text.
     pub searching: bool,
     pub theme: &'a Theme,
 }
@@ -224,6 +224,9 @@ pub(crate) fn compute_scroll_offset(
     scroll.min(total_rows.saturating_sub(content_h))
 }
 
+/// Builds the sidebar's title as a styled [`Line`] rather than a plain
+/// `String` so the search placeholder can be dimmed independently of the
+/// rest of the title, which otherwise all shares `title_style`.
 #[allow(clippy::too_many_arguments)]
 fn build_sidebar_title(
     filter_enabled: bool,
@@ -234,41 +237,52 @@ fn build_sidebar_title(
     total_count: usize,
     search: &str,
     searching: bool,
-) -> String {
+    title_style: Style,
+) -> Line<'static> {
     let filter_count_suffix = if total_count > 0 {
         format!(" [{}/{}]", active_count, total_count)
     } else {
         String::new()
     };
-    let base = if show_marks_only {
+    let mut prefix = if show_marks_only {
         format!("Filters [MARKS ONLY]{}", filter_count_suffix)
     } else if filter_enabled {
         format!("Filters{}", filter_count_suffix)
     } else {
         format!("Filters [OFF]{}", filter_count_suffix)
     };
-    let base = if highlight_mode {
-        format!("{base} [HIGHLIGHT]")
-    } else {
-        base
-    };
+    if highlight_mode {
+        prefix.push_str(" [HIGHLIGHT]");
+    }
+
+    let mut spans = vec![Span::styled(prefix, title_style)];
+
     // Gate on `searching` rather than `search.is_empty()`: the moment right
     // after pressing `/` has an empty query but must still show a visible
-    // cue that the app is now capturing search text.
-    let base = if searching {
+    // cue that the app is now capturing search text. The placeholder is
+    // dimmed to read as a hint rather than active content; the query itself
+    // keeps the normal title style once something's been typed.
+    if searching {
         if search.is_empty() {
-            format!("{base} [SEARCH]")
+            spans.push(Span::styled(
+                " type to search...",
+                title_style.add_modifier(Modifier::DIM),
+            ));
         } else {
-            format!("{base} /{search}")
+            spans.push(Span::styled(format!(" /{search}"), title_style));
         }
-    } else {
-        base
-    };
-    match filter_progress {
-        Some(pct) if pct < 100 => format!("{} {}%", base, pct),
-        Some(_) => format!("{} Indexing\u{2026}", base),
-        None => base,
     }
+
+    let progress_suffix = match filter_progress {
+        Some(pct) if pct < 100 => Some(format!(" {pct}%")),
+        Some(_) => Some(" Indexing\u{2026}".to_string()),
+        None => None,
+    };
+    if let Some(suffix) = progress_suffix {
+        spans.push(Span::styled(suffix, title_style));
+    }
+
+    Line::from(spans)
 }
 
 impl<'a> Widget for Sidebar<'a> {
@@ -290,6 +304,11 @@ impl<'a> Widget for Sidebar<'a> {
 
         let active_count = self.filters.iter().filter(|f| f.enabled).count();
         let total_count = self.filters.len();
+        let title_style = if self.is_filter_mode {
+            Style::default().fg(self.theme.text_highlight_fg)
+        } else {
+            Style::default().fg(self.theme.border_title)
+        };
         let sidebar_title = build_sidebar_title(
             self.filter_enabled,
             self.show_marks_only,
@@ -299,13 +318,9 @@ impl<'a> Widget for Sidebar<'a> {
             total_count,
             self.search,
             self.searching,
+            title_style,
         );
 
-        let title_style = if self.is_filter_mode {
-            Style::default().fg(self.theme.text_highlight_fg)
-        } else {
-            Style::default().fg(self.theme.border_title)
-        };
         let sidebar_block = if self.show_borders {
             let border_style = if self.is_filter_mode {
                 Style::default().fg(self.theme.text_highlight_fg)
@@ -316,13 +331,11 @@ impl<'a> Widget for Sidebar<'a> {
                 .borders(Borders::ALL)
                 .border_style(border_style)
                 .title(sidebar_title)
-                .title_style(title_style)
         } else {
             Block::default()
                 .borders(Borders::NONE)
                 .padding(Padding::new(1, 0, 0, 0))
                 .title(sidebar_title)
-                .title_style(title_style)
         };
 
         Paragraph::new(filters_text)
@@ -552,41 +565,119 @@ mod tests {
 
     #[test]
     fn test_build_sidebar_title_marks_only() {
-        let title = build_sidebar_title(true, true, false, None, 2, 4, "", false);
+        let title_line =
+            build_sidebar_title(true, true, false, None, 2, 4, "", false, Style::default());
+        let title: String = title_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(title.contains("MARKS ONLY"));
         assert!(title.contains("[2/4]"));
     }
 
     #[test]
     fn test_build_sidebar_title_disabled() {
-        let title = build_sidebar_title(false, false, false, None, 0, 3, "", false);
+        let title_line =
+            build_sidebar_title(false, false, false, None, 0, 3, "", false, Style::default());
+        let title: String = title_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(title.contains("[OFF]"));
         assert!(title.contains("[0/3]"));
     }
 
     #[test]
     fn test_build_sidebar_title_with_progress() {
-        let title = build_sidebar_title(true, false, false, Some(50), 1, 2, "", false);
+        let title_line = build_sidebar_title(
+            true,
+            false,
+            false,
+            Some(50),
+            1,
+            2,
+            "",
+            false,
+            Style::default(),
+        );
+        let title: String = title_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(title.contains("50%"));
     }
 
     #[test]
     fn test_build_sidebar_title_indexing_complete() {
-        let title = build_sidebar_title(true, false, false, Some(100), 1, 2, "", false);
+        let title_line = build_sidebar_title(
+            true,
+            false,
+            false,
+            Some(100),
+            1,
+            2,
+            "",
+            false,
+            Style::default(),
+        );
+        let title: String = title_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(title.contains("Indexing"));
     }
 
     #[test]
     fn test_build_sidebar_title_highlight_mode() {
-        let title = build_sidebar_title(true, false, true, None, 1, 2, "", false);
+        let title_line =
+            build_sidebar_title(true, false, true, None, 1, 2, "", false, Style::default());
+        let title: String = title_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(title.contains("[HIGHLIGHT]"));
     }
 
     #[test]
     fn test_build_sidebar_title_highlight_mode_with_marks_only() {
-        let title = build_sidebar_title(true, true, true, None, 1, 2, "", false);
+        let title_line =
+            build_sidebar_title(true, true, true, None, 1, 2, "", false, Style::default());
+        let title: String = title_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(title.contains("MARKS ONLY"));
         assert!(title.contains("[HIGHLIGHT]"));
+    }
+
+    #[test]
+    fn test_build_sidebar_title_search_placeholder_is_dimmed() {
+        let title_style = Style::default().fg(Color::Cyan);
+        let line = build_sidebar_title(true, false, false, None, 1, 2, "", true, title_style);
+        let placeholder_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("type to search"))
+            .expect("placeholder span should be present while searching with an empty query");
+        assert!(placeholder_span.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn test_build_sidebar_title_search_query_is_not_dimmed() {
+        let title_style = Style::default().fg(Color::Cyan);
+        let line = build_sidebar_title(true, false, false, None, 1, 2, "err", true, title_style);
+        let query_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("/err"))
+            .expect("query span should be present while searching with a non-empty query");
+        assert!(!query_span.style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

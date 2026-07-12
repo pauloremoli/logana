@@ -641,6 +641,7 @@ impl Mode for FilterManagementMode {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("> resize  ", Style::default().fg(theme.text)));
+        status_entry(&mut spans, kb.filter.search.display(), "search", theme);
         status_entry(&mut spans, kb.filter.exit_mode.display(), "exit", theme);
         Line::from(spans)
     }
@@ -1494,5 +1495,20 @@ mod tests {
             }
             other => panic!("expected Command, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_mode_bar_content_shows_configured_search_shortcut() {
+        let m = filter_mode(0);
+        let mut kb = Keybindings::default();
+        kb.filter.search = crate::config::KeyBindings(vec![crate::config::KeyBinding(
+            KeyCode::Char('?'),
+            KeyModifiers::NONE,
+        )]);
+        let theme = crate::theme::Theme::default();
+        let line = m.mode_bar_content(&kb, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("search"));
+        assert!(text.contains('?'));
     }
 }
