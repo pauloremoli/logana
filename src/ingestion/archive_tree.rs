@@ -637,34 +637,51 @@ pub fn extract_selected(
     Ok(out)
 }
 
-/// A selected file's display name: its basename, or — only once a later
-/// selected file collides with an earlier one's basename — the basename
-/// suffixed with its immediate containing archive's name, to keep the
-/// common case (no collisions) free of visual noise.
+/// A selected file's display name: its basename (with any lone-compression
+/// suffix stripped, see [`display_name_for_extraction`]), or — only once a
+/// later selected file collides with an earlier one's basename — the
+/// basename suffixed with its immediate containing archive's name, to keep
+/// the common case (no collisions) free of visual noise.
 fn disambiguated_name(
     tree: &ArchiveTree,
     node_id: NodeId,
     used: &mut HashMap<String, usize>,
 ) -> String {
     let node = &tree.nodes[node_id];
-    let seen_before = used.entry(node.name.clone()).or_insert(0);
+    let display_name = display_name_for_extraction(&node.name);
+    let seen_before = used.entry(display_name.clone()).or_insert(0);
     *seen_before += 1;
     if *seen_before == 1 {
-        return node.name.clone();
+        return display_name;
     }
     match node.parent {
-        Some(parent_id) => format!("{} ({})", node.name, tree.nodes[parent_id].name),
-        None => node.name.clone(),
+        Some(parent_id) => format!("{} ({})", display_name, tree.nodes[parent_id].name),
+        None => display_name,
     }
 }
 
-/// Resolves a node's own raw bytes as stored inside its immediate parent —
-/// via `cached_bytes` when available, otherwise by walking down from the
-/// root, re-opening/re-decoding one archive layer at a time.
+/// The name to show for an extracted file: for a nested lone-compressed
+/// entry (e.g. "app.log.gz"), the compression suffix is stripped since
+/// [`resolve_node_bytes`] already decompresses it — the extracted content is
+/// the same as if the entry had never been compressed. Any other name
+/// (including root-level entries, already stripped during listing, and
+/// entries merely named like a multi-entry archive) is returned unchanged.
+fn display_name_for_extraction(name: &str) -> String {
+    match detect_archive_type(name) {
+        Some(ArchiveType::Gz | ArchiveType::Bz2 | ArchiveType::Xz) => stem(name),
+        _ => name.to_string(),
+    }
+}
+
+/// Resolves a node's own *final* bytes — decompressed, if it's a nested lone
+/// Gz/Bz2/Xz entry (see [`decompress_if_lone_compressed`]) — as stored
+/// inside its immediate parent: via `cached_bytes` when available, otherwise
+/// by walking down from the root, re-opening/re-decoding one archive layer
+/// at a time.
 fn resolve_node_bytes(tree: &ArchiveTree, node_id: NodeId, path: &str) -> Result<Vec<u8>, String> {
     let node = &tree.nodes[node_id];
     if let Some(cached) = &node.cached_bytes {
-        return Ok((**cached).clone());
+        return decompress_if_lone_compressed(&node.name, (**cached).clone());
     }
     match node.parent {
         None => resolve_root_entry_bytes(path, &node.full_path),
@@ -678,15 +695,41 @@ fn resolve_node_bytes(tree: &ArchiveTree, node_id: NodeId, path: &str) -> Result
                     ));
                 }
             };
-            read_entry_bytes_from_slice(&parent_bytes, parent_archive_type, &node.full_path)
+            let raw =
+                read_entry_bytes_from_slice(&parent_bytes, parent_archive_type, &node.full_path)?;
+            decompress_if_lone_compressed(&node.name, raw)
         }
     }
 }
 
+/// If `name` indicates a single-file compressed format (Gz/Bz2/Xz) — the
+/// shape `list_zip_entries`/`list_tar_entries` leave as a plain `File` leaf
+/// rather than expanding into a `Container`, since it wraps exactly one file
+/// — decompresses `raw` to that file's actual content. Root-level entries of
+/// this shape are already decompressed by [`resolve_root_entry_bytes`]
+/// before reaching here, so this only ever fires for nested entries. Any
+/// other name (including one merely *named* like a multi-entry archive that
+/// failed to parse as one during listing) is returned unchanged.
+fn decompress_if_lone_compressed(name: &str, raw: Vec<u8>) -> Result<Vec<u8>, String> {
+    match detect_archive_type(name) {
+        Some(ArchiveType::Gz) => read_to_end(flate2::read::GzDecoder::new(Cursor::new(raw))),
+        Some(ArchiveType::Bz2) => read_to_end(bzip2::read::BzDecoder::new(Cursor::new(raw))),
+        Some(ArchiveType::Xz) => read_to_end(xz2::read::XzDecoder::new(Cursor::new(raw))),
+        _ => Ok(raw),
+    }
+}
+
+/// Resolves `full_path`'s bytes from the top-level archive at `path`. For a
+/// multi-entry container (Zip/Tar/...), that entry may itself be a lone
+/// Gz/Bz2/Xz-compressed file (see [`decompress_if_lone_compressed`]) — e.g.
+/// `path` is a `.zip` whose sole top-level entry is `app.log.gz` — so the
+/// raw entry bytes get the same follow-up decompression check applied. For a
+/// lone-compressed `path` itself, `full_path` was already stripped of its
+/// compression suffix by `list_top_level`, so the check is a harmless no-op.
 fn resolve_root_entry_bytes(path: &str, full_path: &str) -> Result<Vec<u8>, String> {
     let archive_type = detect_archive_type(path)
         .ok_or_else(|| format!("'{}' is not a recognised archive format", path))?;
-    match archive_type {
+    let raw = match archive_type {
         ArchiveType::Gz => read_to_end(flate2::read::GzDecoder::new(open(path)?)),
         ArchiveType::Bz2 => read_to_end(bzip2::read::BzDecoder::new(open(path)?)),
         ArchiveType::Xz => read_to_end(xz2::read::XzDecoder::new(open(path)?)),
@@ -701,7 +744,8 @@ fn resolve_root_entry_bytes(path: &str, full_path: &str) -> Result<Vec<u8>, Stri
         ArchiveType::TarXz => {
             read_tar_entry_bytes(xz2::read::XzDecoder::new(open(path)?), full_path)
         }
-    }
+    }?;
+    decompress_if_lone_compressed(full_path, raw)
 }
 
 fn open(path: &str) -> Result<File, String> {
@@ -770,7 +814,7 @@ fn read_tar_entry_bytes<R: Read>(reader: R, full_path: &str) -> Result<Vec<u8>, 
 mod tests {
     use super::*;
     use crate::ingestion::archive::test_helpers::{
-        make_tar, make_tar_bz2, make_tar_gz, make_tar_xz, make_zip,
+        make_bz2, make_gz, make_tar, make_tar_bz2, make_tar_gz, make_tar_xz, make_xz, make_zip,
     };
     use std::io::SeekFrom;
 
@@ -1507,5 +1551,118 @@ mod tests {
         let mut names: Vec<&str> = extracted.iter().map(|f| f.name.as_str()).collect();
         names.sort();
         assert_eq!(names, vec!["app.log", "app.log (b.zip)"]);
+    }
+
+    #[test]
+    fn test_extract_selected_lone_gz_at_zip_top_level_is_decompressed() {
+        // "app.log.gz" inside the zip is a lone single-file compressed entry
+        // (not a multi-entry archive), so listing shows it as a plain File
+        // leaf rather than expanding it — but its bytes as stored in the zip
+        // are still gzip-compressed. Extracting it must yield the original
+        // decompressed text, the same as if it had never been compressed.
+        let gz = make_gz(b"decompressed content");
+        let gz_bytes = std::fs::read(gz.path()).unwrap();
+        let outer_tmp = make_zip(&[("app.log.gz", gz_bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+        let mut tree = list_archive_tree(&path).unwrap();
+        select_by_full_path(&mut tree, "app.log.gz");
+
+        let mut extracted = extract_selected(&path, &tree, no_progress()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(read_extracted(&mut extracted[0]), "decompressed content");
+    }
+
+    #[test]
+    fn test_extract_selected_lone_gz_two_levels_deep_is_decompressed() {
+        // Same shape as above, but "app.log.gz" is inside an inner zip that's
+        // itself nested inside an outer zip — exercising the resolve path
+        // that walks down through a real `Container` ancestor (`Some(parent_id)`
+        // in `resolve_node_bytes`), not just the top-level-archive path.
+        let gz = make_gz(b"deeply nested content");
+        let gz_bytes = std::fs::read(gz.path()).unwrap();
+        let inner = make_zip(&[("app.log.gz", gz_bytes.as_slice())]);
+        let inner_bytes = std::fs::read(inner.path()).unwrap();
+        let outer_tmp = make_zip(&[("inner.zip", inner_bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+        let mut tree = list_archive_tree(&path).unwrap();
+        let leaf_id = select_by_full_path(&mut tree, "app.log.gz");
+        assert!(
+            tree.nodes[leaf_id].parent.is_some(),
+            "precondition: the leaf must have a real Container ancestor"
+        );
+
+        let mut extracted = extract_selected(&path, &tree, no_progress()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].name, "app.log");
+        assert_eq!(read_extracted(&mut extracted[0]), "deeply nested content");
+    }
+
+    #[test]
+    fn test_extract_selected_nested_lone_gz_strips_extension_from_name() {
+        let gz = make_gz(b"hello");
+        let gz_bytes = std::fs::read(gz.path()).unwrap();
+        let outer_tmp = make_zip(&[("app.log.gz", gz_bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+        let mut tree = list_archive_tree(&path).unwrap();
+        select_by_full_path(&mut tree, "app.log.gz");
+
+        let extracted = extract_selected(&path, &tree, no_progress()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(extracted[0].name, "app.log");
+    }
+
+    #[test]
+    fn test_extract_selected_nested_lone_bz2_and_xz_are_decompressed() {
+        let bz2 = make_bz2(b"bz2 content");
+        let bz2_bytes = std::fs::read(bz2.path()).unwrap();
+        let xz = make_xz(b"xz content");
+        let xz_bytes = std::fs::read(xz.path()).unwrap();
+        let outer_tmp = make_zip(&[
+            ("a.log.bz2", bz2_bytes.as_slice()),
+            ("b.log.xz", xz_bytes.as_slice()),
+        ]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+        let mut tree = list_archive_tree(&path).unwrap();
+        select_by_full_path(&mut tree, "a.log.bz2");
+        select_by_full_path(&mut tree, "b.log.xz");
+
+        let mut extracted = extract_selected(&path, &tree, no_progress()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        extracted.sort_by(|a, b| a.name.cmp(&b.name));
+
+        assert_eq!(extracted[0].name, "a.log");
+        assert_eq!(read_extracted(&mut extracted[0]), "bz2 content");
+        assert_eq!(extracted[1].name, "b.log");
+        assert_eq!(read_extracted(&mut extracted[1]), "xz content");
+    }
+
+    #[test]
+    fn test_extract_selected_nested_lone_gz_via_cached_bytes_is_decompressed() {
+        // Nested inside a TarGz stream, "app.log.gz"'s raw (still-compressed)
+        // bytes get cached during listing for reuse at extraction time — the
+        // decompression must still apply on that fast path too, not just the
+        // fresh-read path exercised by the zip-based tests above.
+        let gz = make_gz(b"cached path content");
+        let gz_bytes = std::fs::read(gz.path()).unwrap();
+        let outer_tmp = make_tar_gz(&[("app.log.gz", gz_bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".tar.gz");
+        let mut tree = list_archive_tree(&path).unwrap();
+        let leaf_id = select_by_full_path(&mut tree, "app.log.gz");
+        assert!(
+            tree.nodes[leaf_id].cached_bytes.is_some(),
+            "precondition: TarGz entries are cached by default"
+        );
+
+        let mut extracted = extract_selected(&path, &tree, no_progress()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].name, "app.log");
+        assert_eq!(read_extracted(&mut extracted[0]), "cached path content");
     }
 }
