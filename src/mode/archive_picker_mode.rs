@@ -1,5 +1,5 @@
 use crate::{
-    commands::auto_complete::fuzzy_match,
+    commands::auto_complete::regex_search_match,
     config::Keybindings,
     ingestion::{ArchiveTree, CheckState, NodeId, NodeKind},
     mode::app_mode::{Mode, ModeRenderState, status_entry},
@@ -61,15 +61,15 @@ impl ArchivePickerMode {
     }
 
     /// Rows currently shown: every row when `search` is empty, otherwise
-    /// only rows that match the query plus any ancestor containers needed to
-    /// keep a matching file's location visible.
+    /// only rows that match the query regex plus any ancestor containers
+    /// needed to keep a matching file's location visible.
     pub fn visible_rows(&self) -> Vec<NodeId> {
         if self.search.is_empty() {
             return self.all_ids.clone();
         }
         let mut keep: HashSet<NodeId> = HashSet::new();
         for &id in &self.all_ids {
-            if fuzzy_match(&self.search, &self.tree.nodes[id].name) {
+            if regex_search_match(&self.search, &self.tree.nodes[id].name) {
                 let mut cur = Some(id);
                 while let Some(nid) = cur {
                     keep.insert(nid);
@@ -619,6 +619,32 @@ mod tests {
         // "bundle.zip" doesn't match itself but is kept because its child does;
         // "inner2.log" doesn't match, so it's hidden even though its sibling does.
         assert_eq!(names, vec!["bundle.zip", "inner1.log"]);
+    }
+
+    #[tokio::test]
+    async fn test_search_supports_regex_alternation() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "a.log|inner2").await;
+        let (rows, _, _) = extract_state(m.render_state());
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        // "a.log" matches directly; "inner2.log" matches via the alternation
+        // and pulls in its ancestor "bundle.zip" for context; "inner1.log"
+        // matches neither branch, so it stays hidden.
+        assert_eq!(names, vec!["a.log", "bundle.zip", "inner2.log"]);
+    }
+
+    #[tokio::test]
+    async fn test_search_invalid_regex_does_not_panic_and_falls_back_to_literal() {
+        let mut tab = make_tab().await;
+        // "(inner" is an unclosed group — invalid regex mid-composition,
+        // likely typed on the way to a real pattern like "(inner1|inner2)".
+        // Must not panic, and must fall back to a literal substring search
+        // rather than silently matching nothing — no node name contains the
+        // literal text "(inner", so the narrowed list is empty either way,
+        // but the important thing is this doesn't crash while typing.
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "(inner").await;
+        let (rows, _, _) = extract_state(m.render_state());
+        assert!(rows.is_empty());
     }
 
     #[tokio::test]

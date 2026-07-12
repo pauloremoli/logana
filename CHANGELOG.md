@@ -6,8 +6,8 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- Filter manager now supports the same navigation as the log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u`, `PageDown`/`PageUp`, `gg`/`G`, and `/` to search the filter list live.
-- Archive file picker now supports `/` to search the file tree.
+- Filter manager now supports the same navigation as the log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u`, `PageDown`/`PageUp`, `gg`/`G`, and `/` to search the filter list live using a regex query (falls back to a plain substring match if the regex is invalid/incomplete).
+- Archive file picker now supports `/` to search the file tree using a regex query (same fallback behavior as the filter list search).
 - A startup warning now appears if a user-provided schema in `~/.config/logana/schema/` fails to load (malformed JSON) or fails to compile (invalid template/pattern).
 - `:filter`/`:exclude`/`:highlight --field` can now be repeated to require several parsed fields at once (e.g. `--field level=INFO --field component=Draco`), and combined with trailing free text that must also match — all AND'd together in a single filter. Separate filter commands still OR together as before.
 

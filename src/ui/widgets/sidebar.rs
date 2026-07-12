@@ -3,7 +3,7 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
-use crate::commands::auto_complete::fuzzy_match;
+use crate::commands::auto_complete::regex_search_match;
 use crate::filters::{FilterDef, FilterType};
 use crate::theme::Theme;
 use crate::ui::field_layout::line_row_count;
@@ -110,8 +110,8 @@ pub fn filter_row_display_text(
     format!("{prefix}{value}{suffix}")
 }
 
-/// Indices (into `filters`) of entries whose rendered row text fuzzy-matches
-/// `search`, in original list order. Empty `search` means "everything
+/// Indices (into `filters`) of entries whose rendered row text matches the
+/// `search` regex, in original list order. Empty `search` means "everything
 /// matches" — used both to narrow what the sidebar shows while searching,
 /// and by `FilterManagementMode` to interpret navigation keys against the
 /// same narrowed list while searching.
@@ -128,7 +128,7 @@ pub fn narrowed_filter_indices(
         .enumerate()
         .filter(|(idx, filter)| {
             let text = filter_row_display_text(filter, *idx, *idx, match_counts);
-            fuzzy_match(search, &text)
+            regex_search_match(search, &text)
         })
         .map(|(idx, _)| idx)
         .collect()
@@ -861,6 +861,30 @@ mod tests {
         filter.group = Some("critical".to_string());
         let filters = vec![filter, make_filter("timeout", true, FilterType::Exclude)];
         let indices = narrowed_filter_indices(&filters, &[0, 0], "critical");
+        assert_eq!(indices, vec![0]);
+    }
+
+    #[test]
+    fn test_narrowed_filter_indices_supports_regex_alternation() {
+        let filters = vec![
+            make_filter("ERROR", true, FilterType::Include),
+            make_filter("timeout", true, FilterType::Exclude),
+            make_filter("warn", true, FilterType::Include),
+        ];
+        let indices = narrowed_filter_indices(&filters, &[0, 0, 0], "ERROR|warn");
+        assert_eq!(indices, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_narrowed_filter_indices_invalid_regex_falls_back_to_literal() {
+        let filters = vec![
+            make_filter("(err)", true, FilterType::Include),
+            make_filter("timeout", true, FilterType::Exclude),
+        ];
+        // "(err" is an unclosed group — invalid regex mid-composition — must
+        // fall back to a literal substring search rather than panicking or
+        // matching nothing.
+        let indices = narrowed_filter_indices(&filters, &[0, 0], "(err");
         assert_eq!(indices, vec![0]);
     }
 

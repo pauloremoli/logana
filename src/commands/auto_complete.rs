@@ -443,6 +443,27 @@ pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
     current.is_none()
 }
 
+/// Case-insensitive regex search: `needle` is compiled as a regex and
+/// matched against `haystack`. An empty `needle` always matches.
+///
+/// `needle` is typed one character at a time by a live, per-keystroke
+/// search, so it's frequently an incomplete/invalid regex mid-composition
+/// (e.g. `"(err"` before `"(error|err)"`) — rather than going blank or
+/// panicking, an invalid pattern falls back to a plain case-insensitive
+/// substring match of `needle` itself.
+pub fn regex_search_match(needle: &str, haystack: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    match regex::RegexBuilder::new(needle)
+        .case_insensitive(true)
+        .build()
+    {
+        Ok(re) => re.is_match(haystack),
+        Err(_) => haystack.to_lowercase().contains(&needle.to_lowercase()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1143,6 +1164,48 @@ mod tests {
         assert!(fuzzy_match("DRA", "dracula"));
         assert!(fuzzy_match("", "anything"));
         assert!(!fuzzy_match("xyz", "dracula"));
+    }
+
+    // ── regex_search_match ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_regex_search_match_empty_needle_matches_anything() {
+        assert!(regex_search_match("", "anything"));
+    }
+
+    #[test]
+    fn test_regex_search_match_literal_substring() {
+        assert!(regex_search_match("dra", "dracula"));
+        assert!(!regex_search_match("xyz", "dracula"));
+    }
+
+    #[test]
+    fn test_regex_search_match_is_case_insensitive() {
+        assert!(regex_search_match("DRA", "dracula"));
+    }
+
+    #[test]
+    fn test_regex_search_match_not_fuzzy_subsequence() {
+        // "dul" is a fuzzy subsequence of "dracula" (d..u..l) but not a
+        // contiguous/regex substring — regex search must NOT match it,
+        // unlike fuzzy_match which does (see test_fuzzy_match above).
+        assert!(!regex_search_match("dul", "dracula"));
+    }
+
+    #[test]
+    fn test_regex_search_match_actual_regex_alternation() {
+        assert!(regex_search_match("err(or)?", "an error occurred"));
+        assert!(regex_search_match("err(or)?", "err"));
+        assert!(!regex_search_match("err(or)?", "warning"));
+    }
+
+    #[test]
+    fn test_regex_search_match_invalid_regex_falls_back_to_literal_substring() {
+        // "(" alone is invalid regex (unclosed group) — likely typed
+        // mid-composition of a real pattern. Must not panic or go blank;
+        // falls back to a literal, case-insensitive substring match.
+        assert!(regex_search_match("(err", "a line with (err in it"));
+        assert!(!regex_search_match("(err", "no match here"));
     }
 
     // ── extract_field_partial ─────────────────────────────────────────────────

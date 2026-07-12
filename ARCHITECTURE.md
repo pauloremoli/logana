@@ -22,6 +22,8 @@ logana is structured around a strict separation between domain logic and the UI 
 
 User-defined schemas are loaded once at startup into a process-level `OnceLock` via `config::init_schemas()`. Every call to `detect_format` reads them from `config::custom_schemas()` without any parameter threading — schemas are automatically available to all code paths (startup, `:open`, streaming sources, Docker, DLT).
 
+`config::load_schemas` returns both the successfully loaded schemas and a list of per-file errors (malformed JSON); `parser::validate_custom_schemas` additionally compiles each loaded schema's template/pattern and collects compilation errors. Both error lists feed into `app.session.startup_warnings`, surfaced as a notification once the TUI opens, instead of silently dropping the offending schema from format detection.
+
 ```mermaid
 graph LR
     Dir["~/.config/logana/schema/*.json"] -->|load_schemas| OnceLock["static CUSTOM_SCHEMAS"]
@@ -163,6 +165,8 @@ graph TD
 
 `ArchiveTree` (`ingestion::archive_tree`) is a flat arena — `Vec<ArchiveNode>` with parent/children indices — rather than a nested recursive enum, so toggling a subtree's selection and resolving a selected leaf's bytes back through its ancestor chain are both cheap index walks. `list_archive_tree` recurses into archives found nested inside other archives (a `.zip` inside a `.tar.gz`, for example) up to a depth/entry-count cap; an entry named like an archive whose content doesn't actually parse as one falls back to a plain selectable `File` node rather than a dead-end row. Entries read from a streaming source (`TarGz`/`TarBz2`/`TarXz`, which must be decompressed sequentially to enumerate) have their bytes cached during listing, up to a byte budget, so `extract_selected` can reuse them instead of decompressing the stream a second time; `Zip`/`Tar` support cheap re-reads and are never cached.
 
+A nested entry that is itself a lone compressed file (Gz/Bz2/Xz — the shape the listing leaves as a `File` leaf rather than expanding into a `Container`, since it wraps exactly one file) is decompressed by `decompress_if_lone_compressed` inside `resolve_node_bytes`/`resolve_root_entry_bytes`, so extraction yields the file's actual content rather than raw compressed bytes; `display_name_for_extraction` strips the compression suffix from its extracted tab name to match. The picker's file tree also supports `/` to narrow by a live regex query (`ArchivePickerMode`), reusing the same `regex_search_match` helper as the filter sidebar search below — an invalid/incomplete regex falls back to a plain substring match.
+
 ## Filter Pipeline
 
 ```mermaid
@@ -189,6 +193,10 @@ graph TD
 ```
 
 A `Highlight`-type filter's decision flows through this diagram the same way `Neutral` does — it never decides visibility on its own — but unlike `Neutral`, it still applies its color styling to the match. `FilterState::highlight_mode` short-circuits the whole diagram: every line is `Visible`, styling still applies.
+
+A single `FieldFilter` (the `Field` box above) can hold several `(field, pattern)` conditions plus an optional free-text condition, stored as one `@field:`-prefixed `FilterDef` pattern with conditions joined by `\x1F` and a `\x02`-marked text segment; `field_filter_matches` requires *all* of a filter's own conditions (and its text, matched against the raw line) to hold — an AND within that one filter. The `Field` box's `.any()` loop across the filter *list* is unchanged: separate `FieldFilter`s (from separate `:filter`/`:exclude` commands) still OR together, same as plain text filters.
+
+The filter sidebar (`FilterManagementMode`) supports the same count-prefixed `j`/`k`, half/full page, and `gg`/`G` motions as the log panel, plus `/` to narrow the filter list by a live regex query via `regex_search_match` (`commands::auto_complete`) — falling back to a plain substring match on an invalid/incomplete regex.
 
 ## Dependencies
 
