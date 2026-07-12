@@ -630,6 +630,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_load_filters_tilde_path_is_expanded() {
+        let mut app = make_app(&["line"]).await;
+        // ~/nonexistent_dir_logana_test/filters.json should expand and fail
+        // with a not-found error naming the expanded path, not a literal '~'.
+        let result = app
+            .run_command("load-filters ~/nonexistent_dir_logana_test/filters.json")
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        let home = dirs::home_dir().unwrap();
+        let expected_path = format!("{}/nonexistent_dir_logana_test", home.display());
+        assert!(
+            msg.contains(&expected_path),
+            "expected the expanded home path in the error, got: {msg}"
+        );
+        assert!(
+            !msg.contains('~'),
+            "tilde should have been expanded, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_filters_tilde_path_is_expanded() {
+        let mut app = make_app(&["line"]).await;
+        app.execute_command_str("filter test".to_string()).await;
+        let result = app
+            .run_command("save-filters ~/nonexistent_dir_logana_test/filters.json")
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        let home = dirs::home_dir().unwrap();
+        let expected_path = format!("{}/nonexistent_dir_logana_test", home.display());
+        assert!(
+            msg.contains(&expected_path),
+            "expected the expanded home path in the error, got: {msg}"
+        );
+        assert!(
+            !msg.contains('~'),
+            "tilde should have been expanded, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_set_theme_invalid() {
         let mut app = make_app(&["line"]).await;
         let result = app.run_command("set-theme nonexistent_theme_xyz").await;
@@ -943,6 +986,27 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_export_tilde_path_is_expanded() {
+        // The default "markdown" template has footer fields, so `export`
+        // opens the footer overlay rather than writing immediately — check
+        // the path stored for that deferred write is already expanded.
+        let mut app = make_app(&["line"]).await;
+        let result = app
+            .run_command("export ~/nonexistent_dir_logana_test/out.md")
+            .await
+            .unwrap();
+        assert!(result, "export with footer fields should open the overlay");
+        let home = dirs::home_dir().unwrap();
+        let expected_path = format!("{}/nonexistent_dir_logana_test/out.md", home.display());
+        match app.tabs[0].interaction.mode.render_state() {
+            crate::mode::app_mode::ModeRenderState::ExportFooter { path, .. } => {
+                assert_eq!(path, expected_path);
+            }
+            other => panic!("expected ExportFooter, got {:?}", other),
+        }
     }
 
     // ── goto line ─────────────────────────────────────────────────────

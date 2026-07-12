@@ -12,6 +12,7 @@ All notable changes to logana will be documented in this file.
 
 ### Fixed
 - Extracting a selected archive file that is itself a lone compressed file (e.g. a `.gz` nested inside a `.zip`) now decompresses it, instead of opening the raw compressed bytes as an unreadable log.
+- `:load-filters`, `:save-filters`, and `:export` now expand a leading `~` in the given path, matching `:open`/`:save`/`:export-marked`. Error messages for these commands now also include the (expanded) path that failed.
 
 ## [0.7.1] - 2026-07-11
 

@@ -66,6 +66,7 @@ impl App {
         if path.is_empty() {
             return Err("Path is required".to_string());
         }
+        let path = expand_tilde(&path);
         let tab = &self.tabs[self.active_tab];
         if let Some(src) = tab.log_manager.source_file()
             && crate::headless::same_file(src, std::path::Path::new(&path))
@@ -125,32 +126,35 @@ impl App {
             footer_fields,
         };
         let output = crate::commands::render_export(&tpl, &data);
-        let file = std::fs::File::create(path).map_err(|e| format!("Failed to write: {}", e))?;
+        let file = std::fs::File::create(path)
+            .map_err(|e| format!("Failed to write '{}': {}", path, e))?;
         let mut writer = BufWriter::new(file);
         writer
             .write_all(output.as_bytes())
             .and_then(|_| writer.flush())
-            .map_err(|e| format!("Failed to write: {}", e))?;
+            .map_err(|e| format!("Failed to write '{}': {}", path, e))?;
         Ok(false)
     }
 
     pub(super) fn cmd_save_filters(&mut self, path: String) -> Result<bool, String> {
         if !path.is_empty() {
+            let expanded = expand_tilde(&path);
             self.tabs[self.active_tab]
                 .log_manager
-                .save_filters(&path)
-                .map_err(|e| format!("Failed to save filters: {}", e))?;
+                .save_filters(&expanded)
+                .map_err(|e| format!("Failed to save filters to '{}': {}", expanded, e))?;
         }
         Ok(false)
     }
 
     pub(super) async fn cmd_load_filters(&mut self, path: String) -> Result<bool, String> {
         if !path.is_empty() {
+            let expanded = expand_tilde(&path);
             self.tabs[self.active_tab]
                 .log_manager
-                .load_filters(&path)
+                .load_filters(&expanded)
                 .await
-                .map_err(|e| format!("Failed to load filters: {}", e))?;
+                .map_err(|e| format!("Failed to load filters from '{}': {}", expanded, e))?;
             self.tabs[self.active_tab].begin_filter_refresh();
         }
         Ok(false)
