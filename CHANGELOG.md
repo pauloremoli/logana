@@ -7,6 +7,7 @@ All notable changes to logana will be documented in this file.
 
 ### Added
 - Filter manager now supports the same navigation as the log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u`, `PageDown`/`PageUp`, `gg`/`G`, and `/` to search the filter list live.
+- Archive file picker now supports `/` to search the file tree live, narrowing to matching files while keeping their containing archive visible for context.
 
 ## [0.7.1] - 2026-07-11
 

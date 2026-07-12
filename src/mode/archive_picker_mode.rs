@@ -1,4 +1,5 @@
 use crate::{
+    commands::auto_complete::fuzzy_match,
     config::Keybindings,
     ingestion::{ArchiveTree, CheckState, NodeId, NodeKind},
     mode::app_mode::{Mode, ModeRenderState, status_entry},
@@ -10,6 +11,7 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::collections::HashSet;
 
 /// A single rendered row of the archive picker popup: enough to draw one
 /// line (name, indentation, checkbox state) without the widget needing to
@@ -26,19 +28,68 @@ pub struct ArchiveRow {
 #[derive(Debug)]
 pub struct ArchivePickerMode {
     pub tree: ArchiveTree,
-    pub visible: Vec<NodeId>,
+    /// Full preorder row list, structurally fixed for the lifetime of the
+    /// picker session (the tree has no expand/collapse) — recomputing it on
+    /// every keystroke would be wasted work, so it's cached once here.
+    all_ids: Vec<NodeId>,
     pub selected: usize,
     pub source_path: String,
+    /// Live typeahead query; non-empty narrows [`Self::visible_rows`] to
+    /// matching files and the containers that hold them.
+    pub search: String,
+    /// True while capturing search input — gates every other bound key
+    /// (toggle/all/none) into the query buffer instead, since the picker's
+    /// action keys ('a', 'n', ' ') would otherwise collide with likely
+    /// search text (e.g. a filename starting with "a").
+    pub searching: bool,
+    /// Full-list index to restore if search is cancelled.
+    pre_search_selected: Option<usize>,
 }
 
 impl ArchivePickerMode {
     pub fn new(tree: ArchiveTree, source_path: String) -> Self {
-        let visible = tree.visible_rows();
+        let all_ids = tree.visible_rows();
         Self {
             tree,
-            visible,
+            all_ids,
             selected: 0,
             source_path,
+            search: String::new(),
+            searching: false,
+            pre_search_selected: None,
+        }
+    }
+
+    /// Rows currently shown: every row when `search` is empty, otherwise
+    /// only rows that match the query plus any ancestor containers needed to
+    /// keep a matching file's location visible.
+    pub fn visible_rows(&self) -> Vec<NodeId> {
+        if self.search.is_empty() {
+            return self.all_ids.clone();
+        }
+        let mut keep: HashSet<NodeId> = HashSet::new();
+        for &id in &self.all_ids {
+            if fuzzy_match(&self.search, &self.tree.nodes[id].name) {
+                let mut cur = Some(id);
+                while let Some(nid) = cur {
+                    keep.insert(nid);
+                    cur = self.tree.nodes[nid].parent;
+                }
+            }
+        }
+        self.all_ids
+            .iter()
+            .copied()
+            .filter(|id| keep.contains(id))
+            .collect()
+    }
+
+    fn clamp_selected(&mut self) {
+        let count = self.visible_rows().len();
+        if count == 0 {
+            self.selected = 0;
+        } else if self.selected >= count {
+            self.selected = count - 1;
         }
     }
 
@@ -89,6 +140,61 @@ impl ArchivePickerMode {
     }
 }
 
+impl ArchivePickerMode {
+    /// Handles input while [`Self::searching`] is set — a deliberately
+    /// minimal key set (confirm/cancel/backspace/chars/single-step j/k),
+    /// gating every other bound action out until search is confirmed or
+    /// cancelled.
+    fn handle_search_key(
+        mut self: Box<Self>,
+        kb: &Keybindings,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        if kb.search.confirm.matches(key, modifiers) {
+            let full_idx = self
+                .visible_rows()
+                .get(self.selected)
+                .and_then(|&id| self.all_ids.iter().position(|&aid| aid == id))
+                .unwrap_or(0);
+            self.selected = full_idx;
+            self.search.clear();
+            self.searching = false;
+            self.pre_search_selected = None;
+            return (self, KeyResult::Handled);
+        }
+        if kb.search.cancel.matches(key, modifiers) {
+            self.selected = self.pre_search_selected.take().unwrap_or(0);
+            self.search.clear();
+            self.searching = false;
+            return (self, KeyResult::Handled);
+        }
+        if kb.navigation.scroll_down.matches(key, modifiers) {
+            let count = self.visible_rows().len();
+            if count > 0 {
+                self.selected = (self.selected + 1).min(count - 1);
+            }
+            return (self, KeyResult::Handled);
+        }
+        if kb.navigation.scroll_up.matches(key, modifiers) {
+            self.selected = self.selected.saturating_sub(1);
+            return (self, KeyResult::Handled);
+        }
+        match key {
+            KeyCode::Backspace => {
+                self.search.pop();
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                self.search.push(c);
+            }
+            _ => return (self, KeyResult::Ignored),
+        }
+        self.selected = 0;
+        self.clamp_selected();
+        (self, KeyResult::Handled)
+    }
+}
+
 #[async_trait]
 impl Mode for ArchivePickerMode {
     async fn handle_key(
@@ -98,6 +204,10 @@ impl Mode for ArchivePickerMode {
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
         let kb = &tab.interaction.keybindings;
+
+        if self.searching {
+            return self.handle_search_key(kb, key, modifiers);
+        }
 
         if kb.select_fields.apply.matches(key, modifiers) {
             if !self.any_file_selected() {
@@ -118,14 +228,22 @@ impl Mode for ArchivePickerMode {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
+        if kb.select_fields.search.matches(key, modifiers) {
+            self.pre_search_selected = Some(self.selected);
+            self.search.clear();
+            self.searching = true;
+            return (self, KeyResult::Handled);
+        }
+
         if kb.navigation.scroll_down.matches(key, modifiers) {
-            if !self.visible.is_empty() {
-                self.selected = (self.selected + 1).min(self.visible.len() - 1);
+            let count = self.visible_rows().len();
+            if count > 0 {
+                self.selected = (self.selected + 1).min(count - 1);
             }
         } else if kb.navigation.scroll_up.matches(key, modifiers) {
             self.selected = self.selected.saturating_sub(1);
         } else if kb.select_fields.toggle.matches(key, modifiers) {
-            if let Some(&id) = self.visible.get(self.selected) {
+            if let Some(&id) = self.visible_rows().get(self.selected) {
                 self.tree.toggle_subtree(id);
             }
         } else if kb.select_fields.all.matches(key, modifiers) {
@@ -169,9 +287,15 @@ impl Mode for ArchivePickerMode {
 
     fn render_state(&self) -> ModeRenderState {
         ModeRenderState::ArchivePicker {
-            rows: self.visible.iter().map(|&id| self.row_for(id)).collect(),
+            rows: self
+                .visible_rows()
+                .iter()
+                .map(|&id| self.row_for(id))
+                .collect(),
             selected: self.selected,
             source_path: self.source_path.clone(),
+            search: self.search.clone(),
+            searching: self.searching,
         }
     }
 }
@@ -264,7 +388,22 @@ mod tests {
                 rows,
                 selected,
                 source_path,
+                ..
             } => (rows, selected, source_path),
+            other => panic!("expected ArchivePicker, got {:?}", other),
+        }
+    }
+
+    fn extract_search(state: ModeRenderState) -> String {
+        match state {
+            ModeRenderState::ArchivePicker { search, .. } => search,
+            other => panic!("expected ArchivePicker, got {:?}", other),
+        }
+    }
+
+    fn extract_searching(state: ModeRenderState) -> bool {
+        match state {
+            ModeRenderState::ArchivePicker { searching, .. } => searching,
             other => panic!("expected ArchivePicker, got {:?}", other),
         }
     }
@@ -272,7 +411,7 @@ mod tests {
     #[test]
     fn test_new_flattens_visible_rows_in_preorder() {
         let m = mode();
-        assert_eq!(m.visible, vec![0, 1, 2, 3]);
+        assert_eq!(m.visible_rows(), vec![0, 1, 2, 3]);
         assert_eq!(m.selected, 0);
     }
 
@@ -425,5 +564,176 @@ mod tests {
         let (rows, _, _) = extract_state(m.render_state());
         assert!(rows[1].is_error);
         assert!(rows[1].name.contains("bad zip"));
+    }
+
+    /// Presses `/` to enter search, then types `text` one character at a
+    /// time via `handle_key`, threading the opaque `Box<dyn Mode>` through
+    /// each keystroke the same way real input dispatch does.
+    async fn enter_search_and_type(
+        m: ArchivePickerMode,
+        tab: &mut TabState,
+        text: &str,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        let (mut m, mut result) = press(m, tab, KeyCode::Char('/')).await;
+        for c in text.chars() {
+            let (m2, r) = m
+                .handle_key(tab, KeyCode::Char(c), KeyModifiers::NONE)
+                .await;
+            m = m2;
+            result = r;
+        }
+        (m, result)
+    }
+
+    #[test]
+    fn test_search_starts_empty_and_not_searching() {
+        let m = mode();
+        assert_eq!(extract_search(m.render_state()), "");
+        assert!(!extract_searching(m.render_state()));
+    }
+
+    #[tokio::test]
+    async fn test_slash_enters_search_mode_with_empty_query() {
+        let mut tab = make_tab().await;
+        let (m, result) = press(mode(), &mut tab, KeyCode::Char('/')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(extract_searching(m.render_state()));
+        assert_eq!(extract_search(m.render_state()), "");
+    }
+
+    #[tokio::test]
+    async fn test_typing_while_searching_appends_to_query() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "in").await;
+        assert_eq!(extract_search(m.render_state()), "in");
+        assert!(extract_searching(m.render_state()));
+    }
+
+    #[tokio::test]
+    async fn test_search_narrows_to_matching_files_and_keeps_ancestor_container() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner1").await;
+        let (rows, _, _) = extract_state(m.render_state());
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        // "a.log" doesn't match and has no matching descendant, so it's hidden;
+        // "bundle.zip" doesn't match itself but is kept because its child does;
+        // "inner2.log" doesn't match, so it's hidden even though its sibling does.
+        assert_eq!(names, vec!["bundle.zip", "inner1.log"]);
+    }
+
+    #[tokio::test]
+    async fn test_backspace_removes_last_search_char() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "in").await;
+        let (m2, _) = m
+            .handle_key(&mut tab, KeyCode::Backspace, KeyModifiers::NONE)
+            .await;
+        assert_eq!(extract_search(m2.render_state()), "i");
+    }
+
+    #[tokio::test]
+    async fn test_action_letter_goes_to_query_while_searching_not_triggered() {
+        let mut tab = make_tab().await;
+        // 'a' is normally bound to "select all" — while searching it must be
+        // captured as query text instead, so a filename search for "app.log"
+        // (or anything starting with 'a') actually works.
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "a").await;
+        assert_eq!(extract_search(m.render_state()), "a");
+        let (rows, _, _) = extract_state(m.render_state());
+        assert!(rows.iter().all(|r| r.check_state == CheckState::Unchecked));
+    }
+
+    #[tokio::test]
+    async fn test_none_letter_goes_to_query_while_searching_not_triggered() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.tree.toggle_subtree(1);
+        assert!(m.any_file_selected());
+        let (m, _) = enter_search_and_type(m, &mut tab, "n").await;
+        assert_eq!(extract_search(m.render_state()), "n");
+        let (rows, _, _) = extract_state(m.render_state());
+        assert!(rows.iter().any(|r| r.check_state == CheckState::Checked));
+    }
+
+    #[tokio::test]
+    async fn test_space_goes_to_query_while_searching_not_toggled() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "a b").await;
+        assert_eq!(extract_search(m.render_state()), "a b");
+    }
+
+    #[tokio::test]
+    async fn test_j_navigates_within_narrowed_list_while_searching() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner").await;
+        // Narrowed to ["bundle.zip", "inner1.log", "inner2.log"].
+        let (rows, selected, _) = extract_state(m.render_state());
+        assert_eq!(rows.len(), 3);
+        assert_eq!(selected, 0);
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        let (rows, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 1);
+        assert_eq!(rows[1].name, "inner1.log");
+    }
+
+    #[tokio::test]
+    async fn test_typing_a_character_resets_selection_to_top_of_narrowed_list() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 3;
+        let (m, _) = enter_search_and_type(m, &mut tab, "inner1").await;
+        // Only "bundle.zip" and "inner1.log" match "inner1" -> 2 rows, selection
+        // must have been reclamped down from wherever it started.
+        let (rows, selected, _) = extract_state(m.render_state());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(selected, 0);
+    }
+
+    #[tokio::test]
+    async fn test_enter_confirms_search_and_translates_to_full_list_index() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner1").await;
+        // Narrowed selection is on "bundle.zip" (index 0 of the narrowed list).
+        let (m, result) = m
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(!extract_searching(m.render_state()));
+        assert_eq!(extract_search(m.render_state()), "");
+        let (rows, selected, _) = extract_state(m.render_state());
+        // Search cleared -> full unfiltered list is shown again.
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[selected].name, "bundle.zip");
+    }
+
+    #[tokio::test]
+    async fn test_esc_cancels_search_and_restores_original_selection() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 2; // "inner1.log"
+        let (m, _) = enter_search_and_type(m, &mut tab, "bundle").await;
+        let (m, result) = m
+            .handle_key(&mut tab, KeyCode::Esc, KeyModifiers::NONE)
+            .await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(!extract_searching(m.render_state()));
+        assert_eq!(extract_search(m.render_state()), "");
+        let (rows, selected, _) = extract_state(m.render_state());
+        assert_eq!(rows.len(), 4);
+        assert_eq!(selected, 2);
+        assert_eq!(rows[selected].name, "inner1.log");
+    }
+
+    #[tokio::test]
+    async fn test_esc_exits_mode_when_not_searching() {
+        let mut tab = make_tab().await;
+        let (mode2, result) = press(mode(), &mut tab, KeyCode::Esc).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(!matches!(
+            mode2.render_state(),
+            ModeRenderState::ArchivePicker { .. }
+        ));
     }
 }

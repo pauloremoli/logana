@@ -29,13 +29,21 @@ pub struct ArchivePickerPopup<'a> {
     pub rows: &'a [ArchiveRow],
     pub selected: usize,
     pub source_path: &'a str,
+    /// Live typeahead query narrowing `rows`; empty when not searching or
+    /// when search is active but nothing has been typed yet.
+    pub search: &'a str,
+    /// True while capturing search input. Distinct from `!search.is_empty()`
+    /// so the search row can show a `[SEARCH]` marker the instant the search
+    /// key is pressed, before any character is typed.
+    pub searching: bool,
 }
 
 impl<'a> Widget for ArchivePickerPopup<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let popup_width = (area.width.saturating_sub(4)).clamp(40, 80);
         let content_rows = self.rows.len() as u16;
-        let popup_height = (content_rows + 5)
+        let extra = if self.searching { 6 } else { 5 };
+        let popup_height = (content_rows + extra)
             .min(area.height * 4 / 5)
             .max(9)
             .min(area.height.saturating_sub(2));
@@ -60,18 +68,57 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
         let inner = block.inner(popup_area);
         block.render(popup_area, buf);
 
+        let has_search = self.searching;
         let inner_h = inner.height as usize;
         let footer_lines = 3usize;
-        let content_h = inner_h.saturating_sub(footer_lines);
+        let search_rows = if has_search { 1usize } else { 0 };
+        let content_h = inner_h.saturating_sub(footer_lines + search_rows);
+
+        let mut constraints = vec![];
+        if has_search {
+            constraints.push(Constraint::Length(1));
+        }
+        constraints.push(Constraint::Min(1));
+        constraints.push(Constraint::Length(1));
+        constraints.push(Constraint::Length(2));
 
         let vsplit = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(2),
-            ])
+            .constraints(constraints)
             .split(inner);
+
+        let (search_area, content_area, sep_area, footer_area) = if has_search {
+            (Some(vsplit[0]), vsplit[1], vsplit[2], vsplit[3])
+        } else {
+            (None, vsplit[0], vsplit[1], vsplit[2])
+        };
+
+        if let Some(sa) = search_area {
+            let search_line = if self.search.is_empty() {
+                Line::from(Span::styled(
+                    " [SEARCH]",
+                    Style::default()
+                        .fg(self.theme.text_highlight_fg)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(vec![
+                    Span::styled(
+                        " /",
+                        Style::default()
+                            .fg(self.theme.text_highlight_fg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        self.search.to_string(),
+                        Style::default().fg(self.theme.text_highlight_fg),
+                    ),
+                ])
+            };
+            Paragraph::new(search_line)
+                .style(Style::default().bg(self.theme.root_bg))
+                .render(sa, buf);
+        }
 
         let scroll = if self.selected >= content_h {
             self.selected - content_h + 1
@@ -106,12 +153,12 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
 
         Paragraph::new(lines)
             .style(Style::default().bg(self.theme.root_bg))
-            .render(vsplit[0], buf);
+            .render(content_area, buf);
 
-        let sep = "\u{2500}".repeat(vsplit[1].width as usize);
+        let sep = "\u{2500}".repeat(sep_area.width as usize);
         Paragraph::new(sep)
             .style(Style::default().fg(self.theme.text))
-            .render(vsplit[1], buf);
+            .render(sep_area, buf);
 
         let kb = &self.keybindings.select_fields;
         let key_style = Style::default()
@@ -144,6 +191,14 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
             txt_style,
             br_style,
         );
+        popup_entry(
+            &mut line1,
+            kb.search.display(),
+            "search",
+            key_style,
+            txt_style,
+            br_style,
+        );
         let mut line2: Vec<Span<'static>> = Vec::new();
         popup_entry(
             &mut line2,
@@ -164,7 +219,7 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
         let footer = vec![Line::from(line1), Line::from(line2)];
         Paragraph::new(footer)
             .style(Style::default().bg(self.theme.root_bg))
-            .render(vsplit[2], buf);
+            .render(footer_area, buf);
 
         let total = self.rows.len();
         if total > content_h {
@@ -173,7 +228,7 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
             StatefulWidget::render(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .style(Style::default().fg(self.theme.border)),
-                vsplit[0],
+                content_area,
                 buf,
                 &mut sb_state,
             );
@@ -184,6 +239,7 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
     fn test_checkbox_glyph_checked() {
@@ -198,5 +254,100 @@ mod tests {
     #[test]
     fn test_checkbox_glyph_partial() {
         assert_eq!(checkbox_glyph(CheckState::Partial), "[~] ");
+    }
+
+    fn row(name: &str) -> ArchiveRow {
+        ArchiveRow {
+            name: name.to_string(),
+            depth: 0,
+            is_container: false,
+            check_state: CheckState::Unchecked,
+            is_error: false,
+        }
+    }
+
+    fn row_text(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width)
+            .map(|c| {
+                buf.cell(ratatui::prelude::Position::new(c, y))
+                    .unwrap()
+                    .symbol()
+                    .to_string()
+            })
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn test_no_search_row_when_search_empty() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let rows = vec![row("a.log"), row("b.log")];
+        let popup = ArchivePickerPopup {
+            theme: &theme,
+            keybindings: &kb,
+            rows: &rows,
+            selected: 0,
+            source_path: "archive.zip",
+            search: "",
+            searching: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
+        let text: String = (0..15)
+            .map(|y| row_text(buf.buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // No search row means the first file row is right under the title,
+        // with no `[SEARCH]`/`/query` line pushed in above it.
+        assert!(text.contains("a.log"));
+        assert!(!text.contains("SEARCH"));
+    }
+
+    #[test]
+    fn test_search_marker_shown_immediately_on_empty_query() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let rows = vec![row("a.log")];
+        let popup = ArchivePickerPopup {
+            theme: &theme,
+            keybindings: &kb,
+            rows: &rows,
+            selected: 0,
+            source_path: "archive.zip",
+            search: "",
+            searching: true,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
+        let text: String = (0..15)
+            .map(|y| row_text(buf.buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("SEARCH"));
+    }
+
+    #[test]
+    fn test_search_row_shown_with_query_when_searching() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let rows = vec![row("a.log")];
+        let popup = ArchivePickerPopup {
+            theme: &theme,
+            keybindings: &kb,
+            rows: &rows,
+            selected: 0,
+            source_path: "archive.zip",
+            search: "err",
+            searching: true,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
+        let text: String = (0..15)
+            .map(|y| row_text(buf.buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("/err"));
     }
 }

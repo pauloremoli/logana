@@ -100,6 +100,12 @@ pub enum ModeRenderState {
         rows: Vec<crate::mode::archive_picker_mode::ArchiveRow>,
         selected: usize,
         source_path: String,
+        /// Live typeahead query narrowing `rows`; empty when not searching
+        /// or when search is active but nothing has been typed yet.
+        search: String,
+        /// True while capturing search input — distinct from `search.is_empty()`
+        /// so the popup can show a marker the instant `/` is pressed.
+        searching: bool,
     },
     Ui,
     ExportFooter {
@@ -953,6 +959,8 @@ mod tests {
                 rows: vec![],
                 selected: 0,
                 source_path: String::new(),
+                search: String::new(),
+                searching: false,
             }
             .mode_name(),
             "ARCHIVE"

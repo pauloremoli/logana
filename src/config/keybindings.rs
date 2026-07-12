@@ -1281,6 +1281,10 @@ fn default_sf_apply() -> KeyBindings {
 fn default_sf_cancel() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
+#[inline(always)]
+fn default_sf_search() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('/'), KeyModifiers::NONE)])
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SelectFieldsKeybindings {
@@ -1298,6 +1302,11 @@ pub struct SelectFieldsKeybindings {
     pub apply: KeyBindings,
     #[serde(default = "default_sf_cancel")]
     pub cancel: KeyBindings,
+    /// Enters typeahead search — used by the archive file picker to narrow
+    /// its (potentially deep) file tree. Not read by `select_fields_mode.rs`
+    /// or `merge_select_mode.rs`, which also share this keybindings struct.
+    #[serde(default = "default_sf_search")]
+    pub search: KeyBindings,
 }
 
 impl Default for SelectFieldsKeybindings {
@@ -1310,6 +1319,7 @@ impl Default for SelectFieldsKeybindings {
             none: default_sf_none(),
             apply: default_sf_apply(),
             cancel: default_sf_cancel(),
+            search: default_sf_search(),
         }
     }
 }
@@ -1617,6 +1627,7 @@ impl Keybindings {
             ("select_fields.none", &self.select_fields.none),
             ("select_fields.apply", &self.select_fields.apply),
             ("select_fields.cancel", &self.select_fields.cancel),
+            ("select_fields.search", &self.select_fields.search),
         ];
 
         let help_actions: &[(&str, &KeyBindings)] = &[
@@ -1859,6 +1870,23 @@ mod tests {
         assert!(
             !conflicts.is_empty(),
             "filter mode now also consumes normal.go_to_top_chord — colliding filter.search with it must be reported"
+        );
+    }
+
+    #[test]
+    fn test_default_select_fields_search_is_slash() {
+        let sf = SelectFieldsKeybindings::default();
+        assert!(sf.search.matches(KeyCode::Char('/'), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_if_select_fields_search_collides_with_toggle() {
+        let mut kb = Keybindings::default();
+        kb.select_fields.search = kb.select_fields.toggle.clone();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "rebinding select_fields.search onto an existing select-fields action's key must be reported as a conflict"
         );
     }
 

@@ -34,6 +34,8 @@ type ArchivePickerData = Option<(
     Vec<crate::mode::archive_picker_mode::ArchiveRow>,
     usize,
     String,
+    String,
+    bool,
 )>;
 
 struct UiRenderState {
@@ -287,7 +289,15 @@ impl App {
                 rows,
                 selected,
                 source_path,
-            } => Some((rows.clone(), *selected, source_path.clone())),
+                search,
+                searching,
+            } => Some((
+                rows.clone(),
+                *selected,
+                source_path.clone(),
+                search.clone(),
+                *searching,
+            )),
             _ => None,
         };
         let docker_select: Option<(
@@ -871,7 +881,8 @@ impl App {
             );
         }
 
-        if let Some((rows, selected, source_path)) = &state.archive_picker_state {
+        if let Some((rows, selected, source_path, search, searching)) = &state.archive_picker_state
+        {
             frame.render_widget(
                 super::widgets::ArchivePickerPopup {
                     theme: &self.theme,
@@ -879,6 +890,8 @@ impl App {
                     rows,
                     selected: *selected,
                     source_path,
+                    search,
+                    searching: *searching,
                 },
                 frame_area,
             );
