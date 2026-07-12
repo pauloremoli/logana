@@ -207,36 +207,36 @@ pub fn find_command_completions(prefix: &str) -> Vec<&'static str> {
 
 pub const COLOR_NAMES: &[&str] = &[
     "Black",
-    "Red",
-    "Green",
-    "Yellow",
     "Blue",
-    "Magenta",
-    "Cyan",
-    "Gray",
-    "DarkGray",
-    "LightRed",
-    "LightGreen",
-    "LightYellow",
-    "LightBlue",
-    "LightMagenta",
-    "LightCyan",
-    "White",
-    "Orange",
-    "Pink",
-    "Purple",
-    "Violet",
-    "Indigo",
-    "Teal",
-    "Turquoise",
+    "Brown",
     "Coral",
-    "Salmon",
+    "Cyan",
+    "DarkGray",
     "Gold",
+    "Gray",
+    "Green",
+    "Indigo",
+    "LightBlue",
+    "LightCyan",
+    "LightGreen",
+    "LightMagenta",
+    "LightRed",
+    "LightYellow",
     "Lime",
+    "Magenta",
     "Maroon",
     "Navy",
     "Olive",
-    "Brown",
+    "Orange",
+    "Pink",
+    "Purple",
+    "Red",
+    "Salmon",
+    "Teal",
+    "Turquoise",
+    "Violet",
+    "White",
+    "Yellow",
 ];
 
 /// If the input ends with `--fg <partial>` or `--bg <partial>`, returns the partial color prefix.
@@ -769,6 +769,16 @@ mod tests {
     }
 
     // ── complete_color ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_color_names_sorted_alphabetically() {
+        let mut sorted = COLOR_NAMES.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(
+            COLOR_NAMES, sorted,
+            "COLOR_NAMES should be listed alphabetically so filter autocomplete suggestions are sorted"
+        );
+    }
 
     #[test]
     fn test_complete_color_empty_returns_all() {
