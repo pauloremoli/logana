@@ -296,7 +296,7 @@ impl LogManager {
             if def.pattern.starts_with(crate::filters::FIELD_PREFIX) {
                 if let Some(cc) = &def.color_config
                     && (cc.fg.is_some() || cc.bg.is_some())
-                    && let Ok((field, pattern)) = crate::filters::parse_field_filter(
+                    && let Ok((conditions, text)) = crate::filters::parse_field_filter_expr(
                         &def.pattern[crate::filters::FIELD_PREFIX.len()..],
                     )
                 {
@@ -317,8 +317,8 @@ impl LogManager {
                     };
                     field_filter_styles.push(crate::filters::FieldFilterStyle {
                         field_filter: crate::filters::FieldFilter {
-                            field,
-                            pattern,
+                            conditions,
+                            text,
                             decision,
                         },
                         style_id,

@@ -17,6 +17,14 @@ The `--field` flag tells logana to treat the pattern as a `key=value` pair. The 
 :exclude --field level=debug        # hide all debug-level lines
 ```
 
+`--field` can be repeated within a single command to require several fields at once, and combined with trailing free text that must also match — all AND'd together in one filter:
+
+```sh
+:filter --field level=INFO --field component=Draco Power measurements:
+# shows only lines where level contains "INFO" AND component contains "Draco"
+# AND the line contains "Power measurements:"
+```
+
 ## Field Name Aliases
 
 The following short aliases are recognised regardless of how the field is named in the raw log:
@@ -33,12 +41,21 @@ For example, `:filter --field lvl=warn` and `:filter --field level=warn` are equ
 
 ## Combining Field Filters
 
-**Multiple include field filters** — all must match (AND logic):
+There are two distinct ways to combine field conditions, with different logic:
+
+**Multiple `--field` flags in one command** — AND logic. Every condition (and any trailing text) must match:
+
+```sh
+:filter --field level=error --field component=auth
+# only lines where level contains "error" AND component contains "auth"
+```
+
+**Multiple separate `:filter` commands** — OR logic, same as any other include filters. Each broadens what's visible:
 
 ```sh
 :filter --field level=error
-:filter --field component=auth
-# only lines where level contains "error" AND component contains "auth"
+:filter --field level=warn
+# shows lines where level contains "error" OR level contains "warn"
 ```
 
 **Exclude field filters** — hide any line where the field matches:
@@ -57,11 +74,12 @@ This matches the behaviour of [date filters](date-filters.md) for lines without 
 
 ## Sidebar Display
 
-Field filters appear in the filter manager sidebar with a `[field]` tag:
+Field filters appear in the filter manager sidebar with a `[field]` tag. A filter with multiple `--field` conditions and/or trailing text shows all of them, comma-separated:
 
 ```
 [x] In: level=error [field]
 [x] Out: level=debug [field]
+[x] In: level=INFO, component=Draco, Power measurements: [field]
 ```
 
 ## Requires a Detected Format

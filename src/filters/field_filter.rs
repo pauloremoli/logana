@@ -3,13 +3,28 @@ use crate::parser::DisplayParts;
 
 pub const FIELD_PREFIX: &str = "@field:";
 
-/// A compiled, ready-to-evaluate field-scoped filter.
+/// `(field, value)` conditions parsed from a stored field filter expression,
+/// alongside its optional free-text condition. Returned by
+/// [`parse_field_filter_expr`].
+pub type FieldFilterExpr = (Vec<(String, String)>, Option<String>);
+
+/// Joins multiple `key:value` condition segments within a compound field
+/// filter's stored expression. Never appears in typed filter values.
+const CONDITION_SEP: char = '\u{1F}';
+/// Marks a segment as the free-text condition rather than a `key:value` pair.
+const TEXT_MARKER: char = '\u{02}';
+
+/// A compiled, ready-to-evaluate field-scoped filter. May combine several
+/// `(field, value)` conditions (all must match — AND) with an optional
+/// free-text substring condition (also ANDed), e.g. from
+/// `:filter --field level=INFO --field component=Draco some text`.
 #[derive(Debug, Clone)]
 pub struct FieldFilter {
-    /// Canonical field name after alias resolution (kept for diagnostics / tests).
-    pub field: String,
-    /// Substring to match within the resolved field value.
-    pub pattern: String,
+    /// `(field, pattern)` pairs — every one must match for this filter to match.
+    pub conditions: Vec<(String, String)>,
+    /// Optional free-text substring, ANDed with `conditions` when present —
+    /// matched against the full raw line, same as a plain non-field filter.
+    pub text: Option<String>,
     /// Whether this is an include or exclude filter.
     pub decision: FilterDecision,
 }
@@ -24,7 +39,9 @@ pub struct FieldFilterStyle {
     pub match_only: bool,
 }
 
-/// Parse the stored `key:value` expression (the part **after** `FIELD_PREFIX`).
+/// Parse a single stored `key:value` condition (part of the expression
+/// **after** `FIELD_PREFIX`, already split on [`CONDITION_SEP`] by
+/// [`parse_field_filter_expr`]).
 ///
 /// The first colon splits key from value, so the value may itself contain colons.
 /// Returns `Err` if the key or value is empty, or if no colon is present.
@@ -43,31 +60,88 @@ pub fn parse_field_filter(expr: &str) -> Result<(String, String), String> {
     Ok((key.to_string(), value.to_string()))
 }
 
-/// Extract enabled `@field:` entries from `filter_defs` as `(field, pattern)` pairs,
-/// preserving the original filter order. Used for per-filter match counting.
-pub fn extract_field_filters_ordered(filter_defs: &[FilterDef]) -> Vec<(String, String)> {
+/// Parse the stored expression (the part **after** `FIELD_PREFIX`) into its
+/// `(field, value)` conditions and optional free-text condition.
+///
+/// A single `key:value` with no [`CONDITION_SEP`] — the pre-existing,
+/// single-condition storage format — parses through this same function
+/// unchanged, so filters saved before compound support was added keep
+/// loading correctly.
+pub fn parse_field_filter_expr(expr: &str) -> Result<FieldFilterExpr, String> {
+    let mut conditions = Vec::new();
+    let mut text = None;
+    for segment in expr.split(CONDITION_SEP) {
+        if let Some(t) = segment.strip_prefix(TEXT_MARKER) {
+            text = Some(t.to_string());
+        } else {
+            conditions.push(parse_field_filter(segment)?);
+        }
+    }
+    Ok((conditions, text))
+}
+
+/// Encode `conditions` (and optional `text`) into a `FIELD_PREFIX`-prefixed
+/// stored pattern string. Inverse of [`parse_field_filter_expr`] (applied to
+/// the string with `FIELD_PREFIX` stripped). A single condition with no text
+/// encodes to exactly the pre-existing `@field:key:value` format.
+pub fn encode_field_filter(conditions: &[(String, String)], text: Option<&str>) -> String {
+    let mut segments: Vec<String> = conditions.iter().map(|(k, v)| format!("{k}:{v}")).collect();
+    if let Some(t) = text {
+        segments.push(format!("{TEXT_MARKER}{t}"));
+    }
+    format!(
+        "{FIELD_PREFIX}{}",
+        segments.join(&CONDITION_SEP.to_string())
+    )
+}
+
+/// Whether every one of `ff`'s conditions matches the parsed line, and (if
+/// present) its free-text condition is found in the raw line.
+pub fn field_filter_matches(ff: &FieldFilter, parts: &DisplayParts<'_>, line: &[u8]) -> bool {
+    ff.conditions.iter().all(|(field, pattern)| {
+        resolve_field(field, parts).is_some_and(|v| v.contains(pattern.as_str()))
+    }) && ff
+        .text
+        .as_deref()
+        .is_none_or(|t| std::str::from_utf8(line).is_ok_and(|s| s.contains(t)))
+}
+
+/// Extract enabled `@field:` entries from `filter_defs` as compiled compound
+/// filters, preserving the original filter order. Used for per-filter match
+/// counting (one count per filter — the whole compound condition matching —
+/// not per condition).
+pub fn extract_field_filters_ordered(filter_defs: &[FilterDef]) -> Vec<FieldFilter> {
     filter_defs
         .iter()
         .filter(|d| d.enabled)
         .filter_map(|d| {
             let expr = d.pattern.strip_prefix(FIELD_PREFIX)?;
-            parse_field_filter(expr).ok()
+            let (conditions, text) = parse_field_filter_expr(expr).ok()?;
+            let decision = match d.filter_type {
+                FilterType::Include => FilterDecision::Include,
+                FilterType::Exclude => FilterDecision::Exclude,
+                FilterType::Highlight => FilterDecision::Highlight,
+            };
+            Some(FieldFilter {
+                conditions,
+                text,
+                decision,
+            })
         })
         .collect()
 }
 
-/// Increment per-filter counters for each enabled field filter that matches `parts`.
+/// Increment per-filter counters for each enabled field filter that matches `parts`/`line`.
 /// Entries in `counts` are parallel to `filters` from [`extract_field_filters_ordered`].
 pub fn count_field_filter_matches(
-    filters: &[(String, String)],
+    filters: &[FieldFilter],
     parts: Option<&DisplayParts<'_>>,
+    line: &[u8],
     counts: &mut [usize],
 ) {
     let Some(parts) = parts else { return };
-    for (i, (field, pattern)) in filters.iter().enumerate() {
-        if resolve_field(field, parts)
-            .map(|v| v.contains(pattern.as_str()))
-            .unwrap_or(false)
+    for (i, ff) in filters.iter().enumerate() {
+        if field_filter_matches(ff, parts, line)
             && let Some(c) = counts.get_mut(i)
         {
             *c += 1;
@@ -88,7 +162,7 @@ pub fn extract_field_filters(filter_defs: &[FilterDef]) -> (Vec<FieldFilter>, Ve
         let Some(expr) = def.pattern.strip_prefix(FIELD_PREFIX) else {
             continue;
         };
-        let Ok((field, pattern)) = parse_field_filter(expr) else {
+        let Ok((conditions, text)) = parse_field_filter_expr(expr) else {
             continue;
         };
         // Highlight field filters style matching lines but must never enter
@@ -99,8 +173,8 @@ pub fn extract_field_filters(filter_defs: &[FilterDef]) -> (Vec<FieldFilter>, Ve
             FilterType::Highlight => continue,
         };
         let ff = FieldFilter {
-            field,
-            pattern,
+            conditions,
+            text,
             decision,
         };
         match def.filter_type {
@@ -174,24 +248,27 @@ pub enum FieldVote {
 pub fn any_field_exclude_matches(
     excludes: &[FieldFilter],
     parts: Option<&DisplayParts<'_>>,
+    line: &[u8],
 ) -> bool {
     let Some(parts) = parts else {
         return false; // unparseable → pass through
     };
-    excludes.iter().any(|ff| {
-        resolve_field(&ff.field, parts)
-            .map(|v| v.contains(ff.pattern.as_str()))
-            .unwrap_or(false) // field absent → pass through (don't exclude)
-    })
+    excludes
+        .iter()
+        .any(|ff| field_filter_matches(ff, parts, line))
 }
 
 /// Evaluate field include filters and return a [`FieldVote`].
 ///
-/// - `Match` — at least one include filter found the field and the value matched.
+/// - `Match` — at least one include filter's conditions (and text, if any) all matched.
 /// - `Miss` — at least one field was present and evaluated, but none matched.
 /// - `PassThrough` — `parts` is `None` or all relevant fields were absent; the
 ///   caller should fall back to text-filter-only visibility logic.
-pub fn field_include_vote(includes: &[FieldFilter], parts: Option<&DisplayParts<'_>>) -> FieldVote {
+pub fn field_include_vote(
+    includes: &[FieldFilter],
+    parts: Option<&DisplayParts<'_>>,
+    line: &[u8],
+) -> FieldVote {
     if includes.is_empty() {
         return FieldVote::PassThrough;
     }
@@ -202,7 +279,7 @@ pub fn field_include_vote(includes: &[FieldFilter], parts: Option<&DisplayParts<
     // Line was successfully parsed: any filter that matches → Match; otherwise → Miss.
     // A field that is absent counts as not matching (Miss), not as pass-through.
     for ff in includes {
-        if resolve_field(&ff.field, parts).is_some_and(|v| v.contains(ff.pattern.as_str())) {
+        if field_filter_matches(ff, parts, line) {
             return FieldVote::Match;
         }
     }
@@ -246,6 +323,125 @@ mod tests {
         assert!(parse_field_filter("level:").is_err());
     }
 
+    // ── parse_field_filter_expr / encode_field_filter ───────────────────────
+
+    #[test]
+    fn test_parse_field_filter_expr_single_condition_old_format() {
+        // No separator present — must parse exactly like the pre-existing
+        // single-condition storage format, for backward compatibility with
+        // filters already saved by users.
+        let (conditions, text) = parse_field_filter_expr("level:INFO").unwrap();
+        assert_eq!(conditions, vec![("level".to_string(), "INFO".to_string())]);
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn test_parse_field_filter_expr_multiple_conditions() {
+        let (conditions, text) =
+            parse_field_filter_expr("level:INFO\u{1F}component:Draco").unwrap();
+        assert_eq!(
+            conditions,
+            vec![
+                ("level".to_string(), "INFO".to_string()),
+                ("component".to_string(), "Draco".to_string()),
+            ]
+        );
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn test_parse_field_filter_expr_with_text() {
+        let (conditions, text) =
+            parse_field_filter_expr("level:INFO\u{1F}component:Draco\u{1F}\u{02}Power measuments:")
+                .unwrap();
+        assert_eq!(
+            conditions,
+            vec![
+                ("level".to_string(), "INFO".to_string()),
+                ("component".to_string(), "Draco".to_string()),
+            ]
+        );
+        assert_eq!(text.as_deref(), Some("Power measuments:"));
+    }
+
+    #[test]
+    fn test_parse_field_filter_expr_malformed_condition_errors() {
+        assert!(parse_field_filter_expr("level:INFO\u{1F}levelonly").is_err());
+    }
+
+    #[test]
+    fn test_encode_field_filter_single_condition_matches_old_format() {
+        let encoded = encode_field_filter(&[("level".to_string(), "INFO".to_string())], None);
+        assert_eq!(encoded, "@field:level:INFO");
+    }
+
+    #[test]
+    fn test_encode_field_filter_round_trips_multiple_conditions_and_text() {
+        let conditions = vec![
+            ("level".to_string(), "INFO".to_string()),
+            ("component".to_string(), "Draco".to_string()),
+        ];
+        let encoded = encode_field_filter(&conditions, Some("Power measuments:"));
+        let expr = encoded.strip_prefix(FIELD_PREFIX).unwrap();
+        let (parsed_conditions, parsed_text) = parse_field_filter_expr(expr).unwrap();
+        assert_eq!(parsed_conditions, conditions);
+        assert_eq!(parsed_text.as_deref(), Some("Power measuments:"));
+    }
+
+    // ── field_filter_matches ─────────────────────────────────────────────────
+
+    fn compound(conditions: &[(&str, &str)], text: Option<&str>) -> FieldFilter {
+        FieldFilter {
+            conditions: conditions
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            text: text.map(|t| t.to_string()),
+            decision: FilterDecision::Include,
+        }
+    }
+
+    #[test]
+    fn test_field_filter_matches_all_conditions_and_text() {
+        let ff = compound(
+            &[("level", "INFO"), ("component", "Draco")],
+            Some("Power measuments:"),
+        );
+        let parts = make_parts(Some("INFO"), None, None, None, vec![("component", "Draco")]);
+        assert!(field_filter_matches(
+            &ff,
+            &parts,
+            b"INFO Draco Power measuments: everything nominal"
+        ));
+    }
+
+    #[test]
+    fn test_field_filter_matches_one_condition_fails() {
+        let ff = compound(&[("level", "INFO"), ("component", "Draco")], None);
+        let parts = make_parts(
+            Some("INFO"),
+            None,
+            None,
+            None,
+            vec![("component", "WireBoard")],
+        );
+        assert!(!field_filter_matches(&ff, &parts, b"INFO WireBoard hi"));
+    }
+
+    #[test]
+    fn test_field_filter_matches_text_fails() {
+        let ff = compound(&[("level", "INFO")], Some("Power measuments:"));
+        let parts = make_parts(Some("INFO"), None, None, None, vec![]);
+        assert!(!field_filter_matches(&ff, &parts, b"INFO unrelated text"));
+    }
+
+    #[test]
+    fn test_field_filter_matches_conditions_only_no_text_required() {
+        let ff = compound(&[("level", "INFO")], None);
+        let parts = make_parts(Some("INFO"), None, None, None, vec![]);
+        assert!(field_filter_matches(&ff, &parts, b"anything at all"));
+    }
+
     // ── field_filters_visible ────────────────────────────────────────────────
 
     fn make_parts<'a>(
@@ -271,16 +467,16 @@ mod tests {
 
     fn inc(field: &str, pattern: &str) -> FieldFilter {
         FieldFilter {
-            field: field.to_string(),
-            pattern: pattern.to_string(),
+            conditions: vec![(field.to_string(), pattern.to_string())],
+            text: None,
             decision: FilterDecision::Include,
         }
     }
 
     fn exc(field: &str, pattern: &str) -> FieldFilter {
         FieldFilter {
-            field: field.to_string(),
-            pattern: pattern.to_string(),
+            conditions: vec![(field.to_string(), pattern.to_string())],
+            text: None,
             decision: FilterDecision::Exclude,
         }
     }
@@ -292,7 +488,8 @@ mod tests {
         let parts = make_parts(Some("debug"), None, None, None, vec![]);
         assert!(any_field_exclude_matches(
             &[exc("level", "debug")],
-            Some(&parts)
+            Some(&parts),
+            b""
         ));
     }
 
@@ -301,13 +498,18 @@ mod tests {
         let parts = make_parts(Some("info"), None, None, None, vec![]);
         assert!(!any_field_exclude_matches(
             &[exc("level", "debug")],
-            Some(&parts)
+            Some(&parts),
+            b""
         ));
     }
 
     #[test]
     fn test_exclude_parts_none_passthrough() {
-        assert!(!any_field_exclude_matches(&[exc("level", "debug")], None));
+        assert!(!any_field_exclude_matches(
+            &[exc("level", "debug")],
+            None,
+            b""
+        ));
     }
 
     #[test]
@@ -316,7 +518,8 @@ mod tests {
         let parts = make_parts(None, None, None, None, vec![]);
         assert!(!any_field_exclude_matches(
             &[exc("level", "debug")],
-            Some(&parts)
+            Some(&parts),
+            b""
         ));
     }
 
@@ -326,7 +529,7 @@ mod tests {
     fn test_include_match_vote() {
         let parts = make_parts(Some("error"), None, None, None, vec![]);
         assert_eq!(
-            field_include_vote(&[inc("level", "error")], Some(&parts)),
+            field_include_vote(&[inc("level", "error")], Some(&parts), b""),
             FieldVote::Match
         );
     }
@@ -335,7 +538,7 @@ mod tests {
     fn test_include_no_match_vote_miss() {
         let parts = make_parts(Some("info"), None, None, None, vec![]);
         assert_eq!(
-            field_include_vote(&[inc("level", "error")], Some(&parts)),
+            field_include_vote(&[inc("level", "error")], Some(&parts), b""),
             FieldVote::Miss
         );
     }
@@ -343,7 +546,7 @@ mod tests {
     #[test]
     fn test_include_parts_none_passthrough() {
         assert_eq!(
-            field_include_vote(&[inc("level", "error")], None),
+            field_include_vote(&[inc("level", "error")], None, b""),
             FieldVote::PassThrough
         );
     }
@@ -354,7 +557,7 @@ mod tests {
         // This ensures `filter --field level=error` hides lines that have no `level`.
         let parts = make_parts(None, None, None, None, vec![]);
         assert_eq!(
-            field_include_vote(&[inc("level", "error")], Some(&parts)),
+            field_include_vote(&[inc("level", "error")], Some(&parts), b""),
             FieldVote::Miss
         );
     }
@@ -366,7 +569,8 @@ mod tests {
         assert_eq!(
             field_include_vote(
                 &[inc("level", "error"), inc("target", "auth")],
-                Some(&parts)
+                Some(&parts),
+                b""
             ),
             FieldVote::Match
         );
@@ -378,9 +582,51 @@ mod tests {
         assert_eq!(
             field_include_vote(
                 &[inc("level", "error"), inc("target", "auth")],
-                Some(&parts)
+                Some(&parts),
+                b""
             ),
             FieldVote::Miss
+        );
+    }
+
+    #[test]
+    fn test_compound_filter_requires_all_parts_others_still_or() {
+        // The actual user scenario: `:filter --field level=INFO --field
+        // component=Draco Power measuments:` produces ONE compound filter
+        // whose 2 field conditions and text must ALL match (AND). A second,
+        // separate, unrelated filter alongside it still ORs in as usual.
+        let compound = compound(
+            &[("level", "INFO"), ("component", "Draco")],
+            Some("Power measuments:"),
+        );
+        let unrelated = inc("target", "auth");
+        let includes = [compound, unrelated];
+
+        // Matches every part of the compound filter -> Match.
+        let parts = make_parts(Some("INFO"), None, None, None, vec![("component", "Draco")]);
+        assert_eq!(
+            field_include_vote(
+                &includes,
+                Some(&parts),
+                b"INFO Draco Power measuments: nominal"
+            ),
+            FieldVote::Match
+        );
+
+        // Same fields match, but the text is missing -> compound filter
+        // fails, and the unrelated filter (target=auth) doesn't apply here
+        // either -> Miss overall.
+        assert_eq!(
+            field_include_vote(&includes, Some(&parts), b"INFO Draco unrelated text"),
+            FieldVote::Miss
+        );
+
+        // The unrelated filter alone still matches independently (OR
+        // semantics across separate filters is unaffected).
+        let parts_auth = make_parts(None, None, None, Some("auth"), vec![]);
+        assert_eq!(
+            field_include_vote(&includes, Some(&parts_auth), b"anything"),
+            FieldVote::Match
         );
     }
 
@@ -388,7 +634,7 @@ mod tests {
     fn test_extra_field_by_key_match() {
         let parts = make_parts(None, None, None, None, vec![("component", "auth")]);
         assert_eq!(
-            field_include_vote(&[inc("component", "auth")], Some(&parts)),
+            field_include_vote(&[inc("component", "auth")], Some(&parts), b""),
             FieldVote::Match
         );
     }
@@ -397,7 +643,7 @@ mod tests {
     fn test_extra_field_by_key_miss() {
         let parts = make_parts(None, None, None, None, vec![("component", "auth")]);
         assert_eq!(
-            field_include_vote(&[inc("component", "api")], Some(&parts)),
+            field_include_vote(&[inc("component", "api")], Some(&parts), b""),
             FieldVote::Miss
         );
     }
@@ -408,7 +654,7 @@ mod tests {
     fn test_alias_lvl() {
         let parts = make_parts(Some("warn"), None, None, None, vec![]);
         assert_eq!(
-            field_include_vote(&[inc("lvl", "warn")], Some(&parts)),
+            field_include_vote(&[inc("lvl", "warn")], Some(&parts), b""),
             FieldVote::Match
         );
     }
@@ -417,7 +663,7 @@ mod tests {
     fn test_alias_ts() {
         let parts = make_parts(None, Some("2024-01-01"), None, None, vec![]);
         assert_eq!(
-            field_include_vote(&[inc("ts", "2024")], Some(&parts)),
+            field_include_vote(&[inc("ts", "2024")], Some(&parts), b""),
             FieldVote::Match
         );
     }
@@ -426,7 +672,7 @@ mod tests {
     fn test_alias_msg() {
         let parts = make_parts(None, None, Some("hello world"), None, vec![]);
         assert_eq!(
-            field_include_vote(&[inc("msg", "hello")], Some(&parts)),
+            field_include_vote(&[inc("msg", "hello")], Some(&parts), b""),
             FieldVote::Match
         );
     }
@@ -455,7 +701,7 @@ mod tests {
     fn test_span_dotted_path_match() {
         let parts = make_parts_with_span(vec![], vec![("method", "GET")]);
         assert_eq!(
-            field_include_vote(&[inc("span.method", "GET")], Some(&parts)),
+            field_include_vote(&[inc("span.method", "GET")], Some(&parts), b""),
             FieldVote::Match
         );
     }
@@ -470,7 +716,7 @@ mod tests {
     fn test_span_dotted_path_miss() {
         let parts = make_parts_with_span(vec![], vec![("method", "POST")]);
         assert_eq!(
-            field_include_vote(&[inc("span.method", "GET")], Some(&parts)),
+            field_include_vote(&[inc("span.method", "GET")], Some(&parts), b""),
             FieldVote::Miss
         );
     }
@@ -479,7 +725,7 @@ mod tests {
     fn test_span_dotted_path_absent_key() {
         let parts = make_parts_with_span(vec![], vec![("uri", "/")]);
         assert_eq!(
-            field_include_vote(&[inc("span.method", "GET")], Some(&parts)),
+            field_include_vote(&[inc("span.method", "GET")], Some(&parts), b""),
             FieldVote::Miss
         );
     }
@@ -489,7 +735,7 @@ mod tests {
         // tracing-subscriber inlines "fields" container into extra_fields with bare keys
         let parts = make_parts(None, None, None, None, vec![("order_id", "42")]);
         assert_eq!(
-            field_include_vote(&[inc("fields.order_id", "42")], Some(&parts)),
+            field_include_vote(&[inc("fields.order_id", "42")], Some(&parts), b""),
             FieldVote::Match
         );
     }
@@ -498,7 +744,7 @@ mod tests {
     fn test_fields_dotted_path_miss() {
         let parts = make_parts(None, None, None, None, vec![("order_id", "99")]);
         assert_eq!(
-            field_include_vote(&[inc("fields.order_id", "42")], Some(&parts)),
+            field_include_vote(&[inc("fields.order_id", "42")], Some(&parts), b""),
             FieldVote::Miss
         );
     }
@@ -555,9 +801,14 @@ mod tests {
         let (inc, exc) = extract_field_filters(&defs);
         assert_eq!(inc.len(), 1);
         assert_eq!(exc.len(), 1);
-        assert_eq!(inc[0].field, "level");
-        assert_eq!(inc[0].pattern, "error");
-        assert_eq!(exc[0].pattern, "debug");
+        assert_eq!(
+            inc[0].conditions,
+            vec![("level".to_string(), "error".to_string())]
+        );
+        assert_eq!(
+            exc[0].conditions,
+            vec![("level".to_string(), "debug".to_string())]
+        );
     }
 
     #[test]
@@ -586,7 +837,13 @@ mod tests {
             true,
         )];
         let ordered = extract_field_filters_ordered(&defs);
-        assert_eq!(ordered, vec![("level".to_string(), "error".to_string())]);
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|f| f.conditions.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![("level".to_string(), "error".to_string())]]
+        );
     }
 
     #[test]
@@ -598,9 +855,18 @@ mod tests {
         ];
         let ordered = extract_field_filters_ordered(&defs);
         assert_eq!(ordered.len(), 3);
-        assert_eq!(ordered[0], ("level".to_string(), "error".to_string()));
-        assert_eq!(ordered[1], ("level".to_string(), "debug".to_string()));
-        assert_eq!(ordered[2], ("target".to_string(), "api".to_string()));
+        assert_eq!(
+            ordered[0].conditions,
+            vec![("level".to_string(), "error".to_string())]
+        );
+        assert_eq!(
+            ordered[1].conditions,
+            vec![("level".to_string(), "debug".to_string())]
+        );
+        assert_eq!(
+            ordered[2].conditions,
+            vec![("target".to_string(), "api".to_string())]
+        );
     }
 
     #[test]
@@ -611,7 +877,7 @@ mod tests {
         ];
         let ordered = extract_field_filters_ordered(&defs);
         assert_eq!(ordered.len(), 1);
-        assert_eq!(ordered[0].0, "level");
+        assert_eq!(ordered[0].conditions[0].0, "level");
     }
 
     // ── count_field_filter_matches ────────────────────────────────────────────
@@ -619,26 +885,26 @@ mod tests {
     #[test]
     fn test_count_field_filter_matches_increments_on_match() {
         let parts = make_parts(Some("error"), None, None, None, vec![]);
-        let filters = vec![("level".to_string(), "error".to_string())];
+        let filters = vec![inc("level", "error")];
         let mut counts = vec![0usize];
-        count_field_filter_matches(&filters, Some(&parts), &mut counts);
+        count_field_filter_matches(&filters, Some(&parts), b"", &mut counts);
         assert_eq!(counts[0], 1);
     }
 
     #[test]
     fn test_count_field_filter_matches_no_increment_on_miss() {
         let parts = make_parts(Some("info"), None, None, None, vec![]);
-        let filters = vec![("level".to_string(), "error".to_string())];
+        let filters = vec![inc("level", "error")];
         let mut counts = vec![0usize];
-        count_field_filter_matches(&filters, Some(&parts), &mut counts);
+        count_field_filter_matches(&filters, Some(&parts), b"", &mut counts);
         assert_eq!(counts[0], 0);
     }
 
     #[test]
     fn test_count_field_filter_matches_no_parts_skips() {
-        let filters = vec![("level".to_string(), "error".to_string())];
+        let filters = vec![inc("level", "error")];
         let mut counts = vec![0usize];
-        count_field_filter_matches(&filters, None, &mut counts);
+        count_field_filter_matches(&filters, None, b"", &mut counts);
         assert_eq!(counts[0], 0);
     }
 
@@ -646,12 +912,12 @@ mod tests {
     fn test_count_field_filter_matches_multiple_filters() {
         let parts = make_parts(Some("error"), None, Some("crash"), None, vec![]);
         let filters = vec![
-            ("level".to_string(), "error".to_string()),
-            ("message".to_string(), "crash".to_string()),
-            ("level".to_string(), "debug".to_string()),
+            inc("level", "error"),
+            inc("message", "crash"),
+            inc("level", "debug"),
         ];
         let mut counts = vec![0usize; 3];
-        count_field_filter_matches(&filters, Some(&parts), &mut counts);
+        count_field_filter_matches(&filters, Some(&parts), b"", &mut counts);
         assert_eq!(counts[0], 1);
         assert_eq!(counts[1], 1);
         assert_eq!(counts[2], 0);

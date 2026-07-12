@@ -10,6 +10,8 @@ mod filter;
 mod io;
 mod stream;
 
+pub(crate) use filter::build_field_filter_pattern;
+
 pub(super) fn parse_key_value(pattern: &str) -> Result<(&str, &str), String> {
     let eq = pattern
         .find('=')
@@ -1355,6 +1357,90 @@ mod tests {
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].filter_type, FilterType::Exclude);
         assert!(filters[0].pattern.contains("level:debug"));
+    }
+
+    /// A minimal custom schema shaped like the user's own example
+    /// (`{level}/{component}/{feature}, {message}`), used to prove the
+    /// compound-field-filter feature against a real custom-schema parser
+    /// rather than JSON — the JSON parser has its own unrelated quirk of
+    /// mapping a `"component"` key to `parts.target` instead of
+    /// `extra_fields`, which would otherwise obscure what's under test here.
+    fn draco_parser() -> crate::parser::CustomParser {
+        crate::parser::CustomParser::from_config(&crate::config::CustomSchemaConfig {
+            name: "draco".to_string(),
+            description: None,
+            template: Some("{level}/{component}: {message}".to_string()),
+            pattern: None,
+            fields: std::collections::HashMap::new(),
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_filter_multiple_field_flags_and_text_requires_all() {
+        // The user scenario: `:filter --field level=INFO --field
+        // component=Draco Power measuments:` — only the line matching ALL
+        // THREE conditions stays visible; lines matching just a subset
+        // (which the old OR-across-filters behavior would have shown) hide.
+        let mut app = make_app(&[
+            "INFO/Draco: Power measuments: nominal",
+            "INFO/Draco: something else",
+            "INFO/WireBoard: Power measuments: x",
+            "WARN/Draco: Power measuments: y",
+        ])
+        .await;
+        app.tabs[0].display.format = Some(Arc::new(draco_parser()));
+        let result = app
+            .run_command("filter --field level=INFO --field component=Draco Power measuments:")
+            .await;
+        assert!(result.is_ok(), "{result:?}");
+        await_filter_computations(&mut app).await;
+
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1, "one compound filter, not three");
+        assert_eq!(app.tab().filter.visible_indices.len(), 1);
+        let visible_idx = app.tab().filter.visible_indices.iter().next().unwrap();
+        assert_eq!(visible_idx, 0);
+    }
+
+    #[tokio::test]
+    async fn test_exclude_multiple_field_flags_and_text_requires_all() {
+        let mut app = make_app(&[
+            "INFO/Draco: Power measuments: nominal",
+            "INFO/Draco: something else",
+            "INFO/WireBoard: Power measuments: x",
+        ])
+        .await;
+        app.tabs[0].display.format = Some(Arc::new(draco_parser()));
+        let result = app
+            .run_command("exclude --field level=INFO --field component=Draco Power measuments:")
+            .await;
+        assert!(result.is_ok(), "{result:?}");
+        await_filter_computations(&mut app).await;
+
+        // Only line 0 matches all three conditions and gets excluded; the
+        // other two (partial matches) stay visible.
+        assert_eq!(app.tab().filter.visible_indices.len(), 2);
+        assert!(!app.tab().filter.visible_indices.iter().any(|i| i == 0));
+    }
+
+    #[tokio::test]
+    async fn test_highlight_multiple_field_flags_and_text() {
+        let mut app = make_app(&["INFO/Draco: hi"]).await;
+        app.tabs[0].display.format = Some(Arc::new(draco_parser()));
+        let result = app
+            .run_command("highlight --field level=INFO --field component=Draco some text")
+            .await;
+        assert!(result.is_ok(), "{result:?}");
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].filter_type, FilterType::Highlight);
+        assert!(filters[0].pattern.contains("level:INFO"));
+        assert!(filters[0].pattern.contains("component:Draco"));
+        // Highlight filters never affect visibility, even though this one
+        // has field + text conditions like the include/exclude cases above.
+        await_filter_computations(&mut app).await;
+        assert_eq!(app.tab().filter.visible_indices.len(), 1);
     }
 
     #[tokio::test]

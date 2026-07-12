@@ -7,12 +7,13 @@ All notable changes to logana will be documented in this file.
 
 ### Added
 - Filter manager now supports the same navigation as the log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u`, `PageDown`/`PageUp`, `gg`/`G`, and `/` to search the filter list live.
-- Archive file picker now supports `/` to search the file tree live, narrowing to matching files while keeping their containing archive visible for context.
-- A startup warning now appears if a user-provided schema in `~/.config/logana/schema/` fails to load (malformed JSON) or fails to compile (invalid template/pattern), instead of only printing to stderr.
+- Archive file picker now supports `/` to search the file tree.
+- A startup warning now appears if a user-provided schema in `~/.config/logana/schema/` fails to load (malformed JSON) or fails to compile (invalid template/pattern).
+- `:filter`/`:exclude`/`:highlight --field` can now be repeated to require several parsed fields at once (e.g. `--field level=INFO --field component=Draco`), and combined with trailing free text that must also match — all AND'd together in a single filter. Separate filter commands still OR together as before.
 
 ### Fixed
-- Extracting a selected archive file that is itself a lone compressed file (e.g. a `.gz` nested inside a `.zip`) now decompresses it, instead of opening the raw compressed bytes as an unreadable log.
-- `:load-filters`, `:save-filters`, and `:export` now expand a leading `~` in the given path, matching `:open`/`:save`/`:export-marked`. Error messages for these commands now also include the (expanded) path that failed.
+- Extracting a selected archive file that is itself a compressed file (e.g. a `.gz` nested inside a `.zip`) now decompresses it, instead of opening the raw compressed bytes as an unreadable log.
+- `:load-filters`, `:save-filters`, and `:export` now expand a leading `~` in the given path. 
 
 ## [0.7.1] - 2026-07-11
 

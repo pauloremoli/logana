@@ -218,6 +218,7 @@ pub fn line_is_visible(
     text_dec: FilterDecision,
     ctx: &mut FilterEvalContext<'_>,
     parts: Option<&crate::parser::DisplayParts<'_>>,
+    line: &[u8],
 ) -> bool {
     // Step 1: text filter result — fast path.
     if text_dec == FilterDecision::Exclude {
@@ -241,7 +242,7 @@ pub fn line_is_visible(
     }
 
     // Step 3: field exclude — hides the line if any matching exclude is found.
-    if any_field_exclude_matches(ctx.exc_ff, parts) {
+    if any_field_exclude_matches(ctx.exc_ff, parts, line) {
         return false;
     }
 
@@ -252,7 +253,7 @@ pub fn line_is_visible(
 
     // text_dec is Neutral; check field includes.
     if !ctx.inc_ff.is_empty() {
-        return match field_include_vote(ctx.inc_ff, parts) {
+        return match field_include_vote(ctx.inc_ff, parts, line) {
             FieldVote::Match => true,
             FieldVote::Miss => false,
             // Pass-through: field filters don't apply to this line; fall back to
@@ -953,6 +954,7 @@ impl TabState {
                                     crate::filters::count_field_filter_matches(
                                         &field_defs,
                                         parts.as_ref(),
+                                        line,
                                         &mut fc,
                                     );
                                 }
@@ -964,7 +966,7 @@ impl TabState {
                                     &exc_ff,
                                     year_override,
                                 );
-                                line_is_visible(text_dec, &mut ctx, parts.as_ref())
+                                line_is_visible(text_dec, &mut ctx, parts.as_ref(), line)
                             };
                             if visible {
                                 vis.push(idx);
@@ -1572,6 +1574,7 @@ impl TabState {
                                         crate::filters::count_field_filter_matches(
                                             &field_defs,
                                             parts.as_ref(),
+                                            line,
                                             &mut fc,
                                         );
                                     }
@@ -1583,7 +1586,7 @@ impl TabState {
                                         &exc_ff,
                                         year_override,
                                     );
-                                    line_is_visible(text_dec, &mut ctx, parts.as_ref())
+                                    line_is_visible(text_dec, &mut ctx, parts.as_ref(), line)
                                 };
                                 if highlight_mode || visible {
                                     vis.push(i);
@@ -1848,7 +1851,7 @@ impl TabState {
                     &exc_ff,
                     year_override,
                 );
-                line_is_visible(text_dec, &mut ctx, parts.as_ref())
+                line_is_visible(text_dec, &mut ctx, parts.as_ref(), line)
             };
             if visible {
                 new_visible.push(i);
@@ -4798,6 +4801,7 @@ mod tests {
             dec,
             &mut FilterEvalContext::new(fm.has_include(), &[], &mut [], &[], &[], None),
             None,
+            b""
         ));
     }
 
@@ -4809,6 +4813,7 @@ mod tests {
             dec,
             &mut FilterEvalContext::new(fm.has_include(), &[], &mut [], &[], &[], None),
             None,
+            b""
         ));
     }
 
@@ -4820,6 +4825,7 @@ mod tests {
             dec,
             &mut FilterEvalContext::new(fm.has_include(), &[], &mut [], &[], &[], None),
             None,
+            b""
         ));
     }
 
@@ -4831,6 +4837,7 @@ mod tests {
             dec,
             &mut FilterEvalContext::new(fm.has_include(), &[], &mut [], &[], &[], None),
             None,
+            b""
         ));
     }
 
@@ -4840,6 +4847,7 @@ mod tests {
             FilterDecision::Neutral,
             &mut FilterEvalContext::new(false, &[], &mut [], &[], &[], None),
             None,
+            b""
         ));
     }
 
@@ -4858,7 +4866,8 @@ mod tests {
         assert!(line_is_visible(
             FilterDecision::Neutral,
             &mut ctx,
-            Some(&parts)
+            Some(&parts),
+            b""
         ));
         assert_eq!(counts[0], 1);
     }
@@ -4878,7 +4887,8 @@ mod tests {
         assert!(!line_is_visible(
             FilterDecision::Neutral,
             &mut ctx,
-            Some(&parts)
+            Some(&parts),
+            b""
         ));
         assert_eq!(counts[0], 0);
     }
@@ -4899,7 +4909,8 @@ mod tests {
         assert!(line_is_visible(
             FilterDecision::Neutral,
             &mut ctx,
-            Some(&parts)
+            Some(&parts),
+            b""
         ));
     }
 
@@ -4919,7 +4930,8 @@ mod tests {
         assert!(line_is_visible(
             FilterDecision::Neutral,
             &mut ctx,
-            Some(&parts)
+            Some(&parts),
+            b""
         ));
         assert_eq!(counts[0], 1);
         assert_eq!(counts[1], 1);
@@ -4930,8 +4942,8 @@ mod tests {
         use crate::filters::FieldFilter;
         use crate::parser::DisplayParts;
         let exc = FieldFilter {
-            field: "level".to_string(),
-            pattern: "debug".to_string(),
+            conditions: vec![("level".to_string(), "debug".to_string())],
+            text: None,
             decision: FilterDecision::Exclude,
         };
         let parts = DisplayParts {
@@ -4942,6 +4954,7 @@ mod tests {
             FilterDecision::Neutral,
             &mut FilterEvalContext::new(false, &[], &mut [], &[], &[exc], None),
             Some(&parts),
+            b"",
         ));
     }
 
@@ -4950,8 +4963,8 @@ mod tests {
         use crate::filters::FieldFilter;
         use crate::parser::DisplayParts;
         let inc = FieldFilter {
-            field: "level".to_string(),
-            pattern: "error".to_string(),
+            conditions: vec![("level".to_string(), "error".to_string())],
+            text: None,
             decision: FilterDecision::Include,
         };
         let parts = DisplayParts {
@@ -4962,6 +4975,7 @@ mod tests {
             FilterDecision::Neutral,
             &mut FilterEvalContext::new(false, &[], &mut [], &[inc], &[], None),
             Some(&parts),
+            b"",
         ));
     }
 
@@ -4970,8 +4984,8 @@ mod tests {
         use crate::filters::FieldFilter;
         use crate::parser::DisplayParts;
         let inc = FieldFilter {
-            field: "level".to_string(),
-            pattern: "error".to_string(),
+            conditions: vec![("level".to_string(), "error".to_string())],
+            text: None,
             decision: FilterDecision::Include,
         };
         let parts = DisplayParts {
@@ -4982,6 +4996,7 @@ mod tests {
             FilterDecision::Neutral,
             &mut FilterEvalContext::new(false, &[], &mut [], &[inc], &[], None),
             Some(&parts),
+            b"",
         ));
     }
 
@@ -4991,8 +5006,8 @@ mod tests {
         use crate::parser::DisplayParts;
         // Text include matched; field include miss doesn't override.
         let inc = FieldFilter {
-            field: "level".to_string(),
-            pattern: "error".to_string(),
+            conditions: vec![("level".to_string(), "error".to_string())],
+            text: None,
             decision: FilterDecision::Include,
         };
         let parts = DisplayParts {
@@ -5003,6 +5018,7 @@ mod tests {
             FilterDecision::Include,
             &mut FilterEvalContext::new(true, &[], &mut [], &[inc], &[], None),
             Some(&parts),
+            b"",
         ));
     }
 
@@ -5011,8 +5027,8 @@ mod tests {
         use crate::filters::FieldFilter;
         fn make_inc() -> FieldFilter {
             FieldFilter {
-                field: "level".to_string(),
-                pattern: "error".to_string(),
+                conditions: vec![("level".to_string(), "error".to_string())],
+                text: None,
                 decision: FilterDecision::Include,
             }
         }
@@ -5022,12 +5038,14 @@ mod tests {
             FilterDecision::Neutral,
             &mut FilterEvalContext::new(false, &[], &mut [], &[make_inc()], &[], None),
             None,
+            b"",
         ));
         // has_text_includes=true → hidden (include filter present but nothing matched)
         assert!(!line_is_visible(
             FilterDecision::Neutral,
             &mut FilterEvalContext::new(true, &[], &mut [], &[make_inc()], &[], None),
             None,
+            b"",
         ));
     }
 

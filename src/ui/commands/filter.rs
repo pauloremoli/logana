@@ -7,9 +7,33 @@ pub(super) struct FilterArgs {
     pub fg: Option<String>,
     pub bg: Option<String>,
     pub line_mode: bool,
-    pub field: bool,
+    pub field: Vec<String>,
     pub regex: bool,
     pub group: Option<String>,
+}
+
+/// Builds the stored pattern for `:filter`/`:exclude`/`:highlight` from
+/// repeatable `--field key=value` values and the trailing free-text
+/// `pattern`. Every field entry becomes an AND'd condition; a non-empty
+/// trailing pattern becomes an additional AND'd free-text condition
+/// (matched against the full line, like a plain non-field filter).
+pub(crate) fn build_field_filter_pattern(
+    field: &[String],
+    pattern: &str,
+) -> Result<String, String> {
+    let conditions = field
+        .iter()
+        .map(|kv| {
+            let (k, v) = super::parse_key_value(kv)?;
+            Ok((k.to_string(), v.to_string()))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let text = if pattern.trim().is_empty() {
+        None
+    } else {
+        Some(pattern)
+    };
+    Ok(crate::filters::encode_field_filter(&conditions, text))
 }
 
 impl App {
@@ -23,9 +47,9 @@ impl App {
             regex,
             group,
         } = args;
-        let stored_pattern = if field {
-            let (key, value) = super::parse_key_value(&pattern)?;
-            format!("{}{}:{}", crate::filters::FIELD_PREFIX, key, value)
+        let is_field = !field.is_empty();
+        let stored_pattern = if is_field {
+            build_field_filter_pattern(&field, &pattern)?
         } else {
             pattern.clone()
         };
@@ -47,7 +71,7 @@ impl App {
             opts = opts.group(g);
         }
 
-        let can_incremental = !field
+        let can_incremental = !is_field
             && !regex
             && self.tabs[self.active_tab]
                 .filter
@@ -89,13 +113,13 @@ impl App {
     pub(super) async fn cmd_exclude(
         &mut self,
         pattern: String,
-        field: bool,
+        field: Vec<String>,
         regex: bool,
         group: Option<String>,
     ) -> Result<bool, String> {
-        let stored_pattern = if field {
-            let (key, value) = super::parse_key_value(&pattern)?;
-            format!("{}{}:{}", crate::filters::FIELD_PREFIX, key, value)
+        let is_field = !field.is_empty();
+        let stored_pattern = if is_field {
+            build_field_filter_pattern(&field, &pattern)?
         } else {
             pattern.clone()
         };
@@ -120,7 +144,7 @@ impl App {
                 .add_filter_with_color(stored_pattern.clone(), FilterType::Exclude, opts)
                 .await;
             if was_new {
-                if field {
+                if is_field {
                     self.tabs[self.active_tab].begin_filter_refresh();
                 } else {
                     self.tabs[self.active_tab].apply_incremental_exclude(&stored_pattern);
@@ -143,9 +167,8 @@ impl App {
             regex,
             group,
         } = args;
-        let stored_pattern = if field {
-            let (key, value) = super::parse_key_value(&pattern)?;
-            format!("{}{}:{}", crate::filters::FIELD_PREFIX, key, value)
+        let stored_pattern = if !field.is_empty() {
+            build_field_filter_pattern(&field, &pattern)?
         } else {
             pattern.clone()
         };

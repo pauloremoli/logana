@@ -13,6 +13,7 @@ pub use value_colors::{
 
 mod app;
 mod commands;
+pub(crate) use commands::build_field_filter_pattern;
 pub mod field_layout;
 mod input;
 mod input_handler;

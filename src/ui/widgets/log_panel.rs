@@ -840,17 +840,29 @@ pub fn prepare_log_panel(
                         if let Some(parts) = ffs_parser.parse_line(line_bytes) {
                             collector.with_priority(500);
                             for ffs in &field_filter_styles {
-                                if let Some(val) =
-                                    crate::filters::resolve_field(&ffs.field_filter.field, &parts)
-                                        .filter(|v| v.contains(ffs.field_filter.pattern.as_str()))
-                                {
-                                    if ffs.match_only {
-                                        if let Some(pos) = rendered.find(val) {
-                                            collector.push(pos, pos + val.len(), ffs.style_id);
-                                        }
-                                    } else {
-                                        collector.push(0, rendered.len(), ffs.style_id);
+                                if !crate::filters::field_filter_matches(
+                                    &ffs.field_filter,
+                                    &parts,
+                                    line_bytes,
+                                ) {
+                                    continue;
+                                }
+                                if !ffs.match_only {
+                                    collector.push(0, rendered.len(), ffs.style_id);
+                                    continue;
+                                }
+                                for (field, pattern) in &ffs.field_filter.conditions {
+                                    if let Some(val) = crate::filters::resolve_field(field, &parts)
+                                        .filter(|v| v.contains(pattern.as_str()))
+                                        && let Some(pos) = rendered.find(val)
+                                    {
+                                        collector.push(pos, pos + val.len(), ffs.style_id);
                                     }
+                                }
+                                if let Some(text) = &ffs.field_filter.text
+                                    && let Some(pos) = rendered.find(text.as_str())
+                                {
+                                    collector.push(pos, pos + text.len(), ffs.style_id);
                                 }
                             }
                         }

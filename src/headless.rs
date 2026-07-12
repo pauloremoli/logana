@@ -216,8 +216,9 @@ async fn apply_inline_filters(
         }) = parsed.command
         {
             let pattern = pattern.join(" ");
-            let stored = if field {
-                build_field_pattern(&pattern)?
+            let stored = if !field.is_empty() {
+                crate::ui::build_field_filter_pattern(&field, &pattern)
+                    .map_err(|e| anyhow::anyhow!(e))?
             } else {
                 pattern
             };
@@ -243,8 +244,9 @@ async fn apply_inline_filters(
         }) = parsed.command
         {
             let pattern = pattern.join(" ");
-            let stored = if field {
-                build_field_pattern(&pattern)?
+            let stored = if !field.is_empty() {
+                crate::ui::build_field_filter_pattern(&field, &pattern)
+                    .map_err(|e| anyhow::anyhow!(e))?
             } else {
                 pattern
             };
@@ -275,18 +277,6 @@ async fn apply_inline_filters(
     }
 
     Ok(())
-}
-
-fn build_field_pattern(pattern: &str) -> Result<String> {
-    let eq = pattern
-        .find('=')
-        .ok_or_else(|| anyhow::anyhow!("--field pattern must be 'key=value', got: {}", pattern))?;
-    Ok(format!(
-        "{}{}:{}",
-        crate::filters::FIELD_PREFIX,
-        &pattern[..eq],
-        &pattern[eq + 1..]
-    ))
 }
 
 fn write_visible_lines(
@@ -428,7 +418,8 @@ pub fn run_headless_to_writer(
                                 &exc_ff,
                                 None,
                             );
-                            if crate::ui::line_is_visible(text_dec, &mut ctx, parts.as_ref()) {
+                            if crate::ui::line_is_visible(text_dec, &mut ctx, parts.as_ref(), line)
+                            {
                                 vis.push(idx);
                             }
                         }

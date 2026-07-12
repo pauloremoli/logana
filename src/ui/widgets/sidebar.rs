@@ -64,10 +64,16 @@ fn filter_row_parts(
         )
     } else if is_field {
         let expr = &filter.pattern[crate::filters::FIELD_PREFIX.len()..];
-        let value = if let Some(colon) = expr.find(':') {
-            format!("{}={}", &expr[..colon], &expr[colon + 1..])
-        } else {
-            expr.to_string()
+        let value = match crate::filters::parse_field_filter_expr(expr) {
+            Ok((conditions, text)) => {
+                let mut parts: Vec<String> =
+                    conditions.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                if let Some(t) = text {
+                    parts.push(t);
+                }
+                parts.join(", ")
+            }
+            Err(_) => expr.to_string(),
         };
         (value, " [field]")
     } else {
@@ -784,6 +790,25 @@ mod tests {
         let line = build_filter_row(&filter, 0, 0, &[1], &theme);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("key=val"));
+        assert!(text.contains("[field]"));
+    }
+
+    #[test]
+    fn test_build_filter_row_compound_field_filter_shows_all_conditions_and_text() {
+        let theme = Theme::default();
+        let pattern = crate::filters::encode_field_filter(
+            &[
+                ("level".to_string(), "INFO".to_string()),
+                ("component".to_string(), "Draco".to_string()),
+            ],
+            Some("Power measuments:"),
+        );
+        let filter = make_filter(&pattern, true, FilterType::Include);
+        let line = build_filter_row(&filter, 0, 0, &[1], &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("level=INFO"), "got: {text:?}");
+        assert!(text.contains("component=Draco"), "got: {text:?}");
+        assert!(text.contains("Power measuments:"), "got: {text:?}");
         assert!(text.contains("[field]"));
     }
 

@@ -77,13 +77,23 @@ fn build_field_filter_command(
         append_color_flags(&mut c, cc, true);
     }
     append_group_flag(&mut c, group);
-    c.push_str(" --field ");
-    if let Some(colon) = expr.find(':') {
-        c.push_str(&expr[..colon]);
-        c.push('=');
-        c.push_str(&expr[colon + 1..]);
-    } else {
-        c.push_str(expr);
+    match crate::filters::parse_field_filter_expr(expr) {
+        Ok((conditions, text)) => {
+            for (key, value) in &conditions {
+                c.push_str(" --field ");
+                c.push_str(key);
+                c.push('=');
+                c.push_str(value);
+            }
+            if let Some(t) = text {
+                c.push(' ');
+                c.push_str(&t);
+            }
+        }
+        Err(_) => {
+            c.push_str(" --field ");
+            c.push_str(expr);
+        }
     }
     c
 }
@@ -1459,6 +1469,32 @@ mod tests {
             ModeRenderState::Command { input, .. } => {
                 assert!(input.starts_with("filter"), "{input}");
                 assert!(input.contains("--field level=error"), "{input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_e_opens_command_mode_with_compound_field_filter_pattern() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        let pattern = crate::filters::encode_field_filter(
+            &[
+                ("level".to_string(), "INFO".to_string()),
+                ("component".to_string(), "Draco".to_string()),
+            ],
+            Some("Power measuments:"),
+        );
+        tab.log_manager
+            .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
+            .await;
+        tab.refresh_visible();
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.starts_with("filter"), "{input}");
+                assert!(input.contains("--field level=INFO"), "{input}");
+                assert!(input.contains("--field component=Draco"), "{input}");
+                assert!(input.ends_with("Power measuments:"), "{input}");
             }
             other => panic!("expected Command, got {:?}", other),
         }

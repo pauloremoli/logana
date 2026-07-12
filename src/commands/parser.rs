@@ -22,9 +22,11 @@ pub enum Commands {
         /// Apply color to the whole line instead of only the matched text
         #[arg(short = 'l')]
         line_mode: bool,
-        /// Treat pattern as key=value and match against the named parsed field
+        /// Match a 'key=value' parsed field — repeat to require several
+        /// fields at once (AND); any trailing pattern text is also required
+        /// (AND), matched against the full line.
         #[arg(long = "field", short = 'f')]
-        field: bool,
+        field: Vec<String>,
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
@@ -36,9 +38,11 @@ pub enum Commands {
     Exclude {
         #[arg(trailing_var_arg = true)]
         pattern: Vec<String>,
-        /// Treat pattern as key=value and match against the named parsed field
+        /// Match a 'key=value' parsed field — repeat to require several
+        /// fields at once (AND); any trailing pattern text is also required
+        /// (AND), matched against the full line.
         #[arg(long = "field", short = 'f')]
-        field: bool,
+        field: Vec<String>,
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
@@ -58,9 +62,11 @@ pub enum Commands {
         /// Apply color to the whole line instead of only the matched text
         #[arg(short = 'l')]
         line_mode: bool,
-        /// Treat pattern as key=value and match against the named parsed field
+        /// Match a 'key=value' parsed field — repeat to require several
+        /// fields at once (AND); any trailing pattern text is also required
+        /// (AND), matched against the full line.
         #[arg(long = "field", short = 'f')]
-        field: bool,
+        field: Vec<String>,
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
