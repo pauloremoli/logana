@@ -45,6 +45,28 @@ pub struct ArchivePickerPopup<'a> {
     pub searching: bool,
 }
 
+/// The number of rows actually visible in the popup's content area for a
+/// given frame `area_height` and row count — i.e. the "page size" for
+/// paging/scrolling through `rows`. Pulled out of `render()` so the mode
+/// layer can ask "how many rows fit on screen right now" (for `PageUp`/
+/// `PageDown`/half-page navigation) using the exact same sizing math the
+/// widget itself uses to lay out the popup, instead of a second,
+/// potentially-drifting calculation.
+pub fn popup_content_height(area_height: u16, num_rows: usize, searching: bool) -> usize {
+    let content_rows = num_rows as u16;
+    let extra = if searching { 6 } else { 5 };
+    let popup_height = (content_rows + extra)
+        .min(area_height * 4 / 5)
+        .max(9)
+        .min(area_height.saturating_sub(2));
+    // Mirrors `Block::bordered().inner(..)`: `Borders::ALL` consumes exactly
+    // one row top and bottom.
+    let inner_h = popup_height.saturating_sub(2) as usize;
+    let footer_lines = 3usize;
+    let search_rows = if searching { 1usize } else { 0 };
+    inner_h.saturating_sub(footer_lines + search_rows)
+}
+
 impl<'a> Widget for ArchivePickerPopup<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let popup_width = (area.width.saturating_sub(4)).clamp(40, 80);
@@ -76,10 +98,7 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
         block.render(popup_area, buf);
 
         let has_search = self.searching;
-        let inner_h = inner.height as usize;
-        let footer_lines = 3usize;
-        let search_rows = if has_search { 1usize } else { 0 };
-        let content_h = inner_h.saturating_sub(footer_lines + search_rows);
+        let content_h = popup_content_height(area.height, self.rows.len(), self.searching);
 
         let mut constraints = vec![];
         if has_search {
@@ -255,6 +274,44 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn test_popup_content_height_matches_rendered_row_count() {
+        // Cross-check the extracted pure function against what render()
+        // actually draws, rather than hand-computing the arithmetic (which
+        // would just duplicate — and risk silently drifting from — the
+        // formula under test).
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let rows: Vec<ArchiveRow> = (0..50).map(|i| row(&format!("file{i}.log"))).collect();
+        let popup = ArchivePickerPopup {
+            theme: &theme,
+            keybindings: &kb,
+            rows: &rows,
+            selected: 0,
+            source_path: "archive.zip",
+            search: "",
+            searching: false,
+        };
+        let area_height = 24u16;
+        let mut terminal = Terminal::new(TestBackend::new(80, area_height)).unwrap();
+        let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
+        let rendered_row_count = (0..area_height)
+            .filter(|&y| row_text(buf.buffer, y).contains(".log"))
+            .count();
+        let expected = popup_content_height(area_height, rows.len(), false);
+        assert_eq!(rendered_row_count, expected);
+    }
+
+    #[test]
+    fn test_popup_content_height_shrinks_when_searching() {
+        // The search input row and extra footer line both eat into the
+        // content area when searching, so the content height must shrink
+        // (not grow) relative to the non-searching case for the same area.
+        let not_searching = popup_content_height(24, 50, false);
+        let searching = popup_content_height(24, 50, true);
+        assert!(searching < not_searching);
+    }
 
     #[test]
     fn test_mark_glyph_neither() {

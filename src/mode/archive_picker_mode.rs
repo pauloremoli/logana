@@ -88,6 +88,9 @@ pub struct ArchivePickerMode {
     pub searching: bool,
     /// Full-list index to restore if search is cancelled.
     pre_search_selected: Option<usize>,
+    /// Pending count prefix (e.g. the `4` in `4j`), mirrors
+    /// `FilterManagementMode.count`/`NormalMode.count`.
+    pub count: Option<usize>,
 }
 
 impl ArchivePickerMode {
@@ -102,6 +105,7 @@ impl ArchivePickerMode {
             search_matcher: SearchMatcher::MatchAll,
             searching: false,
             pre_search_selected: None,
+            count: None,
         }
     }
 
@@ -136,6 +140,28 @@ impl ArchivePickerMode {
         } else if self.selected >= count {
             self.selected = count - 1;
         }
+    }
+
+    fn scroll_up(&mut self, count: usize) {
+        self.selected = self.selected.saturating_sub(count);
+    }
+
+    fn scroll_down(&mut self, count: usize) {
+        let num_rows = self.visible_rows().len();
+        if num_rows > 0 {
+            self.selected = (self.selected + count).min(num_rows - 1);
+        }
+    }
+
+    /// Jumps to a specific row: `Some(n)` (a `1`-based count prefix, as in
+    /// `5G`/`5gg`) clamped to the last row, or `None` for the natural
+    /// "no count given" target (`fallback`, `G`'s last row or `gg`'s first).
+    fn goto(&mut self, count: Option<usize>, fallback: usize) {
+        let num_rows = self.visible_rows().len();
+        self.selected = match count {
+            Some(n) => (n.saturating_sub(1)).min(num_rows.saturating_sub(1)),
+            None => fallback,
+        };
     }
 
     /// `states`/`merge_states` are the whole tree's precomputed check
@@ -259,7 +285,29 @@ impl Mode for ArchivePickerMode {
             return self.handle_search_key(kb, key, modifiers);
         }
 
+        if let KeyCode::Char(c @ '1'..='9') = key
+            && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+        {
+            let digit = (c as u32 - '0' as u32) as usize;
+            let n = self
+                .count
+                .unwrap_or(0)
+                .saturating_mul(10)
+                .saturating_add(digit);
+            self.count = Some(n.min(999_999));
+            return (self, KeyResult::Handled);
+        }
+        if let KeyCode::Char('0') = key
+            && self.count.is_some()
+            && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+        {
+            self.count = Some(self.count.unwrap().saturating_mul(10).min(999_999));
+            return (self, KeyResult::Handled);
+        }
+
         if kb.archive_picker.apply.matches(key, modifiers) {
+            self.count = None;
+            tab.interaction.g_key_pressed = false;
             if !self.tree.any_file_selected() && !self.tree.any_file_merge_marked() {
                 tab.interaction.command_error =
                     Some("Select or merge-mark at least 1 file".to_string());
@@ -283,28 +331,91 @@ impl Mode for ArchivePickerMode {
             self.search.clear();
             self.search_matcher = SearchMatcher::MatchAll;
             self.searching = true;
+            self.count = None;
+            tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
 
+        if kb.navigation.scroll_up.matches(key, modifiers) {
+            let count = self.count.take().unwrap_or(1);
+            tab.interaction.g_key_pressed = false;
+            self.scroll_up(count);
+            return (self, KeyResult::Handled);
+        }
         if kb.navigation.scroll_down.matches(key, modifiers) {
-            let count = self.visible_rows().len();
-            if count > 0 {
-                self.selected = (self.selected + 1).min(count - 1);
+            let count = self.count.take().unwrap_or(1);
+            tab.interaction.g_key_pressed = false;
+            self.scroll_down(count);
+            return (self, KeyResult::Handled);
+        }
+        if kb.navigation.half_page_up.matches(key, modifiers) {
+            let half = (tab.interaction.archive_picker_visible_height / 2).max(1);
+            let count = self.count.take().unwrap_or(1);
+            tab.interaction.g_key_pressed = false;
+            self.scroll_up(half.saturating_mul(count));
+            return (self, KeyResult::Handled);
+        }
+        if kb.navigation.half_page_down.matches(key, modifiers) {
+            let half = (tab.interaction.archive_picker_visible_height / 2).max(1);
+            let count = self.count.take().unwrap_or(1);
+            tab.interaction.g_key_pressed = false;
+            self.scroll_down(half.saturating_mul(count));
+            return (self, KeyResult::Handled);
+        }
+        if kb.navigation.page_up.matches(key, modifiers) {
+            let page = tab.interaction.archive_picker_visible_height.max(1);
+            let count = self.count.take().unwrap_or(1);
+            tab.interaction.g_key_pressed = false;
+            self.scroll_up(page.saturating_mul(count));
+            return (self, KeyResult::Handled);
+        }
+        if kb.navigation.page_down.matches(key, modifiers) {
+            let page = tab.interaction.archive_picker_visible_height.max(1);
+            let count = self.count.take().unwrap_or(1);
+            tab.interaction.g_key_pressed = false;
+            self.scroll_down(page.saturating_mul(count));
+            return (self, KeyResult::Handled);
+        }
+        if kb.normal.go_to_bottom.matches(key, modifiers) {
+            let num_rows = self.visible_rows().len();
+            let count = self.count.take();
+            tab.interaction.g_key_pressed = false;
+            self.goto(count, num_rows.saturating_sub(1));
+            return (self, KeyResult::Handled);
+        }
+        if kb.normal.go_to_top_chord.matches(key, modifiers) {
+            if tab.interaction.g_key_pressed {
+                let count = self.count.take();
+                tab.interaction.g_key_pressed = false;
+                self.goto(count, 0);
+            } else {
+                tab.interaction.g_key_pressed = true;
             }
-        } else if kb.navigation.scroll_up.matches(key, modifiers) {
-            self.selected = self.selected.saturating_sub(1);
-        } else if kb.archive_picker.toggle.matches(key, modifiers) {
+            return (self, KeyResult::Handled);
+        }
+
+        self.count = None;
+        tab.interaction.g_key_pressed = false;
+
+        if kb.archive_picker.toggle.matches(key, modifiers) {
             if let Some(&id) = self.visible_rows().get(self.selected) {
                 self.tree.toggle_subtree(id);
             }
-        } else if kb.archive_picker.merge_toggle.matches(key, modifiers) {
+            return (self, KeyResult::Handled);
+        }
+        if kb.archive_picker.merge_toggle.matches(key, modifiers) {
             if let Some(&id) = self.visible_rows().get(self.selected) {
                 self.tree.toggle_merge_subtree(id);
             }
-        } else if kb.archive_picker.all.matches(key, modifiers) {
+            return (self, KeyResult::Handled);
+        }
+        if kb.archive_picker.all.matches(key, modifiers) {
             self.set_all_files_selected(true);
-        } else if kb.archive_picker.none.matches(key, modifiers) {
+            return (self, KeyResult::Handled);
+        }
+        if kb.archive_picker.none.matches(key, modifiers) {
             self.set_all_files_selected(false);
+            return (self, KeyResult::Handled);
         }
 
         (self, KeyResult::Ignored)
@@ -437,6 +548,21 @@ mod tests {
         ArchivePickerMode::new(build_test_tree(), "archive.zip".to_string())
     }
 
+    /// A flat tree of `n` top-level files — large enough to exercise
+    /// count-prefixed motions, half-page/page scrolling, and `gg`/`G`
+    /// meaningfully (unlike `build_test_tree`'s 4 rows).
+    fn build_flat_tree(n: usize) -> ArchiveTree {
+        let nodes: Vec<ArchiveNode> = (0..n)
+            .map(|i| file_node(i, None, &format!("file{i}.log"), 0))
+            .collect();
+        let roots = (0..n).collect();
+        ArchiveTree { nodes, roots }
+    }
+
+    fn mode_with_n_files(n: usize) -> ArchivePickerMode {
+        ArchivePickerMode::new(build_flat_tree(n), "archive.zip".to_string())
+    }
+
     async fn press(
         mode: ArchivePickerMode,
         tab: &mut TabState,
@@ -498,7 +624,10 @@ mod tests {
     async fn test_scroll_down_moves_cursor() {
         let mut tab = make_tab().await;
         let (mode2, result) = press(mode(), &mut tab, KeyCode::Char('j')).await;
-        assert!(matches!(result, KeyResult::Ignored));
+        assert!(
+            matches!(result, KeyResult::Handled),
+            "a recognized navigation key must not also fall through to the global key handler"
+        );
         let (_, selected, _) = extract_state(mode2.render_state());
         assert_eq!(selected, 1);
     }
@@ -519,6 +648,190 @@ mod tests {
         let (mode2, _) = press(mode(), &mut tab, KeyCode::Char('k')).await;
         let (_, selected, _) = extract_state(mode2.render_state());
         assert_eq!(selected, 0);
+    }
+
+    #[tokio::test]
+    async fn test_count_prefixed_j_moves_down_by_count() {
+        let mut tab = make_tab().await;
+        let (m, result) = press_keys(
+            mode_with_n_files(10),
+            &mut tab,
+            &[KeyCode::Char('4'), KeyCode::Char('j')],
+        )
+        .await;
+        assert!(matches!(result, KeyResult::Handled));
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 4);
+    }
+
+    #[tokio::test]
+    async fn test_count_prefixed_k_moves_up_by_count_clamped() {
+        let mut tab = make_tab().await;
+        let mut m = mode_with_n_files(10);
+        m.selected = 5;
+        let (m, _) = press_keys(m, &mut tab, &[KeyCode::Char('9'), KeyCode::Char('k')]).await;
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 0);
+    }
+
+    #[tokio::test]
+    async fn test_digit_accumulation_then_j_moves_down_by_typed_count() {
+        let mut tab = make_tab().await;
+        // "12j" — two digit keypresses accumulate into count 12.
+        let (m, _) = press_keys(
+            mode_with_n_files(20),
+            &mut tab,
+            &[KeyCode::Char('1'), KeyCode::Char('2'), KeyCode::Char('j')],
+        )
+        .await;
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 12);
+    }
+
+    #[tokio::test]
+    async fn test_count_resets_after_being_consumed() {
+        let mut tab = make_tab().await;
+        let (m, _) = press_keys(
+            mode_with_n_files(20),
+            &mut tab,
+            &[KeyCode::Char('4'), KeyCode::Char('j')],
+        )
+        .await;
+        // Second 'j' with no new count should move by 1, not reuse the old count of 4.
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 5);
+    }
+
+    #[tokio::test]
+    async fn test_count_resets_on_unrecognized_key() {
+        let mut tab = make_tab().await;
+        let (m, _) = press_keys(
+            mode_with_n_files(20),
+            &mut tab,
+            &[KeyCode::Char('4'), KeyCode::F(5)],
+        )
+        .await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(
+            selected, 1,
+            "stale count from before an unrecognized key must not apply"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_half_page_down_moves_by_half_visible_height() {
+        let mut tab = make_tab().await;
+        tab.interaction.archive_picker_visible_height = 10;
+        let (m, result) = Box::new(mode_with_n_files(30))
+            .handle_key(&mut tab, KeyCode::Char('d'), KeyModifiers::CONTROL)
+            .await;
+        assert!(matches!(result, KeyResult::Handled));
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 5);
+    }
+
+    #[tokio::test]
+    async fn test_half_page_up_moves_by_half_visible_height() {
+        let mut tab = make_tab().await;
+        tab.interaction.archive_picker_visible_height = 10;
+        let mut m = mode_with_n_files(30);
+        m.selected = 20;
+        let (m2, _) = Box::new(m)
+            .handle_key(&mut tab, KeyCode::Char('u'), KeyModifiers::CONTROL)
+            .await;
+        let (_, selected, _) = extract_state(m2.render_state());
+        assert_eq!(selected, 15);
+    }
+
+    #[tokio::test]
+    async fn test_page_down_moves_by_full_visible_height() {
+        let mut tab = make_tab().await;
+        tab.interaction.archive_picker_visible_height = 10;
+        let (m, _) = press(mode_with_n_files(30), &mut tab, KeyCode::PageDown).await;
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 10);
+    }
+
+    #[tokio::test]
+    async fn test_page_up_moves_by_full_visible_height() {
+        let mut tab = make_tab().await;
+        tab.interaction.archive_picker_visible_height = 10;
+        let mut m = mode_with_n_files(30);
+        m.selected = 25;
+        let (m2, _) = press(m, &mut tab, KeyCode::PageUp).await;
+        let (_, selected, _) = extract_state(m2.render_state());
+        assert_eq!(selected, 15);
+    }
+
+    #[tokio::test]
+    async fn test_capital_g_goes_to_last_row() {
+        let mut tab = make_tab().await;
+        let (m, result) = press(mode_with_n_files(30), &mut tab, KeyCode::Char('G')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 29);
+    }
+
+    #[tokio::test]
+    async fn test_capital_g_with_count_goes_to_specific_row() {
+        let mut tab = make_tab().await;
+        let (m, _) = press_keys(
+            mode_with_n_files(30),
+            &mut tab,
+            &[KeyCode::Char('5'), KeyCode::Char('G')],
+        )
+        .await;
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 4);
+    }
+
+    #[tokio::test]
+    async fn test_gg_chord_goes_to_first_row() {
+        let mut tab = make_tab().await;
+        let mut m = mode_with_n_files(30);
+        m.selected = 20;
+        let (m, _) = press_keys(m, &mut tab, &[KeyCode::Char('g'), KeyCode::Char('g')]).await;
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 0);
+    }
+
+    #[tokio::test]
+    async fn test_gg_chord_with_count_goes_to_specific_row() {
+        let mut tab = make_tab().await;
+        let (m, _) = press_keys(
+            mode_with_n_files(30),
+            &mut tab,
+            &[KeyCode::Char('5'), KeyCode::Char('g'), KeyCode::Char('g')],
+        )
+        .await;
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(selected, 4);
+    }
+
+    #[tokio::test]
+    async fn test_non_g_key_clears_g_key_pressed() {
+        let mut tab = make_tab().await;
+        let mut m = mode_with_n_files(30);
+        m.selected = 20;
+        // First 'g' starts the chord, 'j' interrupts it, second 'g' must
+        // not complete a stale chord.
+        let (m, _) = press_keys(
+            m,
+            &mut tab,
+            &[KeyCode::Char('g'), KeyCode::Char('j'), KeyCode::Char('g')],
+        )
+        .await;
+        let (_, selected, _) = extract_state(m.render_state());
+        assert_eq!(
+            selected, 21,
+            "interrupted gg chord must not jump to the top"
+        );
     }
 
     #[tokio::test]
@@ -687,6 +1000,20 @@ mod tests {
     /// Presses `/` to enter search, then types `text` one character at a
     /// time via `handle_key`, threading the opaque `Box<dyn Mode>` through
     /// each keystroke the same way real input dispatch does.
+    async fn press_keys(
+        m: ArchivePickerMode,
+        tab: &mut TabState,
+        keys: &[KeyCode],
+    ) -> (Box<dyn Mode>, KeyResult) {
+        let (mut m, mut result) = press(m, tab, keys[0]).await;
+        for &k in &keys[1..] {
+            let (m2, r) = m.handle_key(tab, k, KeyModifiers::NONE).await;
+            m = m2;
+            result = r;
+        }
+        (m, result)
+    }
+
     async fn enter_search_and_type(
         m: ArchivePickerMode,
         tab: &mut TabState,

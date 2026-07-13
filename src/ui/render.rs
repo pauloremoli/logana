@@ -809,7 +809,12 @@ impl App {
         }
     }
 
-    fn render_overlay_popups(&self, frame: &mut Frame, frame_area: Rect, state: &UiRenderState) {
+    fn render_overlay_popups(
+        &mut self,
+        frame: &mut Frame,
+        frame_area: Rect,
+        state: &UiRenderState,
+    ) {
         if state.is_confirm_restore {
             frame.render_widget(
                 super::widgets::ConfirmRestoreModal {
@@ -883,6 +888,14 @@ impl App {
 
         if let Some((rows, selected, source_path, search, searching)) = &state.archive_picker_state
         {
+            self.tabs[self.active_tab]
+                .interaction
+                .archive_picker_visible_height =
+                super::widgets::archive_picker_popup::popup_content_height(
+                    frame_area.height,
+                    rows.len(),
+                    *searching,
+                );
             frame.render_widget(
                 super::widgets::ArchivePickerPopup {
                     theme: &self.theme,
@@ -1193,6 +1206,38 @@ mod tests {
         assert!(
             app.tabs[0].filter.sidebar_visible_height > 0,
             "sidebar_visible_height should be persisted from the sidebar's rendered content height"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ui_persists_archive_picker_visible_height_for_page_motions() {
+        use crate::ingestion::{ArchiveNode, ArchiveTree, NodeKind};
+        use crate::mode::archive_picker_mode::ArchivePickerMode;
+
+        let mut app = make_app(&[]).await;
+        let nodes: Vec<ArchiveNode> = (0..30)
+            .map(|i| ArchiveNode {
+                id: i,
+                parent: None,
+                name: format!("file{i}.log"),
+                full_path: format!("file{i}.log"),
+                depth: 0,
+                kind: NodeKind::File,
+                selected: false,
+                merge_marked: false,
+                cached_bytes: None,
+            })
+            .collect();
+        let roots = (0..30).collect();
+        let tree = ArchiveTree { nodes, roots };
+        app.tabs[0].interaction.mode =
+            Box::new(ArchivePickerMode::new(tree, "archive.zip".to_string()));
+        assert_eq!(app.tabs[0].interaction.archive_picker_visible_height, 0);
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert!(
+            app.tabs[0].interaction.archive_picker_visible_height > 0,
+            "archive_picker_visible_height should be persisted from the popup's rendered content height"
         );
     }
 

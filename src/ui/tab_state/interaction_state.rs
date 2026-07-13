@@ -12,6 +12,11 @@ pub struct InteractionState {
     pub notification_set_at: Option<std::time::Instant>,
     pub command_history: Vec<String>,
     pub keybindings: Arc<Keybindings>,
+    /// Row count of the archive picker popup's last-rendered content area —
+    /// set from the render layer each frame (mirrors
+    /// `FilterState::sidebar_visible_height`), read by `ArchivePickerMode`
+    /// for `PageUp`/`PageDown`/half-page navigation sizing.
+    pub archive_picker_visible_height: usize,
 }
 
 impl Default for InteractionState {
@@ -24,6 +29,7 @@ impl Default for InteractionState {
             notification_set_at: None,
             command_history: Vec::new(),
             keybindings: Arc::new(Keybindings::default()),
+            archive_picker_visible_height: 0,
         }
     }
 }
