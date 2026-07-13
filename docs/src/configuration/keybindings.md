@@ -235,6 +235,12 @@ confirms and un-narrows the list, `Esc` cancels back to the pre-search
 selection. An invalid/incomplete regex (e.g. while still typing) falls back
 to a plain substring match rather than matching nothing.
 
+Row navigation reuses the same keys as the filter sidebar and log panel
+(from the `navigation` group) rather than duplicating them here: `j`/`k`
+(optionally count-prefixed, e.g. `12j`), `Ctrl+d`/`Ctrl+u` for a half page,
+`PageDown`/`PageUp` for a full page, and `gg`/`G` (optionally
+count-prefixed, e.g. `25G`) to jump to the first/last or a specific row.
+
 ## Docker Select Mode
 
 ```json
