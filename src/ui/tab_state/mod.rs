@@ -67,7 +67,7 @@ pub enum KeyResult {
         template_name: String,
         footer_fields: Vec<(String, String)>,
     },
-    ExtractSelectedArchiveFiles {
+    ApplyArchivePicker {
         source_path: String,
         tree: ArchiveTree,
     },
@@ -2113,12 +2113,13 @@ impl TabState {
         let limit = self.file_reader.line_count().min(200);
         if limit > 0 {
             let sample: Vec<&[u8]> = (0..limit).map(|j| self.file_reader.get_line(j)).collect();
-            let fmt: Option<Arc<dyn LogFormatParser>> = detect_format(&sample).map(Arc::from);
+            let detected =
+                crate::ingestion::format_detect::detect_format_for_reader(&self.file_reader);
             // Apply default hidden fields only when the tab currently has none
             // (first detection for a streaming source, or non-streaming source
             // whose preview was too short for detection).
             if self.display.hidden_fields.is_empty()
-                && let Some(f) = &fmt
+                && let Some(f) = &detected.format
             {
                 let defaults = f.default_hidden_fields(&sample);
                 if !defaults.is_empty() {
@@ -2129,26 +2130,9 @@ impl TabState {
                     self.set_notification(FIELDS_HIDDEN_MSG);
                 }
             }
-            self.display.format = fmt;
-            self.continuation_map = self
-                .display
-                .format
-                .as_deref()
-                .map(|p| Arc::new(build_continuation_map(&self.file_reader, p)));
-            self.year_map = self.display.format.as_deref().and_then(|p| {
-                if p.timestamp_has_year() {
-                    return None;
-                }
-                use crate::filters::system_time_to_date;
-                let start_year = system_time_to_date(self.file_reader.mtime())
-                    .map(|d| d.year())
-                    .unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
-                Some(Arc::new(year_map::YearMap::build(
-                    &self.file_reader,
-                    p,
-                    start_year,
-                )))
-            });
+            self.display.format = detected.format;
+            self.continuation_map = detected.continuation_map;
+            self.year_map = detected.year_map;
         }
     }
 
@@ -2387,9 +2371,20 @@ pub struct StdinLoadState {
 pub struct ArchiveExtractionState {
     /// Per-file extraction progress updates.
     pub progress_rx: tokio::sync::watch::Receiver<crate::ingestion::ArchiveExtractionProgress>,
-    /// Delivers all `ExtractedFile`s (or error) when extraction finishes.
-    pub result_rx:
-        tokio::sync::oneshot::Receiver<Result<Vec<crate::ingestion::ExtractedFile>, String>>,
+    /// Delivers both the Space-ticked and 'm'-marked outcomes when the
+    /// background apply finishes.
+    pub result_rx: tokio::sync::oneshot::Receiver<ArchivePickerApplyResult>,
+}
+
+/// Result of [`crate::ui::App::apply_archive_picker`]'s background task —
+/// the Space-ticked (extract-to-separate-tabs) and 'm'-marked
+/// (extract-and-merge-into-one-tab) outcomes, tracked independently so a
+/// failure in one (e.g. an unrecognized format among merge-marked files)
+/// never blocks the other from succeeding.
+pub struct ArchivePickerApplyResult {
+    pub selected_files: Result<Vec<crate::ingestion::ExtractedFile>, String>,
+    /// `None` when nothing was merge-marked.
+    pub merge_result: Option<Result<Vec<crate::ingestion::MergeMarkedSource>, String>>,
 }
 
 /// Tracks an in-progress background archive *listing* (the pre-extraction

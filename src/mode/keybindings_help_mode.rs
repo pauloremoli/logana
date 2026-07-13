@@ -522,6 +522,37 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: sf.cancel.display(),
     });
 
+    let ap = &kb.archive_picker;
+    rows.push(HelpRow::Header("Archive Picker Mode".to_string()));
+    rows.push(HelpRow::Entry {
+        action: "Toggle".into(),
+        keys: ap.toggle.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Merge mark".into(),
+        keys: ap.merge_toggle.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Select all".into(),
+        keys: ap.all.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Select none".into(),
+        keys: ap.none.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Apply".into(),
+        keys: ap.apply.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Cancel".into(),
+        keys: ap.cancel.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Search".into(),
+        keys: ap.search.display(),
+    });
+
     let h = &kb.help;
     rows.push(HelpRow::Header("Help Mode".to_string()));
     rows.push(HelpRow::Entry {
@@ -851,6 +882,24 @@ mod tests {
         assert!(
             has_reset,
             "expected a 'Reset to default' entry bound to 'r' in the Select Fields Mode section"
+        );
+    }
+
+    #[test]
+    fn test_build_help_rows_contains_archive_picker_merge_mark() {
+        let kb = Keybindings::default();
+        let rows = build_help_rows(&kb);
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, HelpRow::Header(h) if h == "Archive Picker Mode")),
+            "expected an 'Archive Picker Mode' header section"
+        );
+        let has_merge_mark = rows.iter().any(|r| {
+            matches!(r, HelpRow::Entry { action, keys } if action == "Merge mark" && keys == "m")
+        });
+        assert!(
+            has_merge_mark,
+            "expected a 'Merge mark' entry bound to 'm' in the Archive Picker Mode section"
         );
     }
 

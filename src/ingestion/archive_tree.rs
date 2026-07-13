@@ -51,6 +51,10 @@ pub struct ArchiveNode {
     /// Meaningful for `File` nodes; a container's checkbox state is derived
     /// from its descendants, not stored here.
     pub selected: bool,
+    /// Independent of `selected` — marks this file to be extracted and
+    /// merged into one timestamp-sorted tab, rather than opened on its own.
+    /// A file can be `selected`, `merge_marked`, both, or neither.
+    pub merge_marked: bool,
     /// Populated only when this entry's bytes were already buffered while
     /// listing a streaming (TarGz/TarBz2/TarXz) source, so extraction can
     /// reuse them instead of decompressing the parent stream a second time.
@@ -77,6 +81,33 @@ pub enum CheckState {
     Checked,
     Unchecked,
     Partial,
+}
+
+/// Selects which of `ArchiveNode`'s two independent per-file flags a
+/// tree-walking method operates on — lets `container_check_state`/
+/// `check_states`/`toggle_subtree` share one implementation each between
+/// `selected` (extraction) and `merge_marked` (merge) instead of being
+/// duplicated wholesale for the second flag.
+#[derive(Debug, Clone, Copy)]
+enum MarkField {
+    Selected,
+    MergeMarked,
+}
+
+impl MarkField {
+    fn get(self, node: &ArchiveNode) -> bool {
+        match self {
+            MarkField::Selected => node.selected,
+            MarkField::MergeMarked => node.merge_marked,
+        }
+    }
+
+    fn set(self, node: &mut ArchiveNode, value: bool) {
+        match self {
+            MarkField::Selected => node.selected = value,
+            MarkField::MergeMarked => node.merge_marked = value,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -129,27 +160,27 @@ impl ArchiveTree {
 
     /// A container's checkbox state, derived from its descendant files —
     /// never stored, always computed fresh so it can't drift out of sync.
-    pub fn container_check_state(&self, id: NodeId) -> CheckState {
+    fn check_state_for(&self, id: NodeId, field: MarkField) -> CheckState {
         let files = self.descendant_files(id);
         if files.is_empty() {
             return CheckState::Unchecked;
         }
-        let all_selected = files.iter().all(|&fid| self.nodes[fid].selected);
-        if all_selected {
+        let all_set = files.iter().all(|&fid| field.get(&self.nodes[fid]));
+        if all_set {
             return CheckState::Checked;
         }
-        let any_selected = files.iter().any(|&fid| self.nodes[fid].selected);
-        if any_selected {
+        let any_set = files.iter().any(|&fid| field.get(&self.nodes[fid]));
+        if any_set {
             CheckState::Partial
         } else {
             CheckState::Unchecked
         }
     }
 
-    /// Bulk equivalent of calling [`Self::container_check_state`] once per
-    /// node — for rendering a full row list, that naive approach re-walks
-    /// each container's descendants from scratch, so nested containers pay
-    /// for their shared descendants over and over (worst case `O(n * depth)`
+    /// Bulk equivalent of calling [`Self::check_state_for`] once per node —
+    /// for rendering a full row list, that naive approach re-walks each
+    /// container's descendants from scratch, so nested containers pay for
+    /// their shared descendants over and over (worst case `O(n * depth)`
     /// for a chain of containers each wrapping the same underlying files).
     /// This computes every node's state in a single `O(n)` pass instead, by
     /// relying on the arena invariant that a node's id is always smaller
@@ -157,21 +188,21 @@ impl ArchiveTree {
     /// children while listing) — iterating ids from highest to lowest is
     /// therefore a valid bottom-up (children-before-parents) order without
     /// needing recursion.
-    pub fn check_states(&self) -> Vec<CheckState> {
+    fn check_states_for(&self, field: MarkField) -> Vec<CheckState> {
         let mut total_files = vec![0usize; self.nodes.len()];
-        let mut selected_files = vec![0usize; self.nodes.len()];
+        let mut set_files = vec![0usize; self.nodes.len()];
         for id in (0..self.nodes.len()).rev() {
             match &self.nodes[id].kind {
                 NodeKind::File => {
                     total_files[id] = 1;
-                    if self.nodes[id].selected {
-                        selected_files[id] = 1;
+                    if field.get(&self.nodes[id]) {
+                        set_files[id] = 1;
                     }
                 }
                 NodeKind::Container { children, .. } => {
                     for &child in children {
                         total_files[id] += total_files[child];
-                        selected_files[id] += selected_files[child];
+                        set_files[id] += set_files[child];
                     }
                 }
                 NodeKind::UnreadableContainer { .. } => {}
@@ -181,9 +212,9 @@ impl ArchiveTree {
             .map(|id| {
                 if total_files[id] == 0 {
                     CheckState::Unchecked
-                } else if selected_files[id] == total_files[id] {
+                } else if set_files[id] == total_files[id] {
                     CheckState::Checked
-                } else if selected_files[id] == 0 {
+                } else if set_files[id] == 0 {
                     CheckState::Unchecked
                 } else {
                     CheckState::Partial
@@ -194,21 +225,58 @@ impl ArchiveTree {
 
     /// Toggling a `File` row flips just that node. Toggling a `Container`
     /// row is a "select all in this subtree" shortcut: if every descendant
-    /// file is already selected, deselect them all; otherwise select them
-    /// all. `UnreadableContainer` rows have nothing to toggle.
-    pub fn toggle_subtree(&mut self, id: NodeId) {
+    /// file is already set, unset them all; otherwise set them all.
+    /// `UnreadableContainer` rows have nothing to toggle.
+    fn toggle_subtree_for(&mut self, id: NodeId, field: MarkField) {
         match &self.nodes[id].kind {
             NodeKind::File => {
-                self.nodes[id].selected = !self.nodes[id].selected;
+                let new_value = !field.get(&self.nodes[id]);
+                field.set(&mut self.nodes[id], new_value);
             }
             NodeKind::Container { .. } => {
-                let target = self.container_check_state(id) != CheckState::Checked;
+                let target = self.check_state_for(id, field) != CheckState::Checked;
                 for fid in self.descendant_files(id) {
-                    self.nodes[fid].selected = target;
+                    field.set(&mut self.nodes[fid], target);
                 }
             }
             NodeKind::UnreadableContainer { .. } => {}
         }
+    }
+
+    pub fn container_check_state(&self, id: NodeId) -> CheckState {
+        self.check_state_for(id, MarkField::Selected)
+    }
+
+    pub fn check_states(&self) -> Vec<CheckState> {
+        self.check_states_for(MarkField::Selected)
+    }
+
+    pub fn toggle_subtree(&mut self, id: NodeId) {
+        self.toggle_subtree_for(id, MarkField::Selected);
+    }
+
+    pub fn merge_container_check_state(&self, id: NodeId) -> CheckState {
+        self.check_state_for(id, MarkField::MergeMarked)
+    }
+
+    pub fn merge_check_states(&self) -> Vec<CheckState> {
+        self.check_states_for(MarkField::MergeMarked)
+    }
+
+    pub fn toggle_merge_subtree(&mut self, id: NodeId) {
+        self.toggle_subtree_for(id, MarkField::MergeMarked);
+    }
+
+    pub fn any_file_selected(&self) -> bool {
+        self.nodes
+            .iter()
+            .any(|n| matches!(n.kind, NodeKind::File) && n.selected)
+    }
+
+    pub fn any_file_merge_marked(&self) -> bool {
+        self.nodes
+            .iter()
+            .any(|n| matches!(n.kind, NodeKind::File) && n.merge_marked)
     }
 }
 
@@ -258,6 +326,7 @@ fn placeholder_container_node(
             archive_type: ArchiveType::Zip,
         },
         selected: false,
+        merge_marked: false,
         cached_bytes: None,
     }
 }
@@ -280,6 +349,7 @@ fn unreadable_node(
             error: error.to_string(),
         },
         selected: false,
+        merge_marked: false,
         cached_bytes: None,
     }
 }
@@ -299,6 +369,7 @@ fn file_node(
         depth,
         kind: NodeKind::File,
         selected: false,
+        merge_marked: false,
         cached_bytes: None,
     }
 }
@@ -655,22 +726,23 @@ fn list_tar_entries<R: Read>(
 /// Extracts every `selected` file in `tree` to its own temp file, skipping
 /// everything unselected (including whole nested-archive subtrees with no
 /// selected descendants — those are never even opened).
-pub fn extract_selected(
+fn extract_by_flag(
     path: &str,
     tree: &ArchiveTree,
+    field: MarkField,
     progress_tx: tokio::sync::watch::Sender<ArchiveExtractionProgress>,
 ) -> Result<Vec<ExtractedFile>, String> {
-    let selected: Vec<NodeId> = tree
+    let matched: Vec<NodeId> = tree
         .nodes
         .iter()
-        .filter(|n| n.selected && matches!(n.kind, NodeKind::File))
+        .filter(|n| field.get(n) && matches!(n.kind, NodeKind::File))
         .map(|n| n.id)
         .collect();
 
     let mut used_names: HashMap<String, usize> = HashMap::new();
-    let mut out = Vec::with_capacity(selected.len());
-    let total = selected.len().max(1);
-    for (i, &node_id) in selected.iter().enumerate() {
+    let mut out = Vec::with_capacity(matched.len());
+    let total = matched.len().max(1);
+    for (i, &node_id) in matched.iter().enumerate() {
         let bytes = resolve_node_bytes(tree, node_id, path)?;
         let name = disambiguated_name(tree, node_id, &mut used_names);
         let extracted = decompress_to_temp(&mut Cursor::new(bytes), name)?;
@@ -681,6 +753,51 @@ pub fn extract_selected(
         });
     }
     Ok(out)
+}
+
+pub fn extract_selected(
+    path: &str,
+    tree: &ArchiveTree,
+    progress_tx: tokio::sync::watch::Sender<ArchiveExtractionProgress>,
+) -> Result<Vec<ExtractedFile>, String> {
+    extract_by_flag(path, tree, MarkField::Selected, progress_tx)
+}
+
+/// A merge-marked file's extracted, format-detected form — ready to feed
+/// directly into building a merged tab without needing its own `TabState`/
+/// `LogManager`/DB row (only the final merged tab needs one of those).
+pub struct MergeMarkedSource {
+    /// Same disambiguated display name `extract_selected` produces.
+    pub label: String,
+    pub reader: crate::ingestion::FileReader,
+    pub detected: crate::ingestion::format_detect::DetectedFormat,
+}
+
+/// Extracts every `merge_marked` file in `tree`, exactly like
+/// `extract_selected` extracts `selected` ones, but additionally loads each
+/// extracted file into a `FileReader` and runs format detection on it —
+/// letting the caller decide, before building any tab, whether every
+/// merge-marked file's format was recognized.
+pub fn extract_and_detect_merge_marked(
+    path: &str,
+    tree: &ArchiveTree,
+    progress_tx: tokio::sync::watch::Sender<ArchiveExtractionProgress>,
+) -> Result<Vec<MergeMarkedSource>, String> {
+    let extracted = extract_by_flag(path, tree, MarkField::MergeMarked, progress_tx)?;
+    Ok(extracted
+        .into_iter()
+        .map(|f| {
+            let path_str = f.temp_file.path().to_string_lossy().to_string();
+            let reader = crate::ingestion::FileReader::new(&path_str)
+                .unwrap_or_else(|_| crate::ingestion::FileReader::from_bytes(vec![]));
+            let detected = crate::ingestion::format_detect::detect_format_for_reader(&reader);
+            MergeMarkedSource {
+                label: f.name,
+                reader,
+                detected,
+            }
+        })
+        .collect())
 }
 
 /// A selected file's display name: its basename (with any lone-compression
@@ -905,6 +1022,7 @@ mod tests {
             depth,
             kind: NodeKind::File,
             selected: false,
+            merge_marked: false,
             cached_bytes: None,
         }
     }
@@ -927,6 +1045,7 @@ mod tests {
                 archive_type: ArchiveType::Zip,
             },
             selected: false,
+            merge_marked: false,
             cached_bytes: None,
         }
     }
@@ -1503,6 +1622,162 @@ mod tests {
             "unrelated container's children must be untouched"
         );
         assert_eq!(tree.container_check_state(4), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_toggle_merge_subtree_file_marks_only_itself() {
+        let mut tree = build_test_tree();
+        tree.toggle_merge_subtree(0);
+        assert!(tree.nodes[0].merge_marked);
+        tree.toggle_merge_subtree(0);
+        assert!(!tree.nodes[0].merge_marked);
+    }
+
+    #[test]
+    fn test_toggle_merge_subtree_container_marks_all_descendants() {
+        let mut tree = build_test_tree();
+        tree.toggle_merge_subtree(1);
+        assert!(tree.nodes[2].merge_marked);
+        assert!(tree.nodes[3].merge_marked);
+    }
+
+    #[test]
+    fn test_merge_container_check_state_partial_when_some_descendants_marked() {
+        let mut tree = build_test_tree();
+        tree.nodes[2].merge_marked = true;
+        assert_eq!(tree.merge_container_check_state(1), CheckState::Partial);
+    }
+
+    #[test]
+    fn test_merge_check_states_matches_merge_container_check_state_for_every_node() {
+        for setup in [Vec::<usize>::new(), vec![2], vec![2, 3], vec![2, 3, 5, 6]] {
+            let mut tree = build_test_tree();
+            for &idx in &setup {
+                tree.nodes[idx].merge_marked = true;
+            }
+            let states = tree.merge_check_states();
+            assert_eq!(states.len(), tree.nodes.len());
+            for (id, &state) in states.iter().enumerate() {
+                assert_eq!(
+                    state,
+                    tree.merge_container_check_state(id),
+                    "node {id} mismatched for selection {setup:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_selected_and_merge_marked_are_independent_flags() {
+        let mut tree = build_test_tree();
+        tree.toggle_subtree(0);
+        assert!(tree.nodes[0].selected);
+        assert!(
+            !tree.nodes[0].merge_marked,
+            "toggling selected must not affect merge_marked"
+        );
+
+        tree.toggle_merge_subtree(2);
+        assert!(tree.nodes[2].merge_marked);
+        assert!(
+            !tree.nodes[2].selected,
+            "toggling merge_marked must not affect selected"
+        );
+    }
+
+    #[test]
+    fn test_any_file_selected_true_only_when_a_file_is_selected() {
+        let mut tree = build_test_tree();
+        assert!(!tree.any_file_selected());
+        tree.nodes[0].selected = true;
+        assert!(tree.any_file_selected());
+    }
+
+    #[test]
+    fn test_any_file_merge_marked_true_only_when_a_file_is_marked() {
+        let mut tree = build_test_tree();
+        assert!(!tree.any_file_merge_marked());
+        tree.nodes[2].merge_marked = true;
+        assert!(tree.any_file_merge_marked());
+    }
+
+    #[test]
+    fn test_extract_selected_ignores_merge_marked_only_files() {
+        let tmp = make_zip(&[("a.log", b"hello"), ("b.log", b"world")]);
+        let path = path_with_ext(&tmp, ".zip");
+        let mut tree = list_archive_tree(&path).unwrap();
+        // Mark "a.log" for merge only — not selected for extraction.
+        let a_id = tree
+            .nodes
+            .iter()
+            .find(|n| n.full_path == "a.log")
+            .unwrap()
+            .id;
+        tree.nodes[a_id].merge_marked = true;
+
+        let extracted = extract_selected(&path, &tree, no_progress()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(
+            extracted.is_empty(),
+            "a merge-marked-only file must not be extracted by extract_selected"
+        );
+    }
+
+    #[test]
+    fn test_extract_and_detect_merge_marked_ignores_selected_only_files() {
+        let tmp = make_zip(&[("a.log", b"hello"), ("b.log", b"world")]);
+        let path = path_with_ext(&tmp, ".zip");
+        let mut tree = list_archive_tree(&path).unwrap();
+        let a_id = tree
+            .nodes
+            .iter()
+            .find(|n| n.full_path == "a.log")
+            .unwrap()
+            .id;
+        tree.nodes[a_id].selected = true;
+
+        let merge_sources = extract_and_detect_merge_marked(&path, &tree, no_progress()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(
+            merge_sources.is_empty(),
+            "a selected-only file must not be extracted by extract_and_detect_merge_marked"
+        );
+    }
+
+    #[test]
+    fn test_extract_and_detect_merge_marked_returns_detected_format_per_file() {
+        let recognized =
+            b"{\"timestamp\":\"2024-01-01T00:00:00Z\",\"level\":\"INFO\",\"msg\":\"hello\"}\n"
+                .to_vec();
+        let unrecognized = b"just some random bytes with no structure\n".to_vec();
+        let tmp = make_zip(&[
+            ("recognized.log", recognized.as_slice()),
+            ("unrecognized.log", unrecognized.as_slice()),
+        ]);
+        let path = path_with_ext(&tmp, ".zip");
+        let mut tree = list_archive_tree(&path).unwrap();
+        for node in &mut tree.nodes {
+            if matches!(node.kind, NodeKind::File) {
+                node.merge_marked = true;
+            }
+        }
+
+        let sources = extract_and_detect_merge_marked(&path, &tree, no_progress()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(sources.len(), 2);
+        let recognized_src = sources
+            .iter()
+            .find(|s| s.label.contains("recognized") && !s.label.contains("unrecognized"))
+            .unwrap();
+        assert!(recognized_src.detected.format.is_some());
+        let unrecognized_src = sources
+            .iter()
+            .find(|s| s.label.contains("unrecognized"))
+            .unwrap();
+        assert!(unrecognized_src.detected.format.is_none());
     }
 
     #[test]

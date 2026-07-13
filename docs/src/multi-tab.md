@@ -62,6 +62,8 @@ The merged tab stays live: as the source tabs receive new lines, the merged inde
 
 Filters, search, marks, and annotations all work the same as on any other tab.
 
+Files inside a `.zip`/`.tar.gz`/etc archive can be merged directly without opening them as separate tabs first — mark them with `m` in the archive picker instead of `Space`. See [Opening Compressed and Archive Files](quick-start.md#opening-compressed-and-archive-files). Unlike this live `merged(N)` tab, an archive-picker merge is a one-shot snapshot of the extracted files (there's no live source tab to poll for new lines).
+
 ## Tail Mode Per Tab
 
 Each tab can independently have tail mode enabled or disabled:

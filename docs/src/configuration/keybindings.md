@@ -206,12 +206,34 @@ Shared by both the log panel's `/`/`?` search and the filter manager's `/` searc
 
 `reset` restores the popup's staged fields to the format's default order with everything visible — clearing both any `J`/`K` reorder and any hidden fields in one step. Like `all`/`none`, it only changes what's staged; `apply` still commits it.
 
-The archive file picker also uses this group. Its `search` key opens a live
-regex query that narrows the file tree to matching files (keeping their
-containing archive visible for context) — `Enter` confirms and un-narrows the
-list, `Esc` cancels back to the pre-search selection. An invalid/incomplete
-regex (e.g. while still typing) falls back to a plain substring match rather
-than matching nothing.
+## Archive Picker Mode
+
+```json
+"archive_picker": {
+  "toggle": "Space",
+  "merge_toggle": "m",
+  "all": "a",
+  "none": "n",
+  "apply": "Enter",
+  "cancel": "Esc",
+  "search": "/"
+}
+```
+
+`toggle` marks a file (or a container's whole subtree) for extraction — each
+toggled file opens as its own tab on `apply`. `merge_toggle` marks a file
+independently for merging instead: every merge-marked file is extracted and
+combined into one timestamp-sorted tab on `apply`, rather than opening
+separately. A file can be `toggle`d, `merge_toggle`d, both, or neither, and
+`apply` performs both actions together in one press. If a merge-marked
+file's format can't be recognized, only the merge is skipped (with an error
+naming the file) — toggled files still extract and open normally.
+
+`search` opens a live regex query that narrows the file tree to matching
+files (keeping their containing archive visible for context) — `Enter`
+confirms and un-narrows the list, `Esc` cancels back to the pre-search
+selection. An invalid/incomplete regex (e.g. while still typing) falls back
+to a plain substring match rather than matching nothing.
 
 ## Docker Select Mode
 

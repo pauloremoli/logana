@@ -13,13 +13,20 @@ use crate::theme::Theme;
 
 use super::popup_entry;
 
-/// The checkbox glyph shown for a row's [`CheckState`] — a pure function so
-/// its three cases can be unit-tested without rendering anything.
-pub fn checkbox_glyph(state: CheckState) -> &'static str {
-    match state {
-        CheckState::Checked => "[x] ",
-        CheckState::Unchecked => "[ ] ",
+/// The single mark glyph for a row — `m` says "this file will be merged"
+/// on its own, no need to also show the extraction checkbox alongside it,
+/// so a merge mark takes priority over a plain extraction tick when a row
+/// (rarely) has both. A pure function so every case can be unit-tested
+/// without rendering anything.
+pub fn mark_glyph(check_state: CheckState, merge_check_state: CheckState) -> &'static str {
+    match merge_check_state {
+        CheckState::Checked => "[m] ",
         CheckState::Partial => "[~] ",
+        CheckState::Unchecked => match check_state {
+            CheckState::Checked => "[x] ",
+            CheckState::Partial => "[~] ",
+            CheckState::Unchecked => "[ ] ",
+        },
     }
 }
 
@@ -131,7 +138,7 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
             let is_selected = i == self.selected;
             let prefix = if is_selected { "> " } else { "  " };
             let indent = "  ".repeat(row.depth);
-            let checkbox = checkbox_glyph(row.check_state);
+            let mark = mark_glyph(row.check_state, row.merge_check_state);
             let style = if row.is_error {
                 Style::default().fg(self.theme.error_fg)
             } else if is_selected {
@@ -142,7 +149,7 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
                 Style::default().fg(self.theme.text)
             };
             lines.push(Line::from(Span::styled(
-                format!("{prefix}{indent}{checkbox}{}", row.name),
+                format!("{prefix}{indent}{mark}{}", row.name),
                 style,
             )));
         }
@@ -160,7 +167,7 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
             .style(Style::default().fg(self.theme.text))
             .render(sep_area, buf);
 
-        let kb = &self.keybindings.select_fields;
+        let kb = &self.keybindings.archive_picker;
         let key_style = Style::default()
             .fg(self.theme.text_highlight_fg)
             .add_modifier(Modifier::BOLD);
@@ -171,6 +178,14 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
             &mut line1,
             kb.toggle.display(),
             "toggle",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut line1,
+            kb.merge_toggle.display(),
+            "merge",
             key_style,
             txt_style,
             br_style,
@@ -242,18 +257,55 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
-    fn test_checkbox_glyph_checked() {
-        assert_eq!(checkbox_glyph(CheckState::Checked), "[x] ");
+    fn test_mark_glyph_neither() {
+        assert_eq!(
+            mark_glyph(CheckState::Unchecked, CheckState::Unchecked),
+            "[ ] "
+        );
     }
 
     #[test]
-    fn test_checkbox_glyph_unchecked() {
-        assert_eq!(checkbox_glyph(CheckState::Unchecked), "[ ] ");
+    fn test_mark_glyph_extraction_only() {
+        assert_eq!(
+            mark_glyph(CheckState::Checked, CheckState::Unchecked),
+            "[x] "
+        );
     }
 
     #[test]
-    fn test_checkbox_glyph_partial() {
-        assert_eq!(checkbox_glyph(CheckState::Partial), "[~] ");
+    fn test_mark_glyph_merge_only() {
+        assert_eq!(
+            mark_glyph(CheckState::Unchecked, CheckState::Checked),
+            "[m] "
+        );
+    }
+
+    #[test]
+    fn test_mark_glyph_both_prefers_merge() {
+        // A row rarely has both, but when it does, `m` alone is enough to
+        // say what will happen to the file — no need to also show `x`.
+        assert_eq!(mark_glyph(CheckState::Checked, CheckState::Checked), "[m] ");
+    }
+
+    #[test]
+    fn test_mark_glyph_partial_extraction() {
+        assert_eq!(
+            mark_glyph(CheckState::Partial, CheckState::Unchecked),
+            "[~] "
+        );
+    }
+
+    #[test]
+    fn test_mark_glyph_partial_merge() {
+        assert_eq!(
+            mark_glyph(CheckState::Unchecked, CheckState::Partial),
+            "[~] "
+        );
+    }
+
+    #[test]
+    fn test_mark_glyph_partial_merge_prefers_over_checked_extraction() {
+        assert_eq!(mark_glyph(CheckState::Checked, CheckState::Partial), "[~] ");
     }
 
     fn row(name: &str) -> ArchiveRow {
@@ -262,6 +314,7 @@ mod tests {
             depth: 0,
             is_container: false,
             check_state: CheckState::Unchecked,
+            merge_check_state: CheckState::Unchecked,
             is_error: false,
         }
     }
@@ -277,6 +330,47 @@ mod tests {
             .collect::<String>()
             .trim_end()
             .to_string()
+    }
+
+    #[test]
+    fn test_row_renders_mark_glyph_independently() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let mut checked_row = row("a.log");
+        checked_row.check_state = CheckState::Checked;
+        let mut merged_row = row("b.log");
+        merged_row.merge_check_state = CheckState::Checked;
+        let mut both_row = row("c.log");
+        both_row.check_state = CheckState::Checked;
+        both_row.merge_check_state = CheckState::Checked;
+        let rows = vec![checked_row, merged_row, both_row];
+        let popup = ArchivePickerPopup {
+            theme: &theme,
+            keybindings: &kb,
+            rows: &rows,
+            selected: 0,
+            source_path: "archive.zip",
+            search: "",
+            searching: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
+        let text: String = (0..15)
+            .map(|y| row_text(buf.buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("[x] a.log"),
+            "extraction-checked-only row must show [x]: {text}"
+        );
+        assert!(
+            text.contains("[m] b.log"),
+            "merge-marked-only row must show [m]: {text}"
+        );
+        assert!(
+            text.contains("[m] c.log"),
+            "row marked both ways must show [m], not both: {text}"
+        );
     }
 
     #[test]

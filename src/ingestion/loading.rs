@@ -544,7 +544,14 @@ impl App {
     /// picker popup. Reuses the same `pending_archive`/[`Self::poll_archive_extraction`]
     /// machinery as [`Self::begin_archive_extraction`] — only the extraction
     /// closure differs (selected files only, instead of everything).
-    pub async fn begin_archive_extraction_selected(
+    /// Extracts every Space-ticked file (opened as its own tab, unchanged
+    /// from before) and, independently, every 'm'-marked file (merged into
+    /// one timestamp-sorted tab) — both in a single background task so
+    /// large archives don't block the UI thread twice. The two outcomes
+    /// are independent: a merge-marked file with an unrecognized format
+    /// only skips the merge (with a clear error), it never blocks the
+    /// ticked files from extracting and opening normally.
+    pub async fn apply_archive_picker(
         &mut self,
         source_path: String,
         tree: crate::ingestion::ArchiveTree,
@@ -559,8 +566,34 @@ impl App {
         self.decompression_message = Some("Extracting selected files\u{2026}".to_string());
 
         tokio::task::spawn_blocking(move || {
-            let result = crate::ingestion::extract_selected(&source_path, &tree, progress_tx);
-            let _ = result_tx.send(result);
+            let merge_result = tree.any_file_merge_marked().then(|| {
+                crate::ingestion::extract_and_detect_merge_marked(
+                    &source_path,
+                    &tree,
+                    progress_tx.clone(),
+                )
+                .and_then(|sources| {
+                    let unrecognized: Vec<&str> = sources
+                        .iter()
+                        .filter(|s| s.detected.format.is_none())
+                        .map(|s| s.label.as_str())
+                        .collect();
+                    if unrecognized.is_empty() {
+                        Ok(sources)
+                    } else {
+                        Err(format!(
+                            "Cannot merge \u{2014} unrecognized log format for: {}",
+                            unrecognized.join(", ")
+                        ))
+                    }
+                })
+            });
+            let selected_files =
+                crate::ingestion::extract_selected(&source_path, &tree, progress_tx);
+            let _ = result_tx.send(crate::ui::ArchivePickerApplyResult {
+                selected_files,
+                merge_result,
+            });
         });
 
         self.pending_archive = Some(crate::ui::ArchiveExtractionState {
@@ -569,8 +602,9 @@ impl App {
         });
     }
 
-    /// Poll the pending archive extraction each frame.  When the background task
-    /// finishes, pushes extracted tabs and clears `pending_archive`.
+    /// Poll the pending archive-picker apply each frame. When the background
+    /// task finishes, pushes extracted tabs, builds a merged tab if any
+    /// files were merge-marked, and clears `pending_archive`.
     pub async fn poll_archive_extraction(&mut self) {
         let Some(ref mut state) = self.pending_archive else {
             return;
@@ -582,14 +616,24 @@ impl App {
             self.decompression_message = Some(format!("Decompressing archive\u{2026} {pct}%"));
         }
 
-        match state.result_rx.try_recv() {
-            Ok(Ok(files)) => {
+        let result = match state.result_rx.try_recv() {
+            Ok(result) => result,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                 self.pending_archive = None;
                 self.decompression_message = None;
-                if files.is_empty() {
-                    self.tabs[self.active_tab].set_notification("Archive contains no files.");
-                    return;
-                }
+                return;
+            }
+        };
+        self.pending_archive = None;
+        self.decompression_message = None;
+
+        let mut errors: Vec<String> = Vec::new();
+        let mut created_any_tab = false;
+
+        match result.selected_files {
+            Ok(files) if !files.is_empty() => {
+                created_any_tab = true;
                 // Remove the placeholder tab BEFORE recording tab indices for the
                 // background loads.  If we remove it after, all stored tab_idx values
                 // shift by one and each load replaces the wrong tab.
@@ -627,17 +671,31 @@ impl App {
                 }
                 self.active_tab = first_new_tab_idx;
             }
-            Ok(Err(e)) => {
-                self.pending_archive = None;
-                self.decompression_message = None;
-                self.tabs[self.active_tab]
-                    .set_notification(format!("Failed to extract archive: {e}"));
+            Ok(_) => {}
+            Err(e) => errors.push(format!("Failed to extract archive: {e}")),
+        }
+
+        match result.merge_result {
+            None => {}
+            Some(Ok(sources)) => {
+                created_any_tab = true;
+                // Runs after the selected-files branch above so a merged
+                // tab (the more "primary" result of a mixed apply) wins
+                // `active_tab` when both kinds of tabs were created.
+                self.open_merged_tab_from_extraction(sources).await;
             }
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                self.pending_archive = None;
-                self.decompression_message = None;
-            }
+            Some(Err(e)) => errors.push(e),
+        }
+
+        if !created_any_tab {
+            let msg = if errors.is_empty() {
+                "Archive contains no files.".to_string()
+            } else {
+                errors.join(" ")
+            };
+            self.tabs[self.active_tab].set_notification(msg);
+        } else if !errors.is_empty() {
+            self.tabs[self.active_tab].set_notification(errors.join(" "));
         }
     }
 
@@ -3728,7 +3786,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_begin_archive_extraction_selected_produces_tab_for_selected_file_only() {
+    async fn test_apply_archive_picker_with_only_selected_produces_n_separate_tabs_unchanged() {
         let mut app = make_app(&[]).await;
 
         let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
@@ -3747,8 +3805,7 @@ mod tests {
             .id;
         tree.nodes[a_id].selected = true;
 
-        app.begin_archive_extraction_selected(path.clone(), tree)
-            .await;
+        app.apply_archive_picker(path.clone(), tree).await;
 
         for _ in 0..100 {
             app.poll_archive_extraction().await;
@@ -3763,6 +3820,204 @@ mod tests {
         assert!(app.pending_archive.is_none());
         let last_tab = app.tabs.last().unwrap();
         assert_eq!(last_tab.title, "a.log");
+    }
+
+    /// Waits for `app.pending_archive` to clear (mirrors the polling loop
+    /// used by the other archive-extraction tests in this module).
+    async fn drain_pending_archive(app: &mut App) {
+        for _ in 0..100 {
+            app.poll_archive_extraction().await;
+            if app.pending_archive.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_apply_archive_picker_with_only_merge_marked_produces_one_merged_tab_and_zero_separate_tabs()
+     {
+        let mut app = make_app(&[]).await;
+
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            (
+                "a.log",
+                br#"{"timestamp":"2024-01-01T10:00:01Z","msg":"first"}"#.as_slice(),
+            ),
+            (
+                "b.log",
+                br#"{"timestamp":"2024-01-01T10:00:00Z","msg":"second"}"#.as_slice(),
+            ),
+        ]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+
+        let mut tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        for node in &mut tree.nodes {
+            if matches!(node.kind, crate::ingestion::NodeKind::File) {
+                node.merge_marked = true;
+            }
+        }
+
+        let tabs_before = app.tabs.len();
+        app.apply_archive_picker(path.clone(), tree).await;
+        drain_pending_archive(&mut app).await;
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(app.pending_archive.is_none());
+        assert_eq!(
+            app.tabs.len(),
+            tabs_before + 1,
+            "exactly one merged tab must be created, no separate tabs for the merge-marked files"
+        );
+        let merged_tab = app.tabs.last().unwrap();
+        assert!(merged_tab.merged.is_some());
+        assert!(
+            !app.tabs
+                .iter()
+                .any(|t| t.title == "a.log" || t.title == "b.log"),
+            "merge-marked files must never get their own separate tab"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_archive_picker_with_mixed_selected_and_merge_marked_produces_n_plus_one_tabs()
+     {
+        let mut app = make_app(&[]).await;
+
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("ticked1.log", b"hello"),
+            ("ticked2.log", b"world"),
+            (
+                "merge1.log",
+                br#"{"timestamp":"2024-01-01T10:00:01Z","msg":"first"}"#.as_slice(),
+            ),
+            (
+                "merge2.log",
+                br#"{"timestamp":"2024-01-01T10:00:00Z","msg":"second"}"#.as_slice(),
+            ),
+        ]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+
+        let mut tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        for node in &mut tree.nodes {
+            match node.full_path.as_str() {
+                "ticked1.log" | "ticked2.log" => node.selected = true,
+                "merge1.log" | "merge2.log" => node.merge_marked = true,
+                _ => {}
+            }
+        }
+
+        app.apply_archive_picker(path.clone(), tree).await;
+        drain_pending_archive(&mut app).await;
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(app.pending_archive.is_none());
+        let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert!(titles.contains(&"ticked1.log"));
+        assert!(titles.contains(&"ticked2.log"));
+        assert_eq!(
+            app.tabs.iter().filter(|t| t.merged.is_some()).count(),
+            1,
+            "exactly one merged tab must be created: {titles:?}"
+        );
+        assert!(
+            !titles.contains(&"merge1.log") && !titles.contains(&"merge2.log"),
+            "merge-marked files must not also open as their own tabs: {titles:?}"
+        );
+        assert!(app.tabs.iter().any(|t| t.merged.is_some()));
+    }
+
+    #[tokio::test]
+    async fn test_apply_archive_picker_aborts_only_merge_when_a_merge_marked_file_has_unrecognized_format()
+     {
+        let mut app = make_app(&[]).await;
+
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("ticked.log", b"hello"),
+            (
+                "recognized.log",
+                br#"{"timestamp":"2024-01-01T10:00:00Z","msg":"first"}"#.as_slice(),
+            ),
+            (
+                "unrecognized.log",
+                b"just some random bytes with no structure\n",
+            ),
+        ]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+
+        let mut tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        for node in &mut tree.nodes {
+            match node.full_path.as_str() {
+                "ticked.log" => node.selected = true,
+                "recognized.log" | "unrecognized.log" => node.merge_marked = true,
+                _ => {}
+            }
+        }
+
+        app.apply_archive_picker(path.clone(), tree).await;
+        drain_pending_archive(&mut app).await;
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(app.pending_archive.is_none());
+        // The ticked file's tab was still created — the merge (which had an
+        // unrecognized-format member) contributed zero tabs, but that
+        // failure must not block the unrelated ticked-file extraction.
+        let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert!(titles.contains(&"ticked.log"), "{titles:?}");
+        assert!(
+            !app.tabs.iter().any(|t| t.merged.is_some()),
+            "no merged tab must be created when a merge-marked file's format is unrecognized"
+        );
+        let notification = app.tabs[app.active_tab]
+            .interaction
+            .notification
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            notification.contains("unrecognized.log"),
+            "error must name the offending file: {notification}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_archive_picker_merge_marked_files_are_sorted_by_timestamp_in_merged_tab() {
+        let mut app = make_app(&[]).await;
+
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            (
+                "later.log",
+                br#"{"timestamp":"2024-01-01T10:00:05Z","msg":"later"}"#.as_slice(),
+            ),
+            (
+                "earlier.log",
+                br#"{"timestamp":"2024-01-01T10:00:01Z","msg":"earlier"}"#.as_slice(),
+            ),
+        ]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+
+        let mut tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        for node in &mut tree.nodes {
+            if matches!(node.kind, crate::ingestion::NodeKind::File) {
+                node.merge_marked = true;
+            }
+        }
+
+        app.apply_archive_picker(path.clone(), tree).await;
+        drain_pending_archive(&mut app).await;
+        std::fs::remove_file(&path).unwrap();
+
+        let merged_tab = app.tabs.last().unwrap();
+        assert_eq!(merged_tab.file_reader.line_count(), 2);
+        let line0 = String::from_utf8_lossy(merged_tab.file_reader.get_line(0)).into_owned();
+        let line1 = String::from_utf8_lossy(merged_tab.file_reader.get_line(1)).into_owned();
+        assert!(
+            line0.contains("earlier") && line1.contains("later"),
+            "lines must be sorted by timestamp across the merged sources: {line0:?}, {line1:?}"
+        );
     }
 
     /// End-to-end: opening a `.tar.gz` with a top-level file and a nested

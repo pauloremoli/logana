@@ -1335,6 +1335,77 @@ impl Default for SelectFieldsKeybindings {
 }
 
 #[inline(always)]
+fn default_ap_toggle() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char(' '), KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_ap_merge_toggle() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('m'), KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_ap_all() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('a'), KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_ap_none() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('n'), KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_ap_apply() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_ap_cancel() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_ap_search() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('/'), KeyModifiers::NONE)])
+}
+
+/// Keybindings for the archive picker popup (file tree shown when opening
+/// an archive). Deliberately its own struct rather than sharing
+/// `SelectFieldsKeybindings` (which the popup used to borrow wholesale) —
+/// that struct is also used by the unrelated `:select-fields` column
+/// picker and `:merge`'s tab-picker, and an archive-only action like
+/// `merge_toggle` would otherwise leak into their keybinding help/schema.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ArchivePickerKeybindings {
+    /// Toggles a file (or a container's whole subtree) for extraction —
+    /// each toggled file opens as its own tab on `apply`.
+    #[serde(default = "default_ap_toggle")]
+    pub toggle: KeyBindings,
+    /// Toggles a file (or a container's whole subtree) to be merged into
+    /// one timestamp-sorted tab on `apply`, independently of `toggle`.
+    #[serde(default = "default_ap_merge_toggle")]
+    pub merge_toggle: KeyBindings,
+    #[serde(default = "default_ap_all")]
+    pub all: KeyBindings,
+    #[serde(default = "default_ap_none")]
+    pub none: KeyBindings,
+    #[serde(default = "default_ap_apply")]
+    pub apply: KeyBindings,
+    #[serde(default = "default_ap_cancel")]
+    pub cancel: KeyBindings,
+    #[serde(default = "default_ap_search")]
+    pub search: KeyBindings,
+}
+
+impl Default for ArchivePickerKeybindings {
+    fn default() -> Self {
+        Self {
+            toggle: default_ap_toggle(),
+            merge_toggle: default_ap_merge_toggle(),
+            all: default_ap_all(),
+            none: default_ap_none(),
+            apply: default_ap_apply(),
+            cancel: default_ap_cancel(),
+            search: default_ap_search(),
+        }
+    }
+}
+
+#[inline(always)]
 fn default_help_close() -> KeyBindings {
     KeyBindings(vec![
         KeyBinding(KeyCode::Char('q'), KeyModifiers::NONE),
@@ -1458,6 +1529,8 @@ pub struct Keybindings {
     pub value_colors: ValueColorsKeybindings,
     #[serde(default)]
     pub select_fields: SelectFieldsKeybindings,
+    #[serde(default)]
+    pub archive_picker: ArchivePickerKeybindings,
     #[serde(default)]
     pub help: HelpKeybindings,
     #[serde(default)]
@@ -1641,6 +1714,21 @@ impl Keybindings {
             ("select_fields.search", &self.select_fields.search),
         ];
 
+        let archive_picker_actions: &[(&str, &KeyBindings)] = &[
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
+            ("archive_picker.toggle", &self.archive_picker.toggle),
+            (
+                "archive_picker.merge_toggle",
+                &self.archive_picker.merge_toggle,
+            ),
+            ("archive_picker.all", &self.archive_picker.all),
+            ("archive_picker.none", &self.archive_picker.none),
+            ("archive_picker.apply", &self.archive_picker.apply),
+            ("archive_picker.cancel", &self.archive_picker.cancel),
+            ("archive_picker.search", &self.archive_picker.search),
+        ];
+
         let help_actions: &[(&str, &KeyBindings)] = &[
             ("navigation.scroll_down", &nav.scroll_down),
             ("navigation.scroll_up", &nav.scroll_up),
@@ -1670,6 +1758,7 @@ impl Keybindings {
         check_conflicts(dlt_select_actions, &mut conflicts);
         check_conflicts(value_colors_actions, &mut conflicts);
         check_conflicts(select_fields_actions, &mut conflicts);
+        check_conflicts(archive_picker_actions, &mut conflicts);
         check_conflicts(help_actions, &mut conflicts);
         check_conflicts(ui_actions, &mut conflicts);
 
@@ -1909,6 +1998,49 @@ mod tests {
         assert!(
             !conflicts.is_empty(),
             "rebinding select_fields.reset onto an existing select-fields action's key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_archive_picker_keybindings_default() {
+        let ap = ArchivePickerKeybindings::default();
+        assert!(ap.toggle.matches(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(
+            ap.merge_toggle
+                .matches(KeyCode::Char('m'), KeyModifiers::NONE)
+        );
+        assert!(ap.all.matches(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(ap.none.matches(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(ap.apply.matches(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(ap.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(ap.search.matches(KeyCode::Char('/'), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_if_archive_picker_merge_toggle_collides_with_toggle() {
+        let mut kb = Keybindings::default();
+        kb.archive_picker.merge_toggle = kb.archive_picker.toggle.clone();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "rebinding archive_picker.merge_toggle onto an existing archive-picker action's key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_validate_does_not_conflict_archive_picker_with_select_fields() {
+        let mut kb = Keybindings::default();
+        // Rebind archive_picker.toggle onto whatever key select_fields.toggle
+        // uses (they happen to share the same default, Space, but that's
+        // exactly the point — the two scopes are independent now, so this
+        // must not be reported as a conflict).
+        kb.archive_picker.toggle = kb.select_fields.toggle.clone();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts
+                .iter()
+                .any(|c| c.contains("archive_picker.toggle") && c.contains("select_fields")),
+            "archive_picker and select_fields must be independent scopes: {conflicts:?}"
         );
     }
 

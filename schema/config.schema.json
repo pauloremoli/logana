@@ -12,6 +12,15 @@
     },
     "keybindings": {
       "default": {
+        "archive_picker": {
+          "all": "a",
+          "apply": "Enter",
+          "cancel": "Esc",
+          "merge_toggle": "m",
+          "none": "n",
+          "search": "/",
+          "toggle": "Space"
+        },
         "command": {
           "cancel": "Esc",
           "confirm": "Enter"
@@ -578,6 +587,22 @@
           "allOf": [
             {
               "$ref": "#/definitions/SelectFieldsKeybindings"
+            }
+          ]
+        },
+        "archive_picker": {
+          "default": {
+            "all": "a",
+            "apply": "Enter",
+            "cancel": "Esc",
+            "merge_toggle": "m",
+            "none": "n",
+            "search": "/",
+            "toggle": "Space"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ArchivePickerKeybindings"
             }
           ]
         },
@@ -1680,6 +1705,70 @@
         },
         "search": {
           "description": "Enters typeahead search — used by the archive file picker to narrow its (potentially deep) file tree. Not read by `select_fields_mode.rs` or `merge_select_mode.rs`, which also share this keybindings struct.",
+          "default": "/",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "ArchivePickerKeybindings": {
+      "description": "Keybindings for the archive picker popup (file tree shown when opening an archive). Deliberately its own struct rather than sharing `SelectFieldsKeybindings` (which the popup used to borrow wholesale) — that struct is also used by the unrelated `:select-fields` column picker and `:merge`'s tab-picker, and an archive-only action like `merge_toggle` would otherwise leak into their keybinding help/schema.",
+      "type": "object",
+      "properties": {
+        "toggle": {
+          "description": "Toggles a file (or a container's whole subtree) for extraction — each toggled file opens as its own tab on `apply`.",
+          "default": "Space",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "merge_toggle": {
+          "description": "Toggles a file (or a container's whole subtree) to be merged into one timestamp-sorted tab on `apply`, independently of `toggle`.",
+          "default": "m",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "all": {
+          "default": "a",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "none": {
+          "default": "n",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "apply": {
+          "default": "Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "cancel": {
+          "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search": {
           "default": "/",
           "allOf": [
             {

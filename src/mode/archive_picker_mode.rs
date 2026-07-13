@@ -21,6 +21,9 @@ pub struct ArchiveRow {
     pub depth: usize,
     pub is_container: bool,
     pub check_state: CheckState,
+    /// Independent of `check_state` — whether this row is marked to be
+    /// merged into one timestamp-sorted tab rather than opened on its own.
+    pub merge_check_state: CheckState,
     pub is_error: bool,
 }
 
@@ -135,11 +138,17 @@ impl ArchivePickerMode {
         }
     }
 
-    /// `states` is the whole tree's precomputed check states (see
-    /// [`ArchiveTree::check_states`]) — passing it in rather than calling
-    /// `container_check_state(id)` here keeps a full row list build at
-    /// `O(n)` instead of re-walking each container's descendants per row.
-    fn row_for(&self, id: NodeId, states: &[CheckState]) -> ArchiveRow {
+    /// `states`/`merge_states` are the whole tree's precomputed check
+    /// states (see [`ArchiveTree::check_states`]/[`ArchiveTree::merge_check_states`])
+    /// — passing them in rather than calling `container_check_state(id)`
+    /// here keeps a full row list build at `O(n)` instead of re-walking
+    /// each container's descendants per row.
+    fn row_for(
+        &self,
+        id: NodeId,
+        states: &[CheckState],
+        merge_states: &[CheckState],
+    ) -> ArchiveRow {
         let node = &self.tree.nodes[id];
         match &node.kind {
             NodeKind::File => ArchiveRow {
@@ -147,6 +156,7 @@ impl ArchivePickerMode {
                 depth: node.depth,
                 is_container: false,
                 check_state: states[id],
+                merge_check_state: merge_states[id],
                 is_error: false,
             },
             NodeKind::Container { .. } => ArchiveRow {
@@ -154,6 +164,7 @@ impl ArchivePickerMode {
                 depth: node.depth,
                 is_container: true,
                 check_state: states[id],
+                merge_check_state: merge_states[id],
                 is_error: false,
             },
             NodeKind::UnreadableContainer { error } => ArchiveRow {
@@ -161,16 +172,10 @@ impl ArchivePickerMode {
                 depth: node.depth,
                 is_container: false,
                 check_state: CheckState::Unchecked,
+                merge_check_state: CheckState::Unchecked,
                 is_error: true,
             },
         }
-    }
-
-    fn any_file_selected(&self) -> bool {
-        self.tree
-            .nodes
-            .iter()
-            .any(|n| matches!(n.kind, NodeKind::File) && n.selected)
     }
 
     fn set_all_files_selected(&mut self, selected: bool) {
@@ -254,26 +259,26 @@ impl Mode for ArchivePickerMode {
             return self.handle_search_key(kb, key, modifiers);
         }
 
-        if kb.select_fields.apply.matches(key, modifiers) {
-            if !self.any_file_selected() {
+        if kb.archive_picker.apply.matches(key, modifiers) {
+            if !self.tree.any_file_selected() && !self.tree.any_file_merge_marked() {
                 tab.interaction.command_error =
-                    Some("Select at least 1 file to extract".to_string());
+                    Some("Select or merge-mark at least 1 file".to_string());
                 return (self, KeyResult::Handled);
             }
             return (
                 Box::new(NormalMode::default()),
-                KeyResult::ExtractSelectedArchiveFiles {
+                KeyResult::ApplyArchivePicker {
                     source_path: self.source_path.clone(),
                     tree: self.tree.clone(),
                 },
             );
         }
 
-        if kb.select_fields.cancel.matches(key, modifiers) {
+        if kb.archive_picker.cancel.matches(key, modifiers) {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
-        if kb.select_fields.search.matches(key, modifiers) {
+        if kb.archive_picker.search.matches(key, modifiers) {
             self.pre_search_selected = Some(self.selected);
             self.search.clear();
             self.search_matcher = SearchMatcher::MatchAll;
@@ -288,13 +293,17 @@ impl Mode for ArchivePickerMode {
             }
         } else if kb.navigation.scroll_up.matches(key, modifiers) {
             self.selected = self.selected.saturating_sub(1);
-        } else if kb.select_fields.toggle.matches(key, modifiers) {
+        } else if kb.archive_picker.toggle.matches(key, modifiers) {
             if let Some(&id) = self.visible_rows().get(self.selected) {
                 self.tree.toggle_subtree(id);
             }
-        } else if kb.select_fields.all.matches(key, modifiers) {
+        } else if kb.archive_picker.merge_toggle.matches(key, modifiers) {
+            if let Some(&id) = self.visible_rows().get(self.selected) {
+                self.tree.toggle_merge_subtree(id);
+            }
+        } else if kb.archive_picker.all.matches(key, modifiers) {
             self.set_all_files_selected(true);
-        } else if kb.select_fields.none.matches(key, modifiers) {
+        } else if kb.archive_picker.none.matches(key, modifiers) {
             self.set_all_files_selected(false);
         }
 
@@ -310,34 +319,41 @@ impl Mode for ArchivePickerMode {
         )];
         status_entry(
             &mut spans,
-            kb.select_fields.toggle.display(),
+            kb.archive_picker.toggle.display(),
             "toggle",
             theme,
         );
         status_entry(
             &mut spans,
-            kb.select_fields.apply.display(),
+            kb.archive_picker.merge_toggle.display(),
+            "merge-mark",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.archive_picker.apply.display(),
             "extract",
             theme,
         );
         status_entry(
             &mut spans,
-            kb.select_fields.cancel.display(),
+            kb.archive_picker.cancel.display(),
             "cancel",
             theme,
         );
-        status_entry(&mut spans, kb.select_fields.all.display(), "all", theme);
-        status_entry(&mut spans, kb.select_fields.none.display(), "none", theme);
+        status_entry(&mut spans, kb.archive_picker.all.display(), "all", theme);
+        status_entry(&mut spans, kb.archive_picker.none.display(), "none", theme);
         Line::from(spans)
     }
 
     fn render_state(&self) -> ModeRenderState {
         let states = self.tree.check_states();
+        let merge_states = self.tree.merge_check_states();
         ModeRenderState::ArchivePicker {
             rows: self
                 .visible_rows()
                 .iter()
-                .map(|&id| self.row_for(id, &states))
+                .map(|&id| self.row_for(id, &states, &merge_states))
                 .collect(),
             selected: self.selected,
             source_path: self.source_path.clone(),
@@ -371,6 +387,7 @@ mod tests {
             depth,
             kind: NodeKind::File,
             selected: false,
+            merge_marked: false,
             cached_bytes: None,
         }
     }
@@ -393,6 +410,7 @@ mod tests {
                 archive_type: crate::ingestion::ArchiveType::Zip,
             },
             selected: false,
+            merge_marked: false,
             cached_bytes: None,
         }
     }
@@ -525,6 +543,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_merge_toggle_key_marks_file_row() {
+        let mut tab = make_tab().await;
+        let (mode2, _) = press(mode(), &mut tab, KeyCode::Char('m')).await;
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(rows[0].merge_check_state, CheckState::Checked);
+        assert_eq!(rows[1].merge_check_state, CheckState::Unchecked);
+        // Independent from the extraction checkbox.
+        assert_eq!(rows[0].check_state, CheckState::Unchecked);
+    }
+
+    #[tokio::test]
+    async fn test_merge_toggle_on_container_marks_all_descendants() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 1; // "bundle.zip"
+        let (mode2, _) = press(m, &mut tab, KeyCode::Char('m')).await;
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(rows[1].merge_check_state, CheckState::Checked);
+        assert_eq!(rows[2].merge_check_state, CheckState::Checked);
+        assert_eq!(rows[3].merge_check_state, CheckState::Checked);
+        assert!(
+            rows.iter().all(|r| r.check_state == CheckState::Unchecked),
+            "merge-marking must not affect the extraction checkbox"
+        );
+    }
+
+    #[tokio::test]
     async fn test_toggle_descendant_does_not_affect_sibling_row() {
         let mut tab = make_tab().await;
         let mut m = mode();
@@ -563,18 +608,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_with_selection_returns_extract_key_result() {
+    async fn test_apply_with_selection_returns_apply_archive_picker_key_result() {
         let mut tab = make_tab().await;
         let mut m = mode();
         m.tree.nodes[0].selected = true;
         let (_, result) = press(m, &mut tab, KeyCode::Enter).await;
         match result {
-            KeyResult::ExtractSelectedArchiveFiles { source_path, tree } => {
+            KeyResult::ApplyArchivePicker { source_path, tree } => {
                 assert_eq!(source_path, "archive.zip");
                 assert!(tree.nodes[0].selected);
             }
-            other => panic!("expected ExtractSelectedArchiveFiles, got {:?}", other),
+            other => panic!("expected ApplyArchivePicker, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_apply_with_only_merge_marked_no_selected_succeeds() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.tree.nodes[0].merge_marked = true;
+        let (_, result) = press(m, &mut tab, KeyCode::Enter).await;
+        match result {
+            KeyResult::ApplyArchivePicker { tree, .. } => {
+                assert!(tree.nodes[0].merge_marked);
+                assert!(!tree.nodes[0].selected);
+            }
+            other => panic!("expected ApplyArchivePicker, got {:?}", other),
+        }
+        assert!(tab.interaction.command_error.is_none());
     }
 
     #[tokio::test]
@@ -599,6 +660,16 @@ mod tests {
         let line = m.mode_bar_content(&kb, &theme);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("ARCHIVE"));
+    }
+
+    #[test]
+    fn test_mode_bar_content_contains_merge_mark_entry() {
+        let m = mode();
+        let kb = Keybindings::default();
+        let theme = crate::theme::Theme::default();
+        let line = m.mode_bar_content(&kb, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("merge-mark"));
     }
 
     #[test]
@@ -721,7 +792,7 @@ mod tests {
         let mut tab = make_tab().await;
         let mut m = mode();
         m.tree.toggle_subtree(1);
-        assert!(m.any_file_selected());
+        assert!(m.tree.any_file_selected());
         let (m, _) = enter_search_and_type(m, &mut tab, "n").await;
         assert_eq!(extract_search(m.render_state()), "n");
         let (rows, _, _) = extract_state(m.render_state());
