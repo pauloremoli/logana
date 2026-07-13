@@ -17,7 +17,7 @@ All notable changes to logana will be documented in this file.
 ### Fixed
 - Extracting a selected archive file that is itself a compressed file (e.g. a `.gz` nested inside a `.zip`) now decompresses it, instead of opening the raw compressed bytes as an unreadable log.
 - `:load-filters`, `:save-filters`, and `:export` now expand a leading `~` in the given path.
-- `--regex` on an inline `-i "..."` include filter (startup CLI flag) was silently ignored; it's now applied like every other filter flag.
+- `:schema <name>` now autocompletes from your installed custom schemas.
 
 ## [0.7.1] - 2026-07-11
 

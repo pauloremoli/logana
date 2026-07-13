@@ -5,8 +5,9 @@ use ratatui::{
 
 use crate::commands::auto_complete::{
     FieldCompletion, complete_color, complete_field_name, complete_field_value, complete_file_path,
-    complete_flags, extract_color_partial, extract_field_partial, extract_flag_partial,
-    extract_group_partial, find_command_completions, fuzzy_match, shell_split,
+    complete_flags, complete_schema, extract_color_partial, extract_field_partial,
+    extract_flag_partial, extract_group_partial, find_command_completions, fuzzy_match,
+    shell_split,
 };
 use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
 use crate::theme::parse_color;
@@ -78,6 +79,14 @@ pub fn resolve_completions(
     }
     if let Some(partial_raw) = query_text.trim_start().strip_prefix("set-theme ") {
         return CompletionSource::Items(complete_theme(partial_raw.trim_start()));
+    }
+    if let Some(partial_raw) = query_text.trim_start().strip_prefix("schema ") {
+        let partial = partial_raw.trim_start();
+        let names: Vec<String> = crate::config::custom_schemas()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        return CompletionSource::Items(complete_schema(partial, &names));
     }
     if let Some(partial_raw) = query_text.trim_start().strip_prefix("hide-field ") {
         let partial = partial_raw.trim_start();

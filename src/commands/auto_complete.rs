@@ -278,6 +278,21 @@ pub fn complete_color(partial: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Fuzzy-matches `partial` against `names` (custom schema names), for the
+/// `:schema <name>` command. `names` is passed in rather than read from
+/// `config::custom_schemas()` directly so this stays unit-testable without
+/// touching that process-global `OnceLock`.
+pub fn complete_schema(partial: &str, names: &[String]) -> Vec<String> {
+    if partial.is_empty() {
+        return names.to_vec();
+    }
+    names
+        .iter()
+        .filter(|n| fuzzy_match(partial, n))
+        .cloned()
+        .collect()
+}
+
 /// If the input ends with `--group <partial>`, returns the partial group-name prefix.
 pub fn extract_group_partial(input: &str) -> Option<&str> {
     let group_commands = ["filter", "exclude", "highlight"];
@@ -873,6 +888,39 @@ mod tests {
 
         let results = complete_color("nav");
         assert!(results.contains(&"Navy"), "Navy should fuzzy-match 'nav'");
+    }
+
+    // ── complete_schema ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_complete_schema_empty_returns_all() {
+        let names = vec!["telecom".to_string(), "syslog2".to_string()];
+        let results = complete_schema("", &names);
+        assert_eq!(results, names);
+    }
+
+    #[test]
+    fn test_complete_schema_fuzzy_match() {
+        let names = vec!["telecom".to_string(), "syslog2".to_string()];
+        let results = complete_schema("tc", &names);
+        assert_eq!(results, vec!["telecom".to_string()]);
+    }
+
+    #[test]
+    fn test_complete_schema_case_insensitive() {
+        let names = vec!["Telecom".to_string()];
+        assert_eq!(complete_schema("telecom", &names), vec!["Telecom"]);
+    }
+
+    #[test]
+    fn test_complete_schema_no_match_returns_empty() {
+        let names = vec!["telecom".to_string()];
+        assert!(complete_schema("zzz", &names).is_empty());
+    }
+
+    #[test]
+    fn test_complete_schema_no_names_returns_empty() {
+        assert!(complete_schema("tele", &[]).is_empty());
     }
 
     #[test]

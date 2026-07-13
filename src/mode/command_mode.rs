@@ -216,6 +216,18 @@ impl CommandMode {
                 .collect();
         }
 
+        // schema: complete with known custom schema names
+        if let Some(partial) = Self::arg_partial(input, "schema") {
+            let names: Vec<String> = crate::config::custom_schemas()
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
+            return crate::commands::auto_complete::complete_schema(partial, &names)
+                .into_iter()
+                .map(|n| format!("schema {n}"))
+                .collect();
+        }
+
         // Theme completion
         if let Some(after_prefix) = trimmed.strip_prefix("set-theme") {
             let partial = after_prefix.trim_start();
