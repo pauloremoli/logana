@@ -3593,7 +3593,7 @@ mod tests {
         let mut tab = make_tab(&[line]).await;
         tab.filter.visible_indices = VisibleLines::Filtered(vec![0]);
         let cfg = crate::config::CustomSchemaConfig {
-            name: "telecom".to_string(),
+            name: "acme".to_string(),
             description: None,
             template: Some("{level}/{component}/{feature}, {message}".to_string()),
             pattern: None,

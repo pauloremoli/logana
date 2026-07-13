@@ -171,16 +171,16 @@ Any other placeholder name defaults to an extra field. Use the `fields` map to a
 
 ### Example
 
-Telecom node log line:
+Acme node log line:
 ```
 04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: dirtyrfservice::instance1 state=CONNECTED
 ```
 
-Schema file at `~/.config/logana/schema/telecom.json`:
+Schema file at `~/.config/logana/schema/acme.json`:
 ```json
 {
-  "name": "telecom",
-  "description": "Telecom node log format",
+  "name": "acme",
+  "description": "Acme node log format",
   "template": "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}",
   "fields": {
     "id":      "extra",
@@ -205,7 +205,7 @@ Three fields unlock core logana features. Map them correctly if your format cont
 
 ```
 :schema             — show the active parser name
-:schema telecom     — force the telecom schema for this tab
+:schema acme     — force the acme schema for this tab
 ```
 
 ### tracing-subscriber fmt (Rust / Axum)

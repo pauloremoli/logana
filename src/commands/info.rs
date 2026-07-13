@@ -218,7 +218,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "schema",
         usage: "schema [name]",
-        description: "Show the active parser schema for this tab, or switch to a named schema. e.g. schema, schema telecom",
+        description: "Show the active parser schema for this tab, or switch to a named schema. e.g. schema, schema acme",
     },
 ];
 

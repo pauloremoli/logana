@@ -137,7 +137,7 @@ A value can only be declared for one of `error`/`warning` — declaring the same
 
 When a `template`-based schema matches a line, the log panel renders it using the template's own field order and literal separators — so `{level}/{component}/{feature}` shows as `INF/Syscon/StartupMgr`, not space-joined columns. Hiding a field with `:select-fields` keeps this: the hidden field's value drops and its adjacent separator collapses with it, so hiding `component` renders `INF/StartupMgr` rather than a dangling `INF//StartupMgr`. Only genuinely *reordering* columns (moving a field with `J`/`K` in `:select-fields`) falls back to the standard space-joined column layout, since an arbitrary new order can't be expressed with the template's fixed separators. This only applies to `template`-defined schemas; a `pattern`-defined schema (raw regex) always uses the column layout, since a regex has no literal skeleton to reconstruct from.
 
-The `:select-fields` popup lists a `template`-defined schema's fields in the template's own order (e.g. `id, target, timestamp, pid, level, component, feature, message` for the telecom example below) rather than the generic timestamp/level/target/extras/message grouping used for other formats — matching the order the line actually renders in by default.
+The `:select-fields` popup lists a `template`-defined schema's fields in the template's own order (e.g. `id, target, timestamp, pid, level, component, feature, message` for the acme example below) rather than the generic timestamp/level/target/extras/message grouping used for other formats — matching the order the line actually renders in by default.
 
 ## Detection
 
@@ -145,18 +145,18 @@ Custom schemas are evaluated before all built-in parsers. When a schema matches 
 
 Run `:schema` to confirm which parser was selected, or `:schema <name>` to force a specific schema for the current tab.
 
-## Full example — Telecom node log
+## Full example — Acme node log
 
 Log line:
 ```
 04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: dirtyrfservice::instance1 state=CONNECTED
 ```
 
-`~/.config/logana/schema/telecom.json`:
+`~/.config/logana/schema/acme.json`:
 ```json
 {
-  "name": "telecom",
-  "description": "Telecom node log: id service <timestamp> pid level/component/feature, message",
+  "name": "acme",
+  "description": "Acme node log: id service <timestamp> pid level/component/feature, message",
   "template": "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}",
   "fields": {
     "id":      "extra",

@@ -11,7 +11,18 @@ use crate::ingestion::{ArchiveExtractionProgress, ArchiveType, ExtractedFile};
 /// within-archives are descended into with no nesting-depth limit of their
 /// own — this entry cap is what bounds a listing pass, regardless of how
 /// deeply nested the entries that hit it are.
-pub const MAX_TOTAL_ENTRIES: usize = 10_000;
+///
+/// Real-world archives (dozens of top-level zips each containing hundreds
+/// of entries, many of which are themselves further-nested zips of
+/// compressed logs) can easily total tens of thousands of entries once
+/// fully expanded. Once the shared budget runs out mid-listing, every
+/// *remaining* sibling of whichever container hit the cap — not just its
+/// own descendants — is silently swallowed into one generic "entry limit
+/// reached" marker (see `entry_budget_exhausted`), so a too-low cap can
+/// make specific nested files vanish from the listing entirely with no
+/// indication of where. 10,000 was hit by ordinary real-world archives of
+/// this shape; this is deliberately generous.
+pub const MAX_TOTAL_ENTRIES: usize = 250_000;
 /// Maximum cumulative bytes of streaming-source (TarGz/TarBz2/TarXz) entry
 /// content retained in memory during listing for reuse at extraction time.
 pub const MAX_CACHED_BYTES: u64 = 256 * 1024 * 1024;
@@ -1315,6 +1326,60 @@ mod tests {
     }
 
     #[test]
+    fn test_entry_budget_exhausted_by_earlier_sibling_truncates_a_later_sibling_entirely() {
+        // A large "big_sibling.zip" is listed first and alone consumes the
+        // whole (small, test-only) entry budget. "target.zip" — a LATER
+        // sibling in the same outer zip — never even gets its own node:
+        // the outer zip's loop hits the exhausted-budget check on its very
+        // next iteration and swallows every remaining sibling into one
+        // generic truncation marker. This is the exact mechanism behind a
+        // reported real-world case: a large nested archive (tens of
+        // thousands of entries total) silently dropped a `.xz` file nested
+        // a few levels down, once an earlier-listed sibling used up the
+        // (too small, at the time — see `MAX_TOTAL_ENTRIES`) shared budget.
+        let big_entries: Vec<(String, Vec<u8>)> = (0..10)
+            .map(|i| (format!("f{i}.log"), b"x".to_vec()))
+            .collect();
+        let big_refs: Vec<(&str, &[u8])> = big_entries
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.as_slice()))
+            .collect();
+        let big_sibling = make_zip(&big_refs);
+        let big_sibling_bytes = std::fs::read(big_sibling.path()).unwrap();
+
+        let xz = make_xz(b"target content");
+        let xz_bytes = std::fs::read(xz.path()).unwrap();
+        let target_inner = make_zip(&[("target.xz", xz_bytes.as_slice())]);
+        let target_inner_bytes = std::fs::read(target_inner.path()).unwrap();
+
+        let outer_tmp = make_zip(&[
+            ("big_sibling.zip", big_sibling_bytes.as_slice()),
+            ("target.zip", target_inner_bytes.as_slice()),
+        ]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+
+        let limits = ListLimits {
+            max_entries: 5,
+            ..ListLimits::default()
+        };
+        let tree = list_archive_tree_with_limits(&path, &limits).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(
+            !tree.nodes.iter().any(|n| n.full_path == "target.xz"),
+            "documents current (tiny-budget) truncation behavior: a later \
+             sibling's contents are dropped once the shared entry budget \
+             is exhausted by an earlier one"
+        );
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|n| matches!(n.kind, NodeKind::UnreadableContainer { .. })),
+            "the outer zip must show a truncation marker for its swallowed remaining siblings"
+        );
+    }
+
+    #[test]
     fn test_entry_count_cap_truncates_listing() {
         let entries: Vec<(String, Vec<u8>)> = (0..15)
             .map(|i| (format!("file{i}.log"), b"x".to_vec()))
@@ -1340,6 +1405,15 @@ mod tests {
         );
         let marker = tree.nodes.last().unwrap();
         assert!(matches!(marker.kind, NodeKind::UnreadableContainer { .. }));
+    }
+
+    #[test]
+    fn test_default_entry_budget_is_generous_enough_for_large_real_world_archives() {
+        // Locks in the raised cap (see `MAX_TOTAL_ENTRIES`'s doc comment)
+        // so a future accidental revert back toward the old 10,000 doesn't
+        // silently reintroduce the "later sibling's contents vanish"
+        // truncation for realistically large nested archives.
+        assert_eq!(ListLimits::default().max_entries, 250_000);
     }
 
     #[test]
@@ -1375,6 +1449,33 @@ mod tests {
 
         assert_eq!(tree.nodes.len(), 1);
         assert_eq!(tree.nodes[0].full_path, "a.log");
+    }
+
+    #[test]
+    fn test_lone_xz_three_levels_deep_in_zip_in_zip_is_reachable_via_visible_rows() {
+        // zip (outer) > zip (inner) > app.log.xz — three levels, the lone
+        // .xz at the bottom, listed and its ancestor's `visible_rows()`
+        // reachability both checked (not just presence in `tree.nodes`).
+        let xz = make_xz(b"third level content");
+        let xz_bytes = std::fs::read(xz.path()).unwrap();
+        let inner = make_zip(&[("app.log.xz", xz_bytes.as_slice())]);
+        let inner_bytes = std::fs::read(inner.path()).unwrap();
+        let outer_tmp = make_zip(&[("inner.zip", inner_bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+        let tree = list_archive_tree(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let visible = tree.visible_rows();
+        let xz_id = tree
+            .nodes
+            .iter()
+            .find(|n| n.full_path == "app.log.xz")
+            .expect("app.log.xz must exist in tree.nodes")
+            .id;
+        assert!(
+            visible.contains(&xz_id),
+            "app.log.xz (id {xz_id}) must be reachable via visible_rows(): {visible:?}"
+        );
     }
 
     #[test]

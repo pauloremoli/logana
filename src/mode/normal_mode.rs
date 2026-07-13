@@ -1303,7 +1303,7 @@ mod tests {
         let line = "INFO/Syscon/StartupMgr, hello there";
         let mut tab = make_tab(&[line]).await;
         let cfg = crate::config::CustomSchemaConfig {
-            name: "telecom".to_string(),
+            name: "acme".to_string(),
             description: None,
             template: Some("{level}/{component}/{feature}, {message}".to_string()),
             pattern: None,

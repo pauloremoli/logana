@@ -398,7 +398,7 @@ mod tests {
     // render_template_segments
     // -----------------------------------------------------------------------
 
-    fn telecom_segments() -> Vec<TemplateSegment> {
+    fn acme_segments() -> Vec<TemplateSegment> {
         vec![
             TemplateSegment::Field {
                 canonical_name: "level".to_string(),
@@ -422,7 +422,7 @@ mod tests {
         ]
     }
 
-    fn telecom_parts<'a>() -> DisplayParts<'a> {
+    fn acme_parts<'a>() -> DisplayParts<'a> {
         DisplayParts {
             level: Some("INFO"),
             extra_fields: vec![
@@ -444,22 +444,21 @@ mod tests {
 
     #[test]
     fn test_render_template_segments_all_visible() {
-        let rendered =
-            render_template_segments(&telecom_segments(), &telecom_parts(), &HashSet::new());
+        let rendered = render_template_segments(&acme_segments(), &acme_parts(), &HashSet::new());
         assert_eq!(rendered, "INFO/Syscon/StartupMgr, StateChange: ok");
     }
 
     #[test]
     fn test_render_template_segments_hides_middle_field_collapses_separator() {
         let hidden: HashSet<String> = ["component".to_string()].into_iter().collect();
-        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        let rendered = render_template_segments(&acme_segments(), &acme_parts(), &hidden);
         assert_eq!(rendered, "INFO/StartupMgr, StateChange: ok");
     }
 
     #[test]
     fn test_render_template_segments_hides_first_field() {
         let hidden: HashSet<String> = ["level".to_string()].into_iter().collect();
-        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        let rendered = render_template_segments(&acme_segments(), &acme_parts(), &hidden);
         assert_eq!(rendered, "Syscon/StartupMgr, StateChange: ok");
     }
 
@@ -469,18 +468,18 @@ mod tests {
         // separator before it stays (a defensible "structure preserved"
         // choice, not a dangling mid-line delimiter).
         let hidden: HashSet<String> = ["message".to_string()].into_iter().collect();
-        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        let rendered = render_template_segments(&acme_segments(), &acme_parts(), &hidden);
         assert_eq!(rendered, "INFO/Syscon/StartupMgr, ");
     }
 
     #[test]
     fn test_render_template_segments_ignored_field_always_collapses() {
-        let mut segments = telecom_segments();
+        let mut segments = acme_segments();
         segments[0] = TemplateSegment::Field {
             canonical_name: "level".to_string(),
             ignored: true,
         };
-        let rendered = render_template_segments(&segments, &telecom_parts(), &HashSet::new());
+        let rendered = render_template_segments(&segments, &acme_parts(), &HashSet::new());
         assert_eq!(rendered, "Syscon/StartupMgr, StateChange: ok");
     }
 
@@ -489,7 +488,7 @@ mod tests {
         let hidden: HashSet<String> = ["component".to_string(), "feature".to_string()]
             .into_iter()
             .collect();
-        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        let rendered = render_template_segments(&acme_segments(), &acme_parts(), &hidden);
         assert_eq!(rendered, "INFO/StateChange: ok");
     }
 

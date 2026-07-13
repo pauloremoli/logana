@@ -175,7 +175,7 @@ mod tests {
 
     fn valid_schema_config() -> crate::config::CustomSchemaConfig {
         crate::config::CustomSchemaConfig {
-            name: "telecom".to_string(),
+            name: "acme".to_string(),
             description: None,
             template: Some(
                 "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"

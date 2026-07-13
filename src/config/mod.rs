@@ -1618,14 +1618,14 @@ mod tests {
     fn test_load_schemas_reads_json_files() {
         let dir = tempfile::tempdir().unwrap();
         let schema_json = r#"{
-            "name": "telecom",
+            "name": "acme",
             "template": "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}",
             "fields": {"id": "extra", "service": "target"}
         }"#;
-        std::fs::write(dir.path().join("telecom.json"), schema_json).unwrap();
+        std::fs::write(dir.path().join("acme.json"), schema_json).unwrap();
         let (schemas, errors) = load_schemas(dir.path());
         assert_eq!(schemas.len(), 1);
-        assert_eq!(schemas[0].name, "telecom");
+        assert_eq!(schemas[0].name, "acme");
         assert!(errors.is_empty());
     }
 

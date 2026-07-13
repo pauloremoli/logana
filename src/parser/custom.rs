@@ -457,9 +457,9 @@ impl LogFormatParser for CustomParser {
 mod tests {
     use super::*;
 
-    fn make_telecom_parser() -> CustomParser {
+    fn make_acme_parser() -> CustomParser {
         CustomParser::from_config(&CustomSchemaConfig {
-            name: "telecom".to_string(),
+            name: "acme".to_string(),
             description: None,
             template: Some(
                 "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compile_template_telecom() {
+    fn test_compile_template_acme() {
         let template =
             "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}";
         let result = compile_template(template).unwrap();
@@ -507,8 +507,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_telecom_line() {
-        let parser = make_telecom_parser();
+    fn test_parse_acme_line() {
+        let parser = make_acme_parser();
         let line = b"04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: dirtyrfservice::instance1 state=CONNECTED";
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("2035-04-04T21:54:53.283856Z"));
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_parse_line_with_comma_in_message() {
-        let parser = make_telecom_parser();
+        let parser = make_acme_parser();
         let line = b"05 LINUX-0-syscon <2035-04-04T21:54:53.283979Z> 62A INF/Syscon/StartupMgr, dirtyrfservice::instance1 started in 878 ms, and achieved CONNECTED";
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(
@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_raw_segments_telecom() {
+    fn test_parse_raw_segments_acme() {
         let template =
             "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}";
         let segments = parse_raw_segments(template);
@@ -583,7 +583,7 @@ mod tests {
         // "service" is mapped to the Target role — the resolved segment must
         // carry the canonical name "target" (what `resolve_field`/
         // `hidden_fields` use), not the raw placeholder name "service".
-        let parser = make_telecom_parser();
+        let parser = make_acme_parser();
         let segments = parser.template_segments().unwrap();
         assert_eq!(
             segments[0],
@@ -626,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_template_segments_preserves_literal_separators() {
-        let parser = make_telecom_parser();
+        let parser = make_acme_parser();
         let segments = parser.template_segments().unwrap();
         assert!(segments.contains(&TemplateSegment::Literal("/".to_string())));
         assert!(segments.contains(&TemplateSegment::Literal(", ".to_string())));
@@ -648,8 +648,8 @@ mod tests {
 
     #[test]
     fn test_parse_line_no_match_returns_none() {
-        let parser = make_telecom_parser();
-        let line = b"this does not match the telecom format at all";
+        let parser = make_acme_parser();
+        let line = b"this does not match the acme format at all";
         assert!(parser.parse_line(line).is_none());
     }
 
@@ -762,10 +762,10 @@ mod tests {
 
     #[test]
     fn test_matches_for_detection() {
-        let parser = make_telecom_parser();
+        let parser = make_acme_parser();
         let matching =
             b"04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, msg";
-        let not_matching = b"not a telecom line";
+        let not_matching = b"not a acme line";
         assert!(parser.matches_for_detection(matching));
         assert!(!parser.matches_for_detection(not_matching));
     }
@@ -891,12 +891,12 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_field_names_matches_telecom_template_order() {
+    fn test_collect_field_names_matches_acme_template_order() {
         // The message field isn't last in field-role terms here (component
         // and feature come between level and message in the template) —
         // the popup order must follow the template exactly, not group
         // "extras" together the way the canonical-slot fallback would.
-        let parser = make_telecom_parser();
+        let parser = make_acme_parser();
         let names = parser.collect_field_names(&[]);
         assert_eq!(
             names,

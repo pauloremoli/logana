@@ -6,15 +6,16 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- Archive picker: mark files with `m` to extract and merge them into one timestamp-sorted tab (instead of opening each as its own tab) — press `Enter` as usual, combined with any `Space`-ticked files that still open as separate tabs in the same action. If a merge-marked file's format can't be recognized, only the merge is skipped (with an error naming the file); ticked files still extract normally.
-- Archive picker now supports the same navigation as the filter sidebar and log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u` (half page), `PageDown`/`PageUp` (full page), and `gg`/`G` (optionally count-prefixed) to jump to the first/last (or a specific) row.
+- Archive picker: mark files with `m` to extract and merge them into one timestamp-sorted tab (instead of opening each as its own tab).
+- Archive picker now supports the same navigation as the filter sidebar and log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u` , `PageDown`/`PageUp` (full page), and `gg`/`G`. 
 
 ### Changed
-- Archive listing no longer stops descending into archives-within-archives past a fixed nesting depth (previously 20 levels) — it now descends as deep as an archive is actually nested. The total-entry cap still bounds pathological/zip-bomb-style archives.
+- Archive listing no longer stops descending into archives-within-archives past a fixed nesting depth.
 
 ### Fixed
 - Archive picker navigation and typeahead search on large archives (thousands of entries) no longer stall — a nested container's checkbox state is now computed once per render in a single pass instead of re-walking its descendants for every container row, and the search query is compiled to a regex once per keystroke instead of once per entry checked.
 - Archive picker's basic navigation and toggle keys (`j`/`k`/`Space`/`m`/`a`/`n`) no longer also fall through to the global keybinding handler after being handled — previously they returned `Ignored` even on a successful action, which could trigger an unrelated globally-bound action on the same keypress.
+- In real-world snapshots the 10k entries can be easily reached, increased the limit to 250k file.
 
 ## [0.7.3] - 2026-07-13
 

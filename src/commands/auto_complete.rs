@@ -894,27 +894,27 @@ mod tests {
 
     #[test]
     fn test_complete_schema_empty_returns_all() {
-        let names = vec!["telecom".to_string(), "syslog2".to_string()];
+        let names = vec!["acme".to_string(), "syslog2".to_string()];
         let results = complete_schema("", &names);
         assert_eq!(results, names);
     }
 
     #[test]
     fn test_complete_schema_fuzzy_match() {
-        let names = vec!["telecom".to_string(), "syslog2".to_string()];
-        let results = complete_schema("tc", &names);
-        assert_eq!(results, vec!["telecom".to_string()]);
+        let names = vec!["acme".to_string(), "syslog2".to_string()];
+        let results = complete_schema("ae", &names);
+        assert_eq!(results, vec!["acme".to_string()]);
     }
 
     #[test]
     fn test_complete_schema_case_insensitive() {
-        let names = vec!["Telecom".to_string()];
-        assert_eq!(complete_schema("telecom", &names), vec!["Telecom"]);
+        let names = vec!["Acme".to_string()];
+        assert_eq!(complete_schema("acme", &names), vec!["Acme"]);
     }
 
     #[test]
     fn test_complete_schema_no_match_returns_empty() {
-        let names = vec!["telecom".to_string()];
+        let names = vec!["acme".to_string()];
         assert!(complete_schema("zzz", &names).is_empty());
     }
 

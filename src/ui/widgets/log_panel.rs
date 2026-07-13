@@ -1541,10 +1541,10 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    fn telecom_parser() -> Arc<dyn crate::parser::LogFormatParser> {
+    fn acme_parser() -> Arc<dyn crate::parser::LogFormatParser> {
         Arc::new(
             crate::parser::CustomParser::from_config(&crate::config::CustomSchemaConfig {
-                name: "telecom".to_string(),
+                name: "acme".to_string(),
                 description: None,
                 template: Some(
                     "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"
@@ -1567,7 +1567,7 @@ mod tests {
     async fn test_log_panel_custom_schema_preserves_template_separators() {
         let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
         let mut app = make_app(&[line]).await;
-        app.tabs[0].display.format = Some(telecom_parser());
+        app.tabs[0].display.format = Some(acme_parser());
         let mut terminal = Terminal::new(TestBackend::new(200, 24)).unwrap();
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
@@ -1585,7 +1585,7 @@ mod tests {
         // it, but the OTHER separators (and fields) stay in template order.
         let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
         let mut app = make_app(&[line]).await;
-        app.tabs[0].display.format = Some(telecom_parser());
+        app.tabs[0].display.format = Some(acme_parser());
         app.tabs[0]
             .display
             .hidden_fields
@@ -1611,7 +1611,7 @@ mod tests {
         // template, so it still falls back to the generic column layout.
         let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
         let mut app = make_app(&[line]).await;
-        app.tabs[0].display.format = Some(telecom_parser());
+        app.tabs[0].display.format = Some(acme_parser());
         app.tabs[0].display.field_layout.columns = Some(vec![
             "message".to_string(),
             "level".to_string(),

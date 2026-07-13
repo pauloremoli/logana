@@ -1687,10 +1687,10 @@ mod tests {
         );
     }
 
-    fn telecom_parser() -> Arc<dyn crate::parser::LogFormatParser> {
+    fn acme_parser() -> Arc<dyn crate::parser::LogFormatParser> {
         Arc::new(
             crate::parser::CustomParser::from_config(&crate::config::CustomSchemaConfig {
-                name: "telecom".to_string(),
+                name: "acme".to_string(),
                 description: None,
                 template: Some(
                     "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"
@@ -1769,7 +1769,7 @@ mod tests {
     async fn test_display_line_text_matches_template_reconstruction_with_hidden_field() {
         let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
         let mut tab = make_tab(&[line]).await;
-        tab.display.format = Some(telecom_parser());
+        tab.display.format = Some(acme_parser());
         tab.display.hidden_fields.insert("component".to_string());
 
         let text = display_line_text(&tab);
