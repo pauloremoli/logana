@@ -6,12 +6,11 @@ use std::sync::Arc;
 use crate::ingestion::archive::{decompress_to_temp, detect_archive_type, stem};
 use crate::ingestion::{ArchiveExtractionProgress, ArchiveType, ExtractedFile};
 
-/// Maximum nesting depth of archives-within-archives before listing stops
-/// descending further (a nested entry past this depth is still shown, as a
-/// non-expandable row, just not parsed).
-pub const MAX_RECURSION_DEPTH: usize = 20;
 /// Maximum total entries (across all nesting levels) a single listing pass
-/// will walk, to bound pathological/zip-bomb-style archives.
+/// will walk, to bound pathological/zip-bomb-style archives. Archives-
+/// within-archives are descended into with no nesting-depth limit of their
+/// own — this entry cap is what bounds a listing pass, regardless of how
+/// deeply nested the entries that hit it are.
 pub const MAX_TOTAL_ENTRIES: usize = 10_000;
 /// Maximum cumulative bytes of streaming-source (TarGz/TarBz2/TarXz) entry
 /// content retained in memory during listing for reuse at extraction time.
@@ -19,7 +18,6 @@ pub const MAX_CACHED_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ListLimits {
-    pub max_depth: usize,
     pub max_entries: usize,
     pub max_cached_bytes: u64,
 }
@@ -27,7 +25,6 @@ pub struct ListLimits {
 impl Default for ListLimits {
     fn default() -> Self {
         Self {
-            max_depth: MAX_RECURSION_DEPTH,
             max_entries: MAX_TOTAL_ENTRIES,
             max_cached_bytes: MAX_CACHED_BYTES,
         }
@@ -572,7 +569,7 @@ fn list_zip_entries<R: Read + Seek>(
         // cached for reuse at extraction time (unlike the streaming tar
         // formats handled in `list_tar_entries`).
         match detect_archive_type(&name).filter(is_multi_entry_archive) {
-            Some(nested_type) if depth < state.limits.max_depth => {
+            Some(nested_type) => {
                 let mut buf = Vec::new();
                 let read_result = archive
                     .by_index(i)
@@ -600,19 +597,6 @@ fn list_zip_entries<R: Read + Seek>(
                     }
                     Err(e) => nodes.push(unreadable_node(id, parent, name, full_path, depth, &e)),
                 }
-                children.push(id);
-            }
-            Some(_) => {
-                let id = nodes.len();
-                state.entry_count += 1;
-                nodes.push(unreadable_node(
-                    id,
-                    parent,
-                    name,
-                    full_path,
-                    depth,
-                    "max nesting depth reached",
-                ));
                 children.push(id);
             }
             None => {
@@ -659,7 +643,7 @@ fn list_tar_entries<R: Read>(
         let name = basename(&full_path);
 
         match detect_archive_type(&name).filter(is_multi_entry_archive) {
-            Some(nested_type) if depth < state.limits.max_depth => {
+            Some(nested_type) => {
                 let mut buf = Vec::new();
                 let read_result = entry.read_to_end(&mut buf).map_err(|e| e.to_string());
                 let id = nodes.len();
@@ -690,19 +674,6 @@ fn list_tar_entries<R: Read>(
                     }
                     Err(e) => nodes.push(unreadable_node(id, parent, name, full_path, depth, &e)),
                 }
-                children.push(id);
-            }
-            Some(_) => {
-                let id = nodes.len();
-                state.entry_count += 1;
-                nodes.push(unreadable_node(
-                    id,
-                    parent,
-                    name,
-                    full_path,
-                    depth,
-                    "max nesting depth reached",
-                ));
                 children.push(id);
             }
             None => {
@@ -1297,42 +1268,50 @@ mod tests {
     }
 
     #[test]
-    fn test_depth_cap_truncates_recursion() {
+    fn test_deeply_nested_archives_are_not_depth_limited() {
+        // 25 levels of zip-in-zip nesting — deeper than the old 20-level
+        // recursion cap this test used to verify. Listing must still fully
+        // descend to the leaf file, with no `UnreadableContainer` cutoff
+        // anywhere along the way.
         fn wrap_in_zip(entry_name: &str, bytes: Vec<u8>) -> Vec<u8> {
             let tmp = make_zip(&[(entry_name, bytes.as_slice())]);
             std::fs::read(tmp.path()).unwrap()
         }
 
-        let mut bytes = b"leaf".to_vec();
-        for i in (2..=5).rev() {
+        const DEPTH: usize = 25;
+        // Innermost: a real (unambiguously-a-zip) archive containing one
+        // ordinary leaf file, so there's no "named like a zip but isn't
+        // actually one" fallback-to-File ambiguity at the bottom.
+        let mut bytes = {
+            let tmp = make_zip(&[("leaf.log", b"leaf content".as_slice())]);
+            std::fs::read(tmp.path()).unwrap()
+        };
+        for i in (1..DEPTH).rev() {
             bytes = wrap_in_zip(&format!("archive{i}.zip"), bytes);
         }
-        let outer_tmp = make_zip(&[("archive1.zip", bytes.as_slice())]);
+        let outer_tmp = make_zip(&[("archive0.zip", bytes.as_slice())]);
         let path = path_with_ext(&outer_tmp, ".zip");
 
-        let limits = ListLimits {
-            max_depth: 3,
-            ..ListLimits::default()
-        };
-        let tree = list_archive_tree_with_limits(&path, &limits).unwrap();
+        let tree = list_archive_tree(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
 
-        let archive1 = find_node(&tree, "archive1.zip");
-        assert_eq!(archive1.depth, 0);
-        assert!(matches!(archive1.kind, NodeKind::Container { .. }));
-
-        let archive4 = find_node(&tree, "archive4.zip");
-        assert_eq!(archive4.depth, 3);
         assert!(
-            matches!(archive4.kind, NodeKind::UnreadableContainer { .. }),
-            "expected archive4.zip (depth 3, at the cap) to be truncated, got {:?}",
-            archive4.kind
+            !tree
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, NodeKind::UnreadableContainer { .. })),
+            "no node should be truncated for exceeding a depth limit"
         );
 
-        assert!(
-            tree.nodes.iter().all(|n| n.full_path != "archive5.zip"),
-            "listing must not descend past the depth cap"
-        );
+        for i in 0..DEPTH {
+            let node = find_node(&tree, &format!("archive{i}.zip"));
+            assert_eq!(node.depth, i);
+            assert!(matches!(node.kind, NodeKind::Container { .. }));
+        }
+
+        let leaf = find_node(&tree, "leaf.log");
+        assert_eq!(leaf.depth, DEPTH);
+        assert!(matches!(leaf.kind, NodeKind::File));
     }
 
     #[test]
