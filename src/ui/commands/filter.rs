@@ -9,6 +9,7 @@ pub(super) struct FilterArgs {
     pub line_mode: bool,
     pub field: Vec<String>,
     pub regex: bool,
+    pub ignore_case: bool,
     pub group: Option<String>,
 }
 
@@ -45,6 +46,7 @@ impl App {
             line_mode,
             field,
             regex,
+            ignore_case,
             group,
         } = args;
         let is_field = !field.is_empty();
@@ -61,6 +63,9 @@ impl App {
         if regex {
             opts = opts.regex();
         }
+        if ignore_case {
+            opts = opts.ignore_case();
+        }
         if let Some(ref c) = fg {
             opts = opts.fg(c);
         }
@@ -73,6 +78,7 @@ impl App {
 
         let can_incremental = !is_field
             && !regex
+            && !ignore_case
             && self.tabs[self.active_tab]
                 .filter
                 .editing_filter_id
@@ -115,6 +121,7 @@ impl App {
         pattern: String,
         field: Vec<String>,
         regex: bool,
+        ignore_case: bool,
         group: Option<String>,
     ) -> Result<bool, String> {
         let is_field = !field.is_empty();
@@ -127,6 +134,9 @@ impl App {
         let mut opts = FilterOptions::default();
         if regex {
             opts = opts.regex();
+        }
+        if ignore_case {
+            opts = opts.ignore_case();
         }
         if let Some(ref g) = group {
             opts = opts.group(g);
@@ -144,7 +154,10 @@ impl App {
                 .add_filter_with_color(stored_pattern.clone(), FilterType::Exclude, opts)
                 .await;
             if was_new {
-                if is_field {
+                // The incremental path always compiles a case-sensitive
+                // literal filter, so a regex or case-insensitive pattern must
+                // go through the full refresh instead to match correctly.
+                if is_field || regex || ignore_case {
                     self.tabs[self.active_tab].begin_filter_refresh();
                 } else {
                     self.tabs[self.active_tab].apply_incremental_exclude(&stored_pattern);
@@ -165,6 +178,7 @@ impl App {
             line_mode,
             field,
             regex,
+            ignore_case,
             group,
         } = args;
         let stored_pattern = if !field.is_empty() {
@@ -179,6 +193,9 @@ impl App {
         }
         if regex {
             opts = opts.regex();
+        }
+        if ignore_case {
+            opts = opts.ignore_case();
         }
         if let Some(ref c) = fg {
             opts = opts.fg(c);

@@ -1968,7 +1968,7 @@ impl TabState {
             .filter
             .visible_indices
             .get_opt(self.scroll.scroll_offset);
-        if let Some(filter) = build_filter(pattern, decision, true, 0, false) {
+        if let Some(filter) = build_filter(pattern, decision, true, 0, false, false) {
             let file_reader = &self.file_reader;
             let indices: Vec<usize> = self.filter.visible_indices.iter().collect();
             let new_visible: Vec<usize> = indices
@@ -3947,6 +3947,7 @@ mod tests {
             enabled: true,
             color_config: None,
             use_regex: false,
+            ignore_case: false,
             group: None,
         };
         tab.filter.cached_scan = Some(CachedScanResult {
@@ -4824,14 +4825,16 @@ mod tests {
     }
 
     fn make_fm_include(pattern: &str) -> FilterManager {
-        let f = crate::filters::SubstringFilter::new(pattern, FilterDecision::Include, false, 0)
-            .unwrap();
+        let f =
+            crate::filters::SubstringFilter::new(pattern, FilterDecision::Include, false, 0, false)
+                .unwrap();
         FilterManager::new(vec![Box::new(f)], true)
     }
 
     fn make_fm_exclude(pattern: &str) -> FilterManager {
-        let f = crate::filters::SubstringFilter::new(pattern, FilterDecision::Exclude, false, 0)
-            .unwrap();
+        let f =
+            crate::filters::SubstringFilter::new(pattern, FilterDecision::Exclude, false, 0, false)
+                .unwrap();
         FilterManager::new(vec![Box::new(f)], false)
     }
 

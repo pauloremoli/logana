@@ -1,7 +1,7 @@
 use aho_corasick::AhoCorasick;
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 
@@ -357,9 +357,10 @@ impl SubstringFilter {
         decision: FilterDecision,
         match_only: bool,
         style_id: StyleId,
+        ignore_case: bool,
     ) -> Option<Self> {
         let ac = AhoCorasick::builder()
-            .ascii_case_insensitive(false)
+            .ascii_case_insensitive(ignore_case)
             .build([pattern])
             .ok()?;
         let should_style = matches!(
@@ -427,18 +428,23 @@ impl RegexFilter {
         decision: FilterDecision,
         match_only: bool,
         style_id: StyleId,
+        ignore_case: bool,
     ) -> Option<Self> {
         let should_style = matches!(
             decision,
             FilterDecision::Include | FilterDecision::Highlight
         );
-        Regex::new(pattern).ok().map(|re| RegexFilter {
-            re,
-            decision,
-            style_id,
-            push_match_spans: should_style && match_only,
-            push_full_line: should_style && !match_only,
-        })
+        RegexBuilder::new(pattern)
+            .case_insensitive(ignore_case)
+            .build()
+            .ok()
+            .map(|re| RegexFilter {
+                re,
+                decision,
+                style_id,
+                push_match_spans: should_style && match_only,
+                push_full_line: should_style && !match_only,
+            })
     }
 }
 
@@ -487,12 +493,13 @@ pub fn build_filter(
     match_only: bool,
     style_id: StyleId,
     use_regex: bool,
+    ignore_case: bool,
 ) -> Option<Box<dyn Filter>> {
     if use_regex {
-        RegexFilter::new(pattern, decision, match_only, style_id)
+        RegexFilter::new(pattern, decision, match_only, style_id, ignore_case)
             .map(|f| Box::new(f) as Box<dyn Filter>)
     } else {
-        SubstringFilter::new(pattern, decision, match_only, style_id)
+        SubstringFilter::new(pattern, decision, match_only, style_id, ignore_case)
             .map(|f| Box::new(f) as Box<dyn Filter>)
     }
 }
@@ -506,13 +513,18 @@ pub struct FilterManager {
     filter_decisions: Vec<FilterDecision>,
     /// True if any enabled Include filter exists.
     has_include_filters: bool,
-    /// Combined Aho-Corasick automaton built from all literal (non-regex) patterns.
-    /// `None` when fewer than 2 literal patterns exist (no benefit over per-filter scan).
+    /// Combined Aho-Corasick automaton built from all case-sensitive literal
+    /// patterns. `None` when fewer than 2 such patterns exist (no benefit
+    /// over per-filter scan).
     combined_ac: Option<AhoCorasick>,
     /// Maps combined AC pattern index → (filter index in `self.filters`, FilterDecision).
     combined_ac_meta: Vec<(usize, FilterDecision)>,
-    /// Indices into `self.filters` that are regex-based (not covered by `combined_ac`).
-    regex_filter_indices: Vec<usize>,
+    /// Indices into `self.filters` not covered by `combined_ac` — regex
+    /// filters and case-insensitive literal filters (case-insensitivity is a
+    /// whole-automaton setting in `aho-corasick`, so a filter that wants it
+    /// can't share the shared case-sensitive automaton) — evaluated
+    /// individually via each filter's own compiled matcher.
+    slow_path_filter_indices: Vec<usize>,
 }
 
 impl FilterManager {
@@ -526,7 +538,7 @@ impl FilterManager {
             combined_ac: None,
             combined_ac_meta: Vec::new(),
             // Treat all filters as needing individual evaluation when no combined AC.
-            regex_filter_indices: (0..n).collect(),
+            slow_path_filter_indices: (0..n).collect(),
         }
     }
 
@@ -535,7 +547,7 @@ impl FilterManager {
         has_include_filters: bool,
         combined_ac: Option<AhoCorasick>,
         combined_ac_meta: Vec<(usize, FilterDecision)>,
-        regex_filter_indices: Vec<usize>,
+        slow_path_filter_indices: Vec<usize>,
     ) -> Self {
         let filter_decisions: Vec<FilterDecision> = filters.iter().map(|f| f.decision()).collect();
         FilterManager {
@@ -544,7 +556,7 @@ impl FilterManager {
             has_include_filters,
             combined_ac,
             combined_ac_meta,
-            regex_filter_indices,
+            slow_path_filter_indices,
         }
     }
 
@@ -555,7 +567,7 @@ impl FilterManager {
             has_include_filters: false,
             combined_ac: None,
             combined_ac_meta: Vec::new(),
-            regex_filter_indices: Vec::new(),
+            slow_path_filter_indices: Vec::new(),
         }
     }
 
@@ -590,7 +602,7 @@ impl FilterManager {
                 }
             }
 
-            for &fi in &self.regex_filter_indices {
+            for &fi in &self.slow_path_filter_indices {
                 if best.is_some_and(|(best_idx, _)| best_idx < fi) {
                     break;
                 }
@@ -696,7 +708,7 @@ impl FilterManager {
                 }
             }
 
-            for &fi in &self.regex_filter_indices {
+            for &fi in &self.slow_path_filter_indices {
                 if let Some(filter) = self.filters.get(fi) {
                     let d = filter.matches(line);
                     if d != FilterDecision::Neutral {
@@ -758,7 +770,7 @@ impl FilterManager {
                 }
             }
 
-            for &fi in &self.regex_filter_indices {
+            for &fi in &self.slow_path_filter_indices {
                 if let Some(filter) = self.filters.get(fi)
                     && filter.matches(line).is_decided()
                     && let Some(c) = counts.get(fi)
@@ -923,13 +935,13 @@ impl FilterManager {
         sub_start: usize,
         state: &mut SubChunkState,
     ) {
-        if self.regex_filter_indices.is_empty() {
+        if self.slow_path_filter_indices.is_empty() {
             return;
         }
         let sub_line_count = state.best.len();
         for local in 0..sub_line_count {
             let global = sub_start + local;
-            for &fi in &self.regex_filter_indices {
+            for &fi in &self.slow_path_filter_indices {
                 if let Some(filter) = self.filters.get(fi) {
                     let lb = line_bytes_at(data, line_starts, global);
                     let d = filter.matches(lb);
@@ -1120,6 +1132,10 @@ pub struct FilterOptions {
     pub match_only: bool,
     /// When `true` the pattern is compiled as a regex; when `false` (default) it is a literal.
     pub use_regex: bool,
+    /// When `true` the pattern matches regardless of case; when `false`
+    /// (default) matching is case-sensitive. Has no effect on `--field`
+    /// filters, same as `use_regex`.
+    pub ignore_case: bool,
     /// Optional group name, used to toggle several filters on/off together.
     pub group: Option<String>,
 }
@@ -1131,6 +1147,7 @@ impl Default for FilterOptions {
             bg: None,
             match_only: true,
             use_regex: false,
+            ignore_case: false,
             group: None,
         }
     }
@@ -1177,6 +1194,12 @@ impl FilterOptions {
         self
     }
 
+    /// Match regardless of case.
+    pub fn ignore_case(mut self) -> Self {
+        self.ignore_case = true;
+        self
+    }
+
     /// Assign the filter to a named group, so it can be toggled together with
     /// other filters sharing the same group name.
     pub fn group(mut self, group: &str) -> Self {
@@ -1194,6 +1217,7 @@ pub struct FilterInsertOptions {
     pub color_config: Option<ColorConfig>,
     pub source_file: Option<String>,
     pub use_regex: bool,
+    pub ignore_case: bool,
     pub group: Option<String>,
 }
 
@@ -1225,6 +1249,11 @@ impl FilterInsertOptions {
         self
     }
 
+    pub fn ignore_case(mut self) -> Self {
+        self.ignore_case = true;
+        self
+    }
+
     pub fn group(mut self, g: impl Into<String>) -> Self {
         self.group = Some(g.into());
         self
@@ -1240,6 +1269,8 @@ pub struct FilterDef {
     pub color_config: Option<ColorConfig>,
     #[serde(default)]
     pub use_regex: bool,
+    #[serde(default)]
+    pub ignore_case: bool,
     /// Optional group name; filters sharing a group can be toggled together.
     pub group: Option<String>,
 }
@@ -1304,7 +1335,7 @@ mod tests {
     #[test]
     fn test_substring_filter_include() {
         let line = b"ERROR: connection refused";
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let mut col = MatchCollector::new(line);
         assert_eq!(f.evaluate(line, &mut col), FilterDecision::Include);
 
@@ -1314,9 +1345,25 @@ mod tests {
     }
 
     #[test]
+    fn test_substring_filter_case_sensitive_by_default() {
+        let line = b"error: connection refused";
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
+        let mut col = MatchCollector::new(line);
+        assert_eq!(f.evaluate(line, &mut col), FilterDecision::Neutral);
+    }
+
+    #[test]
+    fn test_substring_filter_ignore_case_matches_different_case() {
+        let line = b"error: connection refused";
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, true).unwrap();
+        let mut col = MatchCollector::new(line);
+        assert_eq!(f.evaluate(line, &mut col), FilterDecision::Include);
+    }
+
+    #[test]
     fn test_substring_filter_exclude() {
         let line = b"DEBUG: verbose output";
-        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0).unwrap();
+        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0, false).unwrap();
         let mut col = MatchCollector::new(line);
         assert_eq!(f.evaluate(line, &mut col), FilterDecision::Exclude);
 
@@ -1328,7 +1375,7 @@ mod tests {
     #[test]
     fn test_substring_filter_match_only_spans() {
         let line = b"ERROR: something went wrong";
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 1).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 1, false).unwrap();
         let mut col = MatchCollector::new(line);
         f.evaluate(line, &mut col);
         assert_eq!(col.spans.len(), 1);
@@ -1340,7 +1387,7 @@ mod tests {
     #[test]
     fn test_substring_filter_exclude_pushes_no_spans() {
         let line = b"DEBUG: verbose output";
-        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, true, 1).unwrap();
+        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, true, 1, false).unwrap();
         let mut col = MatchCollector::new(line);
         f.evaluate(line, &mut col);
         assert!(col.spans.is_empty(), "exclude filters must not style lines");
@@ -1349,7 +1396,7 @@ mod tests {
     #[test]
     fn test_substring_filter_highlight_pushes_match_only_spans() {
         let line = b"ERROR: something went wrong";
-        let f = SubstringFilter::new("ERROR", FilterDecision::Highlight, true, 1).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Highlight, true, 1, false).unwrap();
         let mut col = MatchCollector::new(line);
         let dec = f.evaluate(line, &mut col);
         assert_eq!(col.spans.len(), 1);
@@ -1365,7 +1412,7 @@ mod tests {
     #[test]
     fn test_substring_filter_highlight_pushes_full_line_span() {
         let line = b"ERROR: something went wrong";
-        let f = SubstringFilter::new("ERROR", FilterDecision::Highlight, false, 2).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Highlight, false, 2, false).unwrap();
         let mut col = MatchCollector::new(line);
         f.evaluate(line, &mut col);
         assert_eq!(col.spans.len(), 1);
@@ -1377,7 +1424,7 @@ mod tests {
     #[test]
     fn test_regex_filter_include() {
         let line = b"GET /api/users 200 OK";
-        let f = RegexFilter::new(r"\d{3}", FilterDecision::Include, true, 0).unwrap();
+        let f = RegexFilter::new(r"\d{3}", FilterDecision::Include, true, 0, false).unwrap();
         let mut col = MatchCollector::new(line);
         assert_eq!(f.evaluate(line, &mut col), FilterDecision::Include);
         // Should have a span covering "200"
@@ -1386,9 +1433,25 @@ mod tests {
     }
 
     #[test]
+    fn test_regex_filter_case_sensitive_by_default() {
+        let line = b"error: timeout";
+        let f = RegexFilter::new(r"ERROR", FilterDecision::Include, false, 0, false).unwrap();
+        let mut col = MatchCollector::new(line);
+        assert_eq!(f.evaluate(line, &mut col), FilterDecision::Neutral);
+    }
+
+    #[test]
+    fn test_regex_filter_ignore_case_matches_different_case() {
+        let line = b"error: timeout";
+        let f = RegexFilter::new(r"ERROR", FilterDecision::Include, false, 0, true).unwrap();
+        let mut col = MatchCollector::new(line);
+        assert_eq!(f.evaluate(line, &mut col), FilterDecision::Include);
+    }
+
+    #[test]
     fn test_regex_filter_highlight_pushes_spans() {
         let line = b"GET /api/users 200 OK";
-        let f = RegexFilter::new(r"\d{3}", FilterDecision::Highlight, true, 0).unwrap();
+        let f = RegexFilter::new(r"\d{3}", FilterDecision::Highlight, true, 0, false).unwrap();
         let mut col = MatchCollector::new(line);
         let dec = f.evaluate(line, &mut col);
         assert_eq!(col.spans.len(), 1);
@@ -1398,21 +1461,35 @@ mod tests {
 
     #[test]
     fn test_regex_filter_invalid_pattern() {
-        assert!(RegexFilter::new("[invalid", FilterDecision::Include, false, 0).is_none());
+        assert!(RegexFilter::new("[invalid", FilterDecision::Include, false, 0, false).is_none());
     }
 
     #[test]
     fn test_build_filter_selects_substring_for_literal() {
         // Literal mode (use_regex = false)
-        let f = build_filter("error", FilterDecision::Include, false, 0, false);
+        let f = build_filter("error", FilterDecision::Include, false, 0, false, false);
         assert!(f.is_some());
     }
 
     #[test]
     fn test_build_filter_selects_regex_for_pattern() {
         // Explicit regex mode (use_regex = true)
-        let f = build_filter(r"error\d+", FilterDecision::Include, false, 0, true);
+        let f = build_filter(r"error\d+", FilterDecision::Include, false, 0, true, false);
         assert!(f.is_some());
+    }
+
+    #[test]
+    fn test_build_filter_ignore_case_literal() {
+        let f = build_filter("ERROR", FilterDecision::Include, false, 0, false, true).unwrap();
+        let line = b"an error occurred";
+        assert_eq!(f.matches(line), FilterDecision::Include);
+    }
+
+    #[test]
+    fn test_build_filter_ignore_case_regex() {
+        let f = build_filter(r"err\w+", FilterDecision::Include, false, 0, true, true).unwrap();
+        let line = b"ERROR: timeout";
+        assert_eq!(f.matches(line), FilterDecision::Include);
     }
 
     #[test]
@@ -1424,7 +1501,7 @@ mod tests {
 
     #[test]
     fn test_filter_manager_include_filter() {
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], true);
 
         assert!(fm.is_visible(b"ERROR: bad things"));
@@ -1433,7 +1510,7 @@ mod tests {
 
     #[test]
     fn test_filter_manager_exclude_filter() {
-        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0).unwrap();
+        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], false);
 
         assert!(fm.is_visible(b"INFO: something"));
@@ -1445,8 +1522,8 @@ mod tests {
         // Exclude "minor" at top (higher precedence), Include "ERROR" below.
         // First-match-wins: a line matching the top Exclude is hidden even if
         // a lower Include filter also matches it.
-        let exc = SubstringFilter::new("minor", FilterDecision::Exclude, false, 1).unwrap();
-        let inc = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let exc = SubstringFilter::new("minor", FilterDecision::Exclude, false, 1, false).unwrap();
+        let inc = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(exc), Box::new(inc)], true);
 
         assert!(fm.is_visible(b"ERROR: critical failure")); // no exclude match → include matches
@@ -1463,7 +1540,7 @@ mod tests {
             "DEBUG: verbose",
         ]);
 
-        let inc = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let inc = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(inc)], true);
         let visible = fm.compute_visible(&reader);
 
@@ -1474,7 +1551,7 @@ mod tests {
     fn test_filter_manager_compute_visible_exclude() {
         let (_f, reader) = make_reader(&["ERROR: bad", "DEBUG: verbose", "INFO: good"]);
 
-        let exc = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0).unwrap();
+        let exc = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(exc)], false);
         let visible = fm.compute_visible(&reader);
 
@@ -1506,7 +1583,7 @@ mod tests {
     #[test]
     fn test_evaluate_line_collects_spans() {
         let line = b"ERROR: connection refused to host";
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 0).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], true);
         let col = fm.evaluate_line(line);
         assert!(!col.spans.is_empty());
@@ -1634,8 +1711,8 @@ mod tests {
 
     #[test]
     fn test_filter_count_returns_number_of_compiled_filters() {
-        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
-        let f2 = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 1).unwrap();
+        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
+        let f2 = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 1, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f1), Box::new(f2)], true);
         assert_eq!(fm.filter_count(), 2);
     }
@@ -1651,8 +1728,8 @@ mod tests {
         // Both filters match — counts must increment independently even though
         // pipeline evaluation would short-circuit after the first match.
         let line = b"ERROR DEBUG both";
-        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
-        let f2 = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 1).unwrap();
+        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
+        let f2 = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 1, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f1), Box::new(f2)], true);
 
         let counts: Vec<std::sync::atomic::AtomicUsize> = (0..2)
@@ -1667,8 +1744,10 @@ mod tests {
     #[test]
     fn test_count_line_matches_only_matching_filters_increment() {
         let line = b"INFO: all good";
-        let f_error = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
-        let f_info = SubstringFilter::new("INFO", FilterDecision::Include, false, 1).unwrap();
+        let f_error =
+            SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
+        let f_info =
+            SubstringFilter::new("INFO", FilterDecision::Include, false, 1, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f_error), Box::new(f_info)], true);
 
         let counts: Vec<std::sync::atomic::AtomicUsize> = (0..2)
@@ -1682,7 +1761,7 @@ mod tests {
 
     #[test]
     fn test_count_line_matches_accumulates_across_lines() {
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], true);
 
         let counts: Vec<std::sync::atomic::AtomicUsize> = (0..1)
@@ -1697,42 +1776,42 @@ mod tests {
 
     #[test]
     fn test_substring_filter_matches_include() {
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         assert_eq!(f.matches(b"ERROR: something"), FilterDecision::Include);
         assert_eq!(f.matches(b"INFO: something"), FilterDecision::Neutral);
     }
 
     #[test]
     fn test_substring_filter_matches_exclude() {
-        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0).unwrap();
+        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0, false).unwrap();
         assert_eq!(f.matches(b"DEBUG: verbose"), FilterDecision::Exclude);
         assert_eq!(f.matches(b"INFO: important"), FilterDecision::Neutral);
     }
 
     #[test]
     fn test_regex_filter_matches_include() {
-        let f = RegexFilter::new(r"\d{3}", FilterDecision::Include, true, 0).unwrap();
+        let f = RegexFilter::new(r"\d{3}", FilterDecision::Include, true, 0, false).unwrap();
         assert_eq!(f.matches(b"status 200 OK"), FilterDecision::Include);
         assert_eq!(f.matches(b"no digits here"), FilterDecision::Neutral);
     }
 
     #[test]
     fn test_regex_filter_matches_exclude() {
-        let f = RegexFilter::new(r"^DEBUG", FilterDecision::Exclude, false, 0).unwrap();
+        let f = RegexFilter::new(r"^DEBUG", FilterDecision::Exclude, false, 0, false).unwrap();
         assert_eq!(f.matches(b"DEBUG: noise"), FilterDecision::Exclude);
         assert_eq!(f.matches(b"INFO: keep"), FilterDecision::Neutral);
     }
 
     #[test]
     fn test_regex_filter_matches_invalid_utf8_returns_neutral() {
-        let f = RegexFilter::new("pattern", FilterDecision::Include, false, 0).unwrap();
+        let f = RegexFilter::new("pattern", FilterDecision::Include, false, 0, false).unwrap();
         assert_eq!(f.matches(b"\xff\xfe invalid"), FilterDecision::Neutral);
     }
 
     #[test]
     fn test_matches_consistent_with_evaluate_substring() {
         let line = b"ERROR: connection refused";
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 1).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, true, 1, false).unwrap();
         let mut col = MatchCollector::new(line);
         let eval_decision = f.evaluate(line, &mut col);
         assert_eq!(f.matches(line), eval_decision);
@@ -1741,7 +1820,7 @@ mod tests {
     #[test]
     fn test_matches_consistent_with_evaluate_regex() {
         let line = b"GET /api 200 OK";
-        let f = RegexFilter::new(r"\d+", FilterDecision::Include, true, 0).unwrap();
+        let f = RegexFilter::new(r"\d+", FilterDecision::Include, true, 0, false).unwrap();
         let mut col = MatchCollector::new(line);
         let eval_decision = f.evaluate(line, &mut col);
         assert_eq!(f.matches(line), eval_decision);
@@ -1751,7 +1830,7 @@ mod tests {
         let filters: Vec<Box<dyn Filter>> = patterns
             .iter()
             .map(|(p, d)| {
-                SubstringFilter::new(p, *d, false, 0)
+                SubstringFilter::new(p, *d, false, 0, false)
                     .map(|f| Box::new(f) as Box<dyn Filter>)
                     .unwrap()
             })
@@ -1867,7 +1946,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_and_count_returns_include_decision() {
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], true);
         let mut counts = vec![0usize];
         let dec = fm.evaluate_and_count(b"ERROR: bad", &mut counts);
@@ -1877,7 +1956,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_and_count_returns_exclude_decision() {
-        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0).unwrap();
+        let f = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], false);
         let mut counts = vec![0usize];
         let dec = fm.evaluate_and_count(b"DEBUG: noisy", &mut counts);
@@ -1887,7 +1966,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_and_count_returns_neutral_on_no_match() {
-        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], true);
         let mut counts = vec![0usize];
         let dec = fm.evaluate_and_count(b"INFO: fine", &mut counts);
@@ -1897,8 +1976,8 @@ mod tests {
 
     #[test]
     fn test_evaluate_and_count_counts_all_matching_no_short_circuit() {
-        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
-        let f2 = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 1).unwrap();
+        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
+        let f2 = SubstringFilter::new("DEBUG", FilterDecision::Exclude, false, 1, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f1), Box::new(f2)], true);
         let mut counts = vec![0usize; 2];
         let dec = fm.evaluate_and_count(b"ERROR DEBUG both", &mut counts);
@@ -1909,8 +1988,8 @@ mod tests {
 
     #[test]
     fn test_evaluate_and_count_first_match_wins_by_index() {
-        let f1 = SubstringFilter::new("WARN", FilterDecision::Include, false, 0).unwrap();
-        let f2 = SubstringFilter::new("ERROR", FilterDecision::Exclude, false, 1).unwrap();
+        let f1 = SubstringFilter::new("WARN", FilterDecision::Include, false, 0, false).unwrap();
+        let f2 = SubstringFilter::new("ERROR", FilterDecision::Exclude, false, 1, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f1), Box::new(f2)], true);
         let mut counts = vec![0usize; 2];
         let dec = fm.evaluate_and_count(b"ERROR only", &mut counts);
@@ -1921,8 +2000,8 @@ mod tests {
 
     #[test]
     fn test_evaluate_and_count_consistent_with_separate_calls() {
-        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
-        let f2 = SubstringFilter::new("WARN", FilterDecision::Include, false, 1).unwrap();
+        let f1 = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
+        let f2 = SubstringFilter::new("WARN", FilterDecision::Include, false, 1, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f1), Box::new(f2)], true);
 
         let lines: &[&[u8]] = &[
@@ -1959,7 +2038,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_and_count_counts_highlight_matches() {
-        let f = SubstringFilter::new("ERROR", FilterDecision::Highlight, false, 0).unwrap();
+        let f = SubstringFilter::new("ERROR", FilterDecision::Highlight, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(f)], false);
         let mut counts = vec![0usize];
         let dec = fm.evaluate_and_count(b"ERROR: bad", &mut counts);
@@ -1970,11 +2049,11 @@ mod tests {
     #[test]
     fn test_evaluate_and_count_highlight_regex_counted() {
         // Filter 0 = literal Include "ERROR" (forces a combined_ac to exist),
-        // filter 1 = regex Highlight `\d{3}`, reached via regex_filter_indices.
-        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+        // filter 1 = regex Highlight `\d{3}`, reached via slow_path_filter_indices.
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
-        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Highlight, false, 1)
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Highlight, false, 1, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
         let ac = AhoCorasick::builder()
@@ -2018,10 +2097,10 @@ mod tests {
 
     #[test]
     fn test_combined_ac_with_regex_fallback() {
-        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
-        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1)
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
         let ac = AhoCorasick::builder()
@@ -2204,10 +2283,10 @@ mod tests {
 
     #[test]
     fn test_wholefile_with_regex_fallback() {
-        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
-        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1)
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
         let ac = AhoCorasick::builder()
@@ -2228,10 +2307,10 @@ mod tests {
         // A line that matches both literal filter 0 ("ERROR") and regex filter 1 (\d{3})
         // must increment both counts. Previously scan_regex_fallback skipped fi=1 when
         // state.best[local] was already set to fi=0 by the AC scan.
-        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
-        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1)
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
         let ac = AhoCorasick::builder()
@@ -2252,10 +2331,10 @@ mod tests {
     fn test_wholefile_regex_highlight_counted() {
         // Filter 0 = literal Include "ERROR" (forces combined_ac), filter 1 =
         // regex Highlight `\d{3}`, reached via scan_regex_fallback.
-        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
-        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Highlight, false, 1)
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Highlight, false, 1, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
         let ac = AhoCorasick::builder()
@@ -2308,10 +2387,10 @@ mod tests {
 
     #[test]
     fn test_wholefile_consistent_with_per_line_including_regex() {
-        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0)
+        let f_lit = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
-        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1)
+        let f_re = RegexFilter::new(r"\d{3}", FilterDecision::Include, false, 1, false)
             .map(|f| Box::new(f) as Box<dyn Filter>)
             .unwrap();
         let ac = AhoCorasick::builder()

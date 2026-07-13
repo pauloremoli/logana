@@ -28,7 +28,7 @@
 - **Multi-tab** — open multiple files, `:merge` to group multiple sources into a single view sorted by timestamp.
 
 **Filtering & search**
-- **Filtering** — include/exclude patterns (literal or regex via `-r`), date-range filters, field-scoped filters; `--field` can be repeated within one filter to require several fields (plus trailing free text) at once, all AND'd together; add filters from the command line with `-i`/`-o`/`-t`
+- **Filtering** — include/exclude patterns (literal or regex via `-r`, case-insensitive via `--ignore-case`), date-range filters, field-scoped filters; `--field` can be repeated within one filter to require several fields (plus trailing free text) at once, all AND'd together; add filters from the command line with `-i`/`-o`/`-t`
 - **Highlight filters & highlight mode** — a `:highlight` filter type marks matches without hiding anything; toggle `H` to see the full log with every filter's colors still applied, for reading the context around the lines you care about
 - **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs
 - **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns

@@ -759,6 +759,7 @@ mod tests {
             enabled,
             color_config: None,
             use_regex: false,
+            ignore_case: false,
             group: None,
         }
     }

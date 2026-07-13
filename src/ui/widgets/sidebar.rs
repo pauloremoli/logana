@@ -84,6 +84,7 @@ fn filter_row_parts(
         .as_deref()
         .map(|g| format!("[{g}] "))
         .unwrap_or_default();
+    let ignore_case_tag = if filter.ignore_case { " [i]" } else { "" };
     let count_str = if filter.enabled {
         let count = match_counts.get(idx).copied().unwrap_or(0);
         format!(" ({})", count)
@@ -94,7 +95,7 @@ fn filter_row_parts(
         "{}{} {}: {}",
         selected_prefix, status, filter_type_str, group_tag
     );
-    let suffix = format!("{}{}", field_tag, count_str);
+    let suffix = format!("{}{}{}", field_tag, ignore_case_tag, count_str);
     (prefix, display_pattern, suffix)
 }
 
@@ -367,6 +368,7 @@ mod tests {
             filter_type,
             color_config: None,
             use_regex: false,
+            ignore_case: false,
             group: None,
         }
     }
@@ -825,6 +827,21 @@ mod tests {
         let filter = make_filter("ERROR", true, FilterType::Include);
         let text = filter_row_display_text(&filter, 0, 0, &[3]);
         assert_eq!(text, ">[x] In: ERROR (3)");
+    }
+
+    #[test]
+    fn test_filter_row_display_text_shows_ignore_case_tag() {
+        let mut filter = make_filter("ERROR", true, FilterType::Include);
+        filter.ignore_case = true;
+        let text = filter_row_display_text(&filter, 0, 0, &[3]);
+        assert_eq!(text, ">[x] In: ERROR [i] (3)");
+    }
+
+    #[test]
+    fn test_filter_row_display_text_case_sensitive_omits_ignore_case_tag() {
+        let filter = make_filter("ERROR", true, FilterType::Include);
+        let text = filter_row_display_text(&filter, 0, 0, &[3]);
+        assert!(!text.contains("[i]"));
     }
 
     #[test]

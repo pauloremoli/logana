@@ -44,7 +44,7 @@ fn bench_compute_visible(c: &mut Criterion) {
         );
 
         let fm_include = FilterManager::new(
-            vec![build_filter("INFO", FilterDecision::Include, false, 0, false).unwrap()],
+            vec![build_filter("INFO", FilterDecision::Include, false, 0, false, false).unwrap()],
             true,
         );
         group.bench_with_input(
@@ -54,7 +54,7 @@ fn bench_compute_visible(c: &mut Criterion) {
         );
 
         let fm_exclude = FilterManager::new(
-            vec![build_filter("ERROR", FilterDecision::Exclude, false, 0, false).unwrap()],
+            vec![build_filter("ERROR", FilterDecision::Exclude, false, 0, false, false).unwrap()],
             false,
         );
         group.bench_with_input(
@@ -76,8 +76,8 @@ fn bench_compute_visible_combined(c: &mut Criterion) {
 
         let fm_combined = FilterManager::new(
             vec![
-                build_filter("INFO", FilterDecision::Exclude, false, 0, false).unwrap(),
-                build_filter("ERROR", FilterDecision::Include, false, 1, false).unwrap(),
+                build_filter("INFO", FilterDecision::Exclude, false, 0, false, false).unwrap(),
+                build_filter("ERROR", FilterDecision::Include, false, 1, false, false).unwrap(),
             ],
             true,
         );
@@ -89,11 +89,11 @@ fn bench_compute_visible_combined(c: &mut Criterion) {
 
         let fm_five = FilterManager::new(
             vec![
-                build_filter("ERROR", FilterDecision::Include, false, 0, false).unwrap(),
-                build_filter("WARN", FilterDecision::Include, false, 1, false).unwrap(),
-                build_filter("INFO", FilterDecision::Exclude, false, 2, false).unwrap(),
-                build_filter("DEBUG", FilterDecision::Exclude, false, 3, false).unwrap(),
-                build_filter("myapp", FilterDecision::Exclude, false, 4, false).unwrap(),
+                build_filter("ERROR", FilterDecision::Include, false, 0, false, false).unwrap(),
+                build_filter("WARN", FilterDecision::Include, false, 1, false, false).unwrap(),
+                build_filter("INFO", FilterDecision::Exclude, false, 2, false, false).unwrap(),
+                build_filter("DEBUG", FilterDecision::Exclude, false, 3, false, false).unwrap(),
+                build_filter("myapp", FilterDecision::Exclude, false, 4, false, false).unwrap(),
             ],
             true,
         );

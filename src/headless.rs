@@ -211,6 +211,8 @@ async fn apply_inline_filters(
         if let Some(Commands::Filter {
             pattern,
             field,
+            regex,
+            ignore_case,
             group,
             ..
         }) = parsed.command
@@ -223,6 +225,12 @@ async fn apply_inline_filters(
                 pattern
             };
             let mut opts = FilterOptions::default();
+            if regex {
+                opts = opts.regex();
+            }
+            if ignore_case {
+                opts = opts.ignore_case();
+            }
             if let Some(g) = group {
                 opts = opts.group(&g);
             }
@@ -240,6 +248,7 @@ async fn apply_inline_filters(
             pattern,
             field,
             regex,
+            ignore_case,
             group,
         }) = parsed.command
         {
@@ -253,6 +262,9 @@ async fn apply_inline_filters(
             let mut opts = FilterOptions::default();
             if regex {
                 opts = opts.regex();
+            }
+            if ignore_case {
+                opts = opts.ignore_case();
             }
             if let Some(g) = group {
                 opts = opts.group(&g);

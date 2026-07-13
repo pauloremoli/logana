@@ -2244,7 +2244,8 @@ mod tests {
         use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
         let mut app = make_app(&[]).await;
 
-        let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let filter =
+            SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         app.tabs[0]
             .log_manager
@@ -2485,7 +2486,8 @@ mod tests {
         let path = tmp.path().to_str().unwrap().to_string();
 
         use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
-        let filter = SubstringFilter::new("match", FilterDecision::Include, false, 0).unwrap();
+        let filter =
+            SubstringFilter::new("match", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = crate::ingestion::VisibilityPredicate::new(fm);
 

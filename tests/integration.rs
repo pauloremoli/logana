@@ -627,6 +627,28 @@ fn test_exclude_regex_spaced_pattern_parses() {
     }
 }
 
+#[test]
+fn test_filter_ignore_case_flag_parses() {
+    let args = CommandLine::parse_from(shell_split("filter --ignore-case ERROR"));
+    match args.command.unwrap() {
+        Commands::Filter { ignore_case, .. } => {
+            assert!(ignore_case);
+        }
+        other => panic!("expected Filter, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_filter_short_ignore_case_flag_parses() {
+    let args = CommandLine::parse_from(shell_split("filter -i ERROR"));
+    match args.command.unwrap() {
+        Commands::Filter { ignore_case, .. } => {
+            assert!(ignore_case);
+        }
+        other => panic!("expected Filter, got {:?}", other),
+    }
+}
+
 #[tokio::test]
 async fn test_regex_filter_with_space_in_pattern() {
     let (_db, mut manager) = setup().await;

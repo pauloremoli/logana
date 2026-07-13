@@ -68,6 +68,7 @@ impl App {
                 line_mode,
                 field,
                 regex,
+                ignore_case,
                 group,
             }) => {
                 return self
@@ -78,6 +79,7 @@ impl App {
                         line_mode,
                         field,
                         regex,
+                        ignore_case,
                         group,
                     })
                     .await;
@@ -86,10 +88,11 @@ impl App {
                 pattern,
                 field,
                 regex,
+                ignore_case,
                 group,
             }) => {
                 return self
-                    .cmd_exclude(pattern.join(" "), field, regex, group)
+                    .cmd_exclude(pattern.join(" "), field, regex, ignore_case, group)
                     .await;
             }
             Some(Commands::Highlight {
@@ -99,6 +102,7 @@ impl App {
                 line_mode,
                 field,
                 regex,
+                ignore_case,
                 group,
             }) => {
                 return self
@@ -109,6 +113,7 @@ impl App {
                         line_mode,
                         field,
                         regex,
+                        ignore_case,
                         group,
                     })
                     .await;
@@ -1346,6 +1351,23 @@ mod tests {
         let filters = app.tabs[0].log_manager.get_filters();
         assert_eq!(filters.len(), 1);
         assert!(filters[0].pattern.contains("level:error"));
+    }
+
+    #[tokio::test]
+    async fn test_filter_ignore_case_matches_different_case() {
+        let mut app = make_app(&["error: connection refused", "INFO: all good"]).await;
+        let result = app.run_command("filter --ignore-case ERROR").await;
+        assert!(result.is_ok());
+        await_filter_computations(&mut app).await;
+        assert_eq!(app.tabs[0].filter.visible_indices.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_filter_without_ignore_case_is_still_case_sensitive() {
+        let mut app = make_app(&["error: connection refused", "INFO: all good"]).await;
+        let result = app.run_command("filter ERROR").await;
+        assert!(result.is_ok());
+        assert_eq!(app.tabs[0].filter.visible_indices.len(), 0);
     }
 
     #[tokio::test]

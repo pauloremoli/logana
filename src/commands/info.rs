@@ -7,17 +7,17 @@ pub struct CommandInfo {
 pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "filter",
-        usage: "filter [-r] [-l] [--fg <color>] [--bg <color>] [--group <name>] [--field <key>=<value>] <pattern>",
-        description: "Add an include filter. e.g. filter ERROR, filter connection refused, filter -r \"ERR(OR)?\", filter --field level=error, filter --group errors ERROR",
+        usage: "filter [-r] [-i] [-l] [--fg <color>] [--bg <color>] [--group <name>] [--field <key>=<value>] <pattern>",
+        description: "Add an include filter. e.g. filter ERROR, filter connection refused, filter -r \"ERR(OR)?\", filter --ignore-case error, filter --field level=error, filter --group errors ERROR",
     },
     CommandInfo {
         name: "exclude",
-        usage: "exclude [-r] [--group <name>] [--field <key>=<value>] <pattern>",
-        description: "Add an exclude filter. e.g. exclude debug, exclude connection refused, exclude -r \"health.?check\", exclude --field level=debug, exclude --group noise debug",
+        usage: "exclude [-r] [-i] [--group <name>] [--field <key>=<value>] <pattern>",
+        description: "Add an exclude filter. e.g. exclude debug, exclude connection refused, exclude -r \"health.?check\", exclude --ignore-case debug, exclude --field level=debug, exclude --group noise debug",
     },
     CommandInfo {
         name: "highlight",
-        usage: "highlight [-r] [-l] [--fg <color>] [--bg <color>] [--group <name>] [--field <key>=<value>] <pattern>",
+        usage: "highlight [-r] [-i] [-l] [--fg <color>] [--bg <color>] [--group <name>] [--field <key>=<value>] <pattern>",
         description: "Add a highlight filter (styling only, does not affect visibility). e.g. highlight ERROR, highlight --field level=error, h ERROR",
     },
     CommandInfo {

@@ -30,6 +30,9 @@ pub enum Commands {
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
+        /// Match regardless of case
+        #[arg(long = "ignore-case", short = 'i')]
+        ignore_case: bool,
         /// Assign the filter to a named group, so it can be toggled together with others
         #[arg(long)]
         group: Option<String>,
@@ -46,6 +49,9 @@ pub enum Commands {
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
+        /// Match regardless of case
+        #[arg(long = "ignore-case", short = 'i')]
+        ignore_case: bool,
         /// Assign the filter to a named group, so it can be toggled together with others
         #[arg(long)]
         group: Option<String>,
@@ -70,6 +76,9 @@ pub enum Commands {
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
+        /// Match regardless of case
+        #[arg(long = "ignore-case", short = 'i')]
+        ignore_case: bool,
         /// Assign the filter to a named group, so it can be toggled together with others
         #[arg(long)]
         group: Option<String>,

@@ -135,7 +135,7 @@ fn bench_incremental_include_vs_full(c: &mut Criterion) {
 
         // Exclude 90 % of lines (INFO), leaving only ERROR lines (~10 %).
         let exclude_fm = FilterManager::new(
-            vec![build_filter("INFO", FilterDecision::Exclude, false, 0, false).unwrap()],
+            vec![build_filter("INFO", FilterDecision::Exclude, false, 0, false, false).unwrap()],
             false,
         );
         let pre_filtered: Vec<usize> = exclude_fm.compute_visible(&reader);
@@ -143,15 +143,15 @@ fn bench_incremental_include_vs_full(c: &mut Criterion) {
 
         // Include filter being added.
         let include_filter =
-            build_filter("ERROR", FilterDecision::Include, false, 0, false).unwrap();
+            build_filter("ERROR", FilterDecision::Include, false, 0, false, false).unwrap();
 
         group.throughput(Throughput::Elements(total_lines as u64));
 
         // Full path: compute_visible rebuilds from scratch (scans all N lines).
         let include_fm = FilterManager::new(
             vec![
-                build_filter("INFO", FilterDecision::Exclude, false, 0, false).unwrap(),
-                build_filter("ERROR", FilterDecision::Include, false, 1, false).unwrap(),
+                build_filter("INFO", FilterDecision::Exclude, false, 0, false, false).unwrap(),
+                build_filter("ERROR", FilterDecision::Include, false, 1, false, false).unwrap(),
             ],
             true,
         );
@@ -212,7 +212,7 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
     });
 
     let fm_one = FilterManager::new(
-        vec![build_filter("ERROR", FilterDecision::Include, false, 0, false).unwrap()],
+        vec![build_filter("ERROR", FilterDecision::Include, false, 0, false, false).unwrap()],
         true,
     );
     group.bench_function("one_filter/full_pipeline", |b| {
@@ -226,11 +226,19 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
 
     let fm_five = FilterManager::new(
         vec![
-            build_filter("ERROR", FilterDecision::Include, false, 0, false).unwrap(),
-            build_filter("WARN", FilterDecision::Include, false, 1, false).unwrap(),
-            build_filter("myapp", FilterDecision::Include, false, 2, false).unwrap(),
-            build_filter("debug", FilterDecision::Exclude, false, 3, false).unwrap(),
-            build_filter("healthcheck", FilterDecision::Exclude, false, 4, false).unwrap(),
+            build_filter("ERROR", FilterDecision::Include, false, 0, false, false).unwrap(),
+            build_filter("WARN", FilterDecision::Include, false, 1, false, false).unwrap(),
+            build_filter("myapp", FilterDecision::Include, false, 2, false, false).unwrap(),
+            build_filter("debug", FilterDecision::Exclude, false, 3, false, false).unwrap(),
+            build_filter(
+                "healthcheck",
+                FilterDecision::Exclude,
+                false,
+                4,
+                false,
+                false,
+            )
+            .unwrap(),
         ],
         true,
     );

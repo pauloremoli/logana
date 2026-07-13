@@ -47,6 +47,7 @@ fn build_edit_command(
     cc: &Option<ColorConfig>,
     pattern: &str,
     use_regex: bool,
+    ignore_case: bool,
     group: &Option<String>,
 ) -> String {
     if let Some(expr) = pattern.strip_prefix(crate::filters::DATE_PREFIX) {
@@ -54,7 +55,7 @@ fn build_edit_command(
     } else if let Some(expr) = pattern.strip_prefix(crate::filters::FIELD_PREFIX) {
         build_field_filter_command(ft, cc, expr, group)
     } else {
-        build_text_filter_command(ft, cc, pattern, use_regex, group)
+        build_text_filter_command(ft, cc, pattern, use_regex, ignore_case, group)
     }
 }
 
@@ -103,11 +104,15 @@ fn build_text_filter_command(
     cc: &Option<ColorConfig>,
     pattern: &str,
     use_regex: bool,
+    ignore_case: bool,
     group: &Option<String>,
 ) -> String {
     let mut c = filter_command_prefix(ft);
     if use_regex {
         c.push_str(" --regex");
+    }
+    if ignore_case {
+        c.push_str(" --ignore-case");
     }
     if matches!(ft, FilterType::Include | FilterType::Highlight) {
         append_color_flags(&mut c, cc, true);
@@ -331,13 +336,14 @@ impl FilterManagementMode {
                 f.color_config.clone(),
                 f.pattern.clone(),
                 f.use_regex,
+                f.ignore_case,
                 f.group.clone(),
             )
         });
-        if let Some((id, ft, cc, pattern, use_regex, group)) = filter_info {
+        if let Some((id, ft, cc, pattern, use_regex, ignore_case, group)) = filter_info {
             tab.filter.editing_filter_id = Some(id);
             tab.filter.filter_context = Some(selected);
-            let cmd = build_edit_command(&ft, &cc, &pattern, use_regex, &group);
+            let cmd = build_edit_command(&ft, &cc, &pattern, use_regex, ignore_case, &group);
             return open_command(tab, cmd);
         }
         stay_at(selected, tab)
@@ -1448,6 +1454,27 @@ mod tests {
             ModeRenderState::Command { input, .. } => {
                 assert!(input.starts_with("highlight"), "{input}");
                 assert!(input.contains("--fg Red"), "{input}");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_e_opens_command_mode_preserves_ignore_case() {
+        let mut tab = make_tab(&["error", "warn"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "ERROR".to_string(),
+                FilterType::Include,
+                FilterOptions::default().ignore_case(),
+            )
+            .await;
+        tab.refresh_visible();
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        match mode.render_state() {
+            ModeRenderState::Command { input, .. } => {
+                assert!(input.starts_with("filter"), "{input}");
+                assert!(input.contains("--ignore-case"), "{input}");
             }
             other => panic!("expected Command, got {:?}", other),
         }

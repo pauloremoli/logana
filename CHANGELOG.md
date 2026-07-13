@@ -12,10 +12,12 @@ All notable changes to logana will be documented in this file.
 - `:filter`/`:exclude`/`:highlight --field` can now be repeated to require several parsed fields at once (e.g. `--field level=INFO --field component=Draco`), and combined with trailing free text that must also match — all AND'd together in a single filter. Separate filter commands still OR together as before.
 - Log lines parsed by a custom schema's `template` now render using that schema's own field order and literal separators (e.g. `{level}/{component}/{feature}`) instead of a generic space-joined column layout, as long as no field is hidden and no custom column order is set — either falls back to the column layout, same as before.
 - Custom schemas can now declare which raw `level` values count as error/warning via a `levels` config key (e.g. `"levels": {"error": ["SEV1"], "warning": ["SEV2"]}`), so `e`/`w` navigation and level coloring work for severity codes that don't match the built-in keywords.
+- `:filter`/`:exclude`/`:highlight` now accept `--ignore-case`/`-i` to match regardless of case (text or `--regex` patterns). Case-insensitive filters show an `[i]` tag in the sidebar.
 
 ### Fixed
 - Extracting a selected archive file that is itself a compressed file (e.g. a `.gz` nested inside a `.zip`) now decompresses it, instead of opening the raw compressed bytes as an unreadable log.
-- `:load-filters`, `:save-filters`, and `:export` now expand a leading `~` in the given path. 
+- `:load-filters`, `:save-filters`, and `:export` now expand a leading `~` in the given path.
+- `--regex` on an inline `-i "..."` include filter (startup CLI flag) was silently ignored; it's now applied like every other filter flag.
 
 ## [0.7.1] - 2026-07-11
 

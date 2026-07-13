@@ -25,6 +25,7 @@ Filters are the primary way to narrow the log view. They are layered: include pa
 All filter types support:
 - **Text search** — fast multi-pattern matching
 - **Regular expressions** — full regex syntax, opt-in with `--regex` / `-r`
+- **Case-insensitive matching** — opt-in with `--ignore-case` / `-i`
 
 ## Highlight Mode
 
@@ -113,6 +114,10 @@ logana app.log -i "--field level=ERROR"
 
 # Include filter with highlight color (flags before pattern)
 logana app.log -i "--bg red error"
+
+# Case-insensitive include filter (the outer -i is --include; the inner
+# --ignore-case is the :filter flag documented in Text Filters)
+logana app.log -i "--ignore-case error"
 
 # Date range filter
 logana app.log -t "> 2024-02-21"

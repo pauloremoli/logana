@@ -2,8 +2,9 @@ use crate::db::Comment;
 use crate::filters::{ColorConfig, FilterDef, FilterInsertOptions, FilterType};
 use anyhow::Result;
 use async_trait::async_trait;
+use sqlx::Connection;
 use sqlx::Row;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnection, SqlitePool, SqlitePoolOptions};
 use std::collections::HashSet;
 
 #[async_trait]
@@ -19,6 +20,7 @@ pub trait FilterStore: Send + Sync {
     async fn update_filter_pattern(&self, id: i64, new_pattern: &str) -> Result<()>;
     async fn update_filter_color(&self, id: i64, color_config: Option<&ColorConfig>) -> Result<()>;
     async fn update_filter_group(&self, id: i64, group: Option<&str>) -> Result<()>;
+    #[allow(clippy::too_many_arguments)]
     async fn update_filter(
         &self,
         id: i64,
@@ -26,6 +28,7 @@ pub trait FilterStore: Send + Sync {
         filter_type: &FilterType,
         color_config: Option<&ColorConfig>,
         use_regex: bool,
+        ignore_case: bool,
         group: Option<&str>,
     ) -> Result<()>;
     async fn delete_filter(&self, id: i64) -> Result<()>;
@@ -160,10 +163,17 @@ impl Database {
             .connect(&url)
             .await?;
 
-        let db = Self { pool };
-        db.configure_pragmas().await?;
-        db.run_migrations().await?;
-        Ok(db)
+        // Pragmas and migrations run on one dedicated connection instead of
+        // round-tripping through the pool per statement — schema-changing
+        // statements (especially the v12 table rebuild) must not be
+        // interleaved with other pooled connections picking up a stale view
+        // of the schema.
+        let mut conn = pool.acquire().await?;
+        Self::configure_pragmas(&mut conn).await?;
+        Self::run_migrations(&mut conn).await?;
+        drop(conn);
+
+        Ok(Self { pool })
     }
 
     pub async fn in_memory() -> Result<Self> {
@@ -172,118 +182,131 @@ impl Database {
             .connect("sqlite::memory:")
             .await?;
 
+        let mut conn = pool.acquire().await?;
+        Self::configure_pragmas(&mut conn).await?;
+        Self::run_migrations(&mut conn).await?;
+        drop(conn);
+
         let db = Self { pool };
-        db.configure_pragmas().await?;
-        db.run_migrations().await?;
         Ok(db)
     }
 
-    async fn configure_pragmas(&self) -> Result<()> {
+    async fn configure_pragmas(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query("PRAGMA journal_mode = WAL")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("PRAGMA synchronous = NORMAL")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("PRAGMA cache_size = -64000")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await?;
         Ok(())
     }
 
-    async fn run_migrations(&self) -> Result<()> {
+    /// Runs every unapplied migration in order, on `conn` alone — schema
+    /// changes must not be interleaved with other pooled connections
+    /// picking up a stale view of the schema (see `open`).
+    async fn run_migrations(conn: &mut SqliteConnection) -> Result<()> {
         let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *conn)
             .await?;
 
         if version < 1 {
-            self.migrate_to_v1().await?;
+            Self::migrate_to_v1(conn).await?;
             sqlx::query("PRAGMA user_version = 1")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 2 {
-            self.migrate_to_v2().await?;
+            Self::migrate_to_v2(conn).await?;
             sqlx::query("PRAGMA user_version = 2")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 3 {
-            self.migrate_to_v3().await?;
+            Self::migrate_to_v3(conn).await?;
             sqlx::query("PRAGMA user_version = 3")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 4 {
-            self.migrate_to_v4().await?;
+            Self::migrate_to_v4(conn).await?;
             sqlx::query("PRAGMA user_version = 4")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 5 {
-            self.migrate_to_v5().await?;
+            Self::migrate_to_v5(conn).await?;
             sqlx::query("PRAGMA user_version = 5")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 6 {
-            self.migrate_to_v6().await?;
+            Self::migrate_to_v6(conn).await?;
             sqlx::query("PRAGMA user_version = 6")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 7 {
-            self.migrate_to_v7().await?;
+            Self::migrate_to_v7(conn).await?;
             sqlx::query("PRAGMA user_version = 7")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 8 {
-            self.migrate_to_v8().await?;
+            Self::migrate_to_v8(conn).await?;
             sqlx::query("PRAGMA user_version = 8")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 9 {
-            self.migrate_to_v9().await?;
+            Self::migrate_to_v9(conn).await?;
             sqlx::query("PRAGMA user_version = 9")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 10 {
-            self.migrate_to_v10().await?;
+            Self::migrate_to_v10(conn).await?;
             sqlx::query("PRAGMA user_version = 10")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 11 {
-            self.migrate_to_v11().await?;
+            Self::migrate_to_v11(conn).await?;
             sqlx::query("PRAGMA user_version = 11")
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         if version < 12 {
-            self.migrate_to_v12().await?;
+            Self::migrate_to_v12(conn).await?;
             sqlx::query("PRAGMA user_version = 12")
-                .execute(&self.pool)
+                .execute(&mut *conn)
+                .await?;
+        }
+
+        if version < 13 {
+            Self::migrate_to_v13(conn).await?;
+            sqlx::query("PRAGMA user_version = 13")
+                .execute(&mut *conn)
                 .await?;
         }
 
         Ok(())
     }
 
-    async fn migrate_to_v1(&self) -> Result<()> {
+    async fn migrate_to_v1(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS filters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -297,7 +320,7 @@ impl Database {
                 match_only INTEGER NOT NULL DEFAULT 1
             )",
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await?;
 
         sqlx::query(
@@ -317,7 +340,7 @@ impl Database {
                 show_borders INTEGER NOT NULL DEFAULT 1
             )",
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await?;
 
         sqlx::query(
@@ -326,26 +349,26 @@ impl Database {
                 tab_order INTEGER NOT NULL DEFAULT 0
             )",
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await?;
 
         Ok(())
     }
 
-    async fn migrate_to_v2(&self) -> Result<()> {
+    async fn migrate_to_v2(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query("ALTER TABLE file_context ADD COLUMN show_keys INTEGER NOT NULL DEFAULT 0")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .ok(); // column may already exist on fresh DBs created from v1 schema
         Ok(())
     }
 
-    async fn migrate_to_v3(&self) -> Result<()> {
+    async fn migrate_to_v3(conn: &mut SqliteConnection) -> Result<()> {
         // Add a JSON column for per-level colour disabling.
         sqlx::query(
             "ALTER TABLE file_context ADD COLUMN level_colors_disabled TEXT NOT NULL DEFAULT '[]'",
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await
         .ok(); // column may already exist on fresh DBs
 
@@ -353,44 +376,44 @@ impl Database {
         sqlx::query(
             "UPDATE file_context SET level_colors_disabled = '[\"trace\",\"debug\",\"info\",\"notice\",\"warning\",\"error\",\"fatal\"]' WHERE level_colors = 0 AND level_colors_disabled = '[]'",
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await
         .ok();
 
         Ok(())
     }
 
-    async fn migrate_to_v4(&self) -> Result<()> {
+    async fn migrate_to_v4(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query("ALTER TABLE file_context ADD COLUMN raw_mode INTEGER NOT NULL DEFAULT 0")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .ok(); // column may already exist on fresh DBs
         Ok(())
     }
 
-    async fn migrate_to_v5(&self) -> Result<()> {
+    async fn migrate_to_v5(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query(
             "ALTER TABLE file_context ADD COLUMN sidebar_width INTEGER NOT NULL DEFAULT 30",
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await
         .ok(); // column may already exist on fresh DBs
         Ok(())
     }
 
-    async fn migrate_to_v6(&self) -> Result<()> {
+    async fn migrate_to_v6(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )",
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }
 
-    async fn migrate_to_v7(&self) -> Result<()> {
+    async fn migrate_to_v7(conn: &mut SqliteConnection) -> Result<()> {
         for col in &[
             "show_status_bar",
             "show_borders",
@@ -399,46 +422,46 @@ impl Database {
             "wrap",
         ] {
             sqlx::query(&format!("ALTER TABLE file_context DROP COLUMN {}", col))
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await
                 .ok();
         }
         Ok(())
     }
 
-    async fn migrate_to_v8(&self) -> Result<()> {
+    async fn migrate_to_v8(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query("ALTER TABLE file_context ADD COLUMN hidden_fields TEXT NOT NULL DEFAULT '[]'")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .ok();
         sqlx::query("ALTER TABLE file_context ADD COLUMN field_layout_columns TEXT")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .ok();
         Ok(())
     }
 
-    async fn migrate_to_v9(&self) -> Result<()> {
+    async fn migrate_to_v9(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query(
             "ALTER TABLE file_context ADD COLUMN filtering_enabled INTEGER NOT NULL DEFAULT 1",
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await
         .ok();
         Ok(())
     }
 
-    async fn migrate_to_v10(&self) -> Result<()> {
+    async fn migrate_to_v10(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query("ALTER TABLE filters ADD COLUMN use_regex INTEGER NOT NULL DEFAULT 0")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .ok();
         Ok(())
     }
 
-    async fn migrate_to_v11(&self) -> Result<()> {
+    async fn migrate_to_v11(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query("ALTER TABLE filters ADD COLUMN group_name TEXT")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .ok();
         Ok(())
@@ -446,8 +469,8 @@ impl Database {
 
     /// SQLite can't `ALTER` a `CHECK` constraint, so allowing the new
     /// `Highlight` filter type requires rebuilding the `filters` table.
-    async fn migrate_to_v12(&self) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+    async fn migrate_to_v12(conn: &mut SqliteConnection) -> Result<()> {
+        let mut tx = conn.begin().await?;
         sqlx::query(
             "CREATE TABLE filters_new (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -481,6 +504,16 @@ impl Database {
         sqlx::query("ALTER TABLE filters_new RENAME TO filters")
             .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn migrate_to_v13(conn: &mut SqliteConnection) -> Result<()> {
+        let mut tx = conn.begin().await?;
+        sqlx::query("ALTER TABLE filters ADD COLUMN ignore_case INTEGER NOT NULL DEFAULT 0")
+            .execute(&mut *tx)
+            .await
+            .ok();
         tx.commit().await?;
         Ok(())
     }
@@ -539,6 +572,7 @@ fn row_to_filter_def(row: &sqlx::sqlite::SqliteRow) -> FilterDef {
         enabled: row.get::<i32, _>("enabled") != 0,
         color_config,
         use_regex: row.try_get::<i32, _>("use_regex").unwrap_or(0) != 0,
+        ignore_case: row.try_get::<i32, _>("ignore_case").unwrap_or(0) != 0,
         group: row
             .try_get::<Option<String>, _>("group_name")
             .ok()
@@ -575,8 +609,8 @@ impl FilterStore for Database {
         };
 
         let result = sqlx::query(
-            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex, group_name)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex, ignore_case, group_name)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(pattern)
         .bind(filter_type_to_str(filter_type))
@@ -587,6 +621,7 @@ impl FilterStore for Database {
         .bind(source)
         .bind(match_only as i32)
         .bind(options.use_regex as i32)
+        .bind(options.ignore_case as i32)
         .bind(&options.group)
         .execute(&self.pool)
         .await?;
@@ -647,6 +682,7 @@ impl FilterStore for Database {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn update_filter(
         &self,
         id: i64,
@@ -654,6 +690,7 @@ impl FilterStore for Database {
         filter_type: &FilterType,
         color_config: Option<&ColorConfig>,
         use_regex: bool,
+        ignore_case: bool,
         group: Option<&str>,
     ) -> Result<()> {
         let (fg, bg, match_only) = match color_config {
@@ -665,7 +702,7 @@ impl FilterStore for Database {
             None => (None, None, true),
         };
         sqlx::query(
-            "UPDATE filters SET pattern = ?, filter_type = ?, fg_color = ?, bg_color = ?, match_only = ?, use_regex = ?, group_name = ? WHERE id = ?",
+            "UPDATE filters SET pattern = ?, filter_type = ?, fg_color = ?, bg_color = ?, match_only = ?, use_regex = ?, ignore_case = ?, group_name = ? WHERE id = ?",
         )
         .bind(pattern)
         .bind(filter_type_to_str(filter_type))
@@ -673,6 +710,7 @@ impl FilterStore for Database {
         .bind(&bg)
         .bind(match_only as i32)
         .bind(use_regex as i32)
+        .bind(ignore_case as i32)
         .bind(group)
         .bind(id)
         .execute(&self.pool)
@@ -1157,6 +1195,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_migrate_to_v13_defaults_ignore_case_false_for_pre_existing_filters() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        // Seed a v12-schema database (no `ignore_case` column yet) directly,
+        // then set user_version so run_migrations() only needs to apply v13.
+        let seed_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("sqlite:{path}?mode=rwc"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE filters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern TEXT NOT NULL,
+                filter_type TEXT NOT NULL CHECK(filter_type IN ('Include', 'Exclude', 'Highlight')),
+                enabled INTEGER NOT NULL DEFAULT 1,
+                fg_color TEXT,
+                bg_color TEXT,
+                display_order INTEGER NOT NULL DEFAULT 0,
+                source_file TEXT NOT NULL DEFAULT '',
+                match_only INTEGER NOT NULL DEFAULT 1,
+                use_regex INTEGER NOT NULL DEFAULT 0,
+                group_name TEXT
+            )",
+        )
+        .execute(&seed_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO filters (pattern, filter_type, enabled) VALUES ('ERROR', 'Include', 1)",
+        )
+        .execute(&seed_pool)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version = 12")
+            .execute(&seed_pool)
+            .await
+            .unwrap();
+        seed_pool.close().await;
+
+        // Opening it the same way the app does must run migrate_to_v13 and
+        // leave the pre-existing filter intact with ignore_case = false.
+        let db = Database::new(&path).await.unwrap();
+        let filters = db.get_filters().await.unwrap();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].pattern, "ERROR");
+        assert!(!filters[0].ignore_case);
+
+        // A newly inserted case-insensitive filter round-trips correctly.
+        db.insert_filter(
+            "WARN",
+            &FilterType::Include,
+            FilterInsertOptions::new().ignore_case(),
+        )
+        .await
+        .unwrap();
+        let filters = db.get_filters().await.unwrap();
+        let warn = filters.iter().find(|f| f.pattern == "WARN").unwrap();
+        assert!(warn.ignore_case);
+    }
+
+    #[tokio::test]
     async fn test_filter_with_color() {
         let db = setup_db().await;
         let color = ColorConfig {
@@ -1255,6 +1356,7 @@ mod tests {
             &FilterType::Include,
             None,
             false,
+            false,
             Some("new-group"),
         )
         .await
@@ -1310,6 +1412,7 @@ mod tests {
             enabled: true,
             color_config: None,
             use_regex: false,
+            ignore_case: false,
             group: Some("errors".to_string()),
         }];
         db.replace_all_filters(&filters, None).await.unwrap();
@@ -1359,6 +1462,7 @@ mod tests {
                 enabled: true,
                 color_config: None,
                 use_regex: false,
+                ignore_case: false,
                 group: None,
             },
             FilterDef {
@@ -1368,6 +1472,7 @@ mod tests {
                 enabled: false,
                 color_config: None,
                 use_regex: false,
+                ignore_case: false,
                 group: None,
             },
         ];

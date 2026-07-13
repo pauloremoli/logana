@@ -1729,6 +1729,7 @@ mod tests {
             enabled: true,
             color_config: None,
             use_regex: false,
+            ignore_case: false,
             group: None,
         }];
         let filters = extract_date_filters(&defs);
@@ -1744,6 +1745,7 @@ mod tests {
             enabled: true,
             color_config: None,
             use_regex: false,
+            ignore_case: false,
             group: None,
         }];
         let filters = extract_date_filters(&defs);
@@ -1759,6 +1761,7 @@ mod tests {
             enabled: false,
             color_config: None,
             use_regex: false,
+            ignore_case: false,
             group: None,
         }];
         let filters = extract_date_filters(&defs);
@@ -1774,6 +1777,7 @@ mod tests {
             enabled: true,
             color_config: None,
             use_regex: false,
+            ignore_case: false,
             group: None,
         }];
         let filters = extract_date_filters(&defs);

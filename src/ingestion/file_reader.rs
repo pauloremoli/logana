@@ -1589,7 +1589,8 @@ mod tests {
         use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
         let f = make_tmp(&["ERROR: bad", "INFO: ok", "ERROR: also bad"]);
         let path = f.path().to_str().unwrap().to_string();
-        let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let filter =
+            SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = VisibilityPredicate::new(fm);
         let handle = FileReader::load(
@@ -1611,7 +1612,8 @@ mod tests {
         use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
         let f = make_tmp(&["ERROR: first", "INFO: skip", "ERROR: last"]);
         let path = f.path().to_str().unwrap().to_string();
-        let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let filter =
+            SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = VisibilityPredicate::new(fm);
         let handle = FileReader::load(
@@ -1642,7 +1644,8 @@ mod tests {
         writeln!(f, "\x1b[31mERROR\x1b[0m: also red").unwrap(); // line 2 — contains ERROR
         let path = f.path().to_str().unwrap().to_string();
 
-        let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let filter =
+            SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = VisibilityPredicate::new(fm);
         let handle = FileReader::load(
@@ -1687,7 +1690,8 @@ mod tests {
         use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
         let f = make_tmp(&["INFO: ok", "DEBUG: verbose"]);
         let path = f.path().to_str().unwrap().to_string();
-        let filter = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0).unwrap();
+        let filter =
+            SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = VisibilityPredicate::new(fm);
         let handle = FileReader::load(
@@ -2796,7 +2800,8 @@ mod tests {
         let path = f.path().to_str().unwrap().to_string();
 
         use crate::filters::{FilterDecision, FilterManager, SubstringFilter};
-        let filter = SubstringFilter::new("EVEN", FilterDecision::Include, false, 0).unwrap();
+        let filter =
+            SubstringFilter::new("EVEN", FilterDecision::Include, false, 0, false).unwrap();
         let fm = FilterManager::new(vec![Box::new(filter)], true);
         let pred = VisibilityPredicate::new(fm);
         let handle = FileReader::load(

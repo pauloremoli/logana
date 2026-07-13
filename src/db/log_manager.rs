@@ -83,6 +83,9 @@ impl LogManager {
         if options.use_regex {
             insert_opts = insert_opts.regex();
         }
+        if options.ignore_case {
+            insert_opts = insert_opts.ignore_case();
+        }
         let id = self
             .db
             .insert_filter(&pattern_clone, &filter_type_clone, insert_opts)
@@ -102,6 +105,7 @@ impl LogManager {
             enabled: true,
             color_config,
             use_regex: options.use_regex,
+            ignore_case: options.ignore_case,
             group: options.group.clone(),
         });
         true
@@ -165,6 +169,7 @@ impl LogManager {
             f.filter_type = filter_type.clone();
             f.color_config = color_config.clone();
             f.use_regex = options.use_regex;
+            f.ignore_case = options.ignore_case;
             f.group = options.group.clone();
         }
         let _ = self
@@ -175,6 +180,7 @@ impl LogManager {
                 &filter_type,
                 color_config.as_ref(),
                 options.use_regex,
+                options.ignore_case,
                 options.group.as_deref(),
             )
             .await;
@@ -288,7 +294,7 @@ impl LogManager {
         let mut has_include = false;
         let mut literal_patterns: Vec<String> = Vec::new();
         let mut combined_ac_meta: Vec<(usize, FilterDecision)> = Vec::new();
-        let mut regex_filter_indices: Vec<usize> = Vec::new();
+        let mut slow_path_filter_indices: Vec<usize> = Vec::new();
 
         let mut style_idx: usize = 0;
         for def in self.filter_defs.iter().filter(|f| f.enabled) {
@@ -387,12 +393,21 @@ impl LogManager {
                 .map(|cc| cc.match_only)
                 .unwrap_or(true);
 
-            if let Some(f) =
-                build_filter(&def.pattern, decision, match_only, style_id, def.use_regex)
-            {
+            if let Some(f) = build_filter(
+                &def.pattern,
+                decision,
+                match_only,
+                style_id,
+                def.use_regex,
+                def.ignore_case,
+            ) {
                 let filter_idx = filters.len();
-                if def.use_regex {
-                    regex_filter_indices.push(filter_idx);
+                // Case-insensitive literal patterns can't share the shared
+                // case-sensitive combined automaton (see FilterManager's
+                // `slow_path_filter_indices` doc comment) — they fall back to
+                // individual evaluation, same as regex filters.
+                if def.use_regex || def.ignore_case {
+                    slow_path_filter_indices.push(filter_idx);
                 } else {
                     combined_ac_meta.push((filter_idx, decision));
                     literal_patterns.push(def.pattern.clone());
@@ -419,7 +434,7 @@ impl LogManager {
                 has_include,
                 combined_ac,
                 combined_ac_meta,
-                regex_filter_indices,
+                slow_path_filter_indices,
             ),
             styles,
             date_filter_styles,
@@ -638,6 +653,50 @@ mod tests {
         let (fm, _styles, _, _) = mgr.build_filter_manager();
         assert!(fm.is_visible(b"INFO: something"));
         assert!(!fm.is_visible(b"DEBUG: verbose"));
+    }
+
+    #[tokio::test]
+    async fn test_build_filter_manager_ignore_case_matches_different_case() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "ERROR".into(),
+            FilterType::Include,
+            FilterOptions::default().ignore_case(),
+        )
+        .await;
+
+        let (fm, _, _, _) = mgr.build_filter_manager();
+        assert!(fm.is_visible(b"error: lowercase"));
+        assert!(fm.is_visible(b"ERROR: uppercase"));
+        assert!(!fm.is_visible(b"INFO: unrelated"));
+    }
+
+    /// Regression guard for the `combined_ac`/`slow_path_filter_indices`
+    /// split: a case-sensitive literal filter (fast path) and a
+    /// case-insensitive literal filter (slow path) must both still match
+    /// correctly when compiled together.
+    #[tokio::test]
+    async fn test_build_filter_manager_mixed_case_sensitivity() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "FATAL".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
+        .await;
+        mgr.add_filter_with_color(
+            "WARN".into(),
+            FilterType::Include,
+            FilterOptions::default().ignore_case(),
+        )
+        .await;
+
+        let (fm, _, _, _) = mgr.build_filter_manager();
+        assert!(fm.is_visible(b"FATAL: crash"), "case-sensitive filter");
+        assert!(!fm.is_visible(b"fatal: crash"), "wrong case must not match");
+        assert!(fm.is_visible(b"warn: careful"), "case-insensitive filter");
+        assert!(fm.is_visible(b"WARN: careful"), "case-insensitive filter");
+        assert!(!fm.is_visible(b"INFO: unrelated"));
     }
 
     #[tokio::test]

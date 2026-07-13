@@ -40,12 +40,24 @@ Opt in with `--regex` / `-r`. Supports full regex syntax. Words after `-r` are j
 :filter -r response time: [5-9]\d{3}ms      # slow responses over 5 seconds
 ```
 
-> **Flag ordering:** Options (`-r`, `--fg`, `--bg`, `-l`, `--field`) must appear **before** the pattern. Everything after the first pattern word is part of the pattern.
+> **Flag ordering:** Options (`-r`, `-i`, `--fg`, `--bg`, `-l`, `--field`) must appear **before** the pattern. Everything after the first pattern word is part of the pattern.
 >
 > ```sh
 > :filter --fg red -r timeout.*retry   # correct
 > :filter timeout.*retry --fg red      # wrong — "--fg" becomes part of the pattern
 > ```
+
+## Case-Insensitive Filters
+
+Opt in with `--ignore-case` / `-i`. Works with both text search and `--regex`, and combines with color/group flags the same way `--regex` does.
+
+```sh
+:filter --ignore-case error                  # matches "error", "ERROR", "Error", ...
+:filter -i -r (error|warn)                   # case-insensitive regex
+:exclude --ignore-case debug
+```
+
+`--ignore-case` has no effect on `--field key=value` filters (matching a parsed field is always case-sensitive), same as `--regex`. A case-insensitive filter shows an `[i]` tag in the filter sidebar.
 
 ## Highlight Filters
 
@@ -57,7 +69,7 @@ A third filter kind alongside include/exclude. Highlight filters apply their col
 :highlight --fg yellow ERROR            # with a color, same flags as :filter
 ```
 
-Highlight filters accept the same flags as `:filter` (`--regex`/`-r`, `--fg`, `--bg`, `-l`, `--field`, `--group`) and show up in the filter sidebar with an `H` type tag, e.g. `[x] H: ERROR (12)`. They're for marking the lines you care about while reading the log in full — mark an event, then keep scrolling to see everything around it, without an include/exclude filter narrowing the view down to just the matches.
+Highlight filters accept the same flags as `:filter` (`--regex`/`-r`, `--ignore-case`/`-i`, `--fg`, `--bg`, `-l`, `--field`, `--group`) and show up in the filter sidebar with an `H` type tag, e.g. `[x] H: ERROR (12)`. They're for marking the lines you care about while reading the log in full — mark an event, then keep scrolling to see everything around it, without an include/exclude filter narrowing the view down to just the matches.
 
 To put your existing include/exclude filters into the same visible-but-marked state temporarily — for example when you need to see the full context around what they're currently hiding — see [Highlight Mode](index.md#highlight-mode).
 
