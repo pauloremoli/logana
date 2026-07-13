@@ -211,10 +211,12 @@ mod tests {
             ("level".to_string(), true),
             ("message".to_string(), false),
         ];
+        let default_order = fields.iter().map(|(n, _)| n.clone()).collect();
         app.tabs[0].interaction.mode = Box::new(SelectFieldsMode::new(
             fields,
             FieldLayout::default(),
             std::collections::HashSet::new(),
+            default_order,
         ));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -226,10 +228,12 @@ mod tests {
         let fields: Vec<(String, bool)> = (0..35)
             .map(|i| (format!("field_{}", i), i % 2 == 0))
             .collect();
+        let default_order = fields.iter().map(|(n, _)| n.clone()).collect();
         app.tabs[0].interaction.mode = Box::new(SelectFieldsMode::new(
             fields,
             FieldLayout::default(),
             std::collections::HashSet::new(),
+            default_order,
         ));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

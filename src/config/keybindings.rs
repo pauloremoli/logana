@@ -1274,6 +1274,10 @@ fn default_sf_none() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('n'), KeyModifiers::NONE)])
 }
 #[inline(always)]
+fn default_sf_reset() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('r'), KeyModifiers::NONE)])
+}
+#[inline(always)]
 fn default_sf_apply() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Enter, KeyModifiers::NONE)])
 }
@@ -1298,6 +1302,11 @@ pub struct SelectFieldsKeybindings {
     pub all: KeyBindings,
     #[serde(default = "default_sf_none")]
     pub none: KeyBindings,
+    /// Resets the popup's staged fields to the default order with everything
+    /// visible — clears both any reorder and any hidden fields. Still
+    /// requires `apply` to commit, same as `all`/`none`.
+    #[serde(default = "default_sf_reset")]
+    pub reset: KeyBindings,
     #[serde(default = "default_sf_apply")]
     pub apply: KeyBindings,
     #[serde(default = "default_sf_cancel")]
@@ -1317,6 +1326,7 @@ impl Default for SelectFieldsKeybindings {
             move_down: default_sf_move_down(),
             all: default_sf_all(),
             none: default_sf_none(),
+            reset: default_sf_reset(),
             apply: default_sf_apply(),
             cancel: default_sf_cancel(),
             search: default_sf_search(),
@@ -1625,6 +1635,7 @@ impl Keybindings {
             ("select_fields.move_down", &self.select_fields.move_down),
             ("select_fields.all", &self.select_fields.all),
             ("select_fields.none", &self.select_fields.none),
+            ("select_fields.reset", &self.select_fields.reset),
             ("select_fields.apply", &self.select_fields.apply),
             ("select_fields.cancel", &self.select_fields.cancel),
             ("select_fields.search", &self.select_fields.search),
@@ -1887,6 +1898,17 @@ mod tests {
         assert!(
             !conflicts.is_empty(),
             "rebinding select_fields.search onto an existing select-fields action's key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_if_select_fields_reset_collides_with_all() {
+        let mut kb = Keybindings::default();
+        kb.select_fields.reset = kb.select_fields.all.clone();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "rebinding select_fields.reset onto an existing select-fields action's key must be reported as a conflict"
         );
     }
 

@@ -27,7 +27,9 @@ pub use otlp::OtlpParser;
 pub use schema::LogSchema;
 pub use syslog::SyslogParser;
 pub use types::LogLevel;
-pub use types::{DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, format_span_col};
+pub use types::{
+    DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, TemplateSegment, format_span_col,
+};
 pub use types::{push_extra_field, push_field_as};
 
 pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {

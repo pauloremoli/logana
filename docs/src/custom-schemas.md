@@ -135,7 +135,9 @@ A value can only be declared for one of `error`/`warning` — declaring the same
 
 ## Rendering
 
-When a `template`-based schema matches a line and every field is visible (no hidden fields, no custom column order from `:select-fields`), the log panel renders the line using the template's own field order and literal separators — so `{level}/{component}/{feature}` still shows as `INF/Syscon/StartupMgr`, not space-joined columns. Hiding a field or reordering columns falls back to the standard column layout, since the template's separators no longer line up once a field is missing or moved. This only applies to `template`-defined schemas; a `pattern`-defined schema (raw regex) always uses the column layout, since a regex has no literal skeleton to reconstruct from.
+When a `template`-based schema matches a line, the log panel renders it using the template's own field order and literal separators — so `{level}/{component}/{feature}` shows as `INF/Syscon/StartupMgr`, not space-joined columns. Hiding a field with `:select-fields` keeps this: the hidden field's value drops and its adjacent separator collapses with it, so hiding `component` renders `INF/StartupMgr` rather than a dangling `INF//StartupMgr`. Only genuinely *reordering* columns (moving a field with `J`/`K` in `:select-fields`) falls back to the standard space-joined column layout, since an arbitrary new order can't be expressed with the template's fixed separators. This only applies to `template`-defined schemas; a `pattern`-defined schema (raw regex) always uses the column layout, since a regex has no literal skeleton to reconstruct from.
+
+The `:select-fields` popup lists a `template`-defined schema's fields in the template's own order (e.g. `id, target, timestamp, pid, level, component, feature, message` for the telecom example below) rather than the generic timestamp/level/target/extras/message grouping used for other formats — matching the order the line actually renders in by default.
 
 ## Detection
 

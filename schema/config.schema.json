@@ -56,6 +56,7 @@
           "exit_mode": "Esc",
           "move_filter_down": "J",
           "move_filter_up": "K",
+          "search": "/",
           "set_color": "c",
           "sidebar_grow": ">",
           "sidebar_shrink": "<",
@@ -145,6 +146,8 @@
           "move_down": "J",
           "move_up": "K",
           "none": "n",
+          "reset": "r",
+          "search": "/",
           "toggle": "Space"
         },
         "ui": {
@@ -396,6 +399,7 @@
             "exit_mode": "Esc",
             "move_filter_down": "J",
             "move_filter_up": "K",
+            "search": "/",
             "set_color": "c",
             "sidebar_grow": ">",
             "sidebar_shrink": "<",
@@ -567,6 +571,8 @@
             "move_down": "J",
             "move_up": "K",
             "none": "n",
+            "reset": "r",
+            "search": "/",
             "toggle": "Space"
           },
           "allOf": [
@@ -1088,6 +1094,14 @@
         },
         "sidebar_shrink": {
           "default": "<",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search": {
+          "default": "/",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"
@@ -1639,6 +1653,15 @@
             }
           ]
         },
+        "reset": {
+          "description": "Resets the popup's staged fields to the default order with everything visible — clears both any reorder and any hidden fields. Still requires `apply` to commit, same as `all`/`none`.",
+          "default": "r",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
         "apply": {
           "default": "Enter",
           "allOf": [
@@ -1649,6 +1672,15 @@
         },
         "cancel": {
           "default": "Esc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search": {
+          "description": "Enters typeahead search — used by the archive file picker to narrow its (potentially deep) file tree. Not read by `select_fields_mode.rs` or `merge_select_mode.rs`, which also share this keybindings struct.",
+          "default": "/",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"

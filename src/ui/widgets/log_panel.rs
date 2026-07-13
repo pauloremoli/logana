@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
-use crate::parser::LogLevel;
+use crate::parser::{DisplayParts, LogLevel, TemplateSegment};
 use crate::theme::Theme;
 use crate::ui::field_layout::{apply_field_layout, effective_row_count};
 use crate::ui::{CachedParsedLine, TabState, VisibleLines};
@@ -356,14 +356,19 @@ fn populate_parse_cache(
             && let Some(parts) = parser.parse_line(line_bytes)
         {
             // Only use the parser's own field order/separators (e.g. a custom
-            // schema's `{level}/{component}/{feature}` template) when every
-            // field is visible in its default order — hiding or reordering a
-            // field would leave the template's literal separators dangling.
-            let use_reconstructed = field_layout.columns.is_none() && hidden_fields.is_empty();
-            let reconstructed = parts
-                .reconstructed_line
-                .as_deref()
-                .filter(|_| use_reconstructed);
+            // schema's `{level}/{component}/{feature}` template) when there's
+            // no explicit *reordered* column layout — genuinely moving a
+            // field via `:select-fields` can't be represented in a fixed
+            // template, so that still falls back to the generic column
+            // layout. A hidden field, however, is handled by
+            // `render_template_segments` itself: it drops the field's value
+            // and collapses the separator that follows it, instead of
+            // disabling reconstruction outright.
+            let use_reconstructed = field_layout.columns.is_none();
+            let reconstructed = use_reconstructed
+                .then(|| parser.template_segments())
+                .flatten()
+                .map(|segs| render_template_segments(segs, &parts, hidden_fields));
             let cols = if reconstructed.is_none() {
                 apply_field_layout(
                     &parts,
@@ -377,6 +382,7 @@ fn populate_parse_cache(
             };
             let all_cols_hidden = source_prefix.is_empty()
                 && reconstructed
+                    .as_deref()
                     .map(str::is_empty)
                     .unwrap_or_else(|| cols.is_empty());
             let level = parts.level.map(|s| s.to_string());
@@ -389,7 +395,7 @@ fn populate_parse_cache(
                 .map(|(_, _, v)| v.to_string());
             let rendered = if all_cols_hidden {
                 String::new()
-            } else if let Some(recon) = reconstructed {
+            } else if let Some(recon) = &reconstructed {
                 join_source_prefix(&source_prefix, recon)
             } else {
                 join_source_prefix_and_cols(&source_prefix, &cols)
@@ -445,6 +451,53 @@ fn populate_parse_cache(
     for (line_idx, entry) in new_entries {
         tab.cache.parse.insert(line_idx, (cache_gen, entry));
     }
+}
+
+/// Rebuilds a line from a custom schema's own template segments, filling in
+/// each field's value from `parts` via `resolve_field` (which already
+/// handles the canonical-name/alias lookup). A field whose canonical name is
+/// in `hidden` (or that the schema marked `ignored`) contributes no value —
+/// and, unless it's the template's last field, the literal segment
+/// immediately following it is dropped too, so hiding a field collapses its
+/// separator instead of leaving a dangling delimiter (e.g. hiding
+/// `component` in `{level}/{component}/{feature}` yields `INFO/StartupMgr`,
+/// not `INFO//StartupMgr`).
+fn render_template_segments(
+    segments: &[TemplateSegment],
+    parts: &DisplayParts<'_>,
+    hidden: &HashSet<String>,
+) -> String {
+    let last_field_idx = segments
+        .iter()
+        .rposition(|s| matches!(s, TemplateSegment::Field { .. }));
+    let mut out = String::new();
+    let mut i = 0;
+    while i < segments.len() {
+        match &segments[i] {
+            TemplateSegment::Literal(text) => {
+                out.push_str(text);
+                i += 1;
+            }
+            TemplateSegment::Field {
+                canonical_name,
+                ignored,
+            } => {
+                if *ignored || hidden.contains(canonical_name) {
+                    let is_last_field = Some(i) == last_field_idx;
+                    i += 1;
+                    if !is_last_field && let Some(TemplateSegment::Literal(_)) = segments.get(i) {
+                        i += 1;
+                    }
+                } else {
+                    if let Some(val) = crate::filters::resolve_field(canonical_name, parts) {
+                        out.push_str(val);
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// `source_prefix` (merged-tab label, or empty) followed by `text`, separated
@@ -1305,6 +1358,101 @@ mod tests {
         assert_ne!(stable_hash("hello"), stable_hash("world"));
     }
 
+    fn telecom_segments() -> Vec<TemplateSegment> {
+        vec![
+            TemplateSegment::Field {
+                canonical_name: "level".to_string(),
+                ignored: false,
+            },
+            TemplateSegment::Literal("/".to_string()),
+            TemplateSegment::Field {
+                canonical_name: "component".to_string(),
+                ignored: false,
+            },
+            TemplateSegment::Literal("/".to_string()),
+            TemplateSegment::Field {
+                canonical_name: "feature".to_string(),
+                ignored: false,
+            },
+            TemplateSegment::Literal(", ".to_string()),
+            TemplateSegment::Field {
+                canonical_name: "message".to_string(),
+                ignored: false,
+            },
+        ]
+    }
+
+    fn telecom_parts<'a>() -> DisplayParts<'a> {
+        DisplayParts {
+            level: Some("INFO"),
+            extra_fields: vec![
+                (
+                    crate::parser::FieldSemantic::Component,
+                    "component",
+                    "Syscon",
+                ),
+                (
+                    crate::parser::FieldSemantic::Feature,
+                    "feature",
+                    "StartupMgr",
+                ),
+            ],
+            message: Some("StateChange: ok"),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_render_template_segments_all_visible() {
+        let rendered =
+            render_template_segments(&telecom_segments(), &telecom_parts(), &HashSet::new());
+        assert_eq!(rendered, "INFO/Syscon/StartupMgr, StateChange: ok");
+    }
+
+    #[test]
+    fn test_render_template_segments_hides_middle_field_collapses_separator() {
+        let hidden: HashSet<String> = ["component".to_string()].into_iter().collect();
+        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        assert_eq!(rendered, "INFO/StartupMgr, StateChange: ok");
+    }
+
+    #[test]
+    fn test_render_template_segments_hides_first_field() {
+        let hidden: HashSet<String> = ["level".to_string()].into_iter().collect();
+        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        assert_eq!(rendered, "Syscon/StartupMgr, StateChange: ok");
+    }
+
+    #[test]
+    fn test_render_template_segments_hides_last_field_keeps_leading_separator() {
+        // The last field has no trailing literal to collapse with it, so the
+        // separator before it stays (a defensible "structure preserved"
+        // choice, not a dangling mid-line delimiter).
+        let hidden: HashSet<String> = ["message".to_string()].into_iter().collect();
+        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        assert_eq!(rendered, "INFO/Syscon/StartupMgr, ");
+    }
+
+    #[test]
+    fn test_render_template_segments_ignored_field_always_collapses() {
+        let mut segments = telecom_segments();
+        segments[0] = TemplateSegment::Field {
+            canonical_name: "level".to_string(),
+            ignored: true,
+        };
+        let rendered = render_template_segments(&segments, &telecom_parts(), &HashSet::new());
+        assert_eq!(rendered, "Syscon/StartupMgr, StateChange: ok");
+    }
+
+    #[test]
+    fn test_render_template_segments_hides_two_adjacent_fields() {
+        let hidden: HashSet<String> = ["component".to_string(), "feature".to_string()]
+            .into_iter()
+            .collect();
+        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        assert_eq!(rendered, "INFO/StateChange: ok");
+    }
+
     #[test]
     fn test_find_token_offset_found() {
         assert_eq!(find_token_offset("hello world foo", "world"), Some(6));
@@ -1574,7 +1722,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_log_panel_custom_schema_hidden_field_falls_back_to_columns() {
+    async fn test_log_panel_custom_schema_hidden_field_keeps_structure() {
+        // Hiding a field must not disable template reconstruction outright —
+        // its value drops and the template's own separator collapses with
+        // it, but the OTHER separators (and fields) stay in template order.
         let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
         let mut app = make_app(&[line]).await;
         app.tabs[0].display.format = Some(telecom_parser());
@@ -1587,8 +1738,35 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
         let content: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(
+            content.contains("INF/StartupMgr,"),
+            "expected the hidden field's value and its separator to collapse, other separators kept: {content}"
+        );
+        assert!(
+            !content.contains("Syscon"),
+            "hidden field's value must not appear: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_custom_schema_reordered_columns_falls_back() {
+        // A genuine reorder (an explicit column list whose order differs
+        // from the template's own) can't be represented by the fixed
+        // template, so it still falls back to the generic column layout.
+        let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
+        let mut app = make_app(&[line]).await;
+        app.tabs[0].display.format = Some(telecom_parser());
+        app.tabs[0].display.field_layout.columns = Some(vec![
+            "message".to_string(),
+            "level".to_string(),
+            "component".to_string(),
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(200, 24)).unwrap();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
             !content.contains("INF/Syscon/StartupMgr,"),
-            "hiding a field must fall back to column layout, not the template's separators: {content}"
+            "an explicit reordered column list must fall back to columns, not the template: {content}"
         );
     }
 

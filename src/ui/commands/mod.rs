@@ -816,6 +816,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_show_all_fields_also_clears_column_order() {
+        // ":show-all-fields" documents itself as resetting to the default
+        // display — that must undo a prior :select-fields reorder too, not
+        // just un-hide fields.
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].display.field_layout.columns =
+            Some(vec!["message".to_string(), "level".to_string()]);
+        app.run_command("show-all-fields").await.unwrap();
+        assert_eq!(app.tabs[0].display.field_layout.columns, None);
+    }
+
+    #[tokio::test]
     async fn test_hide_field_by_index_uses_visible_fields() {
         let mut app = make_app(&[r#"{"level":"info","msg":"hello"}"#]).await;
         let all_fields = app.tabs[0].collect_field_names();

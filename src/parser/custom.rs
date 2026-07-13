@@ -1,10 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use regex::Regex;
 
 use crate::config::CustomSchemaConfig;
 use crate::parser::types::{
-    DisplayParts, FieldSemantic, LogFormatParser, LogLevel, push_extra_field, push_field_as,
+    DisplayParts, FieldSemantic, LogFormatParser, LogLevel, TemplateSegment, push_extra_field,
+    push_field_as,
 };
 
 enum FieldRole {
@@ -13,10 +14,12 @@ enum FieldRole {
     Ignored,
 }
 
-/// One piece of a compiled `template`: literal text to reproduce verbatim, or
-/// a placeholder to fill with that field's captured value at parse time.
+/// One piece of a template as written, before field roles are known: literal
+/// text to reproduce verbatim, or a placeholder holding the *raw* `{name}`
+/// from the template. Resolved into `TemplateSegment` (canonical field
+/// names) once `field_map` is available — see `resolve_segments`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum TemplateSegment {
+enum RawSegment {
     Literal(String),
     Field(String),
 }
@@ -137,26 +140,55 @@ pub fn compile_template(template: &str) -> Result<String, String> {
 }
 
 /// Splits `template` into literal runs and `{field}` placeholders, in order,
-/// preserving the template's own separators (see [`TemplateSegment`]).
-fn parse_template_segments(template: &str) -> Vec<TemplateSegment> {
+/// preserving the template's own separators (see [`RawSegment`]).
+fn parse_raw_segments(template: &str) -> Vec<RawSegment> {
     let mut segments = Vec::new();
     let mut remaining = template;
     while let Some(open) = remaining.find('{') {
         let literal = &remaining[..open];
         if !literal.is_empty() {
-            segments.push(TemplateSegment::Literal(literal.to_string()));
+            segments.push(RawSegment::Literal(literal.to_string()));
         }
         let rest = &remaining[open + 1..];
         let Some(close) = rest.find('}') else {
             break;
         };
-        segments.push(TemplateSegment::Field(rest[..close].to_string()));
+        segments.push(RawSegment::Field(rest[..close].to_string()));
         remaining = &rest[close + 1..];
     }
     if !remaining.is_empty() {
-        segments.push(TemplateSegment::Literal(remaining.to_string()));
+        segments.push(RawSegment::Literal(remaining.to_string()));
     }
     segments
+}
+
+/// Resolves `raw` template segments into `TemplateSegment`s carrying each
+/// field's canonical name (the name `resolve_field`/`hidden_fields` use),
+/// using the same role information as `field_map`. A raw field name with no
+/// matching capture group (shouldn't happen — every `{name}` in the template
+/// compiles to a capture group of the same name) is dropped.
+fn resolve_segments(
+    raw: Vec<RawSegment>,
+    field_map: &[(usize, &'static str, FieldRoleStored)],
+) -> Vec<TemplateSegment> {
+    raw.into_iter()
+        .filter_map(|seg| match seg {
+            RawSegment::Literal(text) => Some(TemplateSegment::Literal(text)),
+            RawSegment::Field(raw_name) => {
+                let (_, group_name, role) =
+                    field_map.iter().find(|(_, name, _)| *name == raw_name)?;
+                let ignored = matches!(role, FieldRoleStored::Ignored);
+                let canonical_name = match role {
+                    FieldRoleStored::Semantic(sem) => sem.canonical_name().to_string(),
+                    FieldRoleStored::Extra | FieldRoleStored::Ignored => group_name.to_string(),
+                };
+                Some(TemplateSegment::Field {
+                    canonical_name,
+                    ignored,
+                })
+            }
+        })
+        .collect()
 }
 
 fn collect_placeholder_names(template: &str) -> Vec<&str> {
@@ -222,7 +254,7 @@ fn build_level_overrides(cfg: &CustomSchemaConfig) -> Result<LevelOverrides, Str
 
 impl CustomParser {
     pub fn from_config(cfg: &CustomSchemaConfig) -> Result<Self, String> {
-        let mut template_segments = None;
+        let mut raw_segments = None;
         let pattern_str = match (&cfg.template, &cfg.pattern) {
             (Some(_), Some(_)) => {
                 return Err(format!(
@@ -237,7 +269,7 @@ impl CustomParser {
                 ));
             }
             (Some(tmpl), None) => {
-                template_segments = Some(parse_template_segments(tmpl));
+                raw_segments = Some(parse_raw_segments(tmpl));
                 compile_template(tmpl)?
             }
             (None, Some(raw)) => raw.clone(),
@@ -259,6 +291,7 @@ impl CustomParser {
             field_map.push((capture_idx, static_name, role.into()));
         }
 
+        let template_segments = raw_segments.map(|raw| resolve_segments(raw, &field_map));
         let level_overrides = build_level_overrides(cfg)?;
 
         Ok(CustomParser {
@@ -268,28 +301,6 @@ impl CustomParser {
             template_segments,
             level_overrides,
         })
-    }
-
-    /// Rebuilds the line from `template_segments`, substituting each field's
-    /// captured raw value and reproducing the template's literal separators
-    /// verbatim. `Ignored` fields contribute no value (matching that role's
-    /// "captured but never displayed" contract) but their surrounding literal
-    /// text is still emitted as-is. Returns `None` when this parser was built
-    /// from a raw `pattern` rather than a `template`.
-    fn reconstruct_line(&self, field_values: &HashMap<&str, &str>) -> Option<String> {
-        let segments = self.template_segments.as_ref()?;
-        let mut out = String::new();
-        for seg in segments {
-            match seg {
-                TemplateSegment::Literal(text) => out.push_str(text),
-                TemplateSegment::Field(name) => {
-                    if let Some(val) = field_values.get(name.as_str()) {
-                        out.push_str(val);
-                    }
-                }
-            }
-        }
-        Some(out)
     }
 }
 
@@ -328,7 +339,6 @@ impl LogFormatParser for CustomParser {
         };
 
         let mut parts = DisplayParts::default();
-        let mut field_values: HashMap<&str, &str> = HashMap::new();
         for ((_, group_name, role), range_opt) in self.field_map.iter().zip(byte_ranges.iter()) {
             let val = match range_opt {
                 Some(range) => &s[range.clone()],
@@ -355,16 +365,37 @@ impl LogFormatParser for CustomParser {
                 }
                 FieldRoleStored::Ignored => {}
             }
-            if !matches!(role, FieldRoleStored::Ignored) {
-                field_values.insert(group_name, val);
-            }
         }
-        parts.reconstructed_line = self.reconstruct_line(&field_values);
 
         Some(parts)
     }
 
+    fn template_segments(&self) -> Option<&[TemplateSegment]> {
+        self.template_segments.as_deref()
+    }
+
     fn collect_field_names(&self, _lines: &[&[u8]]) -> Vec<String> {
+        // A `template`-based schema has its own declared field order (see
+        // `TemplateSegment`/`resolve_segments`) — surface fields in that
+        // order so the Select Fields popup (and its "reset" default) matches
+        // what the schema describes, consistent with how the log panel
+        // already renders the line in template order (see log_panel.rs).
+        // `pattern`-based schemas have no such order to draw from, so they
+        // fall back to the canonical-slot order below.
+        if let Some(segments) = &self.template_segments {
+            let mut seen = HashSet::new();
+            return segments
+                .iter()
+                .filter_map(|seg| match seg {
+                    TemplateSegment::Field {
+                        canonical_name,
+                        ignored: false,
+                    } if seen.insert(canonical_name.clone()) => Some(canonical_name.clone()),
+                    _ => None,
+                })
+                .collect();
+        }
+
         let mut has_timestamp = false;
         let mut has_level = false;
         let mut has_target = false;
@@ -508,60 +539,70 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_template_segments_telecom() {
+    fn test_parse_raw_segments_telecom() {
         let template =
             "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}";
-        let segments = parse_template_segments(template);
+        let segments = parse_raw_segments(template);
         assert_eq!(
             segments,
             vec![
-                TemplateSegment::Field("id".to_string()),
-                TemplateSegment::Literal(" ".to_string()),
-                TemplateSegment::Field("service".to_string()),
-                TemplateSegment::Literal(" <".to_string()),
-                TemplateSegment::Field("timestamp".to_string()),
-                TemplateSegment::Literal("> ".to_string()),
-                TemplateSegment::Field("pid".to_string()),
-                TemplateSegment::Literal(" ".to_string()),
-                TemplateSegment::Field("level".to_string()),
-                TemplateSegment::Literal("/".to_string()),
-                TemplateSegment::Field("component".to_string()),
-                TemplateSegment::Literal("/".to_string()),
-                TemplateSegment::Field("feature".to_string()),
-                TemplateSegment::Literal(", ".to_string()),
-                TemplateSegment::Field("message".to_string()),
+                RawSegment::Field("id".to_string()),
+                RawSegment::Literal(" ".to_string()),
+                RawSegment::Field("service".to_string()),
+                RawSegment::Literal(" <".to_string()),
+                RawSegment::Field("timestamp".to_string()),
+                RawSegment::Literal("> ".to_string()),
+                RawSegment::Field("pid".to_string()),
+                RawSegment::Literal(" ".to_string()),
+                RawSegment::Field("level".to_string()),
+                RawSegment::Literal("/".to_string()),
+                RawSegment::Field("component".to_string()),
+                RawSegment::Literal("/".to_string()),
+                RawSegment::Field("feature".to_string()),
+                RawSegment::Literal(", ".to_string()),
+                RawSegment::Field("message".to_string()),
             ]
         );
     }
 
     #[test]
-    fn test_parse_template_segments_leading_and_trailing_literal() {
-        let segments = parse_template_segments("[{level}] done");
+    fn test_parse_raw_segments_leading_and_trailing_literal() {
+        let segments = parse_raw_segments("[{level}] done");
         assert_eq!(
             segments,
             vec![
-                TemplateSegment::Literal("[".to_string()),
-                TemplateSegment::Field("level".to_string()),
-                TemplateSegment::Literal("] done".to_string()),
+                RawSegment::Literal("[".to_string()),
+                RawSegment::Field("level".to_string()),
+                RawSegment::Literal("] done".to_string()),
             ]
         );
     }
 
     #[test]
-    fn test_reconstructed_line_preserves_template_separators() {
-        // The schema's own "/" and ", " separators must survive in the
-        // reconstructed line instead of being collapsed to plain spaces.
+    fn test_template_segments_uses_canonical_names() {
+        // "service" is mapped to the Target role — the resolved segment must
+        // carry the canonical name "target" (what `resolve_field`/
+        // `hidden_fields` use), not the raw placeholder name "service".
         let parser = make_telecom_parser();
-        let line = b"04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: dirtyrfservice::instance1 state=CONNECTED";
-        let parts = parser.parse_line(line).unwrap();
+        let segments = parser.template_segments().unwrap();
         assert_eq!(
-            parts.reconstructed_line.as_deref(),
-            Some(std::str::from_utf8(line).unwrap())
+            segments[0],
+            TemplateSegment::Field {
+                canonical_name: "id".to_string(),
+                ignored: false,
+            }
+        );
+        assert_eq!(
+            segments[2],
+            TemplateSegment::Field {
+                canonical_name: "target".to_string(),
+                ignored: false,
+            }
         );
     }
 
     #[test]
-    fn test_reconstructed_line_omits_ignored_field_value() {
+    fn test_template_segments_marks_ignored_field() {
         let parser = CustomParser::from_config(&CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
@@ -573,13 +614,26 @@ mod tests {
             levels: Default::default(),
         })
         .unwrap();
-        let line = b"1234 INFO started";
-        let parts = parser.parse_line(line).unwrap();
-        assert_eq!(parts.reconstructed_line.as_deref(), Some(" INFO started"));
+        let segments = parser.template_segments().unwrap();
+        assert_eq!(
+            segments[0],
+            TemplateSegment::Field {
+                canonical_name: "pid".to_string(),
+                ignored: true,
+            }
+        );
     }
 
     #[test]
-    fn test_reconstructed_line_none_for_raw_pattern_schema() {
+    fn test_template_segments_preserves_literal_separators() {
+        let parser = make_telecom_parser();
+        let segments = parser.template_segments().unwrap();
+        assert!(segments.contains(&TemplateSegment::Literal("/".to_string())));
+        assert!(segments.contains(&TemplateSegment::Literal(", ".to_string())));
+    }
+
+    #[test]
+    fn test_template_segments_none_for_raw_pattern_schema() {
         let parser = CustomParser::from_config(&CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
@@ -589,8 +643,7 @@ mod tests {
             levels: Default::default(),
         })
         .unwrap();
-        let parts = parser.parse_line(b"INFO started").unwrap();
-        assert!(parts.reconstructed_line.is_none());
+        assert!(parser.template_segments().is_none());
     }
 
     #[test]
@@ -806,10 +859,13 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_field_names_matches_render_order() {
-        // Matches the column order rendered by the default field layout
-        // (timestamp, level, target, sorted extras, message), so the Select
-        // Fields popup shows fields in the same order they're first displayed.
+    fn test_collect_field_names_matches_template_order() {
+        // A template-based schema's own field order (not the canonical
+        // timestamp/level/target/sorted-extras/message slot order) drives
+        // the Select Fields popup, matching how the log panel already
+        // renders the line in template order (see log_panel.rs). "zebra"
+        // before "alpha" here — the opposite of alphabetical — proves it's
+        // not falling back to sorting extras.
         let parser = CustomParser::from_config(&CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
@@ -827,8 +883,31 @@ mod tests {
                 "timestamp".to_string(),
                 "level".to_string(),
                 "target".to_string(),
-                "alpha".to_string(),
                 "zebra".to_string(),
+                "alpha".to_string(),
+                "message".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_collect_field_names_matches_telecom_template_order() {
+        // The message field isn't last in field-role terms here (component
+        // and feature come between level and message in the template) —
+        // the popup order must follow the template exactly, not group
+        // "extras" together the way the canonical-slot fallback would.
+        let parser = make_telecom_parser();
+        let names = parser.collect_field_names(&[]);
+        assert_eq!(
+            names,
+            vec![
+                "id".to_string(),
+                "target".to_string(),
+                "timestamp".to_string(),
+                "pid".to_string(),
+                "level".to_string(),
+                "component".to_string(),
+                "feature".to_string(),
                 "message".to_string(),
             ]
         );

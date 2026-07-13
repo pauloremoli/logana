@@ -178,11 +178,20 @@ pub struct DisplayParts<'a> {
     pub span: Option<SpanInfo<'a>>,
     pub extra_fields: Vec<(FieldSemantic, &'a str, &'a str)>,
     pub message: Option<&'a str>,
-    /// The full line rebuilt from the parser's own field order and literal
-    /// separators (e.g. a custom schema's `{level}/{component}/{feature}`
-    /// template), for parsers that support it. `None` for parsers that don't
-    /// (the caller falls back to the generic space-joined column layout).
-    pub reconstructed_line: Option<String>,
+}
+
+/// One piece of a compiled custom-schema `template`: literal text to
+/// reproduce verbatim, or a placeholder for a field's value, keyed by the
+/// canonical name `resolve_field` understands (not the raw template
+/// placeholder name — e.g. a `{service}` placeholder mapped to the `target`
+/// role is stored as `Field { canonical_name: "target", .. }`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TemplateSegment {
+    Literal(String),
+    Field {
+        canonical_name: String,
+        ignored: bool,
+    },
 }
 
 pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
@@ -199,6 +208,15 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
     /// built-in keyword matching in `LogLevel::parse_level`.
     fn classify_level(&self, raw: &str) -> LogLevel {
         LogLevel::parse_level(raw)
+    }
+
+    /// Returns this parser's compiled template segments (literal text +
+    /// canonical field placeholders, in the template's own order), for
+    /// parsers built from a custom schema `template`. `None` for every other
+    /// parser, including a `pattern`-based custom schema (a raw regex has no
+    /// literal skeleton to reconstruct a line from).
+    fn template_segments(&self) -> Option<&[TemplateSegment]> {
+        None
     }
 
     /// Returns `false` when this format's timestamps do not include a year
@@ -303,7 +321,6 @@ mod tests {
         assert!(p.span.is_none());
         assert!(p.extra_fields.is_empty());
         assert!(p.message.is_none());
-        assert!(p.reconstructed_line.is_none());
     }
 
     #[test]

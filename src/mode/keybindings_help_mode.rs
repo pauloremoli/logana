@@ -510,6 +510,10 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: sf.none.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Reset to default".into(),
+        keys: sf.reset.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Apply".into(),
         keys: sf.apply.display(),
     });
@@ -835,6 +839,19 @@ mod tests {
             .iter()
             .any(|r| matches!(r, HelpRow::Header(h) if h == "Normal Mode"));
         assert!(has_normal);
+    }
+
+    #[test]
+    fn test_build_help_rows_contains_select_fields_reset() {
+        let kb = Keybindings::default();
+        let rows = build_help_rows(&kb);
+        let has_reset = rows.iter().any(|r| {
+            matches!(r, HelpRow::Entry { action, keys } if action == "Reset to default" && keys == "r")
+        });
+        assert!(
+            has_reset,
+            "expected a 'Reset to default' entry bound to 'r' in the Select Fields Mode section"
+        );
     }
 
     #[test]

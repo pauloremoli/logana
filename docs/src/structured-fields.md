@@ -22,6 +22,7 @@ Use `:select-fields` to open an interactive column picker:
 - `J` / `K` — reorder columns
 - `a` — enable all
 - `n` — disable all
+- `r` — reset to the default order with everything visible (clears any reorder and any hidden fields — still requires `Enter` to apply, like `a`/`n`)
 - `Enter` — apply
 - `Esc` — cancel
 
@@ -31,7 +32,7 @@ Or use commands directly:
 :fields timestamp level message       # show only these columns, in this order
 :hide-field span                      # hide a single column
 :show-field span                      # show a previously hidden column
-:show-all-fields                      # reset to default display
+:show-all-fields                      # reset to default display — clears both hidden fields and any custom column order
 ```
 
 ## Field Key Display

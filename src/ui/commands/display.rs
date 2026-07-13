@@ -115,6 +115,7 @@ impl App {
     pub(super) fn cmd_show_all_fields(&mut self) {
         let tab = &mut self.tabs[self.active_tab];
         tab.display.hidden_fields.clear();
+        tab.display.field_layout.columns = None;
         tab.invalidate_parse_cache();
     }
 
@@ -124,6 +125,7 @@ impl App {
         if all_names.is_empty() {
             return Err("No structured fields found in visible lines".to_string());
         }
+        let default_order = all_names.clone();
         let saved_order = &tab.display.field_layout.columns;
         let fields: Vec<(String, bool)> = match saved_order {
             Some(order) => {
@@ -156,6 +158,7 @@ impl App {
             fields,
             original_layout,
             original_hidden_fields,
+            default_order,
         ));
         Ok(true)
     }

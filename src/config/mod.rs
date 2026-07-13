@@ -1101,6 +1101,7 @@ mod tests {
         assert!(kb.move_down.matches(KeyCode::Char('J'), KeyModifiers::NONE));
         assert!(kb.all.matches(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(kb.none.matches(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(kb.reset.matches(KeyCode::Char('r'), KeyModifiers::NONE));
         assert!(kb.apply.matches(KeyCode::Enter, KeyModifiers::NONE));
         assert!(kb.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
     }

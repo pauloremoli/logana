@@ -6,18 +6,19 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- Filter manager now supports the same navigation as the log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u`, `PageDown`/`PageUp`, `gg`/`G`, and `/` to search the filter list live using a regex query (falls back to a plain substring match if the regex is invalid/incomplete).
+- Filter manager now supports the same navigation as the log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u`, `PageDown`/`PageUp`, `gg`/`G`, and `/`.
 - Archive file picker now supports `/` to search the file tree using a regex query (same fallback behavior as the filter list search).
 - A startup warning now appears if a user-provided schema in `~/.config/logana/schema/` fails to load (malformed JSON) or fails to compile (invalid template/pattern).
-- `:filter`/`:exclude`/`:highlight --field` can now be repeated to require several parsed fields at once (e.g. `--field level=INFO --field component=Draco`), and combined with trailing free text that must also match — all AND'd together in a single filter. Separate filter commands still OR together as before.
-- Log lines parsed by a custom schema's `template` now render using that schema's own field order and literal separators (e.g. `{level}/{component}/{feature}`) instead of a generic space-joined column layout, as long as no field is hidden and no custom column order is set — either falls back to the column layout, same as before.
-- Custom schemas can now declare which raw `level` values count as error/warning via a `levels` config key (e.g. `"levels": {"error": ["SEV1"], "warning": ["SEV2"]}`), so `e`/`w` navigation and level coloring work for severity codes that don't match the built-in keywords.
+- `:filter`/`:exclude`/`:highlight --field` can now be repeated to require several parsed fields at once.
+- Log lines parsed by a custom schema's `template` now render using that schema's own field order and literal separators (e.g. `{level}/{component}/{feature}`) instead of a generic space-joined column layout. 
+- Custom schemas can now declare which raw `level` values count as error/warning via a `levels` config key so that `e`/`w` navigation and level coloring works for values that don't match the built-in keywords.
 - `:filter`/`:exclude`/`:highlight` now accept `--ignore-case`/`-i` to match regardless of case (text or `--regex` patterns). Case-insensitive filters show an `[i]` tag in the sidebar.
+- `:select-fields` now has an option to reset the fields to the default order with everything visible.
 
 ### Fixed
-- Extracting a selected archive file that is itself a compressed file (e.g. a `.gz` nested inside a `.zip`) now decompresses it, instead of opening the raw compressed bytes as an unreadable log.
+- Extracting a selected archive file that is itself a compressed file (e.g. a `.gz` nested inside a `.zip`) now decompresses it, instead of opening the raw compressed bytes.
 - `:load-filters`, `:save-filters`, and `:export` now expand a leading `~` in the given path.
-- `:schema <name>` now autocompletes from your installed custom schemas.
+- `:show-all-fields` now also clears any custom column order from a prior `:select-fields` reorder.
 
 ## [0.7.1] - 2026-07-11
 

@@ -195,12 +195,16 @@ Shared by both the log panel's `/`/`?` search and the filter manager's `/` searc
   "toggle": "Space",
   "move_down": "J",
   "move_up": "K",
-  "enable_all": "a",
-  "disable_all": "n",
+  "all": "a",
+  "none": "n",
+  "reset": "r",
   "apply": "Enter",
+  "cancel": "Esc",
   "search": "/"
 }
 ```
+
+`reset` restores the popup's staged fields to the format's default order with everything visible — clearing both any `J`/`K` reorder and any hidden fields in one step. Like `all`/`none`, it only changes what's staged; `apply` still commits it.
 
 The archive file picker also uses this group. Its `search` key opens a live
 regex query that narrows the file tree to matching files (keeping their
