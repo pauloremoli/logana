@@ -5,7 +5,7 @@ use crate::{
     mode::normal_mode::NormalMode,
     mode::search_mode::SearchMode,
     theme::Theme,
-    ui::{KeyResult, TabState, field_layout::apply_field_layout},
+    ui::{KeyResult, TabState, field_layout::render_line_text},
 };
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -345,14 +345,14 @@ pub fn display_line_text(tab: &TabState) -> String {
             && let Some(parser) = tab.display.format.as_ref()
             && let Some(parts) = parser.parse_line(bytes)
         {
-            return apply_field_layout(
+            return render_line_text(
+                parser.as_ref(),
                 &parts,
                 &tab.display.field_layout,
                 &tab.display.hidden_fields,
                 tab.display.show_keys,
                 None,
-            )
-            .join(" ");
+            );
         }
         String::from_utf8_lossy(bytes).into_owned()
     } else {
@@ -1684,6 +1684,103 @@ mod tests {
             tab.scroll.horizontal_scroll <= 2,
             "scroll should have moved left to show cursor, got {}",
             tab.scroll.horizontal_scroll
+        );
+    }
+
+    fn telecom_parser() -> Arc<dyn crate::parser::LogFormatParser> {
+        Arc::new(
+            crate::parser::CustomParser::from_config(&crate::config::CustomSchemaConfig {
+                name: "telecom".to_string(),
+                description: None,
+                template: Some(
+                    "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"
+                        .to_string(),
+                ),
+                pattern: None,
+                fields: [
+                    ("id".to_string(), "extra".to_string()),
+                    ("service".to_string(), "target".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+                levels: Default::default(),
+            })
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_display_line_text_embedded_json_parser_hides_field() {
+        // Built-in (non-custom-schema) parsers have no `template_segments`,
+        // so this must fall back to the generic column layout — unaffected
+        // by the reconstruction feature.
+        let line =
+            r#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","secret":"shh","msg":"hello"}"#;
+        let mut tab = make_tab(&[line]).await;
+        tab.display.format = crate::parser::detect_format(&[line.as_bytes()]).map(Arc::from);
+        tab.display.hidden_fields.insert("secret".to_string());
+
+        let text = display_line_text(&tab);
+        assert!(
+            !text.contains("shh"),
+            "hidden field must not appear: {text}"
+        );
+        assert!(text.contains("INFO"));
+        assert!(text.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_display_line_text_pattern_based_custom_schema_hides_field() {
+        // A `pattern`-based (regex) custom schema has no `template_segments`
+        // either — must also fall back to the generic column layout.
+        let line = "INFO shh hello world";
+        let mut tab = make_tab(&[line]).await;
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: None,
+            pattern: Some("^(?P<level>\\w+) (?P<secret>\\w+) (?P<message>.*)$".to_string()),
+            fields: [("secret".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+        };
+        tab.display.format = Some(Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        tab.display.hidden_fields.insert("secret".to_string());
+
+        let text = display_line_text(&tab);
+        assert!(
+            !text.contains("shh"),
+            "hidden field must not appear: {text}"
+        );
+        assert!(text.contains("INFO"));
+        assert!(text.contains("hello world"));
+    }
+
+    // Regression test for a bug where Visual Char Mode's word-motion text
+    // (`display_line_text`) diverged from what the log panel actually
+    // rendered (`log_panel.rs`'s `reconstructed_line_text`), causing the
+    // selection highlight to land on the wrong characters after a few word
+    // motions on a custom-schema line. Both must go through the same
+    // `render_line_text` function so they can never disagree again.
+    #[tokio::test]
+    async fn test_display_line_text_matches_template_reconstruction_with_hidden_field() {
+        let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
+        let mut tab = make_tab(&[line]).await;
+        tab.display.format = Some(telecom_parser());
+        tab.display.hidden_fields.insert("component".to_string());
+
+        let text = display_line_text(&tab);
+
+        assert_eq!(
+            text,
+            "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/StartupMgr, StateChange: ok"
+        );
+        assert!(
+            !text.contains("Syscon"),
+            "hidden field's value must not appear in word-motion text: {text}"
         );
     }
 }

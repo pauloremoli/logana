@@ -10,9 +10,9 @@ use ratatui::{
 };
 
 use crate::filters::{CURRENT_SEARCH_STYLE_ID, MatchCollector, SEARCH_STYLE_ID, render_line};
-use crate::parser::{DisplayParts, LogLevel, TemplateSegment};
+use crate::parser::LogLevel;
 use crate::theme::Theme;
-use crate::ui::field_layout::{apply_field_layout, effective_row_count};
+use crate::ui::field_layout::{apply_field_layout, effective_row_count, reconstructed_line_text};
 use crate::ui::{CachedParsedLine, TabState, VisibleLines};
 use crate::utils::search::SearchResult;
 use crate::value_colors::{
@@ -361,14 +361,13 @@ fn populate_parse_cache(
             // field via `:select-fields` can't be represented in a fixed
             // template, so that still falls back to the generic column
             // layout. A hidden field, however, is handled by
-            // `render_template_segments` itself: it drops the field's value
+            // `reconstructed_line_text` itself: it drops the field's value
             // and collapses the separator that follows it, instead of
-            // disabling reconstruction outright.
-            let use_reconstructed = field_layout.columns.is_none();
-            let reconstructed = use_reconstructed
-                .then(|| parser.template_segments())
-                .flatten()
-                .map(|segs| render_template_segments(segs, &parts, hidden_fields));
+            // disabling reconstruction outright. This is the same function
+            // Visual Char Mode's word motions use (`render_line_text`), so
+            // the two can never disagree about what's on screen.
+            let reconstructed =
+                reconstructed_line_text(parser, &parts, field_layout, hidden_fields);
             let cols = if reconstructed.is_none() {
                 apply_field_layout(
                     &parts,
@@ -451,53 +450,6 @@ fn populate_parse_cache(
     for (line_idx, entry) in new_entries {
         tab.cache.parse.insert(line_idx, (cache_gen, entry));
     }
-}
-
-/// Rebuilds a line from a custom schema's own template segments, filling in
-/// each field's value from `parts` via `resolve_field` (which already
-/// handles the canonical-name/alias lookup). A field whose canonical name is
-/// in `hidden` (or that the schema marked `ignored`) contributes no value —
-/// and, unless it's the template's last field, the literal segment
-/// immediately following it is dropped too, so hiding a field collapses its
-/// separator instead of leaving a dangling delimiter (e.g. hiding
-/// `component` in `{level}/{component}/{feature}` yields `INFO/StartupMgr`,
-/// not `INFO//StartupMgr`).
-fn render_template_segments(
-    segments: &[TemplateSegment],
-    parts: &DisplayParts<'_>,
-    hidden: &HashSet<String>,
-) -> String {
-    let last_field_idx = segments
-        .iter()
-        .rposition(|s| matches!(s, TemplateSegment::Field { .. }));
-    let mut out = String::new();
-    let mut i = 0;
-    while i < segments.len() {
-        match &segments[i] {
-            TemplateSegment::Literal(text) => {
-                out.push_str(text);
-                i += 1;
-            }
-            TemplateSegment::Field {
-                canonical_name,
-                ignored,
-            } => {
-                if *ignored || hidden.contains(canonical_name) {
-                    let is_last_field = Some(i) == last_field_idx;
-                    i += 1;
-                    if !is_last_field && let Some(TemplateSegment::Literal(_)) = segments.get(i) {
-                        i += 1;
-                    }
-                } else {
-                    if let Some(val) = crate::filters::resolve_field(canonical_name, parts) {
-                        out.push_str(val);
-                    }
-                    i += 1;
-                }
-            }
-        }
-    }
-    out
 }
 
 /// `source_prefix` (merged-tab label, or empty) followed by `text`, separated
@@ -1356,101 +1308,6 @@ mod tests {
     fn test_stable_hash_deterministic() {
         assert_eq!(stable_hash("hello"), stable_hash("hello"));
         assert_ne!(stable_hash("hello"), stable_hash("world"));
-    }
-
-    fn telecom_segments() -> Vec<TemplateSegment> {
-        vec![
-            TemplateSegment::Field {
-                canonical_name: "level".to_string(),
-                ignored: false,
-            },
-            TemplateSegment::Literal("/".to_string()),
-            TemplateSegment::Field {
-                canonical_name: "component".to_string(),
-                ignored: false,
-            },
-            TemplateSegment::Literal("/".to_string()),
-            TemplateSegment::Field {
-                canonical_name: "feature".to_string(),
-                ignored: false,
-            },
-            TemplateSegment::Literal(", ".to_string()),
-            TemplateSegment::Field {
-                canonical_name: "message".to_string(),
-                ignored: false,
-            },
-        ]
-    }
-
-    fn telecom_parts<'a>() -> DisplayParts<'a> {
-        DisplayParts {
-            level: Some("INFO"),
-            extra_fields: vec![
-                (
-                    crate::parser::FieldSemantic::Component,
-                    "component",
-                    "Syscon",
-                ),
-                (
-                    crate::parser::FieldSemantic::Feature,
-                    "feature",
-                    "StartupMgr",
-                ),
-            ],
-            message: Some("StateChange: ok"),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_render_template_segments_all_visible() {
-        let rendered =
-            render_template_segments(&telecom_segments(), &telecom_parts(), &HashSet::new());
-        assert_eq!(rendered, "INFO/Syscon/StartupMgr, StateChange: ok");
-    }
-
-    #[test]
-    fn test_render_template_segments_hides_middle_field_collapses_separator() {
-        let hidden: HashSet<String> = ["component".to_string()].into_iter().collect();
-        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
-        assert_eq!(rendered, "INFO/StartupMgr, StateChange: ok");
-    }
-
-    #[test]
-    fn test_render_template_segments_hides_first_field() {
-        let hidden: HashSet<String> = ["level".to_string()].into_iter().collect();
-        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
-        assert_eq!(rendered, "Syscon/StartupMgr, StateChange: ok");
-    }
-
-    #[test]
-    fn test_render_template_segments_hides_last_field_keeps_leading_separator() {
-        // The last field has no trailing literal to collapse with it, so the
-        // separator before it stays (a defensible "structure preserved"
-        // choice, not a dangling mid-line delimiter).
-        let hidden: HashSet<String> = ["message".to_string()].into_iter().collect();
-        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
-        assert_eq!(rendered, "INFO/Syscon/StartupMgr, ");
-    }
-
-    #[test]
-    fn test_render_template_segments_ignored_field_always_collapses() {
-        let mut segments = telecom_segments();
-        segments[0] = TemplateSegment::Field {
-            canonical_name: "level".to_string(),
-            ignored: true,
-        };
-        let rendered = render_template_segments(&segments, &telecom_parts(), &HashSet::new());
-        assert_eq!(rendered, "Syscon/StartupMgr, StateChange: ok");
-    }
-
-    #[test]
-    fn test_render_template_segments_hides_two_adjacent_fields() {
-        let hidden: HashSet<String> = ["component".to_string(), "feature".to_string()]
-            .into_iter()
-            .collect();
-        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
-        assert_eq!(rendered, "INFO/StateChange: ok");
     }
 
     #[test]

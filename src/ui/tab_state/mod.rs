@@ -448,6 +448,17 @@ pub fn display_text_for_line(
     if let Some(parser) = detected_format
         && let Some(parts) = parser.parse_line(bytes)
     {
+        // Prefer the parser's own template reconstruction (same source of
+        // truth as `log_panel.rs`/`render_line_text`) so match offsets land
+        // on the same text that's actually highlighted on screen.
+        if let Some(reconstructed) = super::field_layout::reconstructed_line_text(
+            parser.as_ref(),
+            &parts,
+            field_layout,
+            hidden_fields,
+        ) {
+            return reconstructed;
+        }
         let cols = super::field_layout::apply_field_layout(
             &parts,
             field_layout,
@@ -3574,6 +3585,79 @@ mod tests {
             tab.search.query.get_results().is_empty(),
             "hidden field content must not be matched"
         );
+    }
+
+    #[tokio::test]
+    async fn test_begin_search_matches_custom_schema_template_reconstruction() {
+        // Search offsets must be computed against the same reconstructed
+        // text the log panel renders (schema template + collapsed
+        // hidden-field separator), not the generic column layout —
+        // otherwise a match's highlighted position drifts from what's on
+        // screen, the same divergence class fixed for Visual Char Mode.
+        let line = "INFO/Syscon/StartupMgr, hello there";
+        let mut tab = make_tab(&[line]).await;
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0]);
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "telecom".to_string(),
+            description: None,
+            template: Some("{level}/{component}/{feature}, {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: Default::default(),
+        };
+        tab.display.format = Some(std::sync::Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        tab.display.hidden_fields.insert("component".to_string());
+
+        tab.begin_search("StartupMgr, hello", true, false);
+        drain_search(&mut tab).await;
+
+        let results = tab.search.query.get_results();
+        assert_eq!(
+            results.len(),
+            1,
+            "expected exactly one match against the reconstructed (hidden-field-collapsed) text"
+        );
+        let expected_start = "INFO/StartupMgr, hello there"
+            .find("StartupMgr, hello")
+            .unwrap();
+        assert_eq!(results[0].matches[0].0, expected_start);
+    }
+
+    #[tokio::test]
+    async fn test_begin_search_pattern_based_custom_schema_hides_field() {
+        // A `pattern`-based (regex) custom schema has no `template_segments`
+        // — it must fall back to the generic column layout (which already
+        // omits hidden fields) rather than a nonexistent reconstruction.
+        let line = "INFO shh needle-in-message";
+        let mut tab = make_tab(&[line]).await;
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0]);
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: None,
+            pattern: Some("^(?P<level>\\w+) (?P<secret>\\w+) (?P<message>.*)$".to_string()),
+            fields: [("secret".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+        };
+        tab.display.format = Some(std::sync::Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        tab.display.hidden_fields.insert("secret".to_string());
+
+        tab.begin_search("shh", true, false);
+        drain_search(&mut tab).await;
+        assert!(
+            tab.search.query.get_results().is_empty(),
+            "hidden field content must not be matched"
+        );
+
+        tab.begin_search("needle-in-message", true, false);
+        drain_search(&mut tab).await;
+        assert_eq!(tab.search.query.get_results().len(), 1);
     }
 
     #[tokio::test]

@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::parser::{DisplayParts, LogFormatParser, SpanInfo, format_span_col};
+use crate::filters::resolve_field;
+use crate::parser::{DisplayParts, LogFormatParser, SpanInfo, TemplateSegment, format_span_col};
 
 #[derive(Debug, Clone, Default)]
 pub struct FieldLayout {
@@ -298,10 +299,199 @@ pub fn apply_field_layout(
     }
 }
 
+/// Rebuilds a line from a custom schema's own template segments, filling in
+/// each field's value from `parts` via `resolve_field` (which already
+/// handles the canonical-name/alias lookup). A field whose canonical name is
+/// in `hidden` (or that the schema marked `ignored`) contributes no value —
+/// and, unless it's the template's last field, the literal segment
+/// immediately following it is dropped too, so hiding a field collapses its
+/// separator instead of leaving a dangling delimiter (e.g. hiding
+/// `component` in `{level}/{component}/{feature}` yields `INFO/StartupMgr`,
+/// not `INFO//StartupMgr`).
+fn render_template_segments(
+    segments: &[TemplateSegment],
+    parts: &DisplayParts<'_>,
+    hidden: &HashSet<String>,
+) -> String {
+    let last_field_idx = segments
+        .iter()
+        .rposition(|s| matches!(s, TemplateSegment::Field { .. }));
+    let mut out = String::new();
+    let mut i = 0;
+    while i < segments.len() {
+        match &segments[i] {
+            TemplateSegment::Literal(text) => {
+                out.push_str(text);
+                i += 1;
+            }
+            TemplateSegment::Field {
+                canonical_name,
+                ignored,
+            } => {
+                if *ignored || hidden.contains(canonical_name) {
+                    let is_last_field = Some(i) == last_field_idx;
+                    i += 1;
+                    if !is_last_field && let Some(TemplateSegment::Literal(_)) = segments.get(i) {
+                        i += 1;
+                    }
+                } else {
+                    if let Some(val) = resolve_field(canonical_name, parts) {
+                        out.push_str(val);
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `parser`'s own template reconstruction (see
+/// `render_template_segments`) applies for the current `field_layout`, and
+/// the reconstructed text if so. `None` means the generic column layout
+/// (`apply_field_layout`) applies instead — either because an explicit
+/// column *order* is set (a template can't represent an arbitrary reorder),
+/// or because `parser` has no template to reconstruct from at all (every
+/// non-custom-schema parser, and a `pattern`-based custom schema).
+///
+/// This is the single source of truth for "does this line use its schema's
+/// own structure or the generic column layout" — both `populate_parse_cache`
+/// (what's drawn) and `render_line_text` (what Visual Char Mode's word
+/// motions and selection operate on) call this, so the two can never drift
+/// out of sync with each other.
+pub fn reconstructed_line_text(
+    parser: &dyn LogFormatParser,
+    parts: &DisplayParts<'_>,
+    field_layout: &FieldLayout,
+    hidden_fields: &HashSet<String>,
+) -> Option<String> {
+    if field_layout.columns.is_some() {
+        return None;
+    }
+    let segments = parser.template_segments()?;
+    Some(render_template_segments(segments, parts, hidden_fields))
+}
+
+/// The full text a parsed line displays as: `parser`'s own template
+/// structure when `reconstructed_line_text` applies, otherwise the generic
+/// space-joined column layout. Used by Visual Char Mode so word motions and
+/// the selection highlight always operate on exactly what's on screen.
+pub fn render_line_text(
+    parser: &dyn LogFormatParser,
+    parts: &DisplayParts<'_>,
+    field_layout: &FieldLayout,
+    hidden_fields: &HashSet<String>,
+    show_keys: bool,
+    year_override: Option<i32>,
+) -> String {
+    reconstructed_line_text(parser, parts, field_layout, hidden_fields).unwrap_or_else(|| {
+        apply_field_layout(parts, field_layout, hidden_fields, show_keys, year_override).join(" ")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parser::SpanInfo;
+
+    // -----------------------------------------------------------------------
+    // render_template_segments
+    // -----------------------------------------------------------------------
+
+    fn telecom_segments() -> Vec<TemplateSegment> {
+        vec![
+            TemplateSegment::Field {
+                canonical_name: "level".to_string(),
+                ignored: false,
+            },
+            TemplateSegment::Literal("/".to_string()),
+            TemplateSegment::Field {
+                canonical_name: "component".to_string(),
+                ignored: false,
+            },
+            TemplateSegment::Literal("/".to_string()),
+            TemplateSegment::Field {
+                canonical_name: "feature".to_string(),
+                ignored: false,
+            },
+            TemplateSegment::Literal(", ".to_string()),
+            TemplateSegment::Field {
+                canonical_name: "message".to_string(),
+                ignored: false,
+            },
+        ]
+    }
+
+    fn telecom_parts<'a>() -> DisplayParts<'a> {
+        DisplayParts {
+            level: Some("INFO"),
+            extra_fields: vec![
+                (
+                    crate::parser::FieldSemantic::Component,
+                    "component",
+                    "Syscon",
+                ),
+                (
+                    crate::parser::FieldSemantic::Feature,
+                    "feature",
+                    "StartupMgr",
+                ),
+            ],
+            message: Some("StateChange: ok"),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_render_template_segments_all_visible() {
+        let rendered =
+            render_template_segments(&telecom_segments(), &telecom_parts(), &HashSet::new());
+        assert_eq!(rendered, "INFO/Syscon/StartupMgr, StateChange: ok");
+    }
+
+    #[test]
+    fn test_render_template_segments_hides_middle_field_collapses_separator() {
+        let hidden: HashSet<String> = ["component".to_string()].into_iter().collect();
+        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        assert_eq!(rendered, "INFO/StartupMgr, StateChange: ok");
+    }
+
+    #[test]
+    fn test_render_template_segments_hides_first_field() {
+        let hidden: HashSet<String> = ["level".to_string()].into_iter().collect();
+        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        assert_eq!(rendered, "Syscon/StartupMgr, StateChange: ok");
+    }
+
+    #[test]
+    fn test_render_template_segments_hides_last_field_keeps_leading_separator() {
+        // The last field has no trailing literal to collapse with it, so the
+        // separator before it stays (a defensible "structure preserved"
+        // choice, not a dangling mid-line delimiter).
+        let hidden: HashSet<String> = ["message".to_string()].into_iter().collect();
+        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        assert_eq!(rendered, "INFO/Syscon/StartupMgr, ");
+    }
+
+    #[test]
+    fn test_render_template_segments_ignored_field_always_collapses() {
+        let mut segments = telecom_segments();
+        segments[0] = TemplateSegment::Field {
+            canonical_name: "level".to_string(),
+            ignored: true,
+        };
+        let rendered = render_template_segments(&segments, &telecom_parts(), &HashSet::new());
+        assert_eq!(rendered, "Syscon/StartupMgr, StateChange: ok");
+    }
+
+    #[test]
+    fn test_render_template_segments_hides_two_adjacent_fields() {
+        let hidden: HashSet<String> = ["component".to_string(), "feature".to_string()]
+            .into_iter()
+            .collect();
+        let rendered = render_template_segments(&telecom_segments(), &telecom_parts(), &hidden);
+        assert_eq!(rendered, "INFO/StateChange: ok");
+    }
 
     // -----------------------------------------------------------------------
     // line_row_count

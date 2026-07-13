@@ -5,7 +5,7 @@ use crate::{
     mode::normal_mode::NormalMode,
     mode::search_mode::SearchMode,
     theme::Theme,
-    ui::{KeyResult, TabState, field_layout::apply_field_layout},
+    ui::{KeyResult, TabState},
 };
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -160,26 +160,7 @@ impl Mode for VisualLineMode {
             let line_indices = tab.filter.visible_indices.slice_to_vec(lo, hi);
             let text: String = line_indices
                 .iter()
-                .map(|&idx| {
-                    let bytes = tab.file_reader.get_line(idx);
-                    if tab.display.raw_mode {
-                        None
-                    } else {
-                        tab.display.format.as_ref()
-                    }
-                    .and_then(|parser| parser.parse_line(bytes))
-                    .map(|parts| {
-                        apply_field_layout(
-                            &parts,
-                            &tab.display.field_layout,
-                            &tab.display.hidden_fields,
-                            tab.display.show_keys,
-                            None,
-                        )
-                        .join(" ")
-                    })
-                    .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
-                })
+                .map(|&idx| tab.get_display_text(idx))
                 .collect::<Vec<_>>()
                 .join("\n");
             return (
@@ -258,21 +239,7 @@ fn lo_line_text(tab: &TabState, anchor: usize, scroll_offset: usize) -> String {
     let max_idx = tab.filter.visible_indices.len() - 1;
     let lo = anchor.min(scroll_offset).min(max_idx);
     let idx = tab.filter.visible_indices.get(lo);
-    let bytes = tab.file_reader.get_line(idx);
-    if !tab.display.raw_mode
-        && let Some(parser) = tab.display.format.as_ref()
-        && let Some(parts) = parser.parse_line(bytes)
-    {
-        return apply_field_layout(
-            &parts,
-            &tab.display.field_layout,
-            &tab.display.hidden_fields,
-            tab.display.show_keys,
-            None,
-        )
-        .join(" ");
-    }
-    String::from_utf8_lossy(bytes).into_owned()
+    tab.get_display_text(idx)
 }
 
 #[cfg(test)]
@@ -481,6 +448,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_y_yanks_custom_schema_template_reconstruction_with_hidden_field() {
+        // Yanked text must match what's actually rendered (schema template,
+        // hidden field's separator collapsed), not the generic column
+        // layout.
+        let line = "INFO/Syscon/StartupMgr, hello there";
+        let mut tab = make_tab(&[line]).await;
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "telecom".to_string(),
+            description: None,
+            template: Some("{level}/{component}/{feature}, {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: Default::default(),
+        };
+        tab.display.format = Some(std::sync::Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        tab.display.hidden_fields.insert("component".to_string());
+        tab.scroll.scroll_offset = 0;
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
+        let (_, result) = press(mode, &mut tab, KeyCode::Char('y')).await;
+        match result {
+            KeyResult::CopyToClipboard(text) => {
+                assert_eq!(text, "INFO/StartupMgr, hello there");
+            }
+            other => panic!("expected CopyToClipboard, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_y_yanks_pattern_based_custom_schema_with_hidden_field() {
+        // A `pattern`-based (regex) custom schema has no `template_segments`
+        // — must also fall back to the generic column layout.
+        let line = "INFO shh hello world";
+        let mut tab = make_tab(&[line]).await;
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: None,
+            pattern: Some("^(?P<level>\\w+) (?P<secret>\\w+) (?P<message>.*)$".to_string()),
+            fields: [("secret".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+        };
+        tab.display.format = Some(std::sync::Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        tab.display.hidden_fields.insert("secret".to_string());
+        tab.scroll.scroll_offset = 0;
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
+        let (_, result) = press(mode, &mut tab, KeyCode::Char('y')).await;
+        match result {
+            KeyResult::CopyToClipboard(text) => {
+                assert!(
+                    !text.contains("shh"),
+                    "hidden field must not appear: {text}"
+                );
+                assert!(text.contains("INFO"));
+                assert!(text.contains("hello world"));
+            }
+            other => panic!("expected CopyToClipboard, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn test_m_marks_all_selected_lines() {
         let mut tab = make_tab(&["a", "b", "c", "d"]).await;
         tab.scroll.scroll_offset = 3;
@@ -638,6 +677,77 @@ mod tests {
             ModeRenderState::Search { query, forward, .. } => {
                 assert!(query.contains("foo"), "expected lo-line text, got: {query}");
                 assert!(forward);
+            }
+            other => panic!("expected Search, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_slash_seeds_search_with_custom_schema_template_reconstruction() {
+        // The seeded search text must match what's rendered (schema
+        // template, hidden field collapsed), not the generic column layout.
+        let line = "INFO/Syscon/StartupMgr, hello there";
+        let mut tab = make_tab(&[line]).await;
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "telecom".to_string(),
+            description: None,
+            template: Some("{level}/{component}/{feature}, {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: Default::default(),
+        };
+        tab.display.format = Some(std::sync::Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        tab.display.hidden_fields.insert("component".to_string());
+        tab.scroll.scroll_offset = 0;
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('/')).await;
+        match mode2.render_state() {
+            ModeRenderState::Search { query, .. } => {
+                assert_eq!(query, regex::escape("INFO/StartupMgr, hello there"));
+            }
+            other => panic!("expected Search, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_slash_seeds_search_with_pattern_based_custom_schema_hidden_field() {
+        // A `pattern`-based (regex) custom schema has no `template_segments`
+        // — must also fall back to the generic column layout.
+        let line = "INFO shh hello world";
+        let mut tab = make_tab(&[line]).await;
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: None,
+            pattern: Some("^(?P<level>\\w+) (?P<secret>\\w+) (?P<message>.*)$".to_string()),
+            fields: [("secret".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+        };
+        tab.display.format = Some(std::sync::Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        tab.display.hidden_fields.insert("secret".to_string());
+        tab.scroll.scroll_offset = 0;
+        let mode = VisualLineMode {
+            anchor: 0,
+            count: None,
+        };
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('/')).await;
+        match mode2.render_state() {
+            ModeRenderState::Search { query, .. } => {
+                assert!(
+                    !query.contains("shh"),
+                    "hidden field must not appear: {query}"
+                );
+                assert!(query.contains("INFO"));
+                assert!(query.contains("hello world"));
             }
             other => panic!("expected Search, got {:?}", other),
         }

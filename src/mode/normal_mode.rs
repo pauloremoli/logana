@@ -12,7 +12,7 @@ use crate::{
         visual_mode::VisualLineMode,
     },
     theme::Theme,
-    ui::{KeyResult, TabState, field_layout::apply_field_layout},
+    ui::{KeyResult, TabState},
 };
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -301,23 +301,7 @@ impl Mode for NormalMode {
                     .scroll_offset
                     .min(tab.filter.visible_indices.len() - 1),
             );
-            let bytes = tab.file_reader.get_line(idx);
-            let text = tab
-                .display
-                .format
-                .as_ref()
-                .and_then(|parser| parser.parse_line(bytes))
-                .map(|parts| {
-                    apply_field_layout(
-                        &parts,
-                        &tab.display.field_layout,
-                        &tab.display.hidden_fields,
-                        tab.display.show_keys,
-                        None,
-                    )
-                    .join(" ")
-                })
-                .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned());
+            let text = tab.get_display_text(idx);
             return (self, KeyResult::CopyToClipboard(text));
         }
 
@@ -331,24 +315,7 @@ impl Mode for NormalMode {
             }
             let text: String = marked
                 .iter()
-                .map(|&idx| {
-                    let bytes = tab.file_reader.get_line(idx);
-                    tab.display
-                        .format
-                        .as_ref()
-                        .and_then(|parser| parser.parse_line(bytes))
-                        .map(|parts| {
-                            apply_field_layout(
-                                &parts,
-                                &tab.display.field_layout,
-                                &tab.display.hidden_fields,
-                                tab.display.show_keys,
-                                None,
-                            )
-                            .join(" ")
-                        })
-                        .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
-                })
+                .map(|&idx| tab.get_display_text(idx))
                 .collect::<Vec<_>>()
                 .join("\n");
             return (self, KeyResult::CopyToClipboard(text));
@@ -1262,6 +1229,96 @@ mod tests {
         match result {
             KeyResult::CopyToClipboard(text) => {
                 assert_eq!(text, "line1");
+            }
+            other => panic!("expected CopyToClipboard, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_y_yanks_embedded_json_parser_with_hidden_field() {
+        // Built-in (non-custom-schema) parsers have no `template_segments`,
+        // so this must fall back to the generic column layout — same as
+        // before the reconstruction feature existed.
+        let line =
+            r#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","secret":"shh","msg":"hello"}"#;
+        let mut tab = make_tab(&[line]).await;
+        tab.display.format = crate::parser::detect_format(&[line.as_bytes()]).map(Arc::from);
+        tab.display.hidden_fields.insert("secret".to_string());
+
+        let (_, result) = press(&mut tab, KeyCode::Char('y'), KeyModifiers::NONE).await;
+        match result {
+            KeyResult::CopyToClipboard(text) => {
+                assert!(
+                    !text.contains("shh"),
+                    "hidden field must not appear: {text}"
+                );
+                assert!(text.contains("INFO"));
+                assert!(text.contains("hello"));
+            }
+            other => panic!("expected CopyToClipboard, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_y_yanks_pattern_based_custom_schema_with_hidden_field() {
+        // A `pattern`-based (regex) custom schema has no `template_segments`
+        // either — must also fall back to the generic column layout.
+        let line = "INFO shh hello world";
+        let mut tab = make_tab(&[line]).await;
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: None,
+            pattern: Some("^(?P<level>\\w+) (?P<secret>\\w+) (?P<message>.*)$".to_string()),
+            fields: [("secret".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+        };
+        tab.display.format = Some(std::sync::Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        tab.display.hidden_fields.insert("secret".to_string());
+
+        let (_, result) = press(&mut tab, KeyCode::Char('y'), KeyModifiers::NONE).await;
+        match result {
+            KeyResult::CopyToClipboard(text) => {
+                assert!(
+                    !text.contains("shh"),
+                    "hidden field must not appear: {text}"
+                );
+                assert!(text.contains("INFO"));
+                assert!(text.contains("hello world"));
+            }
+            other => panic!("expected CopyToClipboard, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_y_yanks_custom_schema_template_reconstruction_with_hidden_field() {
+        // Yanked text must match what's actually rendered (schema template,
+        // hidden field's separator collapsed), not the generic column
+        // layout — otherwise a paste doesn't match what the user saw and
+        // selected.
+        let line = "INFO/Syscon/StartupMgr, hello there";
+        let mut tab = make_tab(&[line]).await;
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "telecom".to_string(),
+            description: None,
+            template: Some("{level}/{component}/{feature}, {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: Default::default(),
+        };
+        tab.display.format = Some(std::sync::Arc::new(
+            crate::parser::CustomParser::from_config(&cfg).unwrap(),
+        ));
+        tab.display.hidden_fields.insert("component".to_string());
+
+        let (_, result) = press(&mut tab, KeyCode::Char('y'), KeyModifiers::NONE).await;
+        match result {
+            KeyResult::CopyToClipboard(text) => {
+                assert_eq!(text, "INFO/StartupMgr, hello there");
             }
             other => panic!("expected CopyToClipboard, got {:?}", other),
         }

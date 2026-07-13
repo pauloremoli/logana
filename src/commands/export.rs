@@ -3,7 +3,7 @@ use crate::db::Comment;
 use crate::ingestion::FileReader;
 use crate::parser::LogFormatParser;
 use crate::ui::FieldLayout;
-use crate::ui::field_layout::apply_field_layout;
+use crate::ui::field_layout::{apply_field_layout, reconstructed_line_text};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -303,6 +303,11 @@ fn render_line_content(line_bytes: &[u8], data: &ExportData) -> String {
     if let Some(parser) = data.parser
         && let Some(parts) = parser.parse_line(line_bytes)
     {
+        if let Some(reconstructed) =
+            reconstructed_line_text(parser, &parts, data.field_layout, data.hidden_fields)
+        {
+            return reconstructed;
+        }
         let cols = apply_field_layout(
             &parts,
             data.field_layout,
@@ -985,5 +990,61 @@ mod tests {
         let result = format_lines(&[0, 99], &data);
         assert!(result.contains("1: only"));
         assert!(result.contains("100: "));
+    }
+
+    #[test]
+    fn test_format_lines_custom_schema_template_reconstruction_with_hidden_field() {
+        // Export must render a line exactly as the TUI would display it
+        // (schema template, hidden field's separator collapsed) — this
+        // function's own doc comment promises that.
+        let line = "INFO/Syscon/StartupMgr, hello there";
+        let reader = make_reader(&[line]);
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "telecom".to_string(),
+            description: None,
+            template: Some("{level}/{component}/{feature}, {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: Default::default(),
+        };
+        let parser = crate::parser::CustomParser::from_config(&cfg).unwrap();
+        let hidden: HashSet<String> = ["component".to_string()].into_iter().collect();
+        let mut data = make_data("f.log", &[], vec![], &reader);
+        data.parser = Some(&parser);
+        data.hidden_fields = &hidden;
+        let result = format_lines(&[0], &data);
+        assert_eq!(result, "1: INFO/StartupMgr, hello there");
+    }
+
+    #[test]
+    fn test_format_lines_pattern_based_custom_schema_hides_field() {
+        // A `pattern`-based (regex) custom schema has no `template_segments`
+        // — export must fall back to the generic column layout (which
+        // already omits hidden fields) rather than a nonexistent
+        // reconstruction.
+        let line = "INFO shh hello world";
+        let reader = make_reader(&[line]);
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: None,
+            pattern: Some("^(?P<level>\\w+) (?P<secret>\\w+) (?P<message>.*)$".to_string()),
+            fields: [("secret".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+        };
+        let parser = crate::parser::CustomParser::from_config(&cfg).unwrap();
+        let hidden: HashSet<String> = ["secret".to_string()].into_iter().collect();
+        let mut data = make_data("f.log", &[], vec![], &reader);
+        data.parser = Some(&parser);
+        data.hidden_fields = &hidden;
+        let result = format_lines(&[0], &data);
+        assert!(
+            !result.contains("shh"),
+            "hidden field must not appear: {result}"
+        );
+        assert!(result.contains("INFO"));
+        assert!(result.contains("hello world"));
     }
 }

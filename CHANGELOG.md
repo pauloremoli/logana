@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Visual Char Mode's word motions (`w`/`e`/`b`), `/` search match offsets, `y`/`Y`/visual-line yank, and `:export` no longer diverge from what's actually rendered on a custom schema's `template` line — they all now go through the same shared reconstruction (`field_layout::render_line_text`) that the log panel uses, instead of separately-computed (and drift-prone) column layouts.
+
 ## [0.7.2] - 2026-07-13
 
 ### Added
