@@ -146,6 +146,52 @@ impl ArchiveTree {
         }
     }
 
+    /// Bulk equivalent of calling [`Self::container_check_state`] once per
+    /// node — for rendering a full row list, that naive approach re-walks
+    /// each container's descendants from scratch, so nested containers pay
+    /// for their shared descendants over and over (worst case `O(n * depth)`
+    /// for a chain of containers each wrapping the same underlying files).
+    /// This computes every node's state in a single `O(n)` pass instead, by
+    /// relying on the arena invariant that a node's id is always smaller
+    /// than any of its descendants' ids (parents are pushed before their
+    /// children while listing) — iterating ids from highest to lowest is
+    /// therefore a valid bottom-up (children-before-parents) order without
+    /// needing recursion.
+    pub fn check_states(&self) -> Vec<CheckState> {
+        let mut total_files = vec![0usize; self.nodes.len()];
+        let mut selected_files = vec![0usize; self.nodes.len()];
+        for id in (0..self.nodes.len()).rev() {
+            match &self.nodes[id].kind {
+                NodeKind::File => {
+                    total_files[id] = 1;
+                    if self.nodes[id].selected {
+                        selected_files[id] = 1;
+                    }
+                }
+                NodeKind::Container { children, .. } => {
+                    for &child in children {
+                        total_files[id] += total_files[child];
+                        selected_files[id] += selected_files[child];
+                    }
+                }
+                NodeKind::UnreadableContainer { .. } => {}
+            }
+        }
+        (0..self.nodes.len())
+            .map(|id| {
+                if total_files[id] == 0 {
+                    CheckState::Unchecked
+                } else if selected_files[id] == total_files[id] {
+                    CheckState::Checked
+                } else if selected_files[id] == 0 {
+                    CheckState::Unchecked
+                } else {
+                    CheckState::Partial
+                }
+            })
+            .collect()
+    }
+
     /// Toggling a `File` row flips just that node. Toggling a `Container`
     /// row is a "select all in this subtree" shortcut: if every descendant
     /// file is already selected, deselect them all; otherwise select them
@@ -1355,6 +1401,50 @@ mod tests {
         let mut tree = build_test_tree();
         tree.nodes[2].selected = true;
         assert_eq!(tree.container_check_state(1), CheckState::Partial);
+    }
+
+    #[test]
+    fn test_check_states_matches_container_check_state_for_every_node() {
+        // `check_states()` is a bulk O(n) alternative to calling
+        // `container_check_state(id)` once per node — must agree with it
+        // for every node in the tree, in several selection states.
+        for setup in [Vec::<usize>::new(), vec![2], vec![2, 3], vec![2, 3, 5, 6]] {
+            let mut tree = build_test_tree();
+            for &idx in &setup {
+                tree.nodes[idx].selected = true;
+            }
+            let states = tree.check_states();
+            assert_eq!(states.len(), tree.nodes.len());
+            for (id, &state) in states.iter().enumerate() {
+                assert_eq!(
+                    state,
+                    tree.container_check_state(id),
+                    "node {id} mismatched for selection {setup:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_check_states_matches_container_check_state_for_deeply_nested_tree() {
+        // A chain of containers, each nesting the next, so a naive
+        // top-down per-container walk would redo work at every level —
+        // `check_states()` must still agree with `container_check_state`.
+        let mut bytes = std::fs::read(make_zip(&[("leaf.log", b"leaf")]).path()).unwrap();
+        for _ in 0..5 {
+            let wrapper = make_zip(&[("wrapped.zip", bytes.as_slice())]);
+            bytes = std::fs::read(wrapper.path()).unwrap();
+        }
+        let outer_tmp = make_zip(&[("wrapped.zip", bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+        let tree = list_archive_tree(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let states = tree.check_states();
+        assert_eq!(states.len(), tree.nodes.len());
+        for (id, &state) in states.iter().enumerate() {
+            assert_eq!(state, tree.container_check_state(id), "node {id}");
+        }
     }
 
     #[test]

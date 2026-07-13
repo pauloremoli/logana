@@ -1,5 +1,4 @@
 use crate::{
-    commands::auto_complete::regex_search_match,
     config::Keybindings,
     ingestion::{ArchiveTree, CheckState, NodeId, NodeKind},
     mode::app_mode::{Mode, ModeRenderState, status_entry},
@@ -25,6 +24,45 @@ pub struct ArchiveRow {
     pub is_error: bool,
 }
 
+/// Precompiled form of the search query — built once when the query text
+/// changes rather than once per node checked. `visible_rows()` is called
+/// several times per keystroke (scroll clamping, then `render_state()`)
+/// and an archive can have thousands of entries, so recompiling a `Regex`
+/// per node per call (as a plain `regex_search_match` per node would) made
+/// every keystroke — and every idle redraw tick — visibly slow to type
+/// once a search was active on a large archive. Mirrors
+/// `regex_search_match`'s own fallback: a pattern that fails to compile as
+/// a regex still works as a plain case-insensitive substring match.
+#[derive(Debug)]
+enum SearchMatcher {
+    MatchAll,
+    Regex(regex::Regex),
+    Literal(String),
+}
+
+impl SearchMatcher {
+    fn compile(query: &str) -> Self {
+        if query.is_empty() {
+            return Self::MatchAll;
+        }
+        match regex::RegexBuilder::new(query)
+            .case_insensitive(true)
+            .build()
+        {
+            Ok(re) => Self::Regex(re),
+            Err(_) => Self::Literal(query.to_lowercase()),
+        }
+    }
+
+    fn is_match(&self, haystack: &str) -> bool {
+        match self {
+            Self::MatchAll => true,
+            Self::Regex(re) => re.is_match(haystack),
+            Self::Literal(needle) => haystack.to_lowercase().contains(needle.as_str()),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ArchivePickerMode {
     pub tree: ArchiveTree,
@@ -37,6 +75,9 @@ pub struct ArchivePickerMode {
     /// Live typeahead query; non-empty narrows [`Self::visible_rows`] to
     /// matching files and the containers that hold them.
     pub search: String,
+    /// Kept in sync with `search` at every mutation site — see
+    /// [`SearchMatcher`].
+    search_matcher: SearchMatcher,
     /// True while capturing search input — gates every other bound key
     /// (toggle/all/none) into the query buffer instead, since the picker's
     /// action keys ('a', 'n', ' ') would otherwise collide with likely
@@ -55,6 +96,7 @@ impl ArchivePickerMode {
             selected: 0,
             source_path,
             search: String::new(),
+            search_matcher: SearchMatcher::MatchAll,
             searching: false,
             pre_search_selected: None,
         }
@@ -69,7 +111,7 @@ impl ArchivePickerMode {
         }
         let mut keep: HashSet<NodeId> = HashSet::new();
         for &id in &self.all_ids {
-            if regex_search_match(&self.search, &self.tree.nodes[id].name) {
+            if self.search_matcher.is_match(&self.tree.nodes[id].name) {
                 let mut cur = Some(id);
                 while let Some(nid) = cur {
                     keep.insert(nid);
@@ -93,25 +135,25 @@ impl ArchivePickerMode {
         }
     }
 
-    fn row_for(&self, id: NodeId) -> ArchiveRow {
+    /// `states` is the whole tree's precomputed check states (see
+    /// [`ArchiveTree::check_states`]) — passing it in rather than calling
+    /// `container_check_state(id)` here keeps a full row list build at
+    /// `O(n)` instead of re-walking each container's descendants per row.
+    fn row_for(&self, id: NodeId, states: &[CheckState]) -> ArchiveRow {
         let node = &self.tree.nodes[id];
         match &node.kind {
             NodeKind::File => ArchiveRow {
                 name: node.name.clone(),
                 depth: node.depth,
                 is_container: false,
-                check_state: if node.selected {
-                    CheckState::Checked
-                } else {
-                    CheckState::Unchecked
-                },
+                check_state: states[id],
                 is_error: false,
             },
             NodeKind::Container { .. } => ArchiveRow {
                 name: node.name.clone(),
                 depth: node.depth,
                 is_container: true,
-                check_state: self.tree.container_check_state(id),
+                check_state: states[id],
                 is_error: false,
             },
             NodeKind::UnreadableContainer { error } => ArchiveRow {
@@ -159,6 +201,7 @@ impl ArchivePickerMode {
                 .unwrap_or(0);
             self.selected = full_idx;
             self.search.clear();
+            self.search_matcher = SearchMatcher::MatchAll;
             self.searching = false;
             self.pre_search_selected = None;
             return (self, KeyResult::Handled);
@@ -166,6 +209,7 @@ impl ArchivePickerMode {
         if kb.search.cancel.matches(key, modifiers) {
             self.selected = self.pre_search_selected.take().unwrap_or(0);
             self.search.clear();
+            self.search_matcher = SearchMatcher::MatchAll;
             self.searching = false;
             return (self, KeyResult::Handled);
         }
@@ -189,6 +233,7 @@ impl ArchivePickerMode {
             }
             _ => return (self, KeyResult::Ignored),
         }
+        self.search_matcher = SearchMatcher::compile(&self.search);
         self.selected = 0;
         self.clamp_selected();
         (self, KeyResult::Handled)
@@ -231,6 +276,7 @@ impl Mode for ArchivePickerMode {
         if kb.select_fields.search.matches(key, modifiers) {
             self.pre_search_selected = Some(self.selected);
             self.search.clear();
+            self.search_matcher = SearchMatcher::MatchAll;
             self.searching = true;
             return (self, KeyResult::Handled);
         }
@@ -286,11 +332,12 @@ impl Mode for ArchivePickerMode {
     }
 
     fn render_state(&self) -> ModeRenderState {
+        let states = self.tree.check_states();
         ModeRenderState::ArchivePicker {
             rows: self
                 .visible_rows()
                 .iter()
-                .map(|&id| self.row_for(id))
+                .map(|&id| self.row_for(id, &states))
                 .collect(),
             selected: self.selected,
             source_path: self.source_path.clone(),
