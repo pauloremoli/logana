@@ -764,6 +764,119 @@ pub fn color_to_string(c: Color) -> String {
     }
 }
 
+/// Minimum WCAG contrast ratio (the AA threshold for normal text) a
+/// generated `fg`/`bg` pair must meet to count as readable.
+pub const MIN_READABLE_CONTRAST: f64 = 4.5;
+
+/// WCAG relative luminance of an sRGB color — the basis of [`contrast_ratio`].
+fn relative_luminance((r, g, b): (u8, u8, u8)) -> f64 {
+    let channel = |c: u8| {
+        let c = c as f64 / 255.0;
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/// WCAG contrast ratio between two sRGB colors: `1.0` (no contrast, e.g.
+/// identical colors) up to `21.0` (black on white). `>= MIN_READABLE_CONTRAST`
+/// is the threshold this module treats as "readable."
+pub fn contrast_ratio(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (lighter, darker) = if la >= lb { (la, lb) } else { (lb, la) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// A tiny, non-cryptographic PRNG (xorshift64*) — good enough for cosmetic
+/// random filter colors, avoids pulling in a whole `rand` dependency for
+/// this one use.
+struct SmallRng(u64);
+
+impl SmallRng {
+    fn from_seed(seed: u64) -> Self {
+        // xorshift64* is degenerate on an all-zero state; nudge it off zero
+        // with a fixed odd constant rather than special-casing every call site.
+        Self(if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        })
+    }
+
+    /// Seeded from `std::collections::hash_map::RandomState`'s per-instance
+    /// random keying — not documented as a randomness source, but varies
+    /// freely between calls, which is all cosmetic color generation needs.
+    fn seeded() -> Self {
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+        Self::from_seed(RandomState::new().build_hasher().finish())
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn next_byte(&mut self) -> u8 {
+        (self.next_u64() >> 56) as u8
+    }
+
+    fn next_rgb(&mut self) -> (u8, u8, u8) {
+        (self.next_byte(), self.next_byte(), self.next_byte())
+    }
+
+    /// A random shade of gray (`r == g == b`) — used for `fg` so generated
+    /// text color stays on a black/white scale instead of an arbitrary hue.
+    fn next_gray(&mut self) -> (u8, u8, u8) {
+        let v = self.next_byte();
+        (v, v, v)
+    }
+}
+
+/// Maximum random `fg` draws tried against one random `bg` before falling
+/// back to a guaranteed-readable choice — bounds the loop; in practice a
+/// contrast-passing `fg` for a random `bg` is common enough to land well
+/// under this within a handful of draws.
+const MAX_CONTRAST_ATTEMPTS: usize = 50;
+
+/// A random `(fg, bg)` RGB pair meeting [`MIN_READABLE_CONTRAST`] — the
+/// core of `random_readable_color_pair`, split out so tests can fix the
+/// seed instead of depending on real randomness. `bg` is a random full
+/// color; `fg` is constrained to a black/white scale (a random gray shade,
+/// not an arbitrary hue) so generated text stays readable body text rather
+/// than a second, competing color.
+fn random_readable_pair_from(rng: &mut SmallRng) -> ((u8, u8, u8), (u8, u8, u8)) {
+    let bg = rng.next_rgb();
+    for _ in 0..MAX_CONTRAST_ATTEMPTS {
+        let fg = rng.next_gray();
+        if contrast_ratio(fg, bg) >= MIN_READABLE_CONTRAST {
+            return (fg, bg);
+        }
+    }
+    // Fallback: black or white text, whichever contrasts more against `bg` —
+    // always readable, since one of the two always is for any `bg`.
+    let white = (255, 255, 255);
+    let black = (0, 0, 0);
+    let fg = if contrast_ratio(white, bg) >= contrast_ratio(black, bg) {
+        white
+    } else {
+        black
+    };
+    (fg, bg)
+}
+
+/// A random, readable `(fg, bg)` RGB color pair for `:filter`/`:highlight --auto`
+/// — `bg` a random color, `fg` a random shade of gray (never a competing hue).
+pub fn random_readable_color_pair() -> ((u8, u8, u8), (u8, u8, u8)) {
+    let mut rng = SmallRng::seeded();
+    random_readable_pair_from(&mut rng)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1270,5 +1383,103 @@ mod tests {
         assert_eq!(parse_color("Teal"), Some(Color::Rgb(0, 128, 128)));
         assert_eq!(parse_color("NAVY"), Some(Color::Rgb(0, 0, 128)));
         assert_eq!(parse_color("Brown"), Some(Color::Rgb(165, 42, 42)));
+    }
+
+    // ── contrast_ratio / random_readable_color_pair ─────────────────────
+
+    #[test]
+    fn test_contrast_ratio_black_on_white_is_maximal() {
+        let ratio = contrast_ratio((0, 0, 0), (255, 255, 255));
+        assert!((ratio - 21.0).abs() < 0.01, "got {ratio}");
+    }
+
+    #[test]
+    fn test_contrast_ratio_identical_colors_is_one() {
+        let ratio = contrast_ratio((100, 150, 200), (100, 150, 200));
+        assert!((ratio - 1.0).abs() < 0.0001, "got {ratio}");
+    }
+
+    #[test]
+    fn test_contrast_ratio_is_symmetric() {
+        let a = (10, 200, 50);
+        let b = (240, 30, 90);
+        assert_eq!(contrast_ratio(a, b), contrast_ratio(b, a));
+    }
+
+    #[test]
+    fn test_random_readable_pair_meets_contrast_threshold_across_many_seeds() {
+        // Property-style check across a spread of seeds (not real
+        // randomness, so this is fully deterministic) rather than one
+        // fixed example — the whole point is this must hold for *any*
+        // random draw, not just a lucky one.
+        for seed in 0..500u64 {
+            let mut rng = SmallRng::from_seed(seed);
+            let (fg, bg) = random_readable_pair_from(&mut rng);
+            let ratio = contrast_ratio(fg, bg);
+            assert!(
+                ratio >= MIN_READABLE_CONTRAST,
+                "seed {seed}: fg={fg:?} bg={bg:?} ratio={ratio} below {MIN_READABLE_CONTRAST}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_random_readable_pair_fg_is_always_grayscale() {
+        // fg must be a black/white-scale shade (r == g == b), never an
+        // arbitrary hue — only bg is a full random color.
+        for seed in 0..500u64 {
+            let mut rng = SmallRng::from_seed(seed);
+            let (fg, _bg) = random_readable_pair_from(&mut rng);
+            assert_eq!(
+                fg.0, fg.1,
+                "seed {seed}: fg={fg:?} is not grayscale (r != g)"
+            );
+            assert_eq!(
+                fg.1, fg.2,
+                "seed {seed}: fg={fg:?} is not grayscale (g != b)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_random_readable_color_pair_fg_is_grayscale() {
+        let (fg, _bg) = random_readable_color_pair();
+        assert_eq!(fg.0, fg.1);
+        assert_eq!(fg.1, fg.2);
+    }
+
+    #[test]
+    fn test_random_readable_pair_varies_across_seeds() {
+        let mut rng_a = SmallRng::from_seed(1);
+        let mut rng_b = SmallRng::from_seed(2);
+        let pair_a = random_readable_pair_from(&mut rng_a);
+        let pair_b = random_readable_pair_from(&mut rng_b);
+        assert_ne!(
+            pair_a, pair_b,
+            "different seeds should (almost always) produce different pairs"
+        );
+    }
+
+    #[test]
+    fn test_random_readable_pair_is_deterministic_for_a_fixed_seed() {
+        let (fg1, bg1) = random_readable_pair_from(&mut SmallRng::from_seed(42));
+        let (fg2, bg2) = random_readable_pair_from(&mut SmallRng::from_seed(42));
+        assert_eq!((fg1, bg1), (fg2, bg2));
+    }
+
+    #[test]
+    fn test_small_rng_from_seed_zero_does_not_get_stuck() {
+        // xorshift64* is degenerate at state 0 (stays 0 forever) — confirm
+        // the zero-seed nudge actually avoids that.
+        let mut rng = SmallRng::from_seed(0);
+        assert_ne!(rng.next_u64(), 0);
+    }
+
+    #[test]
+    fn test_random_readable_color_pair_public_api_meets_contrast() {
+        // Exercises the real (non-seeded) entry point end to end.
+        let (fg, bg) = random_readable_color_pair();
+        let ratio = contrast_ratio(fg, bg);
+        assert!(ratio >= MIN_READABLE_CONTRAST, "got {ratio}");
     }
 }

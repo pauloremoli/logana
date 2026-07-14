@@ -11,6 +11,33 @@ pub(super) struct FilterArgs {
     pub regex: bool,
     pub ignore_case: bool,
     pub group: Option<String>,
+    /// Generate a random, readable fg/bg pair instead of `fg`/`bg`.
+    /// Mutually exclusive with them — see `resolve_auto_colors`.
+    pub auto: bool,
+}
+
+/// Resolves `fg`/`bg` when `--auto` is set: generates a random, readable
+/// color pair (see `theme::random_readable_color_pair`) and formats it as
+/// `[r,g,b]` strings, the same shape `FilterOptions::fg`/`bg` already
+/// accept from `--fg`/`--bg`. Errors if `--auto` is combined with an
+/// explicit `--fg`/`--bg` — silently overriding one or the other would be
+/// more surprising than just asking the user to pick one.
+fn resolve_auto_colors(
+    auto: bool,
+    fg: Option<String>,
+    bg: Option<String>,
+) -> Result<(Option<String>, Option<String>), String> {
+    if !auto {
+        return Ok((fg, bg));
+    }
+    if fg.is_some() || bg.is_some() {
+        return Err("--auto cannot be combined with --fg/--bg".to_string());
+    }
+    let (fg_rgb, bg_rgb) = crate::theme::random_readable_color_pair();
+    Ok((
+        Some(format!("[{},{},{}]", fg_rgb.0, fg_rgb.1, fg_rgb.2)),
+        Some(format!("[{},{},{}]", bg_rgb.0, bg_rgb.1, bg_rgb.2)),
+    ))
 }
 
 /// Builds the stored pattern for `:filter`/`:exclude`/`:highlight` from
@@ -48,7 +75,9 @@ impl App {
             regex,
             ignore_case,
             group,
+            auto,
         } = args;
+        let (fg, bg) = resolve_auto_colors(auto, fg, bg)?;
         let is_field = !field.is_empty();
         let stored_pattern = if is_field {
             build_field_filter_pattern(&field, &pattern)?
@@ -180,7 +209,9 @@ impl App {
             regex,
             ignore_case,
             group,
+            auto,
         } = args;
+        let (fg, bg) = resolve_auto_colors(auto, fg, bg)?;
         let stored_pattern = if !field.is_empty() {
             build_field_filter_pattern(&field, &pattern)?
         } else {

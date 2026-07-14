@@ -7,8 +7,8 @@ pub struct CommandInfo {
 pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "filter",
-        usage: "filter [-r] [-i] [-l] [--fg <color>] [--bg <color>] [--group <name>] [--field <key>=<value>] <pattern>",
-        description: "Add an include filter. e.g. filter ERROR, filter connection refused, filter -r \"ERR(OR)?\", filter --ignore-case error, filter --field level=error, filter --group errors ERROR",
+        usage: "filter [-r] [-i] [-l] [--fg <color>] [--bg <color>] [-a] [--group <name>] [--field <key>=<value>] <pattern>",
+        description: "Add an include filter. e.g. filter ERROR, filter connection refused, filter -r \"ERR(OR)?\", filter --ignore-case error, filter --field level=error, filter --group errors ERROR, filter --auto ERROR (random readable colors)",
     },
     CommandInfo {
         name: "exclude",
@@ -17,8 +17,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "highlight",
-        usage: "highlight [-r] [-i] [-l] [--fg <color>] [--bg <color>] [--group <name>] [--field <key>=<value>] <pattern>",
-        description: "Add a highlight filter (styling only, does not affect visibility). e.g. highlight ERROR, highlight --field level=error, h ERROR",
+        usage: "highlight [-r] [-i] [-l] [--fg <color>] [--bg <color>] [-a] [--group <name>] [--field <key>=<value>] <pattern>",
+        description: "Add a highlight filter (styling only, does not affect visibility). e.g. highlight ERROR, highlight --field level=error, highlight --auto ERROR (random readable colors), h ERROR",
     },
     CommandInfo {
         name: "set-color",

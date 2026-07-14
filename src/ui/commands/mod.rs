@@ -70,6 +70,7 @@ impl App {
                 regex,
                 ignore_case,
                 group,
+                auto,
             }) => {
                 return self
                     .cmd_filter(filter::FilterArgs {
@@ -81,6 +82,7 @@ impl App {
                         regex,
                         ignore_case,
                         group,
+                        auto,
                     })
                     .await;
             }
@@ -104,6 +106,7 @@ impl App {
                 regex,
                 ignore_case,
                 group,
+                auto,
             }) => {
                 return self
                     .cmd_highlight(filter::FilterArgs {
@@ -115,6 +118,7 @@ impl App {
                         regex,
                         ignore_case,
                         group,
+                        auto,
                     })
                     .await;
             }
@@ -1618,6 +1622,66 @@ mod tests {
         let cc = filters[0].color_config.as_ref().unwrap();
         assert_eq!(cc.fg, Some(ratatui::style::Color::Red));
         assert_eq!(cc.bg, Some(ratatui::style::Color::Blue));
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_auto_flag_assigns_a_readable_color_pair() {
+        let mut app = make_app(&["INFO foo", "WARN bar"]).await;
+        app.run_command("filter --auto INFO").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        let cc = filters[0].color_config.as_ref().unwrap();
+        let (fg, bg) = (cc.fg.unwrap(), cc.bg.unwrap());
+        let to_rgb = |c: ratatui::style::Color| match c {
+            ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+            other => panic!("expected -a to generate an Rgb color, got {other:?}"),
+        };
+        let ratio = crate::theme::contrast_ratio(to_rgb(fg), to_rgb(bg));
+        assert!(
+            ratio >= crate::theme::MIN_READABLE_CONTRAST,
+            "auto-generated pair must be readable, got ratio {ratio}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_auto_short_flag() {
+        let mut app = make_app(&["INFO foo"]).await;
+        app.run_command("filter -a INFO").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert!(filters[0].color_config.as_ref().unwrap().fg.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_filter_auto_combined_with_fg_is_an_error() {
+        let mut app = make_app(&["INFO foo"]).await;
+        let result = app.run_command("filter --auto --fg red INFO").await;
+        assert!(result.is_err());
+        assert!(app.tabs[0].log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_filter_auto_combined_with_bg_is_an_error() {
+        let mut app = make_app(&["INFO foo"]).await;
+        let result = app.run_command("filter --auto --bg blue INFO").await;
+        assert!(result.is_err());
+        assert!(app.tabs[0].log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_highlight_with_auto_flag_assigns_a_readable_color_pair() {
+        let mut app = make_app(&["INFO foo"]).await;
+        app.run_command("highlight --auto INFO").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].filter_type, FilterType::Highlight);
+        let cc = filters[0].color_config.as_ref().unwrap();
+        let (fg, bg) = (cc.fg.unwrap(), cc.bg.unwrap());
+        let to_rgb = |c: ratatui::style::Color| match c {
+            ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+            other => panic!("expected -a to generate an Rgb color, got {other:?}"),
+        };
+        let ratio = crate::theme::contrast_ratio(to_rgb(fg), to_rgb(bg));
+        assert!(ratio >= crate::theme::MIN_READABLE_CONTRAST);
     }
 
     #[tokio::test]

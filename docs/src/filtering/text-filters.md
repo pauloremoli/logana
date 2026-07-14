@@ -40,7 +40,7 @@ Opt in with `--regex` / `-r`. Supports full regex syntax. Words after `-r` are j
 :filter -r response time: [5-9]\d{3}ms      # slow responses over 5 seconds
 ```
 
-> **Flag ordering:** Options (`-r`, `-i`, `--fg`, `--bg`, `-l`, `--field`) must appear **before** the pattern. Everything after the first pattern word is part of the pattern.
+> **Flag ordering:** Options (`-r`, `-i`, `--fg`, `--bg`, `-l`, `--field`, `--auto`) must appear **before** the pattern. Everything after the first pattern word is part of the pattern.
 >
 > ```sh
 > :filter --fg red -r timeout.*retry   # correct
@@ -69,7 +69,7 @@ A third filter kind alongside include/exclude. Highlight filters apply their col
 :highlight --fg yellow ERROR            # with a color, same flags as :filter
 ```
 
-Highlight filters accept the same flags as `:filter` (`--regex`/`-r`, `--ignore-case`/`-i`, `--fg`, `--bg`, `-l`, `--field`, `--group`) and show up in the filter sidebar with an `H` type tag, e.g. `[x] H: ERROR (12)`. They're for marking the lines you care about while reading the log in full — mark an event, then keep scrolling to see everything around it, without an include/exclude filter narrowing the view down to just the matches.
+Highlight filters accept the same flags as `:filter` (`--regex`/`-r`, `--ignore-case`/`-i`, `--fg`, `--bg`, `-l`, `--field`, `--group`, `--auto`/`-a`) and show up in the filter sidebar with an `H` type tag, e.g. `[x] H: ERROR (12)`. They're for marking the lines you care about while reading the log in full — mark an event, then keep scrolling to see everything around it, without an include/exclude filter narrowing the view down to just the matches.
 
 To put your existing include/exclude filters into the same visible-but-marked state temporarily — for example when you need to see the full context around what they're currently hiding — see [Highlight Mode](index.md#highlight-mode).
 
@@ -128,6 +128,14 @@ By default, only the matched portion of the line is colored. To highlight the en
 ```
 
 The `-l` flag can also be applied later with `:set-color -l` from the filter manager.
+
+Pass `--auto`/`-a` instead of `--fg`/`--bg` to generate a random color pair with guaranteed readable contrast, rather than picking one yourself:
+
+```sh
+:filter --auto ERROR
+```
+
+`--auto` cannot be combined with `--fg`/`--bg`.
 
 When multiple filters overlap on the same span, their `fg` and `bg` are composed: one filter can contribute the foreground color while another contributes the background. Automatic value colors (HTTP methods, status codes, IPs, UUIDs) apply only to spans not already colored by a filter, and log-level colors are the lowest-priority fallback.
 

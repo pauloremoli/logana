@@ -26,15 +26,17 @@ Press `:` in normal mode to open command mode. Tab completes commands, flags, co
 |---|---|
 | `:filter [--regex\|-r] [-l] [--fg COLOR] [--bg COLOR] <pattern>` | Add an include filter (show only matching lines) |
 | `:filter --field <key>=<value>` | Add a field-scoped include filter (e.g. `level=error`) |
+| `:filter --auto\|-a <pattern>` | Add an include filter with a randomly generated, readable fg/bg color pair instead of specifying `--fg`/`--bg` |
 | `:exclude [--regex\|-r] <pattern>` | Add an exclude filter (hide matching lines) |
 | `:exclude --field <key>=<value>` | Add a field-scoped exclude filter (e.g. `level=debug`) |
 | `:highlight [--regex\|-r] [-l] [--fg COLOR] [--bg COLOR] <pattern>` (alias `:h`) | Add a highlight filter — colors matches without affecting visibility |
+| `:highlight --auto\|-a <pattern>` | Add a highlight filter with a randomly generated, readable fg/bg color pair |
 | `:date-filter <expr>` | Add a date/time range filter |
 | `:set-color [--fg COLOR] [--bg COLOR]` | Set highlight color for the selected filter |
 | `:save-filters <file>` | Save current filters to a JSON file |
 | `:load-filters <file>` | Load filters from a JSON file |
 
-> **Flag ordering:** All options (`--regex`, `--fg`, `--bg`, `-l`, `--field`) must appear **before** the pattern. Everything after the first pattern word is treated as part of the pattern text.
+> **Flag ordering:** All options (`--regex`, `--fg`, `--bg`, `-l`, `--field`, `--auto`) must appear **before** the pattern. Everything after the first pattern word is treated as part of the pattern text. `--auto` cannot be combined with `--fg`/`--bg`.
 
 See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filters.md), and [Field Filters](filtering/field-filters.md) for full details.
 

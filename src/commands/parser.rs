@@ -36,6 +36,9 @@ pub enum Commands {
         /// Assign the filter to a named group, so it can be toggled together with others
         #[arg(long)]
         group: Option<String>,
+        /// Generate a random readable fg/bg color pair instead of specifying --fg/--bg
+        #[arg(long = "auto", short = 'a')]
+        auto: bool,
     },
     /// Add an exclude filter
     Exclude {
@@ -82,6 +85,9 @@ pub enum Commands {
         /// Assign the filter to a named group, so it can be toggled together with others
         #[arg(long)]
         group: Option<String>,
+        /// Generate a random readable fg/bg color pair instead of specifying --fg/--bg
+        #[arg(long = "auto", short = 'a')]
+        auto: bool,
     },
     /// Set color for the selected filter
     SetColor {
