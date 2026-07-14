@@ -44,6 +44,28 @@ fn prepend_line_number(
     Line::from(all_spans).style(render_style)
 }
 
+/// Prepends a merged tab's per-line source label — purely a visual gutter
+/// decoration, exactly like `prepend_line_number`. Applied *after* all
+/// content-based highlighting (char selection, search, filters) so the
+/// label is never part of the addressable/matchable line text: it can't
+/// shift word motions, search offsets, export, or yank, the same way line
+/// numbers can't.
+fn prepend_source_label(
+    line: Line<'static>,
+    label: &str,
+    label_col_width: usize,
+    label_fg: Color,
+    render_style: Style,
+) -> Line<'static> {
+    let label_span = Span::styled(
+        format!("{:<width$} ", label, width = label_col_width),
+        Style::default().fg(label_fg),
+    );
+    let mut all_spans = vec![label_span];
+    all_spans.extend(line.spans);
+    Line::from(all_spans).style(render_style)
+}
+
 fn prepare_comment_maps(
     comments: &[(Vec<usize>, String)],
     visible_indices: &VisibleLines,
@@ -292,14 +314,14 @@ fn populate_parse_cache(
     let cache_gen = tab.cache.parse_gen;
     let mut new_entries: Vec<(usize, CachedParsedLine)> = Vec::new();
 
-    // For merged tabs, resolve per-source parsers and source labels.
+    // For merged tabs, resolve per-source parsers (source *labels* are
+    // rendered separately, purely visually — see `prepend_source_label`;
+    // they never enter `rendered`, so they can't affect word motions,
+    // search, filters, export, or yank).
     let merged_entries_arc: Option<Arc<Vec<crate::ingestion::MergedEntry>>> =
         tab.file_reader.merged_entries().cloned();
     let merged_parsers: Option<Vec<Option<Arc<dyn crate::parser::LogFormatParser>>>> =
         tab.merged.as_ref().map(|m| m.source_parsers.clone());
-    let merged_labels: Option<Vec<String>> = tab.merged.as_ref().map(|m| m.source_labels.clone());
-    let label_col_width: usize = tab.merged.as_ref().map(|m| m.label_col_width).unwrap_or(0);
-    let source_hidden = hidden_fields.contains("source");
     let has_any_parser = merged_parsers.is_some() || tab.display.format.is_some();
     let is_merged = merged_entries_arc.is_some();
 
@@ -320,19 +342,6 @@ fn populate_parse_cache(
         }
 
         let line_bytes = tab.file_reader.get_line(line_idx);
-
-        // Source prefix to prepend for merged tabs (empty string if hidden or not merged).
-        // Padded to label_col_width so all log content starts at the same column.
-        let source_prefix: String = if !source_hidden
-            && let Some(entries) = merged_entries_arc.as_ref()
-            && let Some(labels) = merged_labels.as_ref()
-            && let Some(entry) = entries.get(line_idx)
-            && let Some(label) = labels.get(entry.source_idx)
-        {
-            format!("{:<width$}", label, width = label_col_width)
-        } else {
-            String::new()
-        };
 
         let parser: Option<&dyn crate::parser::LogFormatParser> =
             if let (Some(entries), Some(parsers)) =
@@ -379,11 +388,10 @@ fn populate_parse_cache(
             } else {
                 Vec::new()
             };
-            let all_cols_hidden = source_prefix.is_empty()
-                && reconstructed
-                    .as_deref()
-                    .map(str::is_empty)
-                    .unwrap_or_else(|| cols.is_empty());
+            let all_cols_hidden = reconstructed
+                .as_deref()
+                .map(str::is_empty)
+                .unwrap_or_else(|| cols.is_empty());
             let level = parts.level.map(|s| s.to_string());
             let timestamp = parts.timestamp.map(|s| s.to_string());
             let target = parts.target.map(|s| s.to_string());
@@ -395,9 +403,9 @@ fn populate_parse_cache(
             let rendered = if all_cols_hidden {
                 String::new()
             } else if let Some(recon) = &reconstructed {
-                join_source_prefix(&source_prefix, recon)
+                recon.clone()
             } else {
-                join_source_prefix_and_cols(&source_prefix, &cols)
+                cols.join(" ")
             };
             let target_offset = target
                 .as_deref()
@@ -425,62 +433,11 @@ fn populate_parse_cache(
                     timestamp_offset,
                 },
             ));
-        } else if !source_prefix.is_empty() {
-            // Raw/unparsed line in a merged tab with a visible source label.
-            // Create a minimal cache entry so the source prefix is part of the
-            // content (not a separate span), keeping char-selection offsets correct.
-            let raw_text = std::str::from_utf8(line_bytes).unwrap_or_default();
-            let rendered = format!("{} {}", source_prefix, raw_text);
-            new_entries.push((
-                line_idx,
-                CachedParsedLine {
-                    rendered,
-                    level: None,
-                    timestamp: None,
-                    target: None,
-                    pid: None,
-                    all_cols_hidden: false,
-                    target_offset: None,
-                    pid_offset: None,
-                    timestamp_offset: None,
-                },
-            ));
         }
     }
     for (line_idx, entry) in new_entries {
         tab.cache.parse.insert(line_idx, (cache_gen, entry));
     }
-}
-
-/// `source_prefix` (merged-tab label, or empty) followed by `text`, separated
-/// by a single space when the prefix is non-empty.
-fn join_source_prefix(source_prefix: &str, text: &str) -> String {
-    if source_prefix.is_empty() {
-        text.to_string()
-    } else {
-        format!("{source_prefix} {text}")
-    }
-}
-
-/// `source_prefix` followed by `cols` joined with single spaces.
-fn join_source_prefix_and_cols(source_prefix: &str, cols: &[String]) -> String {
-    let col_bytes: usize = cols.iter().map(|c| c.len()).sum();
-    let cap =
-        source_prefix.len() + if source_prefix.is_empty() { 0 } else { 1 } + col_bytes + cols.len();
-    let mut buf = String::with_capacity(cap);
-    if !source_prefix.is_empty() {
-        buf.push_str(source_prefix);
-        if !cols.is_empty() {
-            buf.push(' ');
-        }
-    }
-    for (i, col) in cols.iter().enumerate() {
-        if i > 0 {
-            buf.push(' ');
-        }
-        buf.push_str(col);
-    }
-    buf
 }
 
 /// Classifies a raw captured `level` value via `parser`'s own mapping (e.g. a
@@ -584,6 +541,15 @@ pub fn prepare_log_panel(
     let field_layout = tab.display.field_layout.clone();
     let show_keys = tab.display.show_keys;
     let raw_mode = tab.display.raw_mode;
+
+    // Merged-tab source label, resolved per row purely for the visual
+    // gutter prepend below — see `prepend_source_label`.
+    let merged_entries_for_labels: Option<Arc<Vec<crate::ingestion::MergedEntry>>> =
+        tab.file_reader.merged_entries().cloned();
+    let merged_source_labels: Option<Vec<String>> =
+        tab.merged.as_ref().map(|m| m.source_labels.clone());
+    let merged_label_col_width: usize = tab.merged.as_ref().map(|m| m.label_col_width).unwrap_or(0);
+    let source_label_hidden = hidden_fields.contains("source");
 
     if num_visible == 0 {
         tab.scroll.scroll_offset = 0;
@@ -962,6 +928,21 @@ pub fn prepare_log_panel(
             line = crate::mode::visual_char_mode::apply_char_selection(line, lo, hi);
         }
 
+        if !source_label_hidden
+            && let Some(entries) = merged_entries_for_labels.as_ref()
+            && let Some(labels) = merged_source_labels.as_ref()
+            && let Some(entry) = entries.get(line_idx)
+            && let Some(label) = labels.get(entry.source_idx)
+        {
+            line = prepend_source_label(
+                line,
+                label,
+                merged_label_col_width,
+                theme.line_number_fg,
+                render_style,
+            );
+        }
+
         if show_line_numbers {
             let is_annotated = vis_comment_map.contains_key(&abs_vis_idx);
             line = prepend_line_number(
@@ -1150,6 +1131,189 @@ mod tests {
 
     fn make_terminal() -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    /// Builds an `App` whose single tab is a merged view of `sources`
+    /// (each `&[&str]` a source's raw lines, none of which detect a parser
+    /// — the common real-world case this bug hit), labelled with `labels`.
+    /// Lines are merged in source order (source 0's lines, then source 1's,
+    /// ...) via a fixed dummy `sort_key` — good enough for rendering tests,
+    /// which don't care about chronological order.
+    async fn make_merged_app(sources: &[&[&str]], labels: &[&str]) -> App {
+        let file_readers: Vec<FileReader> = sources
+            .iter()
+            .map(|lines| FileReader::from_bytes(lines.join("\n").into_bytes()))
+            .collect();
+        let mut entries = Vec::new();
+        for (source_idx, lines) in sources.iter().enumerate() {
+            for line_idx in 0..lines.len() {
+                entries.push(crate::ingestion::MergedEntry {
+                    sort_key: *b"2024-01-01 00:00:00.000",
+                    source_idx,
+                    line_idx,
+                });
+            }
+        }
+        let file_reader = FileReader::from_merged(Arc::new(entries), Arc::new(file_readers));
+
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut app = App::builder(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .build()
+        .await;
+
+        // Auto-detect a parser per source from its own lines, mirroring what
+        // `open_merge_tab` does in production (it reuses whatever format was
+        // already detected for that source's own tab) — this exercises the
+        // "line has a real parser" code path, not just the no-parser one.
+        let source_parsers: Vec<Option<Arc<dyn crate::parser::LogFormatParser>>> = sources
+            .iter()
+            .map(|lines| {
+                let byte_lines: Vec<&[u8]> = lines.iter().map(|l| l.as_bytes()).collect();
+                crate::parser::detect_format(&byte_lines).map(Arc::from)
+            })
+            .collect();
+
+        let label_col_width = labels.iter().map(|l| l.len()).max().unwrap_or(0);
+        app.tabs[0].merged = Some(crate::ui::MergedState {
+            source_tab_indices: Vec::new(),
+            source_parsers,
+            source_labels: labels.iter().map(|s| s.to_string()).collect(),
+            source_line_counts: sources.iter().map(|l| l.len()).collect(),
+            label_col_width,
+            stopped: true,
+        });
+        app.tabs[0].display.format = None;
+        app
+    }
+
+    #[tokio::test]
+    async fn test_merged_tab_source_label_is_visual_only_not_in_parse_cache() {
+        // The actual root cause of the reported bug: for a merged line whose
+        // source *does* have a detected parser, the label used to get baked
+        // directly into `CachedParsedLine.rendered` — the same text word
+        // motions, search, and export treat as "the line". It must not be
+        // there anymore; it's a separate, purely visual gutter span. Uses a
+        // syslog-shaped line so a format actually gets detected and this
+        // exercises the reconstructed/cols cache-population path (not the
+        // no-parser fallback, which now leaves no cache entry at all).
+        let mut app = make_merged_app(
+            &[
+                &["Jan  1 10:00:00 host1 app: first line"],
+                &["Jan  1 10:00:01 host2 app: second line"],
+            ],
+            &["workerA.log", "workerB.log"],
+        )
+        .await;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        for line_idx in 0..2 {
+            let (_, cached) = app.tabs[0]
+                .cache
+                .parse
+                .get(&line_idx)
+                .unwrap_or_else(|| panic!("expected a cache entry for line {line_idx}"));
+            assert!(
+                !cached.rendered.contains("workerA.log")
+                    && !cached.rendered.contains("workerB.log"),
+                "source label leaked into the parsed/matchable line text: {:?}",
+                cached.rendered
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_merged_tab_source_label_still_shown_on_screen() {
+        // The label must still be visible as a gutter decoration — only its
+        // presence in the *matchable content* is the bug being fixed.
+        let mut app = make_merged_app(&[&["hello world"]], &["workerA.log"]).await;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("workerA.log"));
+        assert!(content.contains("hello world"));
+    }
+
+    #[tokio::test]
+    async fn test_merged_tab_source_label_hidden_via_hidden_fields() {
+        let mut app = make_merged_app(&[&["hello world"]], &["workerA.log"]).await;
+        app.tabs[0]
+            .display
+            .hidden_fields
+            .insert("source".to_string());
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(!content.contains("workerA.log"));
+        assert!(content.contains("hello world"));
+    }
+
+    #[tokio::test]
+    async fn test_merged_tab_visual_char_selection_highlights_content_not_label() {
+        // End-to-end reproduction of the reported bug: Visual Char Mode's
+        // `cursor_col` is computed against content-only text (no source
+        // label), so the on-screen highlight it drives must land on the
+        // first character of the actual content — never inside the label,
+        // however long the label is.
+        use crate::mode::visual_char_mode::VisualMode;
+
+        let mut app = make_merged_app(&[&["hello world"]], &["a-very-long-worker-label.log"]).await;
+        let line_text = crate::mode::visual_char_mode::display_line_text(&app.tabs[0]);
+        assert_eq!(
+            line_text, "hello world",
+            "sanity: label must not be in line_text"
+        );
+        app.tabs[0].interaction.mode = Box::new(VisualMode::new(line_text));
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let row_text = |y: u16| -> String {
+            (0..buf.area.width)
+                .map(|x| {
+                    buf.cell(ratatui::prelude::Position::new(x, y))
+                        .unwrap()
+                        .symbol()
+                        .to_string()
+                })
+                .collect()
+        };
+        let content_row = (0..buf.area.height)
+            .find(|&y| row_text(y).contains("hello world"))
+            .expect("content row not found");
+        let row = row_text(content_row);
+        let label_col = row
+            .find("a-very-long-worker-label.log")
+            .expect("label not found on screen") as u16;
+        let content_col = row
+            .find("hello world")
+            .expect("content not found on screen") as u16;
+
+        let cell_at = |x: u16| {
+            buf.cell(ratatui::prelude::Position::new(x, content_row))
+                .unwrap()
+        };
+        assert!(
+            cell_at(content_col)
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED),
+            "cursor at content position 0 must highlight the first content char, not somewhere else"
+        );
+        assert!(
+            !cell_at(label_col)
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED),
+            "the source label must never be highlighted by char-selection"
+        );
     }
 
     #[tokio::test]

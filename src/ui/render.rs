@@ -95,6 +95,25 @@ fn compute_status_height(status_line: &Line, inner_width: usize, show_borders: b
     }
 }
 
+/// The format name to show in the tab bar for a merged tab: its sources'
+/// shared format name, when every source that detected one detected the
+/// *same* format (the common case — e.g. merging two journalctl files).
+/// `None` when sources disagree or none detected anything, same as a plain
+/// tab with no detected format — "unknown format" would be misleading here
+/// (detection didn't fail, there just isn't one single answer to show).
+fn merged_format_name(merged: &crate::ui::MergedState) -> Option<String> {
+    let mut names = merged
+        .source_parsers
+        .iter()
+        .filter_map(|p| p.as_deref().map(|p| p.name()));
+    let first = names.next()?;
+    if names.all(|n| n == first) {
+        Some(first.to_string())
+    } else {
+        None
+    }
+}
+
 impl App {
     pub(super) fn ui(&mut self, frame: &mut Frame) {
         let size = frame.area();
@@ -534,6 +553,8 @@ impl App {
             .map(|t| {
                 let format_name = if t.display.raw_mode {
                     None
+                } else if let Some(merged) = &t.merged {
+                    merged_format_name(merged)
                 } else {
                     t.display.format.as_ref().map(|p| p.name().to_string())
                 };
@@ -2204,6 +2225,93 @@ mod tests {
         assert!(
             !tab_row.contains("[unknown format]"),
             "active tab should not show [unknown format] when parser is detected, got: {:?}",
+            tab_row,
+        );
+    }
+
+    #[test]
+    fn test_merged_format_name_shared_when_all_sources_agree() {
+        let a: Option<Arc<dyn crate::parser::LogFormatParser>> =
+            Some(Arc::new(crate::parser::JournalctlParser::default()));
+        let b: Option<Arc<dyn crate::parser::LogFormatParser>> =
+            Some(Arc::new(crate::parser::JournalctlParser::default()));
+        let merged = crate::ui::MergedState {
+            source_tab_indices: vec![],
+            source_parsers: vec![a, b],
+            source_labels: vec![],
+            source_line_counts: vec![],
+            label_col_width: 0,
+            stopped: true,
+        };
+        assert_eq!(merged_format_name(&merged), Some("journalctl".to_string()));
+    }
+
+    #[test]
+    fn test_merged_format_name_none_when_sources_disagree() {
+        let a: Option<Arc<dyn crate::parser::LogFormatParser>> =
+            Some(Arc::new(crate::parser::JournalctlParser::default()));
+        let b: Option<Arc<dyn crate::parser::LogFormatParser>> =
+            Some(Arc::new(crate::parser::SyslogParser::default()));
+        let merged = crate::ui::MergedState {
+            source_tab_indices: vec![],
+            source_parsers: vec![a, b],
+            source_labels: vec![],
+            source_line_counts: vec![],
+            label_col_width: 0,
+            stopped: true,
+        };
+        assert_eq!(merged_format_name(&merged), None);
+    }
+
+    #[test]
+    fn test_merged_format_name_none_when_no_source_detected_a_format() {
+        let merged = crate::ui::MergedState {
+            source_tab_indices: vec![],
+            source_parsers: vec![None, None],
+            source_labels: vec![],
+            source_line_counts: vec![],
+            label_col_width: 0,
+            stopped: true,
+        };
+        assert_eq!(merged_format_name(&merged), None);
+    }
+
+    #[test]
+    fn test_merged_format_name_ignores_sources_with_no_detected_format() {
+        // A source that didn't detect anything shouldn't block agreement
+        // between the sources that did.
+        let a: Option<Arc<dyn crate::parser::LogFormatParser>> =
+            Some(Arc::new(crate::parser::JournalctlParser::default()));
+        let merged = crate::ui::MergedState {
+            source_tab_indices: vec![],
+            source_parsers: vec![a, None],
+            source_labels: vec![],
+            source_line_counts: vec![],
+            label_col_width: 0,
+            stopped: true,
+        };
+        assert_eq!(merged_format_name(&merged), Some("journalctl".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_merged_tab_shows_shared_format_name_in_tab_bar() {
+        let mut app = make_app(&["2024-02-22T10:15:30+0000 hostA sshd[1]: hi"]).await;
+        app.tabs[0].display.format = crate::parser::detect_format(&[
+            b"2024-02-22T10:15:30+0000 hostA sshd[1]: hi".as_slice(),
+        ])
+        .map(Arc::from);
+        app.open_merge_tab(vec![0]).await;
+        app.tabs.last_mut().unwrap().display.show_borders = true;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let tab_row = row_content(&buf, 0);
+        assert!(
+            !tab_row.contains("[unknown format]"),
+            "merged tab whose sole source has a detected format must not show \
+             the misleading [unknown format], got: {:?}",
             tab_row,
         );
     }

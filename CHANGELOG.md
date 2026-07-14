@@ -17,6 +17,8 @@ All notable changes to logana will be documented in this file.
 - Archive picker navigation and typeahead search on large archives (thousands of entries) no longer stall — a nested container's checkbox state is now computed once per render in a single pass instead of re-walking its descendants for every container row, and the search query is compiled to a regex once per keystroke instead of once per entry checked.
 - Archive picker's basic navigation and toggle keys (`j`/`k`/`Space`/`m`/`a`/`n`) no longer also fall through to the global keybinding handler after being handled — previously they returned `Ignored` even on a successful action, which could trigger an unrelated globally-bound action on the same keypress.
 - In real-world snapshots the 10k entries can be easily reached, increased the limit to 250k file.
+- Merged tab source-file labels no longer leak into the actual line content — they were being baked into the matchable/navigable text, throwing off Visual Char Mode's word motions (and anything else relying on the rendered line). The label is now purely a visual gutter decoration, like line numbers.
+- A merged tab's title bar no longer shows the misleading "[unknown format]" when every source shares the same detected format (e.g. merging two journalctl files) — it now shows that shared format name instead.
 
 ## [0.7.3] - 2026-07-13
 
