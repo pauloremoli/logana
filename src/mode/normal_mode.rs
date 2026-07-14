@@ -57,6 +57,12 @@ impl Mode for NormalMode {
             return (self, KeyResult::Handled);
         }
 
+        if let Some(binding) = kb.custom.iter().find(|c| c.key.matches(key, modifiers)) {
+            self.count = None;
+            tab.interaction.g_key_pressed = false;
+            return (self, KeyResult::ExecuteCommand(binding.command.clone()));
+        }
+
         if kb.global.quit.matches(key, modifiers) {
             self.count = None;
             return (self, KeyResult::Ignored);
@@ -690,6 +696,66 @@ mod tests {
         press(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE).await;
         assert_eq!(tab.scroll.scroll_offset, 0);
         assert!(!tab.interaction.g_key_pressed);
+    }
+
+    #[tokio::test]
+    async fn test_custom_binding_returns_execute_command_with_its_configured_command() {
+        let mut tab = make_tab(&["a"]).await;
+        let mut kb = crate::config::Keybindings::default();
+        kb.custom
+            .push(crate::config::keybindings::CustomCommandBinding {
+                key: crate::config::keybindings::KeyBindings(vec![
+                    crate::config::keybindings::KeyBinding(KeyCode::F(2), KeyModifiers::NONE),
+                ]),
+                command: "load-filters ~/logs/filters/draco-mars.json".to_string(),
+            });
+        tab.interaction.keybindings = Arc::new(kb);
+
+        let (_, result) = press(&mut tab, KeyCode::F(2), KeyModifiers::NONE).await;
+        assert!(
+            matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd == "load-filters ~/logs/filters/draco-mars.json"),
+            "expected ExecuteCommand with the configured command, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_custom_binding_takes_priority_over_a_colliding_builtin_action() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        let mut kb = crate::config::Keybindings::default();
+        let colliding_key = kb.normal.filter_include.clone();
+        kb.custom
+            .push(crate::config::keybindings::CustomCommandBinding {
+                key: colliding_key.clone(),
+                command: "wrap".to_string(),
+            });
+        tab.interaction.keybindings = Arc::new(kb);
+
+        let key = colliding_key.0[0].clone();
+        let (_, result) = press(&mut tab, key.0, key.1).await;
+        assert!(
+            matches!(result, KeyResult::ExecuteCommand(ref cmd) if cmd == "wrap"),
+            "a custom binding must win over the built-in action it collides with, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unbound_key_is_unaffected_by_unrelated_custom_bindings() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        let mut kb = crate::config::Keybindings::default();
+        kb.custom
+            .push(crate::config::keybindings::CustomCommandBinding {
+                key: crate::config::keybindings::KeyBindings(vec![
+                    crate::config::keybindings::KeyBinding(KeyCode::F(2), KeyModifiers::NONE),
+                ]),
+                command: "wrap".to_string(),
+            });
+        tab.interaction.keybindings = Arc::new(kb);
+
+        press(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE).await;
+        assert_eq!(
+            tab.scroll.scroll_offset, 1,
+            "an unrelated key must still behave normally when custom bindings exist"
+        );
     }
 
     #[tokio::test]

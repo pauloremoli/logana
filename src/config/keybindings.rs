@@ -1518,6 +1518,20 @@ impl Default for UiKeybindings {
     }
 }
 
+/// A user-defined keybinding that runs a fixed command line when pressed —
+/// e.g. binding a key to `load-filters ~/logs/filters/draco-mars.json`.
+/// Checked in Normal Mode, ahead of every built-in action, so a custom
+/// binding can deliberately override one (`Keybindings::validate` warns
+/// about the collision at startup, but doesn't block it).
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CustomCommandBinding {
+    /// Key that triggers this command.
+    pub key: KeyBindings,
+    /// Full command to run, exactly as typed after `:` in command mode
+    /// (e.g. `"load-filters ~/logs/filters/draco-mars.json"` — no leading `:`).
+    pub command: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Keybindings {
     #[serde(default)]
@@ -1556,6 +1570,10 @@ pub struct Keybindings {
     pub confirm: ConfirmKeybindings,
     #[serde(default)]
     pub ui: UiKeybindings,
+    /// User-defined keybindings that run a fixed command line — see
+    /// [`CustomCommandBinding`].
+    #[serde(default)]
+    pub custom: Vec<CustomCommandBinding>,
 }
 
 impl Keybindings {
@@ -1771,7 +1789,24 @@ impl Keybindings {
             ("global.prev_tab", &self.global.prev_tab),
         ];
 
-        check_conflicts(normal_actions, &mut conflicts);
+        // Custom command bindings are checked in Normal Mode, so they share
+        // that scope's conflict check — appended dynamically since, unlike
+        // every other group, `custom` is a user-sized list, not a fixed set
+        // of named fields.
+        let custom_labels: Vec<String> = self
+            .custom
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("custom[{i}] ({})", c.command))
+            .collect();
+        let mut normal_and_custom: Vec<(&str, &KeyBindings)> = normal_actions.to_vec();
+        normal_and_custom.extend(
+            self.custom
+                .iter()
+                .zip(custom_labels.iter())
+                .map(|(c, label)| (label.as_str(), &c.key)),
+        );
+        check_conflicts(&normal_and_custom, &mut conflicts);
         check_conflicts(filter_actions, &mut conflicts);
         check_conflicts(visual_line_actions, &mut conflicts);
         check_conflicts(visual_char_actions, &mut conflicts);
@@ -2058,6 +2093,59 @@ mod tests {
         assert!(
             !conflicts.is_empty(),
             "rebinding archive_picker.expand onto archive_picker.collapse's key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_custom_binding_defaults_to_empty() {
+        let kb = Keybindings::default();
+        assert!(kb.custom.is_empty());
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_if_custom_binding_collides_with_normal_action() {
+        let mut kb = Keybindings::default();
+        kb.custom.push(CustomCommandBinding {
+            key: kb.normal.filter_include.clone(),
+            command: "load-filters ~/logs/filters/draco-mars.json".to_string(),
+        });
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "a custom binding reusing normal.filter_include's key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_between_two_custom_bindings() {
+        let mut kb = Keybindings::default();
+        let key = KeyBindings(vec![KeyBinding(KeyCode::F(2), KeyModifiers::NONE)]);
+        kb.custom.push(CustomCommandBinding {
+            key: key.clone(),
+            command: "load-filters a.json".to_string(),
+        });
+        kb.custom.push(CustomCommandBinding {
+            key,
+            command: "load-filters b.json".to_string(),
+        });
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "two custom bindings sharing the same key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_validate_does_not_flag_custom_binding_on_an_unused_key() {
+        let mut kb = Keybindings::default();
+        kb.custom.push(CustomCommandBinding {
+            key: KeyBindings(vec![KeyBinding(KeyCode::F(2), KeyModifiers::NONE)]),
+            command: "load-filters ~/logs/filters/draco-mars.json".to_string(),
+        });
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.iter().any(|c| c.contains("custom[0]")),
+            "an unused key should not be reported as a conflict: {conflicts:?}"
         );
     }
 

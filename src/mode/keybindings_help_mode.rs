@@ -570,6 +570,16 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: kb.confirm.no.display(),
     });
 
+    if !kb.custom.is_empty() {
+        rows.push(HelpRow::Header("Custom Commands".to_string()));
+        for binding in &kb.custom {
+            rows.push(HelpRow::Entry {
+                action: binding.command.clone(),
+                keys: binding.key.display(),
+            });
+        }
+    }
+
     rows
 }
 
@@ -882,6 +892,44 @@ mod tests {
         assert!(
             has_reset,
             "expected a 'Reset to default' entry bound to 'r' in the Select Fields Mode section"
+        );
+    }
+
+    #[test]
+    fn test_build_help_rows_omits_custom_commands_section_when_empty() {
+        let kb = Keybindings::default();
+        let rows = build_help_rows(&kb);
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, HelpRow::Header(h) if h == "Custom Commands")),
+            "no 'Custom Commands' header should appear when none are configured"
+        );
+    }
+
+    #[test]
+    fn test_build_help_rows_contains_custom_commands_when_configured() {
+        let mut kb = Keybindings::default();
+        kb.custom
+            .push(crate::config::keybindings::CustomCommandBinding {
+                key: crate::config::keybindings::KeyBindings(vec![
+                    crate::config::keybindings::KeyBinding(KeyCode::F(2), KeyModifiers::NONE),
+                ]),
+                command: "load-filters ~/logs/filters/draco-mars.json".to_string(),
+            });
+        let rows = build_help_rows(&kb);
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, HelpRow::Header(h) if h == "Custom Commands")),
+            "expected a 'Custom Commands' header section"
+        );
+        assert!(
+            rows.iter().any(|r| matches!(
+                r,
+                HelpRow::Entry { action, keys }
+                    if action == "load-filters ~/logs/filters/draco-mars.json" && keys == "F2"
+            )),
+            "expected an entry showing the custom command and its bound key"
         );
     }
 

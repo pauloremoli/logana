@@ -10,6 +10,7 @@ All notable changes to logana will be documented in this file.
 - Archive picker now supports the same navigation as the filter sidebar and log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u` , `PageDown`/`PageUp` (full page), and `gg`/`G`. 
 - Archive picker: nested archives can be expanded/collapsed with the Right/Left arrow keys.
 - `:filter`/`:highlight` now accept `--auto`/`-a` to generate a random fg/bg color pair with guaranteed readable contrast, instead of picking `--fg`/`--bg` yourself.
+- Custom keybindings in `config.json` can now bind a key to a fixed command line (`keybindings.custom`), e.g. binding a key to `load-filters ~/logs/filters/draco-mars.json`. Checked in Normal Mode ahead of every built-in action, and listed in `:show-keybindings`.
 
 ### Changed
 - Archive listing now only auto-decompresses one nested level (the opened file's own entries, plus one layer of nested-archive contents) instead of eagerly recursing however deep an archive is nested — anything deeper shows as an expandable row instead, opened on demand rather than upfront.

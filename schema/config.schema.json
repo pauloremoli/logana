@@ -45,6 +45,7 @@
             "Enter"
           ]
         },
+        "custom": [],
         "dlt_select": {
           "cancel": "Esc",
           "confirm": "Enter",
@@ -655,6 +656,14 @@
               "$ref": "#/definitions/UiKeybindings"
             }
           ]
+        },
+        "custom": {
+          "description": "User-defined keybindings that run a fixed command line — see [`CustomCommandBinding`].",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CustomCommandBinding"
+          }
         }
       }
     },
@@ -1901,6 +1910,28 @@
               "$ref": "#/definitions/KeyBindings"
             }
           ]
+        }
+      }
+    },
+    "CustomCommandBinding": {
+      "description": "A user-defined keybinding that runs a fixed command line when pressed — e.g. binding a key to `load-filters ~/logs/filters/draco-mars.json`. Checked in Normal Mode, ahead of every built-in action, so a custom binding can deliberately override one (`Keybindings::validate` warns about the collision at startup, but doesn't block it).",
+      "type": "object",
+      "required": [
+        "command",
+        "key"
+      ],
+      "properties": {
+        "key": {
+          "description": "Key that triggers this command.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "command": {
+          "description": "Full command to run, exactly as typed after `:` in command mode (e.g. `\"load-filters ~/logs/filters/draco-mars.json\"` — no leading `:`).",
+          "type": "string"
         }
       }
     },

@@ -266,6 +266,23 @@ count-prefixed, e.g. `25G`) to jump to the first/last or a specific row.
 }
 ```
 
+## Custom Commands
+
+Bind a key to run a fixed command line, checked in Normal Mode ahead of every built-in action:
+
+```json
+"custom": [
+  {
+    "key": "F2",
+    "command": "load-filters ~/logs/filters/draco-mars.json"
+  }
+]
+```
+
+`command` is whatever you'd type after `:` in command mode — no leading `:`. `key` accepts any binding from the [Key Syntax](#key-syntax) above, including an array of alternatives. Add as many entries as you like; each one gets its own row in [`:show-keybindings`](../commands.md).
+
+A custom binding that reuses a built-in action's key wins over it (deliberately — see [Conflict Validation](#conflict-validation) below for how you'll be warned about the collision, not blocked from making it).
+
 ## Conflict Validation
 
 At startup, logana validates all configured keybindings for conflicts within each mode scope. Conflicts are printed to stderr with a description of the overlapping bindings, but do not prevent startup.
