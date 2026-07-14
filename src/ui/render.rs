@@ -1226,6 +1226,7 @@ mod tests {
                 selected: false,
                 merge_marked: false,
                 cached_bytes: None,
+                collapsed: false,
             })
             .collect();
         let roots = (0..30).collect();

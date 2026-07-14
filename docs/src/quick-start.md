@@ -38,10 +38,11 @@ logana logs.tar.gz
 logana logs.zip
 ```
 
-Opening a `.gz`/`.bz2`/`.xz`/`.zip`/`.tar`/`.tar.gz`/`.tar.bz2`/`.tar.xz` file — whether from the command line or with `:open` inside the TUI — shows a popup listing everything inside it as a tree, without extracting anything yet. If an entry is itself an archive (a `.zip` inside a `.tar.gz`, for example), it's expanded recursively so its contents show as nested rows too.
+Opening a `.gz`/`.bz2`/`.xz`/`.zip`/`.tar`/`.tar.gz`/`.tar.bz2`/`.tar.xz` file — whether from the command line or with `:open` inside the TUI — shows a popup listing everything inside it as a tree, without extracting anything yet. If an entry is itself an archive (a `.zip` inside a `.tar.gz`, for example), one nested level is expanded automatically so its contents show as nested rows too; anything nested deeper than that shows as a collapsed row you can expand yourself.
 
 - `Space` toggles the file under the cursor. Toggling a nested archive's own row selects or deselects everything inside it at once.
 - `m` marks the file under the cursor to be merged instead — independently of `Space`, and toggled the same way for a nested archive's whole subtree.
+- `Right` reads and reveals a not-yet-expanded nested archive's contents (or just reveals them again, with no re-read, if they were already fetched and merely folded shut). `Left` folds an expanded archive's contents back out of view.
 - `a` / `n` select or deselect every file.
 - `Enter` extracts the confirmed selection: `Space`-toggled files each open as their own tab, and `m`-marked files are extracted and combined into a single timestamp-sorted tab. Both happen together in one press. If any `m`-marked file's format can't be recognized, only the merge is skipped (with an error naming the file) — toggled files still open normally.
 - `Esc` cancels without extracting anything.

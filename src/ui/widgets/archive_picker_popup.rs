@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::config::Keybindings;
 use crate::ingestion::CheckState;
-use crate::mode::archive_picker_mode::ArchiveRow;
+use crate::mode::archive_picker_mode::{ArchiveRow, RowKind};
 use crate::theme::Theme;
 
 use super::popup_entry;
@@ -27,6 +27,20 @@ pub fn mark_glyph(check_state: CheckState, merge_check_state: CheckState) -> &'s
             CheckState::Partial => "[~] ",
             CheckState::Unchecked => "[ ] ",
         },
+    }
+}
+
+/// The fold-state glyph for a row: a not-yet-read nested archive and a
+/// folded (already-fetched) container both show the same "closed" arrow —
+/// from the row alone there's no visible difference between "never
+/// expanded" and "expanded, then collapsed again"; expanding either reveals
+/// its children (a lazy one re-fetches first, a folded one doesn't need to).
+/// Plain files and error rows have nothing to expand, so no glyph.
+pub fn expand_glyph(kind: RowKind) -> &'static str {
+    match kind {
+        RowKind::Lazy | RowKind::Container { collapsed: true } => "\u{25b8} ",
+        RowKind::Container { collapsed: false } => "\u{25be} ",
+        RowKind::File | RowKind::Error => "  ",
     }
 }
 
@@ -157,8 +171,9 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
             let is_selected = i == self.selected;
             let prefix = if is_selected { "> " } else { "  " };
             let indent = "  ".repeat(row.depth);
+            let expand = expand_glyph(row.kind);
             let mark = mark_glyph(row.check_state, row.merge_check_state);
-            let style = if row.is_error {
+            let style = if matches!(row.kind, RowKind::Error) {
                 Style::default().fg(self.theme.error_fg)
             } else if is_selected {
                 Style::default()
@@ -168,7 +183,7 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
                 Style::default().fg(self.theme.text)
             };
             lines.push(Line::from(Span::styled(
-                format!("{prefix}{indent}{mark}{}", row.name),
+                format!("{prefix}{indent}{expand}{mark}{}", row.name),
                 style,
             )));
         }
@@ -205,6 +220,22 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
             &mut line1,
             kb.merge_toggle.display(),
             "merge",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut line1,
+            kb.expand.display(),
+            "expand",
+            key_style,
+            txt_style,
+            br_style,
+        );
+        popup_entry(
+            &mut line1,
+            kb.collapse.display(),
+            "collapse",
             key_style,
             txt_style,
             br_style,
@@ -365,14 +396,37 @@ mod tests {
         assert_eq!(mark_glyph(CheckState::Checked, CheckState::Partial), "[~] ");
     }
 
+    #[test]
+    fn test_expand_glyph_lazy_and_collapsed_container_match() {
+        // From the row alone there's no visible difference between "never
+        // expanded" and "expanded, then folded again" — both show closed.
+        assert_eq!(
+            expand_glyph(RowKind::Lazy),
+            expand_glyph(RowKind::Container { collapsed: true })
+        );
+    }
+
+    #[test]
+    fn test_expand_glyph_expanded_container_differs_from_collapsed() {
+        assert_ne!(
+            expand_glyph(RowKind::Container { collapsed: false }),
+            expand_glyph(RowKind::Container { collapsed: true })
+        );
+    }
+
+    #[test]
+    fn test_expand_glyph_file_and_error_rows_have_no_glyph() {
+        assert_eq!(expand_glyph(RowKind::File), "  ");
+        assert_eq!(expand_glyph(RowKind::Error), "  ");
+    }
+
     fn row(name: &str) -> ArchiveRow {
         ArchiveRow {
             name: name.to_string(),
             depth: 0,
-            is_container: false,
+            kind: RowKind::File,
             check_state: CheckState::Unchecked,
             merge_check_state: CheckState::Unchecked,
-            is_error: false,
         }
     }
 
@@ -428,6 +482,37 @@ mod tests {
             text.contains("[m] c.log"),
             "row marked both ways must show [m], not both: {text}"
         );
+    }
+
+    #[test]
+    fn test_row_renders_expand_glyph_for_lazy_and_container_rows() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let mut lazy_row = row("archive.zip");
+        lazy_row.kind = RowKind::Lazy;
+        let mut collapsed_row = row("bundle.zip");
+        collapsed_row.kind = RowKind::Container { collapsed: true };
+        let mut expanded_row = row("open.zip");
+        expanded_row.kind = RowKind::Container { collapsed: false };
+        let rows = vec![lazy_row, collapsed_row, expanded_row];
+        let popup = ArchivePickerPopup {
+            theme: &theme,
+            keybindings: &kb,
+            rows: &rows,
+            selected: 0,
+            source_path: "archive.zip",
+            search: "",
+            searching: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
+        let text: String = (0..15)
+            .map(|y| row_text(buf.buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("\u{25b8} [ ] archive.zip"));
+        assert!(text.contains("\u{25b8} [ ] bundle.zip"));
+        assert!(text.contains("\u{25be} [ ] open.zip"));
     }
 
     #[test]

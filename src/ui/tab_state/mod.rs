@@ -11,7 +11,7 @@ use crate::db::LogManager;
 use crate::db::MarkManager;
 use crate::filters::{FieldVote, any_field_exclude_matches, field_include_vote};
 use crate::filters::{FilterDecision, FilterManager};
-use crate::ingestion::{ArchiveTree, FileReader};
+use crate::ingestion::{ArchiveTree, FileReader, NodeId};
 use crate::mode::normal_mode::NormalMode;
 use crate::parser::{LogFormatParser, detect_format};
 use crate::ui::FieldLayout;
@@ -70,6 +70,12 @@ pub enum KeyResult {
     ApplyArchivePicker {
         source_path: String,
         tree: ArchiveTree,
+    },
+    /// The archive picker is still open (unlike `ApplyArchivePicker`, which
+    /// replaces the mode) — the background fetch behind this lands back on
+    /// the live `ArchivePickerMode` via `Mode::as_archive_picker_mut`.
+    ExpandArchiveNode {
+        node_id: NodeId,
     },
 }
 
@@ -2395,6 +2401,17 @@ pub struct ArchiveListingState {
     pub source_path: String,
     /// Delivers the listed tree (or error) when listing finishes.
     pub result_rx: tokio::sync::oneshot::Receiver<Result<ArchiveTree, String>>,
+}
+
+/// Tracks an in-progress background fetch of a single lazy archive node's
+/// raw bytes, dispatched by `App::begin_archive_node_expand` and applied by
+/// `App::poll_archive_expand`.
+pub struct ArchiveExpandState {
+    pub node_id: NodeId,
+    /// Delivers the node's raw archive bytes (or a read failure) when the
+    /// fetch finishes. Parsing those bytes into real children happens
+    /// synchronously on the main thread, in `ArchiveTree::expand_lazy_node`.
+    pub result_rx: tokio::sync::oneshot::Receiver<Result<Vec<u8>, String>>,
 }
 
 /// Per-tab state for watching a file for new appended content.

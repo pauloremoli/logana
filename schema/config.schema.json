@@ -16,6 +16,8 @@
           "all": "a",
           "apply": "Enter",
           "cancel": "Esc",
+          "collapse": "Left",
+          "expand": "Right",
           "merge_toggle": "m",
           "none": "n",
           "search": "/",
@@ -595,6 +597,8 @@
             "all": "a",
             "apply": "Enter",
             "cancel": "Esc",
+            "collapse": "Left",
+            "expand": "Right",
             "merge_toggle": "m",
             "none": "n",
             "search": "/",
@@ -1730,6 +1734,24 @@
         "merge_toggle": {
           "description": "Toggles a file (or a container's whole subtree) to be merged into one timestamp-sorted tab on `apply`, independently of `toggle`.",
           "default": "m",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "expand": {
+          "description": "On a not-yet-read nested archive, fetches and reveals its contents. On an already-fetched but folded container, reveals its children again without re-fetching.",
+          "default": "Right",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "collapse": {
+          "description": "Folds an expanded container's children out of view (the already- fetched data is kept, not discarded).",
+          "default": "Left",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"

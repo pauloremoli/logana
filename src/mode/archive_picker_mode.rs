@@ -12,6 +12,21 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::HashSet;
 
+/// What kind of row this is, for the widget to pick a glyph without needing
+/// to know anything about `NodeKind`/`ArchiveTree`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    File,
+    /// `collapsed` mirrors `ArchiveNode::collapsed` — whether this
+    /// container's children are currently folded out of the row list.
+    Container {
+        collapsed: bool,
+    },
+    /// A nested archive not yet read — see `NodeKind::LazyContainer`.
+    Lazy,
+    Error,
+}
+
 /// A single rendered row of the archive picker popup: enough to draw one
 /// line (name, indentation, checkbox state) without the widget needing to
 /// know anything about the underlying tree structure.
@@ -19,12 +34,11 @@ use std::collections::HashSet;
 pub struct ArchiveRow {
     pub name: String,
     pub depth: usize,
-    pub is_container: bool,
+    pub kind: RowKind,
     pub check_state: CheckState,
     /// Independent of `check_state` — whether this row is marked to be
     /// merged into one timestamp-sorted tab rather than opened on its own.
     pub merge_check_state: CheckState,
-    pub is_error: bool,
 }
 
 /// Precompiled form of the search query — built once when the query text
@@ -69,9 +83,10 @@ impl SearchMatcher {
 #[derive(Debug)]
 pub struct ArchivePickerMode {
     pub tree: ArchiveTree,
-    /// Full preorder row list, structurally fixed for the lifetime of the
-    /// picker session (the tree has no expand/collapse) — recomputing it on
-    /// every keystroke would be wasted work, so it's cached once here.
+    /// Full preorder row list. Recomputing it on every keystroke would be
+    /// wasted work when nothing changed, so it's cached here and refreshed
+    /// via [`Self::refresh_all_ids`] only after something that actually
+    /// changes it: an expand or collapse.
     all_ids: Vec<NodeId>,
     pub selected: usize,
     pub source_path: String,
@@ -180,26 +195,32 @@ impl ArchivePickerMode {
             NodeKind::File => ArchiveRow {
                 name: node.name.clone(),
                 depth: node.depth,
-                is_container: false,
+                kind: RowKind::File,
                 check_state: states[id],
                 merge_check_state: merge_states[id],
-                is_error: false,
             },
             NodeKind::Container { .. } => ArchiveRow {
                 name: node.name.clone(),
                 depth: node.depth,
-                is_container: true,
+                kind: RowKind::Container {
+                    collapsed: node.collapsed,
+                },
                 check_state: states[id],
                 merge_check_state: merge_states[id],
-                is_error: false,
+            },
+            NodeKind::LazyContainer { .. } => ArchiveRow {
+                name: node.name.clone(),
+                depth: node.depth,
+                kind: RowKind::Lazy,
+                check_state: CheckState::Unchecked,
+                merge_check_state: CheckState::Unchecked,
             },
             NodeKind::UnreadableContainer { error } => ArchiveRow {
                 name: format!("{} ({error})", node.name),
                 depth: node.depth,
-                is_container: false,
+                kind: RowKind::Error,
                 check_state: CheckState::Unchecked,
                 merge_check_state: CheckState::Unchecked,
-                is_error: true,
             },
         }
     }
@@ -210,6 +231,16 @@ impl ArchivePickerMode {
                 node.selected = selected;
             }
         }
+    }
+
+    /// Recomputes `all_ids` from the tree and re-clamps `selected` — call
+    /// after any tree mutation that can change which rows exist (expanding
+    /// a lazy node, collapsing/uncollapsing a container). `pub(crate)` so
+    /// `App::poll_archive_expand` (a different module) can call it after
+    /// applying a background expand to the live tree.
+    pub(crate) fn refresh_all_ids(&mut self) {
+        self.all_ids = self.tree.visible_rows();
+        self.clamp_selected();
     }
 }
 
@@ -409,6 +440,34 @@ impl Mode for ArchivePickerMode {
             }
             return (self, KeyResult::Handled);
         }
+        if kb.archive_picker.expand.matches(key, modifiers) {
+            if let Some(&id) = self.visible_rows().get(self.selected) {
+                let is_lazy = matches!(self.tree.nodes[id].kind, NodeKind::LazyContainer { .. });
+                let is_collapsed_container =
+                    matches!(self.tree.nodes[id].kind, NodeKind::Container { .. })
+                        && self.tree.nodes[id].collapsed;
+                if is_lazy {
+                    return (self, KeyResult::ExpandArchiveNode { node_id: id });
+                }
+                if is_collapsed_container {
+                    self.tree.set_collapsed(id, false);
+                    self.refresh_all_ids();
+                }
+            }
+            return (self, KeyResult::Handled);
+        }
+        if kb.archive_picker.collapse.matches(key, modifiers) {
+            if let Some(&id) = self.visible_rows().get(self.selected) {
+                let is_expanded_container =
+                    matches!(self.tree.nodes[id].kind, NodeKind::Container { .. })
+                        && !self.tree.nodes[id].collapsed;
+                if is_expanded_container {
+                    self.tree.set_collapsed(id, true);
+                    self.refresh_all_ids();
+                }
+            }
+            return (self, KeyResult::Handled);
+        }
         if kb.archive_picker.all.matches(key, modifiers) {
             self.set_all_files_selected(true);
             return (self, KeyResult::Handled);
@@ -438,6 +497,18 @@ impl Mode for ArchivePickerMode {
             &mut spans,
             kb.archive_picker.merge_toggle.display(),
             "merge-mark",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.archive_picker.expand.display(),
+            "expand",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.archive_picker.collapse.display(),
+            "collapse",
             theme,
         );
         status_entry(
@@ -472,6 +543,10 @@ impl Mode for ArchivePickerMode {
             searching: self.searching,
         }
     }
+
+    fn as_archive_picker_mut(&mut self) -> Option<&mut ArchivePickerMode> {
+        Some(self)
+    }
 }
 
 #[cfg(test)]
@@ -500,6 +575,7 @@ mod tests {
             selected: false,
             merge_marked: false,
             cached_bytes: None,
+            collapsed: false,
         }
     }
 
@@ -523,7 +599,49 @@ mod tests {
             selected: false,
             merge_marked: false,
             cached_bytes: None,
+            collapsed: false,
         }
+    }
+
+    fn lazy_node(id: NodeId, parent: Option<NodeId>, name: &str, depth: usize) -> ArchiveNode {
+        ArchiveNode {
+            id,
+            parent,
+            name: name.to_string(),
+            full_path: name.to_string(),
+            depth,
+            kind: NodeKind::LazyContainer {
+                archive_type: crate::ingestion::ArchiveType::Zip,
+            },
+            selected: false,
+            merge_marked: false,
+            cached_bytes: None,
+            collapsed: false,
+        }
+    }
+
+    /// Builds:
+    ///   0: File "a.log"                (root)
+    ///   1: Container "bundle.zip"      (root) -> [2, 3]
+    ///     2: File "inner1.log"
+    ///     3: File "inner2.log"
+    ///   4: LazyContainer "lazy.zip"    (root)
+    fn build_tree_with_lazy_node() -> ArchiveTree {
+        let nodes = vec![
+            file_node(0, None, "a.log", 0),
+            container_node(1, None, "bundle.zip", 0, vec![2, 3]),
+            file_node(2, Some(1), "inner1.log", 1),
+            file_node(3, Some(1), "inner2.log", 1),
+            lazy_node(4, None, "lazy.zip", 0),
+        ];
+        ArchiveTree {
+            nodes,
+            roots: vec![0, 1, 4],
+        }
+    }
+
+    fn mode_with_lazy_node() -> ArchivePickerMode {
+        ArchivePickerMode::new(build_tree_with_lazy_node(), "archive.zip".to_string())
     }
 
     /// Builds:
@@ -614,9 +732,9 @@ mod tests {
         assert_eq!(selected, 0);
         assert_eq!(source_path, "archive.zip");
         assert_eq!(rows[0].name, "a.log");
-        assert!(!rows[0].is_container);
+        assert_eq!(rows[0].kind, RowKind::File);
         assert_eq!(rows[1].name, "bundle.zip");
-        assert!(rows[1].is_container);
+        assert_eq!(rows[1].kind, RowKind::Container { collapsed: false });
         assert_eq!(rows[2].depth, 1);
     }
 
@@ -883,6 +1001,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_expand_key_on_lazy_row_returns_expand_archive_node_and_keeps_mode_alive() {
+        let mut tab = make_tab().await;
+        let mut m = mode_with_lazy_node();
+        m.selected = 4; // "lazy.zip"
+        let (mode2, result) = press(m, &mut tab, KeyCode::Right).await;
+        match result {
+            KeyResult::ExpandArchiveNode { node_id } => assert_eq!(node_id, 4),
+            other => panic!("expected ExpandArchiveNode, got {:?}", other),
+        }
+        // The mode itself is unchanged/still alive (not replaced with
+        // NormalMode) — the fetch happens in the background.
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(rows[4].kind, RowKind::Lazy);
+    }
+
+    #[tokio::test]
+    async fn test_expand_key_on_collapsed_container_reveals_children_synchronously() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.tree.set_collapsed(1, true);
+        m.selected = 1; // "bundle.zip", now collapsed
+        let (mode2, result) = press(m, &mut tab, KeyCode::Right).await;
+        assert!(matches!(result, KeyResult::Handled));
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(
+            rows.len(),
+            4,
+            "children must be visible again, no fetch needed"
+        );
+        assert_eq!(rows[1].kind, RowKind::Container { collapsed: false });
+    }
+
+    #[tokio::test]
+    async fn test_expand_key_on_already_expanded_container_is_a_no_op() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 1; // "bundle.zip", already expanded
+        let (mode2, result) = press(m, &mut tab, KeyCode::Right).await;
+        assert!(matches!(result, KeyResult::Handled));
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(rows.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_expand_key_on_file_row_is_a_no_op() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 0; // "a.log"
+        let (_, result) = press(m, &mut tab, KeyCode::Right).await;
+        assert!(matches!(result, KeyResult::Handled));
+    }
+
+    #[tokio::test]
+    async fn test_collapse_key_on_expanded_container_hides_children() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 1; // "bundle.zip"
+        let (mode2, result) = press(m, &mut tab, KeyCode::Left).await;
+        assert!(matches!(result, KeyResult::Handled));
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(rows.len(), 2, "inner1.log/inner2.log must be hidden");
+        assert_eq!(rows[1].kind, RowKind::Container { collapsed: true });
+    }
+
+    #[tokio::test]
+    async fn test_collapse_key_on_already_collapsed_container_is_a_no_op() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.tree.set_collapsed(1, true);
+        m.refresh_all_ids();
+        m.selected = 1;
+        let (mode2, result) = press(m, &mut tab, KeyCode::Left).await;
+        assert!(matches!(result, KeyResult::Handled));
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_collapse_key_on_file_row_is_a_no_op() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 0; // "a.log"
+        let (mode2, result) = press(m, &mut tab, KeyCode::Left).await;
+        assert!(matches!(result, KeyResult::Handled));
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert_eq!(rows.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_mode_bar_shows_expand_and_collapse_entries() {
+        let m = mode();
+        let kb = Keybindings::default();
+        let theme = crate::theme::Theme::default();
+        let line = m.mode_bar_content(&kb, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("expand"));
+        assert!(text.contains("collapse"));
+    }
+
+    #[tokio::test]
     async fn test_toggle_descendant_does_not_affect_sibling_row() {
         let mut tab = make_tab().await;
         let mut m = mode();
@@ -993,7 +1211,7 @@ mod tests {
         };
         let m = ArchivePickerMode::new(tree, "archive.zip".to_string());
         let (rows, _, _) = extract_state(m.render_state());
-        assert!(rows[1].is_error);
+        assert_eq!(rows[1].kind, RowKind::Error);
         assert!(rows[1].name.contains("bad zip"));
     }
 

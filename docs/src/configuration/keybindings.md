@@ -212,6 +212,8 @@ Shared by both the log panel's `/`/`?` search and the filter manager's `/` searc
 "archive_picker": {
   "toggle": "Space",
   "merge_toggle": "m",
+  "expand": "Right",
+  "collapse": "Left",
   "all": "a",
   "none": "n",
   "apply": "Enter",
@@ -228,6 +230,13 @@ separately. A file can be `toggle`d, `merge_toggle`d, both, or neither, and
 `apply` performs both actions together in one press. If a merge-marked
 file's format can't be recognized, only the merge is skipped (with an error
 naming the file) — toggled files still extract and open normally.
+
+Archive listing only auto-decompresses one nested level; a nested archive
+found any deeper shows as a collapsed row instead of being read upfront.
+`expand` reads and reveals it on demand (or, on an already-fetched row
+that's merely folded shut, just reveals its children again with no
+re-fetch); `collapse` folds an expanded container's children back out of
+view without discarding the already-fetched data.
 
 `search` opens a live regex query that narrows the file tree to matching
 files (keeping their containing archive visible for context) — `Enter`

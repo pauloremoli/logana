@@ -26,11 +26,20 @@ pub const MAX_TOTAL_ENTRIES: usize = 250_000;
 /// Maximum cumulative bytes of streaming-source (TarGz/TarBz2/TarXz) entry
 /// content retained in memory during listing for reuse at extraction time.
 pub const MAX_CACHED_BYTES: u64 = 256 * 1024 * 1024;
+/// Deepest nesting level a listing pass recurses into automatically — depth
+/// 0 (the opened file's own entries) and depth 1 (one layer of nested-archive
+/// contents). A nested archive found any deeper becomes a [`NodeKind::LazyContainer`]
+/// placeholder instead of being eagerly decompressed and parsed: still fully
+/// reachable and lossless (unlike the old fixed recursion cap this replaced,
+/// which showed an [`NodeKind::UnreadableContainer`] dead end), just deferred
+/// until the user expands it.
+pub const AUTO_EXPAND_DEPTH: usize = 1;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ListLimits {
     pub max_entries: usize,
     pub max_cached_bytes: u64,
+    pub auto_expand_depth: usize,
 }
 
 impl Default for ListLimits {
@@ -38,6 +47,7 @@ impl Default for ListLimits {
         Self {
             max_entries: MAX_TOTAL_ENTRIES,
             max_cached_bytes: MAX_CACHED_BYTES,
+            auto_expand_depth: AUTO_EXPAND_DEPTH,
         }
     }
 }
@@ -67,6 +77,11 @@ pub struct ArchiveNode {
     /// listing a streaming (TarGz/TarBz2/TarXz) source, so extraction can
     /// reuse them instead of decompressing the parent stream a second time.
     pub cached_bytes: Option<Arc<Vec<u8>>>,
+    /// Meaningful only for `Container` — whether its children are folded out
+    /// of [`ArchiveTree::visible_rows`]. A `LazyContainer` needs no such flag
+    /// of its own: having no children yet already keeps it out of the row
+    /// list until it's expanded.
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -76,9 +91,16 @@ pub enum NodeKind {
         children: Vec<NodeId>,
         archive_type: ArchiveType,
     },
-    /// A nested archive that failed to parse, or one that hit the depth/entry
-    /// cap — shown as a non-expandable row with an error marker. Listing one
-    /// bad nested entry must never abort the whole tree.
+    /// A nested archive found past [`AUTO_EXPAND_DEPTH`] whose contents
+    /// haven't been read yet — not an error state, just deferred. Becomes a
+    /// `Container` once [`ArchiveTree::expand_lazy_node`] is called on it.
+    LazyContainer {
+        archive_type: ArchiveType,
+    },
+    /// A nested archive that failed to parse, or whose bytes couldn't even
+    /// be read — shown as a non-expandable row with an error marker.
+    /// Listing (or expanding) one bad nested entry must never abort the
+    /// whole tree.
     UnreadableContainer {
         error: String,
     },
@@ -126,8 +148,9 @@ pub struct ArchiveTree {
 
 impl ArchiveTree {
     /// Rows in the order they should be rendered: a pre-order depth-first
-    /// walk of `roots`. There is no expand/collapse — the tree is always
-    /// shown in full.
+    /// walk of `roots`, skipping a `Container`'s children while it's
+    /// `collapsed`. A `LazyContainer` naturally contributes no rows beyond
+    /// itself, since it has no children to descend into until expanded.
     pub fn visible_rows(&self) -> Vec<NodeId> {
         let mut out = Vec::new();
         for &root in &self.roots {
@@ -138,7 +161,9 @@ impl ArchiveTree {
 
     fn push_preorder(&self, id: NodeId, out: &mut Vec<NodeId>) {
         out.push(id);
-        if let NodeKind::Container { children, .. } = &self.nodes[id].kind {
+        if let NodeKind::Container { children, .. } = &self.nodes[id].kind
+            && !self.nodes[id].collapsed
+        {
             for &child in children {
                 self.push_preorder(child, out);
             }
@@ -146,8 +171,8 @@ impl ArchiveTree {
     }
 
     /// Every `File` descendant of `id` (including `id` itself if it is a
-    /// `File`). `UnreadableContainer` subtrees contribute no files, since
-    /// they have no children to select.
+    /// `File`). `UnreadableContainer`/`LazyContainer` subtrees contribute no
+    /// files, since they have no known children to select.
     fn descendant_files(&self, id: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
         self.collect_descendant_files(id, &mut out);
@@ -162,7 +187,7 @@ impl ArchiveTree {
                     self.collect_descendant_files(child, out);
                 }
             }
-            NodeKind::UnreadableContainer { .. } => {}
+            NodeKind::LazyContainer { .. } | NodeKind::UnreadableContainer { .. } => {}
         }
     }
 
@@ -213,7 +238,7 @@ impl ArchiveTree {
                         set_files[id] += set_files[child];
                     }
                 }
-                NodeKind::UnreadableContainer { .. } => {}
+                NodeKind::LazyContainer { .. } | NodeKind::UnreadableContainer { .. } => {}
             }
         }
         (0..self.nodes.len())
@@ -234,7 +259,8 @@ impl ArchiveTree {
     /// Toggling a `File` row flips just that node. Toggling a `Container`
     /// row is a "select all in this subtree" shortcut: if every descendant
     /// file is already set, unset them all; otherwise set them all.
-    /// `UnreadableContainer` rows have nothing to toggle.
+    /// `LazyContainer`/`UnreadableContainer` rows have nothing to toggle —
+    /// a lazy one must be expanded first before its files can be selected.
     fn toggle_subtree_for(&mut self, id: NodeId, field: MarkField) {
         match &self.nodes[id].kind {
             NodeKind::File => {
@@ -247,7 +273,7 @@ impl ArchiveTree {
                     field.set(&mut self.nodes[fid], target);
                 }
             }
-            NodeKind::UnreadableContainer { .. } => {}
+            NodeKind::LazyContainer { .. } | NodeKind::UnreadableContainer { .. } => {}
         }
     }
 
@@ -285,6 +311,56 @@ impl ArchiveTree {
         self.nodes
             .iter()
             .any(|n| matches!(n.kind, NodeKind::File) && n.merge_marked)
+    }
+
+    /// Parses `bytes` (the lazy node's own raw archive bytes, fetched via
+    /// [`resolve_node_bytes`]) into real children, turning `node_id` from a
+    /// `LazyContainer` into a `Container` — exactly what listing would have
+    /// done for it eagerly, had it not been deferred past `AUTO_EXPAND_DEPTH`.
+    /// Falls back to a plain `File` if `bytes` doesn't actually parse as the
+    /// claimed archive type (mirrors the eager path's "named like an archive
+    /// but isn't one" fallback). A no-op if `node_id` isn't currently a
+    /// `LazyContainer` (a stale/duplicate expand request).
+    pub fn expand_lazy_node(&mut self, node_id: NodeId, bytes: Vec<u8>) {
+        let (archive_type, depth) = match &self.nodes[node_id].kind {
+            NodeKind::LazyContainer { archive_type } => {
+                (archive_type.clone(), self.nodes[node_id].depth)
+            }
+            _ => return,
+        };
+        let mut state = ListingState::new(ListLimits::default());
+        self.nodes[node_id].kind = match list_nested(
+            &archive_type,
+            bytes,
+            Some(node_id),
+            depth + 1,
+            &mut self.nodes,
+            &mut state,
+        ) {
+            Ok(children) => NodeKind::Container {
+                children,
+                archive_type,
+            },
+            Err(_) => NodeKind::File,
+        };
+    }
+
+    /// Marks `node_id` as failed to even read (as opposed to
+    /// [`Self::expand_lazy_node`]'s parse-failure fallback to `File`) — used
+    /// when the background fetch behind a manual expand can't get the node's
+    /// bytes at all, mirroring the eager listing path's own read-failure
+    /// handling.
+    pub fn mark_unreadable(&mut self, node_id: NodeId, error: String) {
+        self.nodes[node_id].kind = NodeKind::UnreadableContainer { error };
+    }
+
+    /// Folds (`true`) or reveals (`false`) a `Container`'s children in
+    /// [`Self::visible_rows`], without discarding them. No-op on any other
+    /// node kind.
+    pub fn set_collapsed(&mut self, node_id: NodeId, collapsed: bool) {
+        if matches!(self.nodes[node_id].kind, NodeKind::Container { .. }) {
+            self.nodes[node_id].collapsed = collapsed;
+        }
     }
 }
 
@@ -336,6 +412,7 @@ fn placeholder_container_node(
         selected: false,
         merge_marked: false,
         cached_bytes: None,
+        collapsed: false,
     }
 }
 
@@ -359,6 +436,31 @@ fn unreadable_node(
         selected: false,
         merge_marked: false,
         cached_bytes: None,
+        collapsed: false,
+    }
+}
+
+/// A nested archive found past `AUTO_EXPAND_DEPTH` — not read yet, see
+/// [`NodeKind::LazyContainer`].
+fn lazy_container_node(
+    id: NodeId,
+    parent: Option<NodeId>,
+    name: String,
+    full_path: String,
+    depth: usize,
+    archive_type: ArchiveType,
+) -> ArchiveNode {
+    ArchiveNode {
+        id,
+        parent,
+        name,
+        full_path,
+        depth,
+        kind: NodeKind::LazyContainer { archive_type },
+        selected: false,
+        merge_marked: false,
+        cached_bytes: None,
+        collapsed: false,
     }
 }
 
@@ -379,6 +481,7 @@ fn file_node(
         selected: false,
         merge_marked: false,
         cached_bytes: None,
+        collapsed: false,
     }
 }
 
@@ -580,7 +683,7 @@ fn list_zip_entries<R: Read + Seek>(
         // cached for reuse at extraction time (unlike the streaming tar
         // formats handled in `list_tar_entries`).
         match detect_archive_type(&name).filter(is_multi_entry_archive) {
-            Some(nested_type) => {
+            Some(nested_type) if depth < state.limits.auto_expand_depth => {
                 let mut buf = Vec::new();
                 let read_result = archive
                     .by_index(i)
@@ -608,6 +711,23 @@ fn list_zip_entries<R: Read + Seek>(
                     }
                     Err(e) => nodes.push(unreadable_node(id, parent, name, full_path, depth, &e)),
                 }
+                children.push(id);
+            }
+            // Past the auto-expand depth — deferred rather than eagerly
+            // decompressed. Zip's cheap by-index re-reads mean the entry's
+            // bytes don't even need to be read here; `expand_lazy_node` reads
+            // them later, on demand, via `resolve_node_bytes`.
+            Some(nested_type) => {
+                let id = nodes.len();
+                state.entry_count += 1;
+                nodes.push(lazy_container_node(
+                    id,
+                    parent,
+                    name,
+                    full_path,
+                    depth,
+                    nested_type,
+                ));
                 children.push(id);
             }
             None => {
@@ -654,7 +774,7 @@ fn list_tar_entries<R: Read>(
         let name = basename(&full_path);
 
         match detect_archive_type(&name).filter(is_multi_entry_archive) {
-            Some(nested_type) => {
+            Some(nested_type) if depth < state.limits.auto_expand_depth => {
                 let mut buf = Vec::new();
                 let read_result = entry.read_to_end(&mut buf).map_err(|e| e.to_string());
                 let id = nodes.len();
@@ -682,6 +802,30 @@ fn list_tar_entries<R: Read>(
                                 // to a plain, selectable file rather than a dead-end row.
                                 Err(_) => NodeKind::File,
                             };
+                    }
+                    Err(e) => nodes.push(unreadable_node(id, parent, name, full_path, depth, &e)),
+                }
+                children.push(id);
+            }
+            // Past the auto-expand depth. Unlike zip, a tar stream is
+            // sequential — the entry's bytes must still be consumed to reach
+            // whatever follows it — but the recursive parse into its
+            // contents is skipped, deferred to `expand_lazy_node`. Cached
+            // (budget permitting) so a later expand doesn't need to
+            // re-decompress the outer stream from scratch.
+            Some(nested_type) => {
+                let mut buf = Vec::new();
+                let read_result = entry.read_to_end(&mut buf).map_err(|e| e.to_string());
+                let id = nodes.len();
+                state.entry_count += 1;
+                match read_result {
+                    Ok(_) => {
+                        let mut node =
+                            lazy_container_node(id, parent, name, full_path, depth, nested_type);
+                        if should_cache {
+                            node.cached_bytes = state.cache_bytes(buf);
+                        }
+                        nodes.push(node);
                     }
                     Err(e) => nodes.push(unreadable_node(id, parent, name, full_path, depth, &e)),
                 }
@@ -822,8 +966,15 @@ fn display_name_for_extraction(name: &str) -> String {
 /// Gz/Bz2/Xz entry (see [`decompress_if_lone_compressed`]) — as stored
 /// inside its immediate parent: via `cached_bytes` when available, otherwise
 /// by walking down from the root, re-opening/re-decoding one archive layer
-/// at a time.
-fn resolve_node_bytes(tree: &ArchiveTree, node_id: NodeId, path: &str) -> Result<Vec<u8>, String> {
+/// at a time. Also used to fetch a `LazyContainer`'s own raw archive bytes
+/// ahead of [`ArchiveTree::expand_lazy_node`] — for a multi-entry archive
+/// name, `decompress_if_lone_compressed` is a no-op, so this returns exactly
+/// the nested archive's own bytes.
+pub(crate) fn resolve_node_bytes(
+    tree: &ArchiveTree,
+    node_id: NodeId,
+    path: &str,
+) -> Result<Vec<u8>, String> {
     let node = &tree.nodes[node_id];
     if let Some(cached) = &node.cached_bytes {
         return decompress_if_lone_compressed(&node.name, (**cached).clone());
@@ -1006,6 +1157,7 @@ mod tests {
             selected: false,
             merge_marked: false,
             cached_bytes: None,
+            collapsed: false,
         }
     }
 
@@ -1029,6 +1181,7 @@ mod tests {
             selected: false,
             merge_marked: false,
             cached_bytes: None,
+            collapsed: false,
         }
     }
 
@@ -1279,20 +1432,19 @@ mod tests {
     }
 
     #[test]
-    fn test_deeply_nested_archives_are_not_depth_limited() {
-        // 25 levels of zip-in-zip nesting — deeper than the old 20-level
-        // recursion cap this test used to verify. Listing must still fully
-        // descend to the leaf file, with no `UnreadableContainer` cutoff
-        // anywhere along the way.
+    fn test_deeply_nested_archives_become_lazy_past_auto_expand_depth_not_truncated() {
+        // 25 levels of zip-in-zip nesting. Under the default `auto_expand_depth`
+        // (1), listing stops eagerly recursing after depth 0/1 — but unlike the
+        // old fixed recursion cap this replaced, nothing deeper is lost or
+        // shown as an error: it's simply not read yet (`LazyContainer`),
+        // reachable on demand via `expand_lazy_node` (see the dedicated
+        // `test_expand_lazy_node_*` tests below).
         fn wrap_in_zip(entry_name: &str, bytes: Vec<u8>) -> Vec<u8> {
             let tmp = make_zip(&[(entry_name, bytes.as_slice())]);
             std::fs::read(tmp.path()).unwrap()
         }
 
         const DEPTH: usize = 25;
-        // Innermost: a real (unambiguously-a-zip) archive containing one
-        // ordinary leaf file, so there's no "named like a zip but isn't
-        // actually one" fallback-to-File ambiguity at the bottom.
         let mut bytes = {
             let tmp = make_zip(&[("leaf.log", b"leaf content".as_slice())]);
             std::fs::read(tmp.path()).unwrap()
@@ -1311,18 +1463,244 @@ mod tests {
                 .nodes
                 .iter()
                 .any(|n| matches!(n.kind, NodeKind::UnreadableContainer { .. })),
-            "no node should be truncated for exceeding a depth limit"
+            "nothing should be truncated as an error just for being deeply nested"
         );
 
-        for i in 0..DEPTH {
-            let node = find_node(&tree, &format!("archive{i}.zip"));
-            assert_eq!(node.depth, i);
-            assert!(matches!(node.kind, NodeKind::Container { .. }));
-        }
+        let archive0 = find_node(&tree, "archive0.zip");
+        assert_eq!(archive0.depth, 0);
+        assert!(matches!(archive0.kind, NodeKind::Container { .. }));
 
-        let leaf = find_node(&tree, "leaf.log");
-        assert_eq!(leaf.depth, DEPTH);
-        assert!(matches!(leaf.kind, NodeKind::File));
+        let archive1 = find_node(&tree, "archive1.zip");
+        assert_eq!(archive1.depth, 1);
+        assert!(
+            matches!(archive1.kind, NodeKind::LazyContainer { .. }),
+            "past auto_expand_depth, archive1.zip must be lazy, got {:?}",
+            archive1.kind
+        );
+
+        // Nothing past the lazy node was ever read — not present at all
+        // (not even as an error row), since laziness is a "not yet" not a
+        // "lost".
+        assert!(
+            tree.nodes.iter().all(|n| n.full_path != "archive2.zip"),
+            "archive1.zip's own contents must not be read until expanded"
+        );
+        assert!(tree.nodes.iter().all(|n| n.full_path != "leaf.log"));
+    }
+
+    #[test]
+    fn test_lazy_zip_entry_content_is_never_read_at_listing_time() {
+        // A depth-1 entry named like a zip but containing garbage bytes: if
+        // it had been eagerly read+parsed (as it would be at depth 0), the
+        // "named like an archive but isn't one" fallback would turn it into
+        // a plain `File`. It staying `LazyContainer` after listing is the
+        // proof its bytes were never even opened yet — the actual "limit
+        // automatic decompression" win for zip (which supports free by-index
+        // re-reads, so nothing needs to be pre-buffered for later expansion).
+        let middle = make_zip(&[("archive2.zip", b"not a valid zip".as_slice())]);
+        let middle_bytes = std::fs::read(middle.path()).unwrap();
+        let outer_tmp = make_zip(&[("archive1.zip", middle_bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+
+        let tree = list_archive_tree(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let inner = find_node(&tree, "archive2.zip");
+        assert_eq!(inner.depth, 1);
+        assert!(
+            matches!(inner.kind, NodeKind::LazyContainer { .. }),
+            "garbage content must not have been read/parsed yet, got {:?}",
+            inner.kind
+        );
+    }
+
+    #[test]
+    fn test_lazy_tar_entry_still_consumes_stream_but_does_not_recurse() {
+        // Unlike zip, a tar stream is sequential: a lazy entry's bytes must
+        // still be consumed to reach whatever follows it in the same
+        // stream. This proves the sibling *after* a lazy entry is still
+        // discovered (stream position advanced correctly), while the lazy
+        // entry itself doesn't get its own contents recursively parsed.
+        let middle = make_tar(&[("archive2.tar", b"nested content".as_slice())]);
+        let middle_bytes = std::fs::read(middle.path()).unwrap();
+        let outer_tmp = make_tar(&[
+            ("archive1.tar", middle_bytes.as_slice()),
+            ("after.log", b"sibling after the lazy entry".as_slice()),
+        ]);
+        let path = path_with_ext(&outer_tmp, ".tar");
+
+        let tree = list_archive_tree(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let lazy_child = find_node(&tree, "archive2.tar");
+        assert_eq!(lazy_child.depth, 1);
+        assert!(matches!(lazy_child.kind, NodeKind::LazyContainer { .. }));
+
+        let sibling = find_node(&tree, "after.log");
+        assert_eq!(sibling.depth, 0);
+        assert!(matches!(sibling.kind, NodeKind::File));
+    }
+
+    #[test]
+    fn test_expand_lazy_node_zip_populates_real_children_at_correct_depth() {
+        let inner = make_zip(&[("a.log", b"one"), ("b.log", b"two")]);
+        let inner_bytes = std::fs::read(inner.path()).unwrap();
+        let middle = make_zip(&[("inner.zip", inner_bytes.as_slice())]);
+        let middle_bytes = std::fs::read(middle.path()).unwrap();
+        let outer_tmp = make_zip(&[("middle.zip", middle_bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+
+        let mut tree = list_archive_tree(&path).unwrap();
+        let lazy_id = find_node(&tree, "inner.zip").id;
+        assert!(matches!(
+            tree.nodes[lazy_id].kind,
+            NodeKind::LazyContainer { .. }
+        ));
+
+        let bytes = resolve_node_bytes(&tree, lazy_id, &path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        tree.expand_lazy_node(lazy_id, bytes);
+
+        match &tree.nodes[lazy_id].kind {
+            NodeKind::Container {
+                children,
+                archive_type,
+            } => {
+                assert_eq!(*archive_type, ArchiveType::Zip);
+                let mut names: Vec<&str> = children
+                    .iter()
+                    .map(|&id| tree.nodes[id].full_path.as_str())
+                    .collect();
+                names.sort();
+                assert_eq!(names, vec!["a.log", "b.log"]);
+                for &id in children {
+                    assert_eq!(tree.nodes[id].depth, 2);
+                    assert_eq!(tree.nodes[id].parent, Some(lazy_id));
+                }
+            }
+            other => panic!("expected Container after expand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_expand_lazy_node_reveals_further_nesting_as_lazy_too() {
+        // Expanding a lazy node always reveals exactly one level: a further
+        // nested archive among its newly-revealed children is itself lazy,
+        // not eagerly recursed into (the auto-expand depth check is
+        // absolute, not "one more level from wherever you clicked").
+        let innermost = make_zip(&[("leaf.log", b"leaf".as_slice())]);
+        let innermost_bytes = std::fs::read(innermost.path()).unwrap();
+        let inner = make_zip(&[("deeper.zip", innermost_bytes.as_slice())]);
+        let inner_bytes = std::fs::read(inner.path()).unwrap();
+        let middle = make_zip(&[("inner.zip", inner_bytes.as_slice())]);
+        let middle_bytes = std::fs::read(middle.path()).unwrap();
+        let outer_tmp = make_zip(&[("middle.zip", middle_bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+
+        let mut tree = list_archive_tree(&path).unwrap();
+        let lazy_id = find_node(&tree, "inner.zip").id;
+        let bytes = resolve_node_bytes(&tree, lazy_id, &path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        tree.expand_lazy_node(lazy_id, bytes);
+
+        let deeper = find_node(&tree, "deeper.zip");
+        assert_eq!(deeper.depth, 2);
+        assert!(
+            matches!(deeper.kind, NodeKind::LazyContainer { .. }),
+            "one expand reveals one level — deeper.zip must still be lazy, got {:?}",
+            deeper.kind
+        );
+        assert!(
+            tree.nodes.iter().all(|n| n.full_path != "leaf.log"),
+            "content past the newly-revealed lazy node must not have been read"
+        );
+    }
+
+    #[test]
+    fn test_expand_lazy_node_falls_back_to_file_on_corrupt_content() {
+        let middle = make_zip(&[("archive2.zip", b"not a valid zip".as_slice())]);
+        let middle_bytes = std::fs::read(middle.path()).unwrap();
+        let outer_tmp = make_zip(&[("archive1.zip", middle_bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+
+        let mut tree = list_archive_tree(&path).unwrap();
+        let lazy_id = find_node(&tree, "archive2.zip").id;
+        let bytes = resolve_node_bytes(&tree, lazy_id, &path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(bytes, b"not a valid zip");
+        tree.expand_lazy_node(lazy_id, bytes);
+
+        assert!(matches!(tree.nodes[lazy_id].kind, NodeKind::File));
+    }
+
+    #[test]
+    fn test_expand_lazy_node_is_a_no_op_on_a_non_lazy_node() {
+        let mut tree = build_test_tree();
+        let before_len = tree.nodes.len();
+        tree.expand_lazy_node(1, vec![1, 2, 3]); // node 1 is already a real Container
+        assert_eq!(tree.nodes.len(), before_len);
+        assert!(matches!(tree.nodes[1].kind, NodeKind::Container { .. }));
+    }
+
+    #[test]
+    fn test_mark_unreadable_sets_error_kind() {
+        let mut tree = build_test_tree();
+        tree.mark_unreadable(1, "boom".to_string());
+        match &tree.nodes[1].kind {
+            NodeKind::UnreadableContainer { error } => assert_eq!(error, "boom"),
+            other => panic!("expected UnreadableContainer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_set_collapsed_hides_descendants_from_visible_rows_but_keeps_them_in_nodes() {
+        let mut tree = build_test_tree();
+        let before = tree.visible_rows();
+        assert!(before.contains(&2) && before.contains(&3));
+
+        tree.set_collapsed(1, true);
+        let collapsed_rows = tree.visible_rows();
+        assert!(
+            collapsed_rows.contains(&1),
+            "the container row itself stays visible"
+        );
+        assert!(!collapsed_rows.contains(&2));
+        assert!(!collapsed_rows.contains(&3));
+        assert_eq!(tree.nodes.len(), 7, "collapsing must not discard nodes");
+
+        tree.set_collapsed(1, false);
+        assert_eq!(tree.visible_rows(), before);
+    }
+
+    #[test]
+    fn test_set_collapsed_is_a_no_op_on_non_container_nodes() {
+        let mut tree = build_test_tree();
+        tree.set_collapsed(0, true); // node 0 is a File
+        assert!(!tree.nodes[0].collapsed);
+    }
+
+    #[test]
+    fn test_lazy_container_contributes_no_rows_beyond_itself() {
+        let inner = make_zip(&[("a.log", b"one"), ("b.log", b"two")]);
+        let inner_bytes = std::fs::read(inner.path()).unwrap();
+        let middle = make_zip(&[("inner.zip", inner_bytes.as_slice())]);
+        let middle_bytes = std::fs::read(middle.path()).unwrap();
+        let outer_tmp = make_zip(&[("middle.zip", middle_bytes.as_slice())]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+
+        let tree = list_archive_tree(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let lazy = find_node(&tree, "inner.zip");
+        assert!(matches!(lazy.kind, NodeKind::LazyContainer { .. }));
+        let rows = tree.visible_rows();
+        assert!(rows.contains(&lazy.id));
+        assert!(
+            rows.iter()
+                .all(|&id| tree.nodes[id].full_path != "a.log"
+                    && tree.nodes[id].full_path != "b.log"),
+            "a lazy node's not-yet-fetched contents must not appear in visible_rows"
+        );
     }
 
     #[test]
@@ -1932,8 +2310,14 @@ mod tests {
 
         // Zip never populates cached_bytes (see test_zip_source_never_caches_entry_bytes),
         // so listing this three-level-deep zip-in-zip-in-zip forces every level of
-        // `extract_selected` to re-open/re-decode from `path` on demand.
-        let mut tree = list_archive_tree(&path).unwrap();
+        // `extract_selected` to re-open/re-decode from `path` on demand. Uses a
+        // raised `auto_expand_depth` to keep this fully eager (unrelated to
+        // laziness — this test is about `resolve_node_bytes`'s multi-level walk).
+        let limits = ListLimits {
+            auto_expand_depth: 2,
+            ..ListLimits::default()
+        };
+        let mut tree = list_archive_tree_with_limits(&path, &limits).unwrap();
         let leaf_id = select_by_full_path(&mut tree, "a.log");
         assert!(tree.nodes[leaf_id].cached_bytes.is_none());
         assert_eq!(tree.nodes[leaf_id].depth, 2);

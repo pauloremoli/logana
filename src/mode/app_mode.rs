@@ -174,6 +174,18 @@ pub trait Mode: std::fmt::Debug + Send {
     /// Called when the cursor line changes due to mouse scrolling.
     /// Modes that hold per-line state should refresh it here. Default is a no-op.
     fn on_scroll_line_change(&mut self, _tab: &mut TabState) {}
+
+    /// Downcast hook for the one case where `App` needs to mutate a mode's
+    /// own state from outside `handle_key` — applying a background archive
+    /// node expand to the *live* `ArchivePickerMode` still installed on the
+    /// tab, so any selection/search/toggle changes made while the fetch was
+    /// in flight aren't clobbered by replacing the whole mode. Default is
+    /// `None`; only `ArchivePickerMode` overrides it.
+    fn as_archive_picker_mut(
+        &mut self,
+    ) -> Option<&mut crate::mode::archive_picker_mode::ArchivePickerMode> {
+        None
+    }
 }
 
 /// Like `status_entry` but accepts a runtime-computed action string.

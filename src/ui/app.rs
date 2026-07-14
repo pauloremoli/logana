@@ -148,6 +148,8 @@ pub struct App {
     pub pending_archive: Option<crate::ui::ArchiveExtractionState>,
     /// In-progress background archive listing (pre-extraction file tree scan).
     pub pending_archive_listing: Option<crate::ui::ArchiveListingState>,
+    /// In-progress background fetch of a single lazy archive node's bytes.
+    pub pending_archive_expand: Option<crate::ui::ArchiveExpandState>,
     /// App-level decompression progress message shown while an archive is being extracted.
     pub decompression_message: Option<String>,
 }
@@ -328,6 +330,7 @@ impl AppBuilder {
             },
             pending_archive: None,
             pending_archive_listing: None,
+            pending_archive_expand: None,
             decompression_message: None,
         }
     }
@@ -390,6 +393,7 @@ impl App {
             self.advance_filter_computation();
             self.poll_archive_extraction().await;
             self.poll_archive_listing().await;
+            self.poll_archive_expand().await;
 
             let mut poll_timeout = tick_rate
                 .checked_sub(last_tick.elapsed())

@@ -752,6 +752,72 @@ impl App {
         }
     }
 
+    /// Spawn a background fetch of a single lazy archive node's raw bytes
+    /// (a nested archive found past `AUTO_EXPAND_DEPTH`, not yet read) —
+    /// triggered by pressing the archive picker's `expand` key on it. Call
+    /// [`Self::poll_archive_expand`] each frame to check for completion.
+    /// A no-op if the active tab isn't showing an archive picker, or a fetch
+    /// for this node is already pending.
+    pub async fn begin_archive_node_expand(&mut self, node_id: crate::ingestion::NodeId) {
+        if self
+            .pending_archive_expand
+            .as_ref()
+            .is_some_and(|s| s.node_id == node_id)
+        {
+            return;
+        }
+        let Some(picker) = self.tabs[self.active_tab]
+            .interaction
+            .mode
+            .as_archive_picker_mut()
+        else {
+            return;
+        };
+        let tree = picker.tree.clone();
+        let path = picker.source_path.clone();
+
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        tokio::task::spawn_blocking(move || {
+            let result = crate::ingestion::archive_tree::resolve_node_bytes(&tree, node_id, &path);
+            let _ = result_tx.send(result);
+        });
+
+        self.pending_archive_expand = Some(crate::ui::ArchiveExpandState { node_id, result_rx });
+    }
+
+    /// Poll the pending archive node expand each frame. When the background
+    /// fetch finishes, applies it to the *live* `ArchivePickerMode` (so any
+    /// selection/search/toggle changes made while the fetch was in flight
+    /// aren't lost) and clears `pending_archive_expand`.
+    pub async fn poll_archive_expand(&mut self) {
+        let Some(state) = &mut self.pending_archive_expand else {
+            return;
+        };
+
+        match state.result_rx.try_recv() {
+            Ok(result) => {
+                let node_id = state.node_id;
+                self.pending_archive_expand = None;
+                let Some(picker) = self.tabs[self.active_tab]
+                    .interaction
+                    .mode
+                    .as_archive_picker_mut()
+                else {
+                    return;
+                };
+                match result {
+                    Ok(bytes) => picker.tree.expand_lazy_node(node_id, bytes),
+                    Err(e) => picker.tree.mark_unreadable(node_id, e),
+                }
+                picker.refresh_all_ids();
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.pending_archive_expand = None;
+            }
+        }
+    }
+
     /// Poll for new stdin data each frame and apply it to the stdin tab.
     pub(crate) async fn advance_stdin_load(&mut self) {
         let status = self
@@ -3783,6 +3849,203 @@ mod tests {
 
         assert!(app.pending_archive_listing.is_none());
         assert!(app.tabs[app.active_tab].interaction.notification.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_begin_archive_node_expand_no_op_when_not_archive_picker_mode() {
+        let mut app = make_app(&[]).await;
+        app.begin_archive_node_expand(0).await;
+        assert!(app.pending_archive_expand.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_begin_and_poll_archive_node_expand_mutates_live_tree() {
+        let inner = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("a.log", b"one"),
+            ("b.log", b"two"),
+        ]);
+        let inner_bytes = std::fs::read(inner.path()).unwrap();
+        let middle = crate::ingestion::archive::test_helpers::make_zip(&[(
+            "inner.zip",
+            inner_bytes.as_slice(),
+        )]);
+        let middle_bytes = std::fs::read(middle.path()).unwrap();
+        let outer_tmp = crate::ingestion::archive::test_helpers::make_zip(&[(
+            "middle.zip",
+            middle_bytes.as_slice(),
+        )]);
+        let path = outer_tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(outer_tmp.path(), &path).unwrap();
+
+        let tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        let lazy_id = tree
+            .nodes
+            .iter()
+            .find(|n| n.full_path == "inner.zip")
+            .unwrap()
+            .id;
+        assert!(matches!(
+            tree.nodes[lazy_id].kind,
+            crate::ingestion::NodeKind::LazyContainer { .. }
+        ));
+
+        let mut app = make_app(&[]).await;
+        app.tabs[app.active_tab].interaction.mode = Box::new(
+            crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.clone()),
+        );
+
+        app.begin_archive_node_expand(lazy_id).await;
+        assert!(app.pending_archive_expand.is_some());
+
+        for _ in 0..100 {
+            app.poll_archive_expand().await;
+            if app.pending_archive_expand.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(app.pending_archive_expand.is_none());
+        let picker = app.tabs[app.active_tab]
+            .interaction
+            .mode
+            .as_archive_picker_mut()
+            .expect("still an archive picker");
+        match &picker.tree.nodes[lazy_id].kind {
+            crate::ingestion::NodeKind::Container { children, .. } => {
+                assert_eq!(children.len(), 2);
+            }
+            other => panic!("expected Container after expand, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_poll_archive_expand_preserves_interim_edits_to_the_live_tree() {
+        // The whole reason `poll_archive_expand` mutates the *live* mode
+        // (via `as_archive_picker_mut`) instead of replacing it with a
+        // freshly-reconstructed one: any selection change the user makes
+        // while the fetch is in flight must survive. Simulated here by
+        // mutating the live tree directly between dispatch and poll,
+        // deterministically — no reliance on real scheduling races.
+        let inner =
+            crate::ingestion::archive::test_helpers::make_zip(&[("a.log", b"one".as_slice())]);
+        let inner_bytes = std::fs::read(inner.path()).unwrap();
+        let middle = crate::ingestion::archive::test_helpers::make_zip(&[(
+            "inner.zip",
+            inner_bytes.as_slice(),
+        )]);
+        let middle_bytes = std::fs::read(middle.path()).unwrap();
+        let outer_tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("middle.zip", middle_bytes.as_slice()),
+            ("other.log", b"unrelated".as_slice()),
+        ]);
+        let path = outer_tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(outer_tmp.path(), &path).unwrap();
+
+        let tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        let lazy_id = tree
+            .nodes
+            .iter()
+            .find(|n| n.full_path == "inner.zip")
+            .unwrap()
+            .id;
+        let other_id = tree
+            .nodes
+            .iter()
+            .find(|n| n.full_path == "other.log")
+            .unwrap()
+            .id;
+
+        let mut app = make_app(&[]).await;
+        app.tabs[app.active_tab].interaction.mode = Box::new(
+            crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.clone()),
+        );
+
+        app.begin_archive_node_expand(lazy_id).await;
+
+        // Simulate a user toggling an unrelated file while the fetch is
+        // still pending.
+        app.tabs[app.active_tab]
+            .interaction
+            .mode
+            .as_archive_picker_mut()
+            .unwrap()
+            .tree
+            .nodes[other_id]
+            .selected = true;
+
+        for _ in 0..100 {
+            app.poll_archive_expand().await;
+            if app.pending_archive_expand.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+        std::fs::remove_file(&path).unwrap();
+
+        let picker = app.tabs[app.active_tab]
+            .interaction
+            .mode
+            .as_archive_picker_mut()
+            .unwrap();
+        assert!(
+            picker.tree.nodes[other_id].selected,
+            "interim selection change must survive the background expand completing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_poll_archive_expand_marks_unreadable_on_fetch_failure() {
+        let inner =
+            crate::ingestion::archive::test_helpers::make_zip(&[("a.log", b"one".as_slice())]);
+        let inner_bytes = std::fs::read(inner.path()).unwrap();
+        let middle = crate::ingestion::archive::test_helpers::make_zip(&[(
+            "inner.zip",
+            inner_bytes.as_slice(),
+        )]);
+        let middle_bytes = std::fs::read(middle.path()).unwrap();
+        let outer_tmp = crate::ingestion::archive::test_helpers::make_zip(&[(
+            "middle.zip",
+            middle_bytes.as_slice(),
+        )]);
+        let path = outer_tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(outer_tmp.path(), &path).unwrap();
+
+        let tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        let lazy_id = tree
+            .nodes
+            .iter()
+            .find(|n| n.full_path == "inner.zip")
+            .unwrap()
+            .id;
+
+        let mut app = make_app(&[]).await;
+        app.tabs[app.active_tab].interaction.mode = Box::new(
+            crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.clone()),
+        );
+
+        // The source file disappears before the background fetch runs.
+        std::fs::remove_file(&path).unwrap();
+
+        app.begin_archive_node_expand(lazy_id).await;
+        for _ in 0..100 {
+            app.poll_archive_expand().await;
+            if app.pending_archive_expand.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+
+        let picker = app.tabs[app.active_tab]
+            .interaction
+            .mode
+            .as_archive_picker_mut()
+            .unwrap();
+        assert!(matches!(
+            picker.tree.nodes[lazy_id].kind,
+            crate::ingestion::NodeKind::UnreadableContainer { .. }
+        ));
     }
 
     #[tokio::test]

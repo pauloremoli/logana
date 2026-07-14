@@ -399,6 +399,9 @@ impl App {
             KeyResult::ApplyArchivePicker { source_path, tree } => {
                 self.apply_archive_picker(source_path, tree).await;
             }
+            KeyResult::ExpandArchiveNode { node_id } => {
+                self.begin_archive_node_expand(node_id).await;
+            }
         }
     }
 

@@ -27,9 +27,9 @@ pub use app::App;
 pub use tab_state::merged::extend_merged_index;
 pub use tab_state::year_map::YearMap;
 pub use tab_state::{
-    ArchiveExtractionState, ArchiveListingState, ArchivePickerApplyResult, CacheState,
-    CachedParsedLine, CachedScanResult, ConnectFn, DisplayConfig, FileLoadState, FileWatchState,
-    FilterChunk, FilterEvalContext, FilterHandle, FilterState, FilterViewSnapshot,
+    ArchiveExpandState, ArchiveExtractionState, ArchiveListingState, ArchivePickerApplyResult,
+    CacheState, CachedParsedLine, CachedScanResult, ConnectFn, DisplayConfig, FileLoadState,
+    FileWatchState, FilterChunk, FilterEvalContext, FilterHandle, FilterState, FilterViewSnapshot,
     InteractionState, KeyResult, LoadContext, MergedState, ScrollState, SearchHandle, SearchState,
     SidebarSide, StdinLoadState, StreamConnection, StreamRetryState, StreamState, TabState,
     VisibleLines, apply_continuation_correction, build_continuation_map, display_text_for_line,

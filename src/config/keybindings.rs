@@ -1343,6 +1343,14 @@ fn default_ap_merge_toggle() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('m'), KeyModifiers::NONE)])
 }
 #[inline(always)]
+fn default_ap_expand() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Right, KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_ap_collapse() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Left, KeyModifiers::NONE)])
+}
+#[inline(always)]
 fn default_ap_all() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('a'), KeyModifiers::NONE)])
 }
@@ -1379,6 +1387,15 @@ pub struct ArchivePickerKeybindings {
     /// one timestamp-sorted tab on `apply`, independently of `toggle`.
     #[serde(default = "default_ap_merge_toggle")]
     pub merge_toggle: KeyBindings,
+    /// On a not-yet-read nested archive, fetches and reveals its contents.
+    /// On an already-fetched but folded container, reveals its children
+    /// again without re-fetching.
+    #[serde(default = "default_ap_expand")]
+    pub expand: KeyBindings,
+    /// Folds an expanded container's children out of view (the already-
+    /// fetched data is kept, not discarded).
+    #[serde(default = "default_ap_collapse")]
+    pub collapse: KeyBindings,
     #[serde(default = "default_ap_all")]
     pub all: KeyBindings,
     #[serde(default = "default_ap_none")]
@@ -1396,6 +1413,8 @@ impl Default for ArchivePickerKeybindings {
         Self {
             toggle: default_ap_toggle(),
             merge_toggle: default_ap_merge_toggle(),
+            expand: default_ap_expand(),
+            collapse: default_ap_collapse(),
             all: default_ap_all(),
             none: default_ap_none(),
             apply: default_ap_apply(),
@@ -1722,6 +1741,8 @@ impl Keybindings {
                 "archive_picker.merge_toggle",
                 &self.archive_picker.merge_toggle,
             ),
+            ("archive_picker.expand", &self.archive_picker.expand),
+            ("archive_picker.collapse", &self.archive_picker.collapse),
             ("archive_picker.all", &self.archive_picker.all),
             ("archive_picker.none", &self.archive_picker.none),
             ("archive_picker.apply", &self.archive_picker.apply),
@@ -2009,6 +2030,8 @@ mod tests {
             ap.merge_toggle
                 .matches(KeyCode::Char('m'), KeyModifiers::NONE)
         );
+        assert!(ap.expand.matches(KeyCode::Right, KeyModifiers::NONE));
+        assert!(ap.collapse.matches(KeyCode::Left, KeyModifiers::NONE));
         assert!(ap.all.matches(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(ap.none.matches(KeyCode::Char('n'), KeyModifiers::NONE));
         assert!(ap.apply.matches(KeyCode::Enter, KeyModifiers::NONE));
@@ -2024,6 +2047,17 @@ mod tests {
         assert!(
             !conflicts.is_empty(),
             "rebinding archive_picker.merge_toggle onto an existing archive-picker action's key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_if_archive_picker_expand_collides_with_collapse() {
+        let mut kb = Keybindings::default();
+        kb.archive_picker.expand = kb.archive_picker.collapse.clone();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "rebinding archive_picker.expand onto archive_picker.collapse's key must be reported as a conflict"
         );
     }
 
