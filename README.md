@@ -20,30 +20,15 @@
 
 ## Features
 
-**Formats & input**
-- **Auto-detected log formats** — JSON, syslog, journalctl, logfmt, OpenTelemetry, DLT (AUTOSAR), and more
-- **Custom schemas** — define your own log format with a simple `{field}` template; drop a `.json` file in `~/.config/logana/schema/` and logana auto-detects it
-- **Compressed & archive files** — open directly; pick which files to extract from a contents popup, including files nested inside nested archives; the popup's file tree is searchable with `/` (regex, live). A nested entry that's itself a lone compressed file (e.g. `app.log.gz` inside a `.zip`) is decompressed automatically on extraction.
-- **OTel collector** — receive OpenTelemetry logs in real time over gRPC or HTTP.
-- **Multi-tab** — open multiple files, `:merge` to group multiple sources into a single view sorted by timestamp.
-
-**Filtering & search**
-- **Filtering** — include/exclude patterns (literal or regex via `-r`, case-insensitive via `--ignore-case`), date-range filters, field-scoped filters; `--field` can be repeated within one filter to require several fields (plus trailing free text) at once, all AND'd together; add filters from the command line with `-i`/`-o`/`-t`
-- **Highlight filters & highlight mode** — a `:highlight` filter type marks matches without hiding anything; toggle `H` to see the full log with every filter's colors still applied, for reading the context around the lines you care about
-- **Headless mode** — run the full filter pipeline without a TUI to preprocess huge logs
-- **Structured field view** — parsed timestamps, levels, targets, and extra fields displayed in columns
-
-**Navigation**
-- **Vim-style navigation** — `j`/`k`, `gg`/`G`, `Ctrl+d`/`u`, count prefixes (`5j`, `10G`), `/` search; the filter manager sidebar shares the same motions, with `/` narrowing the filter list by a live regex query
-- **Error/warning navigation** — jump directly to the next/previous error or warning with `e`/`w`
-- **Mouse support** — click to select, scroll to navigate
-
-**Analysis & integrations**
-- **Persistent sessions** — filters, scroll position, marks, and annotations survive across runs; configurable restore policy (ask / always / never)
-- **Annotations** — attach comments to log lines; export analysis to Markdown or Jira
-- **MCP server** — embedded Model Context Protocol server; expose marks and annotations to AI assistants
-- **Fully configurable** — all keybindings remappable via a config file
-- **Value coloring** — HTTP methods, status codes, IP addresses, and UUIDs colored automatically
+- **Any log format** — JSON, syslog, journalctl, logfmt, OpenTelemetry, DLT, or your own custom `{field}` schema
+- **Any source** — files, directories, compressed/archives, Docker containers, OTel (gRPC/HTTP), stdin
+- **Filtering** — include/exclude, regex, field-scoped, date-range, and highlight-only filters, all remappable and scriptable from the CLI
+- **Vim-style navigation** — `j`/`k`, `gg`/`G`, count prefixes, `/` search, jump straight to the next error or warning
+- **Annotations** — comment on lines and export the analysis to Markdown or Jira
+- **Persistent sessions** — filters, marks, and scroll position are restored automatically
+- **MCP server** — expose marks and annotations to AI assistants
+- **Headless mode** — run the full filter pipeline without a TUI, for scripting and huge logs
+- **Fully configurable** — every keybinding is remappable
 
 ---
 
@@ -81,91 +66,18 @@ cargo binstall logana
 
 ## Performance
 
-Benchmarked against [lnav](https://lnav.org/) filtering a [**3.3 GB web server access log with 10 million+ lines**](https://www.kaggle.com/datasets/eliasdabbas/web-server-access-logs), cold disk cache.
+Filtering a [3.3 GB access log with 10M+ lines](https://www.kaggle.com/datasets/eliasdabbas/web-server-access-logs) against [lnav](https://lnav.org/), cold disk cache:
 
-### Headless mode — 10 runs
+| | logana | lnav |
+|---|---|---|
+| Headless (10-run avg) | 0.99 s | 11.2 s |
+| TUI, open → filter → quit | 1.8 s | 11.8 s |
 
 <p align="center">
   <img src="docs/src/performance.gif" alt="logana performance comparison with lnav" />
 </p>
 
-**logana**
-```
-
-hyperfine --prepare 'rm filtered.log;sync; echo 3 | sudo tee /proc/sys/vm/drop_caches' 'logana ~/logs/access.log -i food --headless > filtered.log' --runs 10
-Benchmark 1: logana ~/logs/access.log -i food --headless > filtered.log
-  Time (mean ± σ):     994.1 ms ±   6.2 ms    [User: 2629.3 ms, System: 3059.8 ms]
-  Range (min … max):   982.6 ms … 1003.6 ms    10 runs
-```
-
-**lnav**
-```
-$ hyperfine --prepare 'rm filtered.log;sync; echo 3 | sudo tee /proc/sys/vm/drop_caches' \
-  'lnav ~/logs/access.log -c ":filter-in food" -n > filtered.log' --runs 10
-
-Benchmark 1: lnav ~/logs/access.log -c ":filter-in food" -n > filtered.log
-  Time (mean ± σ):     11.197 s ±  0.140 s    [User: 14.177 s, System: 1.580 s]
-  Range (min … max):   10.980 s … 11.483 s    10 runs
-```
-
-**logana filters 3.3 GB / 10M+ lines in under 1 second — 11× faster than lnav.**
-
-### TUI — filter on launch, quit when ready
-
-```
-$ time logana ~/logs/access.log -i food
-logana ~/logs/access.log -i food  4.70s user 3.01s system 421% cpu 1.827 total
-
-$ time lnav ~/logs/access.log -c ":filter-in food"
-lnav ~/logs/access.log -c ":filter-in food"  12.14s user 1.37s system 114% cpu 11.819 total
-```
-
-**logana opens, filters, and renders the full TUI in 1.8 s — 6.5× faster than lnav end-to-end.**
-
-> **Note:** lnav provides additional features beyond filtering that may account for part of the difference. This comparison covers filtering performance only.
-
-Hardware: AMD Ryzen 9 8945HS · 32 GB DDR5 5600 MHz · PCIe NVMe 4.0 x4
-
----
-
-## Quick Start
-
-```sh
-# Open a file
-logana app.log
-
-# Open a directory (each file opens in its own tab)
-logana /var/log/
-
-# Open a compressed or archive file directly — shows a contents popup
-# to pick which files to extract (nested archives are expanded too)
-logana app.log.gz
-logana logs.tar.gz
-
-# Pipe from stdin
-journalctl -f | logana
-
-# Start at the end and follow new lines
-logana app.log --tail
-
-# Stream a Docker container
-logana            # then type :docker
-
-# Receive OpenTelemetry logs over gRPC (port 4317)
-logana            # then type :otel
-
-# Add inline filters on the command line
-logana app.log -i error -o debug
-logana app.log -i "--field level=ERROR" -t "> 2024-02-21"
-
-# Regex filter (opt-in with -r; all flags before the pattern)
-logana app.log -i "-r ERR(OR)?"
-logana app.log -i "-r timeout.*retry"
-
-# Headless — filter without the TUI, output to stdout or a file
-logana app.log --headless -i error -o debug
-logana app.log --headless -i error --output filtered.log
-```
+> lnav offers features beyond filtering that may account for part of the difference — this compares filtering performance only. Hardware: AMD Ryzen 9 8945HS · 32 GB DDR5 5600 MHz · NVMe 4.0 x4.
 
 ---
 
