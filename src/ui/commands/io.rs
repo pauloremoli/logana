@@ -224,10 +224,7 @@ impl App {
         if self.tabs.len() <= 1 {
             return Err("Cannot close last tab. Use 'q' to quit.".to_string());
         }
-        self.tabs.remove(self.active_tab);
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        }
+        self.remove_tab_at(self.active_tab);
         Ok(false)
     }
 }

@@ -741,6 +741,60 @@ mod tests {
     /// returns — before the (potentially slow, for big files) background
     /// read/copy phase has even started polling — with real source
     /// filenames already shown, not just once that phase finishes.
+    /// A tab removed anywhere else (a placeholder cleanup, `:close-tab`, a
+    /// different merge finishing) while THIS merge's index build is still
+    /// running in the background must not desync `pending_merge_builds`'
+    /// tracked tab index — otherwise the next update lands on the wrong
+    /// tab, corrupting it (or, if that tab's line count doesn't match,
+    /// crashing on the next render).
+    #[tokio::test]
+    async fn test_removing_an_earlier_tab_keeps_a_still_building_merge_pointed_at_the_right_tab() {
+        let mut app = make_app().await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        let b = tmp.path().join("b.log");
+        std::fs::write(&a, "2024-01-01 10:00:00 INFO line from a\n").unwrap();
+        std::fs::write(&b, "2024-01-01 09:00:00 INFO line from b\n").unwrap();
+        let tree = ArchiveTree {
+            nodes: vec![
+                file_node(0, "a.log", a.to_str().unwrap(), false, true),
+                file_node(1, "b.log", b.to_str().unwrap(), false, true),
+            ],
+            roots: vec![0, 1],
+        };
+        app.apply_directory_picker(tree).await;
+        drain_pending_directory_merge(&mut app).await;
+
+        // Phase 2 (the merge index build) is pending — intentionally not
+        // drained yet, so it's still "in flight" when the removal below
+        // happens.
+        assert_eq!(app.pending_merge_builds.len(), 1);
+        let merge_tab_idx_before = app.pending_merge_builds[0].tab_idx;
+        assert!(merge_tab_idx_before > 0);
+
+        // Some unrelated tab before the still-building merge tab gets
+        // removed (a placeholder cleanup, `:close-tab`, ...) — must go
+        // through `remove_tab_at` so `pending_merge_builds` stays correct.
+        app.remove_tab_at(0);
+        assert_eq!(
+            app.pending_merge_builds[0].tab_idx,
+            merge_tab_idx_before - 1,
+            "the still-building merge's tracked tab index must shift down \
+             after an earlier tab is removed"
+        );
+
+        drain_pending_merge_builds(&mut app).await;
+
+        let merged_tab = &app.tabs[merge_tab_idx_before - 1];
+        assert!(merged_tab.merged.is_some(), "must still be the merged tab");
+        assert_eq!(merged_tab.file_reader.line_count(), 2);
+        assert_eq!(
+            merged_tab.file_reader.get_line(0),
+            b"2024-01-01 09:00:00 INFO line from b"
+        );
+    }
+
     #[tokio::test]
     async fn test_apply_directory_picker_merge_tab_appears_before_reading_starts() {
         let mut app = make_app().await;

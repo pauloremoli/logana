@@ -368,8 +368,7 @@ impl App {
                             .is_none()
                         && self.tabs[initial_tab_idx].file_reader.line_count() == 0
                     {
-                        self.tabs.remove(initial_tab_idx);
-                        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+                        self.remove_tab_at(initial_tab_idx);
                     }
                     return;
                 }
@@ -429,7 +428,7 @@ impl App {
                     .is_none()
                 && self.tabs[initial_tab_idx].file_reader.line_count() == 0;
             if placeholder_is_empty {
-                self.tabs.remove(initial_tab_idx);
+                self.remove_tab_at(initial_tab_idx);
                 tab_idx -= 1; // pushed after the placeholder, so index shifts by one
             }
             self.active_tab = tab_idx;
@@ -680,9 +679,11 @@ impl App {
                             && t.merged.is_none()
                     })
                 {
-                    self.tabs.remove(idx);
-                    self.active_tab = self.active_tab.saturating_sub(1);
-                    self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+                    // `merge_tab_idx` is a local copy of `state.merge_tab_idx`
+                    // (already cleared from `self.pending_archive` above), so
+                    // `remove_tab_at`'s own pending-state fixups can't reach
+                    // it — it needs the same by-position shift by hand.
+                    self.remove_tab_at(idx);
                     if let Some(merge_idx) = merge_tab_idx.as_mut()
                         && *merge_idx > idx
                     {
@@ -958,14 +959,12 @@ impl App {
         if self.tabs.len() > 1
             && self.stdin_load_state.is_none()
             && let Some(idx) = self.tabs.iter().position(|t| {
-                t.log_manager.source_file().is_none() && t.file_reader.line_count() == 0
+                t.log_manager.source_file().is_none()
+                    && t.file_reader.line_count() == 0
+                    && t.merged.is_none()
             })
         {
-            self.tabs.remove(idx);
-            if self.active_tab > idx {
-                self.active_tab -= 1;
-            }
-            self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+            self.remove_tab_at(idx);
         }
     }
 
@@ -1546,8 +1545,7 @@ impl App {
             } => {
                 // Remove the preview tab created before the load started.
                 if tab_idx < self.tabs.len() && self.tabs.len() > 1 {
-                    self.tabs.remove(tab_idx);
-                    self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+                    self.remove_tab_at(tab_idx);
                 }
                 self.continue_session_restore(remaining, total, initial_tab_idx)
                     .await;
@@ -1555,10 +1553,7 @@ impl App {
             LoadContext::ReplaceTab { tab_idx } => {
                 // Remove the placeholder preview tab; no further action needed.
                 if tab_idx < self.tabs.len() {
-                    self.tabs.remove(tab_idx);
-                    if self.active_tab >= self.tabs.len() {
-                        self.active_tab = self.tabs.len().saturating_sub(1);
-                    }
+                    self.remove_tab_at(tab_idx);
                 }
             }
             // ReplaceInitialTab failure: stay with the empty initial tab.

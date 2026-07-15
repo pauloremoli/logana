@@ -47,6 +47,45 @@ impl App {
         &mut self.tabs[self.active_tab]
     }
 
+    /// Removes the tab at `idx` and fixes up every in-flight background
+    /// operation that tracks a tab index by position
+    /// (`pending_merge_builds`, `pending_archive`'s merge tab,
+    /// `pending_directory_merge`) so they keep pointing at the right tab.
+    /// Removing any tab shifts every later index down by one; without this,
+    /// a background merge build racing with an unrelated tab close/removal
+    /// (a placeholder cleanup, `:close-tab`, another merge finishing) would
+    /// silently start writing its results into the wrong tab.
+    ///
+    /// This is the only place that should call `self.tabs.remove` —
+    /// removing a tab any other way risks exactly that desync.
+    pub(crate) fn remove_tab_at(&mut self, idx: usize) {
+        if idx >= self.tabs.len() {
+            return;
+        }
+        self.tabs.remove(idx);
+        if self.active_tab > idx {
+            self.active_tab -= 1;
+        }
+        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+
+        for state in &mut self.pending_merge_builds {
+            if state.tab_idx > idx {
+                state.tab_idx -= 1;
+            }
+        }
+        if let Some(state) = self.pending_archive.as_mut()
+            && let Some(merge_idx) = state.merge_tab_idx.as_mut()
+            && *merge_idx > idx
+        {
+            *merge_idx -= 1;
+        }
+        if let Some(state) = self.pending_directory_merge.as_mut()
+            && state.tab_idx > idx
+        {
+            state.tab_idx -= 1;
+        }
+    }
+
     pub async fn close_tab(&mut self) -> bool {
         use std::sync::atomic::Ordering;
         self.save_tab_context(&self.tabs[self.active_tab]).await;
@@ -66,10 +105,7 @@ impl App {
         if self.tabs.len() <= 1 {
             return true;
         }
-        self.tabs.remove(self.active_tab);
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        }
+        self.remove_tab_at(self.active_tab);
         false
     }
 
@@ -311,13 +347,6 @@ impl App {
     /// to fill it in, so it would otherwise sit around forever showing
     /// "building" progress that will never move.
     pub(crate) fn remove_pending_merged_tab(&mut self, tab_idx: usize) {
-        if tab_idx >= self.tabs.len() {
-            return;
-        }
-        self.tabs.remove(tab_idx);
-        if self.active_tab > tab_idx {
-            self.active_tab -= 1;
-        }
-        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        self.remove_tab_at(tab_idx);
     }
 }
