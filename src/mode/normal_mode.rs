@@ -177,6 +177,21 @@ impl Mode for NormalMode {
             );
         }
 
+        if kb.normal.filter_include_auto.matches(key, modifiers) {
+            let history = tab.interaction.command_history.clone();
+            tab.interaction.g_key_pressed = false;
+            tab.interaction.command_error = None;
+            self.count = None;
+            return (
+                Box::new(CommandMode::with_history(
+                    "filter --auto ".to_string(),
+                    14,
+                    history,
+                )),
+                KeyResult::Handled,
+            );
+        }
+
         if kb.normal.filter_exclude.matches(key, modifiers) {
             let history = tab.interaction.command_history.clone();
             tab.interaction.g_key_pressed = false;
@@ -554,6 +569,12 @@ impl Mode for NormalMode {
         );
         status_entry(
             &mut spans,
+            kb.normal.filter_include_auto.display(),
+            "filter in (auto)",
+            theme,
+        );
+        status_entry(
+            &mut spans,
             kb.normal.filter_exclude.display(),
             "filter out",
             theme,
@@ -799,6 +820,20 @@ mod tests {
         match mode.render_state() {
             ModeRenderState::Command { input, .. } => {
                 assert_eq!(input, "filter ");
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_a_opens_filter_include_auto_command() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, result) = press(&mut tab, KeyCode::Char('a'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::Handled));
+        match mode.render_state() {
+            ModeRenderState::Command { input, cursor, .. } => {
+                assert_eq!(input, "filter --auto ");
+                assert_eq!(cursor, input.len());
             }
             other => panic!("expected Command, got {:?}", other),
         }

@@ -62,6 +62,7 @@
           "add_exclude_filter": "o",
           "add_highlight_filter": "h",
           "add_include_filter": "i",
+          "add_include_filter_auto": "a",
           "clear_all_filters": "C",
           "delete_filter": "d",
           "edit_filter": "e",
@@ -117,6 +118,7 @@
           "enter_ui_mode": "u",
           "filter_exclude": "o",
           "filter_include": "i",
+          "filter_include_auto": "a",
           "filter_mode": "f",
           "go_to_bottom": "G",
           "go_to_top_chord": "g",
@@ -363,6 +365,7 @@
             "enter_ui_mode": "u",
             "filter_exclude": "o",
             "filter_include": "i",
+            "filter_include_auto": "a",
             "filter_mode": "f",
             "go_to_bottom": "G",
             "go_to_top_chord": "g",
@@ -405,6 +408,7 @@
             "add_exclude_filter": "o",
             "add_highlight_filter": "h",
             "add_include_filter": "i",
+            "add_include_filter_auto": "a",
             "clear_all_filters": "C",
             "delete_filter": "d",
             "edit_filter": "e",
@@ -989,6 +993,14 @@
             }
           ]
         },
+        "filter_include_auto": {
+          "default": "a",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
         "filter_exclude": {
           "default": "o",
           "allOf": [
@@ -1084,6 +1096,14 @@
         },
         "add_include_filter": {
           "default": "i",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "add_include_filter_auto": {
+          "default": "a",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"

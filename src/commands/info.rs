@@ -2,223 +2,296 @@ pub struct CommandInfo {
     pub name: &'static str,
     pub usage: &'static str,
     pub description: &'static str,
+    /// Example invocations, one per entry — rendered as a separate line
+    /// each in the command-help popup instead of crammed into `description`.
+    pub examples: &'static [&'static str],
 }
 
 pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "filter",
         usage: "filter [-r] [-i] [-l] [--fg <color>] [--bg <color>] [-a] [--group <name>] [--field <key>=<value>] <pattern>",
-        description: "Add an include filter. e.g. filter ERROR, filter connection refused, filter -r \"ERR(OR)?\", filter --ignore-case error, filter --field level=error, filter --group errors ERROR, filter --auto ERROR (random readable colors)",
+        description: "Add an include filter — only matching lines stay visible.",
+        examples: &[
+            "filter ERROR",
+            "filter connection refused",
+            "filter -r \"ERR(OR)?\"",
+            "filter --ignore-case error",
+            "filter --field level=error",
+            "filter --group errors ERROR",
+            "filter --auto ERROR",
+        ],
     },
     CommandInfo {
         name: "exclude",
         usage: "exclude [-r] [-i] [--group <name>] [--field <key>=<value>] <pattern>",
-        description: "Add an exclude filter. e.g. exclude debug, exclude connection refused, exclude -r \"health.?check\", exclude --ignore-case debug, exclude --field level=debug, exclude --group noise debug",
+        description: "Add an exclude filter — matching lines are hidden.",
+        examples: &[
+            "exclude debug",
+            "exclude connection refused",
+            "exclude -r \"health.?check\"",
+            "exclude --ignore-case debug",
+            "exclude --field level=debug",
+            "exclude --group noise debug",
+        ],
     },
     CommandInfo {
         name: "highlight",
         usage: "highlight [-r] [-i] [-l] [--fg <color>] [--bg <color>] [-a] [--group <name>] [--field <key>=<value>] <pattern>",
-        description: "Add a highlight filter (styling only, does not affect visibility). e.g. highlight ERROR, highlight --field level=error, highlight --auto ERROR (random readable colors), h ERROR",
+        description: "Add a highlight filter — colors matches without hiding other lines.",
+        examples: &[
+            "highlight ERROR",
+            "highlight --field level=error",
+            "highlight --auto ERROR",
+            "h ERROR",
+        ],
     },
     CommandInfo {
         name: "set-color",
         usage: "set-color [-l] [--fg <color>] [--bg <color>]",
-        description: "Set color for the selected filter. -l colors the whole line. e.g. set-color --fg Green, set-color --fg [0,255,0]",
+        description: "Set color for the selected filter. -l colors the whole line.",
+        examples: &["set-color --fg Green", "set-color --fg [0,255,0]"],
     },
     CommandInfo {
         name: "export-marked",
         usage: "export-marked <path>",
-        description: "Export marked logs to a file. e.g. export-marked /tmp/marked.log",
+        description: "Export marked logs to a file.",
+        examples: &["export-marked /tmp/marked.log"],
     },
     CommandInfo {
         name: "save",
         usage: "save <path>",
-        description: "Save visible (filtered) lines to a file in raw format. e.g. save /tmp/visible.log",
+        description: "Save visible (filtered) lines to a file in raw format.",
+        examples: &["save /tmp/visible.log"],
     },
     CommandInfo {
         name: "save-filters",
         usage: "save-filters <path>",
-        description: "Save current filters to a file. e.g. save-filters filters.json",
+        description: "Save current filters to a file.",
+        examples: &["save-filters filters.json"],
     },
     CommandInfo {
         name: "load-filters",
         usage: "load-filters <path>",
-        description: "Load filters from a file. e.g. load-filters filters.json",
+        description: "Load filters from a file.",
+        examples: &["load-filters filters.json"],
     },
     CommandInfo {
         name: "wrap",
         usage: "wrap",
-        description: "Toggle line wrapping on/off",
+        description: "Toggle line wrapping on/off.",
+        examples: &[],
     },
     CommandInfo {
         name: "set-theme",
         usage: "set-theme <name>",
-        description: "Change the color theme. e.g. set-theme dracula",
+        description: "Change the color theme.",
+        examples: &["set-theme dracula"],
     },
     CommandInfo {
         name: "level-colors",
         usage: "level-colors",
-        description: "Toggle ERROR/WARN log level color highlighting on/off",
+        description: "Toggle ERROR/WARN log level color highlighting on/off.",
+        examples: &[],
     },
     CommandInfo {
         name: "open",
         usage: "open <path>",
-        description: "Open a file in a new tab. e.g. open /var/log/syslog",
+        description: "Open a file in a new tab.",
+        examples: &["open /var/log/syslog"],
     },
     CommandInfo {
         name: "close-tab",
         usage: "close-tab",
-        description: "Close the current tab (quits if last tab)",
+        description: "Close the current tab (quits if last tab).",
+        examples: &[],
     },
     CommandInfo {
         name: "line-numbers",
         usage: "line-numbers",
-        description: "Toggle line numbers on/off",
+        description: "Toggle line numbers on/off.",
+        examples: &[],
     },
     CommandInfo {
         name: "clear-filters",
         usage: "clear-filters",
-        description: "Remove all filter definitions",
+        description: "Remove all filter definitions.",
+        examples: &[],
     },
     CommandInfo {
         name: "disable-filters",
         usage: "disable-filters",
-        description: "Disable all filters without removing them",
+        description: "Disable all filters without removing them.",
+        examples: &[],
     },
     CommandInfo {
         name: "enable-filters",
         usage: "enable-filters",
-        description: "Enable all disabled filters",
+        description: "Enable all disabled filters.",
+        examples: &[],
     },
     CommandInfo {
         name: "toggle-group",
         usage: "toggle-group <name>",
-        description: "Toggle all filters in a named group on/off together. e.g. toggle-group errors",
+        description: "Toggle all filters in a named group on/off together.",
+        examples: &["toggle-group errors"],
     },
     CommandInfo {
         name: "filtering",
         usage: "filtering",
-        description: "Toggle global filtering on/off (bypass all filters)",
+        description: "Toggle global filtering on/off (bypass all filters).",
+        examples: &[],
     },
     CommandInfo {
         name: "hide-field",
         usage: "hide-field <name|index>",
-        description: "Hide a field by name or 0-based index. e.g. hide-field level or hide-field 0",
+        description: "Hide a field by name or 0-based index.",
+        examples: &["hide-field level", "hide-field 0"],
     },
     CommandInfo {
         name: "show-field",
         usage: "show-field <name>",
-        description: "Show a previously hidden field. e.g. show-field level",
+        description: "Show a previously hidden field.",
+        examples: &["show-field level"],
     },
     CommandInfo {
         name: "show-all-fields",
         usage: "show-all-fields",
-        description: "Clear all hidden fields and show all fields",
+        description: "Clear all hidden fields and show all fields.",
+        examples: &[],
     },
     CommandInfo {
         name: "select-fields",
         usage: "select-fields",
-        description: "Open a modal to select which fields to display and their order",
+        description: "Open a modal to select which fields to display and their order.",
+        examples: &[],
     },
     CommandInfo {
         name: "merge",
         usage: "merge",
-        description: "Open a popup to select tabs and create a new interleaved view sorted by timestamp",
+        description: "Open a popup to select tabs and create a new interleaved view sorted by timestamp.",
+        examples: &[],
     },
     CommandInfo {
         name: "docker",
         usage: "docker",
-        description: "List running Docker containers and stream logs from the selected one",
+        description: "List running Docker containers and stream logs from the selected one.",
+        examples: &[],
     },
     CommandInfo {
         name: "value-colors",
         usage: "value-colors",
-        description: "Toggle value-based color coding (HTTP methods, status codes, IPs, UUIDs)",
+        description: "Toggle value-based color coding (HTTP methods, status codes, IPs, UUIDs).",
+        examples: &[],
     },
     CommandInfo {
         name: "export",
         usage: "export [-t <template>] <path>",
-        description: "Export analysis (comments + marked lines) to a file. -t sets the template (default: markdown). e.g. export /tmp/report.md",
+        description: "Export analysis (comments + marked lines) to a file. -t sets the template (default: markdown).",
+        examples: &["export /tmp/report.md"],
     },
     CommandInfo {
         name: "date-filter",
         usage: "date-filter <expression>",
-        description: "Filter lines by timestamp. e.g. date-filter 01:00 .. 02:00, date-filter > 2024-02-22, date-filter >= Feb 21",
+        description: "Filter lines by timestamp.",
+        examples: &[
+            "date-filter 01:00 .. 02:00",
+            "date-filter > 2024-02-22",
+            "date-filter >= Feb 21",
+        ],
     },
     CommandInfo {
         name: "tail",
         usage: "tail",
-        description: "Toggle tail mode — when on, always scrolls to the last line as new content arrives",
+        description: "Toggle tail mode — always scrolls to the last line as new content arrives.",
+        examples: &[],
     },
     CommandInfo {
         name: "show-keys",
         usage: "show-keys",
-        description: "Show field keys alongside values in structured log display (e.g. method=GET instead of GET)",
+        description: "Show field keys alongside values in structured log display (e.g. method=GET instead of GET).",
+        examples: &[],
     },
     CommandInfo {
         name: "hide-keys",
         usage: "hide-keys",
-        description: "Show only values in structured log display, hiding field keys (default)",
+        description: "Show only values in structured log display, hiding field keys (default).",
+        examples: &[],
     },
     CommandInfo {
         name: "raw",
         usage: "raw",
-        description: "Toggle raw mode — disables the format parser and shows unformatted log lines",
+        description: "Toggle raw mode — disables the format parser and shows unformatted log lines.",
+        examples: &[],
     },
     CommandInfo {
         name: "stop",
         usage: "stop",
-        description: "Stop all incoming data for the current tab (file watcher and/or stream)",
+        description: "Stop all incoming data for the current tab (file watcher and/or stream).",
+        examples: &[],
     },
     CommandInfo {
         name: "pause",
         usage: "pause",
-        description: "Pause applying incoming data to the view (watcher/stream keeps running in the background)",
+        description: "Pause applying incoming data to the view (watcher/stream keeps running in the background).",
+        examples: &[],
     },
     CommandInfo {
         name: "resume",
         usage: "resume",
-        description: "Resume applying incoming data after a pause",
+        description: "Resume applying incoming data after a pause.",
+        examples: &[],
     },
     CommandInfo {
         name: "reset",
         usage: "reset",
-        description: "Restore all settings to defaults and clear all persisted state",
+        description: "Restore all settings to defaults and clear all persisted state.",
+        examples: &[],
     },
     CommandInfo {
         name: "dlt",
         usage: "dlt",
-        description: "Show configured DLT devices and connect to one",
+        description: "Show configured DLT devices and connect to one.",
+        examples: &[],
     },
     CommandInfo {
         name: "otel",
         usage: "otel [--http] [port]",
-        description: "Start an OTel collector receiver. Default: gRPC on port 4317. Use --http for HTTP/JSON on port 4318. e.g. otel, otel 4317, otel --http, otel --http 4318",
+        description: "Start an OTel collector receiver. Default: gRPC on port 4317; use --http for HTTP/JSON on port 4318.",
+        examples: &["otel", "otel 4317", "otel --http", "otel --http 4318"],
     },
     CommandInfo {
         name: "enable-mcp",
         usage: "enable-mcp [--port <port>]",
-        description: "Start the embedded MCP server (default port 9876). e.g. enable-mcp --port 8080",
+        description: "Start the embedded MCP server (default port 9876).",
+        examples: &["enable-mcp --port 8080"],
     },
     CommandInfo {
         name: "disable-mcp",
         usage: "disable-mcp",
-        description: "Stop the embedded MCP server",
+        description: "Stop the embedded MCP server.",
+        examples: &[],
     },
     CommandInfo {
         name: "run",
         usage: "run <program> [args...]",
-        description: "Execute a command and stream its output to a new tab. Stderr lines are shown as errors. e.g. run docker logs -f mycontainer, run tail -f /var/log/syslog",
+        description: "Execute a command and stream its output to a new tab. Stderr lines are shown as errors.",
+        examples: &[
+            "run docker logs -f mycontainer",
+            "run tail -f /var/log/syslog",
+        ],
     },
     CommandInfo {
         name: "sidebar-position",
         usage: "sidebar-position <left|right>",
-        description: "Move the filter sidebar to the left or right of the log panel. e.g. sidebar-position left",
+        description: "Move the filter sidebar to the left or right of the log panel.",
+        examples: &["sidebar-position left"],
     },
     CommandInfo {
         name: "schema",
         usage: "schema [name]",
-        description: "Show the active parser schema for this tab, or switch to a named schema. e.g. schema, schema acme",
+        description: "Show the active parser schema for this tab, or switch to a named schema.",
+        examples: &["schema", "schema acme"],
     },
 ];
 
@@ -322,5 +395,18 @@ mod tests {
         let cmd = find_matching_command("filter").unwrap();
         assert!(!cmd.usage.is_empty());
         assert!(!cmd.description.is_empty());
+        assert!(!cmd.examples.is_empty());
+    }
+
+    #[test]
+    fn test_every_command_has_non_empty_usage_and_description() {
+        for cmd in COMMANDS {
+            assert!(!cmd.usage.is_empty(), "{} has empty usage", cmd.name);
+            assert!(
+                !cmd.description.is_empty(),
+                "{} has empty description",
+                cmd.name
+            );
+        }
     }
 }

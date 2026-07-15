@@ -11,7 +11,7 @@ use super::App;
 use super::field_layout::count_wrapped_lines;
 use super::widgets::{
     CommandBar, CompletionSource, InputBar, LogPanel, ModeBar, Sidebar, TabBar, TabBarEntry,
-    file_display_name, prepare_log_panel, resolve_completions,
+    command_help_lines, file_display_name, prepare_log_panel, resolve_completions,
 };
 
 type DltSelectData = Option<(
@@ -1020,27 +1020,40 @@ impl App {
         width: usize,
         completion_index: Option<usize>,
     ) -> u16 {
-        let text = match command_input {
-            Some((input_text, _)) => {
-                let query_text = completion_query.unwrap_or(input_text.as_str());
-                let tab = &mut self.tabs[self.active_tab];
-                match resolve_completions(tab, query_text, completion_index) {
-                    CompletionSource::Error(e) => e,
-                    CompletionSource::Items(items) => items.join("  "),
-                    CompletionSource::ColorItems(items) => items
-                        .iter()
-                        .map(|n| format!(" {} ", n))
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    CompletionSource::FileItems(items) => items
-                        .iter()
-                        .map(|c| file_display_name(c))
-                        .collect::<Vec<_>>()
-                        .join("  "),
-                    CompletionSource::CommandHelp(help) => help,
-                }
+        let Some((input_text, _)) = command_input else {
+            return 1;
+        };
+        let query_text = completion_query.unwrap_or(input_text.as_str());
+        let tab = &mut self.tabs[self.active_tab];
+        let text = match resolve_completions(tab, query_text, completion_index) {
+            CompletionSource::Error(e) => e,
+            CompletionSource::Items(items) => items.join("  "),
+            CompletionSource::ColorItems(items) => items
+                .iter()
+                .map(|n| format!(" {} ", n))
+                .collect::<Vec<_>>()
+                .join(" "),
+            CompletionSource::FileItems(items) => items
+                .iter()
+                .map(|c| file_display_name(c))
+                .collect::<Vec<_>>()
+                .join("  "),
+            CompletionSource::CommandHelp(cmd) => {
+                // Structured (usage / description / examples), not a single
+                // wrapped paragraph — size by summing each section's own
+                // wrapped height instead of `count_wrapped_lines` on one
+                // flattened string. Built via the same `command_help_lines`
+                // the widget itself renders, so the two can't drift apart.
+                let lines = command_help_lines(cmd, &self.theme);
+                let total: usize = lines
+                    .iter()
+                    .map(|line| {
+                        let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                        count_wrapped_lines(&plain, width).max(1)
+                    })
+                    .sum();
+                return (total as u16).clamp(1, 15);
             }
-            None => String::new(),
         };
         if text.is_empty() {
             return 1;

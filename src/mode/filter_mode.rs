@@ -388,6 +388,10 @@ impl FilterManagementMode {
         open_command(tab, "filter ".to_string())
     }
 
+    fn add_include_filter_auto(tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        open_command(tab, "filter --auto ".to_string())
+    }
+
     fn add_exclude_filter(tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
         open_command(tab, "exclude ".to_string())
     }
@@ -542,6 +546,9 @@ impl Mode for FilterManagementMode {
         if kb.filter.add_include_filter.matches(key, modifiers) {
             return Self::add_include_filter(tab);
         }
+        if kb.filter.add_include_filter_auto.matches(key, modifiers) {
+            return Self::add_include_filter_auto(tab);
+        }
         if kb.filter.add_exclude_filter.matches(key, modifiers) {
             return Self::add_exclude_filter(tab);
         }
@@ -574,6 +581,12 @@ impl Mode for FilterManagementMode {
             &mut spans,
             kb.filter.add_include_filter.display(),
             "filter in",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.filter.add_include_filter_auto.display(),
+            "filter in (auto)",
             theme,
         );
         status_entry(
@@ -1339,6 +1352,20 @@ mod tests {
                 .unwrap()
                 .enabled
         );
+    }
+
+    #[tokio::test]
+    async fn test_lowercase_a_opens_command_mode_with_filter_auto_prefill() {
+        let mut tab = make_tab(&["a", "b"]).await;
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('a')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        match mode.render_state() {
+            ModeRenderState::Command { input, cursor, .. } => {
+                assert_eq!(input, "filter --auto ");
+                assert_eq!(cursor, input.len());
+            }
+            other => panic!("expected Command, got {:?}", other),
+        }
     }
 
     #[tokio::test]

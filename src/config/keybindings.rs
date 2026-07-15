@@ -459,6 +459,10 @@ fn default_normal_filter_include() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('i'), KeyModifiers::NONE)])
 }
 #[inline(always)]
+fn default_normal_filter_include_auto() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('a'), KeyModifiers::NONE)])
+}
+#[inline(always)]
 fn default_normal_filter_exclude() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('o'), KeyModifiers::NONE)])
 }
@@ -566,6 +570,8 @@ pub struct NormalKeybindings {
     pub prev_warning: KeyBindings,
     #[serde(default = "default_normal_filter_include")]
     pub filter_include: KeyBindings,
+    #[serde(default = "default_normal_filter_include_auto")]
+    pub filter_include_auto: KeyBindings,
     #[serde(default = "default_normal_filter_exclude")]
     pub filter_exclude: KeyBindings,
     #[serde(default = "default_enter_ui_mode")]
@@ -607,6 +613,7 @@ impl Default for NormalKeybindings {
             next_warning: default_next_warning(),
             prev_warning: default_prev_warning(),
             filter_include: default_normal_filter_include(),
+            filter_include_auto: default_normal_filter_include_auto(),
             filter_exclude: default_normal_filter_exclude(),
             enter_ui_mode: default_enter_ui_mode(),
             clear_search: default_clear_search(),
@@ -649,6 +656,10 @@ fn default_filter_clear_all() -> KeyBindings {
 #[inline(always)]
 fn default_filter_add_include() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('i'), KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_filter_add_include_auto() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('a'), KeyModifiers::NONE)])
 }
 #[inline(always)]
 fn default_filter_add_exclude() -> KeyBindings {
@@ -699,6 +710,8 @@ pub struct FilterKeybindings {
     pub clear_all_filters: KeyBindings,
     #[serde(default = "default_filter_add_include")]
     pub add_include_filter: KeyBindings,
+    #[serde(default = "default_filter_add_include_auto")]
+    pub add_include_filter_auto: KeyBindings,
     #[serde(default = "default_filter_add_exclude")]
     pub add_exclude_filter: KeyBindings,
     #[serde(default = "default_filter_add_date")]
@@ -727,6 +740,7 @@ impl Default for FilterKeybindings {
             toggle_all_filters: default_filter_toggle_all(),
             clear_all_filters: default_filter_clear_all(),
             add_include_filter: default_filter_add_include(),
+            add_include_filter_auto: default_filter_add_include_auto(),
             add_exclude_filter: default_filter_add_exclude(),
             add_date_filter: default_filter_add_date(),
             add_highlight_filter: default_filter_add_highlight(),
@@ -1608,6 +1622,10 @@ impl Keybindings {
             ),
             ("normal.enter_ui_mode", &self.normal.enter_ui_mode),
             ("normal.filter_include", &self.normal.filter_include),
+            (
+                "normal.filter_include_auto",
+                &self.normal.filter_include_auto,
+            ),
             ("normal.filter_exclude", &self.normal.filter_exclude),
             ("normal.go_to_top_chord", &self.normal.go_to_top_chord),
             ("normal.go_to_bottom", &self.normal.go_to_bottom),
@@ -1655,6 +1673,10 @@ impl Keybindings {
             ("filter.toggle_all_filters", &self.filter.toggle_all_filters),
             ("filter.clear_all_filters", &self.filter.clear_all_filters),
             ("filter.add_include_filter", &self.filter.add_include_filter),
+            (
+                "filter.add_include_filter_auto",
+                &self.filter.add_include_filter_auto,
+            ),
             ("filter.add_exclude_filter", &self.filter.add_exclude_filter),
             ("filter.add_date_filter", &self.filter.add_date_filter),
             (

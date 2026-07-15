@@ -6,9 +6,11 @@ Text filters match against the raw content of each log line.
 
 **From normal mode:**
 - Press `i` to add an include filter (opens command mode pre-filled with `filter `)
+- Press `a` to add an include filter with an automatically generated, readable color pair (opens command mode pre-filled with `filter --auto `)
 - Press `o` to add an exclude filter (opens command mode pre-filled with `exclude `)
 
 **From the filter manager (`f`):**
+- Press `i` to add an include filter, `a` for one with an automatically generated color pair
 - Press `h` to add a highlight filter (opens command mode pre-filled with `highlight `)
 
 **From command mode:**

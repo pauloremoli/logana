@@ -37,6 +37,7 @@ Multiple alternatives:
 ```json
 "normal": {
   "filter_include": "i",
+  "filter_include_auto": "a",
   "filter_exclude": "o",
   "open_filter_manager": "f",
   "toggle_filters": "F",
@@ -92,6 +93,9 @@ Multiple alternatives:
   "edit": "e",
   "delete": "d",
   "set_color": "c",
+  "add_include_filter": "i",
+  "add_include_filter_auto": "a",
+  "add_exclude_filter": "o",
   "add_date_filter": "t",
   "add_highlight_filter": "h",
   "search": "/",

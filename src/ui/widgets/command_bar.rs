@@ -19,7 +19,7 @@ pub enum CompletionSource {
     Items(Vec<String>),
     ColorItems(Vec<String>),
     FileItems(Vec<String>),
-    CommandHelp(String),
+    CommandHelp(&'static crate::commands::CommandInfo),
 }
 
 pub fn resolve_completions(
@@ -131,7 +131,7 @@ pub fn resolve_completions(
     if completion_index.is_none()
         && let Some(cmd) = find_matching_command(query_text)
     {
-        return CompletionSource::CommandHelp(format!("  {} - {}", cmd.usage, cmd.description));
+        return CompletionSource::CommandHelp(cmd);
     }
     CompletionSource::Items(
         find_command_completions(trimmed)
@@ -207,14 +207,57 @@ impl<'a> CommandBar<'a> {
                     (file_display_name(path), normal_style, highlight_style)
                 });
             }
-            CompletionSource::CommandHelp(help) => {
-                Paragraph::new(help.as_str())
-                    .style(normal_style)
+            CompletionSource::CommandHelp(cmd) => {
+                Paragraph::new(command_help_lines(cmd, self.theme))
+                    .style(Style::default().bg(root_bg))
                     .wrap(Wrap { trim: false })
                     .render(area, buf);
             }
         }
     }
+}
+
+/// Builds the styled, structured help block for a command: a "Usage:" line,
+/// the description, and — if any — an "Examples:" section with one example
+/// per line. Section labels are bold/highlighted, usage and example command
+/// text share a distinct "code" color, and the description is plain — a
+/// deliberately different look per section so the three are easy to tell
+/// apart at a glance instead of running together as one wrapped paragraph.
+///
+/// Used both to render the actual widget and (in `render.rs`'s
+/// `compute_hint_height`) to size the area it's rendered into — one
+/// function computing both keeps them from silently drifting apart.
+pub fn command_help_lines(cmd: &crate::commands::CommandInfo, theme: &Theme) -> Vec<Line<'static>> {
+    let label_style = Style::default()
+        .fg(theme.text_highlight_fg)
+        .add_modifier(Modifier::BOLD)
+        .bg(theme.root_bg);
+    let code_style = Style::default().fg(theme.cursor_fg).bg(theme.root_bg);
+    let text_style = Style::default().fg(theme.text).bg(theme.root_bg);
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Usage: ", label_style),
+        Span::styled(cmd.usage.to_string(), code_style),
+    ])];
+
+    if !cmd.description.is_empty() {
+        lines.push(Line::from(Span::styled(
+            cmd.description.to_string(),
+            text_style,
+        )));
+    }
+
+    if !cmd.examples.is_empty() {
+        lines.push(Line::from(Span::styled("Examples:", label_style)));
+        for example in cmd.examples {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(example.to_string(), code_style),
+            ]));
+        }
+    }
+
+    lines
 }
 
 fn render_completion_hints_buf(
@@ -305,13 +348,14 @@ mod tests {
     #[test]
     fn test_command_bar_renders_help() {
         let theme = Theme::default();
+        let cmd = crate::commands::find_matching_command("filter").unwrap();
         let bar = CommandBar {
             input_text: "filter",
             cursor_pos: 6,
-            completion: CompletionSource::CommandHelp("  filter <pat> - add filter".to_string()),
+            completion: CompletionSource::CommandHelp(cmd),
             theme: &theme,
         };
-        let mut terminal = Terminal::new(TestBackend::new(80, 2)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
         terminal.draw(|f| f.render_widget(bar, f.area())).unwrap();
     }
 
