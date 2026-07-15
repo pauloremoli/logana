@@ -37,11 +37,16 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
         return None;
     }
 
+    // A schema that fails to compile here was already reported once, at
+    // startup, via `validate_custom_schemas`/`startup_warnings` — this runs
+    // on every call (potentially many times per session, well after the
+    // terminal has entered raw/alt-screen mode), so it must not also
+    // eprintln! the same error again: that would corrupt the TUI's display
+    // instead of being visible to the user.
     let mut parsers: Vec<Box<dyn LogFormatParser>> = crate::config::custom_schemas()
         .iter()
         .filter_map(|cfg| {
             CustomParser::from_config(cfg)
-                .map_err(|e| eprintln!("logana: invalid custom schema '{}': {e}", cfg.name))
                 .ok()
                 .map(|p| Box::new(p) as Box<dyn LogFormatParser>)
         })

@@ -113,6 +113,33 @@ fn merged_format_name(merged: &crate::ui::MergedState) -> Option<String> {
     }
 }
 
+/// Caps how many startup warnings (and how many terminal rows total, once
+/// a multi-line one — e.g. a `regex::Error`'s caret-pointer diagram under
+/// an invalid schema pattern — is split into one row per line) the
+/// warnings banner will show, so one badly-formatted message can't push
+/// the log panel off-screen.
+const MAX_WARNINGS_SHOWN: usize = 10;
+const MAX_WARNING_ROWS: usize = 20;
+
+/// Flattens `warnings` into one entry per terminal row — each warning may
+/// itself span multiple lines (e.g. a regex compile error), which a plain
+/// one-`Line`-per-warning render would show as a single garbled row full of
+/// literal newline characters instead of separate lines. Each entry is
+/// `(is_first_line_of_its_warning, text)`; the first line of a warning is
+/// the one that should get the "Warning: " label.
+fn warning_rows(warnings: &[String]) -> Vec<(bool, &str)> {
+    let mut rows = Vec::new();
+    for w in warnings.iter().take(MAX_WARNINGS_SHOWN) {
+        for (i, line) in w.lines().enumerate() {
+            if rows.len() >= MAX_WARNING_ROWS {
+                return rows;
+            }
+            rows.push((i == 0, line));
+        }
+    }
+    rows
+}
+
 impl App {
     pub(super) fn ui(&mut self, frame: &mut Frame) {
         let size = frame.area();
@@ -263,7 +290,7 @@ impl App {
             .mode_bar_content(&keybindings, &self.theme);
         let show_mode_bar = self.display.show_mode_bar;
         let has_warnings = !self.session.startup_warnings.is_empty();
-        let warnings_height = self.session.startup_warnings.len().min(10) as u16;
+        let warnings_height = warning_rows(&self.session.startup_warnings).len() as u16;
         let visual_anchor: Option<usize> = match render_state {
             ModeRenderState::VisualLine { anchor } => Some(*anchor),
             _ => None,
@@ -783,16 +810,19 @@ impl App {
     ) {
         if let Some(idx) = warnings_chunk_idx {
             let warnings_area = chunks[idx];
-            let lines: Vec<Line> = self
-                .session
-                .startup_warnings
-                .iter()
-                .take(10)
-                .map(|w: &String| {
-                    Line::from(vec![
-                        Span::styled("Warning: ", Style::default().fg(Color::Red)),
-                        Span::raw(w.clone()),
-                    ])
+            let lines: Vec<Line> = warning_rows(&self.session.startup_warnings)
+                .into_iter()
+                .map(|(is_first, text)| {
+                    if is_first {
+                        Line::from(vec![
+                            Span::styled("Warning: ", Style::default().fg(Color::Red)),
+                            Span::raw(text.to_string()),
+                        ])
+                    } else {
+                        // Indented to align under the text that follows
+                        // "Warning: " (9 characters) on the first line.
+                        Line::from(Span::raw(format!("         {text}")))
+                    }
                 })
                 .collect();
             frame.render_widget(
@@ -2749,6 +2779,59 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(content.contains("conflict 0"));
+    }
+
+    #[test]
+    fn test_warning_rows_splits_multiline_warning_into_separate_rows() {
+        let warnings = vec![
+            "invalid custom schema 'x': regex parse error:\n    (abc\n    ^\nerror: unclosed group"
+                .to_string(),
+        ];
+        let rows = warning_rows(&warnings);
+        assert_eq!(
+            rows,
+            vec![
+                (true, "invalid custom schema 'x': regex parse error:"),
+                (false, "    (abc"),
+                (false, "    ^"),
+                (false, "error: unclosed group"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_warning_rows_caps_total_rows_across_warnings() {
+        let warnings: Vec<String> = (0..5)
+            .map(|i| format!("line a {i}\nline b {i}\nline c {i}\nline d {i}\nline e {i}"))
+            .collect();
+        let rows = warning_rows(&warnings);
+        assert_eq!(rows.len(), MAX_WARNING_ROWS);
+    }
+
+    #[tokio::test]
+    async fn test_startup_warnings_multiline_message_renders_as_separate_rows() {
+        let mut app = make_app(&["line 0"]).await;
+        app.session.startup_warnings = vec![
+            "invalid custom schema 'x': regex parse error:\n    ^\nerror: unclosed group"
+                .to_string(),
+        ];
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = (0..buf.area.height)
+            .map(|y| row_content(&buf, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            content.contains("Warning: invalid custom schema 'x': regex parse error:"),
+            "first line should carry the Warning label, got:\n{content}"
+        );
+        assert!(
+            content.contains("error: unclosed group"),
+            "continuation lines of a multi-line warning must still be visible, got:\n{content}"
+        );
     }
 
     #[tokio::test]

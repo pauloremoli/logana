@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- A schema with an invalid regex/template no longer leaks its error to stderr, corrupting the TUI — it now shows in the startup-warning banner, which also properly renders multi-line messages.
+
 ## [0.7.4] - 2026-07-15
 
 ### Added

@@ -181,9 +181,7 @@ pub fn load_schemas(schemas_dir: &std::path::Path) -> (Vec<CustomSchemaConfig>, 
         {
             Ok(schema) => schemas.push(schema),
             Err(e) => {
-                let msg = format!("could not load schema '{}': {e}", path.display());
-                eprintln!("logana: {msg}");
-                errors.push(msg);
+                errors.push(format!("could not load schema '{}': {e}", path.display()));
             }
         }
     }
