@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-07-15
+
 ### Added
 - Archive picker: mark files with `m` to extract and merge them into one timestamp-sorted tab (instead of opening each as its own tab).
 - Archive picker now supports the same navigation as the filter sidebar and log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u` , `PageDown`/`PageUp` (full page), and `gg`/`G`. 
