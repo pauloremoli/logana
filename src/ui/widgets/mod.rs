@@ -17,7 +17,7 @@ pub mod value_colors_popup;
 pub use archive_picker_popup::ArchivePickerPopup;
 pub use command_bar::{CommandBar, CompletionSource, file_display_name, resolve_completions};
 pub use comment_popup::CommentPopup;
-pub use confirm_modal::{ConfirmOpenDirModal, ConfirmRestoreModal, ConfirmRestoreSessionModal};
+pub use confirm_modal::{ConfirmRestoreModal, ConfirmRestoreSessionModal};
 pub use export_footer_popup::ExportFooterPopup;
 pub use input_bar::InputBar;
 pub use keybindings_help_popup::KeybindingsHelpPopup;

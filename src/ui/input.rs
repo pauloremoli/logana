@@ -340,6 +340,145 @@ impl App {
         self.remove_empty_placeholder();
     }
 
+    /// Applies a directory-sourced archive picker (`:open`'d a directory —
+    /// reuses the archive picker's tree/checkbox/merge-mark UI, see
+    /// `ArchiveTree::list_directory_tree`). Unlike `apply_archive_picker`,
+    /// there's nothing to decompress: ticked files are already real paths on
+    /// disk, opened directly via the same path `handle_open_files` uses;
+    /// merge-marked files are read+format-detected directly, in the
+    /// background so a large file can't stall the UI, then merged exactly
+    /// like an archive picker's merge-marked files are.
+    pub(super) async fn apply_directory_picker(&mut self, tree: crate::ingestion::ArchiveTree) {
+        let selected_paths: Vec<String> = tree
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, crate::ingestion::NodeKind::File) && n.selected)
+            .map(|n| n.full_path.clone())
+            .collect();
+        self.handle_open_files(selected_paths).await;
+
+        let merge_marked: Vec<(String, String)> = tree
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, crate::ingestion::NodeKind::File) && n.merge_marked)
+            .map(|n| (n.name.clone(), n.full_path.clone()))
+            .collect();
+        if merge_marked.is_empty() {
+            return;
+        }
+
+        // The destination merged tab is created right away (and its own
+        // progress channel started) so it's visible with real progress from
+        // the moment the merge begins — for big files, reading/copying them
+        // below is the slow part, and without this the tab wouldn't appear
+        // at all until it finished.
+        let labels: Vec<String> = merge_marked.iter().map(|(name, _)| name.clone()).collect();
+        let total = labels.len();
+        let tab_idx = self.create_pending_merged_tab(labels).await;
+
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(0usize);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        tokio::task::spawn_blocking(move || {
+            let mut sources = Vec::with_capacity(merge_marked.len());
+            for (i, (name, path)) in merge_marked.into_iter().enumerate() {
+                // Copied into temp rather than read from `path` directly —
+                // like an archive's merge-marked entries, which are always
+                // extracted to temp — so the merged tab this feeds into is
+                // self-contained and never needs to re-open the original
+                // directory file (see `TabState::merge_source_temps`).
+                let temp_file = match tempfile::NamedTempFile::new() {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let _ = result_tx
+                            .send(Err(format!("Failed to create temp file for '{path}': {e}")));
+                        return;
+                    }
+                };
+                if let Err(e) = std::fs::copy(&path, temp_file.path()) {
+                    let _ = result_tx.send(Err(format!("Failed to read '{path}': {e}")));
+                    return;
+                }
+                let temp_path = temp_file.path().to_string_lossy().into_owned();
+                let reader = match crate::ingestion::FileReader::new(&temp_path) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = result_tx.send(Err(format!("Failed to open '{path}': {e}")));
+                        return;
+                    }
+                };
+                let detected = crate::ingestion::format_detect::detect_format_for_reader(&reader);
+                sources.push(crate::ingestion::MergeMarkedSource {
+                    label: name,
+                    reader,
+                    detected,
+                    temp_file,
+                });
+                let _ = progress_tx.send(i + 1);
+            }
+            let unrecognized: Vec<&str> = sources
+                .iter()
+                .filter(|s| s.detected.format.is_none())
+                .map(|s| s.label.as_str())
+                .collect();
+            let result = if unrecognized.is_empty() {
+                Ok(sources)
+            } else {
+                Err(format!(
+                    "Cannot merge \u{2014} unrecognized log format for: {}",
+                    unrecognized.join(", ")
+                ))
+            };
+            let _ = result_tx.send(result);
+        });
+
+        self.pending_directory_merge = Some(crate::ui::DirectoryMergeState {
+            tab_idx,
+            total,
+            progress_rx,
+            result_rx,
+        });
+    }
+
+    /// Poll the pending directory-picker merge each frame. When the
+    /// background read+detect finishes, feeds the merged tab created by
+    /// `apply_directory_picker` (or removes it, on error) and clears
+    /// `pending_directory_merge`.
+    pub async fn poll_directory_merge(&mut self) {
+        let Some(state) = &mut self.pending_directory_merge else {
+            return;
+        };
+
+        let progress_done = *state.progress_rx.borrow();
+        if state.tab_idx < self.tabs.len() {
+            self.tabs[state.tab_idx].set_notification(format!(
+                "Reading\u{2026} {}/{} files",
+                progress_done.min(state.total),
+                state.total
+            ));
+        }
+
+        match state.result_rx.try_recv() {
+            Ok(Ok(sources)) => {
+                let tab_idx = state.tab_idx;
+                self.pending_directory_merge = None;
+                let inputs = Self::merge_inputs_from_extracted(sources);
+                self.start_merge_build_streaming(tab_idx, inputs);
+            }
+            Ok(Err(e)) => {
+                let tab_idx = state.tab_idx;
+                self.pending_directory_merge = None;
+                self.remove_pending_merged_tab(tab_idx);
+                self.tabs[self.active_tab].set_notification(e);
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                let tab_idx = state.tab_idx;
+                self.pending_directory_merge = None;
+                self.remove_pending_merged_tab(tab_idx);
+            }
+        }
+    }
+
     pub(super) async fn dispatch_key_result(
         &mut self,
         result: KeyResult,
@@ -397,7 +536,11 @@ impl App {
                 self.cmd_export_with_footer(path, template_name, footer_fields);
             }
             KeyResult::ApplyArchivePicker { source_path, tree } => {
-                self.apply_archive_picker(source_path, tree).await;
+                if std::path::Path::new(&source_path).is_dir() {
+                    self.apply_directory_picker(tree).await;
+                } else {
+                    self.apply_archive_picker(source_path, tree).await;
+                }
             }
             KeyResult::ExpandArchiveNode { node_id } => {
                 self.begin_archive_node_expand(node_id).await;
@@ -433,5 +576,403 @@ impl App {
                 tab.interaction.command_error = Some(format!("Failed to copy: {}", e));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Keybindings;
+    use crate::db::{Database, LogManager};
+    use crate::ingestion::{ArchiveNode, ArchiveTree, FileReader, NodeKind};
+    use crate::theme::Theme;
+    use crate::ui::App;
+    use std::sync::Arc;
+
+    async fn make_app() -> App {
+        // Non-empty starting tab so `remove_empty_placeholder` (called after
+        // opening real files) doesn't remove it out from under our tab-count
+        // assertions below.
+        let file_reader = FileReader::from_bytes(b"initial line\n".to_vec());
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::builder(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .build()
+        .await
+    }
+
+    fn file_node(
+        id: usize,
+        name: &str,
+        full_path: &str,
+        selected: bool,
+        merge_marked: bool,
+    ) -> ArchiveNode {
+        ArchiveNode {
+            id,
+            parent: None,
+            name: name.to_string(),
+            full_path: full_path.to_string(),
+            depth: 0,
+            kind: NodeKind::File,
+            selected,
+            merge_marked,
+            cached_bytes: None,
+            collapsed: false,
+        }
+    }
+
+    /// Waits for `app.pending_directory_merge` to clear.
+    async fn drain_pending_directory_merge(app: &mut App) {
+        for _ in 0..100 {
+            app.poll_directory_merge().await;
+            if app.pending_directory_merge.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Waits for every in-progress background merge build (the tab created
+    /// by `apply_directory_picker`'s merge path fills in on a background
+    /// thread — see `App::start_merge_build_streaming`) to finish.
+    async fn drain_pending_merge_builds(app: &mut App) {
+        for _ in 0..100 {
+            app.poll_merge_builds();
+            if app.pending_merge_builds.is_empty() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_apply_directory_picker_opens_ticked_files_as_separate_tabs() {
+        let mut app = make_app().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        let b = tmp.path().join("b.log");
+        std::fs::write(&a, b"hello").unwrap();
+        std::fs::write(&b, b"world").unwrap();
+
+        let tree = ArchiveTree {
+            nodes: vec![
+                file_node(0, "a.log", a.to_str().unwrap(), true, false),
+                file_node(1, "b.log", b.to_str().unwrap(), true, false),
+            ],
+            roots: vec![0, 1],
+        };
+        let initial_tabs = app.tabs.len();
+        app.apply_directory_picker(tree).await;
+
+        assert_eq!(app.tabs.len(), initial_tabs + 2);
+        let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert!(titles.contains(&"a.log"));
+        assert!(titles.contains(&"b.log"));
+    }
+
+    #[tokio::test]
+    async fn test_apply_directory_picker_ignores_unticked_files() {
+        let mut app = make_app().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        let b = tmp.path().join("b.log");
+        std::fs::write(&a, b"hello").unwrap();
+        std::fs::write(&b, b"world").unwrap();
+
+        let tree = ArchiveTree {
+            nodes: vec![
+                file_node(0, "a.log", a.to_str().unwrap(), true, false),
+                file_node(1, "b.log", b.to_str().unwrap(), false, false),
+            ],
+            roots: vec![0, 1],
+        };
+        let initial_tabs = app.tabs.len();
+        app.apply_directory_picker(tree).await;
+
+        assert_eq!(app.tabs.len(), initial_tabs + 1);
+        assert_eq!(app.tabs.last().unwrap().title, "a.log");
+    }
+
+    #[tokio::test]
+    async fn test_apply_directory_picker_merges_merge_marked_files_into_one_tab() {
+        let mut app = make_app().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        let b = tmp.path().join("b.log");
+        std::fs::write(&a, "2024-01-01 10:00:00 INFO line from a\n").unwrap();
+        std::fs::write(&b, "2024-01-01 09:00:00 INFO line from b\n").unwrap();
+
+        let tree = ArchiveTree {
+            nodes: vec![
+                file_node(0, "a.log", a.to_str().unwrap(), false, true),
+                file_node(1, "b.log", b.to_str().unwrap(), false, true),
+            ],
+            roots: vec![0, 1],
+        };
+        let initial_tabs = app.tabs.len();
+        app.apply_directory_picker(tree).await;
+        drain_pending_directory_merge(&mut app).await;
+        drain_pending_merge_builds(&mut app).await;
+
+        assert_eq!(
+            app.tabs.len(),
+            initial_tabs + 1,
+            "exactly one merged tab, no separate tabs for merge-marked files"
+        );
+        let merged = app.tabs.last().unwrap();
+        assert!(merged.merged.is_some());
+        // Sorted by timestamp: b (09:00) before a (10:00).
+        assert_eq!(
+            merged.file_reader.get_line(0),
+            b"2024-01-01 09:00:00 INFO line from b"
+        );
+        assert_eq!(
+            merged.file_reader.get_line(1),
+            b"2024-01-01 10:00:00 INFO line from a"
+        );
+    }
+
+    /// The merged tab must appear the instant `apply_directory_picker`
+    /// returns — before the (potentially slow, for big files) background
+    /// read/copy phase has even started polling — with real source
+    /// filenames already shown, not just once that phase finishes.
+    #[tokio::test]
+    async fn test_apply_directory_picker_merge_tab_appears_before_reading_starts() {
+        let mut app = make_app().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        let b = tmp.path().join("b.log");
+        std::fs::write(&a, "2024-01-01 10:00:00 INFO line from a\n").unwrap();
+        std::fs::write(&b, "2024-01-01 09:00:00 INFO line from b\n").unwrap();
+
+        let tree = ArchiveTree {
+            nodes: vec![
+                file_node(0, "a.log", a.to_str().unwrap(), false, true),
+                file_node(1, "b.log", b.to_str().unwrap(), false, true),
+            ],
+            roots: vec![0, 1],
+        };
+        let initial_tabs = app.tabs.len();
+        app.apply_directory_picker(tree).await;
+
+        assert_eq!(
+            app.tabs.len(),
+            initial_tabs + 1,
+            "the destination tab must exist immediately, before any reading happened"
+        );
+        let merged_tab = app.tabs.last().unwrap();
+        let merged = merged_tab.merged.as_ref().unwrap();
+        assert_eq!(merged.source_labels, vec!["a.log", "b.log"]);
+        assert_eq!(merged_tab.file_reader.line_count(), 0);
+        assert_eq!(app.active_tab, app.tabs.len() - 1);
+    }
+
+    /// Same "must not freeze" guarantee as the archive-picker path — the
+    /// merged tab is visible before its background build has folded any
+    /// source in, and only fills in once `poll_merge_builds` runs.
+    #[tokio::test]
+    async fn test_apply_directory_picker_merge_tab_appears_before_background_build_completes() {
+        let mut app = make_app().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        let b = tmp.path().join("b.log");
+        std::fs::write(&a, "2024-01-01 10:00:00 INFO line from a\n").unwrap();
+        std::fs::write(&b, "2024-01-01 09:00:00 INFO line from b\n").unwrap();
+
+        let tree = ArchiveTree {
+            nodes: vec![
+                file_node(0, "a.log", a.to_str().unwrap(), false, true),
+                file_node(1, "b.log", b.to_str().unwrap(), false, true),
+            ],
+            roots: vec![0, 1],
+        };
+        app.apply_directory_picker(tree).await;
+        drain_pending_directory_merge(&mut app).await;
+
+        assert_eq!(
+            app.pending_merge_builds.len(),
+            1,
+            "a background merge build must be pending right after apply"
+        );
+        let merged_tab = app.tabs.last().unwrap();
+        assert!(merged_tab.merged.is_some());
+        assert_eq!(
+            merged_tab.file_reader.line_count(),
+            0,
+            "no lines are folded in yet — the apply call must return without blocking"
+        );
+
+        drain_pending_merge_builds(&mut app).await;
+
+        let merged_tab = app.tabs.last().unwrap();
+        assert_eq!(merged_tab.file_reader.line_count(), 2);
+        assert_eq!(merged_tab.merged.as_ref().unwrap().building, None);
+    }
+
+    /// While the background read/copy phase is still running, the
+    /// destination tab must show a progress notification reflecting how
+    /// many of the merge-marked files have been read so far — proof the
+    /// feedback is visible right away for a merge that's slow to read, not
+    /// just once it's done.
+    #[tokio::test]
+    async fn test_apply_directory_picker_merge_shows_reading_progress() {
+        let mut app = make_app().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        std::fs::write(&a, "2024-01-01 10:00:00 INFO line from a\n").unwrap();
+
+        let tree = ArchiveTree {
+            nodes: vec![file_node(0, "a.log", a.to_str().unwrap(), false, true)],
+            roots: vec![0],
+        };
+        app.apply_directory_picker(tree).await;
+        let tab_idx = app.pending_directory_merge.as_ref().unwrap().tab_idx;
+        // Poll a few times rather than once — the background read is a real
+        // OS thread and may not have run yet on the very first poll.
+        let mut notification = String::new();
+        for _ in 0..50 {
+            app.poll_directory_merge().await;
+            notification = app.tabs[tab_idx]
+                .interaction
+                .notification
+                .clone()
+                .unwrap_or_default();
+            if notification.contains('/') {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            notification.starts_with("Reading") && notification.contains("/1"),
+            "expected reading progress in the notification, got: {notification:?}"
+        );
+    }
+
+    /// If every merge-marked file turns out unrecognized, the pending
+    /// destination tab created up front must be removed again rather than
+    /// left behind stuck showing "building" forever with nothing to fill it.
+    #[tokio::test]
+    async fn test_apply_directory_picker_merge_removes_pending_tab_on_unrecognized_format() {
+        let mut app = make_app().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        std::fs::write(&a, b"just some random bytes with no structure\n").unwrap();
+
+        let tree = ArchiveTree {
+            nodes: vec![file_node(0, "a.log", a.to_str().unwrap(), false, true)],
+            roots: vec![0],
+        };
+        let initial_tabs = app.tabs.len();
+        app.apply_directory_picker(tree).await;
+        assert_eq!(
+            app.tabs.len(),
+            initial_tabs + 1,
+            "the pending tab exists while reading is in progress"
+        );
+
+        drain_pending_directory_merge(&mut app).await;
+
+        assert_eq!(
+            app.tabs.len(),
+            initial_tabs,
+            "the pending tab must be removed once the merge fails, not left dangling"
+        );
+        let notification = app.tabs[app.active_tab]
+            .interaction
+            .notification
+            .clone()
+            .unwrap_or_default();
+        assert!(notification.contains("a.log"), "{notification:?}");
+    }
+
+    /// A directory merge must be self-contained: each merge-marked source is
+    /// copied into its own retained temp file (not read live from the
+    /// original directory path), and the fully-merged result is also saved
+    /// to one temp file — so the merged tab keeps working even if the
+    /// original directory is deleted out from under it, and shows the
+    /// `[TEMP]` marker to make clear its data isn't the permanent original.
+    #[tokio::test]
+    async fn test_apply_directory_picker_merge_is_self_contained_in_temp() {
+        let mut app = make_app().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        let b = tmp.path().join("b.log");
+        std::fs::write(&a, "2024-01-01 10:00:00 INFO line from a\n").unwrap();
+        std::fs::write(&b, "2024-01-01 09:00:00 INFO line from b\n").unwrap();
+
+        let tree = ArchiveTree {
+            nodes: vec![
+                file_node(0, "a.log", a.to_str().unwrap(), false, true),
+                file_node(1, "b.log", b.to_str().unwrap(), false, true),
+            ],
+            roots: vec![0, 1],
+        };
+        app.apply_directory_picker(tree).await;
+        drain_pending_directory_merge(&mut app).await;
+        drain_pending_merge_builds(&mut app).await;
+
+        let merged_tab = app.tabs.last().unwrap();
+        assert_eq!(
+            merged_tab.merge_source_temps.len(),
+            2,
+            "each merge-marked source must have its own retained temp copy"
+        );
+        assert!(
+            merged_tab.merged_temp.is_some(),
+            "the fully-merged result must be saved to its own temp file"
+        );
+        assert!(merged_tab.is_temp_backed());
+
+        // The original directory is gone; the merged tab must still be
+        // fully readable — it never needs to re-open the originals.
+        drop(tmp);
+        let merged_tab = app.tabs.last().unwrap();
+        assert_eq!(merged_tab.file_reader.line_count(), 2);
+        assert_eq!(
+            merged_tab.file_reader.get_line(0),
+            b"2024-01-01 09:00:00 INFO line from b"
+        );
+        assert_eq!(
+            merged_tab.file_reader.get_line(1),
+            b"2024-01-01 10:00:00 INFO line from a"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_directory_picker_mixed_ticked_and_merge_marked() {
+        let mut app = make_app().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        let b = tmp.path().join("b.log");
+        let c = tmp.path().join("c.log");
+        std::fs::write(&a, "2024-01-01 10:00:00 INFO a\n").unwrap();
+        std::fs::write(&b, "2024-01-01 09:00:00 INFO b\n").unwrap();
+        std::fs::write(&c, "plain ticked file").unwrap();
+
+        let tree = ArchiveTree {
+            nodes: vec![
+                file_node(0, "a.log", a.to_str().unwrap(), false, true),
+                file_node(1, "b.log", b.to_str().unwrap(), false, true),
+                file_node(2, "c.log", c.to_str().unwrap(), true, false),
+            ],
+            roots: vec![0, 1, 2],
+        };
+        let initial_tabs = app.tabs.len();
+        app.apply_directory_picker(tree).await;
+        drain_pending_directory_merge(&mut app).await;
+
+        assert_eq!(
+            app.tabs.len(),
+            initial_tabs + 2,
+            "one separate tab for the ticked file, one merged tab for the marked files"
+        );
+        let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert!(titles.contains(&"c.log"));
+        assert!(app.tabs.iter().any(|t| t.merged.is_some()));
     }
 }

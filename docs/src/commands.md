@@ -50,7 +50,7 @@ See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filter
 
 | Command | Description |
 |---|---|
-| `:open <path>` | Open a file, directory, or compressed/archive file. Archives show a contents picker first — see [Quick Start](quick-start.md#opening-compressed-and-archive-files) |
+| `:open <path>` | Open a file, directory, or compressed/archive file. Directories and archives both show the same contents picker first — see [Quick Start](quick-start.md#opening-compressed-and-archive-files) |
 | `:close-tab` | Close the current tab |
 
 ## Display

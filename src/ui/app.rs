@@ -150,6 +150,13 @@ pub struct App {
     pub pending_archive_listing: Option<crate::ui::ArchiveListingState>,
     /// In-progress background fetch of a single lazy archive node's bytes.
     pub pending_archive_expand: Option<crate::ui::ArchiveExpandState>,
+    /// In-progress background read+format-detect of files merge-marked in a
+    /// directory picker (the file-picker UI reused for opening directories).
+    pub pending_directory_merge: Option<crate::ui::DirectoryMergeState>,
+    /// In-progress background builds of picker-triggered merged tabs (see
+    /// `App::start_merge_build_streaming`). A `Vec` since more than one
+    /// archive/directory merge can be in flight at once (different tabs).
+    pub pending_merge_builds: Vec<crate::ui::MergeBuildState>,
     /// App-level decompression progress message shown while an archive is being extracted.
     pub decompression_message: Option<String>,
 }
@@ -331,6 +338,8 @@ impl AppBuilder {
             pending_archive: None,
             pending_archive_listing: None,
             pending_archive_expand: None,
+            pending_directory_merge: None,
+            pending_merge_builds: Vec::new(),
             decompression_message: None,
         }
     }
@@ -394,6 +403,8 @@ impl App {
             self.poll_archive_extraction().await;
             self.poll_archive_listing().await;
             self.poll_archive_expand().await;
+            self.poll_directory_merge().await;
+            self.poll_merge_builds();
 
             let mut poll_timeout = tick_rate
                 .checked_sub(last_tick.elapsed())

@@ -1,6 +1,5 @@
 use crate::commands::auto_complete::expand_tilde;
 use crate::ui::App;
-use crate::utils::filesystem::list_dir_files;
 use std::io::{BufWriter, Write};
 
 impl App {
@@ -163,15 +162,10 @@ impl App {
     pub(super) async fn cmd_open(&mut self, path: String) -> Result<bool, String> {
         let path = expand_tilde(&path);
         if std::path::Path::new(&path).is_dir() {
-            let files = list_dir_files(&path);
-            if files.is_empty() {
-                return Err(format!("'{}' contains no files.", path));
-            }
-            self.tabs[self.active_tab].interaction.mode =
-                Box::new(crate::mode::app_mode::ConfirmOpenDirMode {
-                    dir: path,
-                    files: std::sync::Arc::new(files),
-                });
+            let tree = crate::ingestion::list_directory_tree(&path)?;
+            self.tabs[self.active_tab].interaction.mode = Box::new(
+                crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path),
+            );
             return Ok(true);
         }
         if crate::ingestion::detect_archive_type(&path).is_some() {

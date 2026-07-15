@@ -982,11 +982,12 @@ pub fn prepare_log_panel(
 
     let tail_mode = tab.stream.tail_mode;
     let paused = tab.stream.paused;
+    let is_temp = tab.is_temp_backed();
     let logs_title = if show_tab_bar {
         String::new()
     } else {
         format!(
-            "{}{} ({}){}{}{}",
+            "{}{} ({}){}{}{}{}",
             mode_name.map(|m| format!("[{}] ", m)).unwrap_or_default(),
             tab.log_manager
                 .source_file()
@@ -1002,6 +1003,7 @@ pub fn prepare_log_panel(
             if tail_mode { " [TAIL]" } else { "" },
             if raw_mode { " [RAW]" } else { "" },
             if paused { " [PAUSED]" } else { "" },
+            if is_temp { " [TEMP]" } else { "" },
         )
     };
 
@@ -1187,6 +1189,7 @@ mod tests {
             source_line_counts: sources.iter().map(|l| l.len()).collect(),
             label_col_width,
             stopped: true,
+            building: None,
         });
         app.tabs[0].display.format = None;
         app

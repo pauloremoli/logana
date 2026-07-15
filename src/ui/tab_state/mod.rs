@@ -585,6 +585,22 @@ pub struct TabState {
     pub load_state: Option<FileLoadState>,
     /// Keeps extracted archive temp file alive for the lifetime of this tab.
     pub archive_temp: Option<tempfile::NamedTempFile>,
+    /// For a picker-triggered merged tab (archive or directory), keeps each
+    /// merge-marked source's own temp copy alive for the lifetime of this
+    /// tab — a directory source is copied into temp same as an archive
+    /// source is extracted into temp, so the merged tab is self-contained
+    /// and never needs to re-open the original files. Empty for anything
+    /// that isn't a picker-triggered merge (including a live `:merge` tab,
+    /// which reads its still-growing sources directly).
+    pub merge_source_temps: Vec<tempfile::NamedTempFile>,
+    /// For a picker-triggered merged tab, the final sorted/interleaved
+    /// content written to one temp file once the background merge build
+    /// finishes — the literal "saved merged file". Not used for reading
+    /// (the tab keeps reading through its `Storage::Merged` view); this
+    /// exists so the merge result exists as a real file on disk and so
+    /// [`TabState::is_temp_backed`] has something to point the `[TEMP]`
+    /// marker at.
+    pub merged_temp: Option<tempfile::NamedTempFile>,
     /// Some(fraction 0.0–1.0) while this tab's content is being extracted from an archive.
     /// None when waiting for its turn, or after extraction completes.
     pub extraction_progress: Option<f64>,
@@ -672,6 +688,8 @@ impl TabState {
             },
             load_state: None,
             archive_temp: None,
+            merge_source_temps: Vec::new(),
+            merged_temp: None,
             extraction_progress: None,
             continuation_map,
             year_map,
@@ -679,6 +697,15 @@ impl TabState {
         };
         tab.refresh_visible();
         tab
+    }
+
+    /// Whether this tab's content lives only in a temp file rather than a
+    /// location the user chose — an extracted archive file, or a
+    /// picker-triggered merge (see `archive_temp`/`merged_temp`). Drives the
+    /// `[TEMP]` title marker so it's clear the data disappears once the temp
+    /// file is cleaned up, unlike a normally opened file.
+    pub fn is_temp_backed(&self) -> bool {
+        self.archive_temp.is_some() || self.merged_temp.is_some()
     }
 
     /// Show a transient notification bar message (auto-dismisses after 10s or on Esc).
@@ -2375,11 +2402,24 @@ pub struct StdinLoadState {
 
 /// Tracks an in-progress background archive extraction.
 pub struct ArchiveExtractionState {
-    /// Per-file extraction progress updates.
+    /// Per-file extraction progress updates for Space-ticked files.
     pub progress_rx: tokio::sync::watch::Receiver<crate::ingestion::ArchiveExtractionProgress>,
     /// Delivers both the Space-ticked and 'm'-marked outcomes when the
     /// background apply finishes.
     pub result_rx: tokio::sync::oneshot::Receiver<ArchivePickerApplyResult>,
+    /// The "pending" merged tab created immediately (see
+    /// `App::create_pending_merged_tab`) when the tree has any merge-marked
+    /// file, and `merge_progress_rx`'s own, separate progress updates for
+    /// it — kept apart from `progress_rx` since merge-marked and
+    /// Space-ticked files are extracted one after another in the same
+    /// background task and would otherwise overwrite each other's progress
+    /// on a shared channel.
+    pub merge_tab_idx: Option<usize>,
+    pub merge_progress_rx:
+        Option<tokio::sync::watch::Receiver<crate::ingestion::ArchiveExtractionProgress>>,
+    /// Total merge-marked file count, for rendering `merge_progress_rx`'s
+    /// `file_index` as "x/total".
+    pub merge_total: usize,
 }
 
 /// Result of [`crate::ui::App::apply_archive_picker`]'s background task —
@@ -2412,6 +2452,37 @@ pub struct ArchiveExpandState {
     /// fetch finishes. Parsing those bytes into real children happens
     /// synchronously on the main thread, in `ArchiveTree::expand_lazy_node`.
     pub result_rx: tokio::sync::oneshot::Receiver<Result<Vec<u8>, String>>,
+}
+
+/// Tracks an in-progress background read+format-detect of files merge-marked
+/// in a directory picker — the directory-opening counterpart of
+/// `ArchiveExtractionState`'s merge path, minus decompression (a directory's
+/// files are already real files on disk).
+pub struct DirectoryMergeState {
+    /// The "pending" merged tab created immediately (see
+    /// `App::create_pending_merged_tab`), filled in once every source has
+    /// been read or removed if reading fails.
+    pub tab_idx: usize,
+    pub total: usize,
+    /// Count of sources read so far.
+    pub progress_rx: tokio::sync::watch::Receiver<usize>,
+    pub result_rx:
+        tokio::sync::oneshot::Receiver<Result<Vec<crate::ingestion::MergeMarkedSource>, String>>,
+}
+
+/// Tracks an in-progress background build of a picker-triggered merged
+/// tab's index (see `App::start_merge_build_streaming`). Sources are folded
+/// in one at a time on a background thread; each update carries the merged
+/// index recomputed so far, applied to the live tab by
+/// `App::poll_merge_builds` as it arrives so the tab fills in progressively
+/// instead of staying empty until every source has been read.
+pub struct MergeBuildState {
+    pub tab_idx: usize,
+    /// The same source readers the tab's `FileReader::from_merged` was
+    /// built with — kept here so each incremental update can rebuild the
+    /// merged view without needing to look anything up on the tab itself.
+    pub sources_arc: Arc<Vec<crate::ingestion::FileReader>>,
+    pub update_rx: std::sync::mpsc::Receiver<crate::ui::tab_state::merged::MergeBuildUpdate>,
 }
 
 /// Per-tab state for watching a file for new appended content.
@@ -2589,6 +2660,26 @@ mod tests {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, Some(source.to_string())).await;
         TabState::new(file_reader, log_manager, "test".to_string())
+    }
+
+    #[tokio::test]
+    async fn test_is_temp_backed_false_for_a_regular_tab() {
+        let tab = make_tab(&["line1"]).await;
+        assert!(!tab.is_temp_backed());
+    }
+
+    #[tokio::test]
+    async fn test_is_temp_backed_true_with_archive_temp() {
+        let mut tab = make_tab(&["line1"]).await;
+        tab.archive_temp = Some(tempfile::NamedTempFile::new().unwrap());
+        assert!(tab.is_temp_backed());
+    }
+
+    #[tokio::test]
+    async fn test_is_temp_backed_true_with_merged_temp() {
+        let mut tab = make_tab(&["line1"]).await;
+        tab.merged_temp = Some(tempfile::NamedTempFile::new().unwrap());
+        assert!(tab.is_temp_backed());
     }
 
     #[tokio::test]

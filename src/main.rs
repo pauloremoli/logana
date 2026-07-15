@@ -9,7 +9,6 @@ use logana::db::Database;
 use logana::db::LogManager;
 use logana::db::{AppSettingsStore, SettingsKey};
 use logana::ingestion::{FileReader, VisibilityPredicate};
-use logana::mode::app_mode::ConfirmOpenDirMode;
 use logana::theme::Theme;
 use logana::ui::{App, LoadContext};
 use logana::{
@@ -350,12 +349,17 @@ async fn begin_initial_load(
 
     if let Some(ref path) = args.file
         && std::path::Path::new(path).is_dir()
+        && let Ok(tree) = logana::ingestion::list_directory_tree(path)
     {
-        let files = list_dir_files(path);
-        app.tabs[0].interaction.mode = Box::new(ConfirmOpenDirMode {
-            dir: path.clone(),
-            files: std::sync::Arc::new(files),
-        });
+        // A directory was explicitly given, so this isn't a bare "resume
+        // where I left off" launch — cancel any queued session restore
+        // (`AppBuilder::build` can't tell a directory apart from "no
+        // argument at all", since it never sees `args.file` directly) so it
+        // doesn't overwrite this mode the moment `app.run()` starts.
+        app.session.pending_session_restore = None;
+        app.tabs[0].interaction.mode = Box::new(
+            logana::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.clone()),
+        );
     }
 }
 

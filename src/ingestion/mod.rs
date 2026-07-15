@@ -11,7 +11,8 @@ pub use archive::{
 };
 pub use archive_tree::{
     ArchiveNode, ArchiveTree, CheckState, MergeMarkedSource, NodeId, NodeKind,
-    extract_and_detect_merge_marked, extract_selected, list_archive_tree,
+    extract_and_detect_merge_marked, extract_selected, list_archive_tree, list_directory_tree,
+    merge_marked_labels,
 };
 pub use file_reader::{
     FileLoadHandle, FileLoadResult, FileReader, MergedEntry, VisibilityPredicate,

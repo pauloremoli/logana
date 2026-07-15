@@ -96,10 +96,15 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
 
         ratatui::widgets::Clear.render(popup_area, buf);
 
+        let title_label = if std::path::Path::new(self.source_path).is_dir() {
+            "Directory Contents"
+        } else {
+            "Archive Contents"
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.theme.border_title))
-            .title(format!(" Archive Contents: {} ", self.source_path))
+            .title(format!(" {title_label}: {} ", self.source_path))
             .title_style(
                 Style::default()
                     .fg(self.theme.text_highlight_fg)
@@ -539,6 +544,57 @@ mod tests {
         // with no placeholder/`/query` line pushed in above it.
         assert!(text.contains("a.log"));
         assert!(!text.contains("type to search"));
+    }
+
+    #[test]
+    fn test_title_says_archive_contents_for_a_file_source() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let rows = vec![row("a.log")];
+        let popup = ArchivePickerPopup {
+            theme: &theme,
+            keybindings: &kb,
+            rows: &rows,
+            selected: 0,
+            source_path: "logs.zip",
+            search: "",
+            searching: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
+        let text: String = (0..15)
+            .map(|y| row_text(buf.buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Archive Contents: logs.zip"), "got: {text:?}");
+    }
+
+    #[test]
+    fn test_title_says_directory_contents_for_a_directory_source() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let rows = vec![row("a.log")];
+        let tmp = tempfile::tempdir().unwrap();
+        let dir_path = tmp.path().to_str().unwrap().to_string();
+        let popup = ArchivePickerPopup {
+            theme: &theme,
+            keybindings: &kb,
+            rows: &rows,
+            selected: 0,
+            source_path: &dir_path,
+            search: "",
+            searching: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
+        let text: String = (0..15)
+            .map(|y| row_text(buf.buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains(&format!("Directory Contents: {dir_path}")),
+            "got: {text:?}"
+        );
     }
 
     #[test]

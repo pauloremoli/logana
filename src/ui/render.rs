@@ -65,7 +65,6 @@ struct UiRenderState {
     )>,
     dlt_select: DltSelectData,
     value_colors_state: ValueColorsData,
-    confirm_open_dir: Option<(String, Arc<Vec<String>>)>,
     export_footer: ExportFooterData,
     notification: Option<String>,
     has_notification: bool,
@@ -353,12 +352,6 @@ impl App {
             } => Some((groups.clone(), search.clone(), *selected, "Level Colors")),
             _ => None,
         };
-        let confirm_open_dir: Option<(String, Arc<Vec<String>>)> = match render_state {
-            ModeRenderState::ConfirmOpenDir { dir, files } => {
-                Some((dir.clone(), Arc::clone(files)))
-            }
-            _ => None,
-        };
         let export_footer: ExportFooterData = match render_state {
             ModeRenderState::ExportFooter {
                 path,
@@ -410,7 +403,6 @@ impl App {
             docker_select,
             dlt_select,
             value_colors_state,
-            confirm_open_dir,
             export_footer,
             notification,
             has_notification,
@@ -572,6 +564,7 @@ impl App {
                         .filter(|r| !r.connected)
                         .map(|r| r.attempt),
                     has_lines: t.file_reader.line_count() > 0,
+                    is_temp: t.is_temp_backed(),
                 }
             })
             .collect();
@@ -849,17 +842,6 @@ impl App {
         if let Some(files) = &state.session_files {
             frame.render_widget(
                 super::widgets::ConfirmRestoreSessionModal {
-                    theme: &self.theme,
-                    keybindings: &self.keybindings,
-                    files,
-                },
-                frame_area,
-            );
-        }
-
-        if let Some((_dir, files)) = &state.confirm_open_dir {
-            frame.render_widget(
-                super::widgets::ConfirmOpenDirModal {
                     theme: &self.theme,
                     keybindings: &self.keybindings,
                     files,
@@ -2242,6 +2224,7 @@ mod tests {
             source_line_counts: vec![],
             label_col_width: 0,
             stopped: true,
+            building: None,
         };
         assert_eq!(merged_format_name(&merged), Some("journalctl".to_string()));
     }
@@ -2259,6 +2242,7 @@ mod tests {
             source_line_counts: vec![],
             label_col_width: 0,
             stopped: true,
+            building: None,
         };
         assert_eq!(merged_format_name(&merged), None);
     }
@@ -2272,6 +2256,7 @@ mod tests {
             source_line_counts: vec![],
             label_col_width: 0,
             stopped: true,
+            building: None,
         };
         assert_eq!(merged_format_name(&merged), None);
     }
@@ -2289,6 +2274,7 @@ mod tests {
             source_line_counts: vec![],
             label_col_width: 0,
             stopped: true,
+            building: None,
         };
         assert_eq!(merged_format_name(&merged), Some("journalctl".to_string()));
     }

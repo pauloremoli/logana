@@ -6,7 +6,7 @@
 # Open a file
 logana app.log
 
-# Open a directory — each file opens in its own tab
+# Open a directory — pick which files to open from a file picker
 logana /var/log/
 
 # Pipe from stdin

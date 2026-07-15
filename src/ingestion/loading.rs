@@ -565,12 +565,31 @@ impl App {
 
         self.decompression_message = Some("Extracting selected files\u{2026}".to_string());
 
+        // The destination merged tab is created right away (and its own,
+        // separate progress channel started) so it's visible with real
+        // progress from the moment the merge begins — for a big archive,
+        // extraction below is the slow part, and without this the tab
+        // wouldn't appear at all until it finished.
+        let merge_labels = crate::ingestion::merge_marked_labels(&tree);
+        let merge_total = merge_labels.len();
+        let (merge_tab_idx, merge_progress_rx, merge_progress_tx) = if merge_total > 0 {
+            let tab_idx = self.create_pending_merged_tab(merge_labels).await;
+            let (tx, rx) =
+                tokio::sync::watch::channel(crate::ingestion::ArchiveExtractionProgress {
+                    file_index: 0,
+                    fraction: 0.0,
+                });
+            (Some(tab_idx), Some(rx), Some(tx))
+        } else {
+            (None, None, None)
+        };
+
         tokio::task::spawn_blocking(move || {
-            let merge_result = tree.any_file_merge_marked().then(|| {
+            let merge_result = merge_progress_tx.map(|merge_progress_tx| {
                 crate::ingestion::extract_and_detect_merge_marked(
                     &source_path,
                     &tree,
-                    progress_tx.clone(),
+                    merge_progress_tx,
                 )
                 .and_then(|sources| {
                     let unrecognized: Vec<&str> = sources
@@ -599,6 +618,9 @@ impl App {
         self.pending_archive = Some(crate::ui::ArchiveExtractionState {
             progress_rx,
             result_rx,
+            merge_tab_idx,
+            merge_progress_rx,
+            merge_total,
         });
     }
 
@@ -615,6 +637,18 @@ impl App {
             let pct = (progress.fraction * 100.0) as u32;
             self.decompression_message = Some(format!("Decompressing archive\u{2026} {pct}%"));
         }
+        if let (Some(tab_idx), Some(merge_progress_rx)) =
+            (state.merge_tab_idx, &state.merge_progress_rx)
+        {
+            let progress = *merge_progress_rx.borrow();
+            if tab_idx < self.tabs.len() {
+                self.tabs[tab_idx].set_notification(format!(
+                    "Reading\u{2026} {}/{} files",
+                    (progress.file_index + 1).min(state.merge_total),
+                    state.merge_total
+                ));
+            }
+        }
 
         let result = match state.result_rx.try_recv() {
             Ok(result) => result,
@@ -625,6 +659,7 @@ impl App {
                 return;
             }
         };
+        let mut merge_tab_idx = state.merge_tab_idx;
         self.pending_archive = None;
         self.decompression_message = None;
 
@@ -642,11 +677,17 @@ impl App {
                         t.file_reader.line_count() == 0
                             && t.load_state.is_none()
                             && t.archive_temp.is_none()
+                            && t.merged.is_none()
                     })
                 {
                     self.tabs.remove(idx);
                     self.active_tab = self.active_tab.saturating_sub(1);
                     self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+                    if let Some(merge_idx) = merge_tab_idx.as_mut()
+                        && *merge_idx > idx
+                    {
+                        *merge_idx -= 1;
+                    }
                 }
                 let first_new_tab_idx = self.tabs.len();
                 for file in files {
@@ -679,12 +720,21 @@ impl App {
             None => {}
             Some(Ok(sources)) => {
                 created_any_tab = true;
-                // Runs after the selected-files branch above so a merged
-                // tab (the more "primary" result of a mixed apply) wins
-                // `active_tab` when both kinds of tabs were created.
-                self.open_merged_tab_from_extraction(sources).await;
+                if let Some(tab_idx) = merge_tab_idx {
+                    let inputs = Self::merge_inputs_from_extracted(sources);
+                    // Runs after the selected-files branch above so a merged
+                    // tab (the more "primary" result of a mixed apply) wins
+                    // `active_tab` when both kinds of tabs were created —
+                    // `start_merge_build_streaming` re-asserts it.
+                    self.start_merge_build_streaming(tab_idx, inputs);
+                }
             }
-            Some(Err(e)) => errors.push(e),
+            Some(Err(e)) => {
+                if let Some(tab_idx) = merge_tab_idx {
+                    self.remove_pending_merged_tab(tab_idx);
+                }
+                errors.push(e);
+            }
         }
 
         if !created_any_tab {
@@ -1214,6 +1264,72 @@ impl App {
                     self.tabs[mi].scroll.scroll_offset = new_count.saturating_sub(1);
                 }
             }
+        }
+    }
+
+    /// For each in-progress background merge build (started by
+    /// `App::start_merge_build_streaming` for an archive/directory-picker
+    /// merge), apply the latest available update to its tab and drop the
+    /// pending state once the background thread finishes. Applying only the
+    /// latest of any updates queued up since the last frame (instead of
+    /// every one) keeps a fast-finishing merge from re-sorting and
+    /// re-rendering once per source unnecessarily.
+    pub(crate) fn poll_merge_builds(&mut self) {
+        if self.pending_merge_builds.is_empty() {
+            return;
+        }
+
+        let mut finished = Vec::new();
+        for (i, state) in self.pending_merge_builds.iter_mut().enumerate() {
+            let mut latest = None;
+            loop {
+                match state.update_rx.try_recv() {
+                    Ok(update) => latest = Some(update),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        finished.push(i);
+                        break;
+                    }
+                }
+            }
+
+            let Some(update) = latest else { continue };
+            let tab_idx = state.tab_idx;
+            if tab_idx >= self.tabs.len() {
+                continue;
+            }
+
+            let done = update.sources_done >= update.sources_total;
+            let entries_arc = std::sync::Arc::new(update.entries);
+            self.tabs[tab_idx].file_reader =
+                crate::ingestion::FileReader::from_merged(entries_arc, state.sources_arc.clone());
+            if let Some(temp) = update.merged_temp {
+                self.tabs[tab_idx].merged_temp = Some(temp);
+            }
+            if let Some(merged) = self.tabs[tab_idx].merged.as_mut() {
+                merged.building = if done {
+                    None
+                } else {
+                    Some((update.sources_done, update.sources_total))
+                };
+            }
+            self.tabs[tab_idx].begin_filter_refresh();
+            if self.tabs[tab_idx].stream.tail_mode {
+                let new_count = self.tabs[tab_idx].filter.visible_indices.len();
+                self.tabs[tab_idx].scroll.scroll_offset = new_count.saturating_sub(1);
+            }
+            self.tabs[tab_idx].set_notification(if done {
+                format!("Merge complete \u{2014} {} files.", update.sources_total)
+            } else {
+                format!(
+                    "Merging\u{2026} {}/{} files",
+                    update.sources_done, update.sources_total
+                )
+            });
+        }
+
+        for &i in finished.iter().rev() {
+            self.pending_merge_builds.remove(i);
         }
     }
 
@@ -4097,6 +4213,19 @@ mod tests {
         }
     }
 
+    /// Waits for every in-progress background merge build (see
+    /// `App::start_merge_build_streaming`) to finish folding in all its
+    /// sources.
+    pub(crate) async fn drain_pending_merge_builds(app: &mut App) {
+        for _ in 0..100 {
+            app.poll_merge_builds();
+            if app.pending_merge_builds.is_empty() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    }
+
     #[tokio::test]
     async fn test_apply_archive_picker_with_only_merge_marked_produces_one_merged_tab_and_zero_separate_tabs()
      {
@@ -4271,6 +4400,7 @@ mod tests {
 
         app.apply_archive_picker(path.clone(), tree).await;
         drain_pending_archive(&mut app).await;
+        drain_pending_merge_builds(&mut app).await;
         std::fs::remove_file(&path).unwrap();
 
         let merged_tab = app.tabs.last().unwrap();
@@ -4281,6 +4411,253 @@ mod tests {
             line0.contains("earlier") && line1.contains("later"),
             "lines must be sorted by timestamp across the merged sources: {line0:?}, {line1:?}"
         );
+    }
+
+    /// A picker-triggered merge must not block on building the full sorted
+    /// index: the merged tab is created (and visible) before the background
+    /// build has folded any source in, and only fills in once
+    /// `poll_merge_builds` is driven — this is what keeps the UI responsive
+    /// instead of freezing on Enter until the whole merge is done.
+    #[tokio::test]
+    async fn test_apply_archive_picker_merge_tab_appears_before_background_build_completes() {
+        let mut app = make_app(&[]).await;
+
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            (
+                "later.log",
+                br#"{"timestamp":"2024-01-01T10:00:05Z","msg":"later"}"#.as_slice(),
+            ),
+            (
+                "earlier.log",
+                br#"{"timestamp":"2024-01-01T10:00:01Z","msg":"earlier"}"#.as_slice(),
+            ),
+        ]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+
+        let mut tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        for node in &mut tree.nodes {
+            if matches!(node.kind, crate::ingestion::NodeKind::File) {
+                node.merge_marked = true;
+            }
+        }
+
+        app.apply_archive_picker(path.clone(), tree).await;
+        drain_pending_archive(&mut app).await;
+        std::fs::remove_file(&path).unwrap();
+
+        // Extraction+detection finished, but the merge-index background
+        // build was only just spawned — this call intentionally does not
+        // drive `poll_merge_builds`, to catch a regression back to blocking.
+        assert_eq!(
+            app.pending_merge_builds.len(),
+            1,
+            "a background merge build must be pending right after apply"
+        );
+        let merged_tab = app.tabs.last().unwrap();
+        assert!(merged_tab.merged.is_some(), "the merged tab exists already");
+        assert_eq!(
+            merged_tab.file_reader.line_count(),
+            0,
+            "no lines are folded in yet — the apply call must return without blocking"
+        );
+        assert_eq!(
+            merged_tab.merged.as_ref().unwrap().building,
+            Some((0, 2)),
+            "building progress must reflect zero of two sources folded in so far"
+        );
+
+        drain_pending_merge_builds(&mut app).await;
+
+        let merged_tab = app.tabs.last().unwrap();
+        assert_eq!(merged_tab.file_reader.line_count(), 2);
+        assert_eq!(
+            merged_tab.merged.as_ref().unwrap().building,
+            None,
+            "building must clear once every source has been folded in"
+        );
+    }
+
+    /// The merged tab must appear the instant `apply_archive_picker`
+    /// returns — before the (potentially slow, for big archives)
+    /// background extraction has even started polling — with real source
+    /// filenames already shown, not just once extraction finishes.
+    #[tokio::test]
+    async fn test_apply_archive_picker_merge_tab_appears_before_extraction_starts() {
+        let mut app = make_app(&[]).await;
+
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            (
+                "later.log",
+                br#"{"timestamp":"2024-01-01T10:00:05Z","msg":"later"}"#.as_slice(),
+            ),
+            (
+                "earlier.log",
+                br#"{"timestamp":"2024-01-01T10:00:01Z","msg":"earlier"}"#.as_slice(),
+            ),
+        ]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+
+        let mut tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        for node in &mut tree.nodes {
+            if matches!(node.kind, crate::ingestion::NodeKind::File) {
+                node.merge_marked = true;
+            }
+        }
+
+        let initial_tabs = app.tabs.len();
+        app.apply_archive_picker(path.clone(), tree).await;
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(
+            app.tabs.len(),
+            initial_tabs + 1,
+            "the destination tab must exist immediately, before any extraction happened"
+        );
+        let merged_tab = app.tabs.last().unwrap();
+        let merged = merged_tab.merged.as_ref().unwrap();
+        assert_eq!(merged.source_labels, vec!["later.log", "earlier.log"]);
+        assert_eq!(merged_tab.file_reader.line_count(), 0);
+        assert_eq!(app.active_tab, app.tabs.len() - 1);
+
+        drain_pending_archive(&mut app).await;
+        drain_pending_merge_builds(&mut app).await;
+    }
+
+    /// While the background extraction phase is still running, the
+    /// destination tab must show a progress notification reflecting how
+    /// many merge-marked entries have been extracted so far.
+    #[tokio::test]
+    async fn test_apply_archive_picker_merge_shows_reading_progress() {
+        let mut app = make_app(&[]).await;
+
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[(
+            "a.log",
+            br#"{"timestamp":"2024-01-01T10:00:00Z","msg":"a"}"#.as_slice(),
+        )]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+
+        let mut tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        for node in &mut tree.nodes {
+            if matches!(node.kind, crate::ingestion::NodeKind::File) {
+                node.merge_marked = true;
+            }
+        }
+
+        app.apply_archive_picker(path.clone(), tree).await;
+        app.poll_archive_extraction().await;
+        std::fs::remove_file(&path).unwrap();
+
+        let tab_idx = app.pending_archive.as_ref().unwrap().merge_tab_idx.unwrap();
+        let notification = app.tabs[tab_idx]
+            .interaction
+            .notification
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            notification.contains("1/1"),
+            "expected reading progress in the notification, got: {notification:?}"
+        );
+        drain_pending_archive(&mut app).await;
+        drain_pending_merge_builds(&mut app).await;
+    }
+
+    /// If every merge-marked entry turns out unrecognized, the pending
+    /// destination tab created up front must be removed again rather than
+    /// left behind stuck showing "building" forever with nothing to fill it.
+    #[tokio::test]
+    async fn test_apply_archive_picker_merge_removes_pending_tab_on_unrecognized_format() {
+        let mut app = make_app(&[]).await;
+
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[(
+            "unrecognized.log",
+            b"just some random bytes with no structure\n",
+        )]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+
+        let mut tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        for node in &mut tree.nodes {
+            if matches!(node.kind, crate::ingestion::NodeKind::File) {
+                node.merge_marked = true;
+            }
+        }
+
+        let initial_tabs = app.tabs.len();
+        app.apply_archive_picker(path.clone(), tree).await;
+        assert_eq!(
+            app.tabs.len(),
+            initial_tabs + 1,
+            "the pending tab exists while extraction is in progress"
+        );
+
+        drain_pending_archive(&mut app).await;
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(
+            app.tabs.len(),
+            initial_tabs,
+            "the pending tab must be removed once the merge fails, not left dangling"
+        );
+        let notification = app.tabs[app.active_tab]
+            .interaction
+            .notification
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            notification.contains("unrecognized.log"),
+            "{notification:?}"
+        );
+    }
+
+    /// An archive merge must be self-contained: each merge-marked entry's
+    /// extraction temp file is retained (not deleted right after being read
+    /// into memory), and the fully-merged result is saved to its own temp
+    /// file — mirrors the directory-picker guarantee in
+    /// `ui::input::tests::test_apply_directory_picker_merge_is_self_contained_in_temp`.
+    #[tokio::test]
+    async fn test_apply_archive_picker_merge_is_self_contained_in_temp() {
+        let mut app = make_app(&[]).await;
+
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
+            (
+                "later.log",
+                br#"{"timestamp":"2024-01-01T10:00:05Z","msg":"later"}"#.as_slice(),
+            ),
+            (
+                "earlier.log",
+                br#"{"timestamp":"2024-01-01T10:00:01Z","msg":"earlier"}"#.as_slice(),
+            ),
+        ]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+
+        let mut tree = crate::ingestion::list_archive_tree(&path).unwrap();
+        for node in &mut tree.nodes {
+            if matches!(node.kind, crate::ingestion::NodeKind::File) {
+                node.merge_marked = true;
+            }
+        }
+
+        app.apply_archive_picker(path.clone(), tree).await;
+        drain_pending_archive(&mut app).await;
+        drain_pending_merge_builds(&mut app).await;
+        std::fs::remove_file(&path).unwrap();
+
+        let merged_tab = app.tabs.last().unwrap();
+        assert_eq!(
+            merged_tab.merge_source_temps.len(),
+            2,
+            "each merge-marked entry must have its own retained temp copy"
+        );
+        assert!(
+            merged_tab.merged_temp.is_some(),
+            "the fully-merged result must be saved to its own temp file"
+        );
+        assert!(merged_tab.is_temp_backed());
+        assert_eq!(merged_tab.file_reader.line_count(), 2);
     }
 
     /// End-to-end: opening a `.tar.gz` with a top-level file and a nested

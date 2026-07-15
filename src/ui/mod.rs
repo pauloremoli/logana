@@ -28,11 +28,12 @@ pub use tab_state::merged::extend_merged_index;
 pub use tab_state::year_map::YearMap;
 pub use tab_state::{
     ArchiveExpandState, ArchiveExtractionState, ArchiveListingState, ArchivePickerApplyResult,
-    CacheState, CachedParsedLine, CachedScanResult, ConnectFn, DisplayConfig, FileLoadState,
-    FileWatchState, FilterChunk, FilterEvalContext, FilterHandle, FilterState, FilterViewSnapshot,
-    InteractionState, KeyResult, LoadContext, MergedState, ScrollState, SearchHandle, SearchState,
-    SidebarSide, StdinLoadState, StreamConnection, StreamRetryState, StreamState, TabState,
-    VisibleLines, apply_continuation_correction, build_continuation_map, display_text_for_line,
-    dlt_connect_fn, docker_connect_fn, line_is_visible, merge_filter_counts, otlp_connect_fn,
-    otlp_grpc_connect_fn, run_connect_fn, watch_state_from_connection, watch_state_from_file,
+    CacheState, CachedParsedLine, CachedScanResult, ConnectFn, DirectoryMergeState, DisplayConfig,
+    FileLoadState, FileWatchState, FilterChunk, FilterEvalContext, FilterHandle, FilterState,
+    FilterViewSnapshot, InteractionState, KeyResult, LoadContext, MergeBuildState, MergedState,
+    ScrollState, SearchHandle, SearchState, SidebarSide, StdinLoadState, StreamConnection,
+    StreamRetryState, StreamState, TabState, VisibleLines, apply_continuation_correction,
+    build_continuation_map, display_text_for_line, dlt_connect_fn, docker_connect_fn,
+    line_is_visible, merge_filter_counts, otlp_connect_fn, otlp_grpc_connect_fn, run_connect_fn,
+    watch_state_from_connection, watch_state_from_file,
 };

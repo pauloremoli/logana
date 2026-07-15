@@ -13,17 +13,17 @@ logana supports multiple tabs, each showing an independent log file, directory, 
 
 ## Opening Files in Tabs
 
-**From the command line**, each file argument opens in its own tab (not yet supported for multiple positional args, but directory expansion creates one tab per file):
+**From the command line**, a file argument opens in its own tab; a directory argument shows a picker to choose which files to open (not yet supported for multiple positional args):
 
 ```sh
-logana /var/log/         # each file in the directory gets its own tab
+logana /var/log/         # shows a picker — pick which files to open, each in its own tab
 ```
 
 **From within logana**, use the `:open` command:
 
 ```sh
 :open app.log            # opens in the current tab
-:open /var/log/          # opens each file in a new tab (directory)
+:open /var/log/          # shows the same picker (directory)
 ```
 
 ## Tab State

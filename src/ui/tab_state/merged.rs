@@ -19,6 +19,13 @@ pub struct MergedState {
     pub label_col_width: usize,
     /// When `true`, live updates from source tabs are no longer applied.
     pub stopped: bool,
+    /// While a picker-triggered merge (archive/directory) is still building
+    /// its index in the background, `Some((sources_done, sources_total))`.
+    /// `None` once the build has finished (or for a `:merge`-built tab,
+    /// which is never built in the background). Drives a progress
+    /// notification so the tab doesn't look silently stuck while more
+    /// sources are still being folded in.
+    pub building: Option<(usize, usize)>,
 }
 
 /// Build a sorted merged index from multiple sources.
@@ -65,6 +72,81 @@ pub fn extend_merged_index(
         from_line,
     );
     entries.sort_unstable_by_key(|a| a.sort_key);
+}
+
+/// One incremental step of [`build_merged_index_streaming`]: the merged
+/// index recomputed with one more source folded in.
+pub struct MergeBuildUpdate {
+    pub entries: Vec<MergedEntry>,
+    pub sources_done: usize,
+    pub sources_total: usize,
+    /// The flattened, sorted merge content written out to one temp file —
+    /// the literal "saved merged file". Only `Some` on the final update,
+    /// once every source has been folded in and there's a complete result
+    /// to write.
+    pub merged_temp: Option<tempfile::NamedTempFile>,
+}
+
+/// Same result as [`build_merged_index`], but folds sources in one at a
+/// time (reusing [`extend_merged_index`]) and reports the entries built so
+/// far after each one via `update_tx`, instead of only returning once every
+/// source has been read. Meant to run on a background thread — the caller
+/// applies each update to a live tab as it arrives, so a merge with many or
+/// large sources renders progressively instead of freezing the UI until
+/// the very last source is folded in.
+pub fn build_merged_index_streaming(
+    sources: &[FileReader],
+    parsers: &[Option<Arc<dyn LogFormatParser>>],
+    year_maps: &[Option<Arc<YearMap>>],
+    continuation_maps: &[Option<Arc<Vec<usize>>>],
+    update_tx: &std::sync::mpsc::Sender<MergeBuildUpdate>,
+) {
+    let mut entries: Vec<MergedEntry> = Vec::new();
+    let sources_total = sources.len();
+    for (source_idx, source) in sources.iter().enumerate() {
+        extend_merged_index(
+            &mut entries,
+            source,
+            parsers[source_idx].as_deref(),
+            year_maps[source_idx].as_deref(),
+            continuation_maps[source_idx].as_deref(),
+            source_idx,
+            0,
+        );
+        let is_last = source_idx + 1 == sources_total;
+        // Best-effort: a failure to write the snapshot must not block the
+        // merge itself finishing — the tab still works, it just won't get
+        // the `[TEMP]` marker or an on-disk copy of the merged result.
+        let merged_temp = is_last
+            .then(|| write_merged_temp_file(&entries, sources).ok())
+            .flatten();
+        let _ = update_tx.send(MergeBuildUpdate {
+            entries: entries.clone(),
+            sources_done: source_idx + 1,
+            sources_total,
+            merged_temp,
+        });
+    }
+}
+
+/// Writes every entry's line, in final sorted order, to one temp file —
+/// exactly the bytes each source's line had, no source label prepended
+/// (matching how the live merged view keeps labels purely visual).
+fn write_merged_temp_file(
+    entries: &[MergedEntry],
+    sources: &[FileReader],
+) -> std::io::Result<tempfile::NamedTempFile> {
+    use std::io::Write;
+    let temp = tempfile::NamedTempFile::new()?;
+    {
+        let mut writer = std::io::BufWriter::new(temp.as_file());
+        for entry in entries {
+            writer.write_all(sources[entry.source_idx].get_line(entry.line_idx))?;
+            writer.write_all(b"\n")?;
+        }
+        writer.flush()?;
+    }
+    Ok(temp)
 }
 
 fn append_source_entries(

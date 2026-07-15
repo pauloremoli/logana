@@ -897,7 +897,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_open_dir_sets_confirm_open_dir_mode() {
+    async fn test_open_dir_opens_archive_picker_mode() {
         let mut app = make_app(&["line"]).await;
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.log"), b"hello").unwrap();
@@ -907,7 +907,7 @@ mod tests {
         assert!(result, "open <dir> should return true (mode was set)");
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
-            ModeRenderState::ConfirmOpenDir { .. }
+            ModeRenderState::ArchivePicker { .. }
         ));
     }
 

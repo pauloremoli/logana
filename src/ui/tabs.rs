@@ -7,17 +7,25 @@ use crate::parser::LogFormatParser;
 use crate::ui::tab_state::year_map::YearMap;
 use std::sync::Arc;
 
-/// Everything [`build_merged_tab`] needs to build a merged tab's index,
+/// Everything [`App::build_merged_tab`] needs to build a merged tab's index,
 /// regardless of whether each source came from an already-open tab (see
 /// [`App::merge_inputs_from_tabs`], used by `:merge`) or from a
-/// freshly-extracted-and-detected archive file (see
-/// [`App::merge_inputs_from_extracted`]).
-struct MergeSourceInputs {
-    sources: Vec<FileReader>,
-    parsers: Vec<Option<Arc<dyn LogFormatParser>>>,
-    year_maps: Vec<Option<Arc<YearMap>>>,
-    continuation_maps: Vec<Option<Arc<Vec<usize>>>>,
-    labels: Vec<String>,
+/// freshly-extracted-and-detected archive or directory file (see
+/// [`App::merge_inputs_from_extracted`]). `pub(crate)` (and likewise its
+/// fields) so a picker-triggered merge's Phase 1 — reading/extracting each
+/// source, which lives in `crate::ingestion::loading` (archive) and
+/// `crate::ui::input` (directory) — can hand its result straight to
+/// [`App::start_merge_build_streaming`].
+pub(crate) struct MergeSourceInputs {
+    pub(crate) sources: Vec<FileReader>,
+    pub(crate) parsers: Vec<Option<Arc<dyn LogFormatParser>>>,
+    pub(crate) year_maps: Vec<Option<Arc<YearMap>>>,
+    pub(crate) continuation_maps: Vec<Option<Arc<Vec<usize>>>>,
+    pub(crate) labels: Vec<String>,
+    /// Owned temp copies backing `sources`, kept alive on the resulting tab
+    /// (see `TabState::merge_source_temps`). Empty for `:merge`'s
+    /// already-open-tab sources, which have no temp copy of their own.
+    pub(crate) temp_files: Vec<tempfile::NamedTempFile>,
 }
 
 impl App {
@@ -107,20 +115,24 @@ impl App {
                 .iter()
                 .map(|&i| self.tabs[i].title.clone())
                 .collect(),
+            temp_files: Vec::new(),
         }
     }
 
     /// Gathers `MergeSourceInputs` from freshly-extracted-and-detected
-    /// archive files — no tab lookups, and (deliberately) no throwaway
-    /// `TabState`/`LogManager`/DB row per source, since only the final
-    /// merged tab needs one of those.
-    fn merge_inputs_from_extracted(sources: Vec<MergeMarkedSource>) -> MergeSourceInputs {
+    /// archive or directory files — no tab lookups, and (deliberately) no
+    /// throwaway `TabState`/`LogManager`/DB row per source, since only the
+    /// final merged tab needs one of those.
+    pub(crate) fn merge_inputs_from_extracted(
+        sources: Vec<MergeMarkedSource>,
+    ) -> MergeSourceInputs {
         let mut inputs = MergeSourceInputs {
             sources: Vec::with_capacity(sources.len()),
             parsers: Vec::with_capacity(sources.len()),
             year_maps: Vec::with_capacity(sources.len()),
             continuation_maps: Vec::with_capacity(sources.len()),
             labels: Vec::with_capacity(sources.len()),
+            temp_files: Vec::with_capacity(sources.len()),
         };
         for s in sources {
             inputs.labels.push(s.label);
@@ -128,6 +140,7 @@ impl App {
             inputs.year_maps.push(s.detected.year_map);
             inputs.continuation_maps.push(s.detected.continuation_map);
             inputs.sources.push(s.reader);
+            inputs.temp_files.push(s.temp_file);
         }
         inputs
     }
@@ -174,6 +187,7 @@ impl App {
             source_line_counts,
             label_col_width,
             stopped: false,
+            building: None,
         });
         self.apply_tab_defaults(&mut tab);
 
@@ -188,15 +202,122 @@ impl App {
             .await;
     }
 
-    /// Builds one merged tab from files extracted from an archive, marked
-    /// with 'm' in the archive picker — the individual sources never get
-    /// their own separate tab, only the merged result does.
-    pub(crate) async fn open_merged_tab_from_extraction(
+    /// Creates an empty, "pending" merged tab immediately and makes it
+    /// active — before either phase of a picker-triggered merge (archive
+    /// entry extraction / directory file copy, or the index build once
+    /// sources are ready) has produced anything. For a merge of big files,
+    /// reading/extracting the sources is the slow part; without this, the
+    /// destination tab wouldn't appear at all until that finished, leaving
+    /// the user with no visible sign the merge is happening. `labels` (the
+    /// eventual source filenames) are known upfront from the archive
+    /// tree/directory listing alone, with no reading needed, so the tab can
+    /// show real source names immediately.
+    ///
+    /// The caller is responsible for reporting Phase 1 progress on this
+    /// tab (e.g. via `TabState::set_notification`) and, once sources are
+    /// ready, calling [`Self::start_merge_build_streaming`] to fill it in —
+    /// or removing the tab if Phase 1 fails before ever producing sources.
+    pub(crate) async fn create_pending_merged_tab(&mut self, labels: Vec<String>) -> usize {
+        use crate::ui::tab_state::merged::MergedState;
+
+        let sources_total = labels.len();
+        let title = format!("merged({sources_total})");
+        let label_col_width = labels.iter().map(|l| l.len()).max().unwrap_or(0);
+        let file_reader = FileReader::from_merged(Arc::new(Vec::new()), Arc::new(Vec::new()));
+        let log_manager = LogManager::new(self.db.clone(), None).await;
+        let mut tab = TabState::new(file_reader, log_manager, title);
+        tab.display.format = None;
+        tab.continuation_map = None;
+        tab.filter.visible_indices = VisibleLines::Filtered(Vec::new());
+        tab.display.show_line_numbers = false;
+        tab.merged = Some(MergedState {
+            source_tab_indices: Vec::new(),
+            source_parsers: Vec::new(),
+            source_labels: labels,
+            source_line_counts: Vec::new(),
+            label_col_width,
+            stopped: false,
+            building: Some((0, sources_total)),
+        });
+        self.apply_tab_defaults(&mut tab);
+        self.tabs.push(tab);
+        let tab_idx = self.tabs.len() - 1;
+        self.active_tab = tab_idx;
+        tab_idx
+    }
+
+    /// Fills in the tab created by [`Self::create_pending_merged_tab`] once
+    /// its sources are ready: spawns a background thread that folds sources
+    /// in one at a time and reports each intermediate result, applied to
+    /// the live tab by [`Self::poll_merge_builds`] — same "renders
+    /// progressively instead of freezing" reasoning as `create_pending_merged_tab`,
+    /// just for the index-build phase instead of the read/extract phase.
+    /// A no-op if `tab_idx` no longer exists (its tab was closed while
+    /// Phase 1 was still running).
+    pub(crate) fn start_merge_build_streaming(
         &mut self,
-        sources: Vec<MergeMarkedSource>,
+        tab_idx: usize,
+        inputs: MergeSourceInputs,
     ) {
-        let title = format!("merged({})", sources.len());
-        let inputs = Self::merge_inputs_from_extracted(sources);
-        self.build_merged_tab(inputs, title, Vec::new()).await;
+        use crate::ui::tab_state::merged::build_merged_index_streaming;
+
+        if tab_idx >= self.tabs.len() {
+            return;
+        }
+
+        let source_line_counts: Vec<usize> =
+            inputs.sources.iter().map(|s| s.line_count()).collect();
+        let label_col_width = inputs.labels.iter().map(|l| l.len()).max().unwrap_or(0);
+        let sources_total = inputs.sources.len();
+        let sources_arc = Arc::new(inputs.sources.clone());
+
+        self.tabs[tab_idx].file_reader =
+            FileReader::from_merged(Arc::new(Vec::new()), sources_arc.clone());
+        self.tabs[tab_idx].merge_source_temps = inputs.temp_files;
+        if let Some(merged) = self.tabs[tab_idx].merged.as_mut() {
+            merged.source_parsers = inputs.parsers.clone();
+            merged.source_labels = inputs.labels;
+            merged.source_line_counts = source_line_counts;
+            merged.label_col_width = label_col_width;
+            merged.building = Some((0, sources_total));
+        }
+        self.active_tab = tab_idx;
+
+        let (update_tx, update_rx) = std::sync::mpsc::channel();
+        let sources = inputs.sources;
+        let parsers = inputs.parsers;
+        let year_maps = inputs.year_maps;
+        let continuation_maps = inputs.continuation_maps;
+        tokio::task::spawn_blocking(move || {
+            build_merged_index_streaming(
+                &sources,
+                &parsers,
+                &year_maps,
+                &continuation_maps,
+                &update_tx,
+            );
+        });
+
+        self.pending_merge_builds.push(crate::ui::MergeBuildState {
+            tab_idx,
+            sources_arc,
+            update_rx,
+        });
+    }
+
+    /// Removes the tab created by [`Self::create_pending_merged_tab`] when
+    /// Phase 1 fails before producing any sources to merge (e.g. every
+    /// merge-marked file had an unrecognized format) — there's nothing left
+    /// to fill it in, so it would otherwise sit around forever showing
+    /// "building" progress that will never move.
+    pub(crate) fn remove_pending_merged_tab(&mut self, tab_idx: usize) {
+        if tab_idx >= self.tabs.len() {
+            return;
+        }
+        self.tabs.remove(tab_idx);
+        if self.active_tab > tab_idx {
+            self.active_tab -= 1;
+        }
+        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
     }
 }

@@ -544,6 +544,32 @@ pub fn list_archive_tree(path: &str) -> Result<ArchiveTree, String> {
     list_archive_tree_with_limits(path, &ListLimits::default())
 }
 
+/// Builds an `ArchiveTree` from a directory's own files — reused so opening
+/// a directory gets the same tree/checkbox/merge-mark picker UI as opening
+/// an archive, instead of a separate "open everything or nothing" prompt.
+/// Every node is a plain `File`, matching `list_dir_files`'s existing flat,
+/// non-recursive (top-level only, hidden files skipped) listing — there's
+/// nothing to decompress, `full_path` is already the real on-disk path.
+pub fn list_directory_tree(dir: &str) -> Result<ArchiveTree, String> {
+    let files = crate::utils::filesystem::list_dir_files(dir);
+    if files.is_empty() {
+        return Err(format!("'{dir}' contains no files."));
+    }
+    let mut nodes = Vec::with_capacity(files.len());
+    let mut roots = Vec::with_capacity(files.len());
+    for path in files {
+        let id = nodes.len();
+        let name = std::path::Path::new(&path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&path)
+            .to_string();
+        nodes.push(file_node(id, None, name, path, 0));
+        roots.push(id);
+    }
+    Ok(ArchiveTree { nodes, roots })
+}
+
 pub fn list_archive_tree_with_limits(
     path: &str,
     limits: &ListLimits,
@@ -889,6 +915,20 @@ pub fn extract_selected(
     extract_by_flag(path, tree, MarkField::Selected, progress_tx)
 }
 
+/// The display labels every merge-marked file will extract to — same
+/// disambiguation `extract_and_detect_merge_marked` produces, but computed
+/// from the tree alone (no reading/decompressing), so the destination
+/// merged tab can be created and titled immediately, before the slow read
+/// phase for big files has produced anything.
+pub fn merge_marked_labels(tree: &ArchiveTree) -> Vec<String> {
+    let mut used_names: HashMap<String, usize> = HashMap::new();
+    tree.nodes
+        .iter()
+        .filter(|n| n.merge_marked && matches!(n.kind, NodeKind::File))
+        .map(|n| disambiguated_name(tree, n.id, &mut used_names))
+        .collect()
+}
+
 /// A merge-marked file's extracted, format-detected form — ready to feed
 /// directly into building a merged tab without needing its own `TabState`/
 /// `LogManager`/DB row (only the final merged tab needs one of those).
@@ -897,6 +937,12 @@ pub struct MergeMarkedSource {
     pub label: String,
     pub reader: crate::ingestion::FileReader,
     pub detected: crate::ingestion::format_detect::DetectedFormat,
+    /// Owns the on-disk temp copy `reader` was built from, so the merged
+    /// tab this source feeds into is self-contained — it never needs to
+    /// re-open the original archive entry or directory file. Dropping it
+    /// deletes the temp copy, so the merged tab that ends up owning this
+    /// (see `TabState::merge_source_temps`) must outlive it.
+    pub temp_file: tempfile::NamedTempFile,
 }
 
 /// Extracts every `merge_marked` file in `tree`, exactly like
@@ -921,6 +967,7 @@ pub fn extract_and_detect_merge_marked(
                 label: f.name,
                 reader,
                 detected,
+                temp_file: f.temp_file,
             }
         })
         .collect())
@@ -1207,6 +1254,68 @@ mod tests {
             nodes,
             roots: vec![0, 1, 4],
         }
+    }
+
+    #[test]
+    fn test_list_directory_tree_empty_dir_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = list_directory_tree(tmp.path().to_str().unwrap()).unwrap_err();
+        assert!(err.contains("contains no files"));
+    }
+
+    #[test]
+    fn test_list_directory_tree_nonexistent_dir_returns_error() {
+        let err = list_directory_tree("/nonexistent/does/not/exist").unwrap_err();
+        assert!(err.contains("contains no files"));
+    }
+
+    #[test]
+    fn test_list_directory_tree_lists_files_as_flat_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.log"), b"one").unwrap();
+        std::fs::write(tmp.path().join("b.log"), b"two").unwrap();
+        let tree = list_directory_tree(tmp.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(tree.nodes.len(), 2);
+        assert_eq!(tree.roots.len(), 2);
+        let mut names: Vec<&str> = tree.nodes.iter().map(|n| n.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["a.log", "b.log"]);
+        for node in &tree.nodes {
+            assert!(matches!(node.kind, NodeKind::File));
+            assert_eq!(node.depth, 0);
+            assert!(node.parent.is_none());
+            assert!(
+                node.full_path.ends_with(&node.name),
+                "full_path should be the real on-disk path, got {:?}",
+                node.full_path
+            );
+        }
+    }
+
+    #[test]
+    fn test_list_directory_tree_excludes_hidden_and_subdirectories() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("visible.log"), b"one").unwrap();
+        std::fs::write(tmp.path().join(".hidden.log"), b"two").unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+        let tree = list_directory_tree(tmp.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(tree.nodes.len(), 1);
+        assert_eq!(tree.nodes[0].name, "visible.log");
+    }
+
+    #[test]
+    fn test_list_directory_tree_full_path_is_the_real_absolute_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.log"), b"one").unwrap();
+        let tree = list_directory_tree(tmp.path().to_str().unwrap()).unwrap();
+
+        // The whole point of a directory-sourced tree: `full_path` is a real,
+        // directly-openable file, not an archive-internal path needing
+        // separate extraction — confirmed by actually reading it back.
+        let content = std::fs::read(&tree.nodes[0].full_path).unwrap();
+        assert_eq!(content, b"one");
     }
 
     #[test]

@@ -88,10 +88,6 @@ pub enum ModeRenderState {
     ConfirmRestoreSession {
         files: Arc<Vec<String>>,
     },
-    ConfirmOpenDir {
-        dir: String,
-        files: Arc<Vec<String>>,
-    },
     MergeSelect {
         tabs: Vec<(String, bool)>,
         selected: usize,
@@ -139,9 +135,9 @@ impl ModeRenderState {
             ModeRenderState::DltSelect { .. } => "DLT",
             ModeRenderState::ValueColors { .. } => "VALUE COLORS",
             ModeRenderState::LevelColors { .. } => "LEVEL COLORS",
-            ModeRenderState::ConfirmRestore
-            | ModeRenderState::ConfirmRestoreSession { .. }
-            | ModeRenderState::ConfirmOpenDir { .. } => "CONFIRM",
+            ModeRenderState::ConfirmRestore | ModeRenderState::ConfirmRestoreSession { .. } => {
+                "CONFIRM"
+            }
             ModeRenderState::MergeSelect { .. } => "MERGE",
             ModeRenderState::ArchivePicker { .. } => "ARCHIVE",
             ModeRenderState::ExportFooter { .. } => "EXPORT",
@@ -348,63 +344,6 @@ impl Mode for ConfirmRestoreSessionMode {
 
     fn render_state(&self) -> ModeRenderState {
         ModeRenderState::ConfirmRestoreSession {
-            files: Arc::clone(&self.files),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct ConfirmOpenDirMode {
-    pub dir: String,
-    pub files: Arc<Vec<String>>,
-}
-
-#[async_trait]
-impl Mode for ConfirmOpenDirMode {
-    async fn handle_key(
-        self: Box<Self>,
-        tab: &mut TabState,
-        key: KeyCode,
-        modifiers: KeyModifiers,
-    ) -> (Box<dyn Mode>, KeyResult) {
-        let kb = &tab.interaction.keybindings.confirm;
-        if kb.yes.matches(key, modifiers) {
-            (
-                Box::new(NormalMode::default()),
-                KeyResult::OpenFiles(Arc::unwrap_or_clone(self.files)),
-            )
-        } else if kb.no.matches(key, modifiers) {
-            (Box::new(NormalMode::default()), KeyResult::Handled)
-        } else {
-            (self, KeyResult::Handled)
-        }
-    }
-
-    fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
-        let n = self.files.len();
-        let mut spans: Vec<Span<'static>> = vec![Span::styled(
-            "[OPEN DIR]  ",
-            Style::default()
-                .fg(theme.text_highlight_fg)
-                .add_modifier(Modifier::BOLD),
-        )];
-        spans.push(Span::styled(
-            format!(
-                "Open {} file{} from {}?  ",
-                n,
-                if n == 1 { "" } else { "s" },
-                self.dir
-            ),
-            Style::default().fg(theme.text),
-        ));
-        status_entry(&mut spans, kb.confirm.yes.display(), "yes", theme);
-        status_entry(&mut spans, kb.confirm.no.display(), "no", theme);
-        Line::from(spans)
-    }
-
-    fn render_state(&self) -> ModeRenderState {
-        ModeRenderState::ConfirmOpenDir {
-            dir: self.dir.clone(),
             files: Arc::clone(&self.files),
         }
     }
@@ -730,108 +669,6 @@ mod tests {
         ));
     }
 
-    async fn press_open_dir(
-        mode: ConfirmOpenDirMode,
-        tab: &mut TabState,
-        code: KeyCode,
-    ) -> (Box<dyn Mode>, KeyResult) {
-        Box::new(mode)
-            .handle_key(tab, code, KeyModifiers::NONE)
-            .await
-    }
-
-    #[tokio::test]
-    async fn test_confirm_open_dir_y_returns_open_files() {
-        let mut tab = make_tab(&["line"]).await;
-        let files = vec!["/tmp/a.log".to_string(), "/tmp/b.log".to_string()];
-        let mode = ConfirmOpenDirMode {
-            dir: "/tmp".to_string(),
-            files: Arc::new(files.clone()),
-        };
-        let (mode2, result) = press_open_dir(mode, &mut tab, KeyCode::Char('y')).await;
-        assert!(matches!(result, KeyResult::OpenFiles(ref f) if *f == files));
-        assert!(!matches!(
-            mode2.render_state(),
-            ModeRenderState::ConfirmOpenDir { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_confirm_open_dir_n_returns_normal() {
-        let mut tab = make_tab(&["line"]).await;
-        let mode = ConfirmOpenDirMode {
-            dir: "/tmp".to_string(),
-            files: Arc::new(vec!["/tmp/a.log".to_string()]),
-        };
-        let (mode2, result) = press_open_dir(mode, &mut tab, KeyCode::Char('n')).await;
-        assert!(matches!(result, KeyResult::Handled));
-        assert!(!matches!(
-            mode2.render_state(),
-            ModeRenderState::ConfirmOpenDir { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_confirm_open_dir_esc_returns_normal() {
-        let mut tab = make_tab(&["line"]).await;
-        let mode = ConfirmOpenDirMode {
-            dir: "/tmp".to_string(),
-            files: Arc::new(vec!["/tmp/a.log".to_string()]),
-        };
-        let (mode2, result) = press_open_dir(mode, &mut tab, KeyCode::Esc).await;
-        assert!(matches!(result, KeyResult::Handled));
-        assert!(!matches!(
-            mode2.render_state(),
-            ModeRenderState::ConfirmOpenDir { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_confirm_open_dir_other_key_stays_in_mode() {
-        let mut tab = make_tab(&["line"]).await;
-        let mode = ConfirmOpenDirMode {
-            dir: "/tmp".to_string(),
-            files: Arc::new(vec!["/tmp/a.log".to_string()]),
-        };
-        let (mode2, result) = press_open_dir(mode, &mut tab, KeyCode::Char('z')).await;
-        assert!(matches!(result, KeyResult::Handled));
-        assert!(matches!(
-            mode2.render_state(),
-            ModeRenderState::ConfirmOpenDir { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_confirm_open_dir_mode_bar_content() {
-        let mode = ConfirmOpenDirMode {
-            dir: "/tmp".to_string(),
-            files: Arc::new(vec!["/tmp/a.log".to_string()]),
-        };
-        assert!(matches!(
-            mode.render_state(),
-            ModeRenderState::ConfirmOpenDir { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_confirm_open_dir_render_state() {
-        let files = vec!["/tmp/a.log".to_string()];
-        let mode = ConfirmOpenDirMode {
-            dir: "/tmp".to_string(),
-            files: Arc::new(files.clone()),
-        };
-        match mode.render_state() {
-            ModeRenderState::ConfirmOpenDir {
-                dir,
-                files: returned,
-            } => {
-                assert_eq!(dir, "/tmp");
-                assert_eq!(*returned, files);
-            }
-            other => panic!("expected ConfirmOpenDir, got {:?}", other),
-        }
-    }
-
     #[test]
     fn mode_name_covers_all_variants() {
         assert_eq!(ModeRenderState::Normal.mode_name(), "NORMAL");
@@ -952,14 +789,6 @@ mod tests {
         assert_eq!(ModeRenderState::ConfirmRestore.mode_name(), "CONFIRM");
         assert_eq!(
             ModeRenderState::ConfirmRestoreSession {
-                files: Arc::new(vec![])
-            }
-            .mode_name(),
-            "CONFIRM"
-        );
-        assert_eq!(
-            ModeRenderState::ConfirmOpenDir {
-                dir: String::new(),
                 files: Arc::new(vec![])
             }
             .mode_name(),

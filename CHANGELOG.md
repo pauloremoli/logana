@@ -10,10 +10,11 @@ All notable changes to logana will be documented in this file.
 - Archive picker now supports the same navigation as the filter sidebar and log panel: count-prefixed `j`/`k`, `Ctrl+d`/`Ctrl+u` , `PageDown`/`PageUp` (full page), and `gg`/`G`. 
 - Archive picker: nested archives can be expanded/collapsed with the Right/Left arrow keys.
 - `:filter`/`:highlight` now accept `--auto`/`-a` to generate a random fg/bg color pair with guaranteed readable contrast, instead of picking `--fg`/`--bg` yourself.
-- Custom keybindings in `config.json` can now bind a key to a fixed command line (`keybindings.custom`), e.g. binding a key to `load-filters ~/logs/filters/draco-mars.json`. Checked in Normal Mode ahead of every built-in action, and listed in `:show-keybindings`.
+- Custom keybindings in `config.json` can now bind a key to a fixed command line (`keybindings.custom`), e.g. binding a key to `load-filters ~/logs/filters/myfilter.json`.
 
 ### Changed
 - Archive listing now only auto-decompresses one nested level (the opened file's own entries, plus one layer of nested-archive contents) instead of eagerly recursing however deep an archive is nested — anything deeper shows as an expandable row instead, opened on demand rather than upfront.
+- Opening a directory now reuses the archive picker's tree/checkbox/merge-mark UI instead of a plain "open all files?" prompt — pick exactly which files to open (each as its own tab) or merge-mark them into one timestamp-sorted tab, the same way you would from inside an archive.
 
 ### Fixed
 - Archive picker navigation and typeahead search on large archives (thousands of entries) no longer stall — a nested container's checkbox state is now computed once per render in a single pass instead of re-walking its descendants for every container row, and the search query is compiled to a regex once per keystroke instead of once per entry checked.
@@ -21,6 +22,8 @@ All notable changes to logana will be documented in this file.
 - In real-world snapshots the 10k entries can be easily reached, increased the limit to 250k file.
 - Merged tab source-file labels no longer leak into the actual line content — they were being baked into the matchable/navigable text, throwing off Visual Char Mode's word motions (and anything else relying on the rendered line). The label is now purely a visual gutter decoration, like line numbers.
 - A merged tab's title bar no longer shows the misleading "[unknown format]" when every source shares the same detected format (e.g. merging two journalctl files) — it now shows that shared format name instead.
+- Confirming a merge from the archive/directory picker (`m`-marked files, `Enter`) no longer freezes the UI, and no longer leaves you without feedback while big files are read — the destination tab now appears the instant you press `Enter`, showing a "Reading… x/y files" notification while sources are extracted/copied and a "Merging… x/y files" one while the index is built, instead of only appearing once everything is done.
+- A merge from the archive/directory picker is now fully self-contained: each merge-marked source and the final merged result are saved to temp files rather than staying tied to the original archive entry or directory file, so the merged tab keeps working even if the original is moved or deleted. Any tab backed only by temp storage (an extracted archive file, or a picker-triggered merge) now shows a `[TEMP]` marker so it's clear the data won't survive past this session.
 
 ## [0.7.3] - 2026-07-13
 

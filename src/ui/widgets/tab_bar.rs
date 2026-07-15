@@ -11,6 +11,10 @@ pub struct TabBarEntry<'a> {
     pub paused: bool,
     pub retry_attempt: Option<u32>,
     pub has_lines: bool,
+    /// Whether this tab's content lives only in a temp file (an extracted
+    /// archive file, or a picker-triggered merge) rather than a location the
+    /// user chose — see `TabState::is_temp_backed`.
+    pub is_temp: bool,
 }
 
 pub struct TabBar<'a> {
@@ -113,11 +117,12 @@ fn tab_suffix(
             }
         };
         format!(
-            " ({}){}{}{}{}  ",
+            " ({}){}{}{}{}{}  ",
             entry.num_visible,
             if entry.tail_mode { " [TAIL]" } else { "" },
             if entry.raw_mode { " [RAW]" } else { "" },
             if entry.paused { " [PAUSED]" } else { "" },
+            if entry.is_temp { " [TEMP]" } else { "" },
             fmt_label,
         )
     } else if entry.raw_mode {
@@ -219,6 +224,7 @@ mod tests {
             paused: false,
             retry_attempt: None,
             has_lines: true,
+            is_temp: false,
         }
     }
 
@@ -300,11 +306,27 @@ mod tests {
             paused: false,
             retry_attempt: None,
             has_lines: true,
+            is_temp: false,
         };
         let suffix = tab_suffix(&entry, true, &[], None, 0);
         assert!(suffix.contains("(5)"));
         assert!(suffix.contains("[TAIL]"));
         assert!(suffix.contains("[json]"));
+    }
+
+    #[test]
+    fn test_tab_suffix_active_temp_backed_shows_marker() {
+        let mut entry = make_entry("t");
+        entry.is_temp = true;
+        let suffix = tab_suffix(&entry, true, &[], None, 0);
+        assert!(suffix.contains("[TEMP]"));
+    }
+
+    #[test]
+    fn test_tab_suffix_active_not_temp_backed_omits_marker() {
+        let entry = make_entry("t");
+        let suffix = tab_suffix(&entry, true, &[], None, 0);
+        assert!(!suffix.contains("[TEMP]"));
     }
 
     // Entries with has_lines=false and num_visible=0 give predictable widths:
@@ -320,6 +342,7 @@ mod tests {
             paused: false,
             retry_attempt: None,
             has_lines: false,
+            is_temp: false,
         }
     }
 
