@@ -126,7 +126,7 @@ impl App {
                 return self.cmd_set_color(fg, bg, line_mode).await;
             }
             Some(Commands::ExportMarked { path }) => return self.cmd_export_marked(path),
-            Some(Commands::Save { path }) => return self.cmd_save(path),
+            Some(Commands::Save { path }) => return self.cmd_save(path).await,
             Some(Commands::Export { path, template }) => return self.cmd_export(path, template),
             Some(Commands::SaveFilters { path }) => return self.cmd_save_filters(path),
             Some(Commands::LoadFilters { path }) => return self.cmd_load_filters(path).await,
@@ -1159,6 +1159,89 @@ mod tests {
         app.run_command(&format!("save {}", path)).await.unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert_eq!(written, "keep this\nkeep too\n");
+    }
+
+    /// Waits for the active tab's background load (started by
+    /// `switch_tab_to_saved_file`) to finish.
+    async fn drain_active_tab_load(app: &mut App) {
+        for _ in 0..100 {
+            app.advance_file_load().await;
+            if app.tabs[app.active_tab].load_state.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save_on_temp_backed_tab_switches_to_the_saved_file() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].archive_temp = Some(tempfile::NamedTempFile::new().unwrap());
+        assert!(app.tabs[0].is_temp_backed());
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("save {path}")).await.unwrap();
+        drain_active_tab_load(&mut app).await;
+
+        assert!(
+            !app.tabs[0].is_temp_backed(),
+            "the tab must no longer be temp-backed after saving"
+        );
+        assert!(app.tabs[0].archive_temp.is_none());
+        assert_eq!(
+            app.tabs[0].title,
+            std::path::Path::new(&path)
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+        );
+        assert_eq!(app.tabs[0].file_reader.line_count(), 2);
+        assert_eq!(app.tabs[0].file_reader.get_line(0), b"line one");
+        assert_eq!(app.tabs[0].file_reader.get_line(1), b"line two");
+    }
+
+    #[tokio::test]
+    async fn test_save_on_temp_backed_merged_tab_drops_merged_state() {
+        let mut app = make_app(&["line one"]).await;
+        app.tabs[0].merged_temp = Some(tempfile::NamedTempFile::new().unwrap());
+        app.tabs[0].merged = Some(crate::ui::MergedState {
+            source_tab_indices: Vec::new(),
+            source_parsers: Vec::new(),
+            source_labels: vec!["a.log".to_string()],
+            source_line_counts: vec![1],
+            label_col_width: 5,
+            stopped: false,
+            building: None,
+        });
+        assert!(app.tabs[0].is_temp_backed());
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("save {path}")).await.unwrap();
+        drain_active_tab_load(&mut app).await;
+
+        assert!(app.tabs[0].merged.is_none());
+        assert!(app.tabs[0].merged_temp.is_none());
+        assert!(!app.tabs[0].is_temp_backed());
+    }
+
+    #[tokio::test]
+    async fn test_save_on_a_regular_tab_does_not_switch_source() {
+        let mut app = make_app(&["line one"]).await;
+        assert!(!app.tabs[0].is_temp_backed());
+        let original_title = app.tabs[0].title.clone();
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("save {path}")).await.unwrap();
+
+        assert_eq!(
+            app.tabs[0].title, original_title,
+            "a regular tab must keep pointing at its own source, not the save destination"
+        );
+        assert!(app.tabs[0].load_state.is_none());
     }
 
     #[tokio::test]

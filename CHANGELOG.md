@@ -15,6 +15,7 @@ All notable changes to logana will be documented in this file.
 ### Changed
 - Archive listing now only auto-decompresses one nested level (the opened file's own entries, plus one layer of nested-archive contents) instead of eagerly recursing however deep an archive is nested — anything deeper shows as an expandable row instead, opened on demand rather than upfront.
 - Opening a directory now reuses the archive picker's tree/checkbox/merge-mark UI instead of a plain "open all files?" prompt — pick exactly which files to open (each as its own tab) or merge-mark them into one timestamp-sorted tab, the same way you would from inside an archive.
+- `:save` on a temp-backed tab (an extracted archive file, or a picker-triggered merge) now switches that tab to the file you just saved — dropping the temp copy, updating the title, and clearing the `[TEMP]` marker — instead of leaving it pointed at a temp file you can't get back to.
 
 ### Fixed
 - Archive picker navigation and typeahead search on large archives (thousands of entries) no longer stall — a nested container's checkbox state is now computed once per render in a single pass instead of re-walking its descendants for every container row, and the search query is compiled to a regex once per keystroke instead of once per entry checked.

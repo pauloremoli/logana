@@ -32,7 +32,7 @@ impl App {
         Ok(false)
     }
 
-    pub(super) fn cmd_save(&mut self, path: String) -> Result<bool, String> {
+    pub(super) async fn cmd_save(&mut self, path: String) -> Result<bool, String> {
         if path.is_empty() {
             return Err("Path is required".to_string());
         }
@@ -58,7 +58,51 @@ impl App {
         writer
             .flush()
             .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
+
+        // A temp-backed tab (an extracted archive file, or a picker-triggered
+        // merge — see `TabState::is_temp_backed`) has nothing permanent
+        // behind it; now that its content has been saved somewhere real,
+        // that's its new home. Re-point the tab at it instead of leaving it
+        // tied to a temp file the user can no longer see or find again.
+        if self.tabs[self.active_tab].is_temp_backed() {
+            self.switch_tab_to_saved_file(self.active_tab, expanded)
+                .await;
+        }
         Ok(false)
+    }
+
+    /// Re-points a temp-backed tab at the file it was just saved to: drops
+    /// the temp copies (`archive_temp`/`merge_source_temps`/`merged_temp`)
+    /// and, for a picker-triggered merge, the multi-source `merged` state
+    /// too (the saved file is a single flat file now, not several sources to
+    /// track), then reloads the tab's content from the saved path — same as
+    /// opening it fresh, including live tail-watching for future growth.
+    async fn switch_tab_to_saved_file(&mut self, tab_idx: usize, path: String) {
+        let abs_path = std::fs::canonicalize(&path)
+            .ok()
+            .and_then(|c| c.to_str().map(|s| s.to_string()))
+            .unwrap_or(path);
+        let title = std::path::Path::new(&abs_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&abs_path)
+            .to_string();
+
+        self.tabs[tab_idx].title = title;
+        self.tabs[tab_idx].archive_temp = None;
+        self.tabs[tab_idx].merge_source_temps = Vec::new();
+        self.tabs[tab_idx].merged_temp = None;
+        self.tabs[tab_idx].merged = None;
+        self.tabs[tab_idx].log_manager =
+            crate::db::LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
+
+        self.begin_file_load(
+            abs_path,
+            crate::ui::LoadContext::ReplaceTab { tab_idx },
+            None,
+            false,
+        )
+        .await;
     }
 
     pub(super) fn cmd_export(&mut self, path: String, template: String) -> Result<bool, String> {
