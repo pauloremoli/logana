@@ -13,24 +13,23 @@ All notable changes to logana will be documented in this file.
 - Custom keybindings in `config.json` can now bind a key to a fixed command line (`keybindings.custom`), e.g. binding a key to `load-filters ~/logs/filters/myfilter.json`.
 
 ### Changed
-- Archive listing now only auto-decompresses one nested level (the opened file's own entries, plus one layer of nested-archive contents) instead of eagerly recursing however deep an archive is nested — anything deeper shows as an expandable row instead, opened on demand rather than upfront.
-- Opening a directory now reuses the archive picker's tree/checkbox/merge-mark UI instead of a plain "open all files?" prompt — pick exactly which files to open (each as its own tab) or merge-mark them into one timestamp-sorted tab, the same way you would from inside an archive.
-- `:save` on a temp-backed tab (an extracted archive file, or a picker-triggered merge) now switches that tab to the file you just saved — dropping the temp copy, updating the title, and clearing the `[TEMP]` marker — instead of leaving it pointed at a temp file you can't get back to.
+- Archive listing now only auto-decompresses one nested level, with option to expand compressed files on demand.
+- Opening a directory now reuses the archive picker's tree/checkbox/merge-mark UI instead of a plain "open all files?".
+- `:save` on a temporary tabs (an extracted archive file, or a picker-triggered merge) now switches that tab to the file you just saved — dropping the temp copy.
+- Improve rendering performance on archive picker navigation and search on large archives.
 
 ### Fixed
-- Archive picker navigation and typeahead search on large archives (thousands of entries) no longer stall — a nested container's checkbox state is now computed once per render in a single pass instead of re-walking its descendants for every container row, and the search query is compiled to a regex once per keystroke instead of once per entry checked.
-- Archive picker's basic navigation and toggle keys (`j`/`k`/`Space`/`m`/`a`/`n`) no longer also fall through to the global keybinding handler after being handled — previously they returned `Ignored` even on a successful action, which could trigger an unrelated globally-bound action on the same keypress.
-- In real-world snapshots the 10k entries can be easily reached, increased the limit to 250k file.
-- Merged tab source-file labels no longer leak into the actual line content — they were being baked into the matchable/navigable text, throwing off Visual Char Mode's word motions (and anything else relying on the rendered line). The label is now purely a visual gutter decoration, like line numbers.
-- A merged tab's title bar no longer shows the misleading "[unknown format]" when every source shares the same detected format (e.g. merging two journalctl files) — it now shows that shared format name instead.
-- Confirming a merge from the archive/directory picker (`m`-marked files, `Enter`) no longer freezes the UI, and no longer leaves you without feedback while big files are read — the destination tab now appears the instant you press `Enter`, showing a "Reading… x/y files" notification while sources are extracted/copied and a "Merging… x/y files" one while the index is built, instead of only appearing once everything is done.
-- A merge from the archive/directory picker is now fully self-contained: each merge-marked source and the final merged result are saved to temp files rather than staying tied to the original archive entry or directory file, so the merged tab keeps working even if the original is moved or deleted. Any tab backed only by temp storage (an extracted archive file, or a picker-triggered merge) now shows a `[TEMP]` marker so it's clear the data won't survive past this session.
-- Fixed a crash (`index out of bounds`) that could happen after a picker-triggered merge failed (e.g. an unrecognized format), if a tab was closed — or another placeholder/merge tab was cleaned up — while a different merge was still building in the background. Closing/removing a tab now consistently updates every in-flight background job's tracked tab index instead of only some of them, so a background merge can no longer end up writing its results into the wrong tab.
+- Merged tab source-file labels no longer leak into the actual line content.
+- A merged tab's title bar no longer shows the misleading "[unknown format]" when every source shares the same detected format (e.g. merging two journalctl files).
+- Merge from the archive/directory picker for big files no longer freezes the UI.
+- A merge from the archive/directory picker is now fully self-contained: each merge-marked source and the final merged result are saved to temp files.
+- Fixed a crash (`index out of bounds`) that could happen after a picker-triggered merge failed (e.g. an unrecognized format)
+- Fixed autocomplete for `:toggle-group` and and `:sidebar-position` commands.
 
 ## [0.7.3] - 2026-07-13
 
 ### Fixed
-- Visual Char Mode's word motions (`w`/`e`/`b`), `/` search match offsets, `y`/`Y`/visual-line yank, and `:export` no longer diverge from what's actually rendered on a custom schema's `template` line — they all now go through the same shared reconstruction (`field_layout::render_line_text`) that the log panel uses, instead of separately-computed (and drift-prone) column layouts.
+- Visual Char Mode's word motions (`w`/`e`/`b`), `/` search match offsets, `y`/`Y`/visual-line yank, and `:export` no longer diverge from what's actually rendered on a custom schema's `template` line.
 
 ## [0.7.2] - 2026-07-13
 

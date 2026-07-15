@@ -216,6 +216,26 @@ impl CommandMode {
                 .collect();
         }
 
+        // toggle-group: complete with known filter group names
+        if let Some(partial) = Self::arg_partial(input, "toggle-group") {
+            return tab
+                .log_manager
+                .group_names()
+                .into_iter()
+                .filter(|g| fuzzy_match(partial, g))
+                .map(|g| format!("toggle-group {g}"))
+                .collect();
+        }
+
+        // sidebar-position: complete with the two valid sides
+        if let Some(partial) = Self::arg_partial(input, "sidebar-position") {
+            return ["left", "right"]
+                .into_iter()
+                .filter(|s| fuzzy_match(partial, s))
+                .map(|s| format!("sidebar-position {s}"))
+                .collect();
+        }
+
         // schema: complete with known custom schema names
         if let Some(partial) = Self::arg_partial(input, "schema") {
             let names: Vec<String> = crate::config::custom_schemas()
@@ -1122,6 +1142,96 @@ mod tests {
             completions.contains(&"show-field message".to_string()),
             "Expected 'show-field message' as fallback when no fields hidden, got: {completions:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_toggle_group_autocomplete_suggests_group_names() {
+        use crate::filters::{FilterOptions, FilterType};
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let mut lm = LogManager::new(db, None).await;
+        lm.add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            FilterOptions::default().group("errors"),
+        )
+        .await;
+        let tab = TabState::new(fr, lm, "test".to_string());
+
+        let mode = CommandMode::with_history("toggle-group ".to_string(), 13, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"toggle-group errors".to_string()),
+            "Expected 'toggle-group errors' in completions, got: {completions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_toggle_group_autocomplete_fuzzy() {
+        use crate::filters::{FilterOptions, FilterType};
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let mut lm = LogManager::new(db, None).await;
+        lm.add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            FilterOptions::default().group("errors"),
+        )
+        .await;
+        let tab = TabState::new(fr, lm, "test".to_string());
+
+        let mode = CommandMode::with_history("toggle-group er".to_string(), 15, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"toggle-group errors".to_string()),
+            "Expected 'toggle-group errors' for partial 'er', got: {completions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tab_cycles_toggle_group_completions() {
+        use crate::filters::{FilterOptions, FilterType};
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let mut lm = LogManager::new(db, None).await;
+        lm.add_filter_with_color(
+            "a".into(),
+            FilterType::Include,
+            FilterOptions::default().group("alpha"),
+        )
+        .await;
+        lm.add_filter_with_color(
+            "b".into(),
+            FilterType::Include,
+            FilterOptions::default().group("zeta"),
+        )
+        .await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+
+        let mode = CommandMode::with_history("toggle-group ".to_string(), 13, vec![]);
+        let (mode, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        let (first, _) = command_state(mode.as_ref()).unwrap();
+        assert_eq!(first, "toggle-group alpha");
+
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        let (second, _) = command_state(mode.as_ref()).unwrap();
+        assert_eq!(
+            second, "toggle-group zeta",
+            "Tab must cycle to the next group name, not repeat the first"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_position_autocomplete_suggests_left_and_right() {
+        let tab = make_json_tab().await;
+        let mode = CommandMode::with_history("sidebar-position ".to_string(), 17, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(completions.contains(&"sidebar-position left".to_string()));
+        assert!(completions.contains(&"sidebar-position right".to_string()));
     }
 
     #[test]
