@@ -510,6 +510,12 @@ impl App {
                 self.save_tab_context(&self.tabs[self.active_tab]).await;
                 self.refresh_mcp_snapshot();
             }
+            McpCommand::ServerError(msg) => {
+                // The background server task has already exited; drop our
+                // side too so the app stops believing MCP is still running.
+                self.mcp.stop();
+                self.tabs[self.active_tab].set_notification(msg);
+            }
         }
     }
 }
@@ -1793,6 +1799,36 @@ mod tests {
             .unwrap();
         app.poll_mcp_commands().await;
         assert!(app.tabs[0].comment_manager.get().is_empty());
+    }
+
+    /// A background MCP server failure must surface as a notification
+    /// (never stderr — the terminal is already in raw/alt-screen mode by
+    /// the time this can happen) and must clear `server_handle`, so the
+    /// app stops believing MCP is still running.
+    #[tokio::test]
+    async fn test_handle_mcp_command_server_error_notifies_and_stops_mcp() {
+        let mut app = make_app(&["line0"]).await;
+        app.mcp.server_handle = Some(crate::mcp::McpServerHandle {
+            cancel: tokio_util::sync::CancellationToken::new(),
+            port: 9876,
+        });
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        app.mcp.cmd_rx = Some(rx);
+        tx.send(crate::mcp::McpCommand::ServerError(
+            "MCP server error: address in use".to_string(),
+        ))
+        .await
+        .unwrap();
+        app.poll_mcp_commands().await;
+
+        assert!(
+            app.mcp.server_handle.is_none(),
+            "server_handle must be cleared once the background task has died"
+        );
+        assert_eq!(
+            app.tabs[0].interaction.notification.as_deref(),
+            Some("MCP server error: address in use")
+        );
     }
 
     #[tokio::test]

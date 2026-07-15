@@ -33,6 +33,9 @@ pub enum McpCommand {
         line_indices: Vec<usize>,
     },
     RemoveAnnotation(usize),
+    /// The background MCP server task failed (e.g. an I/O error in its
+    /// accept loop)
+    ServerError(String),
 }
 
 pub struct McpServerHandle {
@@ -170,6 +173,7 @@ pub async fn start_mcp_server(
 
     let cancel = CancellationToken::new();
     let child_token = cancel.child_token();
+    let error_tx = cmd_tx.clone();
 
     tokio::spawn(async move {
         let server = LoganaServer::new(snapshot, cmd_tx);
@@ -195,7 +199,9 @@ pub async fn start_mcp_server(
             .with_graceful_shutdown(async move { child_token.cancelled_owned().await })
             .await
         {
-            eprintln!("MCP server error: {e}");
+            let _ = error_tx
+                .send(McpCommand::ServerError(format!("MCP server error: {e}")))
+                .await;
         }
     });
 

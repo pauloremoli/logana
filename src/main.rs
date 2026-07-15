@@ -274,7 +274,9 @@ async fn apply_cli_args_to_app(app: &mut App, args: &Args) {
     if let Some(ref fpath) = args.filters
         && let Err(e) = app.tabs[0].log_manager.load_filters(fpath).await
     {
-        eprintln!("Warning: could not load filters from '{}': {}", fpath, e);
+        app.session
+            .startup_warnings
+            .push(format!("could not load filters from '{}': {}", fpath, e));
     }
 
     app.session.startup_tail = args.tail;
@@ -403,11 +405,12 @@ async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
         app.open_run_command(tokens).await;
     }
 
-    let result = app.run(&mut screen.terminal).await;
-    if let Err(ref err) = result {
-        eprintln!("Application error: {:?}", err);
-    }
-    result
+    // Not eprintln!'d here: `screen` (the alternate-screen guard) is still
+    // alive at this point, so a direct stderr write would land in the
+    // alternate screen buffer and be discarded when it's restored below —
+    // never actually seen by the user. `main` already reports this same
+    // error once `run_tui` returns and the terminal has been restored.
+    app.run(&mut screen.terminal).await
 }
 
 #[tokio::main]
@@ -726,5 +729,44 @@ mod tests {
         let (source, bg_load) = resolve_source(&file_path);
         assert!(source.is_none());
         assert!(!bg_load);
+    }
+
+    async fn make_test_app() -> App {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line\n".to_vec());
+        let lm = LogManager::new(db, None).await;
+        App::builder(
+            lm,
+            fr,
+            Theme::default(),
+            Arc::new(logana::config::Keybindings::default()),
+        )
+        .build()
+        .await
+    }
+
+    /// A bad `--filters` path must be recorded as a startup warning, not
+    /// printed to stderr — by the time this runs the terminal is already in
+    /// raw/alt-screen mode (see `run_tui`), so a direct stderr write would
+    /// corrupt the TUI's display instead of being visible to the user.
+    #[tokio::test]
+    async fn test_apply_cli_args_records_bad_filters_path_as_startup_warning() {
+        let mut app = make_test_app().await;
+        let args = Args::try_parse_from([
+            "logana",
+            "file.log",
+            "--filters",
+            "/nonexistent/bad-filters.json",
+        ])
+        .unwrap();
+        apply_cli_args_to_app(&mut app, &args).await;
+        assert!(
+            app.session
+                .startup_warnings
+                .iter()
+                .any(|w| w.contains("bad-filters.json")),
+            "expected a startup warning naming the failed filters path, got: {:?}",
+            app.session.startup_warnings
+        );
     }
 }
