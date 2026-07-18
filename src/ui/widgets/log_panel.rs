@@ -980,6 +980,16 @@ pub fn prepare_log_panel(
         );
     }
 
+    // Horizontal scroll is disabled while wrapped, since wrapping already
+    // fits every line within `inner_width` — 0 signals "no horizontal
+    // range" to the h/l and touchpad-pan clamp logic in that case.
+    let max_line_width = if wrap {
+        0
+    } else {
+        log_lines.iter().map(Line::width).max().unwrap_or(0)
+    };
+    tab.scroll.max_line_width = max_line_width;
+
     let tail_mode = tab.stream.tail_mode;
     let paused = tab.stream.paused;
     let is_temp = tab.is_temp_backed();
@@ -1368,6 +1378,26 @@ mod tests {
         app.tabs[0].scroll.horizontal_scroll = 10;
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_max_line_width_tracks_widest_rendered_line() {
+        let long_line = "A".repeat(200);
+        let mut app = make_app(&["short", &long_line, "mid-length"]).await;
+        app.tabs[0].display.show_line_numbers = false;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert_eq!(app.tabs[0].scroll.max_line_width, 200);
+    }
+
+    #[tokio::test]
+    async fn test_max_line_width_is_zero_when_wrapped() {
+        let long_line = "A".repeat(200);
+        let mut app = make_app(&[&long_line]).await;
+        app.tabs[0].display.wrap = true;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert_eq!(app.tabs[0].scroll.max_line_width, 0);
     }
 
     #[tokio::test]

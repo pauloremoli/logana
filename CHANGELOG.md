@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Touchpad two-finger horizontal swipe pans the log panel left/right, same as `h`/`l`.
+
 ## [0.7.5] - 2026-07-18
 
 ### Added

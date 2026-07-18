@@ -238,7 +238,21 @@ impl Mode for NormalMode {
 
         if kb.normal.scroll_right.matches(key, modifiers) {
             if !tab.display.wrap {
-                tab.scroll.horizontal_scroll = tab.scroll.horizontal_scroll.saturating_add(1);
+                // `max_line_width == 0` means no render pass has run yet
+                // (rather than "content is empty" — a real render always
+                // sets it to at least the width of the shortest non-empty
+                // line) — skip clamping in that case instead of forcing
+                // horizontal_scroll to stay 0 before layout is known.
+                if tab.scroll.max_line_width == 0 {
+                    tab.scroll.horizontal_scroll += 1;
+                } else {
+                    let max_scroll = tab
+                        .scroll
+                        .max_line_width
+                        .saturating_sub(tab.scroll.visible_width);
+                    tab.scroll.horizontal_scroll =
+                        (tab.scroll.horizontal_scroll + 1).min(max_scroll);
+                }
             }
             tab.interaction.g_key_pressed = false;
             self.count = None;
@@ -1073,6 +1087,27 @@ mod tests {
         tab.scroll.horizontal_scroll = 5;
         press(&mut tab, KeyCode::Char('h'), KeyModifiers::NONE).await;
         assert_eq!(tab.scroll.horizontal_scroll, 4);
+    }
+
+    #[tokio::test]
+    async fn test_l_clamps_horizontal_scroll_to_max_line_width_once_known() {
+        let mut tab = make_tab(&["long line"]).await;
+        tab.display.wrap = false;
+        tab.scroll.visible_width = 40;
+        tab.scroll.max_line_width = 45; // max_scroll = 5
+        tab.scroll.horizontal_scroll = 5;
+        press(&mut tab, KeyCode::Char('l'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll.horizontal_scroll, 5);
+    }
+
+    #[tokio::test]
+    async fn test_l_unclamped_before_first_render() {
+        let mut tab = make_tab(&["long line"]).await;
+        tab.display.wrap = false;
+        // max_line_width defaults to 0 (never rendered) — must not force
+        // horizontal_scroll to stay 0 before layout is actually known.
+        press(&mut tab, KeyCode::Char('l'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll.horizontal_scroll, 1);
     }
 
     #[tokio::test]

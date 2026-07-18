@@ -2708,6 +2708,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_mouse_scroll_right_pans_horizontal_scroll() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let mut app = app_with_areas(5, 10, area, None).await;
+        app.tabs[0].scroll.visible_width = 40;
+        app.tabs[0].scroll.max_line_width = 200;
+        app.tabs[0].scroll.horizontal_scroll = 0;
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::ScrollRight,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert_eq!(app.tabs[0].scroll.horizontal_scroll, 4);
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_left_pans_horizontal_scroll() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let mut app = app_with_areas(5, 10, area, None).await;
+        app.tabs[0].scroll.visible_width = 40;
+        app.tabs[0].scroll.max_line_width = 200;
+        app.tabs[0].scroll.horizontal_scroll = 10;
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::ScrollLeft,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert_eq!(app.tabs[0].scroll.horizontal_scroll, 6);
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_right_clamps_to_max_line_width() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let mut app = app_with_areas(5, 10, area, None).await;
+        app.tabs[0].scroll.visible_width = 40;
+        app.tabs[0].scroll.max_line_width = 45; // max_scroll = 5
+        app.tabs[0].scroll.horizontal_scroll = 3;
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::ScrollRight,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert_eq!(app.tabs[0].scroll.horizontal_scroll, 5);
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_left_saturates_at_zero() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let mut app = app_with_areas(5, 10, area, None).await;
+        app.tabs[0].scroll.horizontal_scroll = 2;
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::ScrollLeft,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert_eq!(app.tabs[0].scroll.horizontal_scroll, 0);
+    }
+
+    #[tokio::test]
+    async fn test_mouse_scroll_horizontal_noop_when_wrapped() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
+        let mut app = app_with_areas(5, 10, area, None).await;
+        app.tabs[0].display.wrap = true;
+        app.tabs[0].scroll.max_line_width = 200;
+        app.tabs[0].scroll.visible_width = 40;
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::ScrollRight,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+        .await;
+        assert_eq!(app.tabs[0].scroll.horizontal_scroll, 0);
+    }
+
+    #[tokio::test]
     async fn test_mouse_scroll_over_sidebar_moves_filter_selection_down() {
         use crate::mode::app_mode::ModeRenderState;
         use crossterm::event::{MouseEvent, MouseEventKind};

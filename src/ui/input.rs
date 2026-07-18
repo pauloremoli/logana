@@ -117,6 +117,11 @@ impl App {
                     self.mouse_scroll((h / 2).max(1) as i32);
                 }
             }
+            // Touchpad two-finger horizontal swipe — crossterm reports this
+            // as ScrollLeft/ScrollRight (distinct from a mouse wheel's
+            // ScrollUp/ScrollDown).
+            MouseEventKind::ScrollLeft => self.mouse_scroll_horizontal(-4),
+            MouseEventKind::ScrollRight => self.mouse_scroll_horizontal(4),
             MouseEventKind::Down(MouseButton::Left) => {
                 let hit_scrollbar = {
                     let tab = &self.tabs[self.active_tab];
@@ -247,6 +252,30 @@ impl App {
                 std::mem::replace(&mut tab.interaction.mode, Box::new(NormalMode::default()));
             mode.on_scroll_line_change(tab);
             tab.interaction.mode = mode;
+        }
+    }
+
+    /// Pans the log panel horizontally by `delta` columns — the touchpad
+    /// equivalent of `mouse_scroll`. No-op while wrapped (there's nothing to
+    /// pan: every line already fits within `visible_width`). Clamped to
+    /// `max_line_width`, both written each render pass by `prepare_log_panel`.
+    pub(super) fn mouse_scroll_horizontal(&mut self, delta: i32) {
+        let tab = &mut self.tabs[self.active_tab];
+        if tab.display.wrap {
+            return;
+        }
+        let max_scroll = tab
+            .scroll
+            .max_line_width
+            .saturating_sub(tab.scroll.visible_width);
+        if delta < 0 {
+            tab.scroll.horizontal_scroll = tab
+                .scroll
+                .horizontal_scroll
+                .saturating_sub(delta.unsigned_abs() as usize);
+        } else {
+            tab.scroll.horizontal_scroll =
+                (tab.scroll.horizontal_scroll + delta as usize).min(max_scroll);
         }
     }
 
