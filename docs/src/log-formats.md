@@ -208,6 +208,16 @@ Three fields unlock core logana features. Map them correctly if your format cont
 :schema acme     — force the acme schema for this tab
 ```
 
+### Default filter files per format
+
+```
+:default-filters                              — open a popup listing every format and its configured filter file
+:default-filters acme ~/logs/filters/acme.json — set acme's default filter file
+:default-filters acme                          — clear acme's default filter file mapping
+```
+
+When a tab's format becomes `acme` — auto-detected on open, or via `:schema acme` — and the tab has no filters yet, its configured default filter file loads automatically, same effect as `:load-filters`. Setting or clearing a mapping never retroactively affects the tab you're currently on — it only applies the next time a tab's format is assigned.
+
 ### tracing-subscriber fmt (Rust / Axum)
 
 Rust applications using `tracing-subscriber`'s default `fmt` output produce lines like:

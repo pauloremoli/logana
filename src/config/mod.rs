@@ -108,6 +108,12 @@ pub struct Config {
     /// an explicit `--port` argument. When `None`, falls back to the built-in default (9876).
     #[serde(default)]
     pub mcp_port: Option<u16>,
+    /// Filter file to auto-load when a tab's format (built-in or custom
+    /// schema name) is assigned and it has no filters yet. Entries here take
+    /// priority per-key over the DB-persisted map that `:default-filters`/its
+    /// popup write to.
+    #[serde(default)]
+    pub default_filter_files: Option<std::collections::HashMap<String, String>>,
 }
 
 impl Config {
@@ -141,6 +147,30 @@ impl Config {
         };
         Self::load_from_path(&config_path)
     }
+}
+
+/// Merges `config.json`'s `default_filter_files` with the DB-persisted map,
+/// per-key: an entry in `config.json` always wins for that format name; the
+/// DB-persisted map fills in/overrides any format `config.json` doesn't
+/// mention. Unlike the `theme`-style precedent (a scalar, all-or-nothing
+/// override), this is a map, so a per-key merge is the only way editing
+/// `config.json` for one format doesn't blow away popup-set mappings for
+/// every other format.
+pub async fn resolve_default_filter_files(
+    config: &Config,
+    db: &dyn crate::db::AppSettingsStore,
+) -> std::collections::HashMap<String, String> {
+    let mut merged: std::collections::HashMap<String, String> = db
+        .load_app_setting(crate::db::SettingsKey::DefaultFilterFiles)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+    if let Some(from_config) = &config.default_filter_files {
+        merged.extend(from_config.clone());
+    }
+    merged
 }
 
 static CUSTOM_SCHEMAS: std::sync::OnceLock<Vec<CustomSchemaConfig>> = std::sync::OnceLock::new();
@@ -195,6 +225,7 @@ pub fn schemas_dir() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::AppSettingsStore;
     use crossterm::event::{KeyCode, KeyModifiers};
 
     #[test]
@@ -1460,6 +1491,24 @@ mod tests {
     }
 
     #[test]
+    fn test_deserialize_config_with_default_filter_files() {
+        let json = r#"{
+            "default_filter_files": {"acme": "~/logs/filters/acme.json"}
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.default_filter_files.unwrap().get("acme"),
+            Some(&"~/logs/filters/acme.json".to_string())
+        );
+    }
+
+    #[test]
+    fn test_default_config_has_no_default_filter_files() {
+        let config = Config::default();
+        assert!(config.default_filter_files.is_none());
+    }
+
+    #[test]
     fn test_dlt_device_default_port() {
         let json = r#"{"name": "test", "host": "localhost"}"#;
         let device: DltDevice = serde_json::from_str(json).unwrap();
@@ -1666,5 +1715,87 @@ mod tests {
         let (schemas, errors) = load_schemas(dir.path());
         assert_eq!(schemas.len(), 1);
         assert_eq!(errors.len(), 2);
+    }
+
+    async fn setup_db() -> crate::db::Database {
+        crate::db::Database::in_memory().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_resolve_default_filter_files_config_only() {
+        let db = setup_db().await;
+        let config = Config {
+            default_filter_files: Some(
+                [("acme".to_string(), "a.json".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        let resolved = resolve_default_filter_files(&config, &db).await;
+        assert_eq!(resolved.get("acme"), Some(&"a.json".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_default_filter_files_db_only() {
+        let db = setup_db().await;
+        db.save_app_setting(
+            crate::db::SettingsKey::DefaultFilterFiles,
+            r#"{"syslog":"s.json"}"#,
+        )
+        .await
+        .unwrap();
+        let config = Config::default();
+        let resolved = resolve_default_filter_files(&config, &db).await;
+        assert_eq!(resolved.get("syslog"), Some(&"s.json".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_default_filter_files_per_key_merge() {
+        let db = setup_db().await;
+        db.save_app_setting(
+            crate::db::SettingsKey::DefaultFilterFiles,
+            r#"{"acme":"old.json","syslog":"s.json"}"#,
+        )
+        .await
+        .unwrap();
+        let config = Config {
+            default_filter_files: Some(
+                [("acme".to_string(), "a.json".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        let resolved = resolve_default_filter_files(&config, &db).await;
+        assert_eq!(resolved.get("acme"), Some(&"a.json".to_string()));
+        assert_eq!(resolved.get("syslog"), Some(&"s.json".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_default_filter_files_malformed_db_json_falls_back_to_empty() {
+        let db = setup_db().await;
+        db.save_app_setting(crate::db::SettingsKey::DefaultFilterFiles, "not json")
+            .await
+            .unwrap();
+        let config = Config {
+            default_filter_files: Some(
+                [("acme".to_string(), "a.json".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        let resolved = resolve_default_filter_files(&config, &db).await;
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved.get("acme"), Some(&"a.json".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_default_filter_files_both_empty() {
+        let db = setup_db().await;
+        let config = Config::default();
+        let resolved = resolve_default_filter_files(&config, &db).await;
+        assert!(resolved.is_empty());
     }
 }

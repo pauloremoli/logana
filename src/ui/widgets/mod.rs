@@ -2,6 +2,7 @@ pub mod archive_picker_popup;
 pub mod command_bar;
 pub mod comment_popup;
 pub mod confirm_modal;
+pub mod default_filters_popup;
 pub mod export_footer_popup;
 pub mod input_bar;
 pub mod keybindings_help_popup;
@@ -20,6 +21,7 @@ pub use command_bar::{
 };
 pub use comment_popup::CommentPopup;
 pub use confirm_modal::{ConfirmRestoreModal, ConfirmRestoreSessionModal};
+pub use default_filters_popup::DefaultFiltersPopup;
 pub use export_footer_popup::ExportFooterPopup;
 pub use input_bar::InputBar;
 pub use keybindings_help_popup::KeybindingsHelpPopup;

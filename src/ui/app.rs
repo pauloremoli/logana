@@ -141,6 +141,12 @@ pub struct App {
     pub preview_bytes: u64,
     /// Configured DLT devices from config.json.
     pub dlt_devices: Vec<crate::config::DltDevice>,
+    /// Format name -> filter file path, auto-loaded into a tab when its
+    /// format is assigned and it has no filters yet. Resolved once at
+    /// startup from config.json + the DB-persisted map (see
+    /// `config::resolve_default_filter_files`); kept up to date afterward by
+    /// `:default-filters`/its popup.
+    pub default_filter_files: std::collections::HashMap<String, String>,
     pub mcp: McpState,
     pub input: InputHandler,
     pub session: SessionManager,
@@ -312,6 +318,7 @@ impl AppBuilder {
             },
             preview_bytes: DEFAULT_PREVIEW_BYTES,
             dlt_devices: vec![],
+            default_filter_files: std::collections::HashMap::new(),
             mcp: McpState {
                 port: None,
                 snapshot: std::sync::Arc::new(tokio::sync::RwLock::new(
@@ -395,7 +402,7 @@ impl App {
             // Poll for background load completion, file watch updates, search, and filter.
             self.advance_file_load().await;
             self.advance_stdin_load().await;
-            self.advance_file_watches();
+            self.advance_file_watches().await;
             self.advance_merged_tabs();
             self.advance_stream_retries();
             self.advance_search();
@@ -1333,6 +1340,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dispatch_set_default_filter_file_inserts_mapping() {
+        let mut app = make_app(&["line"]).await;
+        app.dispatch_key_result(
+            KeyResult::SetDefaultFilterFile {
+                format: "acme".to_string(),
+                path: Some("/tmp/a.json".to_string()),
+            },
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert_eq!(
+            app.default_filter_files.get("acme"),
+            Some(&"/tmp/a.json".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_set_default_filter_file_none_path_removes_mapping() {
+        let mut app = make_app(&["line"]).await;
+        app.default_filter_files
+            .insert("acme".to_string(), "/tmp/a.json".to_string());
+        app.dispatch_key_result(
+            KeyResult::SetDefaultFilterFile {
+                format: "acme".to_string(),
+                path: None,
+            },
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert!(!app.default_filter_files.contains_key("acme"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_set_default_filter_file_persists_to_sqlite() {
+        use crate::db::AppSettingsStore;
+        let mut app = make_app(&["line"]).await;
+        app.dispatch_key_result(
+            KeyResult::SetDefaultFilterFile {
+                format: "acme".to_string(),
+                path: Some("/tmp/a.json".to_string()),
+            },
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        let saved = app
+            .db
+            .load_app_setting(crate::db::SettingsKey::DefaultFilterFiles)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(saved.contains("acme"));
+        assert!(saved.contains("/tmp/a.json"));
+    }
+
+    #[tokio::test]
     async fn test_dispatch_toggle_mode_bar() {
         let mut app = make_app(&["line"]).await;
         let initial = app.display.show_mode_bar;
@@ -1843,12 +1908,124 @@ mod tests {
         let fr = FileReader::from_bytes(data);
         let lm = LogManager::new(app.db.clone(), None).await;
         let mut tab = super::super::TabState::new(fr, lm, "new".to_string());
-        app.apply_tab_defaults(&mut tab);
+        app.apply_tab_defaults(&mut tab).await;
         assert!(!tab.display.show_mode_bar);
         assert!(tab.display.show_borders);
         assert!(!tab.display.show_line_numbers);
         assert!(!tab.display.show_sidebar);
         assert!(tab.display.wrap);
+    }
+
+    async fn make_tab_with_format(app: &App, format_name: &str) -> super::super::TabState {
+        let fr = FileReader::from_bytes(b"line\n".to_vec());
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut tab = super::super::TabState::new(fr, lm, "test".to_string());
+        tab.display.format = crate::parser::find_builtin_parser(format_name).map(Arc::from);
+        tab
+    }
+
+    #[tokio::test]
+    async fn test_apply_default_filters_noop_when_no_format() {
+        let mut app = make_app(&["line"]).await;
+        app.default_filter_files
+            .insert("syslog".to_string(), "/nonexistent.json".to_string());
+        let fr = FileReader::from_bytes(b"line\n".to_vec());
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut tab = super::super::TabState::new(fr, lm, "test".to_string());
+        tab.display.format = None;
+        app.apply_default_filters_if_empty(&mut tab).await;
+        assert!(tab.log_manager.get_filters().is_empty());
+        assert!(tab.interaction.notification.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_apply_default_filters_noop_when_no_mapping() {
+        let app = make_app(&["line"]).await;
+        let mut tab = make_tab_with_format(&app, "syslog").await;
+        app.apply_default_filters_if_empty(&mut tab).await;
+        assert!(tab.log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_apply_default_filters_noop_when_tab_has_filters() {
+        let mut app = make_app(&["line"]).await;
+        app.default_filter_files
+            .insert("syslog".to_string(), "/nonexistent.json".to_string());
+        let mut tab = make_tab_with_format(&app, "syslog").await;
+        tab.log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, Default::default())
+            .await;
+        app.apply_default_filters_if_empty(&mut tab).await;
+        assert_eq!(tab.log_manager.get_filters().len(), 1);
+        assert!(tab.interaction.notification.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_apply_default_filters_disabled_filter_still_counts_as_nonempty() {
+        let mut app = make_app(&["line"]).await;
+        app.default_filter_files
+            .insert("syslog".to_string(), "/nonexistent.json".to_string());
+        let mut tab = make_tab_with_format(&app, "syslog").await;
+        tab.log_manager
+            .add_filter_with_color("error".to_string(), FilterType::Include, Default::default())
+            .await;
+        let id = tab.log_manager.get_filters()[0].id;
+        tab.log_manager.toggle_filter(id).await;
+        assert!(!tab.log_manager.get_filters()[0].enabled);
+        app.apply_default_filters_if_empty(&mut tab).await;
+        assert!(tab.interaction.notification.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_apply_default_filters_loads_file_into_empty_tab() {
+        let mut app = make_app(&["line"]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.json");
+        std::fs::write(
+            &path,
+            r#"[{"id":1,"pattern":"error","filter_type":"Include","enabled":true,"color_config":null,"use_regex":false,"ignore_case":false,"group":null}]"#,
+        )
+        .unwrap();
+        app.default_filter_files
+            .insert("syslog".to_string(), path.to_str().unwrap().to_string());
+        let mut tab = make_tab_with_format(&app, "syslog").await;
+        app.apply_default_filters_if_empty(&mut tab).await;
+        assert_eq!(tab.log_manager.get_filters().len(), 1);
+        assert_eq!(tab.log_manager.get_filters()[0].pattern, "error");
+    }
+
+    #[tokio::test]
+    async fn test_apply_default_filters_sets_notification_on_load_error() {
+        let mut app = make_app(&["line"]).await;
+        app.default_filter_files
+            .insert("syslog".to_string(), "/nonexistent-path.json".to_string());
+        let mut tab = make_tab_with_format(&app, "syslog").await;
+        app.apply_default_filters_if_empty(&mut tab).await;
+        assert!(tab.log_manager.get_filters().is_empty());
+        assert!(tab.interaction.notification.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_apply_default_filters_if_empty_at_loads_by_index() {
+        let mut app = make_app(&["line"]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.json");
+        std::fs::write(
+            &path,
+            r#"[{"id":1,"pattern":"error","filter_type":"Include","enabled":true,"color_config":null,"use_regex":false,"ignore_case":false,"group":null}]"#,
+        )
+        .unwrap();
+        app.default_filter_files
+            .insert("syslog".to_string(), path.to_str().unwrap().to_string());
+        app.tabs[0].display.format = crate::parser::find_builtin_parser("syslog").map(Arc::from);
+        app.apply_default_filters_if_empty_at(0).await;
+        assert_eq!(app.tabs[0].log_manager.get_filters().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_apply_default_filters_if_empty_at_out_of_bounds_is_noop() {
+        let mut app = make_app(&["line"]).await;
+        app.apply_default_filters_if_empty_at(99).await;
     }
 
     #[tokio::test]

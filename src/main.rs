@@ -239,6 +239,8 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
         .as_deref()
         .and_then(|name| Theme::from_file(format!("{}.json", name)).ok())
         .unwrap_or_default();
+    let default_filter_files =
+        logana::config::resolve_default_filter_files(&config, log_manager.db.as_ref()).await;
     let mut schema_warnings = init_schemas();
     schema_warnings.extend(logana::parser::validate_custom_schemas(
         logana::config::custom_schemas(),
@@ -264,6 +266,7 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
     .await;
     app.preview_bytes = config.preview_bytes.unwrap_or(DEFAULT_PREVIEW_BYTES);
     app.dlt_devices = config.dlt_devices;
+    app.default_filter_files = default_filter_files;
     app.mcp.port = config.mcp_port;
     app.session.startup_warnings = keybinding_conflicts;
     app.session.startup_warnings.extend(schema_warnings);

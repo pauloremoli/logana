@@ -30,6 +30,13 @@ type ValueColorsData = Option<(
 
 type ExportFooterData = Option<(String, Vec<(String, Vec<String>)>, usize, usize, usize)>;
 
+type DefaultFiltersData = Option<(
+    Vec<crate::mode::default_filters_mode::DefaultFilterRow>,
+    String,
+    usize,
+    Option<crate::mode::default_filters_mode::PathEditState>,
+)>;
+
 type ArchivePickerData = Option<(
     Vec<crate::mode::archive_picker_mode::ArchiveRow>,
     usize,
@@ -66,6 +73,7 @@ struct UiRenderState {
     dlt_select: DltSelectData,
     value_colors_state: ValueColorsData,
     export_footer: ExportFooterData,
+    default_filters_state: DefaultFiltersData,
     notification: Option<String>,
     has_notification: bool,
     has_warnings: bool,
@@ -396,6 +404,15 @@ impl App {
             )),
             _ => None,
         };
+        let default_filters_state: DefaultFiltersData = match render_state {
+            ModeRenderState::DefaultFilters {
+                rows,
+                search,
+                selected,
+                editing,
+            } => Some((rows.clone(), search.clone(), *selected, editing.clone())),
+            _ => None,
+        };
 
         if self.decompression_message.is_none()
             && let Some(set_at) = self.tabs[self.active_tab].interaction.notification_set_at
@@ -431,6 +448,7 @@ impl App {
             dlt_select,
             value_colors_state,
             export_footer,
+            default_filters_state,
             notification,
             has_notification,
             has_warnings,
@@ -979,6 +997,19 @@ impl App {
                     search,
                     selected: *selected,
                     title,
+                },
+                frame_area,
+            );
+        }
+
+        if let Some((rows, search, selected, editing)) = &state.default_filters_state {
+            frame.render_widget(
+                super::widgets::DefaultFiltersPopup {
+                    theme: &self.theme,
+                    rows,
+                    search,
+                    selected: *selected,
+                    editing: editing.as_ref(),
                 },
                 frame_area,
             );

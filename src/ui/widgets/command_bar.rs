@@ -91,6 +91,17 @@ pub fn resolve_completions(
             .collect();
         return CompletionSource::SchemaItems(complete_schema_with_builtins(partial, &names));
     }
+    if let Some(rest) = query_text.trim_start().strip_prefix("default-filters ") {
+        let rest = rest.trim_start();
+        if let Some((_format, path_partial)) = rest.split_once(' ') {
+            return CompletionSource::FileItems(complete_file_path(path_partial.trim_start()));
+        }
+        let names: Vec<String> = crate::config::custom_schemas()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        return CompletionSource::SchemaItems(complete_schema_with_builtins(rest, &names));
+    }
     if let Some(partial_raw) = query_text.trim_start().strip_prefix("hide-field ") {
         let partial = partial_raw.trim_start();
         let index = tab.build_field_index();
@@ -214,7 +225,11 @@ impl<'a> CommandBar<'a> {
                 let custom_style = Style::default()
                     .fg(self.theme.text_highlight_fg)
                     .bg(root_bg);
-                let builtin_style = Style::default().fg(self.theme.cursor_fg).bg(root_bg);
+                // `cursor_fg` is only guaranteed readable when paired with
+                // `cursor_bg` (some themes set it equal to `root_bg`, meant to
+                // sit on a bright cursor highlight) — `inactive_tab_fg` stays
+                // legible against `root_bg` directly across every shipped theme.
+                let builtin_style = Style::default().fg(self.theme.inactive_tab_fg).bg(root_bg);
                 let names: Vec<String> = items.iter().map(|(n, _)| n.clone()).collect();
                 render_completion_hints_buf(&names, None, root_bg, area, buf, |i, name| {
                     let is_custom = items.get(i).map(|(_, c)| *c).unwrap_or(false);
@@ -452,6 +467,22 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
         terminal.draw(|f| f.render_widget(bar, f.area())).unwrap();
+    }
+
+    /// Regression guard: `atomic`, `jandedobbeleer`, `nord`, and `paradox`
+    /// set `cursor_fg` equal (or near-equal) to `root_bg`, since it's only
+    /// meant to be readable when paired with `cursor_bg`. Built-in schema
+    /// names in the `:schema`/`:default-filters` hint must use a color
+    /// that's actually distinct from `root_bg` on every shipped theme.
+    #[test]
+    fn test_schema_items_builtin_color_is_never_invisible_on_shipped_themes() {
+        for name in ["atomic", "jandedobbeleer", "nord", "paradox"] {
+            let theme = Theme::from_file(format!("{name}.json")).unwrap();
+            assert_ne!(
+                theme.inactive_tab_fg, theme.root_bg,
+                "{name}: built-in schema name would be invisible against root_bg"
+            );
+        }
     }
 
     #[test]
@@ -701,6 +732,50 @@ mod tests {
             }
             _ => panic!("expected SchemaItems"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_default_filters_first_arg_returns_schema_items() {
+        use crate::db::Database;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "default-filters sys", None);
+        match result {
+            CompletionSource::SchemaItems(items) => {
+                assert!(
+                    items
+                        .iter()
+                        .any(|(n, is_custom)| n == "syslog" && !is_custom),
+                    "{items:?}"
+                );
+            }
+            _ => panic!("expected SchemaItems"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_default_filters_second_arg_returns_file_items() {
+        use crate::db::Database;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(
+            &mut tab,
+            "default-filters syslog /nonexistent_dir_xyz/",
+            None,
+        );
+        assert!(matches!(result, CompletionSource::FileItems(_)));
     }
 
     #[tokio::test]

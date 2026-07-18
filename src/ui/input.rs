@@ -330,6 +330,18 @@ impl App {
         }
     }
 
+    async fn handle_set_default_filter_file(&mut self, format: String, path: Option<String>) {
+        match path {
+            Some(p) => {
+                self.default_filter_files.insert(format, p);
+            }
+            None => {
+                self.default_filter_files.remove(&format);
+            }
+        }
+        self.persist_default_filter_files().await;
+    }
+
     async fn handle_open_files(&mut self, paths: Vec<String>) {
         for path in paths {
             if let Err(e) = self.open_file(&path).await {
@@ -544,6 +556,9 @@ impl App {
             }
             KeyResult::ExpandArchiveNode { node_id } => {
                 self.begin_archive_node_expand(node_id).await;
+            }
+            KeyResult::SetDefaultFilterFile { format, path } => {
+                self.handle_set_default_filter_file(format, path).await;
             }
         }
     }

@@ -77,6 +77,14 @@ pub enum KeyResult {
     ExpandArchiveNode {
         node_id: NodeId,
     },
+    /// Set (or, when `path` is `None`, clear) one format's default filter
+    /// file mapping, emitted by the `:default-filters` popup. The popup
+    /// itself stays open (see `DefaultFiltersMode`) — this only persists the
+    /// change.
+    SetDefaultFilterFile {
+        format: String,
+        path: Option<String>,
+    },
 }
 
 /// Handle for a background search task spawned by [`TabState::begin_search`].

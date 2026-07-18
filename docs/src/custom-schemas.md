@@ -145,6 +145,8 @@ Custom schemas are evaluated before all built-in parsers. When a schema matches 
 
 Run `:schema` to show the current tab's active schema, or `:schema <name>` to force a specific custom schema for the current tab — start typing a name to see every custom and built-in schema in the autocomplete list.
 
+A default filter file can also be configured per schema — see [Default filter files per format](./log-formats.md#default-filter-files-per-format).
+
 ## Full example — Acme node log
 
 Log line:

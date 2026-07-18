@@ -293,6 +293,16 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Show the active schema, or switch this tab to a named custom or built-in schema. Autocomplete lists every available one.",
         examples: &["schema", "schema acme"],
     },
+    CommandInfo {
+        name: "default-filters",
+        usage: "default-filters [format] [path]",
+        description: "Configure a filter file to auto-load whenever a format is assigned to a tab with no filters yet. No args opens a popup listing every format; <format> alone clears its mapping. Never retroactively affects the tab you're currently on.",
+        examples: &[
+            "default-filters",
+            "default-filters acme ~/logs/filters/acme.json",
+            "default-filters acme",
+        ],
+    },
 ];
 
 /// Commands whose last argument is a file path and should receive path auto-completion.
@@ -345,6 +355,8 @@ mod tests {
             "save-filters",
             "load-filters",
             "reset",
+            "schema",
+            "default-filters",
         ] {
             assert!(names.contains(expected), "missing command: {expected}");
         }
@@ -383,6 +395,12 @@ mod tests {
     #[test]
     fn test_find_matching_command_unknown_returns_none() {
         assert!(find_matching_command("unknown-cmd").is_none());
+    }
+
+    #[test]
+    fn test_find_matching_command_default_filters() {
+        let cmd = find_matching_command("default-filters").unwrap();
+        assert_eq!(cmd.name, "default-filters");
     }
 
     #[test]

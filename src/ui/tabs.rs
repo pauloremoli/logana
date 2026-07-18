@@ -29,7 +29,7 @@ pub(crate) struct MergeSourceInputs {
 }
 
 impl App {
-    pub(crate) fn apply_tab_defaults(&self, tab: &mut TabState) {
+    pub(crate) async fn apply_tab_defaults(&self, tab: &mut TabState) {
         tab.interaction.keybindings = self.keybindings.clone();
         tab.display.show_mode_bar = self.display.show_mode_bar;
         tab.display.show_borders = self.display.show_borders_default;
@@ -37,6 +37,50 @@ impl App {
         tab.display.show_sidebar = self.display.show_sidebar;
         tab.display.wrap = self.display.wrap;
         tab.display.sidebar_side = self.display.sidebar_side;
+        self.apply_default_filters_if_empty(tab).await;
+    }
+
+    /// Whether `tab`'s current format has zero filters and a configured
+    /// default path — returns that path if so. Pure/sync: no I/O, so it's
+    /// trivially testable without spinning up a real filter file.
+    fn pending_default_filter_path(&self, tab: &TabState) -> Option<String> {
+        let format_name = tab.display.format.as_deref().map(|f| f.name())?;
+        if !tab.log_manager.get_filters().is_empty() {
+            return None;
+        }
+        self.default_filter_files.get(format_name).cloned()
+    }
+
+    /// Auto-loads `tab`'s format's default filter file when eligible (see
+    /// `pending_default_filter_path`). A load failure is surfaced as a tab
+    /// notification rather than swallowed, so a stale configured path
+    /// doesn't fail silently.
+    pub(crate) async fn apply_default_filters_if_empty(&self, tab: &mut TabState) {
+        let Some(path) = self.pending_default_filter_path(tab) else {
+            return;
+        };
+        let expanded = crate::commands::auto_complete::expand_tilde(&path);
+        if let Err(e) = tab.log_manager.load_filters(&expanded).await {
+            tab.set_notification(format!("default filter file '{path}': {e}"));
+        }
+    }
+
+    /// Index-taking wrapper around [`Self::apply_default_filters_if_empty`]
+    /// for call sites that hold `self.tabs[idx]` rather than a bare
+    /// `&mut TabState` (needed since `App` can't be borrowed both
+    /// immutably-for-lookup and mutably-for-the-tab at once across a method
+    /// call boundary).
+    pub(crate) async fn apply_default_filters_if_empty_at(&mut self, tab_idx: usize) {
+        let Some(tab) = self.tabs.get(tab_idx) else {
+            return;
+        };
+        let Some(path) = self.pending_default_filter_path(tab) else {
+            return;
+        };
+        let expanded = crate::commands::auto_complete::expand_tilde(&path);
+        if let Err(e) = self.tabs[tab_idx].log_manager.load_filters(&expanded).await {
+            self.tabs[tab_idx].set_notification(format!("default filter file '{path}': {e}"));
+        }
     }
 
     pub fn tab(&self) -> &TabState {
@@ -225,7 +269,7 @@ impl App {
             stopped: false,
             building: None,
         });
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
 
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -275,7 +319,7 @@ impl App {
             stopped: false,
             building: Some((0, sources_total)),
         });
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
         self.tabs.push(tab);
         let tab_idx = self.tabs.len() - 1;
         self.active_tab = tab_idx;

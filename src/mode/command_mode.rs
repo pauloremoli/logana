@@ -248,6 +248,27 @@ impl CommandMode {
                 .collect();
         }
 
+        // default-filters: first arg is a format name, second (once present)
+        // is a file path.
+        if let Some(rest) = Self::arg_partial(input, "default-filters") {
+            if let Some((format, path_partial)) = rest.split_once(' ') {
+                return crate::commands::auto_complete::complete_file_path(
+                    path_partial.trim_start(),
+                )
+                .into_iter()
+                .map(|c| format!("default-filters {format} {c}"))
+                .collect();
+            }
+            let names: Vec<String> = crate::config::custom_schemas()
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
+            return crate::commands::auto_complete::complete_schema_with_builtins(rest, &names)
+                .into_iter()
+                .map(|(n, _)| format!("default-filters {n}"))
+                .collect();
+        }
+
         // Theme completion
         if let Some(after_prefix) = trimmed.strip_prefix("set-theme") {
             let partial = after_prefix.trim_start();
@@ -1242,6 +1263,34 @@ mod tests {
         assert!(
             completions.contains(&"schema syslog".to_string()),
             "Expected 'schema syslog' (a builtin format) in completions, got: {completions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_filters_autocomplete_first_arg_includes_builtin_formats() {
+        let tab = make_json_tab().await;
+        let mode = CommandMode::with_history("default-filters sys".to_string(), 20, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"default-filters syslog".to_string()),
+            "Expected 'default-filters syslog', got: {completions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_filters_autocomplete_second_arg_completes_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.json"), "[]").unwrap();
+        let tab = make_json_tab().await;
+        let input = format!("default-filters syslog {}/", dir.path().display());
+        let cursor = input.len();
+        let mode = CommandMode::with_history(input, cursor, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions
+                .iter()
+                .any(|c| c.starts_with("default-filters syslog ") && c.ends_with("f.json")),
+            "expected a 'default-filters syslog <path>/f.json' completion, got: {completions:?}"
         );
     }
 

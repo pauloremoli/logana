@@ -6,14 +6,15 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- `a` keybinding (Normal mode and filter manager) to add an include filter with an automatically generated color pair.
+- `a` keybinding (Normal mode and filter manager) to add an include filter with an automatically generated filter style (bg/fg).
+- `:default-filters` configures a filter file to auto-load whenever a format is assigned to a tab with no filters yet, per format name.
 
 ### Changed
-- Command-mode help (typing `:filter`, `:highlight`, etc.) now shows usage, description, and examples as separate, distinctly styled lines instead of one long crammed paragraph.
-- `:schema `'s autocomplete now lists built-in log formats alongside custom schemas — custom schemas first (alphabetical), then built-in formats (alphabetical), each in a distinct color.
+- Command-mode help (typing `:filter`, `:highlight`, etc.) now shows usage, description, and examples as separate, distinctly styled lines.
+- `:schema `'s autocomplete now lists built-in log formats alongside custom schemas — custom schemas first (alphabetical), then built-in formats (alphabetical).
 
 ### Fixed
-- A schema with an invalid regex/template no longer leaks its error to stderr, corrupting the TUI — it now shows in the startup-warning banner, which also properly renders multi-line messages.
+- A schema with an invalid regex/template no longer leaks its error to stderr, corrupting the TUI — it now shows in the startup-warning notification.
 
 ## [0.7.4] - 2026-07-15
 

@@ -200,6 +200,15 @@ pub enum Commands {
         /// Schema name to activate. Omit to display the current schema name.
         name: Option<String>,
     },
+    /// Configure a filter file to auto-load for a format. Omit both to open
+    /// a popup listing every format; give only `format` to clear its mapping.
+    #[command(name = "default-filters")]
+    DefaultFilters {
+        /// Format name (custom schema or built-in). Omit to open the popup.
+        format: Option<String>,
+        /// Filter file path. Omit (with `format` given) to clear that format's mapping.
+        path: Option<String>,
+    },
     /// Set the filter sidebar position relative to the log panel (left or right)
     SidebarPosition { side: SidebarSide },
     /// Execute a command and stream its output to a new tab.

@@ -63,7 +63,7 @@ impl App {
             .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
         let log_manager = LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
         let mut tab = TabState::new(preview, log_manager, title);
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
 
         if let Ok(Some(ctx)) = self.db.load_file_context(&abs_path).await {
             match self.session.restore_file_policy {
@@ -99,7 +99,7 @@ impl App {
         let file_reader = FileReader::from_bytes(vec![]);
         let log_manager = LogManager::new(self.db.clone(), Some(source_label)).await;
         let mut tab = TabState::new(file_reader, log_manager, title);
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
         match connection {
             Ok(conn) => {
                 tab.stream.watch = Some(watch_state_from_connection(conn));
@@ -152,7 +152,7 @@ impl App {
             format!("run:{}", full_command)
         };
         let mut tab = TabState::new(file_reader, log_manager, short_title);
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
         tab.stream.no_retry = true;
 
         match FileReader::spawn_process_stream(&program, &arg_refs, true).await {
@@ -175,7 +175,7 @@ impl App {
         let title = format!("dlt:{}", name);
 
         let mut tab = TabState::new(file_reader, log_manager, title);
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
 
         match FileReader::spawn_dlt_tcp_stream(host.clone(), port).await {
             Ok(conn) => {
@@ -203,7 +203,7 @@ impl App {
         let title = source.to_string();
 
         let mut tab = TabState::new(file_reader, log_manager, title);
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
 
         tab.stream.retry = Some(StreamRetryState::new(
             dlt_connect_fn(host, port),
@@ -227,7 +227,7 @@ impl App {
         let title = source.to_string();
 
         let mut tab = TabState::new(file_reader, log_manager, title);
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
 
         tab.stream.retry = Some(StreamRetryState::new(
             docker_connect_fn(name.to_string()),
@@ -256,7 +256,7 @@ impl App {
         let title = format!("otlp:{port}");
 
         let mut tab = TabState::new(file_reader, log_manager, title);
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
 
         match crate::ingestion::spawn_otlp_http_receiver(port).await {
             Ok(conn) => {
@@ -283,7 +283,7 @@ impl App {
         let title = source.to_string();
 
         let mut tab = TabState::new(file_reader, log_manager, title);
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
 
         tab.stream.retry = Some(StreamRetryState::new(
             otlp_connect_fn(port),
@@ -304,7 +304,7 @@ impl App {
         let title = format!("otlp-grpc:{port}");
 
         let mut tab = TabState::new(file_reader, log_manager, title);
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
 
         match crate::ingestion::spawn_otlp_grpc_receiver(port).await {
             Ok(conn) => {
@@ -332,7 +332,7 @@ impl App {
         let title = source.to_string();
 
         let mut tab = TabState::new(file_reader, log_manager, title);
-        self.apply_tab_defaults(&mut tab);
+        self.apply_tab_defaults(&mut tab).await;
 
         tab.stream.retry = Some(StreamRetryState::new(
             otlp_grpc_connect_fn(port),
@@ -408,7 +408,7 @@ impl App {
                 .to_string();
             let log_manager = LogManager::new(self.db.clone(), Some(next.clone())).await;
             let mut tab = TabState::new(preview, log_manager, title);
-            self.apply_tab_defaults(&mut tab);
+            self.apply_tab_defaults(&mut tab).await;
             let abs_path = std::fs::canonicalize(&next)
                 .ok()
                 .and_then(|c| c.to_str().map(|s| s.to_string()))
@@ -482,6 +482,7 @@ impl App {
                 {
                     self.tabs[0].file_reader = preview;
                     self.tabs[0].detect_and_apply_format();
+                    self.apply_default_filters_if_empty_at(0).await;
                     if let Some(ref pred) = predicate {
                         let visible: Vec<usize> = (0..self.tabs[0].file_reader.line_count())
                             .filter(|&i| pred.is_visible(self.tabs[0].file_reader.get_line(i)))
@@ -701,7 +702,7 @@ impl App {
                         LogManager::new(self.db.clone(), Some(tmp_path.clone())).await;
                     let mut tab = TabState::new(preview, log_manager, file.name);
                     tab.archive_temp = Some(file.temp_file);
-                    self.apply_tab_defaults(&mut tab);
+                    self.apply_tab_defaults(&mut tab).await;
                     self.tabs.push(tab);
                     self.begin_file_load(
                         tmp_path,
@@ -930,6 +931,7 @@ impl App {
             }
             if self.tabs[idx].display.format.is_none() {
                 self.tabs[idx].detect_and_apply_format();
+                self.apply_default_filters_if_empty_at(idx).await;
             }
             if incremental {
                 self.tabs[idx].filter_new_lines(old_count);
@@ -946,7 +948,7 @@ impl App {
                 Ok(file_reader) if file_reader.line_count() > 0 => {
                     let log_manager = LogManager::new(self.db.clone(), None).await;
                     let mut tab = TabState::new(file_reader, log_manager, "stdin".to_string());
-                    self.apply_tab_defaults(&mut tab);
+                    self.apply_tab_defaults(&mut tab).await;
                     tab.scroll.scroll_offset = tab.filter.visible_indices.len().saturating_sub(1);
                     self.tabs.push(tab);
                 }
@@ -1007,6 +1009,7 @@ impl App {
                 self.tabs[0].filter.visible_indices =
                     VisibleLines::All(self.tabs[0].file_reader.line_count());
                 self.tabs[0].detect_and_apply_format();
+                self.apply_default_filters_if_empty_at(0).await;
                 let had_precomputed = result.precomputed_visible.is_some();
                 if let Some(visible) = result.precomputed_visible {
                     self.tabs[0].filter.visible_indices = VisibleLines::Filtered(visible);
@@ -1063,6 +1066,7 @@ impl App {
                 }
                 self.tabs[tab_idx].file_reader = result.reader;
                 self.tabs[tab_idx].detect_and_apply_format();
+                self.apply_default_filters_if_empty_at(tab_idx).await;
                 self.tabs[tab_idx].begin_filter_refresh();
                 let rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
                 self.tabs[tab_idx].stream.watch = Some(watch_state_from_file(rx, path));
@@ -1088,6 +1092,7 @@ impl App {
                 self.tabs[tab_idx].filter.visible_indices =
                     VisibleLines::All(self.tabs[tab_idx].file_reader.line_count());
                 self.tabs[tab_idx].detect_and_apply_format();
+                self.apply_default_filters_if_empty_at(tab_idx).await;
                 if let Ok(Some(ctx)) = self.db.load_file_context(&path).await {
                     self.tabs[tab_idx].apply_file_context(&ctx);
                 }
@@ -1105,7 +1110,7 @@ impl App {
     ///
     /// If the user's scroll position is at the last visible line (follow mode),
     /// it is advanced to stay at the new last line after content is appended.
-    pub(crate) fn advance_file_watches(&mut self) {
+    pub(crate) async fn advance_file_watches(&mut self) {
         for i in 0..self.tabs.len() {
             let status = self.tabs[i]
                 .stream
@@ -1149,6 +1154,7 @@ impl App {
                         && self.tabs[i].file_reader.line_count() > 0
                     {
                         self.tabs[i].detect_and_apply_format();
+                        self.apply_default_filters_if_empty_at(i).await;
                     }
                     if incremental {
                         self.tabs[i].filter_new_lines(old_line_count);
@@ -1760,7 +1766,7 @@ mod tests {
         let mut app = make_app(&["line1", "line2"]).await;
         assert!(app.tabs[0].stream.watch.is_none());
         // Should not panic.
-        app.advance_file_watches();
+        app.advance_file_watches().await;
     }
 
     #[tokio::test]
@@ -1773,7 +1779,7 @@ mod tests {
         app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         assert!(app.tabs[0].file_reader.line_count() > original_count);
     }
@@ -1795,7 +1801,7 @@ mod tests {
         app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         let last = app.tabs[0].filter.visible_indices.len().saturating_sub(1);
         assert_eq!(
@@ -1817,7 +1823,7 @@ mod tests {
         let (tx, state) = make_watch_state(b"line1\nline2\nline3\n");
         app.tabs[0].stream.watch = Some(state);
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
         app.tabs[0].scroll.scroll_offset = 1; // user moves to middle
 
         // Second delivery: 3 more lines.
@@ -1826,7 +1832,7 @@ mod tests {
             b"line4\nline5\nline6\n",
         );
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         assert_eq!(
             app.tabs[0].scroll.scroll_offset, 1,
@@ -1847,7 +1853,7 @@ mod tests {
         for batch in &[b"a\nb\nc\n".as_ref(), b"d\ne\n".as_ref(), b"f\n".as_ref()] {
             append_to_watch_file(app.tabs[0].stream.watch.as_ref().unwrap(), batch);
             tx.send(()).unwrap();
-            app.advance_file_watches();
+            app.advance_file_watches().await;
             let last = app.tabs[0].filter.visible_indices.len().saturating_sub(1);
             assert_eq!(
                 app.tabs[0].scroll.scroll_offset, last,
@@ -1889,7 +1895,7 @@ mod tests {
         f.flush().unwrap();
 
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         let last = app.tabs[tab_idx]
             .filter
@@ -1932,7 +1938,7 @@ mod tests {
         // First batch with tail off — scroll stays.
         append_to_watch_file(app.tabs[0].stream.watch.as_ref().unwrap(), b"l4\nl5\n");
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
         assert_eq!(
             app.tabs[0].scroll.scroll_offset, 0,
             "tail off: should not scroll"
@@ -1944,7 +1950,7 @@ mod tests {
         // Second batch — now scroll should follow.
         append_to_watch_file(app.tabs[0].stream.watch.as_ref().unwrap(), b"l6\nl7\n");
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
         let last = app.tabs[0].filter.visible_indices.len().saturating_sub(1);
         assert_eq!(
             app.tabs[0].scroll.scroll_offset, last,
@@ -1962,7 +1968,7 @@ mod tests {
         app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         // Paused: no new lines should have been appended.
         assert_eq!(app.tabs[0].filter.visible_indices.len(), initial_count);
@@ -1977,7 +1983,7 @@ mod tests {
         app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         // Not paused: new line should have been appended.
         assert!(app.tabs[0].file_reader.line_count() > 0);
@@ -2005,7 +2011,7 @@ mod tests {
         app.tabs[0].stream.watch = Some(state);
 
         drop(tx);
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         assert!(app.tabs[0].stream.watch.is_none());
     }
@@ -2020,7 +2026,7 @@ mod tests {
         app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         assert!(app.tabs[0].display.format.is_some());
     }
@@ -2302,6 +2308,49 @@ mod tests {
             app.tabs[1].load_state.is_some(),
             "background load should be in progress"
         );
+    }
+
+    #[tokio::test]
+    async fn test_open_file_auto_applies_default_filters_on_detected_format() {
+        let mut app = make_app(&["existing"]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let filters_path = dir.path().join("f.json");
+        std::fs::write(
+            &filters_path,
+            r#"[{"id":1,"pattern":"error","filter_type":"Include","enabled":true,"color_config":null,"use_regex":false,"ignore_case":false,"group":null}]"#,
+        )
+        .unwrap();
+        app.default_filter_files.insert(
+            "syslog".to_string(),
+            filters_path.to_str().unwrap().to_string(),
+        );
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            b"<34>Oct 11 22:14:15 mymachine su: 'su root' failed\n",
+        )
+        .unwrap();
+        app.open_file(tmp.path().to_str().unwrap()).await.unwrap();
+        assert_eq!(
+            app.tabs[1].display.format.as_deref().map(|f| f.name()),
+            Some("syslog")
+        );
+        assert_eq!(app.tabs[1].log_manager.get_filters().len(), 1);
+        assert_eq!(app.tabs[1].log_manager.get_filters()[0].pattern, "error");
+    }
+
+    #[tokio::test]
+    async fn test_open_file_does_not_apply_when_format_undetected() {
+        let mut app = make_app(&["existing"]).await;
+        app.default_filter_files.insert(
+            "syslog".to_string(),
+            "/nonexistent-should-not-be-touched.json".to_string(),
+        );
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"just some random unstructured text\n").unwrap();
+        let result = app.open_file(tmp.path().to_str().unwrap()).await;
+        assert!(result.is_ok());
+        assert!(app.tabs[1].log_manager.get_filters().is_empty());
     }
 
     #[tokio::test]
@@ -2755,7 +2804,7 @@ mod tests {
         app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         assert_eq!(app.tabs[0].next_error_position(0), Some(1));
         assert_eq!(app.tabs[0].next_warning_position(0), Some(2));
@@ -3107,7 +3156,7 @@ mod tests {
         app.tabs.push(tab);
         let tab_idx = app.tabs.len() - 1;
 
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         assert!(app.tabs[tab_idx].stream.watch.is_none());
         assert!(app.tabs[tab_idx].stream.retry.is_some());
@@ -3131,7 +3180,7 @@ mod tests {
         app.tabs.push(tab);
         let tab_idx = app.tabs.len() - 1;
 
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         assert!(app.tabs[tab_idx].stream.watch.is_none());
         assert!(app.tabs[tab_idx].stream.retry.is_some());
@@ -3165,7 +3214,7 @@ mod tests {
         app.tabs.push(tab);
         let tab_idx = app.tabs.len() - 1;
 
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         let retry = app.tabs[tab_idx].stream.retry.as_ref().unwrap();
         assert!(!retry.connected, "should be back in retry mode");
@@ -3431,7 +3480,7 @@ mod tests {
         app.tabs[0].stream.watch = Some(state);
 
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         let tab = &app.tabs[0];
         assert!(
@@ -3717,7 +3766,7 @@ mod tests {
         client.export(request).await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         let tab = &app.tabs[0];
         assert!(
@@ -4769,7 +4818,7 @@ mod tests {
         let (tx, state) = make_watch_state(new_data);
         app.tabs[0].stream.watch = Some(state);
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         app.advance_merged_tabs();
 
@@ -4794,7 +4843,7 @@ mod tests {
         let (tx, state) = make_watch_state(new_data);
         app.tabs[0].stream.watch = Some(state);
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         app.advance_merged_tabs();
 
@@ -4834,7 +4883,7 @@ mod tests {
         let (tx, state) = make_watch_state(new_data);
         app.tabs[0].stream.watch = Some(state);
         tx.send(()).unwrap();
-        app.advance_file_watches();
+        app.advance_file_watches().await;
 
         app.advance_merged_tabs();
 

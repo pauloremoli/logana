@@ -171,6 +171,9 @@ impl App {
             Some(Commands::DisableMcp) => self.cmd_disable_mcp(),
             Some(Commands::Run { command }) => return self.cmd_run(command).await,
             Some(Commands::Schema { name }) => return self.cmd_schema(name).await,
+            Some(Commands::DefaultFilters { format, path }) => {
+                return self.cmd_default_filters(format, path).await;
+            }
             None => {}
         }
         Ok(false)
@@ -1887,5 +1890,38 @@ mod tests {
         let result = app.run_command("otel --http").await.unwrap();
         assert!(result);
         assert_eq!(app.tabs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_run_command_default_filters_bare_opens_popup() {
+        use crate::mode::app_mode::ModeRenderState;
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("default-filters").await;
+        assert_eq!(result, Ok(true));
+        assert!(matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            ModeRenderState::DefaultFilters { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_run_command_default_filters_format_and_path() {
+        let mut app = make_app(&["line"]).await;
+        let result = app.run_command("default-filters syslog /tmp/f.json").await;
+        assert_eq!(result, Ok(false));
+        assert_eq!(
+            app.default_filter_files.get("syslog"),
+            Some(&"/tmp/f.json".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_command_default_filters_format_only_clears() {
+        let mut app = make_app(&["line"]).await;
+        app.default_filter_files
+            .insert("syslog".to_string(), "/tmp/f.json".to_string());
+        let result = app.run_command("default-filters syslog").await;
+        assert_eq!(result, Ok(false));
+        assert!(!app.default_filter_files.contains_key("syslog"));
     }
 }

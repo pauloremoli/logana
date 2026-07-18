@@ -112,6 +112,13 @@ pub enum ModeRenderState {
         cursor_row: usize,
         cursor_col: usize,
     },
+    DefaultFilters {
+        rows: Vec<crate::mode::default_filters_mode::DefaultFilterRow>,
+        search: String,
+        selected: usize,
+        /// `Some` while the selected row's path is being edited.
+        editing: Option<crate::mode::default_filters_mode::PathEditState>,
+    },
 }
 
 impl ModeRenderState {
@@ -141,6 +148,7 @@ impl ModeRenderState {
             ModeRenderState::MergeSelect { .. } => "MERGE",
             ModeRenderState::ArchivePicker { .. } => "ARCHIVE",
             ModeRenderState::ExportFooter { .. } => "EXPORT",
+            ModeRenderState::DefaultFilters { .. } => "DEFAULT FILTERS",
         }
     }
 }
@@ -817,6 +825,16 @@ mod tests {
             }
             .mode_name(),
             "EXPORT"
+        );
+        assert_eq!(
+            ModeRenderState::DefaultFilters {
+                rows: vec![],
+                search: String::new(),
+                selected: 0,
+                editing: None,
+            }
+            .mode_name(),
+            "DEFAULT FILTERS"
         );
     }
 }

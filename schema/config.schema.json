@@ -325,6 +325,17 @@
       ],
       "format": "uint16",
       "minimum": 0.0
+    },
+    "default_filter_files": {
+      "description": "Filter file to auto-load when a tab's format (built-in or custom schema name) is assigned and it has no filters yet. Entries here take priority per-key over the DB-persisted map that `:default-filters`/its popup write to.",
+      "default": null,
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      }
     }
   },
   "additionalProperties": false,

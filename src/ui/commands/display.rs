@@ -212,12 +212,82 @@ impl App {
                         .map(std::sync::Arc::from)
                         .ok_or_else(|| format!("no schema named '{schema_name}'"))?,
                 };
-                let tab = &mut self.tabs[self.active_tab];
-                tab.display.format = Some(parser);
-                tab.invalidate_parse_cache();
+                let tab_idx = self.active_tab;
+                self.tabs[tab_idx].display.format = Some(parser);
+                self.tabs[tab_idx].invalidate_parse_cache();
+                self.apply_default_filters_if_empty_at(tab_idx).await;
             }
         }
         Ok(false)
+    }
+
+    /// Persists the current `default_filter_files` map, shared by
+    /// `cmd_default_filters` (the direct `:default-filters <format> <path>`
+    /// form) and the `KeyResult::SetDefaultFilterFile` handler (the popup),
+    /// so the SQLite-write line isn't duplicated between the two entry
+    /// points that mutate the map.
+    pub(crate) async fn persist_default_filter_files(&mut self) {
+        let json = serde_json::to_string(&self.default_filter_files).unwrap_or_default();
+        let _ = self
+            .db
+            .save_app_setting(SettingsKey::DefaultFilterFiles, &json)
+            .await;
+    }
+
+    /// `:default-filters` — no args opens a popup listing every format's
+    /// mapping; `<format> <path>` sets one directly; `<format>` alone clears
+    /// it. The direct form never touches the currently open tab's filters,
+    /// even if its format matches — only tabs whose format is assigned
+    /// afterward pick up the change (see `apply_default_filters_if_empty`).
+    pub(super) async fn cmd_default_filters(
+        &mut self,
+        format: Option<String>,
+        path: Option<String>,
+    ) -> Result<bool, String> {
+        match format {
+            None => {
+                let custom_names: Vec<String> = crate::config::custom_schemas()
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect();
+                self.tabs[self.active_tab].interaction.mode =
+                    Box::new(crate::mode::default_filters_mode::DefaultFiltersMode::new(
+                        &custom_names,
+                        &self.default_filter_files,
+                    ));
+                Ok(true)
+            }
+            Some(format_name) => {
+                self.validate_format_name(&format_name)?;
+                match &path {
+                    Some(p) => {
+                        self.default_filter_files.insert(format_name, p.clone());
+                    }
+                    None => {
+                        self.default_filter_files.remove(&format_name);
+                    }
+                }
+                self.persist_default_filter_files().await;
+                Ok(false)
+            }
+        }
+    }
+
+    /// Errors unless `format_name` names a custom schema or a built-in
+    /// format — the same name space `:schema` validates against, so
+    /// `:default-filters <typo>` fails the same way `:schema <typo>` does.
+    fn validate_format_name(&self, format_name: &str) -> Result<(), String> {
+        let is_custom = crate::config::custom_schemas()
+            .iter()
+            .any(|s| s.name == format_name);
+        let is_builtin = crate::parser::builtin_format_names()
+            .iter()
+            .any(|n| n == format_name);
+        if is_custom || is_builtin {
+            Ok(())
+        } else {
+            Err(format!("no schema named '{format_name}'"))
+        }
     }
 }
 
@@ -265,5 +335,164 @@ mod tests {
             tab.display.format.as_deref().map(|f| f.name()),
             Some("syslog")
         );
+    }
+
+    #[tokio::test]
+    async fn test_cmd_schema_switch_applies_default_filters_when_empty() {
+        let mut app = make_app().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.json");
+        std::fs::write(
+            &path,
+            r#"[{"id":1,"pattern":"error","filter_type":"Include","enabled":true,"color_config":null,"use_regex":false,"ignore_case":false,"group":null}]"#,
+        )
+        .unwrap();
+        app.default_filter_files
+            .insert("syslog".to_string(), path.to_str().unwrap().to_string());
+        app.cmd_schema(Some("syslog".to_string())).await.unwrap();
+        let tab = &app.tabs[app.active_tab];
+        assert_eq!(tab.log_manager.get_filters().len(), 1);
+        assert_eq!(tab.log_manager.get_filters()[0].pattern, "error");
+    }
+
+    #[tokio::test]
+    async fn test_cmd_schema_switch_does_not_apply_when_tab_has_filters() {
+        use crate::filters::FilterType;
+        let mut app = make_app().await;
+        app.default_filter_files
+            .insert("syslog".to_string(), "/nonexistent.json".to_string());
+        app.tabs[app.active_tab]
+            .log_manager
+            .add_filter_with_color(
+                "existing".to_string(),
+                FilterType::Include,
+                Default::default(),
+            )
+            .await;
+        app.cmd_schema(Some("syslog".to_string())).await.unwrap();
+        let tab = &app.tabs[app.active_tab];
+        assert_eq!(tab.log_manager.get_filters().len(), 1);
+        assert_eq!(tab.log_manager.get_filters()[0].pattern, "existing");
+    }
+
+    #[tokio::test]
+    async fn test_cmd_schema_switch_no_mapping_is_noop() {
+        let mut app = make_app().await;
+        app.cmd_schema(Some("syslog".to_string())).await.unwrap();
+        let tab = &app.tabs[app.active_tab];
+        assert!(tab.log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cmd_schema_unknown_name_still_errors_before_any_apply() {
+        let mut app = make_app().await;
+        app.default_filter_files
+            .insert("acme".to_string(), "/nonexistent.json".to_string());
+        let result = app.cmd_schema(Some("acme".to_string())).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("acme"));
+        assert!(
+            app.tabs[app.active_tab]
+                .log_manager
+                .get_filters()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cmd_default_filters_bare_opens_popup() {
+        use crate::mode::app_mode::ModeRenderState;
+        let mut app = make_app().await;
+        let result = app.cmd_default_filters(None, None).await;
+        assert_eq!(result, Ok(true));
+        assert!(matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            ModeRenderState::DefaultFilters { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_cmd_default_filters_set_direct_form() {
+        let mut app = make_app().await;
+        let result = app
+            .cmd_default_filters(Some("syslog".to_string()), Some("/tmp/f.json".to_string()))
+            .await;
+        assert_eq!(result, Ok(false));
+        assert_eq!(
+            app.default_filter_files.get("syslog"),
+            Some(&"/tmp/f.json".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cmd_default_filters_clear_direct_form() {
+        let mut app = make_app().await;
+        app.default_filter_files
+            .insert("syslog".to_string(), "/tmp/f.json".to_string());
+        let result = app
+            .cmd_default_filters(Some("syslog".to_string()), None)
+            .await;
+        assert_eq!(result, Ok(false));
+        assert!(!app.default_filter_files.contains_key("syslog"));
+    }
+
+    #[tokio::test]
+    async fn test_cmd_default_filters_unknown_format_errors() {
+        let mut app = make_app().await;
+        let result = app
+            .cmd_default_filters(
+                Some("not-a-real-format".to_string()),
+                Some("/tmp/f.json".to_string()),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not-a-real-format"));
+        assert!(app.default_filter_files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cmd_default_filters_set_persists_to_sqlite() {
+        let mut app = make_app().await;
+        app.cmd_default_filters(Some("syslog".to_string()), Some("/tmp/f.json".to_string()))
+            .await
+            .unwrap();
+        let saved = app
+            .db
+            .load_app_setting(SettingsKey::DefaultFilterFiles)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(saved.contains("syslog"));
+        assert!(saved.contains("/tmp/f.json"));
+    }
+
+    #[tokio::test]
+    async fn test_cmd_default_filters_direct_form_no_retroactive_effect() {
+        let mut app = make_app().await;
+        app.tabs[app.active_tab].display.format =
+            crate::parser::find_builtin_parser("syslog").map(std::sync::Arc::from);
+        app.cmd_default_filters(Some("syslog".to_string()), Some("/tmp/f.json".to_string()))
+            .await
+            .unwrap();
+        assert!(
+            app.tabs[app.active_tab]
+                .log_manager
+                .get_filters()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cmd_default_filters_custom_schema_direct_form_accepted() {
+        // Custom schemas are read from a process-global OnceLock that's never
+        // set in tests, so this exercises only the built-in-name branch of
+        // validate_format_name — the custom-schema branch is covered by
+        // `schema_completion_names`/`complete_schema_with_builtins`'s own
+        // tests in auto_complete.rs.
+        let mut app = make_app().await;
+        let result = app
+            .cmd_default_filters(Some("json".to_string()), Some("/tmp/f.json".to_string()))
+            .await;
+        assert_eq!(result, Ok(false));
     }
 }

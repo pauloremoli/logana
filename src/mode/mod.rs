@@ -2,6 +2,7 @@ pub mod app_mode;
 pub mod archive_picker_mode;
 pub mod command_mode;
 pub mod comment_mode;
+pub mod default_filters_mode;
 pub mod dlt_select_mode;
 pub mod docker_select_mode;
 pub mod export_footer_mode;

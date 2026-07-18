@@ -95,6 +95,7 @@ pub enum SettingsKey {
     ShowLineNumbers,
     ShowSidebar,
     SidebarLeft,
+    DefaultFilterFiles,
 }
 
 impl SettingsKey {
@@ -109,6 +110,7 @@ impl SettingsKey {
             Self::ShowLineNumbers => "show_line_numbers",
             Self::ShowSidebar => "show_sidebar",
             Self::SidebarLeft => "sidebar_left",
+            Self::DefaultFilterFiles => "default_filter_files",
         }
     }
 }
@@ -1907,6 +1909,37 @@ mod tests {
             value.as_deref(),
             Some(RestoreSessionPolicy::Never.to_string().as_str())
         );
+    }
+
+    #[test]
+    fn test_default_filter_files_as_str() {
+        assert_eq!(
+            SettingsKey::DefaultFilterFiles.as_str(),
+            "default_filter_files"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_filter_files_save_and_load() {
+        let db = setup_db().await;
+        db.save_app_setting(SettingsKey::DefaultFilterFiles, r#"{"acme":"a.json"}"#)
+            .await
+            .unwrap();
+        let value = db
+            .load_app_setting(SettingsKey::DefaultFilterFiles)
+            .await
+            .unwrap();
+        assert_eq!(value.as_deref(), Some(r#"{"acme":"a.json"}"#));
+    }
+
+    #[tokio::test]
+    async fn test_default_filter_files_load_returns_none_when_unset() {
+        let db = setup_db().await;
+        let value = db
+            .load_app_setting(SettingsKey::DefaultFilterFiles)
+            .await
+            .unwrap();
+        assert!(value.is_none());
     }
 
     #[tokio::test]
