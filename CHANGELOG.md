@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-07-18
+
 ### Added
 - `a` keybinding (Normal mode and filter manager) to add an include filter with an automatically generated filter style (bg/fg).
 - `:default-filters` configures a filter file to auto-load whenever a format is assigned to a tab with no filters yet, per format name.
