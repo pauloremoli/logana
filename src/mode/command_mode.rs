@@ -236,15 +236,15 @@ impl CommandMode {
                 .collect();
         }
 
-        // schema: complete with known custom schema names
+        // schema: complete with known custom schema names and built-in formats
         if let Some(partial) = Self::arg_partial(input, "schema") {
             let names: Vec<String> = crate::config::custom_schemas()
                 .iter()
                 .map(|s| s.name.clone())
                 .collect();
-            return crate::commands::auto_complete::complete_schema(partial, &names)
+            return crate::commands::auto_complete::complete_schema_with_builtins(partial, &names)
                 .into_iter()
-                .map(|n| format!("schema {n}"))
+                .map(|(n, _)| format!("schema {n}"))
                 .collect();
         }
 
@@ -1232,6 +1232,17 @@ mod tests {
         let completions = mode.compute_completions(&tab);
         assert!(completions.contains(&"sidebar-position left".to_string()));
         assert!(completions.contains(&"sidebar-position right".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_schema_autocomplete_includes_builtin_formats() {
+        let tab = make_json_tab().await;
+        let mode = CommandMode::with_history("schema sys".to_string(), 10, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"schema syslog".to_string()),
+            "Expected 'schema syslog' (a builtin format) in completions, got: {completions:?}"
+        );
     }
 
     #[test]

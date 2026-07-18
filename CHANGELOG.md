@@ -10,6 +10,7 @@ All notable changes to logana will be documented in this file.
 
 ### Changed
 - Command-mode help (typing `:filter`, `:highlight`, etc.) now shows usage, description, and examples as separate, distinctly styled lines instead of one long crammed paragraph.
+- `:schema `'s autocomplete now lists built-in log formats alongside custom schemas — custom schemas first (alphabetical), then built-in formats (alphabetical), each in a distinct color.
 
 ### Fixed
 - A schema with an invalid regex/template no longer leaks its error to stderr, corrupting the TUI — it now shows in the startup-warning banner, which also properly renders multi-line messages.

@@ -1038,6 +1038,11 @@ impl App {
                 .map(|c| file_display_name(c))
                 .collect::<Vec<_>>()
                 .join("  "),
+            CompletionSource::SchemaItems(items) => items
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join("  "),
             CompletionSource::CommandHelp(cmd) => {
                 // Structured (usage / description / examples), not a single
                 // wrapped paragraph — size by summing each section's own

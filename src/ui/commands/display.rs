@@ -199,19 +199,71 @@ impl App {
                 return Err(format!("active schema: {schema_name}"));
             }
             Some(schema_name) => {
-                let schema = crate::config::custom_schemas()
+                let custom = crate::config::custom_schemas()
                     .iter()
                     .find(|s| s.name == schema_name)
                     .cloned();
-                let cfg =
-                    schema.ok_or_else(|| format!("no custom schema named '{schema_name}'"))?;
-                let parser = crate::parser::CustomParser::from_config(&cfg)
-                    .map_err(|e| format!("invalid schema '{schema_name}': {e}"))?;
+                let parser: std::sync::Arc<dyn crate::parser::LogFormatParser> = match custom {
+                    Some(cfg) => std::sync::Arc::new(
+                        crate::parser::CustomParser::from_config(&cfg)
+                            .map_err(|e| format!("invalid schema '{schema_name}': {e}"))?,
+                    ),
+                    None => crate::parser::find_builtin_parser(&schema_name)
+                        .map(std::sync::Arc::from)
+                        .ok_or_else(|| format!("no schema named '{schema_name}'"))?,
+                };
                 let tab = &mut self.tabs[self.active_tab];
-                tab.display.format = Some(std::sync::Arc::new(parser));
+                tab.display.format = Some(parser);
                 tab.invalidate_parse_cache();
             }
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Keybindings;
+    use crate::db::Database;
+    use crate::db::LogManager;
+    use crate::ingestion::FileReader;
+    use crate::theme::Theme;
+    use std::sync::Arc;
+
+    async fn make_app() -> App {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line\n".to_vec());
+        let lm = LogManager::new(db, None).await;
+        App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_cmd_schema_no_arg_shows_active_schema_name() {
+        let mut app = make_app().await;
+        let result = app.cmd_schema(None).await;
+        assert_eq!(result, Err("active schema: none".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_cmd_schema_unknown_name_returns_error() {
+        let mut app = make_app().await;
+        let result = app.cmd_schema(Some("nonexistent".to_string())).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn test_cmd_schema_builtin_name_switches_format() {
+        let mut app = make_app().await;
+        let result = app.cmd_schema(Some("syslog".to_string())).await;
+        assert_eq!(result, Ok(false));
+        let tab = &app.tabs[app.active_tab];
+        assert_eq!(
+            tab.display.format.as_deref().map(|f| f.name()),
+            Some("syslog")
+        );
     }
 }

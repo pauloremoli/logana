@@ -290,7 +290,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "schema",
         usage: "schema [name]",
-        description: "Show the active parser schema for this tab, or switch to a named schema.",
+        description: "Show the active schema, or switch this tab to a named custom or built-in schema. Autocomplete lists every available one.",
         examples: &["schema", "schema acme"],
     },
 ];

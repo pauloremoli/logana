@@ -5,7 +5,7 @@ use ratatui::{
 
 use crate::commands::auto_complete::{
     FieldCompletion, complete_color, complete_field_name, complete_field_value, complete_file_path,
-    complete_flags, complete_schema, extract_color_partial, extract_field_partial,
+    complete_flags, complete_schema_with_builtins, extract_color_partial, extract_field_partial,
     extract_flag_partial, extract_group_partial, find_command_completions, fuzzy_match,
     shell_split,
 };
@@ -19,6 +19,9 @@ pub enum CompletionSource {
     Items(Vec<String>),
     ColorItems(Vec<String>),
     FileItems(Vec<String>),
+    /// Schema names for `:schema <name>` completion: `true` marks a custom
+    /// schema (rendered distinctly from built-in formats).
+    SchemaItems(Vec<(String, bool)>),
     CommandHelp(&'static crate::commands::CommandInfo),
 }
 
@@ -86,7 +89,7 @@ pub fn resolve_completions(
             .iter()
             .map(|s| s.name.clone())
             .collect();
-        return CompletionSource::Items(complete_schema(partial, &names));
+        return CompletionSource::SchemaItems(complete_schema_with_builtins(partial, &names));
     }
     if let Some(partial_raw) = query_text.trim_start().strip_prefix("hide-field ") {
         let partial = partial_raw.trim_start();
@@ -205,6 +208,22 @@ impl<'a> CommandBar<'a> {
             CompletionSource::FileItems(items) => {
                 render_completion_hints_buf(items, None, root_bg, area, buf, |_i, path| {
                     (file_display_name(path), normal_style, highlight_style)
+                });
+            }
+            CompletionSource::SchemaItems(items) => {
+                let custom_style = Style::default()
+                    .fg(self.theme.text_highlight_fg)
+                    .bg(root_bg);
+                let builtin_style = Style::default().fg(self.theme.cursor_fg).bg(root_bg);
+                let names: Vec<String> = items.iter().map(|(n, _)| n.clone()).collect();
+                render_completion_hints_buf(&names, None, root_bg, area, buf, |i, name| {
+                    let is_custom = items.get(i).map(|(_, c)| *c).unwrap_or(false);
+                    let style = if is_custom {
+                        custom_style
+                    } else {
+                        builtin_style
+                    };
+                    (name.to_string(), style, highlight_style)
                 });
             }
             CompletionSource::CommandHelp(cmd) => {
@@ -413,6 +432,22 @@ mod tests {
             input_text: "filter --fg ",
             cursor_pos: 12,
             completion: CompletionSource::ColorItems(vec!["red".to_string(), "blue".to_string()]),
+            theme: &theme,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
+        terminal.draw(|f| f.render_widget(bar, f.area())).unwrap();
+    }
+
+    #[test]
+    fn test_command_bar_renders_schema_items() {
+        let theme = Theme::default();
+        let bar = CommandBar {
+            input_text: "schema ",
+            cursor_pos: 7,
+            completion: CompletionSource::SchemaItems(vec![
+                ("acme".to_string(), true),
+                ("syslog".to_string(), false),
+            ]),
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
@@ -640,6 +675,31 @@ mod tests {
                 assert!(items.contains(&"errors".to_string()), "{items:?}");
             }
             _ => panic!("expected Items"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_schema() {
+        use crate::db::Database;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let lm = LogManager::new(db, None).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "schema sys", None);
+        match result {
+            CompletionSource::SchemaItems(items) => {
+                assert!(
+                    items
+                        .iter()
+                        .any(|(n, is_custom)| n == "syslog" && !is_custom),
+                    "{items:?}"
+                );
+            }
+            _ => panic!("expected SchemaItems"),
         }
     }
 

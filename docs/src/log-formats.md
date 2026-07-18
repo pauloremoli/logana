@@ -21,7 +21,7 @@ All registered parsers score a confidence value against the first 200 lines of t
 
 User-defined schemas (see [Custom Schemas](#custom-schemas) below) are always evaluated first, before any built-in parser.
 
-The detected format name is shown in the status bar. Run `:schema` to display the active schema name, or `:schema <name>` to force a specific schema for the current tab.
+The detected format name is shown in the status bar. Run `:schema` to show the active one, or `:schema <name>` to force a specific format for the current tab — typing `:schema ` shows every custom and built-in schema in the autocomplete list (custom ones first, alphabetically, each in its own color).
 
 ## Format Details
 
@@ -204,7 +204,7 @@ Three fields unlock core logana features. Map them correctly if your format cont
 ### Forcing a schema
 
 ```
-:schema             — show the active parser name
+:schema             — show the active schema
 :schema acme     — force the acme schema for this tab
 ```
 

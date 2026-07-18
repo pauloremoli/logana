@@ -32,6 +32,41 @@ pub use types::{
 };
 pub use types::{push_extra_field, push_field_as};
 
+/// Every built-in (non-custom) parser, freshly constructed. Shared by
+/// `detect_format` (which scores each one against a sample) and
+/// `builtin_format_names` (which only wants their names, for `:schema`'s
+/// listing) so the two can't drift apart — a parser added here is
+/// automatically both detectable and listed.
+fn builtin_parsers() -> Vec<Box<dyn LogFormatParser>> {
+    let mut parsers: Vec<Box<dyn LogFormatParser>> =
+        vec![Box::new(OtlpParser), Box::new(DltParser)];
+    parsers.extend(JsonParser::all_variants());
+    parsers.extend([
+        Box::new(SyslogParser::default()) as Box<dyn LogFormatParser>,
+        Box::new(JournalctlParser::default()),
+        Box::new(ClfParser),
+        Box::new(LogfmtParser::default()),
+        // CommonLogParser last — broadest catch-all with 0.95× score penalty
+        Box::new(CommonLogParser::default()),
+    ]);
+    parsers
+}
+
+/// Names of every built-in log format — used by `:schema` to list what's
+/// available beyond a tab's custom schemas.
+pub fn builtin_format_names() -> Vec<String> {
+    builtin_parsers()
+        .iter()
+        .map(|p| p.name().to_string())
+        .collect()
+}
+
+/// Looks up a built-in parser by its `name()`, for `:schema <name>` to force
+/// a built-in format (not just a custom schema) onto a tab.
+pub fn find_builtin_parser(name: &str) -> Option<Box<dyn LogFormatParser>> {
+    builtin_parsers().into_iter().find(|p| p.name() == name)
+}
+
 pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
     if sample.is_empty() {
         return None;
@@ -49,17 +84,7 @@ pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
                 .map(|p| Box::new(p) as Box<dyn LogFormatParser>)
         })
         .collect();
-    parsers.push(Box::new(OtlpParser));
-    parsers.push(Box::new(DltParser));
-    parsers.extend(JsonParser::all_variants());
-    parsers.extend([
-        Box::new(SyslogParser::default()) as Box<dyn LogFormatParser>,
-        Box::new(JournalctlParser::default()),
-        Box::new(ClfParser),
-        Box::new(LogfmtParser::default()),
-        // CommonLogParser last — broadest catch-all with 0.95× score penalty
-        Box::new(CommonLogParser::default()),
-    ]);
+    parsers.extend(builtin_parsers());
 
     let non_empty: Vec<&[u8]> = sample.iter().copied().filter(|l| !l.is_empty()).collect();
     if non_empty.is_empty() {
@@ -134,6 +159,37 @@ pub fn validate_custom_schemas(schemas: &[crate::config::CustomSchemaConfig]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_builtin_format_names_contains_every_known_builtin_format() {
+        let names = builtin_format_names();
+        for expected in [
+            "otlp",
+            "dlt",
+            "journalctl-json",
+            "tracing-json",
+            "gelf",
+            "json",
+            "syslog",
+            "journalctl",
+            "clf",
+            "logfmt",
+            "common-log",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "expected '{expected}' in builtin_format_names(), got: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_builtin_format_names_excludes_custom_schemas() {
+        // builtin_format_names must never depend on config::custom_schemas()
+        // — it's specifically the *non*-custom list.
+        let names = builtin_format_names();
+        assert_eq!(names.len(), builtin_parsers().len());
+    }
 
     #[test]
     fn test_detect_format_json() {

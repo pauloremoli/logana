@@ -143,7 +143,7 @@ The `:select-fields` popup lists a `template`-defined schema's fields in the tem
 
 Custom schemas are evaluated before all built-in parsers. When a schema matches ≥ 50% of the sampled lines, it wins the detection competition and is used for all subsequent parsing.
 
-Run `:schema` to confirm which parser was selected, or `:schema <name>` to force a specific schema for the current tab.
+Run `:schema` to show the current tab's active schema, or `:schema <name>` to force a specific custom schema for the current tab — start typing a name to see every custom and built-in schema in the autocomplete list.
 
 ## Full example — Acme node log
 

@@ -278,18 +278,33 @@ pub fn complete_color(partial: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// Fuzzy-matches `partial` against `names` (custom schema names), for the
-/// `:schema <name>` command. `names` is passed in rather than read from
-/// `config::custom_schemas()` directly so this stays unit-testable without
-/// touching that process-global `OnceLock`.
-pub fn complete_schema(partial: &str, names: &[String]) -> Vec<String> {
-    if partial.is_empty() {
-        return names.to_vec();
-    }
-    names
-        .iter()
-        .filter(|n| fuzzy_match(partial, n))
-        .cloned()
+/// Every schema name `:schema <name>` can select, or that's useful to
+/// surface as available: custom names first (alphabetical), then built-in
+/// format names (alphabetical) — `true` marks a custom schema, so the
+/// caller can render the two kinds differently. `custom_names` is passed
+/// in rather than read from `config::custom_schemas()` directly so this
+/// stays unit-testable without touching that process-global `OnceLock`.
+pub fn schema_completion_names(custom_names: &[String]) -> Vec<(String, bool)> {
+    let mut custom = custom_names.to_vec();
+    custom.sort();
+    let mut builtin = crate::parser::builtin_format_names();
+    builtin.sort();
+    custom
+        .into_iter()
+        .map(|n| (n, true))
+        .chain(builtin.into_iter().map(|n| (n, false)))
+        .collect()
+}
+
+/// Fuzzy-filters `schema_completion_names`'s output against `partial`,
+/// preserving the custom-first/alphabetical-within-group ordering.
+pub fn complete_schema_with_builtins(
+    partial: &str,
+    custom_names: &[String],
+) -> Vec<(String, bool)> {
+    schema_completion_names(custom_names)
+        .into_iter()
+        .filter(|(n, _)| fuzzy_match(partial, n))
         .collect()
 }
 
@@ -890,37 +905,67 @@ mod tests {
         assert!(results.contains(&"Navy"), "Navy should fuzzy-match 'nav'");
     }
 
-    // ── complete_schema ──────────────────────────────────────────────────────
-
     #[test]
-    fn test_complete_schema_empty_returns_all() {
-        let names = vec!["acme".to_string(), "syslog2".to_string()];
-        let results = complete_schema("", &names);
-        assert_eq!(results, names);
+    fn test_schema_completion_names_custom_first_alphabetical() {
+        let names = vec!["zeta".to_string(), "acme".to_string()];
+        let results = schema_completion_names(&names);
+        let custom: Vec<&(String, bool)> = results.iter().filter(|(_, c)| *c).collect();
+        assert_eq!(
+            custom.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["acme", "zeta"]
+        );
     }
 
     #[test]
-    fn test_complete_schema_fuzzy_match() {
-        let names = vec!["acme".to_string(), "syslog2".to_string()];
-        let results = complete_schema("ae", &names);
-        assert_eq!(results, vec!["acme".to_string()]);
+    fn test_schema_completion_names_includes_builtin_formats() {
+        let results = schema_completion_names(&[]);
+        assert!(
+            results
+                .iter()
+                .any(|(n, is_custom)| n == "syslog" && !is_custom)
+        );
     }
 
     #[test]
-    fn test_complete_schema_case_insensitive() {
-        let names = vec!["Acme".to_string()];
-        assert_eq!(complete_schema("acme", &names), vec!["Acme"]);
+    fn test_schema_completion_names_builtins_are_alphabetical() {
+        let results = schema_completion_names(&[]);
+        let builtin: Vec<&str> = results
+            .iter()
+            .filter(|(_, is_custom)| !is_custom)
+            .map(|(n, _)| n.as_str())
+            .collect();
+        let mut sorted = builtin.clone();
+        sorted.sort();
+        assert_eq!(builtin, sorted);
     }
 
     #[test]
-    fn test_complete_schema_no_match_returns_empty() {
+    fn test_complete_schema_with_builtins_empty_returns_all() {
         let names = vec!["acme".to_string()];
-        assert!(complete_schema("zzz", &names).is_empty());
+        let results = complete_schema_with_builtins("", &names);
+        assert_eq!(results.len(), schema_completion_names(&names).len());
     }
 
     #[test]
-    fn test_complete_schema_no_names_returns_empty() {
-        assert!(complete_schema("tele", &[]).is_empty());
+    fn test_complete_schema_with_builtins_matches_custom_name() {
+        let names = vec!["acme".to_string(), "syslog2".to_string()];
+        let results = complete_schema_with_builtins("ae", &names);
+        assert_eq!(results, vec![("acme".to_string(), true)]);
+    }
+
+    #[test]
+    fn test_complete_schema_with_builtins_matches_builtin_name() {
+        let results = complete_schema_with_builtins("syslog", &[]);
+        assert!(
+            results
+                .iter()
+                .any(|(n, is_custom)| n == "syslog" && !is_custom)
+        );
+    }
+
+    #[test]
+    fn test_complete_schema_with_builtins_no_match_returns_empty() {
+        assert!(complete_schema_with_builtins("zzz_no_match", &["acme".to_string()]).is_empty());
     }
 
     #[test]
