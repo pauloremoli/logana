@@ -83,6 +83,73 @@ impl App {
         }
     }
 
+    /// [`Self::pending_default_filter_path`]'s counterpart for a merged tab:
+    /// a merged tab deliberately never sets `display.format` (see
+    /// `open_merge_tab`'s doc comment — it combines possibly-heterogeneous
+    /// sources, so there's no single format to inherit), so the
+    /// `tab.display.format`-keyed lookup `pending_default_filter_path` does
+    /// can never find anything for one. This instead derives the same
+    /// "format name" from `parsers` — the per-source parsers a merge's
+    /// sources were detected with — only when every source agrees on one
+    /// recognized format; a merge of genuinely mixed formats has no single
+    /// default filter file that would make sense to apply.
+    fn pending_default_filter_path_for_merge(
+        &self,
+        tab: &TabState,
+        parsers: &[Option<Arc<dyn LogFormatParser>>],
+    ) -> Option<String> {
+        if !tab.log_manager.get_filters().is_empty() {
+            return None;
+        }
+        let mut names = parsers.iter().map(|p| p.as_deref().map(|p| p.name()));
+        let format_name = names.next().flatten()?;
+        if !names.all(|n| n == Some(format_name)) {
+            return None;
+        }
+        self.default_filter_files.get(format_name).cloned()
+    }
+
+    /// Auto-loads a merged tab's default filter file when eligible (see
+    /// [`Self::pending_default_filter_path_for_merge`]) — the merge
+    /// counterpart of [`Self::apply_default_filters_if_empty`], for
+    /// [`Self::build_merged_tab`] to call on its local `tab` before pushing
+    /// it, once `inputs.parsers` (the merge's sources' detected formats) is
+    /// known.
+    async fn apply_default_filters_if_empty_for_merge(
+        &self,
+        tab: &mut TabState,
+        parsers: &[Option<Arc<dyn LogFormatParser>>],
+    ) {
+        let Some(path) = self.pending_default_filter_path_for_merge(tab, parsers) else {
+            return;
+        };
+        let expanded = crate::commands::auto_complete::expand_tilde(&path);
+        if let Err(e) = tab.log_manager.load_filters(&expanded).await {
+            tab.set_notification(format!("default filter file '{path}': {e}"));
+        }
+    }
+
+    /// Index-taking wrapper around
+    /// [`Self::apply_default_filters_if_empty_for_merge`] for
+    /// [`Self::start_merge_build_streaming`], whose tab already lives in
+    /// `self.tabs` by the time its sources' parsers become known.
+    async fn apply_default_filters_if_empty_for_merge_at(
+        &mut self,
+        tab_idx: usize,
+        parsers: &[Option<Arc<dyn LogFormatParser>>],
+    ) {
+        let Some(tab) = self.tabs.get(tab_idx) else {
+            return;
+        };
+        let Some(path) = self.pending_default_filter_path_for_merge(tab, parsers) else {
+            return;
+        };
+        let expanded = crate::commands::auto_complete::expand_tilde(&path);
+        if let Err(e) = self.tabs[tab_idx].log_manager.load_filters(&expanded).await {
+            self.tabs[tab_idx].set_notification(format!("default filter file '{path}': {e}"));
+        }
+    }
+
     pub fn tab(&self) -> &TabState {
         &self.tabs[self.active_tab]
     }
@@ -260,6 +327,9 @@ impl App {
         tab.continuation_map = None;
         tab.filter.visible_indices = VisibleLines::Filtered((0..visible_count).collect());
         tab.display.show_line_numbers = false;
+        self.apply_tab_defaults(&mut tab).await;
+        self.apply_default_filters_if_empty_for_merge(&mut tab, &inputs.parsers)
+            .await;
         tab.merged = Some(MergedState {
             source_tab_indices,
             source_parsers: inputs.parsers,
@@ -269,7 +339,6 @@ impl App {
             stopped: false,
             building: None,
         });
-        self.apply_tab_defaults(&mut tab).await;
 
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -334,7 +403,7 @@ impl App {
     /// just for the index-build phase instead of the read/extract phase.
     /// A no-op if `tab_idx` no longer exists (its tab was closed while
     /// Phase 1 was still running).
-    pub(crate) fn start_merge_build_streaming(
+    pub(crate) async fn start_merge_build_streaming(
         &mut self,
         tab_idx: usize,
         inputs: MergeSourceInputs,
@@ -344,6 +413,9 @@ impl App {
         if tab_idx >= self.tabs.len() {
             return;
         }
+
+        self.apply_default_filters_if_empty_for_merge_at(tab_idx, &inputs.parsers)
+            .await;
 
         let source_line_counts: Vec<usize> =
             inputs.sources.iter().map(|s| s.line_count()).collect();
@@ -392,5 +464,96 @@ impl App {
     /// "building" progress that will never move.
     pub(crate) fn remove_pending_merged_tab(&mut self, tab_idx: usize) {
         self.remove_tab_at(tab_idx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Keybindings;
+    use crate::db::{Database, LogManager};
+    use crate::theme::Theme;
+
+    async fn make_app() -> App {
+        let file_reader = FileReader::from_bytes(b"initial line\n".to_vec());
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        App::builder(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .build()
+        .await
+    }
+
+    async fn push_tab_with_format(app: &mut App, content: &str, format_name: &str) -> usize {
+        let fr = FileReader::from_bytes(content.as_bytes().to_vec());
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut tab = TabState::new(fr, lm, "src".to_string());
+        tab.display.format = crate::parser::find_builtin_parser(format_name).map(Arc::from);
+        app.tabs.push(tab);
+        app.tabs.len() - 1
+    }
+
+    fn write_include_error_filter(dir: &tempfile::TempDir, name: &str) -> String {
+        let path = dir.path().join(name);
+        std::fs::write(
+            &path,
+            r#"[{"id":1,"pattern":"error","filter_type":"Include","enabled":true,"color_config":null,"use_regex":false,"ignore_case":false,"group":null}]"#,
+        )
+        .unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn test_open_merge_tab_applies_default_filter_when_all_sources_share_a_format() {
+        let mut app = make_app().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_include_error_filter(&dir, "f.json");
+        app.default_filter_files.insert("syslog".to_string(), path);
+        let a = push_tab_with_format(&mut app, "2024-01-01T00:00:00Z a\n", "syslog").await;
+        let b = push_tab_with_format(&mut app, "2024-01-01T00:00:01Z b\n", "syslog").await;
+
+        app.open_merge_tab(vec![a, b]).await;
+
+        let merged_tab = app.tabs.last().unwrap();
+        assert!(
+            merged_tab.merged.is_some(),
+            "sanity check: last tab should be the merged one"
+        );
+        assert_eq!(merged_tab.log_manager.get_filters().len(), 1);
+        assert_eq!(merged_tab.log_manager.get_filters()[0].pattern, "error");
+    }
+
+    #[tokio::test]
+    async fn test_open_merge_tab_does_not_apply_default_filter_when_sources_have_mixed_formats() {
+        let mut app = make_app().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_include_error_filter(&dir, "f.json");
+        app.default_filter_files.insert("syslog".to_string(), path);
+        let a = push_tab_with_format(&mut app, "2024-01-01T00:00:00Z a\n", "syslog").await;
+        let b = push_tab_with_format(&mut app, "{\"msg\":\"b\"}\n", "logfmt").await;
+
+        app.open_merge_tab(vec![a, b]).await;
+
+        let merged_tab = app.tabs.last().unwrap();
+        assert!(
+            merged_tab.log_manager.get_filters().is_empty(),
+            "no single default filter file applies to a mix of formats"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_merge_tab_noop_when_no_mapping_for_the_shared_format() {
+        let mut app = make_app().await;
+        let a = push_tab_with_format(&mut app, "2024-01-01T00:00:00Z a\n", "syslog").await;
+        let b = push_tab_with_format(&mut app, "2024-01-01T00:00:01Z b\n", "syslog").await;
+
+        app.open_merge_tab(vec![a, b]).await;
+
+        let merged_tab = app.tabs.last().unwrap();
+        assert!(merged_tab.log_manager.get_filters().is_empty());
     }
 }

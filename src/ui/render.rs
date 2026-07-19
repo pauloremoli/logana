@@ -1309,6 +1309,7 @@ mod tests {
                 merge_marked: false,
                 cached_bytes: None,
                 collapsed: false,
+                disk_path: false,
             })
             .collect();
         let roots = (0..30).collect();

@@ -24,6 +24,43 @@ pub fn list_dir_files(path: &str) -> Vec<String> {
     files
 }
 
+/// Lists `path`'s immediate (non-recursive), non-hidden entries, split into
+/// regular files and subdirectories — both sorted by name, absolute path
+/// strings. Returns two empty `Vec`s for a non-existent or unreadable path.
+/// Used by the archive/directory picker's recursive directory listing (see
+/// `ingestion::archive_tree::list_directory_entries`), which needs to walk
+/// into subdirectories itself rather than have them filtered out the way
+/// [`list_dir_files`] does.
+pub fn list_dir_entries(path: &str) -> (Vec<String>, Vec<String>) {
+    let dir = match std::fs::read_dir(path) {
+        Ok(d) => d,
+        Err(_) => return (Vec::new(), Vec::new()),
+    };
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    for entry in dir.filter_map(|entry| entry.ok()) {
+        let fname = entry.file_name();
+        let name = fname.to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let Some(entry_path) = entry.path().to_str().map(|s| s.to_string()) else {
+            continue;
+        };
+        if file_type.is_dir() {
+            dirs.push(entry_path);
+        } else if file_type.is_file() {
+            files.push(entry_path);
+        }
+    }
+    files.sort();
+    dirs.sort();
+    (files, dirs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,5 +111,47 @@ mod tests {
     fn test_list_dir_files_nonexistent() {
         let files = list_dir_files("/nonexistent/path/xyz123");
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_list_dir_entries_splits_files_and_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("b.log"), b"b").unwrap();
+        std::fs::write(dir.join("a.log"), b"a").unwrap();
+        std::fs::create_dir(dir.join("subdir")).unwrap();
+        let (files, dirs) = list_dir_entries(dir.to_str().unwrap());
+        assert_eq!(files.len(), 2);
+        assert!(files[0].ends_with("a.log"));
+        assert!(files[1].ends_with("b.log"));
+        assert_eq!(dirs.len(), 1);
+        assert!(dirs[0].ends_with("subdir"));
+    }
+
+    #[test]
+    fn test_list_dir_entries_excludes_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("visible.log"), b"v").unwrap();
+        std::fs::write(dir.join(".hidden"), b"h").unwrap();
+        std::fs::create_dir(dir.join(".hidden_dir")).unwrap();
+        let (files, dirs) = list_dir_entries(dir.to_str().unwrap());
+        assert_eq!(files.len(), 1);
+        assert!(dirs.is_empty());
+    }
+
+    #[test]
+    fn test_list_dir_entries_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (files, dirs) = list_dir_entries(tmp.path().to_str().unwrap());
+        assert!(files.is_empty());
+        assert!(dirs.is_empty());
+    }
+
+    #[test]
+    fn test_list_dir_entries_nonexistent() {
+        let (files, dirs) = list_dir_entries("/nonexistent/path/xyz123");
+        assert!(files.is_empty());
+        assert!(dirs.is_empty());
     }
 }

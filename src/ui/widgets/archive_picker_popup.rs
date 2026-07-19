@@ -30,6 +30,42 @@ pub fn mark_glyph(check_state: CheckState, merge_check_state: CheckState) -> &'s
     }
 }
 
+/// The topmost visible row index for a `content_h`-row viewport over
+/// `rows`, keeping `selected` on screen — same as plain "keep the cursor
+/// visible" scrolling, except biased to also reveal as many of `selected`'s
+/// children (the rows immediately after it at greater depth) as fit, up to
+/// `content_h`. This is what makes expanding a container (or landing on one
+/// via search) scroll the view down just enough to show what was just
+/// revealed, exactly as if the user had pressed scroll-down — `selected`
+/// itself never moves and rows are never reordered, only which slice of
+/// `rows` is drawn changes. A no-op (returns the same value as the plain
+/// "keep visible" case) for a row with no children, so ordinary navigation
+/// is unaffected. Pure and stateless — recomputed fresh every frame from
+/// `rows` and `selected` alone, so it needs no persisted scroll state and
+/// naturally stops applying once `selected` moves off the container.
+fn scroll_offset(rows: &[ArchiveRow], selected: usize, content_h: usize) -> usize {
+    if rows.is_empty() || content_h == 0 {
+        return 0;
+    }
+    let selected = selected.min(rows.len() - 1);
+    let min_scroll_to_keep_selected_visible = selected.saturating_sub(content_h - 1);
+
+    let selected_depth = rows[selected].depth;
+    let children_end = rows[selected + 1..]
+        .iter()
+        .position(|r| r.depth <= selected_depth)
+        .map(|i| selected + 1 + i)
+        .unwrap_or(rows.len());
+    let last_child_row = children_end - 1;
+    let scroll_to_reveal_children = last_child_row.saturating_sub(content_h - 1);
+
+    // Never scroll further than making `selected` itself the top row — that
+    // would push the very row the user is on off screen.
+    scroll_to_reveal_children
+        .min(selected)
+        .max(min_scroll_to_keep_selected_visible)
+}
+
 /// The fold-state glyph for a row: a not-yet-read nested archive and a
 /// folded (already-fetched) container both show the same "closed" arrow —
 /// from the row alone there's no visible difference between "never
@@ -165,11 +201,7 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
                 .render(sa, buf);
         }
 
-        let scroll = if self.selected >= content_h {
-            self.selected - content_h + 1
-        } else {
-            0
-        };
+        let scroll = scroll_offset(self.rows, self.selected, content_h);
 
         let mut lines: Vec<Line> = Vec::new();
         for (i, row) in self.rows.iter().enumerate().skip(scroll).take(content_h) {
@@ -350,6 +382,87 @@ mod tests {
     }
 
     #[test]
+    fn test_scroll_offset_empty_rows_is_zero() {
+        assert_eq!(scroll_offset(&[], 0, 5), 0);
+    }
+
+    #[test]
+    fn test_scroll_offset_no_children_matches_plain_keep_visible_scrolling() {
+        // 10 plain files, content_h = 4, selected past the fold: scrolling
+        // must behave exactly like the old bottom-anchored formula when
+        // there's nothing below `selected` to reveal.
+        let rows: Vec<ArchiveRow> = (0..10).map(|i| row(&format!("file{i}.log"))).collect();
+        assert_eq!(scroll_offset(&rows, 7, 4), 4);
+    }
+
+    #[test]
+    fn test_scroll_offset_selected_near_top_with_children_needs_no_scroll() {
+        // Container + 2 children all already fit inside content_h=4 with
+        // selected on the container — nothing to scroll for.
+        let rows = vec![
+            row("a.log"),
+            row_depth("bundle.zip", 0),
+            row_depth("inner1.log", 1),
+            row_depth("inner2.log", 1),
+        ];
+        assert_eq!(scroll_offset(&rows, 1, 4), 0);
+    }
+
+    #[test]
+    fn test_scroll_offset_scrolls_down_to_reveal_children_below_the_fold() {
+        // A container at row 8 (bottom-anchored scrolling would put it as
+        // the last visible row, hiding its 3 children entirely) must
+        // instead scroll further so the container moves up within the
+        // viewport and its children become visible.
+        let mut rows: Vec<ArchiveRow> = (0..8).map(|i| row(&format!("file{i}.log"))).collect();
+        rows.push(row_depth("bundle.zip", 0));
+        rows.push(row_depth("inner1.log", 1));
+        rows.push(row_depth("inner2.log", 1));
+        rows.push(row_depth("inner3.log", 1));
+        let content_h = 5;
+        let scroll = scroll_offset(&rows, 8, content_h);
+        // All 3 children (rows 9, 10, 11) must be within [scroll, scroll+content_h).
+        assert!(
+            scroll + content_h >= 12,
+            "scroll={scroll} doesn't reveal every child"
+        );
+        // `selected` itself must still be on screen.
+        assert!(scroll <= 8 && 8 < scroll + content_h);
+    }
+
+    #[test]
+    fn test_scroll_offset_never_scrolls_selected_off_the_top() {
+        // More children than fit in one screen: scrolling must stop once
+        // `selected` itself would be pushed off the top, rather than
+        // chasing every last child.
+        let mut rows: Vec<ArchiveRow> = vec![row_depth("bundle.zip", 0)];
+        for i in 0..20 {
+            rows.push(row_depth(&format!("inner{i}.log"), 1));
+        }
+        let content_h = 5;
+        let scroll = scroll_offset(&rows, 0, content_h);
+        assert_eq!(
+            scroll, 0,
+            "selected is row 0; scroll must never exceed selected's own index"
+        );
+    }
+
+    #[test]
+    fn test_scroll_offset_unaffected_by_an_unrelated_earlier_containers_children() {
+        // A previous, unrelated container's children (rows 1-3) must not
+        // influence scrolling once `selected` has moved past them onto a
+        // plain file with nothing below it to reveal.
+        let rows = vec![
+            row_depth("bundle.zip", 0),
+            row_depth("inner1.log", 1),
+            row_depth("inner2.log", 1),
+            row_depth("inner3.log", 1),
+            row("after.log"),
+        ];
+        assert_eq!(scroll_offset(&rows, 4, 3), 2);
+    }
+
+    #[test]
     fn test_mark_glyph_neither() {
         assert_eq!(
             mark_glyph(CheckState::Unchecked, CheckState::Unchecked),
@@ -426,9 +539,13 @@ mod tests {
     }
 
     fn row(name: &str) -> ArchiveRow {
+        row_depth(name, 0)
+    }
+
+    fn row_depth(name: &str, depth: usize) -> ArchiveRow {
         ArchiveRow {
             name: name.to_string(),
-            depth: 0,
+            depth,
             kind: RowKind::File,
             check_state: CheckState::Unchecked,
             merge_check_state: CheckState::Unchecked,
