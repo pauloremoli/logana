@@ -576,6 +576,7 @@ mod tests {
             merge_marked: false,
             cached_bytes: None,
             collapsed: false,
+            disk_path: false,
         }
     }
 
@@ -594,12 +595,13 @@ mod tests {
             depth,
             kind: NodeKind::Container {
                 children,
-                archive_type: crate::ingestion::ArchiveType::Zip,
+                archive_type: Some(crate::ingestion::ArchiveType::Zip),
             },
             selected: false,
             merge_marked: false,
             cached_bytes: None,
             collapsed: false,
+            disk_path: false,
         }
     }
 
@@ -617,6 +619,7 @@ mod tests {
             merge_marked: false,
             cached_bytes: None,
             collapsed: false,
+            disk_path: false,
         }
     }
 
@@ -1424,5 +1427,46 @@ mod tests {
             mode2.render_state(),
             ModeRenderState::ArchivePicker { .. }
         ));
+    }
+
+    /// A directory-sourced tree's subdirectory (see
+    /// `crate::ingestion::list_directory_tree`) must get the exact same
+    /// picker treatment an archive's containers do: rendered as an
+    /// expandable/collapsible `Container` row, and ticking it checks every
+    /// file nested inside — this already falls out of the generic
+    /// `Container { .. }` handling everywhere in this file and in
+    /// `ArchiveTree`, since a directory container is just a `Container`
+    /// with `archive_type: None`.
+    #[tokio::test]
+    async fn test_directory_sourced_subdirectory_renders_as_container_and_marks_nested_files() {
+        let mut tab = make_tab().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+        std::fs::write(tmp.path().join("subdir/a.log"), b"one").unwrap();
+        std::fs::write(tmp.path().join("subdir/b.log"), b"two").unwrap();
+        let tree = crate::ingestion::list_directory_tree(tmp.path().to_str().unwrap()).unwrap();
+
+        let mut m = ArchivePickerMode::new(tree, tmp.path().to_str().unwrap().to_string());
+        let (rows, _, _) = extract_state(m.render_state());
+        assert_eq!(
+            rows.len(),
+            3,
+            "subdir starts expanded, showing both nested files"
+        );
+        let subdir_row = rows.iter().find(|r| r.name == "subdir").unwrap();
+        assert_eq!(subdir_row.kind, RowKind::Container { collapsed: false });
+        assert_eq!(subdir_row.check_state, CheckState::Unchecked);
+
+        // Ticking the subdirectory row must tick every file nested inside it.
+        let subdir_idx = rows.iter().position(|r| r.name == "subdir").unwrap();
+        m.selected = subdir_idx;
+        let (mode2, _) = press(m, &mut tab, KeyCode::Char(' ')).await;
+        let (rows, _, _) = extract_state(mode2.render_state());
+        assert!(
+            rows.iter()
+                .filter(|r| r.kind == RowKind::File)
+                .all(|r| r.check_state == CheckState::Checked),
+            "ticking the subdirectory container must tick every file inside it"
+        );
     }
 }

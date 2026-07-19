@@ -354,26 +354,52 @@ impl App {
 
     /// Applies a directory-sourced archive picker (`:open`'d a directory —
     /// reuses the archive picker's tree/checkbox/merge-mark UI, see
-    /// `ArchiveTree::list_directory_tree`). Unlike `apply_archive_picker`,
-    /// there's nothing to decompress: ticked files are already real paths on
-    /// disk, opened directly via the same path `handle_open_files` uses;
-    /// merge-marked files are read+format-detected directly, in the
-    /// background so a large file can't stall the UI, then merged exactly
-    /// like an archive picker's merge-marked files are.
-    pub(super) async fn apply_directory_picker(&mut self, tree: crate::ingestion::ArchiveTree) {
-        let selected_paths: Vec<String> = tree
+    /// `ArchiveTree::list_directory_tree`). Most files are `disk_path: true`
+    /// (plain files anywhere under the directory, including inside
+    /// subdirectories) — ticked ones are opened directly via the same path
+    /// `handle_open_files` uses, merge-marked ones are read directly into a
+    /// temp copy, in the background so a large file can't stall the UI, then
+    /// merged exactly like an archive picker's merge-marked files are. A
+    /// file found inside an archive discovered along the way is
+    /// `disk_path: false` — its `full_path` is only meaningful relative to
+    /// that archive's own bytes, so it's routed through the same
+    /// extract-to-temp path `apply_archive_picker` uses instead.
+    pub(super) async fn apply_directory_picker(
+        &mut self,
+        source_path: String,
+        tree: crate::ingestion::ArchiveTree,
+    ) {
+        let selected: Vec<&crate::ingestion::ArchiveNode> = tree
             .nodes
             .iter()
             .filter(|n| matches!(n.kind, crate::ingestion::NodeKind::File) && n.selected)
+            .collect();
+        let disk_selected_paths: Vec<String> = selected
+            .iter()
+            .filter(|n| n.disk_path)
             .map(|n| n.full_path.clone())
             .collect();
-        self.handle_open_files(selected_paths).await;
+        self.handle_open_files(disk_selected_paths).await;
 
-        let merge_marked: Vec<(String, String)> = tree
+        let archived_selected_ids: Vec<crate::ingestion::NodeId> = selected
+            .iter()
+            .filter(|n| !n.disk_path)
+            .map(|n| n.id)
+            .collect();
+        if !archived_selected_ids.is_empty() {
+            self.begin_directory_archived_extraction(
+                source_path.clone(),
+                tree.clone(),
+                archived_selected_ids,
+            )
+            .await;
+        }
+
+        let merge_marked: Vec<(String, crate::ingestion::NodeId, bool)> = tree
             .nodes
             .iter()
             .filter(|n| matches!(n.kind, crate::ingestion::NodeKind::File) && n.merge_marked)
-            .map(|n| (n.name.clone(), n.full_path.clone()))
+            .map(|n| (n.name.clone(), n.id, n.disk_path))
             .collect();
         if merge_marked.is_empty() {
             return;
@@ -384,7 +410,7 @@ impl App {
         // the moment the merge begins — for big files, reading/copying them
         // below is the slow part, and without this the tab wouldn't appear
         // at all until it finished.
-        let labels: Vec<String> = merge_marked.iter().map(|(name, _)| name.clone()).collect();
+        let labels: Vec<String> = merge_marked.iter().map(|(name, ..)| name.clone()).collect();
         let total = labels.len();
         let tab_idx = self.create_pending_merged_tab(labels).await;
 
@@ -392,7 +418,8 @@ impl App {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         tokio::task::spawn_blocking(move || {
             let mut sources = Vec::with_capacity(merge_marked.len());
-            for (i, (name, path)) in merge_marked.into_iter().enumerate() {
+            for (i, (name, node_id, disk_path)) in merge_marked.into_iter().enumerate() {
+                let path = tree.nodes[node_id].full_path.clone();
                 // Copied into temp rather than read from `path` directly —
                 // like an archive's merge-marked entries, which are always
                 // extracted to temp — so the merged tab this feeds into is
@@ -406,7 +433,17 @@ impl App {
                         return;
                     }
                 };
-                if let Err(e) = std::fs::copy(&path, temp_file.path()) {
+                let write_result = if disk_path {
+                    std::fs::copy(&path, temp_file.path())
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                } else {
+                    crate::ingestion::archive_tree::resolve_node_bytes(&tree, node_id, &source_path)
+                        .and_then(|bytes| {
+                            std::fs::write(temp_file.path(), bytes).map_err(|e| e.to_string())
+                        })
+                };
+                if let Err(e) = write_result {
                     let _ = result_tx.send(Err(format!("Failed to read '{path}': {e}")));
                     return;
                 }
@@ -451,6 +488,45 @@ impl App {
         });
     }
 
+    /// Extracts `ids` (files found inside an archive discovered inside the
+    /// directory) to temp copies in the background, then feeds them through
+    /// the exact same `pending_archive`/`poll_archive_extraction` machinery
+    /// `apply_archive_picker` uses to open each as its own tab — `disk_path`
+    /// files never reach here, so `merge_result` is always `None`; a
+    /// directory picker's merge-marked handling lives entirely in
+    /// `pending_directory_merge` instead.
+    async fn begin_directory_archived_extraction(
+        &mut self,
+        source_path: String,
+        tree: crate::ingestion::ArchiveTree,
+        ids: Vec<crate::ingestion::NodeId>,
+    ) {
+        let (progress_tx, progress_rx) =
+            tokio::sync::watch::channel(crate::ingestion::ArchiveExtractionProgress {
+                file_index: 0,
+                fraction: 0.0,
+            });
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        self.decompression_message = Some("Extracting selected files\u{2026}".to_string());
+
+        tokio::task::spawn_blocking(move || {
+            let selected_files =
+                crate::ingestion::archive_tree::extract_ids(&source_path, &tree, &ids, progress_tx);
+            let _ = result_tx.send(crate::ui::ArchivePickerApplyResult {
+                selected_files,
+                merge_result: None,
+            });
+        });
+
+        self.pending_archive = Some(crate::ui::ArchiveExtractionState {
+            progress_rx,
+            result_rx,
+            merge_tab_idx: None,
+            merge_progress_rx: None,
+            merge_total: 0,
+        });
+    }
+
     /// Poll the pending directory-picker merge each frame. When the
     /// background read+detect finishes, feeds the merged tab created by
     /// `apply_directory_picker` (or removes it, on error) and clears
@@ -474,7 +550,7 @@ impl App {
                 let tab_idx = state.tab_idx;
                 self.pending_directory_merge = None;
                 let inputs = Self::merge_inputs_from_extracted(sources);
-                self.start_merge_build_streaming(tab_idx, inputs);
+                self.start_merge_build_streaming(tab_idx, inputs).await;
             }
             Ok(Err(e)) => {
                 let tab_idx = state.tab_idx;
@@ -549,7 +625,7 @@ impl App {
             }
             KeyResult::ApplyArchivePicker { source_path, tree } => {
                 if std::path::Path::new(&source_path).is_dir() {
-                    self.apply_directory_picker(tree).await;
+                    self.apply_directory_picker(source_path, tree).await;
                 } else {
                     self.apply_archive_picker(source_path, tree).await;
                 }
@@ -638,6 +714,7 @@ mod tests {
             merge_marked,
             cached_bytes: None,
             collapsed: false,
+            disk_path: true,
         }
     }
 
@@ -682,7 +759,7 @@ mod tests {
             roots: vec![0, 1],
         };
         let initial_tabs = app.tabs.len();
-        app.apply_directory_picker(tree).await;
+        app.apply_directory_picker(String::new(), tree).await;
 
         assert_eq!(app.tabs.len(), initial_tabs + 2);
         let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
@@ -707,7 +784,7 @@ mod tests {
             roots: vec![0, 1],
         };
         let initial_tabs = app.tabs.len();
-        app.apply_directory_picker(tree).await;
+        app.apply_directory_picker(String::new(), tree).await;
 
         assert_eq!(app.tabs.len(), initial_tabs + 1);
         assert_eq!(app.tabs.last().unwrap().title, "a.log");
@@ -730,7 +807,7 @@ mod tests {
             roots: vec![0, 1],
         };
         let initial_tabs = app.tabs.len();
-        app.apply_directory_picker(tree).await;
+        app.apply_directory_picker(String::new(), tree).await;
         drain_pending_directory_merge(&mut app).await;
         drain_pending_merge_builds(&mut app).await;
 
@@ -778,7 +855,7 @@ mod tests {
             ],
             roots: vec![0, 1],
         };
-        app.apply_directory_picker(tree).await;
+        app.apply_directory_picker(String::new(), tree).await;
         drain_pending_directory_merge(&mut app).await;
 
         // Phase 2 (the merge index build) is pending — intentionally not
@@ -827,7 +904,7 @@ mod tests {
             roots: vec![0, 1],
         };
         let initial_tabs = app.tabs.len();
-        app.apply_directory_picker(tree).await;
+        app.apply_directory_picker(String::new(), tree).await;
 
         assert_eq!(
             app.tabs.len(),
@@ -860,7 +937,7 @@ mod tests {
             ],
             roots: vec![0, 1],
         };
-        app.apply_directory_picker(tree).await;
+        app.apply_directory_picker(String::new(), tree).await;
         drain_pending_directory_merge(&mut app).await;
 
         assert_eq!(
@@ -899,7 +976,7 @@ mod tests {
             nodes: vec![file_node(0, "a.log", a.to_str().unwrap(), false, true)],
             roots: vec![0],
         };
-        app.apply_directory_picker(tree).await;
+        app.apply_directory_picker(String::new(), tree).await;
         let tab_idx = app.pending_directory_merge.as_ref().unwrap().tab_idx;
         // Poll a few times rather than once — the background read is a real
         // OS thread and may not have run yet on the very first poll.
@@ -937,7 +1014,7 @@ mod tests {
             roots: vec![0],
         };
         let initial_tabs = app.tabs.len();
-        app.apply_directory_picker(tree).await;
+        app.apply_directory_picker(String::new(), tree).await;
         assert_eq!(
             app.tabs.len(),
             initial_tabs + 1,
@@ -981,7 +1058,7 @@ mod tests {
             ],
             roots: vec![0, 1],
         };
-        app.apply_directory_picker(tree).await;
+        app.apply_directory_picker(String::new(), tree).await;
         drain_pending_directory_merge(&mut app).await;
         drain_pending_merge_builds(&mut app).await;
 
@@ -1032,7 +1109,7 @@ mod tests {
             roots: vec![0, 1, 2],
         };
         let initial_tabs = app.tabs.len();
-        app.apply_directory_picker(tree).await;
+        app.apply_directory_picker(String::new(), tree).await;
         drain_pending_directory_merge(&mut app).await;
 
         assert_eq!(
@@ -1043,5 +1120,118 @@ mod tests {
         let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
         assert!(titles.contains(&"c.log"));
         assert!(app.tabs.iter().any(|t| t.merged.is_some()));
+    }
+
+    /// Waits for `app.pending_archive` to clear.
+    async fn drain_pending_archive(app: &mut App) {
+        for _ in 0..100 {
+            app.poll_archive_extraction().await;
+            if app.pending_archive.is_none() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_apply_directory_picker_opens_a_ticked_file_inside_a_discovered_archive() {
+        let mut app = make_app().await;
+        let zip_tmp = crate::ingestion::archive::test_helpers::make_zip(&[(
+            "inner.log",
+            b"content from inside the zip".as_slice(),
+        )]);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        std::fs::copy(zip_tmp.path(), tmp_dir.path().join("bundle.zip")).unwrap();
+
+        let mut tree =
+            crate::ingestion::list_directory_tree(tmp_dir.path().to_str().unwrap()).unwrap();
+        let inner_id = tree
+            .nodes
+            .iter()
+            .find(|n| n.name == "inner.log")
+            .unwrap()
+            .id;
+        tree.nodes[inner_id].selected = true;
+        assert!(
+            !tree.nodes[inner_id].disk_path,
+            "the entry lives inside the discovered archive, not directly on disk"
+        );
+
+        let initial_tabs = app.tabs.len();
+        app.apply_directory_picker(tmp_dir.path().to_str().unwrap().to_string(), tree)
+            .await;
+        drain_pending_archive(&mut app).await;
+
+        assert_eq!(app.tabs.len(), initial_tabs + 1);
+        let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert!(titles.contains(&"inner.log"));
+    }
+
+    #[tokio::test]
+    async fn test_apply_directory_picker_merges_a_file_inside_a_discovered_archive() {
+        let mut app = make_app().await;
+        let zip_tmp = crate::ingestion::archive::test_helpers::make_zip(&[(
+            "inner.log",
+            b"2024-01-01T00:00:00Z hello\n".as_slice(),
+        )]);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        std::fs::copy(zip_tmp.path(), tmp_dir.path().join("bundle.zip")).unwrap();
+
+        let mut tree =
+            crate::ingestion::list_directory_tree(tmp_dir.path().to_str().unwrap()).unwrap();
+        let inner_id = tree
+            .nodes
+            .iter()
+            .find(|n| n.name == "inner.log")
+            .unwrap()
+            .id;
+        tree.nodes[inner_id].merge_marked = true;
+
+        app.apply_directory_picker(tmp_dir.path().to_str().unwrap().to_string(), tree)
+            .await;
+        drain_pending_directory_merge(&mut app).await;
+
+        assert!(app.tabs.iter().any(|t| t.merged.is_some()));
+    }
+
+    #[tokio::test]
+    async fn test_apply_directory_picker_merge_applies_default_filter_for_shared_format() {
+        let mut app = make_app().await;
+        let dir = tempfile::tempdir().unwrap();
+        let filter_path = dir.path().join("f.json");
+        std::fs::write(
+            &filter_path,
+            r#"[{"id":1,"pattern":"error","filter_type":"Include","enabled":true,"color_config":null,"use_regex":false,"ignore_case":false,"group":null}]"#,
+        )
+        .unwrap();
+        app.default_filter_files.insert(
+            "common-log".to_string(),
+            filter_path.to_str().unwrap().to_string(),
+        );
+
+        let a = dir.path().join("a.log");
+        let b = dir.path().join("b.log");
+        std::fs::write(&a, "2024-01-01 10:00:00 INFO line from a\n").unwrap();
+        std::fs::write(&b, "2024-01-01 09:00:00 INFO line from b\n").unwrap();
+        let tree = ArchiveTree {
+            nodes: vec![
+                file_node(0, "a.log", a.to_str().unwrap(), false, true),
+                file_node(1, "b.log", b.to_str().unwrap(), false, true),
+            ],
+            roots: vec![0, 1],
+        };
+
+        app.apply_directory_picker(String::new(), tree).await;
+        drain_pending_directory_merge(&mut app).await;
+        drain_pending_merge_builds(&mut app).await;
+
+        let merged = app.tabs.last().unwrap();
+        assert!(merged.merged.is_some());
+        assert_eq!(
+            merged.log_manager.get_filters().len(),
+            1,
+            "merged tab should pick up the shared format's default filter file"
+        );
+        assert_eq!(merged.log_manager.get_filters()[0].pattern, "error");
     }
 }

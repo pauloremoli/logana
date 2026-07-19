@@ -728,7 +728,7 @@ impl App {
                     // tab (the more "primary" result of a mixed apply) wins
                     // `active_tab` when both kinds of tabs were created —
                     // `start_merge_build_streaming` re-asserts it.
-                    self.start_merge_build_streaming(tab_idx, inputs);
+                    self.start_merge_build_streaming(tab_idx, inputs).await;
                 }
             }
             Some(Err(e)) => {

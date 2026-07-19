@@ -82,6 +82,16 @@ pub struct ArchiveNode {
     /// of its own: having no children yet already keeps it out of the row
     /// list until it's expanded.
     pub collapsed: bool,
+    /// True when `full_path` is a real, directly-openable filesystem path
+    /// rather than a path relative to some ancestor archive's decoded bytes
+    /// — every node a directory listing produces (plain files, subdirectory
+    /// containers, and archive files found inside the directory) is
+    /// `disk_path: true`; everything produced while parsing an archive's own
+    /// contents (including the contents of an archive discovered inside a
+    /// directory, once past that archive's own node) is `false`. See
+    /// [`resolve_node_bytes`], which branches on this to know whether to
+    /// read fresh from disk or decode from a parent's buffered bytes.
+    pub disk_path: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -89,7 +99,11 @@ pub enum NodeKind {
     File,
     Container {
         children: Vec<NodeId>,
-        archive_type: ArchiveType,
+        /// `None` for a plain directory container; `Some(t)` for an archive
+        /// container, whether nested inside another archive or discovered
+        /// as a file sitting inside a directory listing — both look
+        /// identical from here on.
+        archive_type: Option<ArchiveType>,
     },
     /// A nested archive found past [`AUTO_EXPAND_DEPTH`] whose contents
     /// haven't been read yet — not an error state, just deferred. Becomes a
@@ -339,7 +353,7 @@ impl ArchiveTree {
         ) {
             Ok(children) => NodeKind::Container {
                 children,
-                archive_type,
+                archive_type: Some(archive_type),
             },
             Err(_) => NodeKind::File,
         };
@@ -391,13 +405,17 @@ fn basename(full_path: &str) -> String {
 /// fills in `children`/`archive_type` (or replaces the whole `kind` with
 /// `UnreadableContainer`) once recursion into it finishes. Needed because a
 /// node's `id` must equal its final index in `nodes`, but its children (with
-/// `parent: Some(id)`) are appended *after* this reservation.
+/// `parent: Some(id)`) are appended *after* this reservation. `disk_path` is
+/// true for a plain directory container or an archive file discovered inside
+/// a directory (both have a real path in `full_path`), false for an archive
+/// nested inside another archive.
 fn placeholder_container_node(
     id: NodeId,
     parent: Option<NodeId>,
     name: String,
     full_path: String,
     depth: usize,
+    disk_path: bool,
 ) -> ArchiveNode {
     ArchiveNode {
         id,
@@ -407,12 +425,13 @@ fn placeholder_container_node(
         depth,
         kind: NodeKind::Container {
             children: Vec::new(),
-            archive_type: ArchiveType::Zip,
+            archive_type: None,
         },
         selected: false,
         merge_marked: false,
         cached_bytes: None,
         collapsed: false,
+        disk_path,
     }
 }
 
@@ -437,6 +456,7 @@ fn unreadable_node(
         merge_marked: false,
         cached_bytes: None,
         collapsed: false,
+        disk_path: false,
     }
 }
 
@@ -461,6 +481,7 @@ fn lazy_container_node(
         merge_marked: false,
         cached_bytes: None,
         collapsed: false,
+        disk_path: false,
     }
 }
 
@@ -470,6 +491,7 @@ fn file_node(
     name: String,
     full_path: String,
     depth: usize,
+    disk_path: bool,
 ) -> ArchiveNode {
     ArchiveNode {
         id,
@@ -482,6 +504,7 @@ fn file_node(
         merge_marked: false,
         cached_bytes: None,
         collapsed: false,
+        disk_path,
     }
 }
 
@@ -544,30 +567,135 @@ pub fn list_archive_tree(path: &str) -> Result<ArchiveTree, String> {
     list_archive_tree_with_limits(path, &ListLimits::default())
 }
 
-/// Builds an `ArchiveTree` from a directory's own files — reused so opening
-/// a directory gets the same tree/checkbox/merge-mark picker UI as opening
-/// an archive, instead of a separate "open everything or nothing" prompt.
-/// Every node is a plain `File`, matching `list_dir_files`'s existing flat,
-/// non-recursive (top-level only, hidden files skipped) listing — there's
-/// nothing to decompress, `full_path` is already the real on-disk path.
+/// Builds an `ArchiveTree` from a directory's own contents — reused so
+/// opening a directory gets the same tree/checkbox/merge-mark picker UI as
+/// opening an archive, instead of a separate "open everything or nothing"
+/// prompt. See [`list_directory_tree_with_limits`] for the recursive shape.
 pub fn list_directory_tree(dir: &str) -> Result<ArchiveTree, String> {
-    let files = crate::utils::filesystem::list_dir_files(dir);
-    if files.is_empty() {
+    list_directory_tree_with_limits(dir, &ListLimits::default())
+}
+
+/// Builds an `ArchiveTree` from a directory's contents, recursively:
+/// subdirectories become plain `Container` nodes (nesting depth is
+/// unbounded — only archive-within-archive nesting is capped by
+/// `AUTO_EXPAND_DEPTH`, since that's the expensive/pathological case this
+/// tree building already guards against for archives), and a file whose
+/// name matches a multi-entry archive format gets its own contents listed
+/// inline too, exactly as if it had been `:open`ed on its own (via
+/// [`list_top_level`], nesting depth reset to 0), rather than shown as an
+/// inert file. Everything else is a plain `disk_path: true` `File` —
+/// `full_path` is always a real, directly-openable on-disk path (see
+/// [`ArchiveNode::disk_path`]).
+pub fn list_directory_tree_with_limits(
+    dir: &str,
+    limits: &ListLimits,
+) -> Result<ArchiveTree, String> {
+    let mut nodes = Vec::new();
+    let mut state = ListingState::new(*limits);
+    let roots = list_directory_entries(dir, None, 0, &mut nodes, &mut state)?;
+    if roots.is_empty() {
         return Err(format!("'{dir}' contains no files."));
     }
-    let mut nodes = Vec::with_capacity(files.len());
-    let mut roots = Vec::with_capacity(files.len());
-    for path in files {
-        let id = nodes.len();
-        let name = std::path::Path::new(&path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&path)
-            .to_string();
-        nodes.push(file_node(id, None, name, path, 0));
-        roots.push(id);
-    }
     Ok(ArchiveTree { nodes, roots })
+}
+
+/// The basename of a real filesystem path — unlike [`basename`] (which
+/// splits on a literal `/`, correct for archive-internal entry paths), this
+/// goes through `std::path::Path` so it's meaningful for actual on-disk
+/// paths.
+fn path_basename(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// Recursively lists `dir`'s entries into `nodes`, anchored at `parent`/
+/// `depth` (tree depth, used for indentation — independent of the
+/// archive-nesting `depth` `list_top_level` tracks, which always resets to 0
+/// for a freshly-discovered archive file regardless of how deep it sits in
+/// the directory tree). Subdirectories are listed before files, both sorted
+/// by name (see `utils::filesystem::list_dir_entries`). Shares `state` with
+/// any archive discovered along the way, so a pathological directory tree is
+/// bounded by the same [`ListLimits::max_entries`] budget.
+fn list_directory_entries(
+    dir: &str,
+    parent: Option<NodeId>,
+    depth: usize,
+    nodes: &mut Vec<ArchiveNode>,
+    state: &mut ListingState,
+) -> Result<Vec<NodeId>, String> {
+    let (files, subdirs) = crate::utils::filesystem::list_dir_entries(dir);
+    let mut children = Vec::new();
+
+    for subdir_path in subdirs {
+        if state.entry_budget_exhausted() {
+            children.push(push_truncated_marker(parent, depth, nodes));
+            break;
+        }
+        let id = nodes.len();
+        state.entry_count += 1;
+        let name = path_basename(&subdir_path);
+        nodes.push(placeholder_container_node(
+            id,
+            parent,
+            name,
+            subdir_path.clone(),
+            depth,
+            true,
+        ));
+        let sub_children = list_directory_entries(&subdir_path, Some(id), depth + 1, nodes, state)?;
+        nodes[id].kind = NodeKind::Container {
+            children: sub_children,
+            archive_type: None,
+        };
+        children.push(id);
+    }
+
+    for file_path in files {
+        if state.entry_budget_exhausted() {
+            children.push(push_truncated_marker(parent, depth, nodes));
+            break;
+        }
+        let name = path_basename(&file_path);
+        match detect_archive_type(&name).filter(is_multi_entry_archive) {
+            Some(archive_type) => {
+                let id = nodes.len();
+                state.entry_count += 1;
+                nodes.push(placeholder_container_node(
+                    id,
+                    parent,
+                    name,
+                    file_path.clone(),
+                    depth,
+                    true,
+                ));
+                nodes[id].kind =
+                    match list_top_level(&file_path, &archive_type, Some(id), 0, nodes, state) {
+                        Ok(archive_children) => NodeKind::Container {
+                            children: archive_children,
+                            archive_type: Some(archive_type),
+                        },
+                        // Named like an archive but didn't actually parse as
+                        // one (or couldn't even be opened) — fall back to a
+                        // plain, selectable file rather than a dead-end row,
+                        // mirroring the nested-archive fallback in
+                        // `list_zip_entries`/`list_tar_entries`.
+                        Err(_) => NodeKind::File,
+                    };
+                children.push(id);
+            }
+            None => {
+                let id = nodes.len();
+                state.entry_count += 1;
+                nodes.push(file_node(id, parent, name, file_path, depth, true));
+                children.push(id);
+            }
+        }
+    }
+
+    Ok(children)
 }
 
 pub fn list_archive_tree_with_limits(
@@ -578,31 +706,39 @@ pub fn list_archive_tree_with_limits(
         .ok_or_else(|| format!("'{}' is not a recognised archive format", path))?;
     let mut nodes = Vec::new();
     let mut state = ListingState::new(*limits);
-    let roots = list_top_level(path, &archive_type, &mut nodes, &mut state)?;
+    let roots = list_top_level(path, &archive_type, None, 0, &mut nodes, &mut state)?;
     Ok(ArchiveTree { nodes, roots })
 }
 
+/// Parses `path`'s own top-level entries into `nodes`, anchored at `parent`/
+/// `depth` — `(None, 0)` for a freestanding `:open some.zip`, or an
+/// already-reserved container id/depth-0 when this archive was instead
+/// discovered as a file sitting inside a directory listing (see
+/// `list_directory_entries`), so it gets the exact same
+/// `AUTO_EXPAND_DEPTH`/`LazyContainer` treatment either way.
 fn list_top_level(
     path: &str,
     archive_type: &ArchiveType,
+    parent: Option<NodeId>,
+    depth: usize,
     nodes: &mut Vec<ArchiveNode>,
     state: &mut ListingState,
 ) -> Result<Vec<NodeId>, String> {
     match archive_type {
         ArchiveType::Zip => {
             let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-            list_zip_entries(file, None, 0, nodes, state)
+            list_zip_entries(file, parent, depth, nodes, state)
         }
         ArchiveType::Tar => {
             let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-            list_tar_entries(file, None, 0, nodes, state, false)
+            list_tar_entries(file, parent, depth, nodes, state, false)
         }
         ArchiveType::TarGz => {
             let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
             list_tar_entries(
                 flate2::read::GzDecoder::new(file),
-                None,
-                0,
+                parent,
+                depth,
                 nodes,
                 state,
                 true,
@@ -612,8 +748,8 @@ fn list_top_level(
             let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
             list_tar_entries(
                 bzip2::read::BzDecoder::new(file),
-                None,
-                0,
+                parent,
+                depth,
                 nodes,
                 state,
                 true,
@@ -621,12 +757,19 @@ fn list_top_level(
         }
         ArchiveType::TarXz => {
             let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-            list_tar_entries(xz2::read::XzDecoder::new(file), None, 0, nodes, state, true)
+            list_tar_entries(
+                xz2::read::XzDecoder::new(file),
+                parent,
+                depth,
+                nodes,
+                state,
+                true,
+            )
         }
         ArchiveType::Gz | ArchiveType::Bz2 | ArchiveType::Xz => {
             let name = stem(&stem(path));
             let id = nodes.len();
-            nodes.push(file_node(id, None, name.clone(), name, 0));
+            nodes.push(file_node(id, parent, name.clone(), name, depth, false));
             state.entry_count += 1;
             Ok(vec![id])
         }
@@ -720,14 +863,14 @@ fn list_zip_entries<R: Read + Seek>(
                 match read_result {
                     Ok(_) => {
                         nodes.push(placeholder_container_node(
-                            id, parent, name, full_path, depth,
+                            id, parent, name, full_path, depth, false,
                         ));
                         nodes[id].kind =
                             match list_nested(&nested_type, buf, Some(id), depth + 1, nodes, state)
                             {
                                 Ok(nested_children) => NodeKind::Container {
                                     children: nested_children,
-                                    archive_type: nested_type,
+                                    archive_type: Some(nested_type),
                                 },
                                 // Named like an archive but didn't actually parse as one
                                 // (garbage bytes, or an empty placeholder file) — fall back
@@ -759,7 +902,7 @@ fn list_zip_entries<R: Read + Seek>(
             None => {
                 let id = nodes.len();
                 state.entry_count += 1;
-                nodes.push(file_node(id, parent, name, full_path, depth));
+                nodes.push(file_node(id, parent, name, full_path, depth, false));
                 children.push(id);
             }
         }
@@ -808,7 +951,7 @@ fn list_tar_entries<R: Read>(
                 match read_result {
                     Ok(_) => {
                         nodes.push(placeholder_container_node(
-                            id, parent, name, full_path, depth,
+                            id, parent, name, full_path, depth, false,
                         ));
                         let cached_bytes = if should_cache {
                             state.cache_bytes(buf.clone())
@@ -821,7 +964,7 @@ fn list_tar_entries<R: Read>(
                             {
                                 Ok(nested_children) => NodeKind::Container {
                                     children: nested_children,
-                                    archive_type: nested_type,
+                                    archive_type: Some(nested_type),
                                 },
                                 // Named like an archive but didn't actually parse as one
                                 // (garbage bytes, or an empty placeholder file) — fall back
@@ -860,7 +1003,7 @@ fn list_tar_entries<R: Read>(
             None => {
                 let id = nodes.len();
                 state.entry_count += 1;
-                let mut node = file_node(id, parent, name, full_path, depth);
+                let mut node = file_node(id, parent, name, full_path, depth, false);
                 if should_cache {
                     let mut buf = Vec::new();
                     if entry.read_to_end(&mut buf).is_ok() {
@@ -873,6 +1016,35 @@ fn list_tar_entries<R: Read>(
         }
     }
     Ok(children)
+}
+
+/// Extracts each of `ids` (assumed to be `File` nodes) to its own temp file,
+/// in order, reporting progress as it goes. Shared by [`extract_by_flag`]
+/// (which resolves `ids` from a whole tree's `selected`/`merge_marked`
+/// flags) and the directory picker's own apply path (`ui::input`), which
+/// needs to extract only the subset of selected/merge-marked files that live
+/// inside a directory-discovered archive — everything else it opens/copies
+/// directly since `full_path` is already a real disk file for those.
+pub(crate) fn extract_ids(
+    path: &str,
+    tree: &ArchiveTree,
+    ids: &[NodeId],
+    progress_tx: tokio::sync::watch::Sender<ArchiveExtractionProgress>,
+) -> Result<Vec<ExtractedFile>, String> {
+    let mut used_names: HashMap<String, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(ids.len());
+    let total = ids.len().max(1);
+    for (i, &node_id) in ids.iter().enumerate() {
+        let bytes = resolve_node_bytes(tree, node_id, path)?;
+        let name = disambiguated_name(tree, node_id, &mut used_names);
+        let extracted = decompress_to_temp(&mut Cursor::new(bytes), name)?;
+        out.push(extracted);
+        let _ = progress_tx.send(ArchiveExtractionProgress {
+            file_index: i,
+            fraction: (i + 1) as f64 / total as f64,
+        });
+    }
+    Ok(out)
 }
 
 /// Extracts every `selected` file in `tree` to its own temp file, skipping
@@ -890,21 +1062,7 @@ fn extract_by_flag(
         .filter(|n| field.get(n) && matches!(n.kind, NodeKind::File))
         .map(|n| n.id)
         .collect();
-
-    let mut used_names: HashMap<String, usize> = HashMap::new();
-    let mut out = Vec::with_capacity(matched.len());
-    let total = matched.len().max(1);
-    for (i, &node_id) in matched.iter().enumerate() {
-        let bytes = resolve_node_bytes(tree, node_id, path)?;
-        let name = disambiguated_name(tree, node_id, &mut used_names);
-        let extracted = decompress_to_temp(&mut Cursor::new(bytes), name)?;
-        out.push(extracted);
-        let _ = progress_tx.send(ArchiveExtractionProgress {
-            file_index: i,
-            fraction: (i + 1) as f64 / total as f64,
-        });
-    }
-    Ok(out)
+    extract_ids(path, tree, &matched, progress_tx)
 }
 
 pub fn extract_selected(
@@ -1026,15 +1184,26 @@ pub(crate) fn resolve_node_bytes(
     if let Some(cached) = &node.cached_bytes {
         return decompress_if_lone_compressed(&node.name, (**cached).clone());
     }
+    // A real, directly-openable path — either a plain file/subdirectory from
+    // a directory listing, or an archive discovered inside one (its own raw
+    // bytes, which the `Some(parent_id)` branch below then decodes an entry
+    // out of for anything nested underneath it). No `path`/decompression
+    // needed, unlike the archive-picker `None` case below.
+    if node.disk_path {
+        return std::fs::read(&node.full_path).map_err(|e| e.to_string());
+    }
     match node.parent {
         None => resolve_root_entry_bytes(path, &node.full_path),
         Some(parent_id) => {
             let parent_bytes = resolve_node_bytes(tree, parent_id, path)?;
             let parent_archive_type = match &tree.nodes[parent_id].kind {
-                NodeKind::Container { archive_type, .. } => archive_type,
+                NodeKind::Container {
+                    archive_type: Some(t),
+                    ..
+                } => t,
                 other => {
                     return Err(format!(
-                        "parent of a nested entry must be a container, got {other:?}"
+                        "parent of a nested entry must be an archive container, got {other:?}"
                     ));
                 }
             };
@@ -1205,6 +1374,7 @@ mod tests {
             merge_marked: false,
             cached_bytes: None,
             collapsed: false,
+            disk_path: false,
         }
     }
 
@@ -1223,12 +1393,13 @@ mod tests {
             depth,
             kind: NodeKind::Container {
                 children,
-                archive_type: ArchiveType::Zip,
+                archive_type: Some(ArchiveType::Zip),
             },
             selected: false,
             merge_marked: false,
             cached_bytes: None,
             collapsed: false,
+            disk_path: false,
         }
     }
 
@@ -1294,15 +1465,119 @@ mod tests {
     }
 
     #[test]
-    fn test_list_directory_tree_excludes_hidden_and_subdirectories() {
+    fn test_list_directory_tree_excludes_hidden_entries() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("visible.log"), b"one").unwrap();
         std::fs::write(tmp.path().join(".hidden.log"), b"two").unwrap();
-        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+        std::fs::create_dir(tmp.path().join(".hidden_dir")).unwrap();
         let tree = list_directory_tree(tmp.path().to_str().unwrap()).unwrap();
 
         assert_eq!(tree.nodes.len(), 1);
         assert_eq!(tree.nodes[0].name, "visible.log");
+    }
+
+    #[test]
+    fn test_list_directory_tree_recurses_into_subdirectories() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("top.log"), b"one").unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+        std::fs::write(tmp.path().join("subdir/nested.log"), b"two").unwrap();
+        let tree = list_directory_tree(tmp.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(tree.roots.len(), 2, "subdir + top.log");
+        let subdir = tree.nodes.iter().find(|n| n.name == "subdir").unwrap();
+        match &subdir.kind {
+            NodeKind::Container {
+                children,
+                archive_type,
+            } => {
+                assert_eq!(*archive_type, None);
+                assert_eq!(children.len(), 1);
+                assert_eq!(tree.nodes[children[0]].name, "nested.log");
+            }
+            other => panic!("expected Container, got {other:?}"),
+        }
+        assert!(subdir.disk_path);
+        assert_eq!(
+            subdir.full_path,
+            tmp.path().join("subdir").to_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_list_directory_tree_lists_archive_file_contents_inline() {
+        let zip_tmp = make_zip(&[("a.log", b"one"), ("b.log", b"two")]);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let zip_path = tmp_dir.path().join("bundle.zip");
+        std::fs::copy(zip_tmp.path(), &zip_path).unwrap();
+        std::fs::write(tmp_dir.path().join("plain.log"), b"plain").unwrap();
+
+        let tree = list_directory_tree(tmp_dir.path().to_str().unwrap()).unwrap();
+
+        let bundle = tree.nodes.iter().find(|n| n.name == "bundle.zip").unwrap();
+        assert!(
+            bundle.disk_path,
+            "the archive file itself is a real on-disk path"
+        );
+        match &bundle.kind {
+            NodeKind::Container {
+                children,
+                archive_type,
+            } => {
+                assert_eq!(*archive_type, Some(ArchiveType::Zip));
+                let mut names: Vec<&str> = children
+                    .iter()
+                    .map(|&id| tree.nodes[id].name.as_str())
+                    .collect();
+                names.sort();
+                assert_eq!(names, vec!["a.log", "b.log"]);
+                for &id in children {
+                    assert!(
+                        !tree.nodes[id].disk_path,
+                        "entries inside the discovered archive are not real disk paths"
+                    );
+                }
+            }
+            other => panic!("expected Container, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_list_directory_tree_file_inside_discovered_archive_round_trips_through_resolve_node_bytes()
+     {
+        let zip_tmp = make_zip(&[("a.log", b"hello from inside the zip")]);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let zip_path = tmp_dir.path().join("bundle.zip");
+        std::fs::copy(zip_tmp.path(), &zip_path).unwrap();
+
+        let tree = list_directory_tree(tmp_dir.path().to_str().unwrap()).unwrap();
+        let a_log_id = tree.nodes.iter().find(|n| n.name == "a.log").unwrap().id;
+
+        // `path` here is intentionally the directory, not the zip — for a
+        // `disk_path` node the walk up to the archive container's own
+        // `full_path` is what actually matters, `path` is never consulted.
+        let bytes = resolve_node_bytes(&tree, a_log_id, tmp_dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(bytes, b"hello from inside the zip");
+    }
+
+    #[test]
+    fn test_list_directory_tree_toggle_subtree_on_subdirectory_marks_nested_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+        std::fs::write(tmp.path().join("subdir/a.log"), b"one").unwrap();
+        std::fs::write(tmp.path().join("subdir/b.log"), b"two").unwrap();
+        let mut tree = list_directory_tree(tmp.path().to_str().unwrap()).unwrap();
+        let subdir_id = tree.nodes.iter().find(|n| n.name == "subdir").unwrap().id;
+
+        tree.toggle_subtree(subdir_id);
+
+        assert!(
+            tree.nodes
+                .iter()
+                .filter(|n| matches!(n.kind, NodeKind::File))
+                .all(|n| n.selected),
+            "ticking the subdirectory container must tick every file inside it"
+        );
     }
 
     #[test]
@@ -1392,7 +1667,7 @@ mod tests {
             } => (children, archive_type),
             other => panic!("expected Container, got {other:?}"),
         };
-        assert_eq!(*archive_type, ArchiveType::Zip);
+        assert_eq!(*archive_type, Some(ArchiveType::Zip));
         let mut names: Vec<&str> = children
             .iter()
             .map(|&id| tree.nodes[id].full_path.as_str())
@@ -1426,7 +1701,7 @@ mod tests {
             } => (children, archive_type),
             other => panic!("expected Container, got {other:?}"),
         };
-        assert_eq!(*archive_type, ArchiveType::Tar);
+        assert_eq!(*archive_type, Some(ArchiveType::Tar));
         let mut names: Vec<&str> = children
             .iter()
             .map(|&id| tree.nodes[id].full_path.as_str())
@@ -1454,7 +1729,7 @@ mod tests {
                 children,
                 archive_type,
             } => {
-                assert_eq!(*archive_type, ArchiveType::Zip);
+                assert_eq!(*archive_type, Some(ArchiveType::Zip));
                 assert_eq!(children.len(), 1);
                 assert_eq!(tree.nodes[children[0]].full_path, "a.log");
                 assert_eq!(tree.nodes[children[0]].depth, 1);
@@ -1478,7 +1753,7 @@ mod tests {
                 children,
                 archive_type,
             } => {
-                assert_eq!(*archive_type, ArchiveType::Tar);
+                assert_eq!(*archive_type, Some(ArchiveType::Tar));
                 assert_eq!(children.len(), 1);
                 assert_eq!(tree.nodes[children[0]].full_path, "a.log");
                 assert_eq!(tree.nodes[children[0]].depth, 1);
@@ -1675,7 +1950,7 @@ mod tests {
                 children,
                 archive_type,
             } => {
-                assert_eq!(*archive_type, ArchiveType::Zip);
+                assert_eq!(*archive_type, Some(ArchiveType::Zip));
                 let mut names: Vec<&str> = children
                     .iter()
                     .map(|&id| tree.nodes[id].full_path.as_str())
@@ -1980,7 +2255,7 @@ mod tests {
                 children,
                 archive_type,
             } => {
-                assert_eq!(*archive_type, ArchiveType::Zip);
+                assert_eq!(*archive_type, Some(ArchiveType::Zip));
                 assert_eq!(children.len(), 1);
                 assert_eq!(tree.nodes[children[0]].full_path, "a.log");
                 assert_eq!(tree.nodes[children[0]].depth, 1);
