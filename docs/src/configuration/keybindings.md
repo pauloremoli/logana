@@ -224,7 +224,9 @@ Shared by both the log panel's `/`/`?` search and the filter manager's `/` searc
   "cancel": "Esc",
   "search": "/",
   "search_toggle": "Ctrl+e",
-  "search_merge_toggle": "Ctrl+m"
+  "search_merge_toggle": "Ctrl+m",
+  "search_select_all": "Ctrl+a",
+  "search_merge_all": "Alt+m"
 }
 ```
 
@@ -255,6 +257,15 @@ their keys are needed as literal query text. `search_toggle` and
 `search_merge_toggle` take their place, marking the selected row for
 extraction/merging without leaving search, so several files sharing a
 prefix can be selected from one query instead of re-searching for each.
+`search_select_all`/`search_merge_all` go further and mark every row
+whose name currently matches the query in one press, rather than just
+the selected row.
+
+`search_merge_all` defaults to `Alt+m` rather than `Ctrl+Shift+m`:
+terminals report Shift inconsistently on Ctrl-chords, so this app's key
+matcher intentionally ignores Shift whenever Ctrl (or Alt) is held —
+meaning a Shift-only variant of `search_merge_toggle`'s `Ctrl+m` could
+never be told apart from it.
 
 Row navigation reuses the same keys as the filter sidebar and log panel
 (from the `navigation` group) rather than duplicating them here: `j`/`k`

@@ -1392,6 +1392,14 @@ fn default_ap_search_toggle() -> KeyBindings {
 fn default_ap_search_merge_toggle() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('m'), KeyModifiers::CONTROL)])
 }
+#[inline(always)]
+fn default_ap_search_select_all() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('a'), KeyModifiers::CONTROL)])
+}
+#[inline(always)]
+fn default_ap_search_merge_all() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('m'), KeyModifiers::ALT)])
+}
 
 /// Keybindings for the archive picker popup (file tree shown when opening
 /// an archive). Deliberately its own struct rather than sharing
@@ -1439,6 +1447,20 @@ pub struct ArchivePickerKeybindings {
     /// reasoning as `search_toggle`, for `merge_toggle`'s key (`m`).
     #[serde(default = "default_ap_search_merge_toggle")]
     pub search_merge_toggle: KeyBindings,
+    /// Marks every row whose name currently matches the search query for
+    /// extraction — unlike `search_toggle` (which only touches the
+    /// selected row), this sweeps every match in one press so files
+    /// sharing a prefix can all be picked from a single query.
+    #[serde(default = "default_ap_search_select_all")]
+    pub search_select_all: KeyBindings,
+    /// Merge-mark equivalent of `search_select_all`. Defaults to `Alt+m`
+    /// rather than `Ctrl+Shift+m`: [`KeyBinding::matches`] intentionally
+    /// ignores Shift whenever Ctrl/Alt is held (terminals report it
+    /// inconsistently for Ctrl-chords), so a Shift-only variant of
+    /// `search_merge_toggle`'s `Ctrl+m` could never be distinguished from
+    /// it — Alt is a modifier `matches` actually checks independently.
+    #[serde(default = "default_ap_search_merge_all")]
+    pub search_merge_all: KeyBindings,
 }
 
 impl Default for ArchivePickerKeybindings {
@@ -1455,6 +1477,8 @@ impl Default for ArchivePickerKeybindings {
             search: default_ap_search(),
             search_toggle: default_ap_search_toggle(),
             search_merge_toggle: default_ap_search_merge_toggle(),
+            search_select_all: default_ap_search_select_all(),
+            search_merge_all: default_ap_search_merge_all(),
         }
     }
 }
@@ -1817,6 +1841,14 @@ impl Keybindings {
                 "archive_picker.search_merge_toggle",
                 &self.archive_picker.search_merge_toggle,
             ),
+            (
+                "archive_picker.search_select_all",
+                &self.archive_picker.search_select_all,
+            ),
+            (
+                "archive_picker.search_merge_all",
+                &self.archive_picker.search_merge_all,
+            ),
         ];
 
         let help_actions: &[(&str, &KeyBindings)] = &[
@@ -2131,6 +2163,14 @@ mod tests {
             ap.search_merge_toggle
                 .matches(KeyCode::Char('m'), KeyModifiers::CONTROL)
         );
+        assert!(
+            ap.search_select_all
+                .matches(KeyCode::Char('a'), KeyModifiers::CONTROL)
+        );
+        assert!(
+            ap.search_merge_all
+                .matches(KeyCode::Char('m'), KeyModifiers::ALT)
+        );
     }
 
     #[test]
@@ -2142,6 +2182,32 @@ mod tests {
         assert!(
             !conflicts.is_empty(),
             "rebinding archive_picker.search_toggle onto archive_picker.search_merge_toggle's key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_if_archive_picker_search_select_all_collides_with_search_toggle()
+     {
+        let mut kb = Keybindings::default();
+        kb.archive_picker.search_select_all = kb.archive_picker.search_toggle.clone();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "rebinding archive_picker.search_select_all onto archive_picker.search_toggle's key must be reported as a conflict"
+        );
+    }
+
+    #[test]
+    fn test_archive_picker_search_merge_all_default_does_not_collide_with_search_merge_toggle() {
+        // Alt+m vs Ctrl+m — different modifiers, must not be flagged even
+        // though both are bound to the 'm' character.
+        let kb = Keybindings::default();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts
+                .iter()
+                .any(|c| c.contains("archive_picker.search_merge_all")),
+            "Alt+m and Ctrl+m must not conflict: {conflicts:?}"
         );
     }
 

@@ -560,6 +560,14 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         action: "Merge mark while searching".into(),
         keys: ap.search_merge_toggle.display(),
     });
+    rows.push(HelpRow::Entry {
+        action: "Select all matching search".into(),
+        keys: ap.search_select_all.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Merge mark all matching search".into(),
+        keys: ap.search_merge_all.display(),
+    });
 
     let h = &kb.help;
     rows.push(HelpRow::Header("Help Mode".to_string()));
@@ -978,6 +986,28 @@ mod tests {
         assert!(
             has_search_merge_toggle,
             "expected a 'Merge mark while searching' entry bound to 'Ctrl+m'"
+        );
+    }
+
+    #[test]
+    fn test_build_help_rows_contains_archive_picker_search_select_all_entries() {
+        let kb = Keybindings::default();
+        let rows = build_help_rows(&kb);
+        let has_search_select_all = rows.iter().any(|r| {
+            matches!(r, HelpRow::Entry { action, keys }
+                if action == "Select all matching search" && keys == "Ctrl+a")
+        });
+        assert!(
+            has_search_select_all,
+            "expected a 'Select all matching search' entry bound to 'Ctrl+a'"
+        );
+        let has_search_merge_all = rows.iter().any(|r| {
+            matches!(r, HelpRow::Entry { action, keys }
+                if action == "Merge mark all matching search" && keys == "Alt+m")
+        });
+        assert!(
+            has_search_merge_all,
+            "expected a 'Merge mark all matching search' entry bound to 'Alt+m'"
         );
     }
 

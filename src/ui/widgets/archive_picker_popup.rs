@@ -264,6 +264,22 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
                 br_style,
             );
             popup_entry(
+                &mut line1,
+                kb.search_select_all.display(),
+                "all",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line1,
+                kb.search_merge_all.display(),
+                "merge all",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
                 &mut line2,
                 self.keybindings.search.confirm.display(),
                 "search",
@@ -817,13 +833,19 @@ mod tests {
             .join("\n");
         assert!(text.contains("Ctrl+e"), "got: {text:?}");
         assert!(text.contains("Ctrl+m"), "got: {text:?}");
+        assert!(text.contains("Ctrl+a"), "got: {text:?}");
+        assert!(text.contains("Alt+m"), "got: {text:?}");
         assert!(
             !text.contains("extract"),
             "the non-search 'extract' hint must not show while searching: {text:?}"
         );
         assert!(
-            !text.contains("all"),
-            "the non-search 'all' hint must not show while searching: {text:?}"
+            !text.contains("expand"),
+            "the non-search 'expand' hint must not show while searching: {text:?}"
+        );
+        assert!(
+            !text.contains("collapse"),
+            "the non-search 'collapse' hint must not show while searching: {text:?}"
         );
     }
 

@@ -148,6 +148,19 @@ impl ArchivePickerMode {
             .collect()
     }
 
+    /// Node ids whose own name matches the current search query directly —
+    /// unlike [`Self::visible_rows`], this excludes ancestor containers
+    /// kept only for context, so "select/merge all matching" doesn't sweep
+    /// in an unmatched sibling just because it shares a matched file's
+    /// parent container.
+    fn matching_ids(&self) -> Vec<NodeId> {
+        self.all_ids
+            .iter()
+            .copied()
+            .filter(|&id| self.search_matcher.is_match(&self.tree.nodes[id].name))
+            .collect()
+    }
+
     fn clamp_selected(&mut self) {
         let count = self.visible_rows().len();
         if count == 0 {
@@ -299,6 +312,18 @@ impl ArchivePickerMode {
         {
             if let Some(&id) = self.visible_rows().get(self.selected) {
                 self.tree.toggle_merge_subtree(id);
+            }
+            return (self, KeyResult::Handled);
+        }
+        if kb.archive_picker.search_select_all.matches(key, modifiers) {
+            for id in self.matching_ids() {
+                self.tree.select_subtree(id);
+            }
+            return (self, KeyResult::Handled);
+        }
+        if kb.archive_picker.search_merge_all.matches(key, modifiers) {
+            for id in self.matching_ids() {
+                self.tree.merge_select_subtree(id);
             }
             return (self, KeyResult::Handled);
         }
@@ -514,6 +539,18 @@ impl Mode for ArchivePickerMode {
                 &mut spans,
                 kb.archive_picker.search_merge_toggle.display(),
                 "merge-mark",
+                theme,
+            );
+            status_entry(
+                &mut spans,
+                kb.archive_picker.search_select_all.display(),
+                "all",
+                theme,
+            );
+            status_entry(
+                &mut spans,
+                kb.archive_picker.search_merge_all.display(),
+                "merge all",
                 theme,
             );
             status_entry(&mut spans, kb.search.confirm.display(), "search", theme);
@@ -1563,6 +1600,120 @@ mod tests {
             extract_search(m.render_state()),
             "in",
             "Ctrl+e must not be appended to the search query"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_a_selects_every_row_matching_search_without_exiting_search() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner").await;
+        let (m, result) = m
+            .handle_key(&mut tab, KeyCode::Char('a'), KeyModifiers::CONTROL)
+            .await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(
+            extract_searching(m.render_state()),
+            "must still be searching after Ctrl+a"
+        );
+        assert_eq!(extract_search(m.render_state()), "inner");
+        let (m2, _) = m
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        let (rows, _, _) = extract_state(m2.render_state());
+        let a_log = rows.iter().find(|r| r.name == "a.log").unwrap();
+        let inner1 = rows.iter().find(|r| r.name == "inner1.log").unwrap();
+        let inner2 = rows.iter().find(|r| r.name == "inner2.log").unwrap();
+        assert_eq!(inner1.check_state, CheckState::Checked);
+        assert_eq!(inner2.check_state, CheckState::Checked);
+        assert_eq!(
+            a_log.check_state,
+            CheckState::Unchecked,
+            "a non-matching row must be untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_a_does_not_select_unmatched_sibling_kept_only_for_ancestor_context() {
+        let mut tab = make_tab().await;
+        // "inner1" matches only "inner1.log" directly; "bundle.zip" is kept
+        // in the narrowed list purely as ancestor context for that match.
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner1").await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('a'), KeyModifiers::CONTROL)
+            .await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        let (rows, _, _) = extract_state(m.render_state());
+        let inner1 = rows.iter().find(|r| r.name == "inner1.log").unwrap();
+        let inner2 = rows.iter().find(|r| r.name == "inner2.log").unwrap();
+        assert_eq!(inner1.check_state, CheckState::Checked);
+        assert_eq!(
+            inner2.check_state,
+            CheckState::Unchecked,
+            "a sibling that didn't itself match must not be swept in just \
+             because its parent container was kept for context"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_a_on_a_directly_matched_container_selects_its_whole_subtree() {
+        let mut tab = make_tab().await;
+        // "bundle" matches the container itself (not its children directly)
+        // — matches search_toggle's existing "toggle a row -> whole subtree"
+        // semantics for containers.
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "bundle").await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('a'), KeyModifiers::CONTROL)
+            .await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        let (rows, _, _) = extract_state(m.render_state());
+        let inner1 = rows.iter().find(|r| r.name == "inner1.log").unwrap();
+        let inner2 = rows.iter().find(|r| r.name == "inner2.log").unwrap();
+        assert_eq!(inner1.check_state, CheckState::Checked);
+        assert_eq!(inner2.check_state, CheckState::Checked);
+    }
+
+    #[tokio::test]
+    async fn test_alt_m_merge_marks_every_row_matching_search_without_exiting_search() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner").await;
+        let (m, result) = m
+            .handle_key(&mut tab, KeyCode::Char('m'), KeyModifiers::ALT)
+            .await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(extract_searching(m.render_state()));
+        assert_eq!(extract_search(m.render_state()), "inner");
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        let (rows, _, _) = extract_state(m.render_state());
+        let inner1 = rows.iter().find(|r| r.name == "inner1.log").unwrap();
+        let inner2 = rows.iter().find(|r| r.name == "inner2.log").unwrap();
+        assert_eq!(inner1.merge_check_state, CheckState::Checked);
+        assert_eq!(inner2.merge_check_state, CheckState::Checked);
+        assert!(
+            rows.iter().all(|r| r.check_state == CheckState::Unchecked),
+            "merge-marking must not affect the extraction checkbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_a_and_alt_m_do_not_get_captured_into_search_query() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "in").await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('a'), KeyModifiers::CONTROL)
+            .await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('m'), KeyModifiers::ALT)
+            .await;
+        assert_eq!(
+            extract_search(m.render_state()),
+            "in",
+            "Ctrl+a/Alt+m must not be appended to the search query"
         );
     }
 

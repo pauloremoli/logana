@@ -291,6 +291,24 @@ impl ArchiveTree {
         }
     }
 
+    /// Unconditionally marks every file in `id`'s subtree (or `id` itself,
+    /// if it's a `File`) — unlike [`Self::toggle_subtree_for`], this never
+    /// flips an already-set file back off, since it's used to bulk-select
+    /// every row matching a search query in one pass, where "already
+    /// selected from an earlier match" must stay selected rather than
+    /// being toggled off by a later, unrelated match sharing a container.
+    fn set_subtree_for(&mut self, id: NodeId, field: MarkField) {
+        match &self.nodes[id].kind {
+            NodeKind::File => field.set(&mut self.nodes[id], true),
+            NodeKind::Container { .. } => {
+                for fid in self.descendant_files(id) {
+                    field.set(&mut self.nodes[fid], true);
+                }
+            }
+            NodeKind::LazyContainer { .. } | NodeKind::UnreadableContainer { .. } => {}
+        }
+    }
+
     pub fn container_check_state(&self, id: NodeId) -> CheckState {
         self.check_state_for(id, MarkField::Selected)
     }
@@ -303,6 +321,10 @@ impl ArchiveTree {
         self.toggle_subtree_for(id, MarkField::Selected);
     }
 
+    pub fn select_subtree(&mut self, id: NodeId) {
+        self.set_subtree_for(id, MarkField::Selected);
+    }
+
     pub fn merge_container_check_state(&self, id: NodeId) -> CheckState {
         self.check_state_for(id, MarkField::MergeMarked)
     }
@@ -313,6 +335,10 @@ impl ArchiveTree {
 
     pub fn toggle_merge_subtree(&mut self, id: NodeId) {
         self.toggle_subtree_for(id, MarkField::MergeMarked);
+    }
+
+    pub fn merge_select_subtree(&mut self, id: NodeId) {
+        self.set_subtree_for(id, MarkField::MergeMarked);
     }
 
     pub fn any_file_selected(&self) -> bool {
@@ -2464,6 +2490,66 @@ mod tests {
             "unrelated container's children must be untouched"
         );
         assert_eq!(tree.container_check_state(4), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn test_select_subtree_file_selects_only_itself() {
+        let mut tree = build_test_tree();
+        tree.select_subtree(0);
+        assert!(tree.nodes[0].selected);
+    }
+
+    #[test]
+    fn test_select_subtree_never_deselects_an_already_selected_file() {
+        let mut tree = build_test_tree();
+        tree.nodes[0].selected = true;
+        tree.select_subtree(0);
+        assert!(
+            tree.nodes[0].selected,
+            "select_subtree must never flip an already-selected file back off"
+        );
+    }
+
+    #[test]
+    fn test_select_subtree_container_selects_all_descendants() {
+        let mut tree = build_test_tree();
+        tree.select_subtree(1);
+        assert!(tree.nodes[2].selected);
+        assert!(tree.nodes[3].selected);
+    }
+
+    #[test]
+    fn test_select_subtree_does_not_affect_unrelated_sibling() {
+        let mut tree = build_test_tree();
+        tree.select_subtree(2); // "inner1.log" under container 1
+        assert!(tree.nodes[2].selected);
+        assert!(
+            !tree.nodes[3].selected,
+            "sibling under the same container must be untouched"
+        );
+    }
+
+    #[test]
+    fn test_merge_select_subtree_file_marks_only_itself() {
+        let mut tree = build_test_tree();
+        tree.merge_select_subtree(0);
+        assert!(tree.nodes[0].merge_marked);
+    }
+
+    #[test]
+    fn test_merge_select_subtree_container_marks_all_descendants() {
+        let mut tree = build_test_tree();
+        tree.merge_select_subtree(1);
+        assert!(tree.nodes[2].merge_marked);
+        assert!(tree.nodes[3].merge_marked);
+    }
+
+    #[test]
+    fn test_merge_select_subtree_never_unmarks_an_already_marked_file() {
+        let mut tree = build_test_tree();
+        tree.nodes[0].merge_marked = true;
+        tree.merge_select_subtree(0);
+        assert!(tree.nodes[0].merge_marked);
     }
 
     #[test]
