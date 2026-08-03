@@ -286,6 +286,22 @@ impl ArchivePickerMode {
             self.selected = self.selected.saturating_sub(1);
             return (self, KeyResult::Handled);
         }
+        if kb.archive_picker.search_toggle.matches(key, modifiers) {
+            if let Some(&id) = self.visible_rows().get(self.selected) {
+                self.tree.toggle_subtree(id);
+            }
+            return (self, KeyResult::Handled);
+        }
+        if kb
+            .archive_picker
+            .search_merge_toggle
+            .matches(key, modifiers)
+        {
+            if let Some(&id) = self.visible_rows().get(self.selected) {
+                self.tree.toggle_merge_subtree(id);
+            }
+            return (self, KeyResult::Handled);
+        }
         match key {
             KeyCode::Backspace => {
                 self.search.pop();
@@ -487,6 +503,23 @@ impl Mode for ArchivePickerMode {
                 .fg(theme.text_highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )];
+        if self.searching {
+            status_entry(
+                &mut spans,
+                kb.archive_picker.search_toggle.display(),
+                "toggle",
+                theme,
+            );
+            status_entry(
+                &mut spans,
+                kb.archive_picker.search_merge_toggle.display(),
+                "merge-mark",
+                theme,
+            );
+            status_entry(&mut spans, kb.search.confirm.display(), "search", theme);
+            status_entry(&mut spans, kb.search.cancel.display(), "cancel", theme);
+            return Line::from(spans);
+        }
         status_entry(
             &mut spans,
             kb.archive_picker.toggle.display(),
@@ -1416,6 +1449,121 @@ mod tests {
         assert_eq!(rows.len(), 4);
         assert_eq!(selected, 2);
         assert_eq!(rows[selected].name, "inner1.log");
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_e_toggles_extraction_while_searching_without_exiting_search() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner1").await;
+        // Narrowed to ["bundle.zip", "inner1.log"], selected is "bundle.zip".
+        let (m, result) = m
+            .handle_key(&mut tab, KeyCode::Char('e'), KeyModifiers::CONTROL)
+            .await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(
+            extract_searching(m.render_state()),
+            "must still be searching after Ctrl+e"
+        );
+        assert_eq!(extract_search(m.render_state()), "inner1");
+        let (rows, _, _) = extract_state(m.render_state());
+        // Toggling the container ("bundle.zip") marks its whole subtree.
+        assert!(
+            rows.iter().all(|r| r.check_state == CheckState::Checked),
+            "Ctrl+e on the selected row must toggle extraction"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_m_toggles_merge_mark_while_searching_without_exiting_search() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner1").await;
+        let (m, result) = m
+            .handle_key(&mut tab, KeyCode::Char('m'), KeyModifiers::CONTROL)
+            .await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(extract_searching(m.render_state()));
+        assert_eq!(extract_search(m.render_state()), "inner1");
+        let (rows, _, _) = extract_state(m.render_state());
+        assert!(
+            rows.iter()
+                .all(|r| r.merge_check_state == CheckState::Checked),
+            "Ctrl+m on the selected row must toggle the merge mark"
+        );
+        assert!(
+            rows.iter().all(|r| r.check_state == CheckState::Unchecked),
+            "merge-marking must not affect the extraction checkbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_e_operates_on_narrowed_selection_not_full_list_index() {
+        let mut tab = make_tab().await;
+        let mut m = mode();
+        m.selected = 3; // "inner2.log" in the full list — must not matter.
+        let (m, _) = enter_search_and_type(m, &mut tab, "inner1").await;
+        // Narrowed list is ["bundle.zip", "inner1.log"]; step onto the file
+        // row so the container's subtree-wide toggle doesn't also catch
+        // "inner2.log".
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('e'), KeyModifiers::CONTROL)
+            .await;
+        // Confirm the search to inspect the full list.
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        let (rows, _, _) = extract_state(m.render_state());
+        assert_eq!(rows[3].name, "inner2.log");
+        assert_eq!(
+            rows[3].check_state,
+            CheckState::Unchecked,
+            "the row outside the narrowed search results must be untouched"
+        );
+        assert_eq!(rows[2].name, "inner1.log");
+        assert_eq!(rows[2].check_state, CheckState::Checked);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_ctrl_e_toggles_survive_further_narrowing() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner").await;
+        // Narrowed to ["bundle.zip", "inner1.log", "inner2.log"], selected at 0.
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await; // -> "inner1.log"
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('e'), KeyModifiers::CONTROL)
+            .await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE)
+            .await; // -> "inner2.log"
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('e'), KeyModifiers::CONTROL)
+            .await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        let (rows, _, _) = extract_state(m.render_state());
+        let inner1 = rows.iter().find(|r| r.name == "inner1.log").unwrap();
+        let inner2 = rows.iter().find(|r| r.name == "inner2.log").unwrap();
+        assert_eq!(inner1.check_state, CheckState::Checked);
+        assert_eq!(inner2.check_state, CheckState::Checked);
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_e_does_not_get_captured_into_search_query() {
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "in").await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('e'), KeyModifiers::CONTROL)
+            .await;
+        assert_eq!(
+            extract_search(m.render_state()),
+            "in",
+            "Ctrl+e must not be appended to the search query"
+        );
     }
 
     #[tokio::test]

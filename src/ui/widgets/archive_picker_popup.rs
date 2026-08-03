@@ -245,79 +245,114 @@ impl<'a> Widget for ArchivePickerPopup<'a> {
         let txt_style = Style::default().fg(self.theme.text);
         let br_style = Style::default().fg(self.theme.text);
         let mut line1: Vec<Span<'static>> = Vec::new();
-        popup_entry(
-            &mut line1,
-            kb.toggle.display(),
-            "toggle",
-            key_style,
-            txt_style,
-            br_style,
-        );
-        popup_entry(
-            &mut line1,
-            kb.merge_toggle.display(),
-            "merge",
-            key_style,
-            txt_style,
-            br_style,
-        );
-        popup_entry(
-            &mut line1,
-            kb.expand.display(),
-            "expand",
-            key_style,
-            txt_style,
-            br_style,
-        );
-        popup_entry(
-            &mut line1,
-            kb.collapse.display(),
-            "collapse",
-            key_style,
-            txt_style,
-            br_style,
-        );
-        popup_entry(
-            &mut line1,
-            kb.all.display(),
-            "all",
-            key_style,
-            txt_style,
-            br_style,
-        );
-        popup_entry(
-            &mut line1,
-            kb.none.display(),
-            "none",
-            key_style,
-            txt_style,
-            br_style,
-        );
-        popup_entry(
-            &mut line1,
-            kb.search.display(),
-            "search",
-            key_style,
-            txt_style,
-            br_style,
-        );
         let mut line2: Vec<Span<'static>> = Vec::new();
-        popup_entry(
-            &mut line2,
-            kb.apply.display(),
-            "extract",
-            key_style,
-            txt_style,
-            br_style,
-        );
-        popup_entry(
-            &mut line2,
-            kb.cancel.display(),
-            "cancel",
-            key_style,
-            txt_style,
-            br_style,
-        );
+        if self.searching {
+            popup_entry(
+                &mut line1,
+                kb.search_toggle.display(),
+                "toggle",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line1,
+                kb.search_merge_toggle.display(),
+                "merge",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line2,
+                self.keybindings.search.confirm.display(),
+                "search",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line2,
+                self.keybindings.search.cancel.display(),
+                "cancel",
+                key_style,
+                txt_style,
+                br_style,
+            );
+        } else {
+            popup_entry(
+                &mut line1,
+                kb.toggle.display(),
+                "toggle",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line1,
+                kb.merge_toggle.display(),
+                "merge",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line1,
+                kb.expand.display(),
+                "expand",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line1,
+                kb.collapse.display(),
+                "collapse",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line1,
+                kb.all.display(),
+                "all",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line1,
+                kb.none.display(),
+                "none",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line1,
+                kb.search.display(),
+                "search",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line2,
+                kb.apply.display(),
+                "extract",
+                key_style,
+                txt_style,
+                br_style,
+            );
+            popup_entry(
+                &mut line2,
+                kb.cancel.display(),
+                "cancel",
+                key_style,
+                txt_style,
+                br_style,
+            );
+        }
         let footer = vec![Line::from(line1), Line::from(line2)];
         Paragraph::new(footer)
             .style(Style::default().bg(self.theme.root_bg))
@@ -758,5 +793,61 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("/err"));
+    }
+
+    #[test]
+    fn test_footer_shows_search_toggle_keys_while_searching() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let rows = vec![row("a.log")];
+        let popup = ArchivePickerPopup {
+            theme: &theme,
+            keybindings: &kb,
+            rows: &rows,
+            selected: 0,
+            source_path: "archive.zip",
+            search: "a",
+            searching: true,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
+        let text: String = (0..15)
+            .map(|y| row_text(buf.buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Ctrl+e"), "got: {text:?}");
+        assert!(text.contains("Ctrl+m"), "got: {text:?}");
+        assert!(
+            !text.contains("extract"),
+            "the non-search 'extract' hint must not show while searching: {text:?}"
+        );
+        assert!(
+            !text.contains("all"),
+            "the non-search 'all' hint must not show while searching: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_footer_shows_normal_keys_when_not_searching() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let rows = vec![row("a.log")];
+        let popup = ArchivePickerPopup {
+            theme: &theme,
+            keybindings: &kb,
+            rows: &rows,
+            selected: 0,
+            source_path: "archive.zip",
+            search: "",
+            searching: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
+        let text: String = (0..15)
+            .map(|y| row_text(buf.buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("extract"), "got: {text:?}");
+        assert!(!text.contains("Ctrl+e"), "got: {text:?}");
     }
 }

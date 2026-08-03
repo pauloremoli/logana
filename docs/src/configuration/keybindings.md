@@ -222,7 +222,9 @@ Shared by both the log panel's `/`/`?` search and the filter manager's `/` searc
   "none": "n",
   "apply": "Enter",
   "cancel": "Esc",
-  "search": "/"
+  "search": "/",
+  "search_toggle": "Ctrl+e",
+  "search_merge_toggle": "Ctrl+m"
 }
 ```
 
@@ -247,6 +249,12 @@ files (keeping their containing archive visible for context) — `Enter`
 confirms and un-narrows the list, `Esc` cancels back to the pre-search
 selection. An invalid/incomplete regex (e.g. while still typing) falls back
 to a plain substring match rather than matching nothing.
+
+While searching, `toggle`/`merge_toggle`/`all`/`none` are unavailable —
+their keys are needed as literal query text. `search_toggle` and
+`search_merge_toggle` take their place, marking the selected row for
+extraction/merging without leaving search, so several files sharing a
+prefix can be selected from one query instead of re-searching for each.
 
 Row navigation reuses the same keys as the filter sidebar and log panel
 (from the `navigation` group) rather than duplicating them here: `j`/`k`

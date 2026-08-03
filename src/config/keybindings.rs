@@ -1384,6 +1384,14 @@ fn default_ap_cancel() -> KeyBindings {
 fn default_ap_search() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('/'), KeyModifiers::NONE)])
 }
+#[inline(always)]
+fn default_ap_search_toggle() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('e'), KeyModifiers::CONTROL)])
+}
+#[inline(always)]
+fn default_ap_search_merge_toggle() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('m'), KeyModifiers::CONTROL)])
+}
 
 /// Keybindings for the archive picker popup (file tree shown when opening
 /// an archive). Deliberately its own struct rather than sharing
@@ -1420,6 +1428,17 @@ pub struct ArchivePickerKeybindings {
     pub cancel: KeyBindings,
     #[serde(default = "default_ap_search")]
     pub search: KeyBindings,
+    /// Toggles the selected row for extraction while [`ArchivePickerMode`]
+    /// is in search-typeahead mode — `toggle`'s key (`Space` by default)
+    /// can't be reused there since it's needed as literal query text.
+    ///
+    /// [`ArchivePickerMode`]: crate::mode::archive_picker_mode::ArchivePickerMode
+    #[serde(default = "default_ap_search_toggle")]
+    pub search_toggle: KeyBindings,
+    /// Toggles the selected row's merge mark while searching — same
+    /// reasoning as `search_toggle`, for `merge_toggle`'s key (`m`).
+    #[serde(default = "default_ap_search_merge_toggle")]
+    pub search_merge_toggle: KeyBindings,
 }
 
 impl Default for ArchivePickerKeybindings {
@@ -1434,6 +1453,8 @@ impl Default for ArchivePickerKeybindings {
             apply: default_ap_apply(),
             cancel: default_ap_cancel(),
             search: default_ap_search(),
+            search_toggle: default_ap_search_toggle(),
+            search_merge_toggle: default_ap_search_merge_toggle(),
         }
     }
 }
@@ -1788,6 +1809,14 @@ impl Keybindings {
             ("archive_picker.apply", &self.archive_picker.apply),
             ("archive_picker.cancel", &self.archive_picker.cancel),
             ("archive_picker.search", &self.archive_picker.search),
+            (
+                "archive_picker.search_toggle",
+                &self.archive_picker.search_toggle,
+            ),
+            (
+                "archive_picker.search_merge_toggle",
+                &self.archive_picker.search_merge_toggle,
+            ),
         ];
 
         let help_actions: &[(&str, &KeyBindings)] = &[
@@ -2094,6 +2123,26 @@ mod tests {
         assert!(ap.apply.matches(KeyCode::Enter, KeyModifiers::NONE));
         assert!(ap.cancel.matches(KeyCode::Esc, KeyModifiers::NONE));
         assert!(ap.search.matches(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert!(
+            ap.search_toggle
+                .matches(KeyCode::Char('e'), KeyModifiers::CONTROL)
+        );
+        assert!(
+            ap.search_merge_toggle
+                .matches(KeyCode::Char('m'), KeyModifiers::CONTROL)
+        );
+    }
+
+    #[test]
+    fn test_validate_detects_conflict_if_archive_picker_search_toggle_collides_with_search_merge_toggle()
+     {
+        let mut kb = Keybindings::default();
+        kb.archive_picker.search_toggle = kb.archive_picker.search_merge_toggle.clone();
+        let conflicts = kb.validate();
+        assert!(
+            !conflicts.is_empty(),
+            "rebinding archive_picker.search_toggle onto archive_picker.search_merge_toggle's key must be reported as a conflict"
+        );
     }
 
     #[test]

@@ -552,6 +552,14 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         action: "Search".into(),
         keys: ap.search.display(),
     });
+    rows.push(HelpRow::Entry {
+        action: "Toggle while searching".into(),
+        keys: ap.search_toggle.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Merge mark while searching".into(),
+        keys: ap.search_merge_toggle.display(),
+    });
 
     let h = &kb.help;
     rows.push(HelpRow::Header("Help Mode".to_string()));
@@ -948,6 +956,28 @@ mod tests {
         assert!(
             has_merge_mark,
             "expected a 'Merge mark' entry bound to 'm' in the Archive Picker Mode section"
+        );
+    }
+
+    #[test]
+    fn test_build_help_rows_contains_archive_picker_search_toggle_entries() {
+        let kb = Keybindings::default();
+        let rows = build_help_rows(&kb);
+        let has_search_toggle = rows.iter().any(|r| {
+            matches!(r, HelpRow::Entry { action, keys }
+                if action == "Toggle while searching" && keys == "Ctrl+e")
+        });
+        assert!(
+            has_search_toggle,
+            "expected a 'Toggle while searching' entry bound to 'Ctrl+e'"
+        );
+        let has_search_merge_toggle = rows.iter().any(|r| {
+            matches!(r, HelpRow::Entry { action, keys }
+                if action == "Merge mark while searching" && keys == "Ctrl+m")
+        });
+        assert!(
+            has_search_merge_toggle,
+            "expected a 'Merge mark while searching' entry bound to 'Ctrl+m'"
         );
     }
 
