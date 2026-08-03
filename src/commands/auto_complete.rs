@@ -15,6 +15,7 @@ pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
     ("set-color", &["--fg", "--bg", "-l"]),
     ("date-filter", &["--fg", "--bg", "-l"]),
     ("export", &["-t", "--template"]),
+    ("group", &["--fg", "--bg", "-l", "--auto", "--clear"]),
 ];
 
 /// If the current token being typed starts with `-` and there is at least one
@@ -1265,6 +1266,12 @@ mod tests {
         assert!(flags.contains(&"--fg"));
         assert!(flags.contains(&"--bg"));
         assert!(flags.contains(&"-l"));
+    }
+
+    #[test]
+    fn test_complete_flags_group() {
+        let flags = complete_flags("group", "--f");
+        assert!(flags.contains(&"--fg"));
     }
 
     #[test]

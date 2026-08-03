@@ -111,6 +111,18 @@ If any filter in the group is enabled, this disables the whole group; otherwise 
 
 Grouped filters show their group name in brackets in the filter sidebar, e.g. `[x] In: [errors] ERROR (12)`.
 
+A group can also have its own predefined color, used by any filter in the group that doesn't set its own `--fg`/`--bg`/`-l`:
+
+```sh
+:group errors --fg Red --bg Black
+:group errors --auto
+:group errors --clear
+```
+
+`--auto` generates a random readable color pair, same as `:filter --auto`. `--clear` removes the group's style. A filter's own color always takes priority over its group's — only filters with no color of their own fall back to it. Groups can be styled before any filter uses them.
+
+The `[groupname]` tag in the sidebar is also colored with the group's style when it has one, regardless of whether the filter itself has its own color.
+
 ## Highlight Colors
 
 Each include filter highlights its matching byte spans in the log line. The color is configurable per filter. When no color is set, logana uses a default highlight style from the active theme.

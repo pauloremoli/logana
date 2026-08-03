@@ -137,6 +137,17 @@ pub const COMMANDS: &[CommandInfo] = &[
         examples: &["toggle-group errors"],
     },
     CommandInfo {
+        name: "group",
+        usage: "group <name> [--fg <color>] [--bg <color>] [-l] [-a] [--clear]",
+        description: "Set, update, or clear a predefined color style for a filter group; filters in the group with no color of their own fall back to it.",
+        examples: &[
+            "group errors --fg Red",
+            "group errors --fg Red --bg Black -l",
+            "group errors --auto",
+            "group errors --clear",
+        ],
+    },
+    CommandInfo {
         name: "filtering",
         usage: "filtering",
         description: "Toggle global filtering on/off (bypass all filters).",
@@ -378,6 +389,12 @@ mod tests {
     fn test_find_matching_command_highlight() {
         let cmd = find_matching_command("highlight").unwrap();
         assert_eq!(cmd.name, "highlight");
+    }
+
+    #[test]
+    fn test_find_matching_command_group() {
+        let cmd = find_matching_command("group").unwrap();
+        assert_eq!(cmd.name, "group");
     }
 
     #[test]

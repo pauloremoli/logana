@@ -1275,7 +1275,9 @@ pub struct FilterDef {
     pub group: Option<String>,
 }
 
-/// Distinct group names present among `filters`, sorted alphabetically.
+/// Distinct group names referenced by `filters`, sorted alphabetically. Does
+/// not include groups that only have a predefined style but no filters yet —
+/// see `LogManager::group_names` for the union with those.
 pub fn known_groups(filters: &[FilterDef]) -> Vec<String> {
     filters
         .iter()
@@ -1283,6 +1285,38 @@ pub fn known_groups(filters: &[FilterDef]) -> Vec<String> {
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+/// A predefined visual style for a named filter group. Filters belonging to
+/// the group fall back to this style when they have no `color_config` of
+/// their own (see `effective_color_config`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GroupDef {
+    pub name: String,
+    pub color_config: Option<ColorConfig>,
+}
+
+/// The predefined style for group `name`, if one has been set.
+pub fn group_style<'a>(groups: &'a [GroupDef], name: &str) -> Option<&'a ColorConfig> {
+    groups
+        .iter()
+        .find(|g| g.name == name)
+        .and_then(|g| g.color_config.as_ref())
+}
+
+/// Resolves the `ColorConfig` that should actually style `filter`: its own
+/// `color_config` if set, otherwise (only when the filter's `color_config`
+/// is entirely `None`) the style predefined on the filter's group, if any.
+/// A filter's own color_config — even set only partially (e.g. just `fg`) —
+/// always wins outright over its group's style; the two are never merged.
+pub fn effective_color_config<'a>(
+    filter: &'a FilterDef,
+    groups: &'a [GroupDef],
+) -> Option<&'a ColorConfig> {
+    if filter.color_config.is_some() {
+        return filter.color_config.as_ref();
+    }
+    group_style(groups, filter.group.as_deref()?)
 }
 
 #[cfg(test)]
@@ -1300,6 +1334,105 @@ mod tests {
         let path = f.path().to_str().unwrap().to_string();
         let reader = FileReader::new(&path).unwrap();
         (f, reader)
+    }
+
+    fn make_filter_def(color_config: Option<ColorConfig>, group: Option<&str>) -> FilterDef {
+        FilterDef {
+            id: 0,
+            pattern: "ERROR".to_string(),
+            filter_type: FilterType::Include,
+            enabled: true,
+            color_config,
+            use_regex: false,
+            ignore_case: false,
+            group: group.map(|g| g.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_group_style_returns_config_for_matching_name() {
+        let cc = ColorConfig {
+            fg: Some(ratatui::style::Color::Red),
+            bg: None,
+            match_only: true,
+        };
+        let groups = vec![GroupDef {
+            name: "g".to_string(),
+            color_config: Some(cc.clone()),
+        }];
+        assert_eq!(group_style(&groups, "g"), Some(&cc));
+    }
+
+    #[test]
+    fn test_group_style_none_for_unknown_name() {
+        let groups: Vec<GroupDef> = Vec::new();
+        assert_eq!(group_style(&groups, "missing"), None);
+    }
+
+    #[test]
+    fn test_effective_color_config_filter_own_config_wins_over_group() {
+        let filter_cc = ColorConfig {
+            fg: Some(ratatui::style::Color::Red),
+            bg: None,
+            match_only: true,
+        };
+        let filter = make_filter_def(Some(filter_cc.clone()), Some("g"));
+        let group_cc = ColorConfig {
+            fg: Some(ratatui::style::Color::Blue),
+            bg: Some(ratatui::style::Color::Black),
+            match_only: false,
+        };
+        let groups = vec![GroupDef {
+            name: "g".to_string(),
+            color_config: Some(group_cc),
+        }];
+        assert_eq!(effective_color_config(&filter, &groups), Some(&filter_cc));
+    }
+
+    #[test]
+    fn test_effective_color_config_falls_back_to_group_style_when_filter_has_none() {
+        let filter = make_filter_def(None, Some("g"));
+        let group_cc = ColorConfig {
+            fg: Some(ratatui::style::Color::Blue),
+            bg: None,
+            match_only: true,
+        };
+        let groups = vec![GroupDef {
+            name: "g".to_string(),
+            color_config: Some(group_cc.clone()),
+        }];
+        assert_eq!(effective_color_config(&filter, &groups), Some(&group_cc));
+    }
+
+    #[test]
+    fn test_effective_color_config_none_when_group_has_no_style() {
+        let filter = make_filter_def(None, Some("g"));
+        let groups = vec![GroupDef {
+            name: "g".to_string(),
+            color_config: None,
+        }];
+        assert_eq!(effective_color_config(&filter, &groups), None);
+    }
+
+    #[test]
+    fn test_effective_color_config_none_when_no_group() {
+        let filter = make_filter_def(None, None);
+        let groups: Vec<GroupDef> = Vec::new();
+        assert_eq!(effective_color_config(&filter, &groups), None);
+    }
+
+    #[test]
+    fn test_effective_color_config_none_when_group_not_found() {
+        let filter = make_filter_def(None, Some("missing"));
+        let groups = vec![GroupDef {
+            name: "other".to_string(),
+            color_config: Some(ColorConfig {
+                fg: Some(ratatui::style::Color::Red),
+                bg: None,
+                match_only: true,
+            }),
+        }];
+        assert_eq!(effective_color_config(&filter, &groups), None);
     }
 
     #[test]

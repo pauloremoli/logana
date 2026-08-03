@@ -227,6 +227,19 @@ impl CommandMode {
                 .collect();
         }
 
+        // group: complete the group-name argument with known group names
+        // (both groups referenced by filters and predefined-but-filterless
+        // groups — see `LogManager::group_names`).
+        if let Some(partial) = Self::arg_partial(input, "group") {
+            return tab
+                .log_manager
+                .group_names()
+                .into_iter()
+                .filter(|g| fuzzy_match(partial, g))
+                .map(|g| format!("group {g}"))
+                .collect();
+        }
+
         // sidebar-position: complete with the two valid sides
         if let Some(partial) = Self::arg_partial(input, "sidebar-position") {
             return ["left", "right"]
@@ -1184,6 +1197,22 @@ mod tests {
         assert!(
             completions.contains(&"toggle-group errors".to_string()),
             "Expected 'toggle-group errors' in completions, got: {completions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_group_autocomplete_suggests_filterless_predefined_groups() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let mut lm = LogManager::new(db, None).await;
+        lm.set_group_style("errors", Some("Red"), None, true).await;
+        let tab = TabState::new(fr, lm, "test".to_string());
+
+        let mode = CommandMode::with_history("group ".to_string(), 6, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"group errors".to_string()),
+            "Expected 'group errors' in completions, got: {completions:?}"
         );
     }
 

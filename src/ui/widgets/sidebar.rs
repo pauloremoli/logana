@@ -4,12 +4,13 @@ use ratatui::{
 };
 
 use crate::commands::auto_complete::regex_search_match;
-use crate::filters::{FilterDef, FilterType};
+use crate::filters::{FilterDef, FilterType, GroupDef};
 use crate::theme::Theme;
 use crate::ui::field_layout::line_row_count;
 
 pub struct Sidebar<'a> {
     pub filters: &'a [FilterDef],
+    pub groups: &'a [GroupDef],
     pub match_counts: &'a [usize],
     pub selected_filter_idx: usize,
     pub filter_enabled: bool,
@@ -34,16 +35,18 @@ pub struct Sidebar<'a> {
     pub theme: &'a Theme,
 }
 
-/// Splits a filter row into `(prefix, value, suffix)`, where `value` is the
-/// filter's pattern text (the part the filter's color highlight should apply
-/// to) and `prefix`/`suffix` are the surrounding metadata (checkbox, type,
-/// group tag, field tag, match count).
+/// Splits a filter row into `(prefix, group_tag, value, suffix)`, where
+/// `value` is the filter's pattern text (the part the filter's color
+/// highlight should apply to), `group_tag` is the `[name] ` tag (styled with
+/// the group's own predefined color, if any — kept separate from `prefix` so
+/// it can be colored independently), and `prefix`/`suffix` are the remaining
+/// metadata (checkbox, type, field tag, match count).
 fn filter_row_parts(
     filter: &FilterDef,
     idx: usize,
     selected: usize,
     match_counts: &[usize],
-) -> (String, String, String) {
+) -> (String, String, String, String) {
     let status = if filter.enabled { "[x]" } else { "[ ]" };
     let selected_prefix = if idx == selected { ">" } else { " " };
     let is_date = filter.pattern.starts_with(crate::filters::DATE_PREFIX);
@@ -91,12 +94,9 @@ fn filter_row_parts(
     } else {
         String::new()
     };
-    let prefix = format!(
-        "{}{} {}: {}",
-        selected_prefix, status, filter_type_str, group_tag
-    );
+    let prefix = format!("{}{} {}: ", selected_prefix, status, filter_type_str);
     let suffix = format!("{}{}{}", field_tag, ignore_case_tag, count_str);
-    (prefix, display_pattern, suffix)
+    (prefix, group_tag, display_pattern, suffix)
 }
 
 /// Returns the plain display text for a filter row (no styling).
@@ -107,8 +107,8 @@ pub fn filter_row_display_text(
     selected: usize,
     match_counts: &[usize],
 ) -> String {
-    let (prefix, value, suffix) = filter_row_parts(filter, idx, selected, match_counts);
-    format!("{prefix}{value}{suffix}")
+    let (prefix, group_tag, value, suffix) = filter_row_parts(filter, idx, selected, match_counts);
+    format!("{prefix}{group_tag}{value}{suffix}")
 }
 
 /// Indices (into `filters`) of entries whose rendered row text matches the
@@ -141,14 +141,15 @@ fn build_filter_row(
     selected: usize,
     match_counts: &[usize],
     theme: &Theme,
+    groups: &[GroupDef],
 ) -> Line<'static> {
-    let (prefix, value, suffix) = filter_row_parts(filter, idx, selected, match_counts);
+    let (prefix, group_tag, value, suffix) = filter_row_parts(filter, idx, selected, match_counts);
     let mut default_style = Style::default().fg(theme.text);
     if idx == selected {
         default_style = default_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     }
     let mut value_style = default_style;
-    if let Some(cfg) = &filter.color_config {
+    if let Some(cfg) = crate::filters::effective_color_config(filter, groups) {
         if let Some(fg) = cfg.fg {
             value_style = value_style.fg(fg);
         }
@@ -156,8 +157,22 @@ fn build_filter_row(
             value_style = value_style.bg(bg);
         }
     }
+    let mut group_tag_style = default_style;
+    if let Some(cfg) = filter
+        .group
+        .as_deref()
+        .and_then(|name| crate::filters::group_style(groups, name))
+    {
+        if let Some(fg) = cfg.fg {
+            group_tag_style = group_tag_style.fg(fg);
+        }
+        if let Some(bg) = cfg.bg {
+            group_tag_style = group_tag_style.bg(bg);
+        }
+    }
     Line::from(vec![
         Span::styled(prefix, default_style),
+        Span::styled(group_tag, group_tag_style),
         Span::styled(value, value_style),
         Span::styled(suffix, default_style),
     ])
@@ -305,6 +320,7 @@ impl<'a> Widget for Sidebar<'a> {
                     self.selected_filter_idx,
                     self.match_counts,
                     self.theme,
+                    self.groups,
                 )
             })
             .collect();
@@ -382,6 +398,7 @@ mod tests {
         ];
         let sidebar = Sidebar {
             filters: &filters,
+            groups: &[],
             match_counts: &[1, 2],
             selected_filter_idx: 0,
             filter_enabled: true,
@@ -423,6 +440,7 @@ mod tests {
         let theme = Theme::default();
         let sidebar = Sidebar {
             filters: &[],
+            groups: &[],
             match_counts: &[],
             selected_filter_idx: 0,
             filter_enabled: true,
@@ -482,6 +500,7 @@ mod tests {
             compute_scroll_offset(&filters, selected, &match_counts, content_w, content_h, 0);
         let sidebar = Sidebar {
             filters: &filters,
+            groups: &[],
             match_counts: &match_counts,
             selected_filter_idx: selected,
             filter_enabled: true,
@@ -523,6 +542,7 @@ mod tests {
         let theme = Theme::default();
         let sidebar = Sidebar {
             filters: &[],
+            groups: &[],
             match_counts: &[],
             selected_filter_idx: 0,
             filter_enabled: true,
@@ -552,6 +572,7 @@ mod tests {
         let match_counts = vec![5, 0];
         let sidebar = Sidebar {
             filters: &filters,
+            groups: &[],
             match_counts: &match_counts,
             selected_filter_idx: 0,
             filter_enabled: true,
@@ -692,7 +713,7 @@ mod tests {
     fn test_build_filter_row_include() {
         let theme = Theme::default();
         let filter = make_filter("hello", true, FilterType::Include);
-        let line = build_filter_row(&filter, 0, 0, &[3], &theme);
+        let line = build_filter_row(&filter, 0, 0, &[3], &theme, &[]);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains(">[x]"));
         assert!(text.contains("In"));
@@ -704,7 +725,7 @@ mod tests {
     fn test_build_filter_row_highlight() {
         let theme = Theme::default();
         let filter = make_filter("hello", true, FilterType::Highlight);
-        let line = build_filter_row(&filter, 0, 0, &[3], &theme);
+        let line = build_filter_row(&filter, 0, 0, &[3], &theme, &[]);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains(">[x] H:"));
         assert!(text.contains("hello"));
@@ -721,7 +742,7 @@ mod tests {
             bg: None,
             match_only: true,
         });
-        let line = build_filter_row(&filter, 0, 0, &[3], &theme);
+        let line = build_filter_row(&filter, 0, 0, &[3], &theme, &[]);
 
         let value_span = line
             .spans
@@ -741,10 +762,145 @@ mod tests {
     }
 
     #[test]
+    fn test_build_filter_row_uses_group_style_when_filter_color_is_none() {
+        use crate::filters::{ColorConfig, GroupDef};
+        let theme = Theme::default();
+        let mut filter = make_filter("hello", true, FilterType::Include);
+        filter.group = Some("errs".to_string());
+        let groups = vec![GroupDef {
+            name: "errs".to_string(),
+            color_config: Some(ColorConfig {
+                fg: Some(ratatui::style::Color::Red),
+                bg: None,
+                match_only: true,
+            }),
+        }];
+        let line = build_filter_row(&filter, 0, 0, &[3], &theme, &groups);
+
+        let value_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "hello")
+            .expect("value span present");
+        assert_eq!(value_span.style.fg, Some(ratatui::style::Color::Red));
+    }
+
+    #[test]
+    fn test_build_filter_row_filter_color_overrides_group_style() {
+        use crate::filters::{ColorConfig, GroupDef};
+        let theme = Theme::default();
+        let mut filter = make_filter("hello", true, FilterType::Include);
+        filter.group = Some("errs".to_string());
+        filter.color_config = Some(ColorConfig {
+            fg: None,
+            bg: Some(ratatui::style::Color::Green),
+            match_only: true,
+        });
+        let groups = vec![GroupDef {
+            name: "errs".to_string(),
+            color_config: Some(ColorConfig {
+                fg: Some(ratatui::style::Color::Red),
+                bg: Some(ratatui::style::Color::Black),
+                match_only: true,
+            }),
+        }];
+        let line = build_filter_row(&filter, 0, 0, &[3], &theme, &groups);
+
+        let value_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "hello")
+            .expect("value span present");
+        // Filter's own (partial) color_config wins outright — no merge with
+        // the group's fg, even though the filter didn't set its own fg.
+        assert_eq!(value_span.style.bg, Some(ratatui::style::Color::Green));
+        assert_ne!(value_span.style.fg, Some(ratatui::style::Color::Red));
+    }
+
+    #[test]
+    fn test_build_filter_row_colors_group_tag_when_group_has_style() {
+        use crate::filters::{ColorConfig, GroupDef};
+        let theme = Theme::default();
+        let mut filter = make_filter("hello", true, FilterType::Include);
+        filter.group = Some("errs".to_string());
+        let groups = vec![GroupDef {
+            name: "errs".to_string(),
+            color_config: Some(ColorConfig {
+                fg: Some(ratatui::style::Color::Red),
+                bg: Some(ratatui::style::Color::Black),
+                match_only: true,
+            }),
+        }];
+        let line = build_filter_row(&filter, 0, 0, &[3], &theme, &groups);
+
+        let group_tag_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "[errs] ")
+            .expect("group tag span present");
+        assert_eq!(group_tag_span.style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(group_tag_span.style.bg, Some(ratatui::style::Color::Black));
+    }
+
+    #[test]
+    fn test_build_filter_row_group_tag_reflects_group_style_even_when_filter_overrides_value() {
+        use crate::filters::{ColorConfig, GroupDef};
+        let theme = Theme::default();
+        let mut filter = make_filter("hello", true, FilterType::Include);
+        filter.group = Some("errs".to_string());
+        filter.color_config = Some(ColorConfig {
+            fg: Some(ratatui::style::Color::Green),
+            bg: None,
+            match_only: true,
+        });
+        let groups = vec![GroupDef {
+            name: "errs".to_string(),
+            color_config: Some(ColorConfig {
+                fg: Some(ratatui::style::Color::Red),
+                bg: None,
+                match_only: true,
+            }),
+        }];
+        let line = build_filter_row(&filter, 0, 0, &[3], &theme, &groups);
+
+        // The group tag always reflects the group's own style, even though
+        // the filter's value uses its own overriding color instead.
+        let group_tag_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "[errs] ")
+            .expect("group tag span present");
+        assert_eq!(group_tag_span.style.fg, Some(ratatui::style::Color::Red));
+
+        let value_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "hello")
+            .expect("value span present");
+        assert_eq!(value_span.style.fg, Some(ratatui::style::Color::Green));
+    }
+
+    #[test]
+    fn test_build_filter_row_group_tag_default_style_when_group_has_no_style() {
+        let theme = Theme::default();
+        let mut filter = make_filter("hello", true, FilterType::Include);
+        filter.group = Some("errs".to_string());
+        let line = build_filter_row(&filter, 0, 0, &[3], &theme, &[]);
+
+        let group_tag_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "[errs] ")
+            .expect("group tag span present");
+        assert_eq!(group_tag_span.style.fg, Some(theme.text));
+        assert_eq!(group_tag_span.style.bg, None);
+    }
+
+    #[test]
     fn test_build_filter_row_selected_is_bold_and_underlined() {
         let theme = Theme::default();
         let filter = make_filter("hello", true, FilterType::Include);
-        let selected_line = build_filter_row(&filter, 0, 0, &[3], &theme);
+        let selected_line = build_filter_row(&filter, 0, 0, &[3], &theme, &[]);
         for span in &selected_line.spans {
             assert!(
                 span.style.add_modifier.contains(Modifier::BOLD),
@@ -758,7 +914,7 @@ mod tests {
             );
         }
 
-        let unselected_line = build_filter_row(&filter, 1, 0, &[3], &theme);
+        let unselected_line = build_filter_row(&filter, 1, 0, &[3], &theme, &[]);
         for span in &unselected_line.spans {
             assert!(
                 !span.style.add_modifier.contains(Modifier::BOLD),
@@ -777,7 +933,7 @@ mod tests {
     fn test_build_filter_row_exclude_disabled() {
         let theme = Theme::default();
         let filter = make_filter("noise", false, FilterType::Exclude);
-        let line = build_filter_row(&filter, 1, 0, &[0, 0], &theme);
+        let line = build_filter_row(&filter, 1, 0, &[0, 0], &theme, &[]);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("[ ]"));
         assert!(text.contains("Out"));
@@ -789,7 +945,7 @@ mod tests {
         let theme = Theme::default();
         let pattern = format!("{}key:val", crate::filters::FIELD_PREFIX);
         let filter = make_filter(&pattern, true, FilterType::Include);
-        let line = build_filter_row(&filter, 0, 0, &[1], &theme);
+        let line = build_filter_row(&filter, 0, 0, &[1], &theme, &[]);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("key=val"));
         assert!(text.contains("[field]"));
@@ -806,7 +962,7 @@ mod tests {
             Some("Power measuments:"),
         );
         let filter = make_filter(&pattern, true, FilterType::Include);
-        let line = build_filter_row(&filter, 0, 0, &[1], &theme);
+        let line = build_filter_row(&filter, 0, 0, &[1], &theme, &[]);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("level=INFO"), "got: {text:?}");
         assert!(text.contains("component=Draco"), "got: {text:?}");
@@ -914,6 +1070,7 @@ mod tests {
                 f.render_widget(
                     Sidebar {
                         filters: &[],
+                        groups: &[],
                         match_counts: &[],
                         selected_filter_idx: 0,
                         filter_enabled: true,
@@ -947,6 +1104,7 @@ mod tests {
                 f.render_widget(
                     Sidebar {
                         filters: &[],
+                        groups: &[],
                         match_counts: &[],
                         selected_filter_idx: 0,
                         filter_enabled: true,
@@ -975,6 +1133,7 @@ mod tests {
                 f.render_widget(
                     Sidebar {
                         filters: &[],
+                        groups: &[],
                         match_counts: &[],
                         selected_filter_idx: 0,
                         filter_enabled: true,

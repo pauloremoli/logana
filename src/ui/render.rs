@@ -701,6 +701,7 @@ impl App {
         frame.render_widget(
             Sidebar {
                 filters,
+                groups: tab.log_manager.get_group_styles(),
                 match_counts: &match_counts,
                 selected_filter_idx,
                 filter_enabled: tab.filter.enabled,

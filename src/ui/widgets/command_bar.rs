@@ -123,6 +123,16 @@ pub fn resolve_completions(
             .collect();
         return CompletionSource::Items(completions);
     }
+    if let Some(partial_raw) = query_text.trim_start().strip_prefix("group ") {
+        let partial = partial_raw.trim_start();
+        let completions = tab
+            .log_manager
+            .group_names()
+            .into_iter()
+            .filter(|g| fuzzy_match(partial, g))
+            .collect();
+        return CompletionSource::Items(completions);
+    }
     if let Some(partial_raw) = query_text.trim_start().strip_prefix("toggle-group ") {
         let partial = partial_raw.trim_start();
         let completions = tab
@@ -701,6 +711,28 @@ mod tests {
         .await;
         let mut tab = TabState::new(fr, lm, "test".to_string());
         let result = resolve_completions(&mut tab, "toggle-group er", None);
+        match result {
+            CompletionSource::Items(items) => {
+                assert!(items.contains(&"errors".to_string()), "{items:?}");
+            }
+            _ => panic!("expected Items"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_completions_group_positional_completes_group_names() {
+        use crate::db::Database;
+        use crate::db::LogManager;
+        use crate::ingestion::FileReader;
+        use crate::ui::TabState;
+        use std::sync::Arc;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let mut lm = LogManager::new(db, None).await;
+        // A predefined-but-filterless group must also autocomplete here.
+        lm.set_group_style("errors", Some("Red"), None, true).await;
+        let mut tab = TabState::new(fr, lm, "test".to_string());
+        let result = resolve_completions(&mut tab, "group er", None);
         match result {
             CompletionSource::Items(items) => {
                 assert!(items.contains(&"errors".to_string()), "{items:?}");

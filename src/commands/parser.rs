@@ -127,6 +127,23 @@ pub enum Commands {
     EnableFilters,
     /// Toggle all filters in a named group on/off together
     ToggleGroup { name: String },
+    /// Set, update, or clear the predefined visual style for a filter group
+    Group {
+        name: String,
+        #[arg(long)]
+        fg: Option<String>,
+        #[arg(long)]
+        bg: Option<String>,
+        /// Apply color to the whole line instead of only the matched text
+        #[arg(short = 'l')]
+        line_mode: bool,
+        /// Generate a random readable fg/bg color pair instead of specifying --fg/--bg
+        #[arg(long = "auto", short = 'a')]
+        auto: bool,
+        /// Remove the group's predefined style
+        #[arg(long)]
+        clear: bool,
+    },
     /// Toggle global filtering on/off
     Filtering,
     /// Hide a JSON field by name or 0-based index

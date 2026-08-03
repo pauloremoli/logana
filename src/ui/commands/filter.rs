@@ -339,4 +339,40 @@ impl App {
         tab.begin_filter_refresh();
         Ok(false)
     }
+
+    /// Set, update, or clear the predefined style for group `name`. Filters
+    /// in the group with no `color_config` of their own fall back to it
+    /// (see `effective_color_config`). The group need not have any filters
+    /// yet — this is how a style gets predefined ahead of time.
+    pub(super) async fn cmd_group(
+        &mut self,
+        name: String,
+        fg: Option<String>,
+        bg: Option<String>,
+        line_mode: bool,
+        auto: bool,
+        clear: bool,
+    ) -> Result<bool, String> {
+        if clear {
+            if fg.is_some() || bg.is_some() || line_mode || auto {
+                return Err("--clear cannot be combined with --fg/--bg/-l/--auto".to_string());
+            }
+            self.tabs[self.active_tab]
+                .log_manager
+                .clear_group_style(&name)
+                .await;
+            self.tabs[self.active_tab].begin_filter_refresh();
+            return Ok(false);
+        }
+        let (fg, bg) = resolve_auto_colors(auto, fg, bg)?;
+        if fg.is_none() && bg.is_none() && !line_mode {
+            return Err("Specify --fg/--bg, -l, or --auto".to_string());
+        }
+        self.tabs[self.active_tab]
+            .log_manager
+            .set_group_style(&name, fg.as_deref(), bg.as_deref(), !line_mode)
+            .await;
+        self.tabs[self.active_tab].begin_filter_refresh();
+        Ok(false)
+    }
 }

@@ -143,6 +143,14 @@ impl App {
             Some(Commands::DisableFilters) => return self.cmd_disable_filters().await,
             Some(Commands::EnableFilters) => return self.cmd_enable_filters().await,
             Some(Commands::ToggleGroup { name }) => return self.cmd_toggle_group(name).await,
+            Some(Commands::Group {
+                name,
+                fg,
+                bg,
+                line_mode,
+                auto,
+                clear,
+            }) => return self.cmd_group(name, fg, bg, line_mode, auto, clear).await,
             Some(Commands::Filtering) => self.cmd_filtering(),
             Some(Commands::HideField { field }) => return self.cmd_hide_field(field),
             Some(Commands::ShowField { field }) => self.cmd_show_field(field),
@@ -780,6 +788,82 @@ mod tests {
             .unwrap();
         let result = app.run_command("toggle-group nonexistent").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_group_sets_style_persisted_on_log_manager() {
+        let mut app = make_app(&["line1"]).await;
+        app.run_command("group errors --fg Red --bg Black")
+            .await
+            .unwrap();
+        let groups = app.tabs[0].log_manager.get_group_styles();
+        assert_eq!(groups.len(), 1);
+        let cc = groups[0].color_config.as_ref().unwrap();
+        assert_eq!(cc.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(cc.bg, Some(ratatui::style::Color::Black));
+    }
+
+    #[tokio::test]
+    async fn test_group_does_not_require_existing_filters() {
+        let mut app = make_app(&["line1"]).await;
+        let result = app.run_command("group newgroup --fg Cyan").await;
+        assert!(result.is_ok());
+        assert_eq!(app.tabs[0].log_manager.group_names(), vec!["newgroup"]);
+    }
+
+    #[tokio::test]
+    async fn test_group_with_auto_flag_assigns_a_readable_color_pair() {
+        let mut app = make_app(&["line1"]).await;
+        app.run_command("group errors --auto").await.unwrap();
+        let groups = app.tabs[0].log_manager.get_group_styles();
+        let cc = groups[0].color_config.as_ref().unwrap();
+        assert!(cc.fg.is_some());
+        assert!(cc.bg.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_group_auto_combined_with_fg_is_an_error() {
+        let mut app = make_app(&["line1"]).await;
+        let result = app.run_command("group errors --auto --fg red").await;
+        assert!(result.is_err());
+        assert!(app.tabs[0].log_manager.get_group_styles().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_group_with_no_flags_is_an_error() {
+        let mut app = make_app(&["line1"]).await;
+        let result = app.run_command("group errors").await;
+        assert!(result.is_err());
+        assert!(app.tabs[0].log_manager.get_group_styles().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_group_clear_combined_with_fg_is_an_error() {
+        let mut app = make_app(&["line1"]).await;
+        app.run_command("group errors --fg Red").await.unwrap();
+        let result = app.run_command("group errors --fg Green --clear").await;
+        assert!(result.is_err());
+        // The pre-existing style is untouched by the rejected call.
+        let groups = app.tabs[0].log_manager.get_group_styles();
+        assert_eq!(
+            groups[0].color_config.as_ref().unwrap().fg,
+            Some(ratatui::style::Color::Red)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_group_clear_removes_existing_style() {
+        let mut app = make_app(&["line1"]).await;
+        app.run_command("group errors --fg Red").await.unwrap();
+        app.run_command("group errors --clear").await.unwrap();
+        assert!(app.tabs[0].log_manager.get_group_styles().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_group_clear_unknown_group_is_a_noop_not_an_error() {
+        let mut app = make_app(&["line1"]).await;
+        let result = app.run_command("group nonexistent --clear").await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

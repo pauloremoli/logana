@@ -1,18 +1,28 @@
-use crate::db::{Database, FilterStore};
+use crate::db::{Database, FilterStore, GroupStore};
 use crate::filters::{ColorConfig, FilterDef, FilterInsertOptions, FilterOptions, FilterType};
 use crate::filters::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
-use crate::filters::{FilterDecision, FilterManager, StyleId, build_filter};
+use crate::filters::{FilterDecision, FilterManager, GroupDef, StyleId, build_filter};
 use crate::theme::parse_color;
 use aho_corasick::AhoCorasick;
 use ratatui::style::Style;
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+
+/// On-disk shape for `:save-filters`/`:load-filters`.
+#[derive(Serialize, Deserialize)]
+struct FiltersExport {
+    filters: Vec<FilterDef>,
+    #[serde(default)]
+    groups: Vec<GroupDef>,
+}
 
 pub struct LogManager {
     pub db: Arc<Database>,
     source_file: Option<String>,
     filter_defs: Vec<FilterDef>,
+    group_defs: Vec<GroupDef>,
 }
 
 impl LogManager {
@@ -21,8 +31,10 @@ impl LogManager {
             db,
             source_file,
             filter_defs: Vec::new(),
+            group_defs: Vec::new(),
         };
         mgr.reload_filters_from_db().await;
+        mgr.reload_groups_from_db().await;
         mgr
     }
 
@@ -33,6 +45,7 @@ impl LogManager {
     pub async fn set_source_file(&mut self, source: Option<String>) {
         self.source_file = source;
         self.reload_filters_from_db().await;
+        self.reload_groups_from_db().await;
     }
 
     pub fn get_filters(&self) -> &[FilterDef] {
@@ -186,9 +199,51 @@ impl LogManager {
             .await;
     }
 
-    /// Distinct group names among the current filters, sorted alphabetically.
+    /// Distinct group names among the current filters, unioned with groups
+    /// that have a predefined style but no filters yet, sorted alphabetically.
     pub fn group_names(&self) -> Vec<String> {
-        crate::filters::known_groups(&self.filter_defs)
+        let mut set: std::collections::BTreeSet<String> =
+            crate::filters::known_groups(&self.filter_defs)
+                .into_iter()
+                .collect();
+        set.extend(self.group_defs.iter().map(|g| g.name.clone()));
+        set.into_iter().collect()
+    }
+
+    pub fn get_group_styles(&self) -> &[GroupDef] {
+        &self.group_defs
+    }
+
+    /// Set (or update) the predefined style for group `name`. `fg`/`bg` are
+    /// string-parsed via `theme::parse_color`, same as filter colors.
+    pub async fn set_group_style(
+        &mut self,
+        name: &str,
+        fg: Option<&str>,
+        bg: Option<&str>,
+        match_only: bool,
+    ) {
+        let cc = ColorConfig {
+            fg: fg.and_then(parse_color),
+            bg: bg.and_then(parse_color),
+            match_only,
+        };
+        if let Some(g) = self.group_defs.iter_mut().find(|g| g.name == name) {
+            g.color_config = Some(cc.clone());
+        } else {
+            self.group_defs.push(GroupDef {
+                name: name.to_string(),
+                color_config: Some(cc.clone()),
+            });
+        }
+        let _ = self.db.upsert_group_style(name, &cc).await;
+    }
+
+    /// Remove group `name`'s predefined style, if any. A no-op if the group
+    /// has no stored style.
+    pub async fn clear_group_style(&mut self, name: &str) {
+        self.group_defs.retain(|g| g.name != name);
+        let _ = self.db.clear_group_style(name).await;
     }
 
     /// Set `enabled` on every filter belonging to `group`.
@@ -248,24 +303,37 @@ impl LogManager {
     }
 
     pub fn save_filters(&self, path: &str) -> anyhow::Result<()> {
-        let json = serde_json::to_string_pretty(&self.filter_defs)?;
+        let export = FiltersExport {
+            filters: self.filter_defs.clone(),
+            groups: self.group_defs.clone(),
+        };
+        let json = serde_json::to_string_pretty(&export)?;
         std::fs::write(path, json)?;
         Ok(())
     }
 
+    /// Loads filters (and, per `FiltersExport`, group styles) from `path`.
+    /// Tries the current `{ filters, groups }` object shape first; a bare
+    /// `[...]` array — the pre-groups format — can never deserialize into
+    /// that struct, so falling back to it is deterministic, not heuristic.
     pub async fn load_filters(&mut self, path: &str) -> anyhow::Result<()> {
         let json = std::fs::read_to_string(path)?;
-        let filters: Vec<FilterDef> = serde_json::from_str(&json)?;
+        let (filters, groups) = match serde_json::from_str::<FiltersExport>(&json) {
+            Ok(export) => (export.filters, export.groups),
+            Err(_) => (serde_json::from_str::<Vec<FilterDef>>(&json)?, Vec::new()),
+        };
         let source = self.source_file.clone();
         self.db
             .replace_all_filters(&filters, source.as_deref())
             .await?;
+        self.db.replace_all_groups(&groups).await?;
         self.filter_defs = if let Some(src) = source.as_deref() {
             self.db.get_filters_for_source(src).await
         } else {
             self.db.get_filters().await
         }
         .unwrap_or_default();
+        self.reload_groups_from_db().await;
         Ok(())
     }
 
@@ -300,7 +368,7 @@ impl LogManager {
         for def in self.filter_defs.iter().filter(|f| f.enabled) {
             // Field filters: applied separately for visibility; collect styles for highlighting.
             if def.pattern.starts_with(crate::filters::FIELD_PREFIX) {
-                if let Some(cc) = &def.color_config
+                if let Some(cc) = crate::filters::effective_color_config(def, &self.group_defs)
                     && (cc.fg.is_some() || cc.bg.is_some())
                     && let Ok((conditions, text)) = crate::filters::parse_field_filter_expr(
                         &def.pattern[crate::filters::FIELD_PREFIX.len()..],
@@ -335,7 +403,7 @@ impl LogManager {
             }
 
             if def.pattern.starts_with(DATE_PREFIX) {
-                if let Some(cc) = &def.color_config
+                if let Some(cc) = crate::filters::effective_color_config(def, &self.group_defs)
                     && (cc.fg.is_some() || cc.bg.is_some())
                     && let Ok(df) = parse_date_filter(&def.pattern[DATE_PREFIX.len()..])
                 {
@@ -361,9 +429,9 @@ impl LogManager {
             let style_id = style_idx as StyleId;
             style_idx += 1;
 
-            let style = def
-                .color_config
-                .as_ref()
+            let effective_cc = crate::filters::effective_color_config(def, &self.group_defs);
+
+            let style = effective_cc
                 .map(|cc| {
                     let mut s = Style::default();
                     if let Some(fg) = cc.fg {
@@ -387,11 +455,7 @@ impl LogManager {
                 FilterType::Highlight => FilterDecision::Highlight,
             };
 
-            let match_only = def
-                .color_config
-                .as_ref()
-                .map(|cc| cc.match_only)
-                .unwrap_or(true);
+            let match_only = effective_cc.map(|cc| cc.match_only).unwrap_or(true);
 
             if let Some(f) = build_filter(
                 &def.pattern,
@@ -467,6 +531,12 @@ impl LogManager {
             .get_filters_for_source(&source)
             .await
             .unwrap_or_default();
+    }
+
+    /// Groups are global (not scoped by `source_file` like filters), so this
+    /// always reloads the full set.
+    async fn reload_groups_from_db(&mut self) {
+        self.group_defs = self.db.get_groups().await.unwrap_or_default();
     }
 }
 
@@ -718,6 +788,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_build_filter_manager_uses_group_style_fallback() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "ERROR".into(),
+            FilterType::Include,
+            FilterOptions::default().group("errs"),
+        )
+        .await;
+        mgr.set_group_style("errs", Some("Red"), Some("Black"), true)
+            .await;
+
+        let (_fm, styles, _, _) = mgr.build_filter_manager();
+        assert_eq!(styles.len(), 1);
+        assert_eq!(styles[0].fg, Some(ratatui::style::Color::Red));
+        assert_eq!(styles[0].bg, Some(ratatui::style::Color::Black));
+    }
+
+    #[tokio::test]
+    async fn test_build_filter_manager_filter_own_color_overrides_group_style() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "ERROR".into(),
+            FilterType::Include,
+            FilterOptions::default().group("errs").fg("Green"),
+        )
+        .await;
+        mgr.set_group_style("errs", Some("Red"), Some("Black"), true)
+            .await;
+
+        let (_fm, styles, _, _) = mgr.build_filter_manager();
+        assert_eq!(styles.len(), 1);
+        assert_eq!(styles[0].fg, Some(ratatui::style::Color::Green));
+        assert_eq!(styles[0].bg, None);
+    }
+
+    #[tokio::test]
+    async fn test_build_filter_manager_field_filter_uses_group_style_fallback() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            crate::filters::encode_field_filter(
+                &[("level".to_string(), "error".to_string())],
+                None,
+            ),
+            FilterType::Include,
+            FilterOptions::default().group("errs"),
+        )
+        .await;
+        mgr.set_group_style("errs", Some("Red"), None, true).await;
+
+        let (_fm, styles, _, field_styles) = mgr.build_filter_manager();
+        assert_eq!(field_styles.len(), 1);
+        assert_eq!(
+            styles[field_styles[0].style_id as usize].fg,
+            Some(ratatui::style::Color::Red)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_filter_manager_date_filter_uses_group_style_fallback() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            format!("{DATE_PREFIX}> 2024-01-01"),
+            FilterType::Include,
+            FilterOptions::default().group("errs"),
+        )
+        .await;
+        mgr.set_group_style("errs", Some("Red"), None, true).await;
+
+        let (_fm, styles, date_styles, _) = mgr.build_filter_manager();
+        assert_eq!(date_styles.len(), 1);
+        assert_eq!(
+            styles[date_styles[0].style_id as usize].fg,
+            Some(ratatui::style::Color::Red)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_group_names_includes_filterless_predefined_groups() {
+        let mut mgr = make_manager().await;
+        mgr.set_group_style("newgroup", Some("Cyan"), None, true)
+            .await;
+        assert_eq!(mgr.group_names(), vec!["newgroup".to_string()]);
+    }
+
+    #[tokio::test]
     async fn test_save_and_load_filters() {
         let mut mgr = make_manager().await;
         mgr.add_filter_with_color(
@@ -746,6 +901,62 @@ mod tests {
         // replace_all_filters assigns display_order 0, 1 to that slice → same order on reload
         assert_eq!(filters[0].pattern, "error");
         assert_eq!(filters[1].pattern, "debug");
+    }
+
+    #[tokio::test]
+    async fn test_save_and_load_filters_round_trips_group_style() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            FilterOptions::default().group("errs"),
+        )
+        .await;
+        mgr.set_group_style("errs", Some("Red"), None, true).await;
+        // A predefined group with no filters at all should also round-trip.
+        mgr.set_group_style("filterless", Some("Blue"), None, true)
+            .await;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        mgr.save_filters(path).unwrap();
+
+        let mut mgr2 = make_manager().await;
+        mgr2.load_filters(path).await.unwrap();
+
+        let groups = mgr2.get_group_styles();
+        assert_eq!(groups.len(), 2);
+        let errs = groups.iter().find(|g| g.name == "errs").unwrap();
+        assert_eq!(
+            errs.color_config.as_ref().unwrap().fg,
+            Some(ratatui::style::Color::Red)
+        );
+        let filterless = groups.iter().find(|g| g.name == "filterless").unwrap();
+        assert_eq!(
+            filterless.color_config.as_ref().unwrap().fg,
+            Some(ratatui::style::Color::Blue)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_filters_accepts_old_bare_array_format() {
+        let mut mgr = make_manager().await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        // Pre-groups on-disk format: a bare JSON array of FilterDef, no
+        // top-level `{ filters, groups }` wrapper.
+        std::fs::write(
+            path,
+            r#"[{"id":1,"pattern":"ERROR","filter_type":"Include","enabled":true,"color_config":null,"use_regex":false,"ignore_case":false,"group":null}]"#,
+        )
+        .unwrap();
+
+        mgr.load_filters(path).await.unwrap();
+
+        let filters = mgr.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].pattern, "ERROR");
+        assert!(mgr.get_group_styles().is_empty());
     }
 
     #[tokio::test]

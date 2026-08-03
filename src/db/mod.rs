@@ -8,7 +8,7 @@ pub use comment_manager::CommentManager;
 pub use log_manager::LogManager;
 pub use mark_manager::MarkManager;
 pub use sqlite::{
-    AppSettingsStore, Database, FileContext, FileContextStore, FilterStore, SessionStore,
-    SettingsKey,
+    AppSettingsStore, Database, FileContext, FileContextStore, FilterStore, GroupStore,
+    SessionStore, SettingsKey,
 };
 pub use types::Comment;

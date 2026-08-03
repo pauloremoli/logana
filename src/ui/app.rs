@@ -2172,6 +2172,7 @@ mod tests {
         );
         let sidebar = Sidebar {
             filters,
+            groups: &[],
             match_counts: &match_counts,
             selected_filter_idx: patterns.len() - 1,
             filter_enabled: tab.filter.enabled,
