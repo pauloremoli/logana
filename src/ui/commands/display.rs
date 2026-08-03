@@ -183,7 +183,7 @@ impl App {
     pub(super) fn cmd_raw(&mut self) {
         let tab = &mut self.tabs[self.active_tab];
         tab.display.raw_mode = !tab.display.raw_mode;
-        tab.invalidate_parse_cache();
+        tab.begin_filter_refresh();
     }
 
     pub(super) async fn cmd_schema(&mut self, name: Option<String>) -> Result<bool, String> {
