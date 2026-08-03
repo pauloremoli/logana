@@ -48,7 +48,7 @@ jobs:
     - name: Install cargo-tarpaulin
       run: cargo install cargo-tarpaulin
     - name: Run coverage
-      run: cargo tarpaulin --out xml --skip-clean -- --test-threads=1
+      run: cargo tarpaulin --engine llvm --out xml --skip-clean -- --test-threads=1
     - name: Upload to Codecov
       uses: codecov/codecov-action@v4
       with:
@@ -56,7 +56,7 @@ jobs:
         fail_ci_if_error: true
     - name: Check coverage threshold
       run: |
-        COVERAGE=$(cargo tarpaulin --skip-clean -- --test-threads=1 2>&1 | grep -oP '[\d.]+% coverage' | grep -oP '[\d.]+')
+        COVERAGE=$(cargo tarpaulin --engine llvm --skip-clean -- --test-threads=1 2>&1 | grep -oP '[\d.]+% coverage' | grep -oP '[\d.]+')
         echo "Coverage: ${COVERAGE}%"
         if [ "$(echo "$COVERAGE < 80" | bc)" -eq 1 ]; then
           echo "Coverage ${COVERAGE}% is below 80% threshold"
