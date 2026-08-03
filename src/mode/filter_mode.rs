@@ -449,7 +449,9 @@ impl Mode for FilterManagementMode {
             return (self, KeyResult::Handled);
         }
 
-        if kb.global.next_tab.matches(key, modifiers) || kb.global.prev_tab.matches(key, modifiers)
+        if kb.global.next_tab.matches(key, modifiers)
+            || kb.global.prev_tab.matches(key, modifiers)
+            || kb.global.file_switcher.matches(key, modifiers)
         {
             self.count = None;
             tab.interaction.g_key_pressed = false;

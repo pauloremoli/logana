@@ -1079,6 +1079,10 @@ mod tests {
             kb.new_tab
                 .matches(KeyCode::Char('t'), KeyModifiers::CONTROL)
         );
+        assert!(
+            kb.file_switcher
+                .matches(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        );
     }
 
     #[test]

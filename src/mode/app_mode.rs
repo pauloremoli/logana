@@ -119,6 +119,16 @@ pub enum ModeRenderState {
         /// `Some` while the selected row's path is being edited.
         editing: Option<crate::mode::default_filters_mode::PathEditState>,
     },
+    FileSwitcher {
+        /// (`App::tabs` index, tab title) for every open tab, snapshotted
+        /// when the popup opened.
+        entries: Vec<(usize, String)>,
+        /// The tab that was active when the popup opened.
+        active_tab: usize,
+        /// Index into the *visible* (filtered) entries.
+        selected: usize,
+        search: String,
+    },
 }
 
 impl ModeRenderState {
@@ -149,6 +159,7 @@ impl ModeRenderState {
             ModeRenderState::ArchivePicker { .. } => "ARCHIVE",
             ModeRenderState::ExportFooter { .. } => "EXPORT",
             ModeRenderState::DefaultFilters { .. } => "DEFAULT FILTERS",
+            ModeRenderState::FileSwitcher { .. } => "SWITCH",
         }
     }
 }
@@ -835,6 +846,16 @@ mod tests {
             }
             .mode_name(),
             "DEFAULT FILTERS"
+        );
+        assert_eq!(
+            ModeRenderState::FileSwitcher {
+                entries: vec![],
+                active_tab: 0,
+                selected: 0,
+                search: String::new(),
+            }
+            .mode_name(),
+            "SWITCH"
         );
     }
 }

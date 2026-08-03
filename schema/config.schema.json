@@ -82,6 +82,7 @@
         },
         "global": {
           "close_tab": "Ctrl+w",
+          "file_switcher": "Ctrl+p",
           "new_tab": "Ctrl+t",
           "next_tab": "Tab",
           "prev_tab": "Shift+Tab",
@@ -442,6 +443,7 @@
         "global": {
           "default": {
             "close_tab": "Ctrl+w",
+            "file_switcher": "Ctrl+p",
             "new_tab": "Ctrl+t",
             "next_tab": "Tab",
             "prev_tab": "Shift+Tab",
@@ -1216,6 +1218,14 @@
         },
         "new_tab": {
           "default": "Ctrl+t",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "file_switcher": {
+          "default": "Ctrl+p",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"

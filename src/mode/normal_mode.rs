@@ -80,6 +80,10 @@ impl Mode for NormalMode {
             self.count = None;
             return (self, KeyResult::Ignored);
         }
+        if kb.global.file_switcher.matches(key, modifiers) {
+            self.count = None;
+            return (self, KeyResult::Ignored);
+        }
 
         if kb.navigation.half_page_down.matches(key, modifiers) {
             let half = (tab.scroll.visible_height / 2).max(1);

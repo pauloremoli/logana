@@ -6,6 +6,7 @@ pub mod default_filters_mode;
 pub mod dlt_select_mode;
 pub mod docker_select_mode;
 pub mod export_footer_mode;
+pub mod file_switcher_mode;
 pub mod filter_mode;
 pub mod keybindings_help_mode;
 pub mod merge_select_mode;

@@ -85,6 +85,10 @@ pub enum KeyResult {
         format: String,
         path: Option<String>,
     },
+    /// Emitted by the file switcher popup (`Ctrl+P`) when Enter is pressed
+    /// on an entry — switches `App::active_tab` to the given `App::tabs`
+    /// index.
+    SwitchToTab(usize),
 }
 
 /// Handle for a background search task spawned by [`TabState::begin_search`].

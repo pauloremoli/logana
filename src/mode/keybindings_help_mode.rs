@@ -323,6 +323,10 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         action: "New tab".into(),
         keys: g.new_tab.display(),
     });
+    rows.push(HelpRow::Entry {
+        action: "Switch file".into(),
+        keys: g.file_switcher.display(),
+    });
 
     rows.push(HelpRow::Header("UI Mode".to_string()));
     let ui = &kb.ui;

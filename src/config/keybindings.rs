@@ -772,6 +772,10 @@ fn default_close_tab() -> KeyBindings {
 fn default_new_tab() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('t'), KeyModifiers::CONTROL)])
 }
+#[inline(always)]
+fn default_file_switcher() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('p'), KeyModifiers::CONTROL)])
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GlobalKeybindings {
@@ -785,6 +789,8 @@ pub struct GlobalKeybindings {
     pub close_tab: KeyBindings,
     #[serde(default = "default_new_tab")]
     pub new_tab: KeyBindings,
+    #[serde(default = "default_file_switcher")]
+    pub file_switcher: KeyBindings,
 }
 
 impl Default for GlobalKeybindings {
@@ -795,6 +801,7 @@ impl Default for GlobalKeybindings {
             prev_tab: default_prev_tab(),
             close_tab: default_close_tab(),
             new_tab: default_new_tab(),
+            file_switcher: default_file_switcher(),
         }
     }
 }
@@ -1698,6 +1705,7 @@ impl Keybindings {
             ("global.prev_tab", &self.global.prev_tab),
             ("global.close_tab", &self.global.close_tab),
             ("global.new_tab", &self.global.new_tab),
+            ("global.file_switcher", &self.global.file_switcher),
         ];
 
         let filter_actions: &[(&str, &KeyBindings)] = &[
@@ -1733,6 +1741,7 @@ impl Keybindings {
             ("global.quit", &self.global.quit),
             ("global.next_tab", &self.global.next_tab),
             ("global.prev_tab", &self.global.prev_tab),
+            ("global.file_switcher", &self.global.file_switcher),
         ];
 
         let visual_line_actions: &[(&str, &KeyBindings)] = &[
@@ -1870,6 +1879,7 @@ impl Keybindings {
             ("global.quit", &self.global.quit),
             ("global.next_tab", &self.global.next_tab),
             ("global.prev_tab", &self.global.prev_tab),
+            ("global.file_switcher", &self.global.file_switcher),
         ];
 
         // Custom command bindings are checked in Normal Mode, so they share

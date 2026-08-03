@@ -44,6 +44,8 @@ impl App {
             self.tabs[self.active_tab].interaction.command_error = None;
             self.tabs[self.active_tab].interaction.mode =
                 Box::new(CommandMode::with_history("open ".to_string(), 5, history));
+        } else if kb.global.file_switcher.matches(key, modifiers) {
+            self.handle_open_file_switcher();
         }
     }
 
@@ -635,6 +637,11 @@ impl App {
             }
             KeyResult::SetDefaultFilterFile { format, path } => {
                 self.handle_set_default_filter_file(format, path).await;
+            }
+            KeyResult::SwitchToTab(idx) => {
+                if idx < self.tabs.len() {
+                    self.active_tab = idx;
+                }
             }
         }
     }

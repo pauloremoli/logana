@@ -238,6 +238,20 @@ impl App {
             Box::new(MergeSelectMode::new(tabs, tab_indices));
     }
 
+    /// Opens the `Ctrl+P` quick-open popup, snapshotting every open tab's
+    /// title against its `self.tabs` index.
+    pub(super) fn handle_open_file_switcher(&mut self) {
+        use crate::mode::file_switcher_mode::FileSwitcherMode;
+        let entries: Vec<(usize, String)> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i, t.title.clone()))
+            .collect();
+        self.tabs[self.active_tab].interaction.mode =
+            Box::new(FileSwitcherMode::new(entries, self.active_tab));
+    }
+
     /// Gathers `MergeSourceInputs` from already-open tabs — the source
     /// shape `:merge` has always used.
     fn merge_inputs_from_tabs(&self, source_tab_indices: &[usize]) -> MergeSourceInputs {

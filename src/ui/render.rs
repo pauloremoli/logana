@@ -45,6 +45,8 @@ type ArchivePickerData = Option<(
     bool,
 )>;
 
+type FileSwitcherData = Option<(Vec<(usize, String)>, usize, usize, String)>;
+
 struct UiRenderState {
     has_input_bar: bool,
     command_input: Option<(String, usize)>,
@@ -74,6 +76,7 @@ struct UiRenderState {
     value_colors_state: ValueColorsData,
     export_footer: ExportFooterData,
     default_filters_state: DefaultFiltersData,
+    file_switcher_state: FileSwitcherData,
     notification: Option<String>,
     has_notification: bool,
     has_warnings: bool,
@@ -413,6 +416,15 @@ impl App {
             } => Some((rows.clone(), search.clone(), *selected, editing.clone())),
             _ => None,
         };
+        let file_switcher_state: FileSwitcherData = match render_state {
+            ModeRenderState::FileSwitcher {
+                entries,
+                active_tab,
+                selected,
+                search,
+            } => Some((entries.clone(), *active_tab, *selected, search.clone())),
+            _ => None,
+        };
 
         if self.decompression_message.is_none()
             && let Some(set_at) = self.tabs[self.active_tab].interaction.notification_set_at
@@ -449,6 +461,7 @@ impl App {
             value_colors_state,
             export_footer,
             default_filters_state,
+            file_switcher_state,
             notification,
             has_notification,
             has_warnings,
@@ -1011,6 +1024,19 @@ impl App {
                     search,
                     selected: *selected,
                     editing: editing.as_ref(),
+                },
+                frame_area,
+            );
+        }
+
+        if let Some((entries, active_tab, selected, search)) = &state.file_switcher_state {
+            frame.render_widget(
+                super::widgets::FileSwitcherPopup {
+                    theme: &self.theme,
+                    entries,
+                    active_tab: *active_tab,
+                    selected: *selected,
+                    search,
                 },
                 frame_area,
             );
