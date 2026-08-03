@@ -290,8 +290,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "schema",
         usage: "schema [name]",
-        description: "Show the active schema, or switch this tab to a named custom or built-in schema. Autocomplete lists every available one.",
-        examples: &["schema", "schema acme"],
+        description: "Show the active schema, or switch this tab to a named custom or built-in schema. Use 'none' to clear the schema and treat the file as plain text. Autocomplete lists every available one.",
+        examples: &["schema", "schema acme", "schema none"],
     },
     CommandInfo {
         name: "default-filters",

@@ -7,6 +7,7 @@ All notable changes to logana will be documented in this file.
 
 ### Added
 - Custom schemas can set `"multiline": true` to fold continuation lines into the record's `message` field.
+- `:schema none` clears a tab's schema, treating its content as plain text.
 
 ## [0.7.5] - 2026-07-18
 

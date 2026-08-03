@@ -279,11 +279,13 @@ pub fn complete_color(partial: &str) -> Vec<&'static str> {
 }
 
 /// Every schema name `:schema <name>` can select, or that's useful to
-/// surface as available: custom names first (alphabetical), then built-in
-/// format names (alphabetical) — `true` marks a custom schema, so the
-/// caller can render the two kinds differently. `custom_names` is passed
-/// in rather than read from `config::custom_schemas()` directly so this
-/// stays unit-testable without touching that process-global `OnceLock`.
+/// surface as available: custom names first (alphabetical), then the
+/// reserved `none` keyword (clears the tab's format, treating it as raw
+/// text), then built-in format names (alphabetical) — `true` marks a
+/// custom schema, so the caller can render the two kinds differently.
+/// `custom_names` is passed in rather than read from
+/// `config::custom_schemas()` directly so this stays unit-testable
+/// without touching that process-global `OnceLock`.
 pub fn schema_completion_names(custom_names: &[String]) -> Vec<(String, bool)> {
     let mut custom = custom_names.to_vec();
     custom.sort();
@@ -292,6 +294,7 @@ pub fn schema_completion_names(custom_names: &[String]) -> Vec<(String, bool)> {
     custom
         .into_iter()
         .map(|n| (n, true))
+        .chain(std::iter::once(("none".to_string(), false)))
         .chain(builtin.into_iter().map(|n| (n, false)))
         .collect()
 }
@@ -931,12 +934,28 @@ mod tests {
         let results = schema_completion_names(&[]);
         let builtin: Vec<&str> = results
             .iter()
-            .filter(|(_, is_custom)| !is_custom)
+            .filter(|(n, is_custom)| !is_custom && n != "none")
             .map(|(n, _)| n.as_str())
             .collect();
         let mut sorted = builtin.clone();
         sorted.sort();
         assert_eq!(builtin, sorted);
+    }
+
+    #[test]
+    fn test_schema_completion_names_includes_none() {
+        let results = schema_completion_names(&["acme".to_string()]);
+        assert!(
+            results
+                .iter()
+                .any(|(n, is_custom)| n == "none" && !is_custom)
+        );
+    }
+
+    #[test]
+    fn test_schema_completion_names_none_present_without_custom_schemas() {
+        let results = schema_completion_names(&[]);
+        assert!(results.iter().any(|(n, _)| n == "none"));
     }
 
     #[test]

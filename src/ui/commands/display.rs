@@ -198,6 +198,11 @@ impl App {
                     .unwrap_or_else(|| "none".to_string());
                 return Err(format!("active schema: {schema_name}"));
             }
+            Some(schema_name) if schema_name == "none" => {
+                let tab_idx = self.active_tab;
+                self.tabs[tab_idx].display.format = None;
+                self.tabs[tab_idx].invalidate_parse_cache();
+            }
             Some(schema_name) => {
                 let custom = crate::config::custom_schemas()
                     .iter()
@@ -335,6 +340,26 @@ mod tests {
             tab.display.format.as_deref().map(|f| f.name()),
             Some("syslog")
         );
+    }
+
+    #[tokio::test]
+    async fn test_cmd_schema_none_clears_format() {
+        let mut app = make_app().await;
+        app.cmd_schema(Some("syslog".to_string())).await.unwrap();
+        let result = app.cmd_schema(Some("none".to_string())).await;
+        assert_eq!(result, Ok(false));
+        let tab = &app.tabs[app.active_tab];
+        assert!(tab.display.format.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cmd_schema_none_does_not_apply_default_filters() {
+        let mut app = make_app().await;
+        app.default_filter_files
+            .insert("syslog".to_string(), "/nonexistent.json".to_string());
+        app.cmd_schema(Some("none".to_string())).await.unwrap();
+        let tab = &app.tabs[app.active_tab];
+        assert!(tab.log_manager.get_filters().is_empty());
     }
 
     #[tokio::test]
