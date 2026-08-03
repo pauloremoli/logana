@@ -42,6 +42,7 @@ pub struct CustomParser {
     /// only a template has a literal skeleton to reconstruct the line from.
     template_segments: Option<Vec<TemplateSegment>>,
     level_overrides: LevelOverrides,
+    multiline: bool,
 }
 
 #[derive(Debug)]
@@ -300,6 +301,7 @@ impl CustomParser {
             field_map,
             template_segments,
             level_overrides,
+            multiline: cfg.multiline,
         })
     }
 }
@@ -326,6 +328,10 @@ impl LogFormatParser for CustomParser {
         } else {
             LogLevel::parse_level(raw)
         }
+    }
+
+    fn merges_continuation_into_message(&self) -> bool {
+        self.multiline
     }
 
     fn parse_line<'a>(&self, line: &'a [u8]) -> Option<DisplayParts<'a>> {
@@ -473,6 +479,7 @@ mod tests {
             .into_iter()
             .collect(),
             levels: Default::default(),
+            multiline: false,
         })
         .unwrap()
     }
@@ -612,6 +619,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             levels: Default::default(),
+            multiline: false,
         })
         .unwrap();
         let segments = parser.template_segments().unwrap();
@@ -641,6 +649,7 @@ mod tests {
             pattern: Some("^(?P<level>\\w+) (?P<message>.*)$".to_string()),
             fields: Default::default(),
             levels: Default::default(),
+            multiline: false,
         })
         .unwrap();
         assert!(parser.template_segments().is_none());
@@ -662,6 +671,7 @@ mod tests {
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
+            multiline: false,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must specify either"));
@@ -676,6 +686,7 @@ mod tests {
             pattern: Some("(?P<foo>.*)".to_string()),
             fields: Default::default(),
             levels: Default::default(),
+            multiline: false,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cannot specify both"));
@@ -690,6 +701,7 @@ mod tests {
             pattern: Some("(?P<foo>[invalid".to_string()),
             fields: Default::default(),
             levels: Default::default(),
+            multiline: false,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid regex"));
@@ -704,6 +716,7 @@ mod tests {
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
+            multiline: false,
         })
         .unwrap();
 
@@ -755,6 +768,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             levels: Default::default(),
+            multiline: false,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown field role"));
@@ -770,6 +784,27 @@ mod tests {
         assert!(!parser.matches_for_detection(not_matching));
     }
 
+    #[test]
+    fn test_merges_continuation_into_message_defaults_false() {
+        let parser = make_acme_parser();
+        assert!(!parser.merges_continuation_into_message());
+    }
+
+    #[test]
+    fn test_merges_continuation_into_message_reflects_config() {
+        let parser = CustomParser::from_config(&CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: Some("{level} {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: Default::default(),
+            multiline: true,
+        })
+        .unwrap();
+        assert!(parser.merges_continuation_into_message());
+    }
+
     fn parser_with_level_overrides(error: &[&str], warning: &[&str]) -> CustomParser {
         CustomParser::from_config(&CustomSchemaConfig {
             name: "sev".to_string(),
@@ -781,6 +816,7 @@ mod tests {
                 error: error.iter().map(|s| s.to_string()).collect(),
                 warning: warning.iter().map(|s| s.to_string()).collect(),
             },
+            multiline: false,
         })
         .unwrap()
     }
@@ -830,6 +866,7 @@ mod tests {
                 error: vec!["SEV1".to_string()],
                 warning: vec!["sev1".to_string()],
             },
+            multiline: false,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("both error and warning"));
@@ -846,6 +883,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             levels: Default::default(),
+            multiline: false,
         })
         .unwrap();
 
@@ -873,6 +911,7 @@ mod tests {
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
+            multiline: false,
         })
         .unwrap();
 
@@ -927,6 +966,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             levels: Default::default(),
+            multiline: false,
         })
         .unwrap();
 
@@ -946,6 +986,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             levels: Default::default(),
+            multiline: false,
         })
         .unwrap();
 

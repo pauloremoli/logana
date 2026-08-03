@@ -1497,6 +1497,7 @@ mod tests {
             pattern: None,
             fields: std::collections::HashMap::new(),
             levels: Default::default(),
+            multiline: false,
         })
         .unwrap()
     }

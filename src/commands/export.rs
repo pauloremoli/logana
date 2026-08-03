@@ -1006,6 +1006,7 @@ mod tests {
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
+            multiline: false,
         };
         let parser = crate::parser::CustomParser::from_config(&cfg).unwrap();
         let hidden: HashSet<String> = ["component".to_string()].into_iter().collect();
@@ -1033,6 +1034,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             levels: Default::default(),
+            multiline: false,
         };
         let parser = crate::parser::CustomParser::from_config(&cfg).unwrap();
         let hidden: HashSet<String> = ["secret".to_string()].into_iter().collect();

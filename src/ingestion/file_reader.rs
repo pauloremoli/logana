@@ -911,6 +911,17 @@ impl FileReader {
             let entry = &entries[idx];
             return sources[entry.source_idx].get_line(entry.line_idx);
         }
+        &self.storage.as_bytes()[self.line_byte_range(idx)]
+    }
+
+    /// Byte range of line `idx` within [`data()`] (without the trailing
+    /// newline). Only meaningful for non-`Merged` storage — a `Merged`
+    /// reader has no single flat buffer for `idx` to index into (see
+    /// [`data()`]).
+    ///
+    /// # Panics
+    /// Panics if `idx >= line_count()`.
+    pub fn line_byte_range(&self, idx: usize) -> std::ops::Range<usize> {
         let data = self.storage.as_bytes();
         let start = self.line_starts[idx];
         let end = if idx + 1 < self.line_starts.len() {
@@ -924,7 +935,7 @@ impl FileReader {
         } else {
             data.len()
         };
-        &data[start..end]
+        start..end
     }
 
     /// The contiguous backing data buffer (mmap or in-memory bytes).
@@ -1562,6 +1573,34 @@ mod tests {
 
     fn make(content: &[u8]) -> FileReader {
         FileReader::from_bytes(content.to_vec())
+    }
+
+    #[test]
+    fn test_line_byte_range_matches_get_line() {
+        let reader = make(b"first\nsecond\nthird\n");
+        for idx in 0..reader.line_count() {
+            let range = reader.line_byte_range(idx);
+            assert_eq!(&reader.data()[range], reader.get_line(idx));
+        }
+    }
+
+    #[test]
+    fn test_line_byte_range_last_line_without_trailing_newline() {
+        let reader = make(b"first\nsecond");
+        assert_eq!(reader.line_count(), 2);
+        let range = reader.line_byte_range(1);
+        assert_eq!(&reader.data()[range], b"second");
+    }
+
+    #[test]
+    fn test_line_byte_range_is_contiguous_across_consecutive_lines() {
+        // The range for line N ends exactly where line N+1's range starts
+        // (modulo the trailing newline byte) — the zero-copy multiline merge
+        // relies on this contiguity.
+        let reader = make(b"first\nsecond\nthird\n");
+        let r0 = reader.line_byte_range(0);
+        let r1 = reader.line_byte_range(1);
+        assert_eq!(r0.end + 1, r1.start); // +1 skips the '\n' between lines
     }
 
     fn make_tmp(lines: &[&str]) -> NamedTempFile {

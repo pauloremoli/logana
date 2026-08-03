@@ -60,6 +60,12 @@ pub struct CustomSchemaConfig {
     pub fields: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub levels: CustomLevelValues,
+    /// When `true`, continuation lines that follow a matched record (lines
+    /// that don't match this schema's `template`/`pattern`) are merged into
+    /// the record's `message` field, so field filters and the structured
+    /// fields panel can see their content. See `merges_continuation_into_message`.
+    #[serde(default)]
+    pub multiline: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1797,5 +1803,30 @@ mod tests {
         let config = Config::default();
         let resolved = resolve_default_filter_files(&config, &db).await;
         assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn test_custom_schema_config_multiline_defaults_false() {
+        let cfg: CustomSchemaConfig = serde_json::from_str(r#"{"name": "test"}"#).unwrap();
+        assert!(!cfg.multiline);
+    }
+
+    #[test]
+    fn test_custom_schema_config_multiline_deserializes_true() {
+        let cfg: CustomSchemaConfig =
+            serde_json::from_str(r#"{"name": "test", "multiline": true}"#).unwrap();
+        assert!(cfg.multiline);
+    }
+
+    #[test]
+    fn test_custom_schema_config_multiline_serde_roundtrip() {
+        let cfg = CustomSchemaConfig {
+            name: "test".to_string(),
+            multiline: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: CustomSchemaConfig = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.multiline);
     }
 }

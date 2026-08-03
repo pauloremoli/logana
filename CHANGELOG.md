@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Custom schemas can set `"multiline": true` to fold continuation lines into the record's `message` field.
+
 ## [0.7.5] - 2026-07-18
 
 ### Added

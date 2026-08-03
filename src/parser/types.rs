@@ -210,6 +210,16 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
         LogLevel::parse_level(raw)
     }
 
+    /// Returns `true` when this schema's continuation lines (lines the
+    /// generic continuation grouping attaches to the previous matched
+    /// record — see `build_continuation_map`) should be folded into that
+    /// record's `message` field, so field filters and the structured fields
+    /// panel can see their content. Defaults to `false`; only a `CustomParser`
+    /// built from a schema with `"multiline": true` returns `true`.
+    fn merges_continuation_into_message(&self) -> bool {
+        false
+    }
+
     /// Returns this parser's compiled template segments (literal text +
     /// canonical field placeholders, in the template's own order), for
     /// parsers built from a custom schema `template`. `None` for every other

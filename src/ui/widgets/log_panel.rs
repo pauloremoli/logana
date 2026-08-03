@@ -1725,6 +1725,7 @@ mod tests {
                 .into_iter()
                 .collect(),
                 levels: Default::default(),
+                multiline: false,
             })
             .unwrap(),
         )

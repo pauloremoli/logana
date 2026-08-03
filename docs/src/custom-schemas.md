@@ -36,6 +36,7 @@ Each file describes one format. The filename is arbitrary; the `name` field insi
 | `template` | one of `template` / `pattern` | Template string with `{field}` placeholders |
 | `pattern` | one of `template` / `pattern` | Raw regex with named capture groups |
 | `fields` | no | Overrides the automatic role for named placeholders/groups |
+| `multiline` | no | When `true`, folds continuation lines into the record's `message` field — see [Multiline records](#multiline-records) |
 
 ## Template syntax
 
@@ -146,6 +147,35 @@ Custom schemas are evaluated before all built-in parsers. When a schema matches 
 Run `:schema` to show the current tab's active schema, or `:schema <name>` to force a specific custom schema for the current tab — start typing a name to see every custom and built-in schema in the autocomplete list.
 
 A default filter file can also be configured per schema — see [Default filter files per format](./log-formats.md#default-filter-files-per-format).
+
+## Multiline records
+
+A line that doesn't match the schema's `template`/`pattern` is already treated as a continuation of the previous matched line — it's shown right below its parent and inherits the parent's level and visibility. This covers most multiline formats (stack traces, wrapped messages) automatically, with no schema changes needed.
+
+By default, though, continuation lines stay unstructured: their content isn't part of the parsed `message`, so `--field message`/`fields.message` filters can't see it. Set `"multiline": true` to fold continuation lines into the record's `message` field:
+
+```json
+{
+  "name":      "journalctl-verbose",
+  "template":  "{weekday} {timestamp} {host} [{cursor}]",
+  "multiline": true,
+  "fields": {
+    "cursor": "extra"
+  }
+}
+```
+
+Given `journalctl --output=verbose` output like:
+```
+Tue 2024-01-01 10:15:30.123456 UTC myhost [s=abc;i=1;b=def;t=2;x=3]
+    MESSAGE=disk usage at 92%
+    _PID=1234
+    _COMM=diskmond
+```
+
+Only the first line matches this schema's template — the two indented `_KEY=VALUE` lines become its continuation. With `multiline` enabled, the record's `message` field becomes the continuation lines' raw text (joined by their original newlines), so `:filter --field message disk usage` matches the record even though the header line itself carries no message text at all. If the schema's template *does* capture a `message` field, continuation text is appended after it instead of replacing it.
+
+This only changes what field filters and the structured fields panel see for the record — each physical line still renders as its own row in the log panel, exactly as before.
 
 ## Full example — Acme node log
 

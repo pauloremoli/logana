@@ -529,6 +529,72 @@ pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser)
     result
 }
 
+/// Walks forward from `line_idx + 1` while `cmap` marks each line as a
+/// continuation of `line_idx` (`build_continuation_map`'s convention: a
+/// continuation line's entry equals its parent's index). Returns the last
+/// such continuation line, or `None` if `line_idx` has no continuation.
+fn last_continuation_line(cmap: &[usize], line_idx: usize) -> Option<usize> {
+    let mut last = None;
+    let mut j = line_idx + 1;
+    while j < cmap.len() && cmap[j] == line_idx {
+        last = Some(j);
+        j += 1;
+    }
+    last
+}
+
+/// Byte range (within `reader.data()`) covering `message` (if present, else
+/// the start of the first continuation line) through the end of the last
+/// continuation line — the zero-copy merged `message` span.
+///
+/// Both endpoints are guaranteed to fall within `reader.data()`: `message`
+/// (when `Some`) always borrows from `reader.get_line(line_idx)`, itself a
+/// subslice of `reader.data()`, and every line up to `last` is contiguous in
+/// that same buffer (consecutive file lines, per `line_byte_range`).
+fn merged_message_range(
+    reader: &FileReader,
+    message: Option<&str>,
+    line_idx: usize,
+    last: usize,
+) -> std::ops::Range<usize> {
+    let data = reader.data();
+    let start = match message {
+        Some(msg) => msg.as_ptr() as usize - data.as_ptr() as usize,
+        None => reader.line_byte_range(line_idx + 1).start,
+    };
+    let end = reader.line_byte_range(last).end;
+    start..end
+}
+
+/// Parses line `line_idx`, and — when `parser` opts into
+/// `merges_continuation_into_message` and `line_idx` has continuation lines
+/// in `cmap` — extends the `message` field's byte range to cover every
+/// continuation line (zero-copy, since consecutive file lines are
+/// contiguous in `reader`'s backing buffer — see `merged_message_range`), so
+/// field filters and the structured fields panel can see their content.
+pub fn parse_line_with_continuation<'a>(
+    parser: &dyn LogFormatParser,
+    reader: &'a FileReader,
+    cmap: Option<&[usize]>,
+    line_idx: usize,
+) -> Option<crate::parser::DisplayParts<'a>> {
+    let mut parts = parser.parse_line(reader.get_line(line_idx))?;
+    if !parser.merges_continuation_into_message() {
+        return Some(parts);
+    }
+    let Some(cmap) = cmap else {
+        return Some(parts);
+    };
+    let Some(last) = last_continuation_line(cmap, line_idx) else {
+        return Some(parts);
+    };
+    let range = merged_message_range(reader, parts.message, line_idx, last);
+    if let Ok(merged) = std::str::from_utf8(&reader.data()[range]) {
+        parts.message = Some(merged);
+    }
+    Some(parts)
+}
+
 /// `has_include_filters` controls how continuation lines absent from the filter
 /// result are treated:
 /// - `false` (exclude-only): a line absent from `visible` was **explicitly
@@ -912,6 +978,7 @@ impl TabState {
             use rayon::prelude::*;
             let file_reader = &self.file_reader;
             let year_map = self.year_map.as_deref();
+            let cmap = self.continuation_map.as_deref().map(Vec::as_slice);
             let n_text = fm.filter_count();
             let n_field = field_defs.len();
             let n_date = date_filters.len();
@@ -983,7 +1050,9 @@ impl TabState {
                                     .unwrap_or(true)
                             } else {
                                 let parts = if needs_parse && !can_skip {
-                                    parser.and_then(|p| p.parse_line(line))
+                                    parser.and_then(|p| {
+                                        parse_line_with_continuation(p, file_reader, cmap, idx)
+                                    })
                                 } else {
                                     None
                                 };
@@ -3715,6 +3784,7 @@ mod tests {
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
+            multiline: false,
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -3753,6 +3823,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             levels: Default::default(),
+            multiline: false,
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -4433,6 +4504,7 @@ mod tests {
                 error: vec!["SEV1".to_string()],
                 warning: vec!["SEV2".to_string()],
             },
+            multiline: false,
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -4453,6 +4525,7 @@ mod tests {
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
+            multiline: false,
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -4611,6 +4684,189 @@ mod tests {
         assert!(visible.contains(&0), "line 0 must be visible");
         assert!(visible.contains(&1), "line 1 must be visible");
         assert!(visible.contains(&3), "line 3 must be visible");
+    }
+
+    fn multiline_schema_config(multiline: bool) -> crate::config::CustomSchemaConfig {
+        crate::config::CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: Some("{level} {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: Default::default(),
+            multiline,
+        }
+    }
+
+    /// A schema whose pattern matches only a bare header line (no `message`
+    /// role captured at all) — models `journalctl --output=verbose`, whose
+    /// header line carries no message text of its own.
+    fn header_only_schema_config() -> crate::config::CustomSchemaConfig {
+        crate::config::CustomSchemaConfig {
+            name: "header-only".to_string(),
+            description: None,
+            template: None,
+            pattern: Some(r"^HEADER (?P<id>\d+)$".to_string()),
+            fields: [("id".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+            multiline: true,
+        }
+    }
+
+    #[test]
+    fn test_parse_line_with_continuation_non_multiline_schema_unchanged() {
+        let reader = FileReader::from_bytes(
+            b"INFO hello\n  stack trace line 1\n  stack trace line 2\n".to_vec(),
+        );
+        let parser =
+            crate::parser::CustomParser::from_config(&multiline_schema_config(false)).unwrap();
+        let cmap = build_continuation_map(&reader, &parser);
+        assert_eq!(cmap, vec![0, 0, 0]);
+
+        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        assert_eq!(parts.message, Some("hello"));
+    }
+
+    #[test]
+    fn test_parse_line_with_continuation_merges_own_message_and_continuations() {
+        let reader = FileReader::from_bytes(
+            b"INFO hello\n  stack trace line 1\n  stack trace line 2\n".to_vec(),
+        );
+        let parser =
+            crate::parser::CustomParser::from_config(&multiline_schema_config(true)).unwrap();
+        let cmap = build_continuation_map(&reader, &parser);
+        assert_eq!(cmap, vec![0, 0, 0]);
+
+        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        assert_eq!(
+            parts.message,
+            Some("hello\n  stack trace line 1\n  stack trace line 2")
+        );
+        // Zero-copy: the merged message must be a literal subslice of the
+        // reader's backing buffer, not an owned/allocated string.
+        let data_range = reader.data().as_ptr_range();
+        let msg = parts.message.unwrap();
+        let msg_range = msg.as_bytes().as_ptr_range();
+        assert!(data_range.start <= msg_range.start && msg_range.end <= data_range.end);
+    }
+
+    #[test]
+    fn test_parse_line_with_continuation_synthesizes_message_when_none_captured() {
+        // journalctl-verbose-style: header line has no message field at all;
+        // the continuation (indented KEY=VALUE) lines become the message.
+        let reader = FileReader::from_bytes(b"HEADER 1\n  KEY1=val1\n  KEY2=val2\n".to_vec());
+        let parser =
+            crate::parser::CustomParser::from_config(&header_only_schema_config()).unwrap();
+        let cmap = build_continuation_map(&reader, &parser);
+        assert_eq!(cmap, vec![0, 0, 0]);
+
+        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        assert_eq!(parts.message, Some("  KEY1=val1\n  KEY2=val2"));
+    }
+
+    #[test]
+    fn test_parse_line_with_continuation_no_continuation_lines_unchanged() {
+        let reader = FileReader::from_bytes(b"INFO hello\nINFO world\n".to_vec());
+        let parser =
+            crate::parser::CustomParser::from_config(&multiline_schema_config(true)).unwrap();
+        let cmap = build_continuation_map(&reader, &parser);
+        assert_eq!(cmap, vec![0, 1]); // both lines parse; neither is a continuation
+
+        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        assert_eq!(parts.message, Some("hello"));
+    }
+
+    #[test]
+    fn test_parse_line_with_continuation_no_cmap_is_passthrough() {
+        let reader = FileReader::from_bytes(b"INFO hello\n  stack trace line 1\n".to_vec());
+        let parser =
+            crate::parser::CustomParser::from_config(&multiline_schema_config(true)).unwrap();
+
+        let parts = parse_line_with_continuation(&parser, &reader, None, 0).unwrap();
+        assert_eq!(parts.message, Some("hello"));
+    }
+
+    /// Sets `tab`'s format to a custom schema and rebuilds its continuation
+    /// map to match — `make_tab` doesn't run format detection, so tests that
+    /// override `display.format` directly must also (re)build the map
+    /// `refresh_visible_inner` reads, mirroring what `TabState::new` does for
+    /// an auto-detected format.
+    fn set_custom_format(tab: &mut TabState, cfg: &crate::config::CustomSchemaConfig) {
+        let parser = crate::parser::CustomParser::from_config(cfg).unwrap();
+        tab.continuation_map = Some(std::sync::Arc::new(build_continuation_map(
+            &tab.file_reader,
+            &parser,
+        )));
+        tab.display.format = Some(std::sync::Arc::new(parser));
+    }
+
+    #[tokio::test]
+    async fn test_multiline_field_filter_matches_message_merged_from_continuation() {
+        // Only the continuation lines mention "NullPointerException" — the
+        // header line's own message ("hello") does not.
+        let mut tab = make_tab(&[
+            "INFO hello",
+            "  boom NullPointerException",
+            "  at foo.bar(Baz.java:42)",
+        ])
+        .await;
+        set_custom_format(&mut tab, &multiline_schema_config(true));
+
+        tab.log_manager
+            .add_filter_with_color(
+                crate::filters::encode_field_filter(
+                    &[("message".to_string(), "NullPointerException".to_string())],
+                    None,
+                ),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+
+        tab.refresh_visible();
+
+        let visible: Vec<usize> = tab.filter.visible_indices.iter().collect();
+        assert!(
+            visible.contains(&0),
+            "header record must be visible: its merged message includes the \
+             continuation lines' text; got {visible:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_multiline_field_filter_ignores_continuation_content() {
+        // Same fixture and filter as above, but the schema does not opt into
+        // `multiline` — the header's own message ("hello") never matches, so
+        // the record must not be shown.
+        let mut tab = make_tab(&[
+            "INFO hello",
+            "  boom NullPointerException",
+            "  at foo.bar(Baz.java:42)",
+        ])
+        .await;
+        set_custom_format(&mut tab, &multiline_schema_config(false));
+
+        tab.log_manager
+            .add_filter_with_color(
+                crate::filters::encode_field_filter(
+                    &[("message".to_string(), "NullPointerException".to_string())],
+                    None,
+                ),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+
+        tab.refresh_visible();
+
+        let visible: Vec<usize> = tab.filter.visible_indices.iter().collect();
+        assert!(
+            !visible.contains(&0),
+            "header record's own message never contains the searched text \
+             without merging; got {visible:?}"
+        );
     }
 
     /// Regression test: `apply_continuation_correction` must not panic when the
