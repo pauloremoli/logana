@@ -1,15 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
 use crossterm::{
-    event::{
-        DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-    },
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-        supports_keyboard_enhancement,
-    },
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use logana::db::Database;
 use logana::db::LogManager;
@@ -96,32 +90,15 @@ struct Args {
 
 struct AlternateScreen {
     terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
-    /// `true` only when `PushKeyboardEnhancementFlags` was actually sent, so
-    /// `Drop` pops exactly what it pushed. On a terminal that supports the
-    /// protocol (Kitty, WezTerm, foot, Ghostty, …), this lets keybindings
-    /// like `Ctrl+m` be reported distinctly from a plain `Enter` — outside
-    /// it, both otherwise arrive as the identical carriage-return byte, and
-    /// the terminal reports it as `Enter` (see
-    /// `ArchivePickerKeybindings::search_merge_toggle`'s doc comment).
-    keyboard_enhancement_enabled: bool,
 }
 
 impl AlternateScreen {
     fn new() -> Result<Self> {
         enable_raw_mode()?;
-        let keyboard_enhancement_enabled = supports_keyboard_enhancement().unwrap_or(false)
-            && execute!(
-                stdout(),
-                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-            )
-            .is_ok();
         execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
         terminal.clear()?;
-        Ok(Self {
-            terminal,
-            keyboard_enhancement_enabled,
-        })
+        Ok(Self { terminal })
     }
 }
 
@@ -129,9 +106,6 @@ impl Drop for AlternateScreen {
     fn drop(&mut self) {
         while crossterm::event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
             let _ = crossterm::event::read();
-        }
-        if self.keyboard_enhancement_enabled {
-            let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
         }
         let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen);
         let _ = disable_raw_mode();

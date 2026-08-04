@@ -1479,10 +1479,7 @@ pub struct ArchivePickerKeybindings {
     /// only requires a binding's own modifiers to be held, so an
     /// Alt-only binding also matches a Ctrl+Alt event, and checking the more
     /// specific one first is what keeps `Ctrl+Alt+m` from being swallowed by
-    /// `search_merge_toggle`. `main.rs`'s `AlternateScreen` enables the
-    /// terminal's enhanced-keyboard protocol at startup when supported, so
-    /// `Ctrl+m` can safely be rebound here too on a terminal that has it —
-    /// `Ctrl+Alt+m` just has to remain the *default* since most don't.
+    /// `search_merge_toggle`.
     #[serde(default = "default_ap_search_merge_all")]
     pub search_merge_all: KeyBindings,
 }
