@@ -99,34 +99,55 @@ impl InputHandler {
             return None;
         }
         let visual_row = (row - inner.y) as usize;
-        if !tab.display.wrap {
-            let visible_idx = tab.scroll.viewport_offset + visual_row;
-            return if visible_idx < tab.filter.visible_indices.len() {
-                Some(visible_idx)
-            } else {
-                None
-            };
-        }
+        let wrap = tab.display.wrap;
         let inner_width = tab.scroll.visible_width;
         let parser = tab.display.format.as_deref();
         let field_layout = &tab.display.field_layout;
         let hidden_fields = &tab.display.hidden_fields;
         let show_keys = tab.display.show_keys;
         let visible_count = tab.filter.visible_indices.len();
+        let start = tab.scroll.viewport_offset;
+
+        let comments_for_render: Vec<(Vec<usize>, String)> = tab
+            .comment_manager
+            .get()
+            .iter()
+            .map(|a| (a.line_indices.clone(), a.text.clone()))
+            .collect();
+        let (banner_at, _) = super::widgets::log_panel::prepare_comment_maps(
+            &comments_for_render,
+            &tab.filter.visible_indices,
+            start,
+            visible_count,
+        );
+
         let mut accumulated = 0usize;
-        let mut idx = tab.scroll.viewport_offset;
+        let mut idx = start;
         while idx < visible_count {
-            let line_bytes = tab
-                .file_reader
-                .get_line(tab.filter.visible_indices.get(idx));
-            let rc = super::field_layout::effective_row_count(
-                line_bytes,
-                inner_width,
-                parser,
-                field_layout,
-                hidden_fields,
-                show_keys,
-            );
+            if let Some(&cmt_idx) = banner_at.get(&idx) {
+                let banner_rows = super::widgets::log_panel::comment_banner_row_count(
+                    &comments_for_render[cmt_idx].1,
+                );
+                if accumulated + banner_rows > visual_row {
+                    return None;
+                }
+                accumulated += banner_rows;
+            }
+            let rc = if wrap {
+                let line_bytes = tab
+                    .file_reader
+                    .get_line(tab.filter.visible_indices.get(idx));
+                super::field_layout::effective_row_count(
+                    line_bytes,
+                    inner_width,
+                    parser,
+                    field_layout,
+                    hidden_fields,
+                    show_keys,
+                )
+            } else {
+                1
+            };
             if accumulated + rc > visual_row {
                 return Some(idx);
             }
@@ -314,5 +335,68 @@ mod tests {
         tab.scroll.scroll_offset = 0;
         assert!(h.hit_test_log_panel(10, 5, &tab).is_none());
         assert!(h.hit_test_log_panel(10, 4, &tab).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_log_panel_offsets_below_single_line_comment_banner() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let (h, mut tab) = fixture(10, 20, area, None).await;
+        tab.scroll.viewport_offset = 0;
+        // Banner sits above line 2, pushing every following row down by one.
+        tab.comment_manager.add("note".to_string(), vec![2]);
+        assert_eq!(h.hit_test_log_panel(10, 0, &tab), Some(0));
+        assert_eq!(h.hit_test_log_panel(10, 1, &tab), Some(1));
+        assert!(h.hit_test_log_panel(10, 2, &tab).is_none());
+        assert_eq!(h.hit_test_log_panel(10, 3, &tab), Some(2));
+        assert_eq!(h.hit_test_log_panel(10, 4, &tab), Some(3));
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_log_panel_offsets_below_multi_line_comment_banner() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let (h, mut tab) = fixture(10, 20, area, None).await;
+        tab.scroll.viewport_offset = 0;
+        // Three-line comment body pushes rows down by three.
+        tab.comment_manager
+            .add("line1\nline2\nline3".to_string(), vec![2]);
+        assert_eq!(h.hit_test_log_panel(10, 1, &tab), Some(1));
+        assert!(h.hit_test_log_panel(10, 2, &tab).is_none());
+        assert!(h.hit_test_log_panel(10, 3, &tab).is_none());
+        assert!(h.hit_test_log_panel(10, 4, &tab).is_none());
+        assert_eq!(h.hit_test_log_panel(10, 5, &tab), Some(2));
+        assert_eq!(h.hit_test_log_panel(10, 6, &tab), Some(3));
+    }
+
+    #[tokio::test]
+    async fn test_hit_test_log_panel_offsets_stack_across_multiple_comments() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let (h, mut tab) = fixture(10, 20, area, None).await;
+        tab.scroll.viewport_offset = 0;
+        tab.comment_manager.add("a".to_string(), vec![1]);
+        tab.comment_manager.add("b\nc".to_string(), vec![3]);
+        // rows: 0=idx0, 1=banner(a), 2=idx1, 3=idx2, 4-5=banner(b,c), 6=idx3, 7=idx4
+        assert_eq!(h.hit_test_log_panel(10, 0, &tab), Some(0));
+        assert!(h.hit_test_log_panel(10, 1, &tab).is_none());
+        assert_eq!(h.hit_test_log_panel(10, 2, &tab), Some(1));
+        assert_eq!(h.hit_test_log_panel(10, 3, &tab), Some(2));
+        assert!(h.hit_test_log_panel(10, 4, &tab).is_none());
+        assert!(h.hit_test_log_panel(10, 5, &tab).is_none());
+        assert_eq!(h.hit_test_log_panel(10, 6, &tab), Some(3));
+        assert_eq!(h.hit_test_log_panel(10, 7, &tab), Some(4));
     }
 }

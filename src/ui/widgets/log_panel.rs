@@ -66,7 +66,13 @@ fn prepend_source_label(
     Line::from(all_spans).style(render_style)
 }
 
-fn prepare_comment_maps(
+/// Row height a comment banner occupies once rendered: one row per line of
+/// the comment's text, mirroring [`build_comment_banner_lines`].
+pub(crate) fn comment_banner_row_count(text: &str) -> usize {
+    text.lines().count()
+}
+
+pub(crate) fn prepare_comment_maps(
     comments: &[(Vec<usize>, String)],
     visible_indices: &VisibleLines,
     start: usize,
