@@ -71,12 +71,13 @@ impl<'a> ExportFooterPopup<'a> {
     pub fn cursor_position(&self, area: Rect) -> Option<(u16, u16)> {
         let p = self.layout(area);
         let text_y_offset = p.field_text_y(self.active_idx);
-        let scroll = Self::scroll_for(self.cursor_row, p.field_h);
+        let scroll_y = Self::scroll_for(self.cursor_row, p.field_h);
         let text_area_y = p.popup_y + text_y_offset;
         let text_area_x = p.popup_x + 1;
         let inner_w = p.popup_w.saturating_sub(2);
-        let cur_x = text_area_x + self.cursor_col as u16;
-        let cur_y = text_area_y + self.cursor_row as u16 - scroll;
+        let scroll_x = Self::scroll_for(self.cursor_col, inner_w);
+        let cur_x = text_area_x + self.cursor_col as u16 - scroll_x;
+        let cur_y = text_area_y + self.cursor_row as u16 - scroll_y;
         if cur_x < text_area_x + inner_w && cur_y < text_area_y + p.field_h {
             Some((cur_x, cur_y))
         } else {
@@ -109,10 +110,17 @@ fn render_field_label(text: &str, active: bool, theme: &Theme, area: Rect, buf: 
         .render(area, buf);
 }
 
-fn render_text_field(lines: &[String], scroll: u16, theme: &Theme, area: Rect, buf: &mut Buffer) {
+fn render_text_field(
+    lines: &[String],
+    scroll_y: u16,
+    scroll_x: u16,
+    theme: &Theme,
+    area: Rect,
+    buf: &mut Buffer,
+) {
     let content: Vec<Line> = lines.iter().map(|l| Line::from(l.as_str())).collect();
     Paragraph::new(content)
-        .scroll((scroll, 0))
+        .scroll((scroll_y, scroll_x))
         .style(Style::default().fg(theme.text).bg(theme.root_bg))
         .render(area, buf);
 }
@@ -198,18 +206,29 @@ impl<'a> Widget for ExportFooterPopup<'a> {
             .constraints(constraints)
             .split(inner);
 
+        let inner_w = p.popup_w.saturating_sub(2);
         let mut chunk_idx = 0;
         for (i, (name, lines)) in self.fields.iter().enumerate() {
             let active = i == self.active_idx;
             let label = placeholder_to_label(name);
             render_field_label(&label, active, self.theme, chunks[chunk_idx], buf);
             chunk_idx += 1;
-            let scroll = if active {
-                Self::scroll_for(self.cursor_row, p.field_h)
+            let (scroll_y, scroll_x) = if active {
+                (
+                    Self::scroll_for(self.cursor_row, p.field_h),
+                    Self::scroll_for(self.cursor_col, inner_w),
+                )
             } else {
-                0
+                (0, 0)
             };
-            render_text_field(lines, scroll, self.theme, chunks[chunk_idx], buf);
+            render_text_field(
+                lines,
+                scroll_y,
+                scroll_x,
+                self.theme,
+                chunks[chunk_idx],
+                buf,
+            );
             chunk_idx += 1;
             if i + 1 < self.fields.len() {
                 render_section_separator(self.theme, chunks[chunk_idx], buf);
@@ -297,6 +316,33 @@ mod tests {
         let (_, cy) = pos.unwrap();
         let p = popup.layout(area);
         assert_eq!(cy, p.popup_y + p.field_text_y(1));
+    }
+
+    #[test]
+    fn test_cursor_stays_visible_when_line_exceeds_field_width() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let long_line = "x".repeat(200);
+        let fields: Vec<(String, Vec<String>)> = vec![
+            ("conclusion".to_string(), vec![long_line]),
+            ("next_steps".to_string(), vec![String::new()]),
+        ];
+        let mut popup = make_popup(&theme, &kb, &fields, 0);
+        popup.cursor_row = 0;
+        popup.cursor_col = 150;
+        let area = Rect::new(0, 0, 80, 24);
+        let pos = popup.cursor_position(area);
+        assert!(pos.is_some(), "cursor must remain visible past field width");
+        let (cx, _cy) = pos.unwrap();
+        let p = popup.layout(area);
+        let text_area_x = p.popup_x + 1;
+        let inner_w = p.popup_w.saturating_sub(2);
+        assert!(
+            cx < text_area_x + inner_w,
+            "cursor x {} must stay within field width {}",
+            cx,
+            inner_w
+        );
     }
 
     #[test]
