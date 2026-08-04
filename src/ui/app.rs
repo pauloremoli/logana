@@ -330,6 +330,7 @@ impl AppBuilder {
             input: InputHandler {
                 log_panel_area: Rect::default(),
                 sidebar_area: None,
+                tab_bar_area: None,
                 last_click: None,
                 scrollbar_dragging: false,
             },

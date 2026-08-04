@@ -193,8 +193,11 @@ impl App {
         let mut chunk_idx = 0;
 
         if show_tab_bar {
+            self.input.tab_bar_area = Some(chunks[chunk_idx]);
             self.render_tab_bar_widget(frame, chunks[chunk_idx], show_borders, mode_name, &state);
             chunk_idx += 1;
+        } else {
+            self.input.tab_bar_area = None;
         }
 
         let main_chunk = chunks[chunk_idx];
@@ -579,14 +582,10 @@ impl App {
         }
     }
 
-    fn render_tab_bar_widget(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        show_borders: bool,
-        mode_name: Option<&str>,
-        state: &UiRenderState,
-    ) {
+    /// Builds the `TabBar` widget used for both rendering and mouse
+    /// hit-testing, so a click always maps to the same layout that was
+    /// actually drawn.
+    fn build_tab_bar<'a>(&'a self, show_borders: bool, mode_name: Option<&'a str>) -> TabBar<'a> {
         let loading_info: Vec<(usize, usize)> = self
             .tabs
             .iter()
@@ -638,19 +637,47 @@ impl App {
                 }
             })
             .collect();
-        frame.render_widget(
-            TabBar {
-                tabs: tab_entries,
-                active_tab: self.active_tab,
-                loading_info,
-                filtering_tabs,
-                show_borders,
-                mode_name,
-                theme: &self.theme,
-            },
-            area,
-        );
+        TabBar {
+            tabs: tab_entries,
+            active_tab: self.active_tab,
+            loading_info,
+            filtering_tabs,
+            show_borders,
+            mode_name,
+            theme: &self.theme,
+        }
+    }
+
+    fn render_tab_bar_widget(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        show_borders: bool,
+        mode_name: Option<&str>,
+        state: &UiRenderState,
+    ) {
+        frame.render_widget(self.build_tab_bar(show_borders, mode_name), area);
         let _ = state;
+    }
+
+    /// Maps a mouse click to a tab index, mirroring exactly what
+    /// `render_tab_bar_widget` last drew (same entries, offset, and widths).
+    pub(super) fn hit_test_tab_bar(&self, col: u16, row: u16) -> Option<usize> {
+        let area = self.input.tab_bar_area?;
+        let show_borders = self.tabs[self.active_tab].display.show_borders;
+        let mode_name = if !self.display.show_mode_bar {
+            Some(
+                self.tabs[self.active_tab]
+                    .interaction
+                    .mode
+                    .render_state()
+                    .mode_name(),
+            )
+        } else {
+            None
+        };
+        self.build_tab_bar(show_borders, mode_name)
+            .hit_test(area, col, row)
     }
 
     fn render_log_panel(
@@ -1215,6 +1242,49 @@ mod tests {
         let mut app = make_app(&lines).await;
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_click_on_tab_bar_switches_active_tab() {
+        let mut app = make_app(&["line"]).await;
+        app.tabs[0].display.show_borders = false;
+        let data: Vec<u8> = b"tab2\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut t = super::super::TabState::new(fr, lm, "tab2".to_string());
+        t.interaction.keybindings = app.keybindings.clone();
+        t.display.show_borders = false;
+        app.tabs.push(t);
+        assert_eq!(app.active_tab, 0);
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let area = app.input.tab_bar_area.expect("tab bar area should be set");
+
+        let col = (area.x..area.x + area.width)
+            .find(|&c| app.hit_test_tab_bar(c, area.y) == Some(1))
+            .expect("second tab should be clickable somewhere in the bar");
+
+        app.handle_left_click(col, area.y).await;
+        assert_eq!(app.active_tab, 1);
+    }
+
+    #[tokio::test]
+    async fn test_click_below_tab_bar_does_not_change_active_tab() {
+        let mut app = make_app(&["line"]).await;
+        let data: Vec<u8> = b"tab2\n".to_vec();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut t = super::super::TabState::new(fr, lm, "tab2".to_string());
+        t.interaction.keybindings = app.keybindings.clone();
+        app.tabs.push(t);
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let area = app.input.tab_bar_area.expect("tab bar area should be set");
+
+        app.handle_left_click(area.x, area.y + area.height).await;
+        assert_eq!(app.active_tab, 0);
     }
 
     #[tokio::test]

@@ -5,6 +5,7 @@ use super::TabState;
 pub struct InputHandler {
     pub log_panel_area: Rect,
     pub sidebar_area: Option<Rect>,
+    pub tab_bar_area: Option<Rect>,
     pub last_click: Option<(std::time::Instant, u16, u16)>,
     pub scrollbar_dragging: bool,
 }
@@ -201,6 +202,7 @@ mod tests {
         let handler = InputHandler {
             log_panel_area: log_area,
             sidebar_area,
+            tab_bar_area: None,
             last_click: None,
             scrollbar_dragging: false,
         };

@@ -253,6 +253,12 @@ impl App {
     }
 
     pub(super) async fn handle_left_click(&mut self, col: u16, row: u16) {
+        if let Some(idx) = self.hit_test_tab_bar(col, row) {
+            if idx != self.active_tab {
+                self.active_tab = idx;
+            }
+            return;
+        }
         let (scroll_pos, filter_idx, visible_idx) = {
             let tab = &self.tabs[self.active_tab];
             (
