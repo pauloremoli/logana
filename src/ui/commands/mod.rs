@@ -1582,6 +1582,7 @@ mod tests {
             fields: std::collections::HashMap::new(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         })
         .unwrap()
     }

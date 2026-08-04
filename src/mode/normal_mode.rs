@@ -1380,6 +1380,7 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -1416,6 +1417,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),

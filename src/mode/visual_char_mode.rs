@@ -1705,6 +1705,7 @@ mod tests {
                 .collect(),
                 levels: Default::default(),
                 multiline: false,
+                continuation: None,
             })
             .unwrap(),
         )
@@ -1746,6 +1747,7 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         };
         tab.display.format = Some(Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),

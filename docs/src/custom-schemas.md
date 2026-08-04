@@ -37,6 +37,7 @@ Each file describes one format. The filename is arbitrary; the `name` field insi
 | `pattern` | one of `template` / `pattern` | Raw regex with named capture groups |
 | `fields` | no | Overrides the automatic role for named placeholders/groups |
 | `multiline` | no | When `true`, folds continuation lines into the record's `message` field — see [Multiline records](#multiline-records) |
+| `continuation` | no | Extracts structured fields from continuation lines (and optionally where the record ends) — see [Multiline field extraction](#multiline-field-extraction) |
 
 ## Template syntax
 
@@ -176,6 +177,47 @@ Tue 2024-01-01 10:15:30.123456 UTC myhost [s=abc;i=1;b=def;t=2;x=3]
 Only the first line matches this schema's template — the two indented `_KEY=VALUE` lines become its continuation. With `multiline` enabled, the record's `message` field becomes the continuation lines' raw text (joined by their original newlines), so `:filter --field message disk usage` matches the record even though the header line itself carries no message text at all. If the schema's template *does* capture a `message` field, continuation text is appended after it instead of replacing it.
 
 This only changes what field filters and the structured fields panel see for the record — each physical line still renders as its own row in the log panel, exactly as before.
+
+## Multiline field extraction
+
+`multiline` only folds continuation text into `message` as one blob. For formats where each continuation line carries its own field — or where the record has an explicit terminator instead of just running until the next header — use `continuation` alongside (or instead of) `multiline`:
+
+```json
+{
+  "name": "transaction",
+  "template": "### Start transaction {id}",
+  "fields": { "id": "extra" },
+  "continuation": {
+    "end_pattern": "### End transaction",
+    "fields": [
+      { "template": "field1: {field1}" },
+      { "template": "field2: {field2}" },
+      { "template": "Object {payload}", "json": true }
+    ]
+  }
+}
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `end_pattern` | no | Template/literal matching the line that ends this record's continuation block. Compiled the same way as a header `template`. When absent, the block still ends at the next line matching the header, same as `multiline` today. |
+| `fields` | no | List of matchers tried in order against each continuation line; the first one that matches extracts that line's fields |
+
+Each entry in `continuation.fields` uses the same `template`/`pattern`/`fields` syntax as the top-level schema, with one restriction: a continuation field can't be mapped to `timestamp`, `level`, `target`, or `message` — those belong to the header alone. Map it to `extra` (the default) or any other field role instead.
+
+Set `"json": true` on an entry to treat its single placeholder as an embedded JSON object instead of a plain string — each key in the object becomes its own `extra` field, using the JSON key's own name.
+
+Given:
+
+```
+### Start transaction 42
+field1: 10
+field2: 3
+Object { "user": "alice", "amount": 99 }
+### End transaction
+```
+
+the record is parsed with extra fields `id=42, field1=10, field2=3, user=alice, amount=99`. `end_pattern` also bounds where extraction stops — any lines between `### End transaction` and the next `### Start transaction` (stray blank lines, unrelated output, etc.) aren't scanned for fields.
 
 ## Full example — Acme node log
 

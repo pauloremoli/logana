@@ -220,6 +220,39 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
         false
     }
 
+    /// Returns `true` when `line` marks the end of the current record's
+    /// continuation block (a schema's declared `continuation.end_pattern`).
+    /// The continuation walk in `parse_line_with_continuation` stops at (and
+    /// includes) the first line this returns `true` for, instead of running
+    /// to the last line `build_continuation_map` groups with the header.
+    /// Defaults to `false` — only a `CustomParser` built from a schema with
+    /// `continuation.end_pattern` set overrides this.
+    fn is_continuation_end(&self, _line: &[u8]) -> bool {
+        false
+    }
+
+    /// Extracts structured fields from a single continuation line (one
+    /// already known not to match this parser's own header pattern), for
+    /// merging into the parent record's `extra_fields`. Defaults to no
+    /// fields; only a `CustomParser` built from a schema with
+    /// `continuation.fields` overrides this.
+    fn extract_continuation_fields<'a>(
+        &self,
+        _line: &'a [u8],
+    ) -> Vec<(FieldSemantic, &'a str, &'a str)> {
+        Vec::new()
+    }
+
+    /// Returns `true` when `parse_line_with_continuation` should walk a
+    /// matched record's continuation lines at all (to fold them into
+    /// `message` and/or extract fields from them). Defaults to
+    /// `merges_continuation_into_message()`; `CustomParser` also returns
+    /// `true` when it has `continuation.fields` or `continuation.end_pattern`
+    /// declared, even without `multiline: true`.
+    fn wants_continuation_walk(&self) -> bool {
+        self.merges_continuation_into_message()
+    }
+
     /// Returns this parser's compiled template segments (literal text +
     /// canonical field placeholders, in the template's own order), for
     /// parsers built from a custom schema `template`. `None` for every other

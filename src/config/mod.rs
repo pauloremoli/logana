@@ -47,6 +47,45 @@ pub struct CustomLevelValues {
     pub warning: Vec<String>,
 }
 
+/// One matcher tried against each continuation line following a matched
+/// header, in the order declared in `ContinuationConfig::fields`. Same
+/// `template`/`pattern` syntax as the top-level schema, but a continuation
+/// field can only resolve to `extra` or a non-slot semantic role (see
+/// `CustomParser::compile_matcher`'s `allow_slot_roles`) — `timestamp`,
+/// `level`, `target` and `message` belong to the header alone.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ContinuationFieldSpec {
+    #[serde(default)]
+    pub template: Option<String>,
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub fields: std::collections::HashMap<String, String>,
+    /// When `true`, this spec must have exactly one placeholder; its
+    /// captured text is parsed as a JSON object and each key becomes its
+    /// own `extra` field (the `fields` role map is unused in this case).
+    #[serde(default)]
+    pub json: bool,
+}
+
+/// Structured extraction for a multiline custom-schema record: fields
+/// carried on lines *after* the header, and where that record's
+/// continuation block ends. See [`CustomSchemaConfig::continuation`].
+#[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ContinuationConfig {
+    /// Template/literal matched against a continuation line to mark the end
+    /// of this record's continuation block (e.g. `"### End transaction"`).
+    /// Compiled the same way as a header `template`. Optional — when
+    /// absent, the block still ends at the next line matching the header
+    /// (today's continuation-grouping behavior, unchanged).
+    #[serde(default)]
+    pub end_pattern: Option<String>,
+    /// Matchers tried in declared order against each continuation line; the
+    /// first one that matches extracts that line's fields.
+    #[serde(default)]
+    pub fields: Vec<ContinuationFieldSpec>,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CustomSchemaConfig {
     pub name: String,
@@ -66,6 +105,11 @@ pub struct CustomSchemaConfig {
     /// fields panel can see their content. See `merges_continuation_into_message`.
     #[serde(default)]
     pub multiline: bool,
+    /// Structured field extraction from continuation lines (as opposed to
+    /// `multiline`'s raw-text folding into `message`). See
+    /// [`ContinuationConfig`].
+    #[serde(default)]
+    pub continuation: Option<ContinuationConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1832,5 +1876,58 @@ mod tests {
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: CustomSchemaConfig = serde_json::from_str(&json).unwrap();
         assert!(deserialized.multiline);
+    }
+
+    #[test]
+    fn test_custom_schema_config_continuation_defaults_none() {
+        let cfg: CustomSchemaConfig = serde_json::from_str(r#"{"name": "test"}"#).unwrap();
+        assert!(cfg.continuation.is_none());
+    }
+
+    #[test]
+    fn test_custom_schema_config_continuation_deserializes_from_docs_example() {
+        // The exact JSON shape documented in docs/src/custom-schemas.md's
+        // "Multiline field extraction" section.
+        let json = "{
+            \"name\": \"transaction\",
+            \"template\": \"### Start transaction {id}\",
+            \"fields\": { \"id\": \"extra\" },
+            \"continuation\": {
+                \"end_pattern\": \"### End transaction\",
+                \"fields\": [
+                    { \"template\": \"field1: {field1}\" },
+                    { \"template\": \"field2: {field2}\" },
+                    { \"template\": \"Object {payload}\", \"json\": true }
+                ]
+            }
+        }";
+        let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
+
+        // Compiles successfully via the same path startup validation uses.
+        assert!(crate::parser::CustomParser::from_config(&cfg).is_ok());
+
+        let continuation = cfg.continuation.expect("continuation block should parse");
+        assert_eq!(
+            continuation.end_pattern.as_deref(),
+            Some("### End transaction")
+        );
+        assert_eq!(continuation.fields.len(), 3);
+        assert_eq!(
+            continuation.fields[0].template.as_deref(),
+            Some("field1: {field1}")
+        );
+        assert!(!continuation.fields[0].json);
+        assert_eq!(
+            continuation.fields[2].template.as_deref(),
+            Some("Object {payload}")
+        );
+        assert!(continuation.fields[2].json);
+    }
+
+    #[test]
+    fn test_continuation_config_end_pattern_optional() {
+        let json = r#"{"name": "test", "continuation": {"fields": []}}"#;
+        let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.continuation.unwrap().end_pattern.is_none());
     }
 }

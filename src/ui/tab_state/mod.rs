@@ -535,16 +535,39 @@ pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser)
 
 /// Walks forward from `line_idx + 1` while `cmap` marks each line as a
 /// continuation of `line_idx` (`build_continuation_map`'s convention: a
-/// continuation line's entry equals its parent's index). Returns the last
-/// such continuation line, or `None` if `line_idx` has no continuation.
-fn last_continuation_line(cmap: &[usize], line_idx: usize) -> Option<usize> {
-    let mut last = None;
+/// continuation line's entry equals its parent's index), extracting each
+/// line's structured fields via `parser.extract_continuation_fields` into
+/// `parts.extra_fields`. Stops at (and includes) the first line
+/// `parser.is_continuation_end` matches, if any — otherwise walks every
+/// continuation line `cmap` groups with `line_idx`. Returns the index of the
+/// last line still considered part of this record, or `line_idx` itself if
+/// there are no continuation lines.
+///
+/// For a schema with no `continuation.fields`/`end_pattern` declared,
+/// `extract_continuation_fields`/`is_continuation_end` default to
+/// empty/false, so this returns exactly what the old `last_continuation_line`
+/// helper did and leaves `parts.extra_fields` untouched.
+fn apply_continuation_fields<'a>(
+    parser: &dyn LogFormatParser,
+    reader: &'a FileReader,
+    cmap: &[usize],
+    line_idx: usize,
+    parts: &mut crate::parser::DisplayParts<'a>,
+) -> usize {
+    let mut block_end = line_idx;
     let mut j = line_idx + 1;
     while j < cmap.len() && cmap[j] == line_idx {
-        last = Some(j);
+        let line = reader.get_line(j);
+        block_end = j;
+        if parser.is_continuation_end(line) {
+            break;
+        }
+        parts
+            .extra_fields
+            .extend(parser.extract_continuation_fields(line));
         j += 1;
     }
-    last
+    block_end
 }
 
 /// Byte range (within `reader.data()`) covering `message` (if present, else
@@ -570,10 +593,12 @@ fn merged_message_range(
     start..end
 }
 
-/// Parses line `line_idx`, and — when `parser` opts into
-/// `merges_continuation_into_message` and `line_idx` has continuation lines
-/// in `cmap` — extends the `message` field's byte range to cover every
-/// continuation line (zero-copy, since consecutive file lines are
+/// Parses line `line_idx`, and — when `parser` wants a continuation walk
+/// (`merges_continuation_into_message` and/or a `continuation` block) and
+/// `line_idx` has continuation lines in `cmap` — merges structured fields
+/// extracted from those lines into `parts.extra_fields`, and (when
+/// `merges_continuation_into_message`) extends the `message` field's byte
+/// range to cover them too (zero-copy, since consecutive file lines are
 /// contiguous in `reader`'s backing buffer — see `merged_message_range`), so
 /// field filters and the structured fields panel can see their content.
 pub fn parse_line_with_continuation<'a>(
@@ -583,18 +608,18 @@ pub fn parse_line_with_continuation<'a>(
     line_idx: usize,
 ) -> Option<crate::parser::DisplayParts<'a>> {
     let mut parts = parser.parse_line(reader.get_line(line_idx))?;
-    if !parser.merges_continuation_into_message() {
+    if !parser.wants_continuation_walk() {
         return Some(parts);
     }
     let Some(cmap) = cmap else {
         return Some(parts);
     };
-    let Some(last) = last_continuation_line(cmap, line_idx) else {
-        return Some(parts);
-    };
-    let range = merged_message_range(reader, parts.message, line_idx, last);
-    if let Ok(merged) = std::str::from_utf8(&reader.data()[range]) {
-        parts.message = Some(merged);
+    let block_end = apply_continuation_fields(parser, reader, cmap, line_idx, &mut parts);
+    if parser.merges_continuation_into_message() && block_end > line_idx {
+        let range = merged_message_range(reader, parts.message, line_idx, block_end);
+        if let Ok(merged) = std::str::from_utf8(&reader.data()[range]) {
+            parts.message = Some(merged);
+        }
     }
     Some(parts)
 }
@@ -3789,6 +3814,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -3828,6 +3854,7 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -4509,6 +4536,7 @@ mod tests {
                 warning: vec!["SEV2".to_string()],
             },
             multiline: false,
+            continuation: None,
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -4530,6 +4558,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -4699,6 +4728,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline,
+            continuation: None,
         }
     }
 
@@ -4716,6 +4746,7 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: true,
+            continuation: None,
         }
     }
 
@@ -4790,6 +4821,128 @@ mod tests {
 
         let parts = parse_line_with_continuation(&parser, &reader, None, 0).unwrap();
         assert_eq!(parts.message, Some("hello"));
+    }
+
+    /// Header `"### Start transaction {id}"`, continuation fields for
+    /// `field1`/`field2`, terminated by `"### End transaction"` — the
+    /// scenario from the multiline-schema feature request.
+    fn transaction_schema_config() -> crate::config::CustomSchemaConfig {
+        crate::config::CustomSchemaConfig {
+            name: "transaction".to_string(),
+            description: None,
+            template: Some("### Start transaction {id}".to_string()),
+            pattern: None,
+            fields: [("id".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+            multiline: false,
+            continuation: Some(crate::config::ContinuationConfig {
+                end_pattern: Some("### End transaction".to_string()),
+                fields: vec![
+                    crate::config::ContinuationFieldSpec {
+                        template: Some("field1: {field1}".to_string()),
+                        pattern: None,
+                        fields: Default::default(),
+                        json: false,
+                    },
+                    crate::config::ContinuationFieldSpec {
+                        template: Some("field2: {field2}".to_string()),
+                        pattern: None,
+                        fields: Default::default(),
+                        json: false,
+                    },
+                ],
+            }),
+        }
+    }
+
+    #[test]
+    fn test_apply_continuation_fields_merges_extracted_fields_into_parent() {
+        let reader = FileReader::from_bytes(
+            b"### Start transaction 42\nfield1: 10\nfield2: 3\n### End transaction\n".to_vec(),
+        );
+        let parser =
+            crate::parser::CustomParser::from_config(&transaction_schema_config()).unwrap();
+        let cmap = build_continuation_map(&reader, &parser);
+        assert_eq!(cmap, vec![0, 0, 0, 0]);
+
+        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        let extra = |k: &str| {
+            parts
+                .extra_fields
+                .iter()
+                .find(|(_, key, _)| *key == k)
+                .map(|(_, _, v)| *v)
+        };
+        assert_eq!(extra("id"), Some("42"));
+        assert_eq!(extra("field1"), Some("10"));
+        assert_eq!(extra("field2"), Some("3"));
+    }
+
+    #[test]
+    fn test_apply_continuation_fields_stops_at_end_pattern_even_if_cmap_groups_further_lines() {
+        // Everything after "### End transaction" up to the next header still
+        // gets grouped as a continuation by `build_continuation_map` (it only
+        // looks at the header pattern) — `apply_continuation_fields` must
+        // still stop extracting once it passes the end marker, so the stray
+        // "field1: 999" line doesn't get folded into the first record.
+        let reader = FileReader::from_bytes(
+            b"### Start transaction 42\n\
+              field1: 10\n\
+              ### End transaction\n\
+              field1: 999\n\
+              ### Start transaction 43\n\
+              field2: 3\n"
+                .to_vec(),
+        );
+        let parser =
+            crate::parser::CustomParser::from_config(&transaction_schema_config()).unwrap();
+        let cmap = build_continuation_map(&reader, &parser);
+        assert_eq!(cmap, vec![0, 0, 0, 0, 4, 4]);
+
+        let mut parts = crate::parser::DisplayParts::default();
+        let block_end = apply_continuation_fields(&parser, &reader, &cmap, 0, &mut parts);
+        assert_eq!(
+            block_end, 2,
+            "should stop at the end_pattern line (index 2)"
+        );
+        assert_eq!(
+            parts
+                .extra_fields
+                .iter()
+                .find(|(_, k, _)| *k == "field1")
+                .map(|(_, _, v)| *v),
+            Some("10"),
+            "field1 from before the end marker must be extracted"
+        );
+        assert!(
+            !parts.extra_fields.iter().any(|(_, _, v)| *v == "999"),
+            "field1 after the end marker must not leak into this record"
+        );
+    }
+
+    #[test]
+    fn test_wants_continuation_walk_gates_field_extraction_without_multiline() {
+        // multiline: false, but a `continuation` block is declared — the
+        // walk must still run so field1/field2 get extracted even though
+        // `message` is never folded.
+        let reader = FileReader::from_bytes(
+            b"### Start transaction 42\nfield1: 10\n### End transaction\n".to_vec(),
+        );
+        let parser =
+            crate::parser::CustomParser::from_config(&transaction_schema_config()).unwrap();
+        assert!(!parser.merges_continuation_into_message());
+        let cmap = build_continuation_map(&reader, &parser);
+
+        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        assert_eq!(parts.message, None, "no message field declared or merged");
+        assert!(
+            parts
+                .extra_fields
+                .iter()
+                .any(|(_, k, v)| *k == "field1" && *v == "10")
+        );
     }
 
     /// Sets `tab`'s format to a custom schema and rebuilds its continuation

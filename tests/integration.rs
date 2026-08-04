@@ -942,3 +942,102 @@ async fn test_include_filter_shows_continuations_with_parent() {
         "INFO entry should be hidden (no match)"
     );
 }
+
+#[test]
+fn test_multiline_schema_transaction_end_to_end() {
+    use logana::config::{ContinuationConfig, ContinuationFieldSpec, CustomSchemaConfig};
+    use logana::parser::{CustomParser, LogFormatParser};
+    use logana::ui::build_continuation_map;
+
+    // The scenario from the multiline custom-schema feature request: a
+    // header capturing a transaction id, continuation lines carrying their
+    // own fields (including one embedded JSON object), terminated by an
+    // explicit end marker.
+    let cfg = CustomSchemaConfig {
+        name: "transaction".to_string(),
+        description: None,
+        template: Some("### Start transaction {id}".to_string()),
+        pattern: None,
+        fields: [("id".to_string(), "extra".to_string())]
+            .into_iter()
+            .collect(),
+        levels: Default::default(),
+        multiline: false,
+        continuation: Some(ContinuationConfig {
+            end_pattern: Some("### End transaction".to_string()),
+            fields: vec![
+                ContinuationFieldSpec {
+                    template: Some("field1: {field1}".to_string()),
+                    pattern: None,
+                    fields: Default::default(),
+                    json: false,
+                },
+                ContinuationFieldSpec {
+                    template: Some("field2: {field2}".to_string()),
+                    pattern: None,
+                    fields: Default::default(),
+                    json: false,
+                },
+                ContinuationFieldSpec {
+                    template: Some("Object {payload}".to_string()),
+                    pattern: None,
+                    fields: Default::default(),
+                    json: true,
+                },
+            ],
+        }),
+    };
+    let parser = CustomParser::from_config(&cfg).expect("schema should compile");
+
+    let data = b"### Start transaction 42\nfield1: 10\nfield2: 3\nObject {\"user\":\"alice\",\"amount\":99}\n### End transaction\n### Start transaction 43\nfield1: 20\n### End transaction\n".to_vec();
+    let reader = FileReader::from_bytes(data);
+    let cmap = build_continuation_map(&reader, &parser);
+
+    assert_eq!(cmap, vec![0, 0, 0, 0, 0, 5, 5, 5]);
+
+    // Walk record 1's continuation block the same way the render pipeline
+    // does (see `apply_continuation_fields` in `ui::tab_state`), stopping at
+    // the end_pattern line.
+    let extract_record = |header_idx: usize| -> Vec<(String, String)> {
+        let mut fields = Vec::new();
+        let mut j = header_idx + 1;
+        while j < cmap.len() && cmap[j] == header_idx {
+            let line = reader.get_line(j);
+            if parser.is_continuation_end(line) {
+                break;
+            }
+            for (_, k, v) in parser.extract_continuation_fields(line) {
+                fields.push((k.to_string(), v.to_string()));
+            }
+            j += 1;
+        }
+        fields
+    };
+
+    let record1 = extract_record(0);
+    assert!(record1.contains(&("field1".to_string(), "10".to_string())));
+    assert!(record1.contains(&("field2".to_string(), "3".to_string())));
+    assert!(record1.contains(&("user".to_string(), "alice".to_string())));
+    assert!(record1.contains(&("amount".to_string(), "99".to_string())));
+
+    let header1 = parser.parse_line(reader.get_line(0)).unwrap();
+    let id1 = header1
+        .extra_fields
+        .iter()
+        .find(|(_, k, _)| *k == "id")
+        .map(|(_, _, v)| *v);
+    assert_eq!(id1, Some("42"));
+
+    // The second transaction parses independently: its own id and field1,
+    // with nothing leaked from the first record.
+    let header2 = parser.parse_line(reader.get_line(5)).unwrap();
+    let id2 = header2
+        .extra_fields
+        .iter()
+        .find(|(_, k, _)| *k == "id")
+        .map(|(_, _, v)| *v);
+    assert_eq!(id2, Some("43"));
+
+    let record2 = extract_record(5);
+    assert_eq!(record2, vec![("field1".to_string(), "20".to_string())]);
+}

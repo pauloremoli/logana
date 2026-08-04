@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use regex::Regex;
 
-use crate::config::CustomSchemaConfig;
+use crate::config::{ContinuationConfig, CustomSchemaConfig};
+use crate::parser::json::parse_json_line;
 use crate::parser::types::{
     DisplayParts, FieldSemantic, LogFormatParser, LogLevel, TemplateSegment, push_extra_field,
     push_field_as,
@@ -33,6 +34,16 @@ struct LevelOverrides {
     warning: HashSet<String>,
 }
 
+/// One compiled `continuation.fields[]` entry: a matcher tried against each
+/// continuation line, extracting either plain fields via `field_map` or (when
+/// `json_capture` is `Some`) unpacking a single capture's text as JSON.
+#[derive(Debug)]
+struct ContinuationMatcher {
+    regex: Regex,
+    field_map: Vec<(usize, &'static str, FieldRoleStored)>,
+    json_capture: Option<usize>,
+}
+
 #[derive(Debug)]
 pub struct CustomParser {
     name: String,
@@ -43,6 +54,8 @@ pub struct CustomParser {
     template_segments: Option<Vec<TemplateSegment>>,
     level_overrides: LevelOverrides,
     multiline: bool,
+    continuation_matchers: Vec<ContinuationMatcher>,
+    end_pattern: Option<Regex>,
 }
 
 #[derive(Debug)]
@@ -253,55 +266,159 @@ fn build_level_overrides(cfg: &CustomSchemaConfig) -> Result<LevelOverrides, Str
     Ok(LevelOverrides { error, warning })
 }
 
+/// Result of compiling one `template`/`pattern` pair (the header, or one
+/// `continuation.fields[]` entry) into a regex and its resolved field roles.
+struct CompiledMatcher {
+    regex: Regex,
+    field_map: Vec<(usize, &'static str, FieldRoleStored)>,
+    /// `Some` only when compiled from a `template`, not a raw `pattern`.
+    raw_segments: Option<Vec<RawSegment>>,
+}
+
+/// Compiles a `template`/`pattern` pair (mutually exclusive, exactly one
+/// required) into a regex and resolves each named capture group's field
+/// role. Shared by the header (`allow_slot_roles: true`) and each
+/// `continuation.fields[]` entry (`allow_slot_roles: false` — a continuation
+/// field can't claim the header's singular timestamp/level/target/message
+/// slots).
+fn compile_matcher(
+    schema_name: &str,
+    template: &Option<String>,
+    pattern: &Option<String>,
+    fields: &std::collections::HashMap<String, String>,
+    allow_slot_roles: bool,
+) -> Result<CompiledMatcher, String> {
+    let mut raw_segments = None;
+    let pattern_str = match (template, pattern) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "schema '{schema_name}': cannot specify both 'template' and 'pattern'"
+            ));
+        }
+        (None, None) => {
+            return Err(format!(
+                "schema '{schema_name}': must specify either 'template' or 'pattern'"
+            ));
+        }
+        (Some(tmpl), None) => {
+            raw_segments = Some(parse_raw_segments(tmpl));
+            compile_template(tmpl)?
+        }
+        (None, Some(raw)) => raw.clone(),
+    };
+
+    let regex = Regex::new(&pattern_str)
+        .map_err(|e| format!("schema '{schema_name}': invalid regex: {e}"))?;
+
+    let mut field_map = Vec::new();
+    for (capture_idx, group_name) in named_capture_groups(&regex) {
+        let role = if let Some(explicit) = fields.get(group_name) {
+            FieldRole::from_str(explicit)?
+        } else if let Some(implicit) = FieldRole::from_canonical(group_name) {
+            implicit
+        } else {
+            FieldRole::Extra
+        };
+        if !allow_slot_roles
+            && let FieldRole::Semantic(sem) = &role
+            && matches!(
+                sem,
+                FieldSemantic::Timestamp
+                    | FieldSemantic::Level
+                    | FieldSemantic::Target
+                    | FieldSemantic::Message
+            )
+        {
+            return Err(format!(
+                "schema '{schema_name}': continuation field '{group_name}' cannot use role '{}' \
+                 — timestamp/level/target/message are only valid on the header template/pattern",
+                sem.canonical_name()
+            ));
+        }
+        let static_name: &'static str = Box::leak(group_name.to_string().into_boxed_str());
+        field_map.push((capture_idx, static_name, role.into()));
+    }
+
+    Ok(CompiledMatcher {
+        regex,
+        field_map,
+        raw_segments,
+    })
+}
+
+/// Compiles a schema's `continuation` block (if any) into its runtime form.
+fn compile_continuation(
+    cfg: &CustomSchemaConfig,
+) -> Result<(Vec<ContinuationMatcher>, Option<Regex>), String> {
+    let Some(ContinuationConfig {
+        end_pattern,
+        fields,
+    }) = &cfg.continuation
+    else {
+        return Ok((Vec::new(), None));
+    };
+
+    let end_pattern = end_pattern
+        .as_ref()
+        .map(|p| -> Result<Regex, String> {
+            let pattern_str = compile_template(p)?;
+            Regex::new(&pattern_str).map_err(|e| {
+                format!(
+                    "schema '{}': invalid continuation end_pattern: {e}",
+                    cfg.name
+                )
+            })
+        })
+        .transpose()?;
+
+    let mut matchers = Vec::with_capacity(fields.len());
+    for spec in fields {
+        let compiled = compile_matcher(
+            &cfg.name,
+            &spec.template,
+            &spec.pattern,
+            &spec.fields,
+            false,
+        )?;
+        let json_capture = if spec.json {
+            if compiled.field_map.len() != 1 {
+                return Err(format!(
+                    "schema '{}': a 'json' continuation field must have exactly one placeholder",
+                    cfg.name
+                ));
+            }
+            Some(compiled.field_map[0].0)
+        } else {
+            None
+        };
+        matchers.push(ContinuationMatcher {
+            regex: compiled.regex,
+            field_map: compiled.field_map,
+            json_capture,
+        });
+    }
+
+    Ok((matchers, end_pattern))
+}
+
 impl CustomParser {
     pub fn from_config(cfg: &CustomSchemaConfig) -> Result<Self, String> {
-        let mut raw_segments = None;
-        let pattern_str = match (&cfg.template, &cfg.pattern) {
-            (Some(_), Some(_)) => {
-                return Err(format!(
-                    "schema '{}': cannot specify both 'template' and 'pattern'",
-                    cfg.name
-                ));
-            }
-            (None, None) => {
-                return Err(format!(
-                    "schema '{}': must specify either 'template' or 'pattern'",
-                    cfg.name
-                ));
-            }
-            (Some(tmpl), None) => {
-                raw_segments = Some(parse_raw_segments(tmpl));
-                compile_template(tmpl)?
-            }
-            (None, Some(raw)) => raw.clone(),
-        };
-
-        let regex = Regex::new(&pattern_str)
-            .map_err(|e| format!("schema '{}': invalid regex: {e}", cfg.name))?;
-
-        let mut field_map = Vec::new();
-        for (capture_idx, group_name) in named_capture_groups(&regex) {
-            let role = if let Some(explicit) = cfg.fields.get(group_name) {
-                FieldRole::from_str(explicit)?
-            } else if let Some(implicit) = FieldRole::from_canonical(group_name) {
-                implicit
-            } else {
-                FieldRole::Extra
-            };
-            let static_name: &'static str = Box::leak(group_name.to_string().into_boxed_str());
-            field_map.push((capture_idx, static_name, role.into()));
-        }
-
-        let template_segments = raw_segments.map(|raw| resolve_segments(raw, &field_map));
+        let header = compile_matcher(&cfg.name, &cfg.template, &cfg.pattern, &cfg.fields, true)?;
+        let template_segments = header
+            .raw_segments
+            .map(|raw| resolve_segments(raw, &header.field_map));
         let level_overrides = build_level_overrides(cfg)?;
+        let (continuation_matchers, end_pattern) = compile_continuation(cfg)?;
 
         Ok(CustomParser {
             name: cfg.name.clone(),
-            regex,
-            field_map,
+            regex: header.regex,
+            field_map: header.field_map,
             template_segments,
             level_overrides,
             multiline: cfg.multiline,
+            continuation_matchers,
+            end_pattern,
         })
     }
 }
@@ -332,6 +449,58 @@ impl LogFormatParser for CustomParser {
 
     fn merges_continuation_into_message(&self) -> bool {
         self.multiline
+    }
+
+    fn wants_continuation_walk(&self) -> bool {
+        self.multiline || !self.continuation_matchers.is_empty() || self.end_pattern.is_some()
+    }
+
+    fn is_continuation_end(&self, line: &[u8]) -> bool {
+        let Some(end) = &self.end_pattern else {
+            return false;
+        };
+        std::str::from_utf8(line)
+            .map(|s| end.is_match(s))
+            .unwrap_or(false)
+    }
+
+    fn extract_continuation_fields<'a>(
+        &self,
+        line: &'a [u8],
+    ) -> Vec<(FieldSemantic, &'a str, &'a str)> {
+        let Ok(s) = std::str::from_utf8(line) else {
+            return Vec::new();
+        };
+        for matcher in &self.continuation_matchers {
+            let Some(caps) = matcher.regex.captures(s) else {
+                continue;
+            };
+            let mut out = Vec::new();
+            if let Some(json_idx) = matcher.json_capture {
+                let Some(text) = caps.get(json_idx).map(|m| m.as_str().trim()) else {
+                    return out;
+                };
+                let Some(json_fields) = parse_json_line(text.as_bytes()) else {
+                    return out;
+                };
+                for f in &json_fields {
+                    push_extra_field(&mut out, f.key, f.value);
+                }
+                return out;
+            }
+            for (idx, group_name, role) in &matcher.field_map {
+                let Some(val) = caps.get(*idx).map(|m| m.as_str()) else {
+                    continue;
+                };
+                match role {
+                    FieldRoleStored::Semantic(sem) => push_field_as(&mut out, *sem, val),
+                    FieldRoleStored::Extra => push_extra_field(&mut out, group_name, val),
+                    FieldRoleStored::Ignored => {}
+                }
+            }
+            return out;
+        }
+        Vec::new()
     }
 
     fn parse_line<'a>(&self, line: &'a [u8]) -> Option<DisplayParts<'a>> {
@@ -380,17 +549,20 @@ impl LogFormatParser for CustomParser {
         self.template_segments.as_deref()
     }
 
-    fn collect_field_names(&self, _lines: &[&[u8]]) -> Vec<String> {
+    fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String> {
         // A `template`-based schema has its own declared field order (see
         // `TemplateSegment`/`resolve_segments`) — surface fields in that
         // order so the Select Fields popup (and its "reset" default) matches
         // what the schema describes, consistent with how the log panel
         // already renders the line in template order (see log_panel.rs).
         // `pattern`-based schemas have no such order to draw from, so they
-        // fall back to the canonical-slot order below.
+        // fall back to the canonical-slot order below. Either way, any
+        // `continuation.fields`/embedded-JSON names actually observed in
+        // `lines` are appended last (dynamic — a sample-dependent set, like
+        // JsonParser's extras), so they show up in the Select Fields popup.
         if let Some(segments) = &self.template_segments {
             let mut seen = HashSet::new();
-            return segments
+            let mut result: Vec<String> = segments
                 .iter()
                 .filter_map(|seg| match seg {
                     TemplateSegment::Field {
@@ -400,6 +572,8 @@ impl LogFormatParser for CustomParser {
                     _ => None,
                 })
                 .collect();
+            result.extend(self.continuation_field_names(lines, &mut seen));
+            return result;
         }
 
         let mut has_timestamp = false;
@@ -449,6 +623,7 @@ impl LogFormatParser for CustomParser {
         if has_message {
             result.push("message".to_string());
         }
+        result.extend(self.continuation_field_names(lines, &mut seen));
         result
     }
 
@@ -456,6 +631,27 @@ impl LogFormatParser for CustomParser {
         std::str::from_utf8(line)
             .map(|s| self.regex.is_match(s))
             .unwrap_or(false)
+    }
+}
+
+impl CustomParser {
+    /// Scans `lines` with `extract_continuation_fields`, returning names not
+    /// already in `seen` (in first-seen order), and inserting them into
+    /// `seen`. Shared by both `collect_field_names` branches.
+    fn continuation_field_names(&self, lines: &[&[u8]], seen: &mut HashSet<String>) -> Vec<String> {
+        let mut names = Vec::new();
+        for &line in lines {
+            for (sem, key, _) in self.extract_continuation_fields(line) {
+                let name = match sem {
+                    FieldSemantic::Extra => key.to_string(),
+                    other => other.canonical_name().to_string(),
+                };
+                if seen.insert(name.clone()) {
+                    names.push(name);
+                }
+            }
+        }
+        names
     }
 }
 
@@ -480,6 +676,7 @@ mod tests {
             .collect(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         })
         .unwrap()
     }
@@ -620,6 +817,7 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         })
         .unwrap();
         let segments = parser.template_segments().unwrap();
@@ -650,6 +848,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         })
         .unwrap();
         assert!(parser.template_segments().is_none());
@@ -672,6 +871,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must specify either"));
@@ -687,6 +887,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cannot specify both"));
@@ -702,6 +903,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid regex"));
@@ -717,6 +919,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         })
         .unwrap();
 
@@ -769,6 +972,7 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown field role"));
@@ -800,6 +1004,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: true,
+            continuation: None,
         })
         .unwrap();
         assert!(parser.merges_continuation_into_message());
@@ -817,6 +1022,7 @@ mod tests {
                 warning: warning.iter().map(|s| s.to_string()).collect(),
             },
             multiline: false,
+            continuation: None,
         })
         .unwrap()
     }
@@ -867,6 +1073,7 @@ mod tests {
                 warning: vec!["sev1".to_string()],
             },
             multiline: false,
+            continuation: None,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("both error and warning"));
@@ -884,6 +1091,7 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         })
         .unwrap();
 
@@ -912,6 +1120,7 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         })
         .unwrap();
 
@@ -967,6 +1176,7 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         })
         .unwrap();
 
@@ -987,11 +1197,208 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         })
         .unwrap();
 
         let names = parser.collect_field_names(&[]);
         assert!(!names.contains(&"pid".to_string()));
         assert!(names.contains(&"message".to_string()));
+    }
+
+    // ── continuation field extraction ────────────────────────────────────
+
+    use crate::config::ContinuationFieldSpec;
+
+    fn transaction_schema_config(fields: Vec<ContinuationFieldSpec>) -> CustomSchemaConfig {
+        CustomSchemaConfig {
+            name: "transaction".to_string(),
+            description: None,
+            template: Some("### Start transaction {id}".to_string()),
+            pattern: None,
+            fields: [("id".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+            multiline: false,
+            continuation: Some(crate::config::ContinuationConfig {
+                end_pattern: Some("### End transaction".to_string()),
+                fields,
+            }),
+        }
+    }
+
+    #[test]
+    fn test_continuation_field_rejects_slot_role() {
+        let result =
+            CustomParser::from_config(&transaction_schema_config(vec![ContinuationFieldSpec {
+                template: Some("ts: {when}".to_string()),
+                pattern: None,
+                fields: [("when".to_string(), "timestamp".to_string())]
+                    .into_iter()
+                    .collect(),
+                json: false,
+            }]));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("timestamp"), "{err}");
+        assert!(err.contains("continuation field"), "{err}");
+    }
+
+    #[test]
+    fn test_continuation_json_field_requires_exactly_one_placeholder() {
+        let no_placeholder =
+            CustomParser::from_config(&transaction_schema_config(vec![ContinuationFieldSpec {
+                template: Some("Object literal".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: true,
+            }]));
+        assert!(no_placeholder.is_err());
+        assert!(
+            no_placeholder
+                .unwrap_err()
+                .contains("exactly one placeholder")
+        );
+
+        let two_placeholders =
+            CustomParser::from_config(&transaction_schema_config(vec![ContinuationFieldSpec {
+                template: Some("Object {a} {b}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: true,
+            }]));
+        assert!(two_placeholders.is_err());
+        assert!(
+            two_placeholders
+                .unwrap_err()
+                .contains("exactly one placeholder")
+        );
+    }
+
+    #[test]
+    fn test_extract_continuation_fields_plain_template() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config(vec![ContinuationFieldSpec {
+                template: Some("field1: {field1}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            }]))
+            .unwrap();
+
+        let fields = parser.extract_continuation_fields(b"field1: 10");
+        assert_eq!(fields, vec![(FieldSemantic::Extra, "field1", "10")]);
+    }
+
+    #[test]
+    fn test_extract_continuation_fields_unpacks_json() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config(vec![ContinuationFieldSpec {
+                template: Some("Object {payload}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: true,
+            }]))
+            .unwrap();
+
+        let fields = parser.extract_continuation_fields(br#"Object {"user":"alice","amount":99}"#);
+        assert!(fields.contains(&(FieldSemantic::Extra, "user", "alice")));
+        assert!(fields.contains(&(FieldSemantic::Extra, "amount", "99")));
+    }
+
+    #[test]
+    fn test_extract_continuation_fields_tries_specs_in_order_first_match_wins() {
+        let parser = CustomParser::from_config(&transaction_schema_config(vec![
+            ContinuationFieldSpec {
+                template: Some("field1: {field1}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            },
+            ContinuationFieldSpec {
+                template: Some("field2: {field2}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            },
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            parser.extract_continuation_fields(b"field1: 10"),
+            vec![(FieldSemantic::Extra, "field1", "10")]
+        );
+        assert_eq!(
+            parser.extract_continuation_fields(b"field2: 3"),
+            vec![(FieldSemantic::Extra, "field2", "3")]
+        );
+    }
+
+    #[test]
+    fn test_extract_continuation_fields_no_match_returns_empty() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config(vec![ContinuationFieldSpec {
+                template: Some("field1: {field1}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            }]))
+            .unwrap();
+
+        assert!(
+            parser
+                .extract_continuation_fields(b"nothing to see here")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_is_continuation_end_matches_configured_end_pattern() {
+        let parser = CustomParser::from_config(&transaction_schema_config(vec![])).unwrap();
+        assert!(parser.is_continuation_end(b"### End transaction"));
+        assert!(!parser.is_continuation_end(b"field1: 10"));
+    }
+
+    #[test]
+    fn test_is_continuation_end_false_without_end_pattern() {
+        let parser = make_acme_parser();
+        assert!(!parser.is_continuation_end(b"anything"));
+    }
+
+    #[test]
+    fn test_wants_continuation_walk_true_for_continuation_block_without_multiline() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config(vec![ContinuationFieldSpec {
+                template: Some("field1: {field1}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            }]))
+            .unwrap();
+        assert!(!parser.merges_continuation_into_message());
+        assert!(parser.wants_continuation_walk());
+    }
+
+    #[test]
+    fn test_wants_continuation_walk_false_without_multiline_or_continuation() {
+        let parser = make_acme_parser();
+        assert!(!parser.wants_continuation_walk());
+    }
+
+    #[test]
+    fn test_collect_field_names_includes_continuation_fields_from_sample() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config(vec![ContinuationFieldSpec {
+                template: Some("field1: {field1}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            }]))
+            .unwrap();
+
+        let sample: Vec<&[u8]> = vec![b"### Start transaction 42", b"field1: 10"];
+        let names = parser.collect_field_names(&sample);
+        assert_eq!(names, vec!["id".to_string(), "field1".to_string()]);
     }
 }

@@ -249,6 +249,7 @@ mod tests {
             .collect(),
             levels: Default::default(),
             multiline: false,
+            continuation: None,
         }
     }
 
