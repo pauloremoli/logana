@@ -13,6 +13,7 @@ pub mod merge_select_mode;
 pub mod normal_mode;
 pub mod search_mode;
 pub mod select_fields_mode;
+pub mod theme_picker_mode;
 pub mod ui_mode;
 pub mod value_colors_mode;
 pub mod visual_char_mode;

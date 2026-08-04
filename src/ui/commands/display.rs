@@ -68,19 +68,62 @@ impl App {
         Ok(true)
     }
 
-    pub(super) async fn cmd_set_theme(&mut self, theme_name: String) -> Result<bool, String> {
-        let theme_filename = format!("{}.json", theme_name.to_lowercase());
-        self.theme = Theme::from_file(&theme_filename)
-            .map_err(|e| format!("Failed to load theme '{}': {}", theme_name, e))?;
+    /// Applies `theme` immediately and invalidates every tab's render cache
+    /// so the new colors actually show up — shared by `:set-theme`, the
+    /// `:theme` picker's live preview/confirm, and its Esc-revert.
+    pub(crate) fn apply_theme(&mut self, theme: Theme) {
+        self.theme = theme;
         for tab in &mut self.tabs {
             tab.cache.render_gen = tab.cache.render_gen.wrapping_add(1);
             tab.cache.render_line.clear();
         }
+    }
+
+    pub(super) async fn cmd_set_theme(&mut self, theme_name: String) -> Result<bool, String> {
+        let theme_filename = format!("{}.json", theme_name.to_lowercase());
+        let theme = Theme::from_file(&theme_filename)
+            .map_err(|e| format!("Failed to load theme '{}': {}", theme_name, e))?;
+        self.apply_theme(theme);
         let _ = self
             .db
             .save_app_setting(SettingsKey::Theme, &theme_name)
             .await;
         Ok(false)
+    }
+
+    /// Opens the `:theme` picker (see `ThemePickerMode`), snapshotting the
+    /// active theme so Esc can restore it after a live preview.
+    pub(super) fn cmd_theme_picker(&mut self) -> Result<bool, String> {
+        let entries = Theme::list_available_themes();
+        if entries.is_empty() {
+            return Err("No themes available".to_string());
+        }
+        let original_theme = self.theme.clone();
+        self.tabs[self.active_tab].interaction.mode = Box::new(
+            crate::mode::theme_picker_mode::ThemePickerMode::new(entries, original_theme),
+        );
+        Ok(true)
+    }
+
+    /// Live-previews `theme_name` while the `:theme` picker is open —
+    /// applied immediately, not persisted. Silently no-ops on a load
+    /// failure (the name came from `Theme::list_available_themes`, so this
+    /// should be unreachable in practice).
+    pub(crate) fn apply_theme_preview(&mut self, theme_name: &str) {
+        let theme_filename = format!("{}.json", theme_name.to_lowercase());
+        if let Ok(theme) = Theme::from_file(&theme_filename) {
+            self.apply_theme(theme);
+        }
+    }
+
+    /// Confirms `theme_name` from the `:theme` picker on Enter — loads,
+    /// applies, and persists it, surfacing a notification if it fails to
+    /// load (the picker already closed, so there's no command-error slot to
+    /// report through).
+    pub(crate) async fn confirm_theme(&mut self, theme_name: String) {
+        if let Err(e) = self.cmd_set_theme(theme_name).await {
+            self.tabs[self.active_tab].set_notification(e);
+        }
     }
 
     pub(super) async fn cmd_sidebar_position(&mut self, side: SidebarSide) -> Result<bool, String> {
@@ -519,5 +562,77 @@ mod tests {
             .cmd_default_filters(Some("json".to_string()), Some("/tmp/f.json".to_string()))
             .await;
         assert_eq!(result, Ok(false));
+    }
+
+    #[tokio::test]
+    async fn test_cmd_theme_picker_opens_mode_and_keeps_current_theme() {
+        let mut app = make_app().await;
+        let before = app.theme.clone();
+        let result = app.cmd_theme_picker();
+        assert_eq!(result, Ok(true));
+        assert_eq!(
+            app.theme, before,
+            "opening the picker must not change the theme yet"
+        );
+        assert!(matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            crate::mode::app_mode::ModeRenderState::ThemePicker { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_apply_theme_preview_applies_bundled_theme_without_persisting() {
+        let mut app = make_app().await;
+        let gen_before = app.tabs[app.active_tab].cache.render_gen;
+        app.apply_theme_preview("dracula");
+        assert_ne!(app.theme, Theme::default());
+        assert_ne!(app.tabs[app.active_tab].cache.render_gen, gen_before);
+        assert!(
+            app.db
+                .load_app_setting(crate::db::SettingsKey::Theme)
+                .await
+                .unwrap()
+                .is_none(),
+            "preview must not persist to the DB"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_theme_preview_unknown_name_is_a_no_op() {
+        let mut app = make_app().await;
+        let before = app.theme.clone();
+        app.apply_theme_preview("does-not-exist");
+        assert_eq!(app.theme, before);
+    }
+
+    #[tokio::test]
+    async fn test_confirm_theme_applies_and_persists() {
+        let mut app = make_app().await;
+        app.confirm_theme("dracula".to_string()).await;
+        assert_ne!(app.theme, Theme::default());
+        assert_eq!(
+            app.db
+                .load_app_setting(crate::db::SettingsKey::Theme)
+                .await
+                .unwrap(),
+            Some("dracula".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_confirm_theme_unknown_name_sets_notification() {
+        let mut app = make_app().await;
+        app.confirm_theme("does-not-exist".to_string()).await;
+        assert!(app.tabs[app.active_tab].interaction.notification.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_apply_theme_reverts_to_given_theme_and_bumps_cache() {
+        let mut app = make_app().await;
+        app.apply_theme_preview("dracula");
+        let gen_after_preview = app.tabs[app.active_tab].cache.render_gen;
+        app.apply_theme(Theme::default());
+        assert_eq!(app.theme, Theme::default());
+        assert_ne!(app.tabs[app.active_tab].cache.render_gen, gen_after_preview);
     }
 }

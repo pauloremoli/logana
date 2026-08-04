@@ -64,6 +64,7 @@ See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filter
 | `:level-colors` | Open the level colors dialog — toggle coloring per level (TRACE, DEBUG, INFO, NOTICE, WARNING, ERROR, FATAL); INFO/TRACE/DEBUG/NOTICE are off by default |
 | `:value-colors` | Open the value colors dialog — toggle coloring for HTTP methods, status codes, IPs, UUIDs, and process/logger names |
 | `:set-theme <name>` | Switch the color theme (persisted across sessions) |
+| `:theme` | Open a searchable picker to browse themes with live preview; Enter applies and persists, Esc restores the previous theme |
 | `:sidebar-position left\|right` | Move the filter sidebar to the left or right of the log panel (persisted across sessions) |
 
 ## OTel Collector

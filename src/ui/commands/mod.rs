@@ -134,6 +134,7 @@ impl App {
             Some(Commands::LineNumbers) => self.cmd_line_numbers().await,
             Some(Commands::LevelColors) => return self.cmd_level_colors(),
             Some(Commands::SetTheme { theme_name }) => return self.cmd_set_theme(theme_name).await,
+            Some(Commands::Theme) => return self.cmd_theme_picker(),
             Some(Commands::SidebarPosition { side }) => {
                 return self.cmd_sidebar_position(side).await;
             }
@@ -406,6 +407,17 @@ mod tests {
         let result = app.run_command("select-fields").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("No structured fields"));
+    }
+
+    #[tokio::test]
+    async fn test_theme_command_opens_picker_mode() {
+        let mut app = make_app(&["plain text line"]).await;
+        let result = app.run_command("theme").await.unwrap();
+        assert!(result, "theme should return true (mode was set)");
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::ThemePicker { .. }
+        ));
     }
 
     #[tokio::test]

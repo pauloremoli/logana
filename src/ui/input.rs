@@ -643,6 +643,9 @@ impl App {
                     self.active_tab = idx;
                 }
             }
+            KeyResult::PreviewTheme(name) => self.apply_theme_preview(&name),
+            KeyResult::ConfirmTheme(name) => self.confirm_theme(name).await,
+            KeyResult::RevertTheme(original) => self.apply_theme(*original),
         }
     }
 
@@ -1240,5 +1243,65 @@ mod tests {
             "merged tab should pick up the shared format's default filter file"
         );
         assert_eq!(merged.log_manager.get_filters()[0].pattern, "error");
+    }
+
+    #[tokio::test]
+    async fn test_theme_picker_end_to_end_preview_confirm_and_revert() {
+        use crate::mode::app_mode::ModeRenderState;
+        use crossterm::event::KeyCode;
+
+        let mut app = make_app().await;
+        let original_theme = app.theme.clone();
+
+        // `:theme` opens the picker without changing the theme yet.
+        app.run_command("theme").await.unwrap();
+        assert_eq!(app.theme, original_theme);
+        assert!(matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            ModeRenderState::ThemePicker { .. }
+        ));
+
+        // Moving the selection previews live, through the real top-level key
+        // dispatch (`handle_key_event`), not just the mode/App pieces in
+        // isolation.
+        app.handle_key_event(KeyCode::Char('j')).await;
+        let previewed_theme = app.theme.clone();
+        assert_ne!(
+            previewed_theme, original_theme,
+            "moving the selection must preview a different theme immediately"
+        );
+        assert!(matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            ModeRenderState::ThemePicker { .. }
+        ));
+
+        // Esc discards the preview and restores the original theme.
+        app.handle_key_event(KeyCode::Esc).await;
+        assert_eq!(app.theme, original_theme);
+        assert!(matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            ModeRenderState::Normal
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_theme_picker_end_to_end_confirm_persists_previewed_theme() {
+        use crate::mode::app_mode::ModeRenderState;
+        use crossterm::event::KeyCode;
+
+        let mut app = make_app().await;
+        app.run_command("theme").await.unwrap();
+        app.handle_key_event(KeyCode::Char('j')).await;
+        let previewed_theme = app.theme.clone();
+
+        app.handle_key_event(KeyCode::Enter).await;
+        assert_eq!(
+            app.theme, previewed_theme,
+            "Enter must keep the previewed theme"
+        );
+        assert!(matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            ModeRenderState::Normal
+        ));
     }
 }

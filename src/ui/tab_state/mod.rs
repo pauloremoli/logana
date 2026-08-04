@@ -89,6 +89,18 @@ pub enum KeyResult {
     /// on an entry — switches `App::active_tab` to the given `App::tabs`
     /// index.
     SwitchToTab(usize),
+    /// Emitted by the `:theme` picker every time the highlighted entry
+    /// changes, so the whole UI re-renders with the named theme applied
+    /// immediately — before the user confirms with Enter.
+    PreviewTheme(String),
+    /// Emitted by the `:theme` picker on Enter — applies and persists the
+    /// named theme.
+    ConfirmTheme(String),
+    /// Emitted by the `:theme` picker on Esc — restores the theme that was
+    /// active before the picker opened, undoing any live preview. Boxed
+    /// since `Theme` is large and every other `KeyResult` variant would
+    /// otherwise pay for its size.
+    RevertTheme(Box<crate::theme::Theme>),
 }
 
 /// Handle for a background search task spawned by [`TabState::begin_search`].

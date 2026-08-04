@@ -14,6 +14,7 @@ pub mod select_fields_popup;
 pub mod sidebar;
 pub mod source_select_popup;
 pub mod tab_bar;
+pub mod theme_picker_popup;
 pub mod value_colors_popup;
 
 pub use archive_picker_popup::ArchivePickerPopup;
@@ -34,6 +35,7 @@ pub use select_fields_popup::SelectFieldsPopup;
 pub use sidebar::Sidebar;
 pub use source_select_popup::{DltSelectPopup, DockerSelectPopup};
 pub use tab_bar::{TabBar, TabBarEntry};
+pub use theme_picker_popup::ThemePickerPopup;
 pub use value_colors_popup::ValueColorsPopup;
 
 pub(super) fn popup_entry(

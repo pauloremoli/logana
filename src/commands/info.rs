@@ -89,6 +89,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         examples: &["set-theme dracula"],
     },
     CommandInfo {
+        name: "theme",
+        usage: "theme",
+        description: "Open a picker to preview and switch the color theme.",
+        examples: &["theme"],
+    },
+    CommandInfo {
         name: "level-colors",
         usage: "level-colors",
         description: "Toggle ERROR/WARN log level color highlighting on/off.",
@@ -358,6 +364,7 @@ mod tests {
             "set-color",
             "wrap",
             "set-theme",
+            "theme",
             "level-colors",
             "open",
             "close-tab",

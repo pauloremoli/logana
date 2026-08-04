@@ -47,6 +47,8 @@ type ArchivePickerData = Option<(
 
 type FileSwitcherData = Option<(Vec<(usize, String)>, usize, usize, String)>;
 
+type ThemePickerData = Option<(Vec<String>, usize, String)>;
+
 struct UiRenderState {
     has_input_bar: bool,
     command_input: Option<(String, usize)>,
@@ -77,6 +79,7 @@ struct UiRenderState {
     export_footer: ExportFooterData,
     default_filters_state: DefaultFiltersData,
     file_switcher_state: FileSwitcherData,
+    theme_picker_state: ThemePickerData,
     notification: Option<String>,
     has_notification: bool,
     has_warnings: bool,
@@ -425,6 +428,14 @@ impl App {
             } => Some((entries.clone(), *active_tab, *selected, search.clone())),
             _ => None,
         };
+        let theme_picker_state: ThemePickerData = match render_state {
+            ModeRenderState::ThemePicker {
+                entries,
+                selected,
+                search,
+            } => Some((entries.clone(), *selected, search.clone())),
+            _ => None,
+        };
 
         if self.decompression_message.is_none()
             && let Some(set_at) = self.tabs[self.active_tab].interaction.notification_set_at
@@ -462,6 +473,7 @@ impl App {
             export_footer,
             default_filters_state,
             file_switcher_state,
+            theme_picker_state,
             notification,
             has_notification,
             has_warnings,
@@ -1035,6 +1047,18 @@ impl App {
                     theme: &self.theme,
                     entries,
                     active_tab: *active_tab,
+                    selected: *selected,
+                    search,
+                },
+                frame_area,
+            );
+        }
+
+        if let Some((entries, selected, search)) = &state.theme_picker_state {
+            frame.render_widget(
+                super::widgets::ThemePickerPopup {
+                    theme: &self.theme,
+                    entries,
                     selected: *selected,
                     search,
                 },

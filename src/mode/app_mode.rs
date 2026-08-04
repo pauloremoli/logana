@@ -129,6 +129,13 @@ pub enum ModeRenderState {
         selected: usize,
         search: String,
     },
+    ThemePicker {
+        /// Available theme names, snapshotted when the popup opened.
+        entries: Vec<String>,
+        /// Index into the *visible* (filtered) entries.
+        selected: usize,
+        search: String,
+    },
 }
 
 impl ModeRenderState {
@@ -160,6 +167,7 @@ impl ModeRenderState {
             ModeRenderState::ExportFooter { .. } => "EXPORT",
             ModeRenderState::DefaultFilters { .. } => "DEFAULT FILTERS",
             ModeRenderState::FileSwitcher { .. } => "SWITCH",
+            ModeRenderState::ThemePicker { .. } => "THEME",
         }
     }
 }
@@ -856,6 +864,15 @@ mod tests {
             }
             .mode_name(),
             "SWITCH"
+        );
+        assert_eq!(
+            ModeRenderState::ThemePicker {
+                entries: vec![],
+                selected: 0,
+                search: String::new(),
+            }
+            .mode_name(),
+            "THEME"
         );
     }
 }

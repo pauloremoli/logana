@@ -13,6 +13,7 @@ All notable changes to logana will be documented in this file.
 - Archive/directory picker: `Ctrl+e`/`Ctrl+m` toggle extraction/merge marks while searching, without leaving search.
 - Archive/directory picker: `Ctrl+a`/`Alt+m` mark every row matching the search for extraction/merging in one press.
 - `Ctrl+p` opens a searchable popup to switch between open files.
+- `:theme` opens a searchable popup to browse and live-preview color themes.
 
 ## [0.7.5] - 2026-07-18
 

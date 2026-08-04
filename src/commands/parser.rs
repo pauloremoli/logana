@@ -113,6 +113,8 @@ pub enum Commands {
     LineNumbers,
     /// Set the theme
     SetTheme { theme_name: String },
+    /// Open a picker to preview and switch the color theme
+    Theme,
     /// Toggle log level color highlighting
     LevelColors,
     /// Open a file in a new tab
