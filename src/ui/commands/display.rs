@@ -243,8 +243,7 @@ impl App {
             }
             Some(schema_name) if schema_name == "none" => {
                 let tab_idx = self.active_tab;
-                self.tabs[tab_idx].display.format = None;
-                self.tabs[tab_idx].invalidate_parse_cache();
+                self.tabs[tab_idx].apply_format(None);
             }
             Some(schema_name) => {
                 let custom = crate::config::custom_schemas()
@@ -261,8 +260,7 @@ impl App {
                         .ok_or_else(|| format!("no schema named '{schema_name}'"))?,
                 };
                 let tab_idx = self.active_tab;
-                self.tabs[tab_idx].display.format = Some(parser);
-                self.tabs[tab_idx].invalidate_parse_cache();
+                self.tabs[tab_idx].apply_format(Some(parser));
                 self.apply_default_filters_if_empty_at(tab_idx).await;
             }
         }
@@ -393,6 +391,128 @@ mod tests {
         assert_eq!(result, Ok(false));
         let tab = &app.tabs[app.active_tab];
         assert!(tab.display.format.is_none());
+    }
+
+    /// Drains an active filter scan by polling `advance_filter_computation`
+    /// (the real per-tick production path) until it completes.
+    async fn drain_filter_scan(app: &mut App) {
+        for _ in 0..200 {
+            app.advance_filter_computation();
+            if app.tabs[app.active_tab].filter.handle.is_none() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("filter scan did not complete in time");
+    }
+
+    /// Regression test: toggling raw mode via `:raw` (`cmd_raw`) must bypass
+    /// a stale multiline continuation map the same way `:schema none` does —
+    /// this exercises the real production scan path
+    /// (`App::advance_filter_computation`), not just the sync test helper.
+    #[tokio::test]
+    async fn test_cmd_raw_bypasses_stale_continuation_grouping_end_to_end() {
+        use crate::filters::{FilterOptions, FilterType};
+        use crate::parser::CustomParser;
+
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(
+            b"INFO hello\n  boom NullPointerException\n  at foo.bar(Baz.java:42)\n".to_vec(),
+        );
+        let lm = LogManager::new(db, None).await;
+        let mut app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
+
+        // Only the continuation lines mention "NullPointerException" — the
+        // header line's own text ("hello") does not.
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "test".to_string(),
+            description: None,
+            template: Some("{level} {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: Default::default(),
+            multiline: true,
+            continuation: None,
+        };
+        let parser = CustomParser::from_config(&cfg).unwrap();
+        let tab = &mut app.tabs[app.active_tab];
+        let cmap = crate::ui::build_continuation_map(&tab.file_reader, &parser);
+        tab.continuation_map = Some(Arc::new(cmap));
+        tab.display.format = Some(Arc::new(parser));
+
+        app.tabs[app.active_tab]
+            .log_manager
+            .add_filter_with_color(
+                "NullPointerException".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+
+        // Sanity: under structured (non-raw) multiline grouping, the match
+        // is hidden because its parent line doesn't independently match.
+        app.tabs[app.active_tab].begin_filter_refresh();
+        drain_filter_scan(&mut app).await;
+        assert!(
+            !app.tabs[app.active_tab].filter.visible_indices.contains(1),
+            "sanity: structured grouping should hide the unmatched parent's block"
+        );
+
+        // Toggle raw mode via the real `:raw` command path.
+        app.cmd_raw();
+        drain_filter_scan(&mut app).await;
+
+        let visible: Vec<usize> = app.tabs[app.active_tab]
+            .filter
+            .visible_indices
+            .iter()
+            .collect();
+        assert!(
+            visible.contains(&1),
+            "raw mode must evaluate lines independently of the stale multiline \
+             continuation map; got {visible:?}"
+        );
+    }
+
+    /// Regression test: `:schema none` must clear the stale continuation
+    /// map and trigger a rescan — previously it only cleared `format`,
+    /// leaving the multiline continuation map from the old schema active
+    /// and never re-running the filter scan against the new (absent) format.
+    #[tokio::test]
+    async fn test_cmd_schema_none_clears_continuation_map_and_rescans() {
+        use crate::filters::{FilterOptions, FilterType};
+
+        let mut app = make_app().await;
+        app.cmd_schema(Some("syslog".to_string())).await.unwrap();
+        app.tabs[app.active_tab].continuation_map =
+            Some(std::sync::Arc::new(vec![
+                0usize;
+                app.tabs[app.active_tab]
+                    .file_reader
+                    .line_count()
+            ]));
+        app.tabs[app.active_tab]
+            .log_manager
+            .add_filter_with_color(
+                "line".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+
+        app.cmd_schema(Some("none".to_string())).await.unwrap();
+
+        let tab = &app.tabs[app.active_tab];
+        assert!(
+            tab.continuation_map.is_none(),
+            "switching to no schema must drop the previous schema's continuation map"
+        );
+        assert!(
+            tab.filter.handle.is_some(),
+            "switching schema must (re)run the filter scan, not just clear the format"
+        );
     }
 
     #[tokio::test]

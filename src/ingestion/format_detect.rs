@@ -18,6 +18,31 @@ pub struct DetectedFormat {
     pub continuation_map: Option<Arc<Vec<usize>>>,
 }
 
+/// Builds the year map (only when the format's timestamps lack a year) and
+/// continuation map for an already-known `format`. This is the derivation
+/// half of [`detect_format_for_reader`], factored out so that a manually
+/// assigned format (`TabState::apply_format`, used by `:schema`) gets the
+/// same derived structures an auto-detected one would — otherwise the
+/// continuation map from whatever format was previously active stays
+/// around and keeps gating line visibility by a "parent" line that the
+/// current parser no longer recognizes.
+pub fn derive_format_structures(
+    reader: &FileReader,
+    format: Option<&dyn LogFormatParser>,
+) -> (Option<Arc<Vec<usize>>>, Option<Arc<YearMap>>) {
+    let continuation_map = format.map(|p| Arc::new(build_continuation_map(reader, p)));
+    let year_map = format.and_then(|p| {
+        if p.timestamp_has_year() {
+            return None;
+        }
+        let start_year = system_time_to_date(reader.mtime())
+            .map(|d| d.year())
+            .unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
+        Some(Arc::new(YearMap::build(reader, p, start_year)))
+    });
+    (continuation_map, year_map)
+}
+
 /// Samples up to 200 lines of `reader`, detects its format, and — if a
 /// format was detected — builds the year map (only when the format's
 /// timestamps lack a year) and continuation map.
@@ -28,18 +53,7 @@ pub fn detect_format_for_reader(reader: &FileReader) -> DetectedFormat {
     }
     let sample: Vec<&[u8]> = (0..limit).map(|j| reader.get_line(j)).collect();
     let format: Option<Arc<dyn LogFormatParser>> = detect_format(&sample).map(Arc::from);
-    let continuation_map = format
-        .as_deref()
-        .map(|p| Arc::new(build_continuation_map(reader, p)));
-    let year_map = format.as_deref().and_then(|p| {
-        if p.timestamp_has_year() {
-            return None;
-        }
-        let start_year = system_time_to_date(reader.mtime())
-            .map(|d| d.year())
-            .unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
-        Some(Arc::new(YearMap::build(reader, p, start_year)))
-    });
+    let (continuation_map, year_map) = derive_format_structures(reader, format.as_deref());
     DetectedFormat {
         format,
         year_map,

@@ -1012,14 +1012,18 @@ impl TabState {
             let field_defs =
                 crate::filters::extract_field_filters_ordered(self.log_manager.get_filters());
             let all_filter_defs = self.log_manager.get_filters().to_vec();
-            let parser = self.display.format.as_deref();
+            let parser = if self.display.raw_mode {
+                None
+            } else {
+                self.display.format.as_deref()
+            };
             let field_layout = &self.display.field_layout;
             let hidden_fields = &self.display.hidden_fields;
             let show_keys = self.display.show_keys;
             use rayon::prelude::*;
             let file_reader = &self.file_reader;
             let year_map = self.year_map.as_deref();
-            let cmap = self.continuation_map.as_deref().map(Vec::as_slice);
+            let cmap = self.active_continuation_map().map(|c| c.as_slice());
             let n_text = fm.filter_count();
             let n_field = field_defs.len();
             let n_date = date_filters.len();
@@ -1172,10 +1176,10 @@ impl TabState {
             // Apply continuation-line grouping: continuation lines (those whose
             // parser returned None) inherit their parent's filter visibility so
             // they are hidden when the parent is hidden by a date or exclude filter.
-            if let Some(cmap) = self.continuation_map.as_deref() {
+            if let Some(cmap) = self.active_continuation_map().cloned() {
                 apply_continuation_correction(
                     &mut self.filter.visible_indices,
-                    cmap,
+                    &cmap,
                     has_text_includes,
                 );
             }
@@ -2025,7 +2029,7 @@ impl TabState {
         // Apply continuation semantics: continuation lines inherit their parent's
         // filter decision. A parent in this batch uses `new_visible`; a parent
         // from earlier uses `visible_indices`.
-        if let Some(cmap) = self.continuation_map.clone() {
+        if let Some(cmap) = self.active_continuation_map().cloned() {
             let existing = &self.filter.visible_indices;
             let new_vis_set: std::collections::HashSet<usize> =
                 new_visible.iter().copied().collect();
@@ -2284,6 +2288,42 @@ impl TabState {
             self.display.format = detected.format;
             self.continuation_map = detected.continuation_map;
             self.year_map = detected.year_map;
+        }
+    }
+
+    /// Sets the tab's format (or clears it to `None`) and rebuilds the
+    /// derived continuation/year maps to match, then re-scans active
+    /// filters against the new format.
+    ///
+    /// Without rebuilding these, manually switching schemas (`:schema
+    /// <name>` / `:schema none`) left the continuation map from whatever
+    /// format was previously active in place; filter visibility is gated
+    /// on it every scan, so a line that individually matches a filter
+    /// stayed hidden because its old structured "parent" line (under a
+    /// format the tab no longer uses) didn't match.
+    pub fn apply_format(&mut self, parser: Option<Arc<dyn LogFormatParser>>) {
+        let (continuation_map, year_map) =
+            crate::ingestion::format_detect::derive_format_structures(
+                &self.file_reader,
+                parser.as_deref(),
+            );
+        self.continuation_map = continuation_map;
+        self.year_map = year_map;
+        self.display.format = parser;
+        self.invalidate_parse_cache();
+        self.begin_filter_refresh();
+    }
+
+    /// The continuation map to use for multiline grouping, or `None` when
+    /// raw mode bypasses format-aware parsing (matching the parser
+    /// selection every scan already uses). Consulting the map while raw
+    /// mode is on would hide lines that individually match a filter just
+    /// because their old structured "parent" line doesn't.
+    pub(crate) fn active_continuation_map(&self) -> Option<&Arc<Vec<usize>>> {
+        if self.display.raw_mode || self.display.format.is_none() {
+            None
+        } else {
+            self.continuation_map.as_ref()
         }
     }
 
@@ -5035,6 +5075,99 @@ mod tests {
             !visible.contains(&0),
             "header record's own message never contains the searched text \
              without merging; got {visible:?}"
+        );
+    }
+
+    /// Regression test: toggling raw mode on a tab whose format was
+    /// (correctly or incorrectly) detected as a multiline schema must not
+    /// leave the old continuation map gating visibility. A line that
+    /// individually matches an include filter has to show up even though,
+    /// under the stale multiline grouping, its structured "parent" line
+    /// doesn't match.
+    #[tokio::test]
+    async fn test_raw_mode_bypasses_stale_continuation_grouping() {
+        // Only the continuation line mentions "NullPointerException" — the
+        // header line's own text ("hello") does not.
+        let mut tab = make_tab(&[
+            "INFO hello",
+            "  boom NullPointerException",
+            "  at foo.bar(Baz.java:42)",
+        ])
+        .await;
+        set_custom_format(&mut tab, &multiline_schema_config(true));
+
+        tab.log_manager
+            .add_filter_with_color(
+                "NullPointerException".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+
+        // Sanity check: under normal (non-raw) multiline grouping, the
+        // continuation line is hidden because its parent doesn't match.
+        tab.refresh_visible();
+        assert!(
+            !tab.filter.visible_indices.contains(1),
+            "sanity: structured grouping should hide the unmatched parent's block"
+        );
+
+        tab.display.raw_mode = true;
+        tab.refresh_visible();
+
+        let visible: Vec<usize> = tab.filter.visible_indices.iter().collect();
+        assert!(
+            visible.contains(&1),
+            "raw mode must evaluate lines independently of the stale multiline \
+             continuation map; the matching line must be visible, got {visible:?}"
+        );
+    }
+
+    /// Regression test: `TabState::apply_format` (used by `:schema none` /
+    /// `:schema <name>`) must clear the continuation map along with the
+    /// format, so a subsequent scan doesn't keep gating a matching line's
+    /// visibility on a "parent" line from a format the tab no longer uses.
+    #[tokio::test]
+    async fn test_apply_format_none_clears_continuation_map_and_rescans() {
+        let mut tab = make_tab(&[
+            "INFO hello",
+            "  boom NullPointerException",
+            "  at foo.bar(Baz.java:42)",
+        ])
+        .await;
+        set_custom_format(&mut tab, &multiline_schema_config(true));
+        assert!(tab.continuation_map.is_some());
+
+        tab.log_manager
+            .add_filter_with_color(
+                "NullPointerException".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+
+        tab.apply_format(None);
+        assert!(
+            tab.continuation_map.is_none(),
+            "clearing the schema must drop the now-stale continuation map"
+        );
+        assert!(
+            tab.filter.handle.is_some(),
+            "apply_format must trigger a rescan against the new format"
+        );
+
+        let mut h = tab.filter.handle.take().unwrap();
+        let mut all_visible = Vec::new();
+        while let Some(chunk) = h.result_rx.recv().await {
+            all_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+        assert!(
+            all_visible.contains(&1),
+            "with no format, the matching line must be independently visible, \
+             got {all_visible:?}"
         );
     }
 

@@ -1501,7 +1501,7 @@ impl App {
                     // (those whose parser returned None) inherit their parent's
                     // filter visibility so they are hidden when the parent is
                     // hidden (e.g. by a date or exclude filter).
-                    if let Some(cmap) = tab.continuation_map.clone() {
+                    if let Some(cmap) = tab.active_continuation_map().cloned() {
                         crate::ui::apply_continuation_correction(
                             &mut tab.filter.visible_indices,
                             &cmap,
