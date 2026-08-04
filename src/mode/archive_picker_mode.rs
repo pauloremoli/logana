@@ -305,6 +305,19 @@ impl ArchivePickerMode {
             }
             return (self, KeyResult::Handled);
         }
+        // `search_merge_all` (Ctrl+Alt+m by default) is checked before
+        // `search_merge_toggle` (Alt+m by default) deliberately:
+        // `KeyBinding::matches` only requires a binding's own modifiers to
+        // be held, so the Alt-only `search_merge_toggle` binding also
+        // matches a Ctrl+Alt keypress — checking the more specific binding
+        // first is what keeps a genuine Ctrl+Alt+m from being swallowed by
+        // `search_merge_toggle` instead of reaching `search_merge_all`.
+        if kb.archive_picker.search_merge_all.matches(key, modifiers) {
+            for id in self.matching_ids() {
+                self.tree.merge_select_subtree(id);
+            }
+            return (self, KeyResult::Handled);
+        }
         if kb
             .archive_picker
             .search_merge_toggle
@@ -318,12 +331,6 @@ impl ArchivePickerMode {
         if kb.archive_picker.search_select_all.matches(key, modifiers) {
             for id in self.matching_ids() {
                 self.tree.select_subtree(id);
-            }
-            return (self, KeyResult::Handled);
-        }
-        if kb.archive_picker.search_merge_all.matches(key, modifiers) {
-            for id in self.matching_ids() {
-                self.tree.merge_select_subtree(id);
             }
             return (self, KeyResult::Handled);
         }
@@ -1511,15 +1518,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ctrl_alt_m_toggles_merge_mark_while_searching_without_exiting_search() {
+    async fn test_alt_m_toggles_merge_mark_while_searching_without_exiting_search() {
         let mut tab = make_tab().await;
         let (m, _) = enter_search_and_type(mode(), &mut tab, "inner1").await;
         let (m, result) = m
-            .handle_key(
-                &mut tab,
-                KeyCode::Char('m'),
-                KeyModifiers::CONTROL | KeyModifiers::ALT,
-            )
+            .handle_key(&mut tab, KeyCode::Char('m'), KeyModifiers::ALT)
             .await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(extract_searching(m.render_state()));
@@ -1528,7 +1531,7 @@ mod tests {
         assert!(
             rows.iter()
                 .all(|r| r.merge_check_state == CheckState::Checked),
-            "Ctrl+Alt+m on the selected row must toggle the merge mark"
+            "Alt+m on the selected row must toggle the merge mark"
         );
         assert!(
             rows.iter().all(|r| r.check_state == CheckState::Unchecked),
@@ -1541,7 +1544,8 @@ mod tests {
         // A physical Ctrl+M keypress arrives from the terminal as a plain
         // `Enter` (see the doc comment on `search_merge_toggle`), never as
         // `Char('m')` + `CONTROL` — but even if some environment did report
-        // it that way, only the `Ctrl+Alt+m` default should toggle the mark.
+        // it that way, bare Ctrl+m alone (no Alt) isn't bound to anything
+        // merge-related and must not toggle the mark.
         let mut tab = make_tab().await;
         let (m, _) = enter_search_and_type(mode(), &mut tab, "inner1").await;
         let (m, _) = m
@@ -1700,11 +1704,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_alt_m_merge_marks_every_row_matching_search_without_exiting_search() {
+    async fn test_ctrl_alt_m_merge_marks_every_row_matching_search_without_exiting_search() {
         let mut tab = make_tab().await;
         let (m, _) = enter_search_and_type(mode(), &mut tab, "inner").await;
         let (m, result) = m
-            .handle_key(&mut tab, KeyCode::Char('m'), KeyModifiers::ALT)
+            .handle_key(
+                &mut tab,
+                KeyCode::Char('m'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            )
             .await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(extract_searching(m.render_state()));
@@ -1720,6 +1728,34 @@ mod tests {
         assert!(
             rows.iter().all(|r| r.check_state == CheckState::Unchecked),
             "merge-marking must not affect the extraction checkbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_alt_m_is_not_swallowed_by_the_alt_only_merge_toggle_binding() {
+        // Regression guard for the check-order fix: `search_merge_toggle`
+        // (Alt+m) is a modifier subset of `search_merge_all` (Ctrl+Alt+m),
+        // and `KeyBinding::matches` doesn't reject extra modifiers — so a
+        // genuine Ctrl+Alt+m keypress must resolve to "mark all", not just
+        // toggle the single selected row.
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner").await;
+        let (m, _) = m
+            .handle_key(
+                &mut tab,
+                KeyCode::Char('m'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            )
+            .await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
+            .await;
+        let (rows, _, _) = extract_state(m.render_state());
+        let inner2 = rows.iter().find(|r| r.name == "inner2.log").unwrap();
+        assert_eq!(
+            inner2.merge_check_state,
+            CheckState::Checked,
+            "Ctrl+Alt+m must mark every matching row (inner2.log too), not just the selected one"
         );
     }
 

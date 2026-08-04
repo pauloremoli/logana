@@ -224,9 +224,9 @@ Shared by both the log panel's `/`/`?` search and the filter manager's `/` searc
   "cancel": "Esc",
   "search": "/",
   "search_toggle": "Ctrl+e",
-  "search_merge_toggle": "Ctrl+Alt+m",
+  "search_merge_toggle": "Alt+m",
   "search_select_all": "Ctrl+a",
-  "search_merge_all": "Alt+m"
+  "search_merge_all": "Ctrl+Alt+m"
 }
 ```
 
@@ -261,23 +261,23 @@ prefix can be selected from one query instead of re-searching for each.
 whose name currently matches the query in one press, rather than just
 the selected row.
 
-`search_merge_toggle` defaults to `Ctrl+Alt+m` rather than plain `Ctrl+m`:
-on a terminal *without* an enhanced keyboard protocol, Ctrl+M and a plain
-`Enter` keypress send the exact same byte, so the terminal reports Ctrl+M
-as `Enter` — a bare `Ctrl+m` binding would silently never fire, and
-`apply`'s `Enter` binding would consume the keypress instead. logana
-auto-detects and enables the enhanced protocol at startup on terminals
-that support it (Kitty, WezTerm, foot, Ghostty, Contour, iTerm2 partially,
-…) so Ctrl+M is reported unambiguously there; on such a terminal you can
-rebind `search_merge_toggle` back to `"Ctrl+m"` if you prefer. On terminals
-without support (most others, including tmux/screen in front of one), the
-default `Ctrl+Alt+m` is required.
+`search_merge_toggle` defaults to `Alt+m` rather than a `Ctrl`-chord at
+all: on a terminal *without* an enhanced keyboard protocol, Ctrl+M and a
+plain `Enter` keypress send the exact same byte, so the terminal reports
+Ctrl+M as `Enter` — a bare `Ctrl+m` binding would silently never fire, and
+`apply`'s `Enter` binding would consume the keypress instead. `Alt+m`
+sidesteps the ambiguity entirely rather than depending on protocol support.
 
-`search_merge_all` defaults to `Alt+m` rather than `Ctrl+Shift+m`:
-terminals report Shift inconsistently on Ctrl-chords, so this app's key
-matcher intentionally ignores Shift whenever Ctrl (or Alt) is held —
-meaning a Shift-only variant of `search_merge_toggle`'s `Ctrl+Alt+m` could
-never be told apart from it.
+`search_merge_all` defaults to `Ctrl+Alt+m` — a superset of
+`search_merge_toggle`'s `Alt+m`, keeping the two mnemonically paired
+(`m` for merge, an extra modifier for "all"). It doesn't collide with
+`Enter` either, since Alt alone isn't held. logana auto-detects and
+enables the terminal's enhanced keyboard protocol at startup when
+supported (Kitty, WezTerm, foot, Ghostty, Contour, iTerm2 partially, …),
+so on such a terminal you can rebind either of these back to a plain
+`Ctrl+m`/`Ctrl+Shift+m` if you prefer — on terminals without support
+(most others, including tmux/screen in front of one), the shipped
+defaults are required.
 
 Row navigation reuses the same keys as the filter sidebar and log panel
 (from the `navigation` group) rather than duplicating them here: `j`/`k`

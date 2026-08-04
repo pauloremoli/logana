@@ -825,7 +825,11 @@ mod tests {
             search: "a",
             searching: true,
         };
-        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        // Wide enough that all four "<key> label" footer entries fit on one
+        // line without truncation — the popup clamps its width to at most
+        // 80, so anything comfortably above that plus borders/padding works
+        // regardless of which entry happens to carry the longest key.
+        let mut terminal = Terminal::new(TestBackend::new(90, 15)).unwrap();
         let buf = terminal.draw(|f| f.render_widget(popup, f.area())).unwrap();
         let text: String = (0..15)
             .map(|y| row_text(buf.buffer, y))

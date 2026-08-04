@@ -1397,10 +1397,7 @@ fn default_ap_search_toggle() -> KeyBindings {
 }
 #[inline(always)]
 fn default_ap_search_merge_toggle() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(
-        KeyCode::Char('m'),
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
-    )])
+    KeyBindings(vec![KeyBinding(KeyCode::Char('m'), KeyModifiers::ALT)])
 }
 #[inline(always)]
 fn default_ap_search_select_all() -> KeyBindings {
@@ -1408,7 +1405,10 @@ fn default_ap_search_select_all() -> KeyBindings {
 }
 #[inline(always)]
 fn default_ap_search_merge_all() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('m'), KeyModifiers::ALT)])
+    KeyBindings(vec![KeyBinding(
+        KeyCode::Char('m'),
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    )])
 }
 
 /// Keybindings for the archive picker popup (file tree shown when opening
@@ -1456,16 +1456,13 @@ pub struct ArchivePickerKeybindings {
     /// Toggles the selected row's merge mark while searching — same
     /// reasoning as `search_toggle`, for `merge_toggle`'s key (`m`).
     ///
-    /// Defaults to `Ctrl+Alt+m`, not `Ctrl+m`: outside an enhanced-keyboard
-    /// terminal protocol, a terminal cannot distinguish Ctrl+M from a plain
-    /// Enter keypress — both send the same carriage-return byte — so
-    /// crossterm reports Ctrl+M as `KeyCode::Enter` with no modifiers. A
-    /// `Ctrl+m` binding here would therefore never fire; `apply`'s `Enter`
-    /// binding would consume the keypress instead. `main.rs`'s
-    /// `AlternateScreen` enables the enhanced protocol at startup when the
-    /// terminal supports it, in which case `Ctrl+m` can safely be rebound
-    /// here — `Ctrl+Alt+m` just has to remain the *default* since most
-    /// terminals still don't support it.
+    /// Defaults to `Alt+m` — deliberately not a `Ctrl`-chord at all: outside
+    /// an enhanced-keyboard terminal protocol, a terminal cannot distinguish
+    /// Ctrl+M from a plain Enter keypress — both send the same
+    /// carriage-return byte — so crossterm reports Ctrl+M as
+    /// `KeyCode::Enter` with no modifiers, and a bare `Ctrl+m` binding here
+    /// would therefore never fire (`apply`'s `Enter` binding would consume
+    /// the keypress instead). `Alt+m` sidesteps that entirely.
     #[serde(default = "default_ap_search_merge_toggle")]
     pub search_merge_toggle: KeyBindings,
     /// Marks every row whose name currently matches the search query for
@@ -1474,14 +1471,18 @@ pub struct ArchivePickerKeybindings {
     /// sharing a prefix can all be picked from a single query.
     #[serde(default = "default_ap_search_select_all")]
     pub search_select_all: KeyBindings,
-    /// Merge-mark equivalent of `search_select_all`. Defaults to `Alt+m`
-    /// rather than a `Shift` variant of `search_merge_toggle`'s `Ctrl+Alt+m`:
-    /// [`KeyBinding::matches`] intentionally ignores Shift whenever
-    /// Ctrl/Alt is held (terminals report it inconsistently for
-    /// Ctrl-chords), so the two could never be distinguished that way —
-    /// Alt-only is a modifier `matches` actually checks independently, and
-    /// doesn't collide with plain `Enter` the way `Ctrl+m` alone would (see
-    /// `search_merge_toggle`).
+    /// Merge-mark equivalent of `search_select_all`. Defaults to
+    /// `Ctrl+Alt+m` — a superset of `search_merge_toggle`'s `Alt+m` rather
+    /// than an unrelated key, so the two stay mnemonically paired (`m` for
+    /// merge, an extra modifier for "all"). [`ArchivePickerMode`] checks
+    /// this binding *before* `search_merge_toggle`'s: [`KeyBinding::matches`]
+    /// only requires a binding's own modifiers to be held, so an
+    /// Alt-only binding also matches a Ctrl+Alt event, and checking the more
+    /// specific one first is what keeps `Ctrl+Alt+m` from being swallowed by
+    /// `search_merge_toggle`. `main.rs`'s `AlternateScreen` enables the
+    /// terminal's enhanced-keyboard protocol at startup when supported, so
+    /// `Ctrl+m` can safely be rebound here too on a terminal that has it —
+    /// `Ctrl+Alt+m` just has to remain the *default* since most don't.
     #[serde(default = "default_ap_search_merge_all")]
     pub search_merge_all: KeyBindings,
 }
@@ -2185,18 +2186,18 @@ mod tests {
             ap.search_toggle
                 .matches(KeyCode::Char('e'), KeyModifiers::CONTROL)
         );
-        assert!(ap.search_merge_toggle.matches(
-            KeyCode::Char('m'),
-            KeyModifiers::CONTROL | KeyModifiers::ALT
-        ));
+        assert!(
+            ap.search_merge_toggle
+                .matches(KeyCode::Char('m'), KeyModifiers::ALT)
+        );
         assert!(
             ap.search_select_all
                 .matches(KeyCode::Char('a'), KeyModifiers::CONTROL)
         );
-        assert!(
-            ap.search_merge_all
-                .matches(KeyCode::Char('m'), KeyModifiers::ALT)
-        );
+        assert!(ap.search_merge_all.matches(
+            KeyCode::Char('m'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        ));
     }
 
     #[test]
@@ -2238,12 +2239,12 @@ mod tests {
     }
 
     #[test]
-    fn test_archive_picker_search_merge_toggle_default_does_not_collide_with_enter() {
+    fn test_archive_picker_search_merge_defaults_do_not_collide_with_enter() {
         // A physical Ctrl+M keypress is delivered as a plain `Enter` key
         // event by terminals that don't support an enhanced keyboard
-        // protocol (this app doesn't enable one) — see the doc comment on
-        // `ArchivePickerKeybindings::search_merge_toggle`. The default must
-        // not be a bare `Ctrl+m`, or it could never fire.
+        // protocol — see the doc comments on
+        // `ArchivePickerKeybindings::search_merge_toggle`/`search_merge_all`.
+        // Neither default may be a bare `Ctrl+m`, or it could never fire.
         let kb = Keybindings::default();
         assert!(
             !kb.archive_picker
@@ -2254,9 +2255,22 @@ mod tests {
         );
         assert!(
             !kb.archive_picker
+                .search_merge_all
+                .matches(KeyCode::Enter, KeyModifiers::NONE),
+            "search_merge_all's default must not match what a physical Ctrl+M keypress \
+             is actually reported as"
+        );
+        assert!(
+            !kb.archive_picker
                 .search_merge_toggle
                 .matches(KeyCode::Char('m'), KeyModifiers::CONTROL),
-            "search_merge_toggle's default must require Alt too, not bare Ctrl+m"
+            "search_merge_toggle's default must not be a bare Ctrl+m"
+        );
+        assert!(
+            !kb.archive_picker
+                .search_merge_all
+                .matches(KeyCode::Char('m'), KeyModifiers::CONTROL),
+            "search_merge_all's default must require Alt too, not bare Ctrl+m"
         );
     }
 
