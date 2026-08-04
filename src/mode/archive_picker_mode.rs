@@ -1511,11 +1511,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ctrl_m_toggles_merge_mark_while_searching_without_exiting_search() {
+    async fn test_ctrl_alt_m_toggles_merge_mark_while_searching_without_exiting_search() {
         let mut tab = make_tab().await;
         let (m, _) = enter_search_and_type(mode(), &mut tab, "inner1").await;
         let (m, result) = m
-            .handle_key(&mut tab, KeyCode::Char('m'), KeyModifiers::CONTROL)
+            .handle_key(
+                &mut tab,
+                KeyCode::Char('m'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            )
             .await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(extract_searching(m.render_state()));
@@ -1524,11 +1528,30 @@ mod tests {
         assert!(
             rows.iter()
                 .all(|r| r.merge_check_state == CheckState::Checked),
-            "Ctrl+m on the selected row must toggle the merge mark"
+            "Ctrl+Alt+m on the selected row must toggle the merge mark"
         );
         assert!(
             rows.iter().all(|r| r.check_state == CheckState::Unchecked),
             "merge-marking must not affect the extraction checkbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bare_ctrl_m_while_searching_does_not_toggle_merge_mark() {
+        // A physical Ctrl+M keypress arrives from the terminal as a plain
+        // `Enter` (see the doc comment on `search_merge_toggle`), never as
+        // `Char('m')` + `CONTROL` — but even if some environment did report
+        // it that way, only the `Ctrl+Alt+m` default should toggle the mark.
+        let mut tab = make_tab().await;
+        let (m, _) = enter_search_and_type(mode(), &mut tab, "inner1").await;
+        let (m, _) = m
+            .handle_key(&mut tab, KeyCode::Char('m'), KeyModifiers::CONTROL)
+            .await;
+        let (rows, _, _) = extract_state(m.render_state());
+        assert!(
+            rows.iter()
+                .all(|r| r.merge_check_state == CheckState::Unchecked),
+            "bare Ctrl+m must not toggle the merge mark"
         );
     }
 

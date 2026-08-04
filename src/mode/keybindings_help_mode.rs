@@ -985,11 +985,11 @@ mod tests {
         );
         let has_search_merge_toggle = rows.iter().any(|r| {
             matches!(r, HelpRow::Entry { action, keys }
-                if action == "Merge mark while searching" && keys == "Ctrl+m")
+                if action == "Merge mark while searching" && keys == "Ctrl+Alt+m")
         });
         assert!(
             has_search_merge_toggle,
-            "expected a 'Merge mark while searching' entry bound to 'Ctrl+m'"
+            "expected a 'Merge mark while searching' entry bound to 'Ctrl+Alt+m'"
         );
     }
 

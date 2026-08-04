@@ -832,7 +832,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("Ctrl+e"), "got: {text:?}");
-        assert!(text.contains("Ctrl+m"), "got: {text:?}");
+        assert!(text.contains("Ctrl+Alt+m"), "got: {text:?}");
         assert!(text.contains("Ctrl+a"), "got: {text:?}");
         assert!(text.contains("Alt+m"), "got: {text:?}");
         assert!(

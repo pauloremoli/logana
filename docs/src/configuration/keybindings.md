@@ -224,7 +224,7 @@ Shared by both the log panel's `/`/`?` search and the filter manager's `/` searc
   "cancel": "Esc",
   "search": "/",
   "search_toggle": "Ctrl+e",
-  "search_merge_toggle": "Ctrl+m",
+  "search_merge_toggle": "Ctrl+Alt+m",
   "search_select_all": "Ctrl+a",
   "search_merge_all": "Alt+m"
 }
@@ -261,10 +261,17 @@ prefix can be selected from one query instead of re-searching for each.
 whose name currently matches the query in one press, rather than just
 the selected row.
 
+`search_merge_toggle` defaults to `Ctrl+Alt+m` rather than plain `Ctrl+m`:
+outside a terminal with an enhanced keyboard protocol enabled (which this
+app doesn't request), Ctrl+M and a plain `Enter` keypress send the exact
+same byte, so a terminal reports Ctrl+M as `Enter` — a bare `Ctrl+m`
+binding would silently never fire, and `apply`'s `Enter` binding would
+consume the keypress instead.
+
 `search_merge_all` defaults to `Alt+m` rather than `Ctrl+Shift+m`:
 terminals report Shift inconsistently on Ctrl-chords, so this app's key
 matcher intentionally ignores Shift whenever Ctrl (or Alt) is held —
-meaning a Shift-only variant of `search_merge_toggle`'s `Ctrl+m` could
+meaning a Shift-only variant of `search_merge_toggle`'s `Ctrl+Alt+m` could
 never be told apart from it.
 
 Row navigation reuses the same keys as the filter sidebar and log panel
