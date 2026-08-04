@@ -262,11 +262,16 @@ whose name currently matches the query in one press, rather than just
 the selected row.
 
 `search_merge_toggle` defaults to `Ctrl+Alt+m` rather than plain `Ctrl+m`:
-outside a terminal with an enhanced keyboard protocol enabled (which this
-app doesn't request), Ctrl+M and a plain `Enter` keypress send the exact
-same byte, so a terminal reports Ctrl+M as `Enter` — a bare `Ctrl+m`
-binding would silently never fire, and `apply`'s `Enter` binding would
-consume the keypress instead.
+on a terminal *without* an enhanced keyboard protocol, Ctrl+M and a plain
+`Enter` keypress send the exact same byte, so the terminal reports Ctrl+M
+as `Enter` — a bare `Ctrl+m` binding would silently never fire, and
+`apply`'s `Enter` binding would consume the keypress instead. logana
+auto-detects and enables the enhanced protocol at startup on terminals
+that support it (Kitty, WezTerm, foot, Ghostty, Contour, iTerm2 partially,
+…) so Ctrl+M is reported unambiguously there; on such a terminal you can
+rebind `search_merge_toggle` back to `"Ctrl+m"` if you prefer. On terminals
+without support (most others, including tmux/screen in front of one), the
+default `Ctrl+Alt+m` is required.
 
 `search_merge_all` defaults to `Alt+m` rather than `Ctrl+Shift+m`:
 terminals report Shift inconsistently on Ctrl-chords, so this app's key

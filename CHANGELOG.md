@@ -14,6 +14,7 @@ All notable changes to logana will be documented in this file.
 - Archive/directory picker: `Ctrl+a`/`Alt+m` mark every row matching the search for extraction/merging in one press.
 - `Ctrl+p` opens a searchable popup to switch between open files.
 - `:theme` opens a searchable popup to browse and live-preview color themes.
+- Enables the terminal's enhanced keyboard protocol at startup when supported, so Ctrl-chords like `Ctrl+m` that would otherwise be indistinguishable from `Enter` can be reported and bound correctly.
 
 ## [0.7.5] - 2026-07-18
 

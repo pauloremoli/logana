@@ -1457,11 +1457,15 @@ pub struct ArchivePickerKeybindings {
     /// reasoning as `search_toggle`, for `merge_toggle`'s key (`m`).
     ///
     /// Defaults to `Ctrl+Alt+m`, not `Ctrl+m`: outside an enhanced-keyboard
-    /// terminal protocol (which this app doesn't enable), a terminal cannot
-    /// distinguish Ctrl+M from a plain Enter keypress — both send the same
-    /// carriage-return byte — so crossterm reports Ctrl+M as `KeyCode::Enter`
-    /// with no modifiers. A `Ctrl+m` binding here would therefore never
-    /// fire; `apply`'s `Enter` binding would consume the keypress instead.
+    /// terminal protocol, a terminal cannot distinguish Ctrl+M from a plain
+    /// Enter keypress — both send the same carriage-return byte — so
+    /// crossterm reports Ctrl+M as `KeyCode::Enter` with no modifiers. A
+    /// `Ctrl+m` binding here would therefore never fire; `apply`'s `Enter`
+    /// binding would consume the keypress instead. `main.rs`'s
+    /// `AlternateScreen` enables the enhanced protocol at startup when the
+    /// terminal supports it, in which case `Ctrl+m` can safely be rebound
+    /// here — `Ctrl+Alt+m` just has to remain the *default* since most
+    /// terminals still don't support it.
     #[serde(default = "default_ap_search_merge_toggle")]
     pub search_merge_toggle: KeyBindings,
     /// Marks every row whose name currently matches the search query for
