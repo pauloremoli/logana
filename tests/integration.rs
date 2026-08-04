@@ -1041,3 +1041,48 @@ fn test_multiline_schema_transaction_end_to_end() {
     let record2 = extract_record(5);
     assert_eq!(record2, vec![("field1".to_string(), "20".to_string())]);
 }
+
+/// `main.rs`'s `--headless` CLI path is glue code the library-level
+/// `run_headless_to_writer` tests above never exercise (they build a
+/// `LogManager`/`FileReader` directly, bypassing `main.rs` entirely). This
+/// spawns the actual compiled binary to catch bugs that only live in that
+/// glue — e.g. `--headless` used to never call `init_schemas()`, so custom
+/// schemas (and any `--field` filter on a field they define) silently had no
+/// effect in headless mode even though the same schema worked in the TUI.
+#[test]
+fn test_headless_binary_loads_custom_schema_and_honors_field_filter() {
+    let tmp = tempfile::tempdir().unwrap();
+    let schema_dir = tmp.path().join("logana").join("schema");
+    std::fs::create_dir_all(&schema_dir).unwrap();
+    std::fs::write(
+        schema_dir.join("acme.json"),
+        r#"{"name": "acme", "template": "{level} {message}"}"#,
+    )
+    .unwrap();
+
+    let log_path = tmp.path().join("sample.log");
+    std::fs::write(&log_path, "ERROR boom\nINFO fine\n").unwrap();
+
+    // `-i`'s value is one shell-split filter spec (see `logana --help`), not
+    // separate argv entries — the space inside is intentional.
+    #[allow(clippy::suspicious_command_arg_space)]
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_logana"))
+        .arg("--headless")
+        .arg(&log_path)
+        .arg("-i")
+        .arg("--field level=ERROR")
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .output()
+        .expect("failed to run the logana binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("ERROR boom"),
+        "matching line missing from stdout: {stdout:?} (stderr: {})",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !stdout.contains("INFO fine"),
+        "non-matching line should have been filtered out: {stdout:?}"
+    );
+}

@@ -213,6 +213,15 @@ async fn run_headless_mode(args: Args) -> Result<()> {
         );
         std::process::exit(1);
     }
+
+    let mut schema_warnings = init_schemas();
+    schema_warnings.extend(logana::parser::validate_custom_schemas(
+        logana::config::custom_schemas(),
+    ));
+    for warning in &schema_warnings {
+        eprintln!("Warning: {warning}");
+    }
+
     logana::headless::run_headless(&logana::headless::HeadlessArgs {
         file: args.file,
         filters: args.filters,
