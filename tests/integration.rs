@@ -943,6 +943,52 @@ async fn test_include_filter_shows_continuations_with_parent() {
     );
 }
 
+/// Regression test: an include filter that only matches text inside a
+/// *continuation* line (never the header) must still pull the whole
+/// multiline record into view, not just leave it hidden because the
+/// header itself didn't match.
+#[tokio::test]
+async fn test_include_filter_matching_only_continuation_shows_whole_record() {
+    use logana::filters::FilterType;
+    use logana::parser::detect_format;
+    use logana::ui::{VisibleLines, apply_continuation_correction, build_continuation_map};
+
+    let (_db, mut manager) = setup().await;
+    let reader = make_multiline_log();
+    let sample: Vec<&[u8]> = (0..reader.line_count())
+        .map(|i| reader.get_line(i))
+        .collect();
+    let parser = detect_format(&sample).expect("format detected");
+    let cmap = build_continuation_map(&reader, parser.as_ref());
+
+    // "Foo.bar" appears only in continuation line 1, not in header line 0
+    // ("...NullPointerException") nor continuation line 2 ("...Main.main...").
+    manager
+        .add_filter_with_color(
+            "Foo.bar".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
+        .await;
+    let (fm, _, _, _) = manager.build_filter_manager();
+    let mut visible = VisibleLines::Filtered(fm.compute_visible(&reader));
+    apply_continuation_correction(&mut visible, &cmap, fm.has_include());
+
+    assert!(
+        visible.contains(0),
+        "header should be shown because a line in its record matched"
+    );
+    assert!(visible.contains(1), "the matching continuation line itself");
+    assert!(
+        visible.contains(2),
+        "sibling continuation should follow the promoted record"
+    );
+    assert!(
+        !visible.contains(3),
+        "unrelated INFO entry should stay hidden (no match)"
+    );
+}
+
 #[test]
 fn test_multiline_schema_transaction_end_to_end() {
     use logana::config::{ContinuationConfig, ContinuationFieldSpec, CustomSchemaConfig};

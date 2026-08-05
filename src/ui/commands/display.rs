@@ -451,13 +451,20 @@ mod tests {
             )
             .await;
 
-        // Sanity: under structured (non-raw) multiline grouping, the match
-        // is hidden because its parent line doesn't independently match.
+        // Sanity: under structured (non-raw) multiline grouping, the
+        // matching continuation promotes its whole record, including the
+        // header, whose own text never matched.
         app.tabs[app.active_tab].begin_filter_refresh();
         drain_filter_scan(&mut app).await;
-        assert!(
-            !app.tabs[app.active_tab].filter.visible_indices.contains(1),
-            "sanity: structured grouping should hide the unmatched parent's block"
+        let grouped: Vec<usize> = app.tabs[app.active_tab]
+            .filter
+            .visible_indices
+            .iter()
+            .collect();
+        assert_eq!(
+            grouped,
+            vec![0, 1, 2],
+            "sanity: the whole record should be promoted by the continuation's match"
         );
 
         // Toggle raw mode via the real `:raw` command path.
@@ -469,10 +476,12 @@ mod tests {
             .visible_indices
             .iter()
             .collect();
-        assert!(
-            visible.contains(&1),
+        assert_eq!(
+            visible,
+            vec![1],
             "raw mode must evaluate lines independently of the stale multiline \
-             continuation map; got {visible:?}"
+             continuation map — only the individually matching line, no group \
+             promotion — got {visible:?}"
         );
     }
 

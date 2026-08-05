@@ -664,13 +664,35 @@ pub fn apply_continuation_correction(
         }
     }
 
-    // Each line is visible iff its parent is visible AND
-    // (the line itself was not explicitly excluded OR include filters exist).
-    // For parent lines (i == parent) this reduces to filter_visible[i] unchanged.
+    // When include filters are active, a line that individually matches pulls
+    // its whole record (parent + every continuation) into view — the match
+    // may live entirely in continuation content (e.g. a "Status: FAILED"
+    // line deep in a multiline transaction record) that the header line
+    // itself never mentions. `group_matched[p]` is set once for a parent `p`
+    // if *any* member of its record — the header or a continuation —
+    // individually matched.
+    let mut group_matched = filter_visible.clone();
+    if has_include_filters {
+        for i in 0..n {
+            if filter_visible[i] != 0 {
+                group_matched[cmap[i]] = 1;
+            }
+        }
+    }
+
+    // Each line is visible iff its record matched: with include filters,
+    // that's "some member of the record matched" (`group_matched`); with
+    // only excludes, a line is visible iff both its parent and itself are
+    // (an explicit exclude anywhere in the record must not be overridden by
+    // an unrelated match elsewhere in it).
     let mut new_indices: Vec<usize> = (0..n)
         .into_par_iter()
         .filter(|&i| {
-            filter_visible[cmap[i]] != 0 && (filter_visible[i] != 0 || has_include_filters)
+            if has_include_filters {
+                group_matched[cmap[i]] != 0
+            } else {
+                filter_visible[cmap[i]] != 0 && filter_visible[i] != 0
+            }
         })
         .collect();
 
@@ -5105,21 +5127,26 @@ mod tests {
             .await;
 
         // Sanity check: under normal (non-raw) multiline grouping, the
-        // continuation line is hidden because its parent doesn't match.
+        // matching continuation promotes its whole record — including the
+        // header, whose own text never matched.
         tab.refresh_visible();
-        assert!(
-            !tab.filter.visible_indices.contains(1),
-            "sanity: structured grouping should hide the unmatched parent's block"
+        let grouped: Vec<usize> = tab.filter.visible_indices.iter().collect();
+        assert_eq!(
+            grouped,
+            vec![0, 1, 2],
+            "sanity: the whole record should be promoted by the continuation's match"
         );
 
         tab.display.raw_mode = true;
         tab.refresh_visible();
 
         let visible: Vec<usize> = tab.filter.visible_indices.iter().collect();
-        assert!(
-            visible.contains(&1),
+        assert_eq!(
+            visible,
+            vec![1],
             "raw mode must evaluate lines independently of the stale multiline \
-             continuation map; the matching line must be visible, got {visible:?}"
+             continuation map — only the individually matching line, no group \
+             promotion — got {visible:?}"
         );
     }
 
