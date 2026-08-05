@@ -1,0 +1,149 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CustomSchemaConfig",
+  "type": "object",
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "template": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pattern": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fields": {
+      "default": {},
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "levels": {
+      "default": {
+        "error": [],
+        "warning": []
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/CustomLevelValues"
+        }
+      ]
+    },
+    "multiline": {
+      "description": "When `true`, continuation lines that follow a matched record (lines that don't match this schema's `template`/`pattern`) are merged into the record's `message` field, so field filters and the structured fields panel can see their content. See `merges_continuation_into_message`.",
+      "default": false,
+      "type": "boolean"
+    },
+    "continuation": {
+      "description": "Structured field extraction from continuation lines (as opposed to `multiline`'s raw-text folding into `message`). See [`ContinuationConfig`].",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ContinuationConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "CustomLevelValues": {
+      "description": "Raw `level` field values (case-insensitive) that a custom schema wants classified as Error/Warning, for schemas whose level values (e.g. `SEV1`) don't match any of the built-in keywords (`error`, `warn`, `fatal`, …) that `LogLevel::parse_level` recognizes. Drives both level coloring and the `e`/`w` error/warning navigation keys.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warning": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ContinuationConfig": {
+      "description": "Structured extraction for a multiline custom-schema record: fields carried on lines *after* the header, and where that record's continuation block ends. See [`CustomSchemaConfig::continuation`].",
+      "type": "object",
+      "properties": {
+        "end_pattern": {
+          "description": "Template/literal matched against a continuation line to mark the end of this record's continuation block (e.g. `\"### End transaction\"`). Compiled the same way as a header `template`. Optional — when absent, the block still ends at the next line matching the header (today's continuation-grouping behavior, unchanged).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "description": "Matchers tried in declared order against each continuation line; the first one that matches extracts that line's fields.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ContinuationFieldSpec"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ContinuationFieldSpec": {
+      "description": "One matcher tried against each continuation line following a matched header, in the order declared in `ContinuationConfig::fields`. Same `template`/`pattern` syntax as the top-level schema, but a continuation field can only resolve to `extra` or a non-slot semantic role (see `CustomParser::compile_matcher`'s `allow_slot_roles`) — `timestamp`, `level`, `target` and `message` belong to the header alone.",
+      "type": "object",
+      "properties": {
+        "template": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pattern": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "json": {
+          "description": "When `true`, this spec must have exactly one placeholder; its captured text is parsed as a JSON object and each key becomes its own `extra` field (the `fields` role map is unused in this case).",
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "acme",
+  "description": "Acme node log: id service <timestamp> pid level/component/feature, message",
+  "template": "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}",
+  "fields": {
+    "id": "extra",
+    "service": "target"
+  }
+}

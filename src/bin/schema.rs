@@ -1,5 +1,93 @@
+use logana::config::{Config, CustomSchemaConfig};
+
+/// Selects which type `main` generates a JSON Schema for.
+#[derive(Debug)]
+enum SchemaKind {
+    Config,
+    CustomSchema,
+}
+
+impl SchemaKind {
+    fn parse(arg: Option<&str>) -> Result<SchemaKind, String> {
+        match arg {
+            None | Some("config") => Ok(SchemaKind::Config),
+            Some("custom-schema") => Ok(SchemaKind::CustomSchema),
+            Some(other) => Err(format!(
+                "unknown schema kind '{other}' (expected 'config' or 'custom-schema')"
+            )),
+        }
+    }
+
+    fn to_json(&self) -> String {
+        let schema = match self {
+            SchemaKind::Config => schemars::schema_for!(Config),
+            SchemaKind::CustomSchema => schemars::schema_for!(CustomSchemaConfig),
+        };
+        serde_json::to_string_pretty(&schema).expect("failed to serialize schema")
+    }
+}
+
 fn main() {
-    let schema = schemars::schema_for!(logana::config::Config);
-    let json = serde_json::to_string_pretty(&schema).expect("failed to serialize schema");
-    println!("{json}");
+    let arg = std::env::args().nth(1);
+    match SchemaKind::parse(arg.as_deref()) {
+        Ok(kind) => println!("{}", kind.to_json()),
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_defaults_to_config() {
+        assert!(matches!(SchemaKind::parse(None), Ok(SchemaKind::Config)));
+    }
+
+    #[test]
+    fn test_parse_config_kind() {
+        assert!(matches!(
+            SchemaKind::parse(Some("config")),
+            Ok(SchemaKind::Config)
+        ));
+    }
+
+    #[test]
+    fn test_parse_custom_schema_kind() {
+        assert!(matches!(
+            SchemaKind::parse(Some("custom-schema")),
+            Ok(SchemaKind::CustomSchema)
+        ));
+    }
+
+    #[test]
+    fn test_parse_unknown_kind_is_err() {
+        let err = SchemaKind::parse(Some("bogus")).unwrap_err();
+        assert!(err.contains("bogus"), "{err}");
+    }
+
+    #[test]
+    fn test_config_schema_is_valid_json_schema() {
+        let json = SchemaKind::Config.to_json();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(jsonschema::validator_for(&value).is_ok());
+    }
+
+    #[test]
+    fn test_custom_schema_schema_is_valid_json_schema() {
+        let json = SchemaKind::CustomSchema.to_json();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(jsonschema::validator_for(&value).is_ok());
+    }
+
+    #[test]
+    fn test_custom_schema_schema_omits_schema_url_property() {
+        // `schema_url` carries `#[schemars(skip)]` so editors' own `$schema`
+        // line isn't itself treated as a documented property.
+        let json = SchemaKind::CustomSchema.to_json();
+        assert!(!json.contains("schema_url"), "{json}");
+    }
 }

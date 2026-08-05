@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Custom schema files now support a `$schema` line and reject unknown keys, matching `config.json`'s validation.
 - Custom schemas can set `"multiline": true` to fold continuation lines into the record's `message` field.
 - Custom schemas can declare a `continuation` block to extract structured fields (including embedded JSON) from continuation lines, optionally bounded by an `end_pattern`.
 - `:schema none` clears a tab's schema, treating its content as plain text.

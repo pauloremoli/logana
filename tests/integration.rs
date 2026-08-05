@@ -1032,6 +1032,7 @@ fn test_multiline_schema_transaction_end_to_end() {
                 },
             ],
         }),
+        ..Default::default()
     };
     let parser = CustomParser::from_config(&cfg).expect("schema should compile");
 

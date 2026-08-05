@@ -34,11 +34,12 @@ sed -i "s/^version = \".*\"$/version = \"$VERSION\"/" Cargo.toml
 
 cargo update --workspace
 
-cargo run --bin schema 2>/dev/null > schema/config.schema.json
+cargo run --bin schema -- config 2>/dev/null > schema/config.schema.json
+cargo run --bin schema -- custom-schema 2>/dev/null > schema/custom-schema.schema.json
 
 sed -i "s|^## \[Unreleased\]$|## [Unreleased]\n\n## [$VERSION] - $TODAY|" CHANGELOG.md
 
-git add Cargo.toml Cargo.lock CHANGELOG.md schema/config.schema.json
+git add Cargo.toml Cargo.lock CHANGELOG.md schema/config.schema.json schema/custom-schema.schema.json
 git commit -m "version v$VERSION"
 git tag "v$VERSION"
 

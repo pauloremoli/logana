@@ -3889,6 +3889,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -3929,6 +3930,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -4611,6 +4613,7 @@ mod tests {
             },
             multiline: false,
             continuation: None,
+            ..Default::default()
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -4633,6 +4636,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         };
         tab.display.format = Some(std::sync::Arc::new(
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
@@ -4803,6 +4807,7 @@ mod tests {
             levels: Default::default(),
             multiline,
             continuation: None,
+            ..Default::default()
         }
     }
 
@@ -4821,6 +4826,7 @@ mod tests {
             levels: Default::default(),
             multiline: true,
             continuation: None,
+            ..Default::default()
         }
     }
 
@@ -4928,6 +4934,7 @@ mod tests {
                     },
                 ],
             }),
+            ..Default::default()
         }
     }
 

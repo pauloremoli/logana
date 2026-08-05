@@ -1595,6 +1595,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         })
         .unwrap()
     }

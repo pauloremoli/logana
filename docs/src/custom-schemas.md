@@ -16,6 +16,20 @@ On Windows, `%APPDATA%` resolves to `C:\Users\<username>\AppData\Roaming`, e.g. 
 
 Each file describes one format. The filename is arbitrary; the `name` field inside the JSON is what identifies the schema at runtime.
 
+## Schema Validation
+
+logana publishes a JSON Schema for custom schema files. Add a `$schema` line to enable validation and autocomplete in VS Code and other JSON-aware editors:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/pauloremoli/logana/main/schema/custom-schema.schema.json",
+  "name": "my-format",
+  "template": "{level} {message}"
+}
+```
+
+An unrecognized key (e.g. a typo like `"templte"`) is rejected at load time — logana's startup warning names the file and the bad key instead of silently ignoring it.
+
 ## Schema file structure
 
 ```json

@@ -677,6 +677,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         })
         .unwrap()
     }
@@ -818,6 +819,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         })
         .unwrap();
         let segments = parser.template_segments().unwrap();
@@ -849,6 +851,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         })
         .unwrap();
         assert!(parser.template_segments().is_none());
@@ -872,6 +875,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must specify either"));
@@ -888,6 +892,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cannot specify both"));
@@ -904,6 +909,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid regex"));
@@ -920,6 +926,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -973,6 +980,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown field role"));
@@ -1005,6 +1013,7 @@ mod tests {
             levels: Default::default(),
             multiline: true,
             continuation: None,
+            ..Default::default()
         })
         .unwrap();
         assert!(parser.merges_continuation_into_message());
@@ -1023,6 +1032,7 @@ mod tests {
             },
             multiline: false,
             continuation: None,
+            ..Default::default()
         })
         .unwrap()
     }
@@ -1074,6 +1084,7 @@ mod tests {
             },
             multiline: false,
             continuation: None,
+            ..Default::default()
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("both error and warning"));
@@ -1092,6 +1103,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -1121,6 +1133,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -1177,6 +1190,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -1198,6 +1212,7 @@ mod tests {
             levels: Default::default(),
             multiline: false,
             continuation: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -1225,6 +1240,7 @@ mod tests {
                 end_pattern: Some("### End transaction".to_string()),
                 fields,
             }),
+            ..Default::default()
         }
     }
 

@@ -40,6 +40,7 @@ pub enum RestoreSessionPolicy {
 /// that `LogLevel::parse_level` recognizes. Drives both level coloring and
 /// the `e`/`w` error/warning navigation keys.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CustomLevelValues {
     #[serde(default)]
     pub error: Vec<String>,
@@ -54,6 +55,7 @@ pub struct CustomLevelValues {
 /// `CustomParser::compile_matcher`'s `allow_slot_roles`) — `timestamp`,
 /// `level`, `target` and `message` belong to the header alone.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ContinuationFieldSpec {
     #[serde(default)]
     pub template: Option<String>,
@@ -72,6 +74,7 @@ pub struct ContinuationFieldSpec {
 /// carried on lines *after* the header, and where that record's
 /// continuation block ends. See [`CustomSchemaConfig::continuation`].
 #[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ContinuationConfig {
     /// Template/literal matched against a continuation line to mark the end
     /// of this record's continuation block (e.g. `"### End transaction"`).
@@ -87,7 +90,12 @@ pub struct ContinuationConfig {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CustomSchemaConfig {
+    /// JSON Schema URL — accepted and ignored so editors can include a `$schema` line.
+    #[serde(rename = "$schema", default, skip_serializing)]
+    #[schemars(skip)]
+    pub schema_url: Option<String>,
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -1929,5 +1937,75 @@ mod tests {
         let json = r#"{"name": "test", "continuation": {"fields": []}}"#;
         let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.continuation.unwrap().end_pattern.is_none());
+    }
+
+    #[test]
+    fn test_custom_schema_config_rejects_unknown_field() {
+        // A typo'd key (e.g. "templte" instead of "template") should be
+        // reported immediately, not silently ignored only to surface later
+        // as a confusing "must specify either 'template' or 'pattern'" error.
+        let json = r#"{"name": "test", "templte": "{message}"}"#;
+        let err = serde_json::from_str::<CustomSchemaConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("templte"), "{err}");
+    }
+
+    #[test]
+    fn test_custom_schema_config_accepts_schema_url_key() {
+        let json = r#"{"$schema": "./custom-schema.schema.json", "name": "test"}"#;
+        let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.name, "test");
+    }
+
+    #[test]
+    fn test_custom_schema_config_schema_url_not_serialized() {
+        let cfg = CustomSchemaConfig {
+            name: "test".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("$schema"), "{json}");
+    }
+
+    #[test]
+    fn test_continuation_config_rejects_unknown_field() {
+        let json = r#"{"name": "test", "continuation": {"fields": [], "bogus": true}}"#;
+        let err = serde_json::from_str::<CustomSchemaConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("bogus"), "{err}");
+    }
+
+    #[test]
+    fn test_continuation_field_spec_rejects_unknown_field() {
+        let json =
+            r#"{"name": "test", "continuation": {"fields": [{"template": "{a}", "bogus": true}]}}"#;
+        let err = serde_json::from_str::<CustomSchemaConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("bogus"), "{err}");
+    }
+
+    #[test]
+    fn test_custom_level_values_rejects_unknown_field() {
+        let json = r#"{"name": "test", "levels": {"bogus": []}}"#;
+        let err = serde_json::from_str::<CustomSchemaConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("bogus"), "{err}");
+    }
+
+    #[test]
+    fn example_custom_schema_validates_against_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../schema/custom-schema.schema.json")).unwrap();
+        let example: serde_json::Value =
+            serde_json::from_str(include_str!("../../examples/custom-schema.example.json"))
+                .unwrap();
+
+        let validator = jsonschema::validator_for(&schema).expect("invalid schema");
+        let errors: Vec<String> = validator
+            .iter_errors(&example)
+            .map(|e| format!("{} (path: {})", e, e.instance_path))
+            .collect();
+
+        assert!(
+            errors.is_empty(),
+            "example custom schema failed schema validation:\n{}",
+            errors.join("\n")
+        );
     }
 }

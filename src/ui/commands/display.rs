@@ -435,6 +435,7 @@ mod tests {
             levels: Default::default(),
             multiline: true,
             continuation: None,
+            ..Default::default()
         };
         let parser = CustomParser::from_config(&cfg).unwrap();
         let tab = &mut app.tabs[app.active_tab];
