@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-08-06
+
 ### Added
 - Custom schema files now support a `$schema` line and reject unknown keys, matching `config.json`'s validation.
 - Custom schemas can set `"multiline": true` to fold continuation lines into the record's `message` field.

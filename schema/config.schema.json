@@ -21,6 +21,10 @@
           "merge_toggle": "m",
           "none": "n",
           "search": "/",
+          "search_merge_all": "Ctrl+Alt+m",
+          "search_merge_toggle": "Alt+m",
+          "search_select_all": "Ctrl+a",
+          "search_toggle": "Ctrl+e",
           "toggle": "Space"
         },
         "command": {
@@ -620,6 +624,10 @@
             "merge_toggle": "m",
             "none": "n",
             "search": "/",
+            "search_merge_all": "Ctrl+Alt+m",
+            "search_merge_toggle": "Alt+m",
+            "search_select_all": "Ctrl+a",
+            "search_toggle": "Ctrl+e",
             "toggle": "Space"
           },
           "allOf": [
@@ -1842,6 +1850,42 @@
         },
         "search": {
           "default": "/",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search_toggle": {
+          "description": "Toggles the selected row for extraction while [`ArchivePickerMode`] is in search-typeahead mode — `toggle`'s key (`Space` by default) can't be reused there since it's needed as literal query text.\n\n[`ArchivePickerMode`]: crate::mode::archive_picker_mode::ArchivePickerMode",
+          "default": "Ctrl+e",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search_merge_toggle": {
+          "description": "Toggles the selected row's merge mark while searching — same reasoning as `search_toggle`, for `merge_toggle`'s key (`m`).\n\nDefaults to `Alt+m` — deliberately not a `Ctrl`-chord at all: outside an enhanced-keyboard terminal protocol, a terminal cannot distinguish Ctrl+M from a plain Enter keypress — both send the same carriage-return byte — so crossterm reports Ctrl+M as `KeyCode::Enter` with no modifiers, and a bare `Ctrl+m` binding here would therefore never fire (`apply`'s `Enter` binding would consume the keypress instead). `Alt+m` sidesteps that entirely.",
+          "default": "Alt+m",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search_select_all": {
+          "description": "Marks every row whose name currently matches the search query for extraction — unlike `search_toggle` (which only touches the selected row), this sweeps every match in one press so files sharing a prefix can all be picked from a single query.",
+          "default": "Ctrl+a",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search_merge_all": {
+          "description": "Merge-mark equivalent of `search_select_all`. Defaults to `Ctrl+Alt+m` — a superset of `search_merge_toggle`'s `Alt+m` rather than an unrelated key, so the two stay mnemonically paired (`m` for merge, an extra modifier for \"all\"). [`ArchivePickerMode`] checks this binding *before* `search_merge_toggle`'s: [`KeyBinding::matches`] only requires a binding's own modifiers to be held, so an Alt-only binding also matches a Ctrl+Alt event, and checking the more specific one first is what keeps `Ctrl+Alt+m` from being swallowed by `search_merge_toggle`.",
+          "default": "Ctrl+Alt+m",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"
