@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-08-07
+
 ## [0.7.6] - 2026-08-06
 
 ### Added
