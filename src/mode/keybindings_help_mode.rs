@@ -112,11 +112,11 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.search_backward.display(),
     });
     rows.push(HelpRow::Entry {
-        action: "Next match".into(),
+        action: "Next match / mark".into(),
         keys: n.next_match.display(),
     });
     rows.push(HelpRow::Entry {
-        action: "Prev match".into(),
+        action: "Prev match / mark".into(),
         keys: n.prev_match.display(),
     });
     rows.push(HelpRow::Entry {

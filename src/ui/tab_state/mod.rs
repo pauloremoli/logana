@@ -906,6 +906,23 @@ impl TabState {
         self.scan_level_backward(from, false)
     }
 
+    /// Scan forward from `from` (exclusive) for the next visible marked line.
+    pub fn next_marked_position(&self, from: usize) -> Option<usize> {
+        let len = self.filter.visible_indices.len();
+        (from.saturating_add(1)..len).find(|&pos| {
+            self.mark_manager
+                .is_marked(self.filter.visible_indices.get(pos))
+        })
+    }
+
+    /// Scan backward from `from` (exclusive) for the previous visible marked line.
+    pub fn prev_marked_position(&self, from: usize) -> Option<usize> {
+        (0..from).rev().find(|&pos| {
+            self.mark_manager
+                .is_marked(self.filter.visible_indices.get(pos))
+        })
+    }
+
     fn scan_level_forward(&self, from: usize, errors: bool) -> Option<usize> {
         let parser: Option<&dyn LogFormatParser> = if self.display.raw_mode {
             None
@@ -4656,6 +4673,32 @@ mod tests {
         let tab = make_tab(&["INFO line", "DEBUG detail"]).await;
         assert_eq!(tab.next_error_position(0), None);
         assert_eq!(tab.next_warning_position(0), None);
+    }
+
+    #[tokio::test]
+    async fn test_next_marked_position_finds_forward() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3"]).await;
+        tab.mark_manager.toggle(1);
+        tab.mark_manager.toggle(3);
+        assert_eq!(tab.next_marked_position(0), Some(1));
+        assert_eq!(tab.next_marked_position(1), Some(3));
+        assert_eq!(tab.next_marked_position(3), None);
+    }
+
+    #[tokio::test]
+    async fn test_prev_marked_position_finds_backward() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3"]).await;
+        tab.mark_manager.toggle(1);
+        tab.mark_manager.toggle(3);
+        assert_eq!(tab.prev_marked_position(3), Some(1));
+        assert_eq!(tab.prev_marked_position(1), None);
+    }
+
+    #[tokio::test]
+    async fn test_marked_position_no_marks() {
+        let tab = make_tab(&["line0", "line1"]).await;
+        assert_eq!(tab.next_marked_position(0), None);
+        assert_eq!(tab.prev_marked_position(1), None);
     }
 
     #[tokio::test]

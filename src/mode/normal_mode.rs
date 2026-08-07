@@ -396,9 +396,15 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.next_match.matches(key, modifiers) {
-            // `n` continues in the original search direction (vim semantics).
-            if tab.search.query.go_next().is_some() {
-                tab.scroll_to_current_search_match();
+            if tab.search.query.get_pattern().is_some() {
+                // `n` continues in the original search direction (vim semantics).
+                if tab.search.query.go_next().is_some() {
+                    tab.scroll_to_current_search_match();
+                }
+            } else if let Some(pos) = tab.next_marked_position(tab.scroll.scroll_offset) {
+                tab.scroll.scroll_offset = pos;
+            } else {
+                tab.interaction.command_error = Some("No more marks".to_string());
             }
             tab.interaction.g_key_pressed = false;
             self.count = None;
@@ -406,9 +412,15 @@ impl Mode for NormalMode {
         }
 
         if kb.normal.prev_match.matches(key, modifiers) {
-            // `N` reverses the original search direction (vim semantics).
-            if tab.search.query.go_prev().is_some() {
-                tab.scroll_to_current_search_match();
+            if tab.search.query.get_pattern().is_some() {
+                // `N` reverses the original search direction (vim semantics).
+                if tab.search.query.go_prev().is_some() {
+                    tab.scroll_to_current_search_match();
+                }
+            } else if let Some(pos) = tab.prev_marked_position(tab.scroll.scroll_offset) {
+                tab.scroll.scroll_offset = pos;
+            } else {
+                tab.interaction.command_error = Some("No previous mark".to_string());
             }
             tab.interaction.g_key_pressed = false;
             self.count = None;
@@ -1823,6 +1835,64 @@ mod tests {
             tab.interaction.command_error.as_deref(),
             Some("No previous warning")
         );
+    }
+
+    // ── Marked-line navigation (n/N without an active search) ──────────────
+
+    #[tokio::test]
+    async fn test_n_navigates_to_next_marked_line_when_no_search() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3"]).await;
+        tab.mark_manager.toggle(2);
+        tab.scroll.scroll_offset = 0;
+        press(&mut tab, KeyCode::Char('n'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll.scroll_offset, 2);
+    }
+
+    #[tokio::test]
+    async fn test_capital_n_navigates_to_prev_marked_line_when_no_search() {
+        let mut tab = make_tab(&["line0", "line1", "line2", "line3"]).await;
+        tab.mark_manager.toggle(1);
+        tab.scroll.scroll_offset = 3;
+        press(&mut tab, KeyCode::Char('N'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll.scroll_offset, 1);
+    }
+
+    #[tokio::test]
+    async fn test_n_no_marks_no_search_sets_command_error() {
+        let mut tab = make_tab(&["line0", "line1"]).await;
+        tab.scroll.scroll_offset = 0;
+        press(&mut tab, KeyCode::Char('n'), KeyModifiers::NONE).await;
+        assert_eq!(
+            tab.interaction.command_error.as_deref(),
+            Some("No more marks")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_capital_n_no_marks_no_search_sets_command_error() {
+        let mut tab = make_tab(&["line0", "line1"]).await;
+        tab.scroll.scroll_offset = 1;
+        press(&mut tab, KeyCode::Char('N'), KeyModifiers::NONE).await;
+        assert_eq!(
+            tab.interaction.command_error.as_deref(),
+            Some("No previous mark")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_n_navigates_search_matches_when_search_active_even_with_marks() {
+        let lines = ["foo line", "bar line", "foo again"];
+        let mut tab = make_tab(&lines).await;
+        // A mark on a non-matching line must be ignored while a search is active.
+        tab.mark_manager.toggle(1);
+        let texts: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        tab.search
+            .query
+            .search("foo", 0..lines.len(), |i| texts.get(i).cloned())
+            .unwrap();
+        tab.scroll.scroll_offset = 0;
+        press(&mut tab, KeyCode::Char('n'), KeyModifiers::NONE).await;
+        assert_eq!(tab.scroll.scroll_offset, 2);
     }
 
     #[tokio::test]
