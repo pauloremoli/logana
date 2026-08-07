@@ -47,7 +47,9 @@ pub fn build_merged_index(
         let cmap = continuation_maps[source_idx].as_deref();
         append_source_entries(&mut entries, source, parser, year_map, cmap, source_idx, 0);
     }
-    entries.sort_unstable_by_key(|a| a.sort_key);
+    // Stable: entries with equal sort_key (e.g. many lines within the same
+    // second) must keep each source's original chronological order.
+    entries.sort_by_key(|a| a.sort_key);
     entries
 }
 
@@ -71,7 +73,8 @@ pub fn extend_merged_index(
         source_idx,
         from_line,
     );
-    entries.sort_unstable_by_key(|a| a.sort_key);
+    // Stable, for the same reason as `build_merged_index`.
+    entries.sort_by_key(|a| a.sort_key);
 }
 
 /// One incremental step of [`build_merged_index_streaming`]: the merged
@@ -188,6 +191,51 @@ fn append_source_entries(
                 source_idx,
                 line_idx,
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ingestion::FileReader;
+    use crate::parser::syslog::SyslogParser;
+
+    /// A BSD-syslog source with `num_groups` distinct seconds, each repeated
+    /// `group_size` times — i.e. many lines per source sharing one sort key,
+    /// the common real-world case (log bursts within the same second).
+    fn bsd_source(num_groups: usize, group_size: usize) -> FileReader {
+        let mut data = String::new();
+        for g in 0..num_groups {
+            for i in 0..group_size {
+                data.push_str(&format!("Jan  1 00:00:{:02} host tag: line {}\n", g, i));
+            }
+        }
+        FileReader::from_bytes(data.into_bytes())
+    }
+
+    #[test]
+    fn merge_preserves_intra_source_order_for_duplicate_timestamps() {
+        let parser: Arc<dyn LogFormatParser> = Arc::new(SyslogParser::default());
+        let sources = vec![bsd_source(5, 6), bsd_source(5, 6)];
+        let parsers = vec![Some(parser.clone()), Some(parser)];
+        let year_maps: Vec<Option<Arc<YearMap>>> = vec![None, None];
+        let continuation_maps: Vec<Option<Arc<Vec<usize>>>> = vec![None, None];
+
+        let entries = build_merged_index(&sources, &parsers, &year_maps, &continuation_maps);
+
+        for source_idx in 0..sources.len() {
+            let mut last_line: Option<usize> = None;
+            for entry in entries.iter().filter(|e| e.source_idx == source_idx) {
+                if let Some(prev) = last_line {
+                    assert!(
+                        entry.line_idx > prev,
+                        "source {source_idx} line order violated: line {} came after line {prev}",
+                        entry.line_idx
+                    );
+                }
+                last_line = Some(entry.line_idx);
+            }
         }
     }
 }
