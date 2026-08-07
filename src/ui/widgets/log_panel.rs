@@ -72,18 +72,25 @@ pub(crate) fn comment_banner_row_count(text: &str) -> usize {
     text.lines().count()
 }
 
-pub(crate) fn prepare_comment_maps(
-    comments: &[(Vec<usize>, String)],
-    visible_indices: &VisibleLines,
-    start: usize,
-    end: usize,
-) -> (HashMap<usize, usize>, HashMap<usize, usize>) {
+/// Maps each commented file line to the index of its comment in `comments`,
+/// independent of any viewport window.
+fn build_line_comment_map(comments: &[(Vec<usize>, String)]) -> HashMap<usize, usize> {
     let mut line_cmt_map: HashMap<usize, usize> = HashMap::new();
     for (cmt_idx, (line_indices, _)) in comments.iter().enumerate() {
         for &li in line_indices {
             line_cmt_map.entry(li).or_insert(cmt_idx);
         }
     }
+    line_cmt_map
+}
+
+pub(crate) fn prepare_comment_maps(
+    comments: &[(Vec<usize>, String)],
+    visible_indices: &VisibleLines,
+    start: usize,
+    end: usize,
+) -> (HashMap<usize, usize>, HashMap<usize, usize>) {
+    let line_cmt_map = build_line_comment_map(comments);
     let mut banner_at: HashMap<usize, usize> = HashMap::new();
     let mut vis_comment_map: HashMap<usize, usize> = HashMap::new();
     let mut seen_cmts: HashSet<usize> = HashSet::new();
@@ -182,124 +189,106 @@ fn compute_viewport(
     field_layout: &crate::ui::FieldLayout,
     show_keys: bool,
     raw_mode: bool,
+    comments: &[(Vec<usize>, String)],
 ) -> (usize, usize) {
     let parser = if raw_mode {
         None
     } else {
         tab.display.format.as_deref()
     };
-    let row_count = |li: usize| -> usize {
-        effective_row_count(
-            tab.file_reader.get_line(li),
-            inner_width,
-            parser,
-            field_layout,
-            hidden_fields,
-            show_keys,
-        )
-    };
-
-    let new_viewport = if scroll_offset < viewport_offset {
-        scroll_offset
-    } else if wrap && inner_width > 0 && num_visible > 0 {
-        let gap = scroll_offset.saturating_sub(viewport_offset);
-        let overflowed = gap > visible_height || {
-            let rows_used: usize = (viewport_offset..=scroll_offset)
-                .map(|i| row_count(tab.filter.visible_indices.get(i)))
-                .sum();
-            rows_used > visible_height
-        };
-        if overflowed {
-            let mut rows = 0usize;
-            let mut new_vp = scroll_offset + 1;
-            loop {
-                if new_vp == 0 {
-                    break;
-                }
-                new_vp -= 1;
-                let h = row_count(tab.filter.visible_indices.get(new_vp));
-                if rows + h > visible_height {
-                    new_vp += 1;
-                    break;
-                }
-                rows += h;
-                if new_vp == 0 {
-                    break;
-                }
-            }
-            new_vp.min(scroll_offset)
+    let use_wrap = wrap && inner_width > 0;
+    let content_rows = |li: usize| -> usize {
+        if use_wrap {
+            effective_row_count(
+                tab.file_reader.get_line(li),
+                inner_width,
+                parser,
+                field_layout,
+                hidden_fields,
+                show_keys,
+            )
         } else {
-            viewport_offset
+            1
         }
-    } else if visible_height > 0 && scroll_offset >= viewport_offset + visible_height {
-        scroll_offset - visible_height + 1
-    } else {
-        viewport_offset
     };
-
-    let start = new_viewport;
-    let end = if wrap && inner_width > 0 {
+    let line_cmt_map = build_line_comment_map(comments);
+    // Row height of visible-position `pos`, plus its comment banner the first
+    // time `seen` encounters that comment — mirrors how `prepare_comment_maps`
+    // places a banner once per comment, at its first line within the window.
+    let row_height = |pos: usize, seen: &mut HashSet<usize>| -> usize {
+        let li = tab.filter.visible_indices.get(pos);
+        let mut h = content_rows(li);
+        if let Some(&cmt_idx) = line_cmt_map.get(&li)
+            && seen.insert(cmt_idx)
+        {
+            h += comment_banner_row_count(&comments[cmt_idx].1);
+        }
+        h
+    };
+    // Grows a window forward from `from`, returning the exclusive end that
+    // still fits within `visible_height` rows (always at least one line).
+    let forward_fill = |from: usize| -> usize {
         let mut rows = 0usize;
-        let mut e = start;
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut e = from;
         while e < num_visible {
-            let h = row_count(tab.filter.visible_indices.get(e));
+            let h = row_height(e, &mut seen);
             if rows + h > visible_height {
                 break;
             }
             rows += h;
             e += 1;
         }
-        if e == start && start < num_visible {
-            e = start + 1;
+        if e == from && from < num_visible {
+            e = from + 1;
         }
         e
-    } else {
-        (start + visible_height).min(num_visible)
+    };
+    // Grows a window backward from `upto` (exclusive), returning the
+    // inclusive start that still fits within `visible_height` rows.
+    let backward_fill = |upto: usize| -> usize {
+        let mut rows = 0usize;
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut s = upto;
+        while s > 0 {
+            let h = row_height(s - 1, &mut seen);
+            if rows + h > visible_height {
+                break;
+            }
+            rows += h;
+            s -= 1;
+        }
+        s
     };
 
-    if end == num_visible && num_visible > 0 {
-        let filled_start = if wrap && inner_width > 0 {
+    let new_viewport = if scroll_offset < viewport_offset {
+        scroll_offset
+    } else if num_visible == 0 {
+        viewport_offset
+    } else {
+        let gap = scroll_offset.saturating_sub(viewport_offset);
+        let overflowed = gap > visible_height || {
             let mut rows = 0usize;
-            let mut s = num_visible;
-            loop {
-                if s == 0 {
-                    break;
-                }
-                s -= 1;
-                let h = row_count(tab.filter.visible_indices.get(s));
-                if rows + h > visible_height {
-                    s += 1;
-                    break;
-                }
-                rows += h;
-                if s == 0 {
-                    break;
-                }
+            let mut seen: HashSet<usize> = HashSet::new();
+            for pos in viewport_offset..=scroll_offset {
+                rows += row_height(pos, &mut seen);
             }
-            s
-        } else {
-            num_visible.saturating_sub(visible_height)
+            rows > visible_height
         };
+        if overflowed {
+            backward_fill(scroll_offset + 1).min(scroll_offset)
+        } else {
+            viewport_offset
+        }
+    };
+
+    let start = new_viewport;
+    let end = forward_fill(start);
+
+    if end == num_visible && num_visible > 0 {
+        let filled_start = backward_fill(num_visible);
         if filled_start < new_viewport {
-            let adj_end = if wrap && inner_width > 0 {
-                let mut rows = 0usize;
-                let mut e = filled_start;
-                while e < num_visible {
-                    let h = row_count(tab.filter.visible_indices.get(e));
-                    if rows + h > visible_height {
-                        break;
-                    }
-                    rows += h;
-                    e += 1;
-                }
-                if e == filled_start && filled_start < num_visible {
-                    e += 1;
-                }
-                e
-            } else {
-                num_visible
-            };
-            (filled_start, adj_end)
+            (filled_start, forward_fill(filled_start))
         } else {
             (new_viewport, end)
         }
@@ -572,6 +561,13 @@ pub fn prepare_log_panel(
     let scroll_offset = tab.scroll.scroll_offset;
     let viewport_offset = tab.scroll.viewport_offset;
 
+    let comments_for_render: Vec<(Vec<usize>, String)> = tab
+        .comment_manager
+        .get()
+        .iter()
+        .map(|a| (a.line_indices.clone(), a.text.clone()))
+        .collect();
+
     let (new_viewport, end) = compute_viewport(
         tab,
         scroll_offset,
@@ -584,6 +580,7 @@ pub fn prepare_log_panel(
         &field_layout,
         show_keys,
         raw_mode,
+        &comments_for_render,
     );
 
     tab.scroll.viewport_offset = new_viewport;
@@ -655,13 +652,6 @@ pub fn prepare_log_panel(
     let visual_style = Style::default()
         .fg(theme.visual_select_fg)
         .bg(theme.visual_select_bg);
-
-    let comments_for_render: Vec<(Vec<usize>, String)> = tab
-        .comment_manager
-        .get()
-        .iter()
-        .map(|a| (a.line_indices.clone(), a.text.clone()))
-        .collect();
 
     let (banner_at, vis_comment_map) = prepare_comment_maps(
         &comments_for_render,
@@ -1608,6 +1598,131 @@ mod tests {
             .add("my annotation".to_string(), vec![0]);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    /// Reproduces the bug where jumping far down the file (as `:next-error`
+    /// / `:next-warning` do) with wrap enabled and a comment banner sitting
+    /// inside the target window left the viewport miscalculated: the
+    /// banner's extra rows weren't reserved, so the window computed as
+    /// "fitting" `visible_height` actually overflowed it once rendered.
+    #[tokio::test]
+    async fn test_compute_viewport_reserves_room_for_comment_banner_in_wrap_mode() {
+        // Every line is a single 40-char word — no spaces — so at
+        // inner_width 20 it wraps to exactly 2 rows, deterministically.
+        let lines: Vec<String> = (0..30).map(|_| "X".repeat(40)).collect();
+        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let mut app = make_app(&line_refs).await;
+        app.tabs[0].display.wrap = true;
+        app.tabs[0]
+            .comment_manager
+            .add("note".to_string(), vec![18]);
+
+        let tab = &app.tabs[0];
+        let comments: Vec<(Vec<usize>, String)> = tab
+            .comment_manager
+            .get()
+            .iter()
+            .map(|a| (a.line_indices.clone(), a.text.clone()))
+            .collect();
+        let inner_width = 20;
+        let visible_height = 10;
+        let num_visible = tab.filter.visible_indices.len();
+        let scroll_offset = 20;
+
+        let (start, end) = compute_viewport(
+            tab,
+            scroll_offset,
+            0, // stale viewport_offset from before the jump
+            num_visible,
+            visible_height,
+            true,
+            inner_width,
+            &HashSet::new(),
+            &tab.display.field_layout,
+            false,
+            false,
+            &comments,
+        );
+
+        assert!(
+            start <= scroll_offset && scroll_offset < end,
+            "jump target {scroll_offset} must be inside the rendered viewport [{start}, {end})"
+        );
+
+        // Recompute the rows the renderer will actually use for [start, end)
+        // — content rows plus the banner, counted once at its first line —
+        // and confirm it never exceeds what actually fits on screen.
+        let mut total_rows = 0usize;
+        let mut seen_comment = false;
+        for i in start..end {
+            let li = tab.filter.visible_indices.get(i);
+            total_rows += effective_row_count(
+                tab.file_reader.get_line(li),
+                inner_width,
+                None,
+                &tab.display.field_layout,
+                &HashSet::new(),
+                false,
+            );
+            if li == 18 && !seen_comment {
+                total_rows += comment_banner_row_count("note");
+                seen_comment = true;
+            }
+        }
+        assert!(
+            total_rows <= visible_height,
+            "window [{start}, {end}) needs {total_rows} rows, more than fits in visible_height {visible_height}"
+        );
+    }
+
+    /// Same bug as above, but without wrap: the fixed-height branch used
+    /// plain index arithmetic that didn't know about comment banners either.
+    #[tokio::test]
+    async fn test_compute_viewport_reserves_room_for_comment_banner_without_wrap() {
+        let lines: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
+        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let mut app = make_app(&line_refs).await;
+        app.tabs[0]
+            .comment_manager
+            .add("note".to_string(), vec![18]);
+
+        let tab = &app.tabs[0];
+        let comments: Vec<(Vec<usize>, String)> = tab
+            .comment_manager
+            .get()
+            .iter()
+            .map(|a| (a.line_indices.clone(), a.text.clone()))
+            .collect();
+        let visible_height = 10;
+        let num_visible = tab.filter.visible_indices.len();
+        let scroll_offset = 20;
+
+        let (start, end) = compute_viewport(
+            tab,
+            scroll_offset,
+            0,
+            num_visible,
+            visible_height,
+            false,
+            80,
+            &HashSet::new(),
+            &tab.display.field_layout,
+            false,
+            false,
+            &comments,
+        );
+
+        assert!(
+            start <= scroll_offset && scroll_offset < end,
+            "jump target {scroll_offset} must be inside the rendered viewport [{start}, {end})"
+        );
+        // One row per line, plus the single-line banner once.
+        let rows = (end - start)
+            + usize::from((start..end).any(|i| tab.filter.visible_indices.get(i) == 18));
+        assert!(
+            rows <= visible_height,
+            "window [{start}, {end}) needs {rows} rows, more than fits in visible_height {visible_height}"
+        );
     }
 
     #[test]
