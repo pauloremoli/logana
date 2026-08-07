@@ -115,16 +115,7 @@ fn compute_status_height(status_line: &Line, inner_width: usize, show_borders: b
 /// tab with no detected format — "unknown format" would be misleading here
 /// (detection didn't fail, there just isn't one single answer to show).
 fn merged_format_name(merged: &crate::ui::MergedState) -> Option<String> {
-    let mut names = merged
-        .source_parsers
-        .iter()
-        .filter_map(|p| p.as_deref().map(|p| p.name()));
-    let first = names.next()?;
-    if names.all(|n| n == first) {
-        Some(first.to_string())
-    } else {
-        None
-    }
+    merged.uniform_parser().map(|p| p.name().to_string())
 }
 
 /// Caps how many startup warnings (and how many terminal rows total, once

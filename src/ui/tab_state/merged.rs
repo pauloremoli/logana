@@ -28,6 +28,23 @@ pub struct MergedState {
     pub building: Option<(usize, usize)>,
 }
 
+impl MergedState {
+    /// The single parser shared by every source with a detected format
+    /// (sources with none are ignored), or `None` if none detected a
+    /// format or two disagree. Used both to label a merged tab's format in
+    /// the tab bar and to let a merged tab itself be used as a source in a
+    /// further merge (see `App::merge_source_parser`).
+    pub fn uniform_parser(&self) -> Option<Arc<dyn LogFormatParser>> {
+        let mut detected = self.source_parsers.iter().flatten();
+        let first = detected.next()?.clone();
+        if detected.all(|p| p.name() == first.name()) {
+            Some(first)
+        } else {
+            None
+        }
+    }
+}
+
 /// Build a sorted merged index from multiple sources.
 ///
 /// For each source, lines with parseable timestamps are indexed.

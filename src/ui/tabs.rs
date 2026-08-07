@@ -226,7 +226,6 @@ impl App {
             .tabs
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.merged.is_none())
             .map(|(i, t)| ((t.title.clone(), i == self.active_tab), i))
             .unzip();
         if tabs.len() < 2 {
@@ -252,6 +251,23 @@ impl App {
             Box::new(FileSwitcherMode::new(entries, self.active_tab));
     }
 
+    /// A source tab's parser for a nested `merge_inputs_from_tabs` build. A
+    /// plain tab uses its own detected `display.format`. A merged tab
+    /// always has `display.format == None` (it may combine heterogeneous
+    /// sources — see `pending_default_filter_path_for_merge`'s doc comment),
+    /// so using that directly would silently contribute zero lines to the
+    /// new merge (`append_source_entries` skips every line when `parser` is
+    /// `None`). Falling back to its `MergedState::uniform_parser` instead
+    /// lets a previously-merged tab (e.g. from the archive picker) be
+    /// merged again when its own sources agreed on one format.
+    fn merge_source_parser(&self, tab_idx: usize) -> Option<Arc<dyn LogFormatParser>> {
+        let tab = &self.tabs[tab_idx];
+        match &tab.merged {
+            Some(merged) => merged.uniform_parser(),
+            None => tab.display.format.clone(),
+        }
+    }
+
     /// Gathers `MergeSourceInputs` from already-open tabs — the source
     /// shape `:merge` has always used.
     fn merge_inputs_from_tabs(&self, source_tab_indices: &[usize]) -> MergeSourceInputs {
@@ -262,7 +278,7 @@ impl App {
                 .collect(),
             parsers: source_tab_indices
                 .iter()
-                .map(|&i| self.tabs[i].display.format.clone())
+                .map(|&i| self.merge_source_parser(i))
                 .collect(),
             year_maps: source_tab_indices
                 .iter()
@@ -569,5 +585,43 @@ mod tests {
 
         let merged_tab = app.tabs.last().unwrap();
         assert!(merged_tab.log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_open_merge_select_includes_a_previously_merged_tab() {
+        let mut app = make_app().await;
+        let a = push_tab_with_format(&mut app, "2024-01-01T00:00:00Z a\n", "syslog").await;
+        let b = push_tab_with_format(&mut app, "2024-01-01T00:00:01Z b\n", "syslog").await;
+        app.open_merge_tab(vec![a, b]).await;
+
+        app.handle_open_merge_select();
+
+        let debug = format!("{:?}", app.tabs[app.active_tab].interaction.mode);
+        assert!(
+            debug.contains("merged(2)"),
+            "a tab that is itself the result of a merge (e.g. from the archive \
+             picker) must still be selectable as a source for a further merge; \
+             got mode: {debug}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_merge_tab_includes_lines_from_a_merged_tab_source() {
+        let mut app = make_app().await;
+        let a = push_tab_with_format(&mut app, "2024-01-01T00:00:00Z a\n", "syslog").await;
+        let b = push_tab_with_format(&mut app, "2024-01-01T00:00:01Z b\n", "syslog").await;
+        app.open_merge_tab(vec![a, b]).await;
+        let inner_merged = app.tabs.len() - 1;
+
+        let c = push_tab_with_format(&mut app, "2024-01-01T00:00:02Z c\n", "syslog").await;
+        app.open_merge_tab(vec![inner_merged, c]).await;
+
+        let outer_merged = app.tabs.last().unwrap();
+        assert_eq!(
+            outer_merged.filter.visible_indices.len(),
+            3,
+            "nested merge must include both lines from the inner merged tab \
+             instead of silently dropping them for lacking a `display.format`"
+        );
     }
 }
