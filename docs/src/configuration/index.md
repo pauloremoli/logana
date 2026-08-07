@@ -6,7 +6,7 @@ logana is configured via a `config.json` file. The file is entirely optional —
 
 logana never writes to the config file. Any settings defined there are applied on startup and take precedence over the values stored in the database.
 
-Many settings can also be changed at runtime — UI toggles via the UI options menu (`u`) and display commands (`:wrap`, `:line-numbers`, `:set-theme`, `:sidebar-position`). When changed at runtime the new value is saved to the database and restored on the next session, unless the setting is also defined in the config file, in which case the config file value always wins.
+Many settings can also be changed at runtime — UI toggles via the UI options menu (`u`) and display commands (`:wrap`, `:line-numbers`, `:relative-line-numbers`, `:set-theme`, `:sidebar-position`). When changed at runtime the new value is saved to the database and restored on the next session, unless the setting is also defined in the config file, in which case the config file value always wins.
 
 ## Schema Validation
 
@@ -40,6 +40,7 @@ The path depends on the operating system:
   "show_borders": true,
   "show_sidebar": true,
   "show_line_numbers": true,
+  "relative_line_numbers": false,
   "wrap": false,
   "sidebar_side": "right",
   "preview_bytes": 16777216,
@@ -87,6 +88,7 @@ The path depends on the operating system:
 | `show_borders` | bool | `true` | Show panel borders on startup |
 | `show_sidebar` | bool | `true` | Show the filter sidebar on startup |
 | `show_line_numbers` | bool | `true` | Show the line number gutter |
+| `relative_line_numbers` | bool | `false` | Show line numbers relative to the selected row instead of absolute |
 | `wrap` | bool | `false` | Wrap long lines |
 | `sidebar_side` | string | `"right"` | Pin the filter sidebar to `"left"` or `"right"` of the log panel |
 | `preview_bytes` | number | `16777216` | Bytes read for the instant preview shown while the full file index is built in the background (16 MiB) |

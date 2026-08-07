@@ -173,6 +173,7 @@
           "exit": "Esc",
           "toggle_borders": "B",
           "toggle_mode_bar": "b",
+          "toggle_relative_line_numbers": "r",
           "toggle_sidebar": "s",
           "toggle_wrap": "w"
         },
@@ -288,6 +289,14 @@
     },
     "show_line_numbers": {
       "description": "When `Some`, overrides the DB-stored show_line_numbers runtime setting.",
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "relative_line_numbers": {
+      "description": "When `Some`, overrides the DB-stored relative_line_numbers runtime setting.",
       "default": null,
       "type": [
         "boolean",
@@ -673,6 +682,7 @@
             "exit": "Esc",
             "toggle_borders": "B",
             "toggle_mode_bar": "b",
+            "toggle_relative_line_numbers": "r",
             "toggle_sidebar": "s",
             "toggle_wrap": "w"
           },
@@ -1982,6 +1992,14 @@
         },
         "toggle_wrap": {
           "default": "w",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "toggle_relative_line_numbers": {
+          "default": "r",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"

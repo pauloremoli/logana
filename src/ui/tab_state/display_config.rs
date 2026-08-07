@@ -33,6 +33,7 @@ impl SidebarSide {
 pub struct DisplayConfig {
     pub wrap: bool,
     pub show_line_numbers: bool,
+    pub relative_line_numbers: bool,
     pub show_sidebar: bool,
     pub sidebar_width: u16,
     pub sidebar_side: SidebarSide,
@@ -51,6 +52,7 @@ impl Default for DisplayConfig {
         Self {
             wrap: true,
             show_line_numbers: true,
+            relative_line_numbers: false,
             show_sidebar: true,
             sidebar_width: 30,
             sidebar_side: SidebarSide::Right,

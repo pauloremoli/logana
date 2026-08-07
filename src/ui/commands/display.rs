@@ -36,6 +36,24 @@ impl App {
             .await;
     }
 
+    pub(super) async fn cmd_relative_line_numbers(&mut self) {
+        self.display.relative_line_numbers = !self.display.relative_line_numbers;
+        for tab in &mut self.tabs {
+            tab.display.relative_line_numbers = self.display.relative_line_numbers;
+        }
+        let _ = self
+            .db
+            .save_app_setting(
+                SettingsKey::RelativeLineNumbers,
+                if self.display.relative_line_numbers {
+                    "true"
+                } else {
+                    "false"
+                },
+            )
+            .await;
+    }
+
     pub(super) fn cmd_level_colors(&mut self) -> Result<bool, String> {
         use crate::mode::value_colors_mode::{
             ValueColorEntry, ValueColorGroup as VCGroup, ValueColorsMode,

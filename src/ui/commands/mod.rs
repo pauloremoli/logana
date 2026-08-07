@@ -132,6 +132,7 @@ impl App {
             Some(Commands::LoadFilters { path }) => return self.cmd_load_filters(path).await,
             Some(Commands::Wrap) => self.cmd_wrap().await,
             Some(Commands::LineNumbers) => self.cmd_line_numbers().await,
+            Some(Commands::RelativeLineNumbers) => self.cmd_relative_line_numbers().await,
             Some(Commands::LevelColors) => return self.cmd_level_colors(),
             Some(Commands::SetTheme { theme_name }) => return self.cmd_set_theme(theme_name).await,
             Some(Commands::Theme) => return self.cmd_theme_picker(),
@@ -291,6 +292,16 @@ mod tests {
         assert!(!app.tab().display.show_line_numbers);
         app.run_command("line-numbers").await.unwrap();
         assert!(app.tab().display.show_line_numbers);
+    }
+
+    #[tokio::test]
+    async fn test_relative_line_numbers_toggle() {
+        let mut app = make_app(&["line1", "line2"]).await;
+        assert!(!app.tab().display.relative_line_numbers);
+        app.run_command("relative-line-numbers").await.unwrap();
+        assert!(app.tab().display.relative_line_numbers);
+        app.run_command("relative-line-numbers").await.unwrap();
+        assert!(!app.tab().display.relative_line_numbers);
     }
 
     #[tokio::test]

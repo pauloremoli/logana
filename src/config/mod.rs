@@ -154,6 +154,9 @@ pub struct Config {
     /// When `Some`, overrides the DB-stored show_line_numbers runtime setting.
     #[serde(default)]
     pub show_line_numbers: Option<bool>,
+    /// When `Some`, overrides the DB-stored relative_line_numbers runtime setting.
+    #[serde(default)]
+    pub relative_line_numbers: Option<bool>,
     /// When `Some`, overrides the DB-stored wrap runtime setting.
     #[serde(default)]
     pub wrap: Option<bool>,

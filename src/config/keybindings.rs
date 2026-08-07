@@ -399,6 +399,10 @@ fn default_toggle_wrap() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('w'), KeyModifiers::NONE)])
 }
 #[inline(always)]
+fn default_toggle_relative_line_numbers() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('r'), KeyModifiers::NONE)])
+}
+#[inline(always)]
 fn default_visual_mode() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('V'), KeyModifiers::NONE)])
 }
@@ -1582,6 +1586,8 @@ pub struct UiKeybindings {
     pub toggle_borders: KeyBindings,
     #[serde(default = "default_toggle_wrap")]
     pub toggle_wrap: KeyBindings,
+    #[serde(default = "default_toggle_relative_line_numbers")]
+    pub toggle_relative_line_numbers: KeyBindings,
     #[serde(default = "default_ui_exit")]
     pub exit: KeyBindings,
 }
@@ -1593,6 +1599,7 @@ impl Default for UiKeybindings {
             toggle_mode_bar: default_toggle_mode_bar(),
             toggle_borders: default_toggle_borders(),
             toggle_wrap: default_toggle_wrap(),
+            toggle_relative_line_numbers: default_toggle_relative_line_numbers(),
             exit: default_ui_exit(),
         }
     }

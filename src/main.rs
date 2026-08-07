@@ -268,6 +268,7 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
     .show_mode_bar(config.show_mode_bar)
     .show_borders(config.show_borders)
     .show_line_numbers(config.show_line_numbers)
+    .relative_line_numbers(config.relative_line_numbers)
     .show_sidebar(config.show_sidebar)
     .wrap(config.wrap)
     .sidebar_side(config.sidebar_side)

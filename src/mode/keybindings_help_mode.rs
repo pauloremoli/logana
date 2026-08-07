@@ -347,6 +347,10 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: ui.toggle_wrap.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Toggle relative line numbers".into(),
+        keys: ui.toggle_relative_line_numbers.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Exit UI mode".into(),
         keys: ui.exit.display(),
     });

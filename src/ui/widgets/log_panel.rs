@@ -22,16 +22,31 @@ use crate::value_colors::{
     collect_value_color_spans,
 };
 
+/// Picks the number shown in the line-number gutter for one row: the
+/// absolute file line number, or — in relative mode, on rows other than the
+/// selected one — the row's distance from the selected row.
+fn line_number_for_row(
+    line_idx: usize,
+    abs_vis_idx: usize,
+    current_scroll: usize,
+    relative: bool,
+) -> usize {
+    if relative && abs_vis_idx != current_scroll {
+        abs_vis_idx.abs_diff(current_scroll)
+    } else {
+        line_idx + 1
+    }
+}
+
 fn prepend_line_number(
     line: Line<'static>,
-    line_idx: usize,
+    line_num: usize,
     line_number_width: usize,
     is_annotated: bool,
     comment_fg: Color,
     line_number_fg: Color,
     render_style: Style,
 ) -> Line<'static> {
-    let line_num = line_idx + 1;
     let line_num_str = format!("{:>width$} ", line_num, width = line_number_width);
     let bar_span = if is_annotated {
         Span::styled("\u{2502}", Style::default().fg(comment_fg))
@@ -516,6 +531,7 @@ pub fn prepare_log_panel(
     tab.scroll.visible_height = visible_height;
 
     let show_line_numbers = tab.display.show_line_numbers;
+    let relative_line_numbers = tab.display.relative_line_numbers;
     let total_lines = tab.file_reader.line_count();
     let line_number_width = if show_line_numbers {
         total_lines.max(1).to_string().len()
@@ -941,9 +957,11 @@ pub fn prepare_log_panel(
 
         if show_line_numbers {
             let is_annotated = vis_comment_map.contains_key(&abs_vis_idx);
+            let line_num =
+                line_number_for_row(line_idx, abs_vis_idx, current_scroll, relative_line_numbers);
             line = prepend_line_number(
                 line,
-                line_idx,
+                line_num,
                 line_number_width,
                 is_annotated,
                 theme.comment_fg,
@@ -1411,7 +1429,7 @@ mod tests {
         let line = Line::from("hello");
         let result = prepend_line_number(
             line,
-            0,
+            1,
             3,
             false,
             Color::Yellow,
@@ -1428,7 +1446,7 @@ mod tests {
         let line = Line::from("annotated");
         let result = prepend_line_number(
             line,
-            4,
+            5,
             2,
             true,
             Color::Yellow,
@@ -1437,6 +1455,38 @@ mod tests {
         );
         let bar_span = &result.spans[0];
         assert_eq!(bar_span.content, "\u{2502}");
+    }
+
+    #[test]
+    fn test_prepend_line_number_width_padding() {
+        let line = Line::from("hello");
+        let result = prepend_line_number(
+            line,
+            3,
+            4,
+            false,
+            Color::Yellow,
+            Color::Gray,
+            Style::default(),
+        );
+        let num_span = &result.spans[1];
+        assert_eq!(num_span.content, "   3 ");
+    }
+
+    #[test]
+    fn test_line_number_for_row_absolute_when_relative_off() {
+        assert_eq!(line_number_for_row(9, 5, 5, false), 10);
+    }
+
+    #[test]
+    fn test_line_number_for_row_relative_distance_on_non_current_row() {
+        // abs_vis_idx=8, current_scroll=5 -> distance 3, not the absolute line_idx+1.
+        assert_eq!(line_number_for_row(99, 8, 5, true), 3);
+    }
+
+    #[test]
+    fn test_line_number_for_row_absolute_on_current_row_even_when_relative() {
+        assert_eq!(line_number_for_row(9, 5, 5, true), 10);
     }
 
     #[test]
@@ -1588,6 +1638,20 @@ mod tests {
         terminal
             .draw(|f| f.render_widget(LogPanel { data: &data }, f.area()))
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_relative_line_numbers_end_to_end() {
+        let mut app = make_app(&["line one", "line two", "line three"]).await;
+        app.tabs[0].display.relative_line_numbers = true;
+        app.tabs[0].scroll.scroll_offset = 2;
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains(" 2 line one"), "{content}");
+        assert!(content.contains(" 1 line two"), "{content}");
+        assert!(content.contains(" 3 line three"), "{content}");
     }
 
     #[tokio::test]

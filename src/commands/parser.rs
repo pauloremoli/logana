@@ -111,6 +111,8 @@ pub enum Commands {
     Wrap,
     /// Toggle line numbers
     LineNumbers,
+    /// Toggle relative line numbers
+    RelativeLineNumbers,
     /// Set the theme
     SetTheme { theme_name: String },
     /// Open a picker to preview and switch the color theme

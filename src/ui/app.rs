@@ -48,6 +48,7 @@ struct StartupOverrides {
     show_mode_bar: Option<bool>,
     show_borders: Option<bool>,
     show_line_numbers: Option<bool>,
+    relative_line_numbers: Option<bool>,
     show_sidebar: Option<bool>,
     wrap: Option<bool>,
     sidebar_side: Option<SidebarSide>,
@@ -61,6 +62,7 @@ struct StartupSettings {
     show_mode_bar: bool,
     show_borders_default: bool,
     show_line_numbers: bool,
+    relative_line_numbers: bool,
     show_sidebar: bool,
     wrap: bool,
     sidebar_side: SidebarSide,
@@ -106,6 +108,13 @@ async fn resolve_startup_settings(
             true,
         )
         .await,
+        relative_line_numbers: resolve_bool_setting(
+            db,
+            SettingsKey::RelativeLineNumbers,
+            ov.relative_line_numbers,
+            false,
+        )
+        .await,
         show_sidebar: resolve_bool_setting(db, SettingsKey::ShowSidebar, ov.show_sidebar, true)
             .await,
         wrap: resolve_bool_setting(db, SettingsKey::Wrap, ov.wrap, false).await,
@@ -119,6 +128,7 @@ pub struct DisplaySettings {
     pub show_mode_bar: bool,
     pub show_borders_default: bool,
     pub show_line_numbers: bool,
+    pub relative_line_numbers: bool,
     pub show_sidebar: bool,
     pub wrap: bool,
     pub sidebar_side: SidebarSide,
@@ -210,6 +220,11 @@ impl AppBuilder {
         self
     }
 
+    pub fn relative_line_numbers(mut self, v: Option<bool>) -> Self {
+        self.overrides.relative_line_numbers = v;
+        self
+    }
+
     pub fn show_sidebar(mut self, v: Option<bool>) -> Self {
         self.overrides.show_sidebar = v;
         self
@@ -234,6 +249,7 @@ impl AppBuilder {
             show_mode_bar,
             show_borders_default,
             show_line_numbers,
+            relative_line_numbers,
             show_sidebar,
             wrap,
             sidebar_side,
@@ -259,6 +275,7 @@ impl AppBuilder {
         tab.display.show_mode_bar = show_mode_bar;
         tab.display.show_borders = show_borders_default;
         tab.display.show_line_numbers = show_line_numbers;
+        tab.display.relative_line_numbers = relative_line_numbers;
         tab.display.show_sidebar = show_sidebar;
         tab.display.wrap = wrap;
         tab.display.sidebar_side = sidebar_side;
@@ -312,6 +329,7 @@ impl AppBuilder {
                 show_mode_bar,
                 show_borders_default,
                 show_line_numbers,
+                relative_line_numbers,
                 show_sidebar,
                 wrap,
                 sidebar_side,
@@ -369,6 +387,7 @@ impl App {
                 show_mode_bar: None,
                 show_borders: None,
                 show_line_numbers: None,
+                relative_line_numbers: None,
                 show_sidebar: None,
                 wrap: None,
                 sidebar_side: None,

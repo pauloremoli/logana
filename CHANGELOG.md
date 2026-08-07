@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Add relative line numbers, toggleable via `:relative-line-numbers` and the UI options menu.
+
 ## [0.7.6] - 2026-08-07
 
 ## [0.7.6] - 2026-08-06

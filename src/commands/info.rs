@@ -119,6 +119,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         examples: &[],
     },
     CommandInfo {
+        name: "relative-line-numbers",
+        usage: "relative-line-numbers",
+        description: "Toggle relative line numbers on/off.",
+        examples: &[],
+    },
+    CommandInfo {
         name: "clear-filters",
         usage: "clear-filters",
         description: "Remove all filter definitions.",
@@ -369,6 +375,7 @@ mod tests {
             "open",
             "close-tab",
             "line-numbers",
+            "relative-line-numbers",
             "export-marked",
             "save-filters",
             "load-filters",

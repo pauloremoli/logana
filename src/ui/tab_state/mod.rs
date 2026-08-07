@@ -54,6 +54,7 @@ pub enum KeyResult {
     ToggleBorders,
     ToggleWrap,
     ToggleLineNumbers,
+    ToggleRelativeLineNumbers,
     AlwaysRestoreFile(Box<crate::db::FileContext>),
     NeverRestoreFile,
     AlwaysRestoreSession(Vec<String>),

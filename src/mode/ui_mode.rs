@@ -14,6 +14,7 @@ pub struct UiMode {
     pub mode_bar: bool,
     pub borders: bool,
     pub wrap: bool,
+    pub relative_line_numbers: bool,
 }
 
 impl UiMode {
@@ -23,6 +24,7 @@ impl UiMode {
             mode_bar: tab.display.show_mode_bar,
             borders: tab.display.show_borders,
             wrap: tab.display.wrap,
+            relative_line_numbers: tab.display.relative_line_numbers,
         }
     }
 }
@@ -55,6 +57,13 @@ impl Mode for UiMode {
 
         if kb.ui.toggle_wrap.matches(key, modifiers) {
             return (Box::new(NormalMode::default()), KeyResult::ToggleWrap);
+        }
+
+        if kb.ui.toggle_relative_line_numbers.matches(key, modifiers) {
+            return (
+                Box::new(NormalMode::default()),
+                KeyResult::ToggleRelativeLineNumbers,
+            );
         }
 
         // Pass global keys (quit, tab switch) through to App.
@@ -96,6 +105,12 @@ impl Mode for UiMode {
             &mut spans,
             kb.ui.toggle_wrap.display(),
             format!("wrap{}", on_off(self.wrap)),
+            theme,
+        );
+        status_entry_dyn(
+            &mut spans,
+            kb.ui.toggle_relative_line_numbers.display(),
+            format!("relative numbers{}", on_off(self.relative_line_numbers)),
             theme,
         );
         status_entry(&mut spans, kb.ui.exit.display(), "back", theme);
@@ -167,9 +182,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_r_returns_toggle_relative_line_numbers() {
+        let mut tab = make_tab().await;
+        let (_, result) = press(&mut tab, KeyCode::Char('r'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::ToggleRelativeLineNumbers));
+    }
+
+    #[tokio::test]
     async fn test_returns_to_normal_mode_after_toggle() {
         let mut tab = make_tab().await;
-        for key in [KeyCode::Char('s'), KeyCode::Char('B'), KeyCode::Char('w')] {
+        for key in [
+            KeyCode::Char('s'),
+            KeyCode::Char('B'),
+            KeyCode::Char('w'),
+            KeyCode::Char('r'),
+        ] {
             let (mode, _) = press(&mut tab, key, KeyModifiers::NONE).await;
             assert!(
                 matches!(mode.render_state(), ModeRenderState::Normal),

@@ -330,6 +330,18 @@ impl App {
             .await;
     }
 
+    async fn handle_toggle_relative_line_numbers(&mut self) {
+        self.display.relative_line_numbers = !self.display.relative_line_numbers;
+        for tab in &mut self.tabs {
+            tab.display.relative_line_numbers = self.display.relative_line_numbers;
+        }
+        self.save_app_bool(
+            SettingsKey::RelativeLineNumbers,
+            self.display.relative_line_numbers,
+        )
+        .await;
+    }
+
     async fn handle_apply_value_colors(&mut self, disabled: std::collections::HashSet<String>) {
         self.theme.value_colors.disabled = disabled;
         for tab in &mut self.tabs {
@@ -598,6 +610,9 @@ impl App {
             KeyResult::ToggleBorders => self.handle_toggle_borders().await,
             KeyResult::ToggleWrap => self.handle_toggle_wrap().await,
             KeyResult::ToggleLineNumbers => self.handle_toggle_line_numbers().await,
+            KeyResult::ToggleRelativeLineNumbers => {
+                self.handle_toggle_relative_line_numbers().await
+            }
             KeyResult::OpenFiles(paths) => self.handle_open_files(paths).await,
             KeyResult::AlwaysRestoreFile(_) => {
                 self.session
