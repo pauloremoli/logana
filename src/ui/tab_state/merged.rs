@@ -169,6 +169,29 @@ fn write_merged_temp_file(
     Ok(temp)
 }
 
+/// A batch starting at `from_line` can land in the middle of a continuation
+/// group — the parent line was indexed by an earlier call (e.g. an earlier
+/// live-poll batch), so this call has no `current_key` of its own to give
+/// its leading continuation lines. Re-derive that parent's sort key by
+/// walking back through `continuation_map` and re-parsing its timestamp, so
+/// those continuation lines still get attached instead of being dropped.
+fn seed_current_key(
+    source: &FileReader,
+    parser: Option<&dyn LogFormatParser>,
+    year_map: Option<&YearMap>,
+    continuation_map: Option<&Vec<usize>>,
+    from_line: usize,
+) -> Option<CanonicalTs> {
+    let cmap = continuation_map?;
+    let parent_idx = *cmap.get(from_line)?;
+    if parent_idx >= from_line {
+        return None;
+    }
+    let ts = parser?.parse_timestamp(source.get_line(parent_idx))?;
+    let year_override = year_map.map(|ym| ym.year_for_line(parent_idx));
+    timestamp_to_canonical(ts, year_override)
+}
+
 fn append_source_entries(
     entries: &mut Vec<MergedEntry>,
     source: &FileReader,
@@ -179,7 +202,7 @@ fn append_source_entries(
     from_line: usize,
 ) {
     let count = source.line_count();
-    let mut current_key: Option<CanonicalTs> = None;
+    let mut current_key = seed_current_key(source, parser, year_map, continuation_map, from_line);
 
     for line_idx in from_line..count {
         let line = source.get_line(line_idx);
@@ -254,5 +277,49 @@ mod tests {
                 last_line = Some(entry.line_idx);
             }
         }
+    }
+
+    /// Simulates a live-tailed source whose continuation lines are read by
+    /// a *later* poll than their parent (very plausible: the parent header
+    /// and its multi-line body can land in different reads). `extend_merged_index`
+    /// must still attach them to their parent's sort key instead of dropping
+    /// them for lack of a `current_key` carried over from the earlier batch.
+    #[test]
+    fn merge_extend_recovers_continuation_lines_split_across_batches() {
+        let parser: Arc<dyn LogFormatParser> = Arc::new(SyslogParser::default());
+
+        let partial_source =
+            FileReader::from_bytes(b"Jan  1 00:00:01 host tag: header one\n".to_vec());
+        let sources = vec![partial_source];
+        let parsers = vec![Some(parser.clone())];
+        let year_maps: Vec<Option<Arc<YearMap>>> = vec![None];
+        let continuation_maps: Vec<Option<Arc<Vec<usize>>>> = vec![None];
+        let mut entries = build_merged_index(&sources, &parsers, &year_maps, &continuation_maps);
+        assert_eq!(entries.len(), 1);
+
+        // The continuation lines have now arrived; the source (and its
+        // continuation map) reflect the full, grown content.
+        let full_source = FileReader::from_bytes(
+            b"Jan  1 00:00:01 host tag: header one\n  continuation 1a\n  continuation 1b\n"
+                .to_vec(),
+        );
+        let cmap = crate::ui::tab_state::build_continuation_map(&full_source, parser.as_ref());
+        assert_eq!(cmap, vec![0, 0, 0]);
+
+        extend_merged_index(
+            &mut entries,
+            &full_source,
+            Some(parser.as_ref()),
+            None,
+            Some(&cmap),
+            0,
+            1,
+        );
+
+        assert_eq!(
+            entries.len(),
+            3,
+            "continuation lines split across batches must not be dropped"
+        );
     }
 }
