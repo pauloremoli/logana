@@ -16,6 +16,7 @@ pub struct CommentPopup<'a> {
     pub cursor_row: usize,
     pub cursor_col: usize,
     pub line_count: usize,
+    pub is_editing: bool,
 }
 
 impl<'a> CommentPopup<'a> {
@@ -106,6 +107,16 @@ impl<'a> Widget for CommentPopup<'a> {
             txt_style,
             br_style,
         );
+        if self.is_editing {
+            popup_entry(
+                &mut footer_spans,
+                self.keybindings.comment.delete.display(),
+                "delete",
+                key_style,
+                txt_style,
+                br_style,
+            );
+        }
         popup_entry(
             &mut footer_spans,
             self.keybindings.comment.cancel.display(),
@@ -151,6 +162,16 @@ mod tests {
         Terminal::new(TestBackend::new(80, 24)).unwrap()
     }
 
+    fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
     #[tokio::test]
     async fn test_comment_popup_basic() {
         let mut app = make_app(&["line one", "line two"]).await;
@@ -168,6 +189,25 @@ mod tests {
         app.tabs[0].interaction.mode = Box::new(mode);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_comment_popup_new_comment_has_no_delete_option() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].interaction.mode = Box::new(CommentMode::new(vec![0]));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert!(!buffer_text(&terminal).contains("delete"));
+    }
+
+    #[tokio::test]
+    async fn test_comment_popup_edit_mode_has_delete_option() {
+        let mut app = make_app(&["line one", "line two"]).await;
+        app.tabs[0].interaction.mode =
+            Box::new(CommentMode::edit(0, "existing".to_string(), vec![0]));
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert!(buffer_text(&terminal).contains("delete"));
     }
 
     #[tokio::test]

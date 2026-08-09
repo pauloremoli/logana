@@ -54,6 +54,7 @@ pub enum ModeRenderState {
         cursor_row: usize,
         cursor_col: usize,
         line_count: usize,
+        is_editing: bool,
     },
     KeybindingsHelp {
         scroll: usize,
@@ -786,7 +787,8 @@ mod tests {
                 lines: vec![],
                 cursor_row: 0,
                 cursor_col: 0,
-                line_count: 0
+                line_count: 0,
+                is_editing: false
             }
             .mode_name(),
             "COMMENT"

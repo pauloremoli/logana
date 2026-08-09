@@ -64,7 +64,7 @@ struct UiRenderState {
     filter_searching: bool,
     visual_anchor: Option<usize>,
     visual_char_selection: Option<(usize, usize)>,
-    comment_popup: Option<(Vec<String>, usize, usize, usize)>,
+    comment_popup: Option<(Vec<String>, usize, usize, usize, bool)>,
     help_state: Option<(usize, String)>,
     select_fields_state: Option<(Vec<(String, bool)>, usize)>,
     merge_select_state: Option<(Vec<(String, bool)>, usize)>,
@@ -316,13 +316,20 @@ impl App {
             }
             _ => None,
         };
-        let comment_popup: Option<(Vec<String>, usize, usize, usize)> = match render_state {
+        let comment_popup: Option<(Vec<String>, usize, usize, usize, bool)> = match render_state {
             ModeRenderState::Comment {
                 lines,
                 cursor_row,
                 cursor_col,
                 line_count,
-            } => Some((lines.clone(), *cursor_row, *cursor_col, *line_count)),
+                is_editing,
+            } => Some((
+                lines.clone(),
+                *cursor_row,
+                *cursor_col,
+                *line_count,
+                *is_editing,
+            )),
             _ => None,
         };
         let help_state: Option<(usize, String)> = match render_state {
@@ -942,7 +949,8 @@ impl App {
             );
         }
 
-        if let Some((lines, cursor_row, cursor_col, line_count)) = &state.comment_popup {
+        if let Some((lines, cursor_row, cursor_col, line_count, is_editing)) = &state.comment_popup
+        {
             let popup = super::widgets::CommentPopup {
                 theme: &self.theme,
                 keybindings: &self.tabs[self.active_tab].interaction.keybindings,
@@ -950,6 +958,7 @@ impl App {
                 cursor_row: *cursor_row,
                 cursor_col: *cursor_col,
                 line_count: *line_count,
+                is_editing: *is_editing,
             };
             if let Some((cx, cy)) = popup.cursor_position(frame_area) {
                 frame.set_cursor_position((cx, cy));

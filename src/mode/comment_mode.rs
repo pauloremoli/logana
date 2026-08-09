@@ -190,6 +190,7 @@ impl Mode for CommentMode {
             cursor_row: self.cursor_row,
             cursor_col: self.cursor_col,
             line_count: self.line_indices.len(),
+            is_editing: self.editing_index.is_some(),
         }
     }
 }
