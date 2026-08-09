@@ -964,36 +964,45 @@ impl TabState {
     }
 
     fn scan_level_forward(&self, from: usize, errors: bool) -> Option<usize> {
-        let parser: Option<&dyn LogFormatParser> = if self.display.raw_mode {
-            None
-        } else {
-            self.display.format.as_deref()
-        };
         let len = self.filter.visible_indices.len();
-        (from.saturating_add(1)..len).find(|&pos| self.pos_matches_level(pos, parser, errors))
+        (from.saturating_add(1)..len).find(|&pos| self.pos_matches_level(pos, errors))
     }
 
     fn scan_level_backward(&self, from: usize, errors: bool) -> Option<usize> {
-        let parser: Option<&dyn LogFormatParser> = if self.display.raw_mode {
-            None
-        } else {
-            self.display.format.as_deref()
-        };
         (0..from)
             .rev()
-            .find(|&pos| self.pos_matches_level(pos, parser, errors))
+            .find(|&pos| self.pos_matches_level(pos, errors))
     }
 
-    fn pos_matches_level(
-        &self,
-        pos: usize,
-        parser: Option<&dyn LogFormatParser>,
-        errors: bool,
-    ) -> bool {
+    /// The parser that applies to file line `line_idx`: for a merged tab,
+    /// the specific source's own detected parser (via
+    /// `MergedEntry::source_idx`) — a merged tab's lines can come from
+    /// sources with different formats, so `display.format` (always `None`
+    /// for a merged tab; see `App::build_merged_tab`) can't answer this.
+    /// For a non-merged tab, just `display.format`. Mirrors the per-source
+    /// resolution `log_panel.rs`'s render loop already uses for coloring —
+    /// level classification here must agree with what's actually rendered.
+    fn parser_for_line(&self, line_idx: usize) -> Option<&dyn LogFormatParser> {
+        if self.display.raw_mode {
+            return None;
+        }
+        if let Some(entries) = self.file_reader.merged_entries()
+            && let Some(merged) = self.merged.as_ref()
+        {
+            return entries
+                .get(line_idx)
+                .and_then(|e| merged.source_parsers.get(e.source_idx))
+                .and_then(|p| p.as_deref());
+        }
+        self.display.format.as_deref()
+    }
+
+    fn pos_matches_level(&self, pos: usize, errors: bool) -> bool {
         use crate::parser::LogLevel;
         let file_idx = self.filter.visible_indices.get(pos);
         let bytes = self.file_reader.get_line(file_idx);
-        let level = parser
+        let level = self
+            .parser_for_line(file_idx)
             .and_then(|p| {
                 p.parse_line(bytes)
                     .and_then(|parts| parts.level)
@@ -4823,6 +4832,76 @@ mod tests {
             crate::parser::CustomParser::from_config(&cfg).unwrap(),
         ));
         assert_eq!(tab.next_error_position(0), None);
+    }
+
+    /// Regression test: `e`/`w` navigation on a merged tab must classify
+    /// each line's level using *that line's own source's* parser, not
+    /// `tab.display.format` — which `App::build_merged_tab` always sets to
+    /// `None`, since a merged tab's lines can come from sources with
+    /// different formats. Before this was fixed, every merged-tab line fell
+    /// back to the generic keyword scan, which doesn't know a custom
+    /// schema's non-standard level values (like "SEV1" here).
+    #[tokio::test]
+    async fn test_next_error_position_on_merged_tab_uses_per_source_parser() {
+        use crate::ingestion::MergedEntry;
+
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "sev".to_string(),
+            description: None,
+            template: Some("{level} {message}".to_string()),
+            pattern: None,
+            fields: Default::default(),
+            levels: crate::config::CustomLevelValues {
+                error: vec!["SEV1".to_string()],
+                warning: vec![],
+            },
+            multiline: false,
+            continuation: None,
+            ..Default::default()
+        };
+        let source_a_parser = Arc::new(crate::parser::CustomParser::from_config(&cfg).unwrap());
+
+        // source_a (the custom "sev" schema, at sources[1] below): line 0 is
+        // a "SEV1" error that only source_a's own parser recognizes as such.
+        let source_a = FileReader::from_bytes(b"SEV1 oops".to_vec());
+        // source_b (at sources[0]): plain, no detected format at all.
+        let source_b = FileReader::from_bytes(b"hello world".to_vec());
+
+        let entries = vec![
+            MergedEntry {
+                sort_key: [0u8; 23],
+                source_idx: 0, // source_b ("hello world")
+                line_idx: 0,
+            },
+            MergedEntry {
+                sort_key: [1u8; 23],
+                source_idx: 1, // source_a ("SEV1 oops")
+                line_idx: 0,
+            },
+        ];
+        let file_reader =
+            FileReader::from_merged(Arc::new(entries), Arc::new(vec![source_b, source_a]));
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut tab = TabState::new(file_reader, log_manager, "merged".to_string());
+        tab.display.format = None;
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0, 1]);
+        tab.merged = Some(MergedState {
+            source_tab_indices: vec![0, 1],
+            source_parsers: vec![None, Some(source_a_parser)],
+            source_labels: vec!["b".to_string(), "a".to_string()],
+            source_line_counts: vec![1, 1],
+            label_col_width: 1,
+            stopped: false,
+            building: None,
+        });
+
+        assert_eq!(
+            tab.next_error_position(0),
+            Some(1),
+            "the SEV1 line (merged position 1, from source_idx 1, the 'sev' \
+             schema) must be found using that source's own parser"
+        );
     }
 
     #[tokio::test]
