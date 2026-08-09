@@ -822,6 +822,53 @@ fn test_build_continuation_map_basic() {
     assert_eq!(cmap[3], 3, "line 3 is its own parent");
 }
 
+/// Regression test: a schema's `continuation.end_pattern` line must be
+/// grouped as part of the block it terminates even when its text also
+/// happens to satisfy the schema's own main header pattern — an easy
+/// authoring overlap, since an end line's wording (e.g. "... ended at: ...")
+/// often closely resembles its header's (e.g. "... started at: ..."). Before
+/// this was fixed, `build_continuation_map` only asked `parse_line`, so an
+/// end line that independently parsed became its own standalone parent
+/// instead of collapsing into the preceding record.
+#[test]
+fn test_build_continuation_map_end_pattern_never_starts_a_new_block() {
+    use logana::config::{ContinuationConfig, CustomSchemaConfig};
+    use logana::parser::CustomParser;
+    use logana::ui::build_continuation_map;
+
+    let cfg = CustomSchemaConfig {
+        schema_url: None,
+        name: "txn-overlap".to_string(),
+        description: None,
+        // Deliberately loose: matches both "started at" and "ended at" lines.
+        template: Some("### Transaction {rest}".to_string()),
+        pattern: None,
+        fields: [("rest".to_string(), "extra".to_string())]
+            .into_iter()
+            .collect(),
+        levels: Default::default(),
+        multiline: false,
+        continuation: Some(ContinuationConfig {
+            end_pattern: Some("### Transaction ended at: {ended_at}".to_string()),
+            fields: Vec::new(),
+        }),
+    };
+    let parser = CustomParser::from_config(&cfg).unwrap();
+
+    let data = b"### Transaction 42 started at: 10:00\n\
+                 Status: PENDING\n\
+                 ### Transaction ended at: 10:05\n\
+                 ### Transaction 43 started at: 10:06\n\
+                 Status: PENDING\n\
+                 ### Transaction ended at: 10:11\n"
+        .to_vec();
+    let reader = FileReader::from_bytes(data);
+
+    let cmap = build_continuation_map(&reader, &parser);
+
+    assert_eq!(cmap, vec![0, 0, 0, 3, 3, 3]);
+}
+
 #[test]
 fn test_apply_continuation_correction_hides_orphaned_continuations() {
     use logana::ui::{VisibleLines, apply_continuation_correction};

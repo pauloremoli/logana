@@ -105,6 +105,7 @@ pub enum SettingsKey {
     ShowSidebar,
     SidebarLeft,
     DefaultFilterFiles,
+    CollapseContinuations,
 }
 
 impl SettingsKey {
@@ -121,6 +122,7 @@ impl SettingsKey {
             Self::ShowSidebar => "show_sidebar",
             Self::SidebarLeft => "sidebar_left",
             Self::DefaultFilterFiles => "default_filter_files",
+            Self::CollapseContinuations => "collapse_continuations",
         }
     }
 }

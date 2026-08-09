@@ -306,6 +306,35 @@ impl Mode for NormalMode {
             return (self, KeyResult::Handled);
         }
 
+        if kb.normal.expand_continuation.matches(key, modifiers) {
+            // Works regardless of `collapse_continuations` — resolves the
+            // cursor's record (whether it's sitting on the parent line or
+            // one of its continuation lines) and expands just that one.
+            if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset)
+                && let Some(cmap) = tab.active_continuation_map()
+                && let Some(&parent) = cmap.get(line_idx)
+                && cmap.get(parent + 1) == Some(&parent)
+            {
+                tab.set_continuation_collapsed(parent, false);
+            }
+            tab.interaction.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
+        if kb.normal.collapse_continuation.matches(key, modifiers) {
+            if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset)
+                && let Some(cmap) = tab.active_continuation_map()
+                && let Some(&parent) = cmap.get(line_idx)
+                && cmap.get(parent + 1) == Some(&parent)
+            {
+                tab.set_continuation_collapsed(parent, true);
+            }
+            tab.interaction.g_key_pressed = false;
+            self.count = None;
+            return (self, KeyResult::Handled);
+        }
+
         if kb.normal.toggle_marks_only.matches(key, modifiers) {
             tab.filter.show_marks_only = !tab.filter.show_marks_only;
             tab.begin_filter_refresh();
@@ -733,6 +762,130 @@ mod tests {
         press(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE).await;
         assert_eq!(tab.scroll.scroll_offset, 0);
         assert!(!tab.interaction.g_key_pressed);
+    }
+
+    /// Same four-line fixture as
+    /// `tab_state::tests::test_continuation_correction_respects_exclude_filter`:
+    /// lines 0-1 parse as structured logs, lines 2-3 are unparseable
+    /// access-log lines that continue parent line 1.
+    const PARSED0: &str = "2024-07-24T10:00:00Z INFO request processed";
+    const PARSED1: &str = "2024-07-24T10:00:01Z INFO another request";
+    const ACCESS2: &str = "2019-01-26 20:29:10.000 5.120.204.67 200 GET / HTTP/1.1";
+    const ACCESS3: &str = "2019-01-26 20:29:11.000 5.120.204.68 200 GET /api HTTP/1.1";
+
+    /// `<` must collapse the entry under the cursor even when
+    /// `:collapse` has never run — the whole point of decoupling `<`/`>`
+    /// from the global `collapse_continuations` default.
+    #[tokio::test]
+    async fn test_collapse_continuation_works_without_collapse_mode_on() {
+        let mut tab = make_tab(&[PARSED0, PARSED1, ACCESS2, ACCESS3]).await;
+        assert!(!tab.display.collapse_continuations);
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+
+        tab.scroll.scroll_offset = 1;
+        press(&mut tab, KeyCode::Char('<'), KeyModifiers::NONE).await;
+        assert!(tab.filter.overridden_groups.contains(&1));
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1],
+            "collapsing the entry under the cursor must hide its continuation lines \
+             even though the global default is still expanded"
+        );
+        assert!(
+            !tab.display.collapse_continuations,
+            "the local override must not flip the global default"
+        );
+    }
+
+    /// `>` on an already-expanded entry (default off, no override) is a
+    /// harmless no-op: nothing to expand.
+    #[tokio::test]
+    async fn test_expand_continuation_noop_when_already_expanded() {
+        let mut tab = make_tab(&[PARSED0, PARSED1, ACCESS2, ACCESS3]).await;
+        tab.scroll.scroll_offset = 1;
+        press(&mut tab, KeyCode::Char('>'), KeyModifiers::NONE).await;
+        assert!(tab.filter.overridden_groups.is_empty());
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_expand_then_collapse_continuation_under_cursor() {
+        let mut tab = make_tab(&[PARSED0, PARSED1, ACCESS2, ACCESS3]).await;
+        {
+            let cmap = tab.continuation_map.as_ref().unwrap();
+            assert_eq!(cmap[2], 1, "access line 2 must map to parsed parent 1");
+            assert_eq!(cmap[3], 1, "access line 3 must map to parsed parent 1");
+        }
+
+        tab.display.collapse_continuations = true;
+        tab.begin_filter_refresh();
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1],
+            "continuation lines 2 and 3 must be hidden once collapsed"
+        );
+
+        // Cursor on line 1, the parent with hidden continuation lines.
+        tab.scroll.scroll_offset = 1;
+        press(&mut tab, KeyCode::Char('>'), KeyModifiers::NONE).await;
+        assert!(tab.filter.overridden_groups.contains(&1));
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "expanding the group under the cursor must reveal its continuation lines"
+        );
+
+        press(&mut tab, KeyCode::Char('<'), KeyModifiers::NONE).await;
+        assert!(!tab.filter.overridden_groups.contains(&1));
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1],
+            "collapsing the group under the cursor must hide its continuation lines again"
+        );
+    }
+
+    /// Pressing `<` while the cursor sits on a *continuation* line (not the
+    /// parent) must still resolve and collapse the whole record, and must
+    /// re-pin the cursor onto the now-visible parent line — otherwise
+    /// `scroll_offset` keeps its old numeric value, which now resolves to
+    /// whatever line slid into that screen position once the continuation
+    /// lines vanished, silently retargeting a follow-up `>` at an unrelated
+    /// entry (from the user's perspective: "stuck collapsed, can't expand").
+    #[tokio::test]
+    async fn test_collapse_continuation_resolves_parent_from_continuation_line() {
+        let mut tab = make_tab(&[PARSED0, PARSED1, ACCESS2, ACCESS3]).await;
+        // Cursor on line 2, a continuation line (visible pos 2 since nothing
+        // is collapsed yet: positions are file lines 0,1,2,3 verbatim).
+        tab.scroll.scroll_offset = 2;
+        press(&mut tab, KeyCode::Char('<'), KeyModifiers::NONE).await;
+        assert!(tab.filter.overridden_groups.contains(&1));
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            tab.filter.visible_indices.get(tab.scroll.scroll_offset),
+            1,
+            "cursor must be re-pinned to the parent line (1), not left at the \
+             stale visible position 2 (which now maps to a different file line)"
+        );
+
+        // A follow-up `>` must still target the entry just collapsed, not
+        // whatever line the stale scroll_offset would have resolved to.
+        press(&mut tab, KeyCode::Char('>'), KeyModifiers::NONE).await;
+        assert!(!tab.filter.overridden_groups.contains(&1));
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "expand must actually restore the continuation lines, proving \
+             the cursor stayed correctly anchored on the collapsed entry"
+        );
     }
 
     #[tokio::test]

@@ -45,6 +45,10 @@ pub struct DisplayConfig {
     pub hidden_fields: HashSet<String>,
     pub field_layout: FieldLayout,
     pub level_colors_disabled: HashSet<String>,
+    /// When true, continuation lines (stack traces, wrapped records) are
+    /// hidden file-wide, leaving only each entry's first line visible.
+    /// Toggled via `:collapse`.
+    pub collapse_continuations: bool,
 }
 
 impl Default for DisplayConfig {
@@ -64,6 +68,7 @@ impl Default for DisplayConfig {
             hidden_fields: HashSet::new(),
             field_layout: FieldLayout::default(),
             level_colors_disabled: HashSet::new(),
+            collapse_continuations: false,
         }
     }
 }

@@ -59,6 +59,67 @@ fn prepend_line_number(
     Line::from(all_spans).style(render_style)
 }
 
+/// Prepends a 1-char collapse indicator: `+` for a parent line whose
+/// continuation lines are currently hidden (whether because
+/// `collapse_continuations` is on or because `<` individually collapsed
+/// just this entry), `-` for a parent individually flipped away from the
+/// default via `<`/`>` but currently expanded, or a blank space otherwise.
+/// Independent of `prepend_line_number`'s comment-bar slot so a line that's
+/// both commented and collapsed can show both indicators.
+fn prepend_collapse_indicator(
+    line: Line<'static>,
+    marker: Option<char>,
+    fg: Color,
+    render_style: Style,
+) -> Line<'static> {
+    let marker_span = match marker {
+        Some(c) => Span::styled(c.to_string(), Style::default().fg(fg)),
+        None => Span::raw(" "),
+    };
+    let mut all_spans = vec![marker_span];
+    all_spans.extend(line.spans);
+    Line::from(all_spans).style(render_style)
+}
+
+/// Whether — and how — to render the collapse indicator for file line
+/// `line_idx`. `<`/`>` work regardless of `collapse_continuations`'s value
+/// (see `TabState::set_continuation_collapsed`), so this always reflects
+/// the entry's actual effective state — `default_collapsed XOR
+/// overridden_groups.contains(line_idx)` — rather than gating on the
+/// global default: `Some('+')` when currently collapsed, `Some('-')` when
+/// individually flipped away from the default but currently expanded,
+/// `None` when it's not a collapsible parent line or is expanded with no
+/// override (the common, unaffected case — kept marker-free to avoid
+/// clutter on ordinary multiline entries).
+///
+/// Uses raw `cmap` adjacency rather than the post-filter visible set, so a
+/// marker can show even if every continuation line of that entry happens to
+/// be excluded by an unrelated active filter — a known, accepted
+/// simplification that mirrors how the comment-bar indicator already
+/// ignores filter state.
+fn collapse_indicator_for_line(
+    default_collapsed: bool,
+    cmap: Option<&[usize]>,
+    overridden_groups: &HashSet<usize>,
+    line_idx: usize,
+) -> Option<char> {
+    let cmap = cmap?;
+    if cmap.get(line_idx) != Some(&line_idx) {
+        return None; // not a parent line
+    }
+    if cmap.get(line_idx + 1) != Some(&line_idx) {
+        return None; // no continuation lines
+    }
+    let overridden = overridden_groups.contains(&line_idx);
+    if default_collapsed ^ overridden {
+        Some('+')
+    } else if overridden {
+        Some('-')
+    } else {
+        None
+    }
+}
+
 /// Prepends a merged tab's per-line source label — purely a visual gutter
 /// decoration, exactly like `prepend_line_number`. Applied *after* all
 /// content-based highlighting (char selection, search, filters) so the
@@ -532,6 +593,9 @@ pub fn prepare_log_panel(
 
     let show_line_numbers = tab.display.show_line_numbers;
     let relative_line_numbers = tab.display.relative_line_numbers;
+    let collapse_continuations = tab.display.collapse_continuations;
+    let cmap = tab.active_continuation_map().cloned();
+    let overridden_groups = tab.filter.overridden_groups.clone();
     let total_lines = tab.file_reader.line_count();
     let line_number_width = if show_line_numbers {
         total_lines.max(1).to_string().len()
@@ -539,7 +603,7 @@ pub fn prepare_log_panel(
         0
     };
     let ln_prefix_width = if show_line_numbers {
-        line_number_width + 2
+        line_number_width + 3
     } else {
         0
     };
@@ -968,6 +1032,14 @@ pub fn prepare_log_panel(
                 theme.line_number_fg,
                 render_style,
             );
+
+            let marker = collapse_indicator_for_line(
+                collapse_continuations,
+                cmap.as_deref().map(Vec::as_slice),
+                &overridden_groups,
+                line_idx,
+            );
+            line = prepend_collapse_indicator(line, marker, theme.line_number_fg, render_style);
         }
 
         if let Some(&cmt_idx) = banner_at.get(&abs_vis_idx) {
@@ -1147,6 +1219,74 @@ mod tests {
 
     fn make_terminal() -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    #[test]
+    fn test_collapse_indicator_none_when_default_expanded_no_override() {
+        let cmap = vec![0usize, 0, 0];
+        assert_eq!(
+            collapse_indicator_for_line(false, Some(&cmap), &HashSet::new(), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn test_collapse_indicator_plus_on_collapsed_parent() {
+        let cmap = vec![0usize, 0, 0];
+        assert_eq!(
+            collapse_indicator_for_line(true, Some(&cmap), &HashSet::new(), 0),
+            Some('+')
+        );
+    }
+
+    #[test]
+    fn test_collapse_indicator_minus_on_expanded_parent() {
+        let cmap = vec![0usize, 0, 0];
+        let overridden: HashSet<usize> = [0].into_iter().collect();
+        assert_eq!(
+            collapse_indicator_for_line(true, Some(&cmap), &overridden, 0),
+            Some('-')
+        );
+    }
+
+    /// A parent line individually collapsed via `<` while the global
+    /// default is expanded must still show `+`, regardless of
+    /// `collapse_continuations` — the indicator must reflect the entry's
+    /// real state, not gate on the global mode.
+    #[test]
+    fn test_collapse_indicator_plus_on_overridden_parent_when_default_expanded() {
+        let cmap = vec![0usize, 0, 0];
+        let overridden: HashSet<usize> = [0].into_iter().collect();
+        assert_eq!(
+            collapse_indicator_for_line(false, Some(&cmap), &overridden, 0),
+            Some('+')
+        );
+    }
+
+    #[test]
+    fn test_collapse_indicator_none_on_continuation_line() {
+        let cmap = vec![0usize, 0, 0];
+        assert_eq!(
+            collapse_indicator_for_line(true, Some(&cmap), &HashSet::new(), 1),
+            None
+        );
+    }
+
+    #[test]
+    fn test_collapse_indicator_none_on_parent_without_continuations() {
+        let cmap = vec![0usize, 1, 2];
+        assert_eq!(
+            collapse_indicator_for_line(true, Some(&cmap), &HashSet::new(), 1),
+            None
+        );
+    }
+
+    #[test]
+    fn test_collapse_indicator_none_when_no_continuation_map() {
+        assert_eq!(
+            collapse_indicator_for_line(true, None, &HashSet::new(), 0),
+            None
+        );
     }
 
     /// Builds an `App` whose single tab is a merged view of `sources`
@@ -1652,6 +1792,221 @@ mod tests {
         assert!(content.contains(" 2 line one"), "{content}");
         assert!(content.contains(" 1 line two"), "{content}");
         assert!(content.contains(" 3 line three"), "{content}");
+    }
+
+    /// End-to-end regression test for a plain, normally-opened file (no
+    /// custom schema, no streaming): after `:collapse`, the parent line's
+    /// gutter must show a literal `+` character right before its line
+    /// number, and the hidden continuation lines must not appear at all.
+    #[tokio::test]
+    async fn test_collapse_indicator_renders_end_to_end_on_plain_file() {
+        let mut app = make_app(&[
+            "2024-07-24T10:00:00Z INFO request processed",
+            "2024-07-24T10:00:01Z ERROR something failed",
+            "    at module.function (file.rs:42)",
+            "    at caller (file.rs:10)",
+            "2024-07-24T10:00:02Z INFO another request",
+        ])
+        .await;
+        assert!(
+            app.tabs[0].continuation_map.is_some(),
+            "format must be detected for this test to exercise the collapse indicator"
+        );
+
+        app.run_command("collapse").await.unwrap();
+        assert_eq!(
+            app.tab().filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1, 4],
+            "lines 2 and 3 (continuations of line 1) must be hidden"
+        );
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+
+        assert!(
+            content.contains("+ 2"),
+            "expected a '+' immediately before line number 2's gutter, got: {content}"
+        );
+        assert!(
+            !content.contains("module.function"),
+            "the collapsed continuation line must not be rendered at all: {content}"
+        );
+    }
+
+    /// Same end-to-end check as above, but via the normal-mode `<` key
+    /// (per-entry collapse) instead of `:collapse` — must work without the
+    /// global collapse mode ever being turned on.
+    #[tokio::test]
+    async fn test_collapse_indicator_renders_end_to_end_via_normal_mode_key() {
+        use crate::mode::app_mode::Mode;
+        use crate::mode::normal_mode::NormalMode;
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let mut app = make_app(&[
+            "2024-07-24T10:00:00Z INFO request processed",
+            "2024-07-24T10:00:01Z ERROR something failed",
+            "    at module.function (file.rs:42)",
+            "    at caller (file.rs:10)",
+            "2024-07-24T10:00:02Z INFO another request",
+        ])
+        .await;
+        assert!(app.tabs[0].continuation_map.is_some());
+        app.tabs[0].scroll.scroll_offset = 1; // cursor on the ERROR entry
+        assert!(!app.tabs[0].display.collapse_continuations);
+
+        Box::new(NormalMode::default())
+            .handle_key(&mut app.tabs[0], KeyCode::Char('<'), KeyModifiers::NONE)
+            .await;
+
+        assert_eq!(
+            app.tab().filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1, 4]
+        );
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+
+        assert!(
+            content.contains("+ 2"),
+            "expected a '+' immediately before line number 2's gutter, got: {content}"
+        );
+    }
+
+    /// A nested, brace-structured multiline schema (mirroring a real HLAPI
+    /// transaction log — a header, deeply nested `object { ... }` blocks,
+    /// and a distinctly-worded `end_pattern` footer) combined with two
+    /// active include filters, matching a real reported "+ doesn't show"
+    /// setup. Confirms the gutter marker survives that combination.
+    #[tokio::test]
+    async fn test_collapse_indicator_renders_with_nested_schema_and_active_filters() {
+        let cfg = crate::config::CustomSchemaConfig {
+            name: "txn".to_string(),
+            template: Some("### Transaction {id} started at: {ts}".to_string()),
+            fields: [("id".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            continuation: Some(crate::config::ContinuationConfig {
+                end_pattern: Some("### Transaction ended at: {ended_at}".to_string()),
+                fields: vec![crate::config::ContinuationFieldSpec {
+                    template: Some("Status: {status}".to_string()),
+                    fields: Default::default(),
+                    pattern: None,
+                    json: false,
+                }],
+            }),
+            ..Default::default()
+        };
+        let parser = crate::parser::CustomParser::from_config(&cfg).unwrap();
+
+        let mut app = make_app(&[
+            "### Transaction 148 started at: 1980-01-06 00:00:22.234",
+            "Status: FAILED",
+            "object {",
+            "  class_name: \"Widget\"",
+            "  nested {",
+            "    array: \"a\"",
+            "  }",
+            "}",
+            "### Transaction ended at: 1980-01-06 00:00:22.297",
+            "### Transaction 147 started at: 1980-01-06 00:00:22.234",
+            "Status: SUCCESS",
+            "object {",
+            "  class_name: \"Widget\"",
+            "}",
+            "### Transaction ended at: 1980-01-06 00:00:22.297",
+        ])
+        .await;
+        app.tabs[0].apply_format(Some(Arc::new(parser)));
+        assert_eq!(
+            app.tabs[0]
+                .continuation_map
+                .as_deref()
+                .map(|c| c.as_slice()),
+            Some([0usize, 0, 0, 0, 0, 0, 0, 0, 0, 9, 9, 9, 9, 9, 9].as_slice())
+        );
+
+        app.run_command("filter SUCCESS").await.unwrap();
+        app.run_command("filter FAILED").await.unwrap();
+        while app.tab().filter.handle.is_some() {
+            app.advance_filter_computation();
+            tokio::task::yield_now().await;
+        }
+        app.run_command("collapse").await.unwrap();
+        assert_eq!(
+            app.tab().filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 9]
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("+  1 ###"),
+            "expected a '+' immediately before line number 1's gutter, got: {content}"
+        );
+        assert!(
+            content.contains("+ 10 ###"),
+            "expected a '+' immediately before line number 10's gutter, got: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collapse_indicator_renders_with_wrap_enabled() {
+        let mut app = make_app(&[
+            "2024-07-24T10:00:00Z INFO request processed",
+            "2024-07-24T10:00:01Z ERROR something failed",
+            "    at module.function (file.rs:42)",
+            "    at caller (file.rs:10)",
+            "2024-07-24T10:00:02Z INFO another request",
+        ])
+        .await;
+        app.tabs[0].display.wrap = true;
+        app.run_command("collapse").await.unwrap();
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("+ 2"),
+            "expected a '+' immediately before line number 2's gutter with wrap on, got: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collapse_indicator_renders_with_active_filter() {
+        let mut app = make_app(&[
+            "2024-07-24T10:00:00Z INFO request processed",
+            "2024-07-24T10:00:01Z ERROR something failed",
+            "    at module.function (file.rs:42)",
+            "    at caller (file.rs:10)",
+            "2024-07-24T10:00:02Z INFO another request",
+        ])
+        .await;
+        app.run_command("filter 2024").await.unwrap();
+        for tab in &mut app.tabs {
+            if let Some(mut h) = tab.filter.handle.take() {
+                while let Some(chunk) = h.result_rx.recv().await {
+                    if chunk.is_last {
+                        break;
+                    }
+                }
+            }
+        }
+        app.run_command("collapse").await.unwrap();
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let content: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("+ 2"),
+            "expected a '+' immediately before line number 2's gutter with an \
+             active filter, got: {content}"
+        );
     }
 
     #[tokio::test]

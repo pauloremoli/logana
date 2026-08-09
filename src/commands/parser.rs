@@ -113,6 +113,10 @@ pub enum Commands {
     LineNumbers,
     /// Toggle relative line numbers
     RelativeLineNumbers,
+    /// Collapse continuation lines to their entry's first line
+    Collapse,
+    /// Expand continuation lines previously hidden by `collapse`
+    Expand,
     /// Set the theme
     SetTheme { theme_name: String },
     /// Open a picker to preview and switch the color theme

@@ -375,6 +375,14 @@ fn default_go_to_bottom() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('G'), KeyModifiers::NONE)])
 }
 #[inline(always)]
+fn default_expand_continuation() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('>'), KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_collapse_continuation() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('<'), KeyModifiers::NONE)])
+}
+#[inline(always)]
 fn default_mark_line() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('m'), KeyModifiers::NONE)])
 }
@@ -536,6 +544,10 @@ pub struct NormalKeybindings {
     pub go_to_bottom: KeyBindings,
     #[serde(default = "default_mark_line")]
     pub mark_line: KeyBindings,
+    #[serde(default = "default_expand_continuation")]
+    pub expand_continuation: KeyBindings,
+    #[serde(default = "default_collapse_continuation")]
+    pub collapse_continuation: KeyBindings,
     #[serde(default = "default_search_forward")]
     pub search_forward: KeyBindings,
     #[serde(default = "default_search_backward")]
@@ -598,6 +610,8 @@ impl Default for NormalKeybindings {
             go_to_top_chord: default_go_to_top_chord(),
             go_to_bottom: default_go_to_bottom(),
             mark_line: default_mark_line(),
+            expand_continuation: default_expand_continuation(),
+            collapse_continuation: default_collapse_continuation(),
             search_forward: default_search_forward(),
             search_backward: default_search_backward(),
             next_match: default_next_match(),
@@ -1703,6 +1717,14 @@ impl Keybindings {
             ("normal.go_to_top_chord", &self.normal.go_to_top_chord),
             ("normal.go_to_bottom", &self.normal.go_to_bottom),
             ("normal.mark_line", &self.normal.mark_line),
+            (
+                "normal.expand_continuation",
+                &self.normal.expand_continuation,
+            ),
+            (
+                "normal.collapse_continuation",
+                &self.normal.collapse_continuation,
+            ),
             ("normal.toggle_marks_only", &self.normal.toggle_marks_only),
             ("normal.yank_line", &self.normal.yank_line),
             ("normal.yank_marked", &self.normal.yank_marked),

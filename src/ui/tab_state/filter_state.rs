@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use ratatui::style::Style;
@@ -38,6 +39,19 @@ pub struct FilterState {
     pub saved_view: Option<FilterViewSnapshot>,
     pub cached_scan: Option<CachedScanResult>,
     pub handle: Option<FilterHandle>,
+    /// Parent line indices whose continuation-line visibility has been
+    /// individually flipped away from `DisplayConfig::collapse_continuations`
+    /// (the default) via the normal-mode `<` and `>` keys. A parent's
+    /// *effective* collapsed state is `collapse_continuations XOR
+    /// overridden_groups.contains(parent)`, so `<`/`>` behave the same
+    /// whether the global default is expanded or collapsed.
+    pub overridden_groups: HashSet<usize>,
+    /// Snapshot of `visible_indices` from before the collapse mask was
+    /// applied. `None` when nothing is currently collapsed (the common
+    /// case), letting filter refreshes skip collapse work entirely. Set
+    /// lazily by `<`/`>` even when `collapse_continuations` is off, so a
+    /// single overridden group still has a baseline to mask against.
+    pub pre_collapse_visible: Option<VisibleLines>,
 }
 
 pub type FilterViewSnapshot = (
@@ -68,6 +82,8 @@ impl Default for FilterState {
             saved_view: None,
             cached_scan: None,
             handle: None,
+            overridden_groups: HashSet::new(),
+            pre_collapse_visible: None,
         }
     }
 }

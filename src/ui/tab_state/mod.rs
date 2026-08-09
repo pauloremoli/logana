@@ -519,7 +519,17 @@ pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser)
 
             for i in start..end {
                 let line = reader.get_line(i);
-                if !line.is_empty() && parser.parse_line(line).is_some() {
+                // A line matching the schema's declared `continuation.end_pattern`
+                // is, by definition, the terminator of the block already open —
+                // it must never start a new one, even if it also happens to
+                // satisfy the schema's main `parse_line` pattern (an easy
+                // authoring overlap: an end line's text often closely
+                // resembles the header it's ending, e.g. "... ended at: ..."
+                // vs "... started at: ...").
+                if !line.is_empty()
+                    && !parser.is_continuation_end(line)
+                    && parser.parse_line(line).is_some()
+                {
                     last_parent = i;
                 }
                 local.push(last_parent);
@@ -705,6 +715,35 @@ pub fn apply_continuation_correction(
     new_indices.sort_unstable();
 
     *indices = new_indices;
+}
+
+/// Removes continuation lines whose parent is effectively collapsed from
+/// `visible`. A parent `p`'s effective state is `default_collapsed XOR
+/// overridden_groups.contains(p)`, so `overridden_groups` acts as a
+/// per-parent override in either direction regardless of the global
+/// default — this is what lets the normal-mode `<`/`>` keys collapse or
+/// expand a single entry independent of whether `:collapse` has ever run.
+/// Parent lines (`cmap[i] == i`) are always kept, as are indices beyond
+/// `cmap`'s range (file grew after the map was built). Must run after
+/// `apply_continuation_correction` — it further restricts an
+/// already-correct filtered view, it doesn't re-derive filter matches.
+///
+/// Unlike `apply_continuation_correction`, this also applies to
+/// `VisibleLines::All`: collapsing continuation lines on an otherwise
+/// unfiltered file is the primary use case for `:collapse`.
+pub fn apply_collapse_correction(
+    visible: &mut VisibleLines,
+    cmap: &[usize],
+    default_collapsed: bool,
+    overridden_groups: &HashSet<usize>,
+) {
+    visible.retain(|idx| {
+        if idx >= cmap.len() || cmap[idx] == idx {
+            return true;
+        }
+        let parent = cmap[idx];
+        !(default_collapsed ^ overridden_groups.contains(&parent))
+    });
 }
 
 pub struct TabState {
@@ -989,6 +1028,7 @@ impl TabState {
             self.filter.date_styles = Vec::new();
             self.filter.field_styles = Vec::new();
             self.filter.match_counts = Vec::new();
+            self.sync_collapse_mask();
             self.restore_scroll_to_line(current_line);
             return;
         }
@@ -1225,6 +1265,7 @@ impl TabState {
             }
         }
 
+        self.sync_collapse_mask();
         self.restore_scroll_to_line(current_line);
     }
 
@@ -1509,6 +1550,7 @@ impl TabState {
             self.filter.date_styles = Vec::new();
             self.filter.field_styles = Vec::new();
             self.filter.match_counts = Vec::new();
+            self.sync_collapse_mask();
             self.restore_scroll_to_line(current_line);
             return;
         }
@@ -1534,6 +1576,7 @@ impl TabState {
             self.filter.visible_indices = VisibleLines::Filtered(indices);
             self.rebuild_filter_manager_cache();
             self.filter.match_counts = Vec::new();
+            self.sync_collapse_mask();
             self.restore_scroll_to_line(current_line);
             return;
         }
@@ -1555,6 +1598,7 @@ impl TabState {
             self.filter.text_styles = saved_styles;
             self.filter.date_styles = saved_date_styles;
             self.filter.field_styles = saved_field_styles;
+            self.sync_collapse_mask();
             self.restore_scroll_to_line(current_line);
             return;
         }
@@ -1570,6 +1614,7 @@ impl TabState {
             self.filter.date_styles = Vec::new();
             self.filter.field_styles = Vec::new();
             self.filter.match_counts = Vec::new();
+            self.sync_collapse_mask();
             self.restore_scroll_to_line(current_line);
             return;
         }
@@ -1908,6 +1953,27 @@ impl TabState {
             return;
         }
 
+        // Captured against the current (possibly masked) `visible_indices`,
+        // before it's replaced by the pristine baseline below — restored at
+        // every exit point so the cursor doesn't drift onto an unrelated
+        // line once the mask is recomputed (see `set_continuation_collapsed`
+        // for the same concern with `<`/`>`).
+        let current_line = self
+            .filter
+            .visible_indices
+            .get_opt(self.scroll.scroll_offset);
+
+        // If a collapse mask is currently applied, work from the pristine
+        // (unmasked) baseline instead of the partially-hidden current view —
+        // otherwise the new lines below would extend a mix of "old lines
+        // already masked" and "new lines never masked", and snapshotting
+        // that mix as the new baseline would corrupt future `:expand`/`<`/`>`
+        // calls. `sync_collapse_mask` at every exit point re-derives the
+        // mask (old + new lines alike) from this restored baseline.
+        if let Some(baseline) = self.filter.pre_collapse_visible.take() {
+            self.filter.visible_indices = baseline;
+        }
+
         // Extend the continuation map for the newly-appended lines.
         if let (Some(cmap), Some(parser)) = (
             self.continuation_map.as_mut(),
@@ -1920,7 +1986,13 @@ impl TabState {
             let mut last_parent = map.last().copied().unwrap_or(0);
             for i in old_line_count..new_count {
                 let line = self.file_reader.get_line(i);
-                if !line.is_empty() && parser.parse_line(line).is_some() {
+                // See `build_continuation_map`: an `end_pattern` match must
+                // never start a new block, even if it also happens to
+                // satisfy the schema's main `parse_line` pattern.
+                if !line.is_empty()
+                    && !parser.is_continuation_end(line)
+                    && parser.parse_line(line).is_some()
+                {
                     last_parent = i;
                 }
                 map.push(last_parent);
@@ -1956,6 +2028,8 @@ impl TabState {
                     }
                 }
             }
+            self.sync_collapse_mask();
+            self.restore_scroll_to_line(current_line);
             return;
         }
 
@@ -1966,6 +2040,8 @@ impl TabState {
                     self.filter.visible_indices = VisibleLines::All(new_count);
                 }
             }
+            self.sync_collapse_mask();
+            self.restore_scroll_to_line(current_line);
             return;
         }
 
@@ -1973,6 +2049,8 @@ impl TabState {
             let mut indices = self.mark_manager.get_indices();
             indices.retain(|&i| i < new_count);
             self.filter.visible_indices = VisibleLines::Filtered(indices);
+            self.sync_collapse_mask();
+            self.restore_scroll_to_line(current_line);
             return;
         }
 
@@ -2093,6 +2171,8 @@ impl TabState {
                 v.extend(new_visible);
             }
         }
+        self.sync_collapse_mask();
+        self.restore_scroll_to_line(current_line);
     }
 
     /// Jump to a 1-based line number, or the closest visible line if the
@@ -2365,6 +2445,89 @@ impl TabState {
         } else {
             self.continuation_map.as_ref()
         }
+    }
+
+    /// Snapshots the just-recomputed `visible_indices` into
+    /// `pre_collapse_visible` and applies the collapse mask on top, when
+    /// there's anything to collapse (`collapse_continuations` is on, or an
+    /// individual `<` override is active despite the default being
+    /// expanded). Otherwise clears `pre_collapse_visible` so later filter
+    /// refreshes can skip collapse work entirely — cheap, since
+    /// `visible_indices` is already correct in that case. Must run last in
+    /// every place that (re)computes `visible_indices` fresh from the
+    /// filter pipeline (both `refresh_visible_inner`'s exit points and the
+    /// async `advance_filter_computation` path), so `:collapse`/`:expand`
+    /// and `<`/`>` always have an accurate uncollapsed baseline to work
+    /// from.
+    pub(crate) fn sync_collapse_mask(&mut self) {
+        if !self.display.collapse_continuations && self.filter.overridden_groups.is_empty() {
+            self.filter.pre_collapse_visible = None;
+            return;
+        }
+        self.filter.pre_collapse_visible = Some(self.filter.visible_indices.clone());
+        if let Some(cmap) = self.active_continuation_map().cloned() {
+            apply_collapse_correction(
+                &mut self.filter.visible_indices,
+                &cmap,
+                self.display.collapse_continuations,
+                &self.filter.overridden_groups,
+            );
+        }
+    }
+
+    /// Reapplies the collapse mask from `pre_collapse_visible` after
+    /// `overridden_groups` changes (`>`/`<`), without re-running the filter
+    /// pipeline. No-op if no baseline exists yet (`pre_collapse_visible` is
+    /// `None`) — callers that might be establishing the first override
+    /// must set it themselves first (see `set_continuation_collapsed`).
+    pub(crate) fn recompute_collapse_mask(&mut self) {
+        let Some(base) = self.filter.pre_collapse_visible.clone() else {
+            return;
+        };
+        self.filter.visible_indices = base;
+        if let Some(cmap) = self.active_continuation_map().cloned() {
+            apply_collapse_correction(
+                &mut self.filter.visible_indices,
+                &cmap,
+                self.display.collapse_continuations,
+                &self.filter.overridden_groups,
+            );
+        }
+    }
+
+    /// Sets whether `parent` (a line with at least one continuation line)
+    /// is collapsed, independent of the global `collapse_continuations`
+    /// default — the entry point for the normal-mode `<`/`>` keys, which
+    /// must work whether or not `:collapse` has ever run. Lazily
+    /// establishes `pre_collapse_visible` the first time an override is
+    /// introduced while nothing was collapsed before (at that point
+    /// `visible_indices` is still the pristine baseline, per
+    /// `sync_collapse_mask`'s early-return case).
+    ///
+    /// Re-pins the cursor to `parent` afterward (parent lines are always
+    /// visible, per `apply_collapse_correction`) — without this, collapsing
+    /// an entry the cursor was sitting inside (e.g. on one of its now-hidden
+    /// continuation lines) would leave `scroll_offset` resolving to
+    /// whatever line slides into that screen position once the file
+    /// shrinks, silently retargeting the *next* `<`/`>` press at a
+    /// different, unrelated entry — from the user's perspective, `>` then
+    /// does nothing and the view looks permanently stuck collapsed.
+    pub(crate) fn set_continuation_collapsed(&mut self, parent: usize, collapsed: bool) {
+        if self.filter.pre_collapse_visible.is_none() {
+            self.filter.pre_collapse_visible = Some(self.filter.visible_indices.clone());
+        }
+        if self.display.collapse_continuations != collapsed {
+            self.filter.overridden_groups.insert(parent);
+        } else {
+            self.filter.overridden_groups.remove(&parent);
+        }
+        self.recompute_collapse_mask();
+        if !self.display.collapse_continuations && self.filter.overridden_groups.is_empty() {
+            // Back to "nothing collapsed" — drop the baseline to regain the
+            // cheap no-op path on the next filter refresh.
+            self.filter.pre_collapse_visible = None;
+        }
+        self.restore_scroll_to_line(Some(parent));
     }
 
     pub fn to_file_context(&self) -> Option<FileContext> {
@@ -5266,6 +5429,80 @@ mod tests {
         assert_eq!(result, vec![0, 1, 2, 3]);
     }
 
+    /// With `default_collapsed` on and no overrides, `apply_collapse_correction`
+    /// hides every continuation line and keeps every parent line.
+    #[test]
+    fn test_collapse_correction_hides_all_continuations_by_default() {
+        // Lines 0,3 are parents; 1,2 continue 0; 4 continues 3.
+        let cmap = vec![0usize, 0, 0, 3, 3];
+        let mut visible = VisibleLines::Filtered(vec![0, 1, 2, 3, 4]);
+        apply_collapse_correction(&mut visible, &cmap, true, &HashSet::new());
+        let result: Vec<usize> = visible.iter().collect();
+        assert_eq!(result, vec![0, 3]);
+    }
+
+    /// A parent line present in `overridden_groups` keeps its continuation
+    /// lines visible when `default_collapsed` is on; other groups stay
+    /// collapsed.
+    #[test]
+    fn test_collapse_correction_keeps_overridden_group_visible_when_default_collapsed() {
+        let cmap = vec![0usize, 0, 0, 3, 3];
+        let mut visible = VisibleLines::Filtered(vec![0, 1, 2, 3, 4]);
+        let overridden: HashSet<usize> = [0].into_iter().collect();
+        apply_collapse_correction(&mut visible, &cmap, true, &overridden);
+        let result: Vec<usize> = visible.iter().collect();
+        assert_eq!(result, vec![0, 1, 2, 3]);
+    }
+
+    /// A parent line present in `overridden_groups` hides its continuation
+    /// lines even when `default_collapsed` is off — this is what lets `<`
+    /// collapse a single entry without needing `:collapse` first.
+    #[test]
+    fn test_collapse_correction_overridden_group_collapses_when_default_expanded() {
+        let cmap = vec![0usize, 0, 0, 3, 3];
+        let mut visible = VisibleLines::Filtered(vec![0, 1, 2, 3, 4]);
+        let overridden: HashSet<usize> = [0].into_iter().collect();
+        apply_collapse_correction(&mut visible, &cmap, false, &overridden);
+        let result: Vec<usize> = visible.iter().collect();
+        assert_eq!(result, vec![0, 3, 4]);
+    }
+
+    /// Indices beyond the continuation map (file grew after the map was
+    /// built) are preserved unchanged, same convention as
+    /// `apply_continuation_correction`.
+    #[test]
+    fn test_collapse_correction_indices_beyond_cmap() {
+        let cmap = vec![0usize, 1, 2];
+        let mut visible = VisibleLines::Filtered(vec![0, 1, 2, 3]);
+        apply_collapse_correction(&mut visible, &cmap, true, &HashSet::new());
+        let result: Vec<usize> = visible.iter().collect();
+        assert_eq!(result, vec![0, 1, 2, 3]);
+    }
+
+    /// Unlike `apply_continuation_correction` (a no-op with no active
+    /// filters), collapse must still hide continuation lines when every
+    /// line is otherwise visible (`VisibleLines::All`) — that's the primary
+    /// use case for `:collapse` on an unfiltered file.
+    #[test]
+    fn test_collapse_correction_applies_to_all_visible() {
+        let cmap = vec![0usize, 0, 0];
+        let mut visible = VisibleLines::All(3);
+        apply_collapse_correction(&mut visible, &cmap, true, &HashSet::new());
+        let result: Vec<usize> = visible.iter().collect();
+        assert_eq!(result, vec![0]);
+    }
+
+    /// With `default_collapsed` off and no overrides, nothing is hidden —
+    /// confirms the XOR formula's identity case.
+    #[test]
+    fn test_collapse_correction_noop_when_default_expanded_no_overrides() {
+        let cmap = vec![0usize, 0, 0];
+        let mut visible = VisibleLines::All(3);
+        apply_collapse_correction(&mut visible, &cmap, false, &HashSet::new());
+        let result: Vec<usize> = visible.iter().collect();
+        assert_eq!(result, vec![0, 1, 2]);
+    }
+
     #[tokio::test]
     async fn test_filter_match_counts_updated_via_advance() {
         let mut tab = make_tab(&["ERROR line", "INFO line", "ERROR again"]).await;
@@ -5940,6 +6177,44 @@ mod tests {
         assert_eq!(tab.file_reader.line_count(), 4);
         tab.filter_new_lines(old);
         assert_eq!(tab.filter.visible_indices, VisibleLines::All(4));
+    }
+
+    /// Regression test: lines appended to a live/watched file while
+    /// collapse mode is on must be masked too, not just whatever was in the
+    /// file when `:collapse` ran — otherwise every newly streamed-in entry
+    /// would appear permanently expanded regardless of the collapse state.
+    #[tokio::test]
+    async fn test_filter_new_lines_applies_collapse_mask_to_newly_appended_group() {
+        let parsed0 = "2024-07-24T10:00:00Z INFO request processed";
+        let access1 = "2019-01-26 20:29:10.000 5.120.204.67 200 GET / HTTP/1.1";
+        let data = format!("{parsed0}\n{access1}\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        let mut tab = TabState::new(file_reader, log_manager, "test".to_string());
+        assert!(tab.continuation_map.is_some());
+
+        tab.display.collapse_continuations = true;
+        tab.begin_filter_refresh();
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0],
+            "line 1 (a continuation of line 0) must start hidden"
+        );
+
+        let old = tab.file_reader.line_count();
+        let parsed2 = "2024-07-24T10:01:00Z INFO another request";
+        let access3 = "2019-01-26 20:30:00.000 5.120.204.68 200 GET /api HTTP/1.1";
+        tab.file_reader
+            .append_bytes(format!("{parsed2}\n{access3}\n").as_bytes());
+        tab.filter_new_lines(old);
+
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 2],
+            "the newly appended group's continuation line (3) must also be \
+             hidden, not just the group that existed when :collapse ran"
+        );
     }
 
     #[tokio::test]

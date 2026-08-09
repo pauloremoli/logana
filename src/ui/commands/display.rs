@@ -54,6 +54,44 @@ impl App {
             .await;
     }
 
+    pub(super) async fn cmd_collapse(&mut self) {
+        self.set_collapse_continuations(true).await;
+    }
+
+    pub(super) async fn cmd_expand(&mut self) {
+        self.set_collapse_continuations(false).await;
+    }
+
+    async fn set_collapse_continuations(&mut self, enabled: bool) {
+        self.display.collapse_continuations = enabled;
+        for tab in &mut self.tabs {
+            let current_line = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset);
+            tab.display.collapse_continuations = enabled;
+            // Restore the pristine baseline first (whether the previous
+            // masked state came from the global default or from individual
+            // `<`/`>` overrides), then clear overrides and re-derive from
+            // scratch — `:collapse`/`:expand` are bulk, idempotent resets,
+            // not a toggle relative to whatever was individually flipped.
+            if let Some(baseline) = tab.filter.pre_collapse_visible.take() {
+                tab.filter.visible_indices = baseline;
+            }
+            tab.filter.overridden_groups.clear();
+            tab.sync_collapse_mask();
+            // The line the cursor was on may now be hidden (bulk collapse)
+            // or the view may have grown (bulk expand) — re-pin to the
+            // nearest still-visible line so the cursor doesn't silently
+            // drift onto an unrelated entry.
+            tab.restore_scroll_to_line(current_line);
+        }
+        let _ = self
+            .db
+            .save_app_setting(
+                SettingsKey::CollapseContinuations,
+                if enabled { "true" } else { "false" },
+            )
+            .await;
+    }
+
     pub(super) fn cmd_level_colors(&mut self) -> Result<bool, String> {
         use crate::mode::value_colors_mode::{
             ValueColorEntry, ValueColorGroup as VCGroup, ValueColorsMode,

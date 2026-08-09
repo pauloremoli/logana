@@ -125,6 +125,18 @@ pub const COMMANDS: &[CommandInfo] = &[
         examples: &[],
     },
     CommandInfo {
+        name: "collapse",
+        usage: "collapse",
+        description: "Collapse continuation lines to their entry's first line.",
+        examples: &[],
+    },
+    CommandInfo {
+        name: "expand",
+        usage: "expand",
+        description: "Expand continuation lines previously hidden by collapse.",
+        examples: &[],
+    },
+    CommandInfo {
         name: "clear-filters",
         usage: "clear-filters",
         description: "Remove all filter definitions.",

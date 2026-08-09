@@ -270,6 +270,7 @@ impl Mode for ConfirmRestoreMode {
         let kb = &tab.interaction.keybindings.confirm;
         if kb.yes.matches(key, modifiers) {
             tab.apply_file_context(&self.context);
+            tab.sync_collapse_mask();
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else if kb.no.matches(key, modifiers) {
             tab.log_manager.clear_filters().await;
@@ -278,6 +279,7 @@ impl Mode for ConfirmRestoreMode {
             (Box::new(NormalMode::default()), KeyResult::Handled)
         } else if kb.always.matches(key, modifiers) {
             tab.apply_file_context(&self.context);
+            tab.sync_collapse_mask();
             (
                 Box::new(NormalMode::default()),
                 KeyResult::AlwaysRestoreFile(Box::new(self.context)),
@@ -454,6 +456,35 @@ mod tests {
         assert_eq!(tab.scroll.scroll_offset, 5);
         assert!(!tab.display.level_colors_disabled.is_empty());
         assert_eq!(tab.scroll.horizontal_scroll, 3);
+    }
+
+    /// Regression test: confirming a saved file-context restore must
+    /// re-derive the collapse mask, not just copy fields off `context` —
+    /// otherwise a file whose collapse mode was already on (persisted
+    /// globally, independent of this per-file context) would keep showing
+    /// every continuation line and no `+` marker after the user says "yes".
+    #[tokio::test]
+    async fn test_confirm_restore_y_applies_collapse_mask() {
+        let mut tab = make_tab(&[
+            "2024-07-24T10:00:00Z INFO request processed",
+            "2024-07-24T10:00:01Z INFO another request",
+            "2019-01-26 20:29:10.000 5.120.204.67 200 GET / HTTP/1.1",
+        ])
+        .await;
+        assert!(tab.continuation_map.is_some());
+        tab.display.collapse_continuations = true;
+
+        let mode = ConfirmRestoreMode {
+            context: default_context(),
+        };
+        press_restore(mode, &mut tab, KeyCode::Char('y')).await;
+
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1],
+            "line 2 (a continuation of line 1) must be hidden once the \
+             restore is confirmed, matching collapse_continuations=true"
+        );
     }
 
     #[tokio::test]

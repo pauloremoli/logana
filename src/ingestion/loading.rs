@@ -1043,10 +1043,12 @@ impl App {
                         self.tabs[0].filter.match_counts = Vec::new();
                     }
                     // The precomputed path skips begin_filter_refresh, so there
-                    // is no scroll-anchor mechanism.  Translate the saved absolute
-                    // file line (set by apply_file_context above) to its position
-                    // in the already-computed filtered view.
+                    // is no scroll-anchor mechanism, nor collapse-mask
+                    // application — apply it now so a persisted
+                    // collapse_continuations=true (or apply_file_context's
+                    // raw_mode, above) actually takes effect on this tab.
                     let saved_line = self.tabs[0].scroll.scroll_offset;
+                    self.tabs[0].sync_collapse_mask();
                     self.tabs[0].restore_scroll_to_line(Some(saved_line));
                 } else {
                     self.tabs[0].begin_filter_refresh();
@@ -1508,6 +1510,7 @@ impl App {
                             tab.filter.manager.has_include(),
                         );
                     }
+                    tab.sync_collapse_mask();
                     tab.restore_scroll_to_line(scroll_anchor);
                 } else if tab.filter.visible_indices.is_empty() {
                     tab.scroll.scroll_offset = 0;
@@ -2484,6 +2487,54 @@ mod tests {
         assert!(
             app.tabs[0].display.format.is_some(),
             "Format should be re-detected after ReplaceInitialTab load"
+        );
+    }
+
+    /// Regression test: the `had_precomputed` fast path (taken when the
+    /// background load already resolved filter visibility, skipping
+    /// `begin_filter_refresh`) must still apply the collapse mask —
+    /// otherwise a file opened this way with `collapse_continuations`
+    /// already on from a previous session would show every continuation
+    /// line and no `+` marker.
+    #[tokio::test]
+    async fn test_on_load_success_precomputed_applies_collapse_mask() {
+        let mut app = make_app(&[]).await;
+        app.tabs[0].display.collapse_continuations = true;
+
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0_f64);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let parsed0 = "2024-07-24T10:00:00Z INFO request processed";
+        let parsed1 = "2024-07-24T10:00:01Z INFO another request";
+        let access2 = "2019-01-26 20:29:10.000 5.120.204.67 200 GET / HTTP/1.1";
+        let fr = FileReader::from_bytes(format!("{parsed0}\n{parsed1}\n{access2}\n").into_bytes());
+        let _ = result_tx.send(Ok(FileLoadResult {
+            reader: fr,
+            precomputed_visible: Some(vec![0, 1, 2]),
+            precomputed_text_counts: None,
+        }));
+        drop(progress_tx);
+
+        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
+            path: "test.log".to_string(),
+            progress_rx,
+            result_rx,
+            total_bytes: 32,
+            on_complete: LoadContext::ReplaceInitialTab,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+
+        app.advance_file_load().await;
+
+        assert!(app.tabs[0].continuation_map.is_some());
+        assert_eq!(
+            app.tabs[0]
+                .filter
+                .visible_indices
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![0, 1],
+            "line 2 (a continuation of line 1) must be hidden, matching the \
+             already-on collapse_continuations setting"
         );
     }
 

@@ -133,6 +133,8 @@ impl App {
             Some(Commands::Wrap) => self.cmd_wrap().await,
             Some(Commands::LineNumbers) => self.cmd_line_numbers().await,
             Some(Commands::RelativeLineNumbers) => self.cmd_relative_line_numbers().await,
+            Some(Commands::Collapse) => self.cmd_collapse().await,
+            Some(Commands::Expand) => self.cmd_expand().await,
             Some(Commands::LevelColors) => return self.cmd_level_colors(),
             Some(Commands::SetTheme { theme_name }) => return self.cmd_set_theme(theme_name).await,
             Some(Commands::Theme) => return self.cmd_theme_picker(),
@@ -193,6 +195,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::config::Keybindings;
+    use crate::db::AppSettingsStore;
     use crate::db::Database;
     use crate::db::LogManager;
     use crate::filters::FilterType;
@@ -302,6 +305,105 @@ mod tests {
         assert!(app.tab().display.relative_line_numbers);
         app.run_command("relative-line-numbers").await.unwrap();
         assert!(!app.tab().display.relative_line_numbers);
+    }
+
+    /// Lines 0-1 parse as structured logs; lines 2-3 are unparseable
+    /// access-log lines that continue parent line 1 — same fixture as
+    /// `mode::normal_mode::tests`'s continuation-line coverage.
+    const PARSED0: &str = "2024-07-24T10:00:00Z INFO request processed";
+    const PARSED1: &str = "2024-07-24T10:00:01Z INFO another request";
+    const ACCESS2: &str = "2019-01-26 20:29:10.000 5.120.204.67 200 GET / HTTP/1.1";
+    const ACCESS3: &str = "2019-01-26 20:29:11.000 5.120.204.68 200 GET /api HTTP/1.1";
+
+    #[tokio::test]
+    async fn test_collapse_defaults_to_all_expanded() {
+        let app = make_app(&[PARSED0, PARSED1, ACCESS2, ACCESS3]).await;
+        assert!(!app.tab().display.collapse_continuations);
+        assert_eq!(
+            app.tab().filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collapse_and_expand_are_separate_explicit_commands() {
+        let mut app = make_app(&[PARSED0, PARSED1, ACCESS2, ACCESS3]).await;
+
+        app.run_command("collapse").await.unwrap();
+        assert!(app.tab().display.collapse_continuations);
+        assert_eq!(
+            app.tab().filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+
+        // Calling collapse again is idempotent, not a toggle.
+        app.run_command("collapse").await.unwrap();
+        assert!(app.tab().display.collapse_continuations);
+        assert_eq!(
+            app.tab().filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+
+        app.run_command("expand").await.unwrap();
+        assert!(!app.tab().display.collapse_continuations);
+        assert_eq!(
+            app.tab().filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+
+        // Calling expand again is idempotent too.
+        app.run_command("expand").await.unwrap();
+        assert!(!app.tab().display.collapse_continuations);
+        assert_eq!(
+            app.tab().filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+    }
+
+    /// `:collapse` while the cursor sits on a continuation line about to be
+    /// hidden must re-pin the cursor to its (still-visible) parent line —
+    /// otherwise `scroll_offset` keeps its stale numeric value, which now
+    /// resolves to whichever line slides into that screen position, or is
+    /// simply out of range for the now-shorter visible set.
+    #[tokio::test]
+    async fn test_collapse_repins_cursor_off_a_hidden_continuation_line() {
+        let mut app = make_app(&[PARSED0, PARSED1, ACCESS2, ACCESS3]).await;
+        app.tabs[0].scroll.scroll_offset = 3; // file line 3, a continuation line
+        app.run_command("collapse").await.unwrap();
+        assert_eq!(
+            app.tab().filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            app.tab()
+                .filter
+                .visible_indices
+                .get(app.tab().scroll.scroll_offset),
+            1,
+            "cursor must land on the parent (1), not the stale position 3 \
+             (out of range for the now 2-line-long visible set)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collapse_setting_persisted_and_expand_clears_it() {
+        let mut app = make_app(&[PARSED0, PARSED1, ACCESS2, ACCESS3]).await;
+        app.run_command("collapse").await.unwrap();
+        assert_eq!(
+            app.db
+                .load_app_setting(crate::db::SettingsKey::CollapseContinuations)
+                .await
+                .unwrap(),
+            Some("true".to_string())
+        );
+        app.run_command("expand").await.unwrap();
+        assert_eq!(
+            app.db
+                .load_app_setting(crate::db::SettingsKey::CollapseContinuations)
+                .await
+                .unwrap(),
+            Some("false".to_string())
+        );
     }
 
     #[tokio::test]

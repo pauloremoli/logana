@@ -7,8 +7,12 @@ All notable changes to logana will be documented in this file.
 
 ### Added
 - Add relative line numbers, toggleable via `:relative-line-numbers` and the UI options menu.
+- Add `:collapse`/`:expand` to hide or reveal continuation lines file-wide, with `>`/`<` to expand or collapse the entry under the cursor at any time.
 
-## [0.7.6] - 2026-08-07
+### Fixed
+- Fix a multiline schema's `continuation.end_pattern` line becoming its own entry instead of collapsing with the block it terminates.
+- Fix `:collapse`/`:expand` not applying to lines appended to a live/watched file after the command ran.
+- Fix collapsed continuation lines not staying collapsed when reopening a file across sessions.
 
 ## [0.7.6] - 2026-08-06
 

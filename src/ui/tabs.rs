@@ -37,6 +37,8 @@ impl App {
         tab.display.show_sidebar = self.display.show_sidebar;
         tab.display.wrap = self.display.wrap;
         tab.display.sidebar_side = self.display.sidebar_side;
+        tab.display.collapse_continuations = self.display.collapse_continuations;
+        tab.sync_collapse_mask();
         self.apply_default_filters_if_empty(tab).await;
     }
 

@@ -66,6 +66,7 @@ struct StartupSettings {
     show_sidebar: bool,
     wrap: bool,
     sidebar_side: SidebarSide,
+    collapse_continuations: bool,
 }
 
 async fn resolve_startup_settings(
@@ -119,6 +120,13 @@ async fn resolve_startup_settings(
             .await,
         wrap: resolve_bool_setting(db, SettingsKey::Wrap, ov.wrap, false).await,
         sidebar_side,
+        collapse_continuations: resolve_bool_setting(
+            db,
+            SettingsKey::CollapseContinuations,
+            None,
+            false,
+        )
+        .await,
     }
 }
 
@@ -132,6 +140,7 @@ pub struct DisplaySettings {
     pub show_sidebar: bool,
     pub wrap: bool,
     pub sidebar_side: SidebarSide,
+    pub collapse_continuations: bool,
 }
 
 pub struct App {
@@ -253,6 +262,7 @@ impl AppBuilder {
             show_sidebar,
             wrap,
             sidebar_side,
+            collapse_continuations,
         } = settings;
 
         let title = self
@@ -279,6 +289,7 @@ impl AppBuilder {
         tab.display.show_sidebar = show_sidebar;
         tab.display.wrap = wrap;
         tab.display.sidebar_side = sidebar_side;
+        tab.display.collapse_continuations = collapse_continuations;
         let mut pending_session_restore: Option<Vec<String>> = None;
 
         // Check for saved context only when we have real data (not a placeholder
@@ -315,6 +326,17 @@ impl AppBuilder {
             }
         }
 
+        // Re-derive the collapse mask now that every prior mutation that
+        // could affect it (the persisted `collapse_continuations` override
+        // above, and — when restored — `apply_file_context`'s `raw_mode`)
+        // has settled. Without this, a file opened straight from the
+        // command line with collapse mode already on from a previous
+        // session would start with nothing collapsed and no `+` markers,
+        // until some unrelated action happened to trigger a full filter
+        // refresh — see `apply_tab_defaults`, which needs the same call
+        // for tabs opened via `:open` instead of at startup.
+        tab.sync_collapse_mask();
+
         let session_db = db.clone();
         App {
             tabs: vec![tab],
@@ -333,6 +355,7 @@ impl AppBuilder {
                 show_sidebar,
                 wrap,
                 sidebar_side,
+                collapse_continuations,
             },
             preview_bytes: DEFAULT_PREVIEW_BYTES,
             dlt_devices: vec![],
@@ -1934,6 +1957,69 @@ mod tests {
         assert!(!tab.display.show_line_numbers);
         assert!(!tab.display.show_sidebar);
         assert!(tab.display.wrap);
+    }
+
+    /// A tab opened while collapse mode is globally on (e.g. via `:collapse`
+    /// before `:open`) must start collapsed too, not just inherit the flag —
+    /// `apply_tab_defaults` must also apply the mask to `visible_indices`.
+    #[tokio::test]
+    async fn test_apply_tab_defaults_applies_collapse_mask_to_new_tab() {
+        let mut app = make_app(&["line"]).await;
+        app.display.collapse_continuations = true;
+
+        let parsed0 = "2024-07-24T10:00:00Z INFO request processed";
+        let parsed1 = "2024-07-24T10:00:01Z INFO another request";
+        let access2 = "2019-01-26 20:29:10.000 5.120.204.67 200 GET / HTTP/1.1";
+        let data: Vec<u8> = [parsed0, parsed1, access2].join("\n").into_bytes();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(app.db.clone(), None).await;
+        let mut tab = super::super::TabState::new(fr, lm, "new".to_string());
+        assert!(tab.continuation_map.is_some());
+
+        app.apply_tab_defaults(&mut tab).await;
+
+        assert!(tab.display.collapse_continuations);
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1],
+            "the new tab's continuation line (index 2) must start hidden"
+        );
+    }
+
+    /// Regression test: the *initial* tab built by `AppBuilder::build` (the
+    /// one opened at startup, as opposed to `:open`'s `apply_tab_defaults`
+    /// path, already covered above) must also apply the collapse mask when
+    /// `collapse_continuations` was persisted as on from a previous
+    /// session — otherwise every file opened straight from the command line
+    /// with collapse mode already enabled would start with no lines
+    /// collapsed and no `+` markers, until some unrelated action happened
+    /// to trigger a full filter refresh.
+    #[tokio::test]
+    async fn test_app_builder_build_applies_collapse_mask_to_startup_tab() {
+        use crate::db::AppSettingsStore;
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        db.save_app_setting(SettingsKey::CollapseContinuations, "true")
+            .await
+            .unwrap();
+
+        let parsed0 = "2024-07-24T10:00:00Z INFO request processed";
+        let parsed1 = "2024-07-24T10:00:01Z INFO another request";
+        let access2 = "2019-01-26 20:29:10.000 5.120.204.67 200 GET / HTTP/1.1";
+        let data: Vec<u8> = [parsed0, parsed1, access2].join("\n").into_bytes();
+        let fr = FileReader::from_bytes(data);
+        let lm = LogManager::new(db, Some("/tmp/startup_collapse.log".to_string())).await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
+
+        assert!(app.tab().display.collapse_continuations);
+        assert!(app.tab().continuation_map.is_some());
+        assert_eq!(
+            app.tab().filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1],
+            "the startup tab's continuation line (index 2) must start hidden, \
+             matching the persisted collapse_continuations=true setting"
+        );
     }
 
     async fn make_tab_with_format(app: &App, format_name: &str) -> super::super::TabState {
