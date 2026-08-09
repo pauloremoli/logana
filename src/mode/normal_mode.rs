@@ -526,6 +526,21 @@ impl Mode for NormalMode {
             tab.interaction.g_key_pressed = false;
             self.count = None;
             if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
+                let comments = tab.comment_manager.get();
+                if let Some(idx) = comments
+                    .iter()
+                    .position(|c| c.line_indices.contains(&line_idx))
+                {
+                    let c = &comments[idx];
+                    return (
+                        Box::new(CommentMode::edit(
+                            idx,
+                            c.text.clone(),
+                            c.line_indices.clone(),
+                        )),
+                        KeyResult::Handled,
+                    );
+                }
                 return (
                     Box::new(CommentMode::new(vec![line_idx])),
                     KeyResult::Handled,
@@ -1908,6 +1923,28 @@ mod tests {
             }
             other => panic!("expected Comment, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_c_on_commented_line_opens_edit_mode() {
+        let mut tab = make_tab(&["line0", "line1", "line2"]).await;
+        tab.comment_manager.add("existing note".into(), vec![1]);
+        tab.scroll.scroll_offset = 1;
+        let (mode, result) = press(&mut tab, KeyCode::Char('c'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::Handled));
+        match mode.render_state() {
+            ModeRenderState::Comment {
+                lines, line_count, ..
+            } => {
+                assert_eq!(lines, vec!["existing note".to_string()]);
+                assert_eq!(line_count, 1);
+            }
+            other => panic!("expected Comment, got {:?}", other),
+        }
+        // Saving should update the existing comment, not add a new one.
+        mode.handle_key(&mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL)
+            .await;
+        assert_eq!(tab.comment_manager.get().len(), 1);
     }
 
     // ── Error / warning navigation ────────────────────────────────────────

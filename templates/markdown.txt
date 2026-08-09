@@ -11,8 +11,6 @@ Date: *{{date}}*
 {{/header}}
 {{#comment_group}}
 
----
-
 {{commentary}}
 
 ```
@@ -22,7 +20,6 @@ Date: *{{date}}*
 {{/comment_group}}
 {{#footer}}
 
----
 
 ## Conclusion
 
