@@ -163,11 +163,13 @@ impl App {
     /// Removes the tab at `idx` and fixes up every in-flight background
     /// operation that tracks a tab index by position
     /// (`pending_merge_builds`, `pending_archive`'s merge tab,
-    /// `pending_directory_merge`) so they keep pointing at the right tab.
+    /// `pending_directory_merge`, and every remaining tab's own
+    /// `load_state.on_complete`) so they keep pointing at the right tab.
     /// Removing any tab shifts every later index down by one; without this,
-    /// a background merge build racing with an unrelated tab close/removal
-    /// (a placeholder cleanup, `:close-tab`, another merge finishing) would
-    /// silently start writing its results into the wrong tab.
+    /// a background merge build or file load racing with an unrelated tab
+    /// close/removal (a placeholder cleanup, `:close-tab`, another merge
+    /// finishing) would silently start writing its results into the wrong
+    /// tab.
     ///
     /// This is the only place that should call `self.tabs.remove` —
     /// removing a tab any other way risks exactly that desync.
@@ -196,6 +198,37 @@ impl App {
             && state.tab_idx > idx
         {
             state.tab_idx -= 1;
+        }
+        // Every remaining tab's own in-progress background load (if any)
+        // embeds the tab_idx it was started with, so it can find its way
+        // back to the right tab once loading finishes — that index must
+        // shift the same way every other pending-state tracker above does,
+        // or a load started before this removal lands on whatever tab now
+        // occupies its old position instead (see `handle_open_files`,
+        // whose `remove_empty_placeholder` runs after opening files while
+        // their loads are still in flight).
+        for tab in &mut self.tabs {
+            let Some(ls) = tab.load_state.as_mut() else {
+                continue;
+            };
+            match &mut ls.on_complete {
+                crate::ui::LoadContext::ReplaceTab { tab_idx } if *tab_idx > idx => {
+                    *tab_idx -= 1;
+                }
+                crate::ui::LoadContext::SessionRestoreTab {
+                    tab_idx,
+                    initial_tab_idx,
+                    ..
+                } => {
+                    if *tab_idx > idx {
+                        *tab_idx -= 1;
+                    }
+                    if *initial_tab_idx > idx {
+                        *initial_tab_idx -= 1;
+                    }
+                }
+                _ => {}
+            }
         }
     }
 

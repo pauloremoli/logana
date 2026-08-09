@@ -2208,6 +2208,92 @@ mod tests {
         );
     }
 
+    /// Regression test: `handle_open_files` (the directory/archive picker's
+    /// "open these ticked files as their own tabs" path) opens every file
+    /// first — each capturing its own `tab_idx` in `load_state.on_complete`
+    /// — and only removes the empty initial placeholder tab afterward, via
+    /// `remove_empty_placeholder`. Before this was fixed, that removal
+    /// shifted every later tab's real index without updating the `tab_idx`
+    /// already captured in its still-in-flight `load_state`, so a load
+    /// finishing after the removal wrote its result into whatever tab now
+    /// sat at its stale index — a different file's tab, or (once shifted
+    /// out of range) nowhere at all, silently dropping that file's load.
+    #[tokio::test]
+    async fn test_remove_empty_placeholder_does_not_misroute_in_flight_loads() {
+        let tmp_a = tempfile::NamedTempFile::new().unwrap();
+        let mut content_a = String::new();
+        for i in 0..50 {
+            content_a.push_str(&format!("2024-07-24T10:00:{i:02}Z INFO from file A\n"));
+        }
+        std::fs::write(tmp_a.path(), content_a).unwrap();
+
+        let tmp_b = tempfile::NamedTempFile::new().unwrap();
+        let mut content_b = String::new();
+        for i in 0..3000 {
+            content_b.push_str(&format!(
+                "2024-07-24T11:{:02}:{:02}Z INFO from file B\n",
+                (i / 60) % 60,
+                i % 60
+            ));
+        }
+        std::fs::write(tmp_b.path(), content_b).unwrap();
+
+        // make_app(&[]) gives tabs[0] the same "empty placeholder" shape
+        // remove_empty_placeholder looks for: no source file, zero lines.
+        let mut app = make_app(&[]).await;
+        let path_a = tmp_a.path().to_str().unwrap().to_string();
+        let path_b = tmp_b.path().to_str().unwrap().to_string();
+
+        app.open_file(&path_a).await.unwrap();
+        app.open_file(&path_b).await.unwrap();
+        assert_eq!(app.tabs.len(), 3, "placeholder + 2 new tabs");
+        // Mirrors handle_open_files: remove the placeholder only after both
+        // opens (and their background loads) have already started.
+        app.remove_empty_placeholder();
+        assert_eq!(app.tabs.len(), 2, "placeholder must be gone");
+
+        for _ in 0..500 {
+            if app.tabs.iter().all(|t| t.load_state.is_none()) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            app.advance_file_load().await;
+        }
+
+        let tab_a = app
+            .tabs
+            .iter()
+            .find(|t| t.log_manager.source_file() == Some(path_a.as_str()))
+            .expect("file A's tab must still exist");
+        let tab_b = app
+            .tabs
+            .iter()
+            .find(|t| t.log_manager.source_file() == Some(path_b.as_str()))
+            .expect("file B's tab must still exist");
+
+        assert_eq!(
+            tab_a.file_reader.line_count(),
+            50,
+            "tab A must hold file A's own content, not file B's"
+        );
+        assert_eq!(
+            tab_b.file_reader.line_count(),
+            3000,
+            "tab B must hold file B's own content, not file A's"
+        );
+        for tab in [tab_a, tab_b] {
+            if let Some(cmap) = &tab.continuation_map {
+                assert_eq!(
+                    cmap.len(),
+                    tab.file_reader.line_count(),
+                    "a tab's continuation_map must match its own file_reader, \
+                     not a different tab's — this is the exact shape of the \
+                     'index out of bounds' panic this test guards against"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_open_file_nonexistent() {
         let mut app = make_app(&[]).await;
