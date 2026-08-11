@@ -568,18 +568,20 @@ pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser)
 
 /// Walks forward from `line_idx + 1` while `cmap` marks each line as a
 /// continuation of `line_idx` (`build_continuation_map`'s convention: a
-/// continuation line's entry equals its parent's index), extracting each
-/// line's structured fields via `parser.extract_continuation_fields` into
-/// `parts.extra_fields`. Stops at (and includes) the first line
-/// `parser.is_continuation_end` matches, if any — otherwise walks every
-/// continuation line `cmap` groups with `line_idx`. Returns the index of the
-/// last line still considered part of this record, or `line_idx` itself if
-/// there are no continuation lines.
+/// continuation line's entry equals its parent's index), collecting lines up
+/// to (and including) the first one `parser.is_continuation_end` matches, if
+/// any — otherwise every continuation line `cmap` groups with `line_idx`.
+/// The collected lines are handed to `parser.walk_continuation` in one
+/// batch, merging its flat fields into `parts.extra_fields` and its
+/// per-group items into `parts.field_groups`. Returns the index of the last
+/// line still considered part of this record, or `line_idx` itself if there
+/// are no continuation lines.
 ///
-/// For a schema with no `continuation.fields`/`end_pattern` declared,
-/// `extract_continuation_fields`/`is_continuation_end` default to
-/// empty/false, so this returns exactly what the old `last_continuation_line`
-/// helper did and leaves `parts.extra_fields` untouched.
+/// For a schema with no flat/`vec` continuation content declared,
+/// `walk_continuation`'s default reduces to `extract_continuation_fields`
+/// per line with no groups and `is_continuation_end` defaults to `false`,
+/// so this returns exactly what the old `last_continuation_line` helper did
+/// and leaves `parts.extra_fields`/`parts.field_groups` untouched.
 fn apply_continuation_fields<'a>(
     parser: &dyn LogFormatParser,
     reader: &'a FileReader,
@@ -588,6 +590,7 @@ fn apply_continuation_fields<'a>(
     parts: &mut crate::parser::DisplayParts<'a>,
 ) -> usize {
     let mut block_end = line_idx;
+    let mut lines: Vec<&'a [u8]> = Vec::new();
     let mut j = line_idx + 1;
     while j < cmap.len() && cmap[j] == line_idx {
         let line = reader.get_line(j);
@@ -595,11 +598,12 @@ fn apply_continuation_fields<'a>(
         if parser.is_continuation_end(line) {
             break;
         }
-        parts
-            .extra_fields
-            .extend(parser.extract_continuation_fields(line));
+        lines.push(line);
         j += 1;
     }
+    let result = parser.walk_continuation(&lines);
+    parts.extra_fields.extend(result.flat_fields);
+    parts.field_groups = result.groups;
     block_end
 }
 
@@ -4085,12 +4089,15 @@ mod tests {
         let cfg = crate::config::CustomSchemaConfig {
             name: "acme".to_string(),
             description: None,
-            template: Some("{level}/{component}/{feature}, {message}".to_string()),
+            template: Some(
+                "{level}/{component}/{feature}, {message}"
+                    .to_string()
+                    .into(),
+            ),
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         };
         tab.display.format = Some(std::sync::Arc::new(
@@ -4131,7 +4138,6 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         };
         tab.display.format = Some(std::sync::Arc::new(
@@ -4858,7 +4864,7 @@ mod tests {
         let cfg = crate::config::CustomSchemaConfig {
             name: "sev".to_string(),
             description: None,
-            template: Some("{level} {message}".to_string()),
+            template: Some("{level} {message}".to_string().into()),
             pattern: None,
             fields: Default::default(),
             levels: crate::config::CustomLevelValues {
@@ -4866,7 +4872,6 @@ mod tests {
                 warning: vec!["SEV2".to_string()],
             },
             multiline: false,
-            continuation: None,
             ..Default::default()
         };
         tab.display.format = Some(std::sync::Arc::new(
@@ -4884,12 +4889,11 @@ mod tests {
         let cfg = crate::config::CustomSchemaConfig {
             name: "sev".to_string(),
             description: None,
-            template: Some("{level} {message}".to_string()),
+            template: Some("{level} {message}".to_string().into()),
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         };
         tab.display.format = Some(std::sync::Arc::new(
@@ -4912,7 +4916,7 @@ mod tests {
         let cfg = crate::config::CustomSchemaConfig {
             name: "sev".to_string(),
             description: None,
-            template: Some("{level} {message}".to_string()),
+            template: Some("{level} {message}".to_string().into()),
             pattern: None,
             fields: Default::default(),
             levels: crate::config::CustomLevelValues {
@@ -4920,7 +4924,6 @@ mod tests {
                 warning: vec![],
             },
             multiline: false,
-            continuation: None,
             ..Default::default()
         };
         let source_a_parser = Arc::new(crate::parser::CustomParser::from_config(&cfg).unwrap());
@@ -5151,12 +5154,11 @@ mod tests {
         crate::config::CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
-            template: Some("{level} {message}".to_string()),
+            template: Some("{level} {message}".to_string().into()),
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
             multiline,
-            continuation: None,
             ..Default::default()
         }
     }
@@ -5175,7 +5177,6 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: true,
-            continuation: None,
             ..Default::default()
         }
     }
@@ -5257,33 +5258,73 @@ mod tests {
     /// `field1`/`field2`, terminated by `"### End transaction"` — the
     /// scenario from the multiline-schema feature request.
     fn transaction_schema_config() -> crate::config::CustomSchemaConfig {
+        use crate::config::{ContinuationFieldSpec, TemplateLine, TemplateValue};
+        let lines = vec![
+            TemplateLine::Str("### Start transaction {id}".to_string()),
+            TemplateLine::Plain(ContinuationFieldSpec {
+                template: Some("field1: {field1}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            }),
+            TemplateLine::Plain(ContinuationFieldSpec {
+                template: Some("field2: {field2}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            }),
+            TemplateLine::Str("### End transaction".to_string()),
+        ];
         crate::config::CustomSchemaConfig {
             name: "transaction".to_string(),
             description: None,
-            template: Some("### Start transaction {id}".to_string()),
+            template: Some(TemplateValue::Lines(lines)),
             pattern: None,
             fields: [("id".to_string(), "extra".to_string())]
                 .into_iter()
                 .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: Some(crate::config::ContinuationConfig {
-                end_pattern: Some("### End transaction".to_string()),
-                fields: vec![
-                    crate::config::ContinuationFieldSpec {
-                        template: Some("field1: {field1}".to_string()),
-                        pattern: None,
-                        fields: Default::default(),
-                        json: false,
-                    },
-                    crate::config::ContinuationFieldSpec {
-                        template: Some("field2: {field2}".to_string()),
-                        pattern: None,
-                        fields: Default::default(),
-                        json: false,
-                    },
-                ],
+            ..Default::default()
+        }
+    }
+
+    /// Header `"### Start transaction {id}"` with a repeating `operations`
+    /// continuation group, terminated by `"### End transaction"`.
+    fn transaction_schema_config_with_operations_group() -> crate::config::CustomSchemaConfig {
+        use crate::config::{
+            ContinuationFieldSpec, TemplateGroupConfig, TemplateLine, TemplateValue,
+        };
+        let lines = vec![
+            TemplateLine::Str("### Start transaction {id}".to_string()),
+            TemplateLine::Group(TemplateGroupConfig {
+                vec: "operations".to_string(),
+                template: ContinuationFieldSpec {
+                    template: Some("operation_type: {operation_type}".to_string()),
+                    pattern: None,
+                    fields: Default::default(),
+                    json: false,
+                },
+                fields: vec![ContinuationFieldSpec {
+                    template: Some("object_name: {object_name}".to_string()),
+                    pattern: None,
+                    fields: Default::default(),
+                    json: false,
+                }],
+                auto_fields: false,
             }),
+            TemplateLine::Str("### End transaction".to_string()),
+        ];
+        crate::config::CustomSchemaConfig {
+            name: "transaction".to_string(),
+            description: None,
+            template: Some(TemplateValue::Lines(lines)),
+            pattern: None,
+            fields: [("id".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+            multiline: false,
             ..Default::default()
         }
     }
@@ -5309,6 +5350,34 @@ mod tests {
         assert_eq!(extra("id"), Some("42"));
         assert_eq!(extra("field1"), Some("10"));
         assert_eq!(extra("field2"), Some("3"));
+    }
+
+    #[test]
+    fn test_apply_continuation_fields_populates_field_groups() {
+        let reader = FileReader::from_bytes(
+            b"### Start transaction 42\noperation_type: CREATE\nobject_name: txCarrier1\noperation_type: DELETE\nobject_name: txCarrier2\n### End transaction\n".to_vec(),
+        );
+        let parser = crate::parser::CustomParser::from_config(
+            &transaction_schema_config_with_operations_group(),
+        )
+        .unwrap();
+        let cmap = build_continuation_map(&reader, &parser);
+
+        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        assert_eq!(parts.field_groups.len(), 1);
+        let (name, items) = &parts.field_groups[0];
+        assert_eq!(*name, "operations");
+        assert_eq!(items.len(), 2);
+        assert!(items[0].fields.contains(&(
+            crate::parser::FieldSemantic::Extra,
+            "object_name",
+            "txCarrier1"
+        )));
+        assert!(items[1].fields.contains(&(
+            crate::parser::FieldSemantic::Extra,
+            "object_name",
+            "txCarrier2"
+        )));
     }
 
     #[test]

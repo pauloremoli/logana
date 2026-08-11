@@ -1002,12 +1002,15 @@ mod tests {
         let cfg = crate::config::CustomSchemaConfig {
             name: "acme".to_string(),
             description: None,
-            template: Some("{level}/{component}/{feature}, {message}".to_string()),
+            template: Some(
+                "{level}/{component}/{feature}, {message}"
+                    .to_string()
+                    .into(),
+            ),
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         };
         let parser = crate::parser::CustomParser::from_config(&cfg).unwrap();
@@ -1037,7 +1040,6 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         };
         let parser = crate::parser::CustomParser::from_config(&cfg).unwrap();

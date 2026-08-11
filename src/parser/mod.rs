@@ -28,7 +28,8 @@ pub use schema::LogSchema;
 pub use syslog::SyslogParser;
 pub use types::LogLevel;
 pub use types::{
-    DisplayParts, FieldSemantic, LogFormatParser, SpanInfo, TemplateSegment, format_span_col,
+    ContinuationWalkResult, DisplayParts, FieldSemantic, GroupItem, LogFormatParser, SpanInfo,
+    TemplateSegment, format_span_col,
 };
 pub use types::{push_extra_field, push_field_as};
 
@@ -238,7 +239,8 @@ mod tests {
             description: None,
             template: Some(
                 "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"
-                    .to_string(),
+                    .to_string()
+                    .into(),
             ),
             pattern: None,
             fields: [
@@ -249,7 +251,6 @@ mod tests {
             .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         }
     }
@@ -264,7 +265,7 @@ mod tests {
     fn test_validate_custom_schemas_reports_error_for_unclosed_placeholder() {
         let mut bad = valid_schema_config();
         bad.name = "broken".to_string();
-        bad.template = Some("{id unclosed".to_string());
+        bad.template = Some("{id unclosed".to_string().into());
         let errors = validate_custom_schemas(&[bad]);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("broken"));
@@ -274,7 +275,7 @@ mod tests {
     fn test_validate_custom_schemas_only_reports_the_broken_one() {
         let mut bad = valid_schema_config();
         bad.name = "broken".to_string();
-        bad.template = Some("{id unclosed".to_string());
+        bad.template = Some("{id unclosed".to_string().into());
         let errors = validate_custom_schemas(&[valid_schema_config(), bad]);
         assert_eq!(errors.len(), 1);
     }

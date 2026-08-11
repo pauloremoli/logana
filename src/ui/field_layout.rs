@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use unicode_width::UnicodeWidthChar;
 
 use crate::filters::resolve_field;
-use crate::parser::{DisplayParts, LogFormatParser, SpanInfo, TemplateSegment, format_span_col};
+use crate::parser::{
+    DisplayParts, GroupItem, LogFormatParser, SpanInfo, TemplateSegment, format_span_col,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct FieldLayout {
@@ -122,6 +124,34 @@ pub fn effective_row_count(
     line_row_count(line_bytes, inner_width)
 }
 
+/// Flattens `field_groups` into `(indexed_key, bare_key, value)` triples, in
+/// declared-group, then-item, then-field order — e.g.
+/// `("operations.0.object_name", "operations.object_name", "txCarrier1")`.
+/// `indexed_key` is the exact dotted-index name used for lookup/rendering
+/// (`get_col`, explicit column lists); `bare_key` is the group-scoped name
+/// with no item index, used to hide a field across every item at once
+/// (mirrors how a bare `span.<key>` hides a span sub-field regardless of how
+/// many fields the span has). Shared by `get_col`'s dotted-group lookup and
+/// both branches of `apply_field_layout`. Empty when `groups` is empty —
+/// i.e. always empty for a schema without a `vec` group.
+fn flatten_field_groups<'a>(
+    groups: &'a [(&'static str, Vec<GroupItem<'a>>)],
+) -> Vec<(String, String, &'a str)> {
+    let mut out = Vec::new();
+    for (name, items) in groups {
+        for (idx, item) in items.iter().enumerate() {
+            for (_, key, value) in &item.fields {
+                out.push((
+                    format!("{name}.{idx}.{key}"),
+                    format!("{name}.{key}"),
+                    *value,
+                ));
+            }
+        }
+    }
+    out
+}
+
 pub fn get_col(
     p: &DisplayParts<'_>,
     name: &str,
@@ -173,6 +203,13 @@ pub fn get_col(
                     return p.message.map(|s| s.to_string());
                 }
                 _ => {}
+            }
+            if !p.field_groups.is_empty()
+                && let Some((_, _, v)) = flatten_field_groups(&p.field_groups)
+                    .into_iter()
+                    .find(|(indexed, _, _)| indexed == n)
+            {
+                return Some(v.to_string());
             }
             p.extra_fields
                 .iter()
@@ -290,6 +327,18 @@ pub fn apply_field_layout(
                 } else {
                     cols.push(value.to_string());
                 }
+            }
+        }
+        let mut group_cols = flatten_field_groups(&p.field_groups);
+        group_cols.sort_by(|a, b| a.0.cmp(&b.0));
+        for (indexed_key, bare_key, value) in group_cols {
+            if hidden_fields.contains(&indexed_key) || hidden_fields.contains(&bare_key) {
+                continue;
+            }
+            if show_keys {
+                cols.push(format!("{indexed_key}={value}"));
+            } else {
+                cols.push(value.to_string());
             }
         }
         if !msg_hidden && let Some(msg) = p.message {
@@ -595,7 +644,121 @@ mod tests {
             }),
             extra_fields: vec![(crate::parser::FieldSemantic::Extra, "count", "42")],
             message: Some("hello world"),
+            ..Default::default()
         }
+    }
+
+    fn make_parts_with_groups<'a>() -> DisplayParts<'a> {
+        let mut p = make_parts();
+        p.field_groups = vec![(
+            "operations",
+            vec![
+                crate::parser::GroupItem {
+                    fields: vec![(
+                        crate::parser::FieldSemantic::Extra,
+                        "object_name",
+                        "txCarrier1",
+                    )],
+                },
+                crate::parser::GroupItem {
+                    fields: vec![(
+                        crate::parser::FieldSemantic::Extra,
+                        "object_name",
+                        "txCarrier2",
+                    )],
+                },
+            ],
+        )];
+        p
+    }
+
+    #[test]
+    fn test_get_col_dotted_group_field() {
+        let p = make_parts_with_groups();
+        assert_eq!(
+            get_col(&p, "operations.0.object_name", false, None),
+            Some("txCarrier1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_col_dotted_group_field_second_index() {
+        let p = make_parts_with_groups();
+        assert_eq!(
+            get_col(&p, "operations.1.object_name", false, None),
+            Some("txCarrier2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_col_group_field_missing_index_returns_none() {
+        let p = make_parts_with_groups();
+        assert_eq!(get_col(&p, "operations.5.object_name", false, None), None);
+    }
+
+    #[test]
+    fn test_apply_field_layout_default_renders_flattened_group_columns() {
+        let p = make_parts_with_groups();
+        let layout = FieldLayout::default();
+        let hidden = HashSet::new();
+        let cols = apply_field_layout(&p, &layout, &hidden, true, None);
+        assert!(
+            cols.iter()
+                .any(|c| c == "operations.0.object_name=txCarrier1"),
+            "{cols:?}"
+        );
+        assert!(
+            cols.iter()
+                .any(|c| c == "operations.1.object_name=txCarrier2"),
+            "{cols:?}"
+        );
+    }
+
+    #[test]
+    fn test_apply_field_layout_hidden_bare_group_field_hides_all_indices() {
+        let p = make_parts_with_groups();
+        let layout = FieldLayout::default();
+        let mut hidden = HashSet::new();
+        hidden.insert("operations.object_name".to_string());
+        let cols = apply_field_layout(&p, &layout, &hidden, true, None);
+        assert!(!cols.iter().any(|c| c.contains("object_name")), "{cols:?}");
+    }
+
+    #[test]
+    fn test_apply_field_layout_hidden_indexed_group_field_hides_only_that_instance() {
+        let p = make_parts_with_groups();
+        let layout = FieldLayout::default();
+        let mut hidden = HashSet::new();
+        hidden.insert("operations.0.object_name".to_string());
+        let cols = apply_field_layout(&p, &layout, &hidden, true, None);
+        assert!(
+            !cols
+                .iter()
+                .any(|c| c == "operations.0.object_name=txCarrier1"),
+            "{cols:?}"
+        );
+        assert!(
+            cols.iter()
+                .any(|c| c == "operations.1.object_name=txCarrier2"),
+            "{cols:?}"
+        );
+    }
+
+    #[test]
+    fn test_apply_field_layout_explicit_columns_can_reference_indexed_group_field() {
+        let p = make_parts_with_groups();
+        let layout = FieldLayout {
+            columns: Some(vec!["operations.0.object_name".to_string()]),
+        };
+        let hidden = HashSet::new();
+        let cols = apply_field_layout(&p, &layout, &hidden, false, None);
+        assert_eq!(cols, vec!["txCarrier1".to_string()]);
+    }
+
+    #[test]
+    fn test_flatten_field_groups_empty_when_no_groups() {
+        let p = make_parts();
+        assert!(flatten_field_groups(&p.field_groups).is_empty());
     }
 
     #[test]
@@ -752,6 +915,7 @@ mod tests {
             span: None,
             extra_fields: vec![],
             message: Some("only message"),
+            ..Default::default()
         };
         let cols = default_cols(&p, false);
         assert_eq!(cols.len(), 1);
@@ -887,6 +1051,7 @@ mod tests {
             }),
             extra_fields: vec![],
             message: Some("hello"),
+            ..Default::default()
         };
         let layout = FieldLayout::default();
         let mut hidden = HashSet::new();
@@ -915,6 +1080,7 @@ mod tests {
             }),
             extra_fields: vec![],
             message: None,
+            ..Default::default()
         };
         let layout = FieldLayout {
             columns: Some(vec!["span".to_string()]),
@@ -945,6 +1111,7 @@ mod tests {
             }),
             extra_fields: vec![],
             message: None,
+            ..Default::default()
         };
         let layout = FieldLayout {
             columns: Some(vec![
@@ -977,6 +1144,7 @@ mod tests {
             }),
             extra_fields: vec![],
             message: None,
+            ..Default::default()
         };
         let layout = FieldLayout::default();
         let mut hidden = HashSet::new();

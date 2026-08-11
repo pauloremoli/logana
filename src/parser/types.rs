@@ -168,6 +168,25 @@ pub struct SpanInfo<'a> {
     pub fields: Vec<(&'a str, &'a str)>,
 }
 
+/// One item of a repeated continuation group (see
+/// `crate::config::TemplateGroupConfig`) — a named field group's fields for
+/// one occurrence, e.g. one "operation" in a transaction record. Borrows
+/// from the same line buffer as `DisplayParts`.
+#[derive(Debug, Default)]
+pub struct GroupItem<'a> {
+    pub fields: Vec<(FieldSemantic, &'a str, &'a str)>,
+}
+
+/// Result of walking a record's continuation lines: flat top-level fields
+/// plus, per named group, the finalized list of items collected during the
+/// walk. Returned by [`LogFormatParser::walk_continuation`].
+#[derive(Debug, Default)]
+pub struct ContinuationWalkResult<'a> {
+    pub flat_fields: Vec<(FieldSemantic, &'a str, &'a str)>,
+    /// `(group_name, items)` in declared-group order.
+    pub groups: Vec<(&'static str, Vec<GroupItem<'a>>)>,
+}
+
 /// Zero-copy representation of a parsed log line. All slices borrow from the
 /// original line bytes.
 #[derive(Debug, Default)]
@@ -177,6 +196,11 @@ pub struct DisplayParts<'a> {
     pub target: Option<&'a str>,
     pub span: Option<SpanInfo<'a>>,
     pub extra_fields: Vec<(FieldSemantic, &'a str, &'a str)>,
+    /// Repeated continuation-group items (see
+    /// `crate::config::TemplateGroupConfig`), in declared-group order; each
+    /// group's items are in the order they closed. Empty for every
+    /// parser/schema that doesn't declare a `vec` group.
+    pub field_groups: Vec<(&'static str, Vec<GroupItem<'a>>)>,
     pub message: Option<&'a str>,
 }
 
@@ -241,6 +265,26 @@ pub trait LogFormatParser: Send + Sync + std::fmt::Debug {
         _line: &'a [u8],
     ) -> Vec<(FieldSemantic, &'a str, &'a str)> {
         Vec::new()
+    }
+
+    /// Walks every continuation line of one record (each already known not
+    /// to match this parser's own header), extracting flat fields and/or
+    /// repeated-group items. Defaults to calling `extract_continuation_fields`
+    /// per line with no groups, preserving current behavior for every parser
+    /// that doesn't declare `vec` groups. Only a `CustomParser` built from a
+    /// schema with `vec` groups overrides this to run its group state
+    /// machine. The caller (`ui::tab_state::apply_continuation_fields`)
+    /// still consults `is_continuation_end` itself to decide which lines to
+    /// include in `lines` — this method does not stop the walk on its own.
+    fn walk_continuation<'a>(&self, lines: &[&'a [u8]]) -> ContinuationWalkResult<'a> {
+        let mut flat_fields = Vec::new();
+        for line in lines {
+            flat_fields.extend(self.extract_continuation_fields(line));
+        }
+        ContinuationWalkResult {
+            flat_fields,
+            groups: Vec::new(),
+        }
     }
 
     /// Returns `true` when `parse_line_with_continuation` should walk a
@@ -364,6 +408,50 @@ mod tests {
         assert!(p.span.is_none());
         assert!(p.extra_fields.is_empty());
         assert!(p.message.is_none());
+        assert!(p.field_groups.is_empty());
+    }
+
+    #[derive(Debug)]
+    struct FlatOnlyParser;
+
+    impl LogFormatParser for FlatOnlyParser {
+        fn parse_line<'a>(&self, _line: &'a [u8]) -> Option<DisplayParts<'a>> {
+            None
+        }
+
+        fn collect_field_names(&self, _lines: &[&[u8]]) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn name(&self) -> &str {
+            "flat-only"
+        }
+
+        fn extract_continuation_fields<'a>(
+            &self,
+            line: &'a [u8],
+        ) -> Vec<(FieldSemantic, &'a str, &'a str)> {
+            let s = std::str::from_utf8(line).unwrap();
+            match s.strip_prefix("field1: ") {
+                Some(v) => vec![(FieldSemantic::Extra, "field1", v)],
+                None => Vec::new(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_walk_continuation_default_delegates_to_extract_continuation_fields_per_line() {
+        let parser = FlatOnlyParser;
+        let lines: Vec<&[u8]> = vec![b"field1: 10", b"unmatched", b"field1: 20"];
+        let result = parser.walk_continuation(&lines);
+        assert_eq!(
+            result.flat_fields,
+            vec![
+                (FieldSemantic::Extra, "field1", "10"),
+                (FieldSemantic::Extra, "field1", "20"),
+            ]
+        );
+        assert!(result.groups.is_empty());
     }
 
     #[test]

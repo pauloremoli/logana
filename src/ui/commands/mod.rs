@@ -1714,12 +1714,11 @@ mod tests {
         crate::parser::CustomParser::from_config(&crate::config::CustomSchemaConfig {
             name: "draco".to_string(),
             description: None,
-            template: Some("{level}/{component}: {message}".to_string()),
+            template: Some("{level}/{component}: {message}".to_string().into()),
             pattern: None,
             fields: std::collections::HashMap::new(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         })
         .unwrap()

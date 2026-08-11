@@ -241,6 +241,7 @@ fn classify_otlp_fields<'a>(fields: &[super::json::JsonField<'a>]) -> DisplayPar
         span: None,
         extra_fields,
         message,
+        ..Default::default()
     }
 }
 

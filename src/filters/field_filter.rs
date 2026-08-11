@@ -95,11 +95,67 @@ pub fn encode_field_filter(conditions: &[(String, String)], text: Option<&str>) 
     )
 }
 
+/// Splits a dotted field path into `(group, key)` iff its first dot-segment
+/// exactly matches a group name actually present in `parts.field_groups` —
+/// never a string-prefix guess. This is what lets `field_filter_matches`
+/// tell a group-scoped path (`operations.object_name`) apart from a
+/// `fields.<key>`/plain dotted-looking name that happens to contain a dot:
+/// when no groups are declared, `parts.field_groups` is always empty, so
+/// this always returns `None` and every condition falls through to the
+/// pre-existing [`resolve_field`] path unchanged.
+fn split_group_field_path<'p>(
+    parts: &'p DisplayParts<'_>,
+    field: &'p str,
+) -> Option<(&'p str, &'p str)> {
+    let (group, key) = field.split_once('.')?;
+    parts
+        .field_groups
+        .iter()
+        .any(|(name, _)| *name == group)
+        .then_some((group, key))
+}
+
+/// Whether `parts.field_groups` contains a group named `group` with at
+/// least one item whose `key` field's value contains `pattern` — "any item
+/// matches" semantics for a group-scoped filter condition (e.g.
+/// `operations.object_name=txCarrier1` matching a transaction with several
+/// operations, as long as one of them is `txCarrier1`). Deliberately
+/// independent of [`resolve_field`]'s first-match-only semantics, which
+/// stays untouched for every other field path (its other callers need
+/// single-value resolution). Indexed paths (`operations.0.object_name`) are
+/// out of scope here — group-scoped filtering is "any item" only; per-index
+/// filtering is not supported (display-only, see `field_layout.rs`).
+fn group_field_condition_matches(
+    parts: &DisplayParts<'_>,
+    group: &str,
+    key: &str,
+    pattern: &str,
+) -> bool {
+    parts
+        .field_groups
+        .iter()
+        .filter(|(name, _)| *name == group)
+        .flat_map(|(_, items)| items)
+        .any(|item| {
+            item.fields
+                .iter()
+                .any(|(_, k, v)| *k == key && v.contains(pattern))
+        })
+}
+
 /// Whether every one of `ff`'s conditions matches the parsed line, and (if
-/// present) its free-text condition is found in the raw line.
+/// present) its free-text condition is found in the raw line. A condition
+/// whose field path names a declared continuation group (e.g.
+/// `operations.object_name`) matches if *any* item in that group matches
+/// (see [`group_field_condition_matches`]); every other field path keeps
+/// [`resolve_field`]'s strict first-match-only semantics.
 pub fn field_filter_matches(ff: &FieldFilter, parts: &DisplayParts<'_>, line: &[u8]) -> bool {
     ff.conditions.iter().all(|(field, pattern)| {
-        resolve_field(field, parts).is_some_and(|v| v.contains(pattern.as_str()))
+        if let Some((group, key)) = split_group_field_path(parts, field) {
+            group_field_condition_matches(parts, group, key, pattern)
+        } else {
+            resolve_field(field, parts).is_some_and(|v| v.contains(pattern.as_str()))
+        }
     }) && ff
         .text
         .as_deref()
@@ -440,6 +496,96 @@ mod tests {
         let ff = compound(&[("level", "INFO")], None);
         let parts = make_parts(Some("INFO"), None, None, None, vec![]);
         assert!(field_filter_matches(&ff, &parts, b"anything at all"));
+    }
+
+    // ── group-scoped field filtering (any-item semantics) ───────────────────
+
+    fn make_parts_with_group<'a>(
+        group_name: &'static str,
+        items: Vec<Vec<(&'a str, &'a str)>>,
+    ) -> DisplayParts<'a> {
+        use crate::parser::{FieldSemantic, GroupItem};
+        DisplayParts {
+            field_groups: vec![(
+                group_name,
+                items
+                    .into_iter()
+                    .map(|fields| GroupItem {
+                        fields: fields
+                            .into_iter()
+                            .map(|(k, v)| (FieldSemantic::Extra, k, v))
+                            .collect(),
+                    })
+                    .collect(),
+            )],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_field_filter_matches_group_field_any_item_matches() {
+        let ff = compound(&[("operations.object_name", "txCarrier1")], None);
+        let parts = make_parts_with_group("operations", vec![vec![("object_name", "txCarrier1")]]);
+        assert!(field_filter_matches(&ff, &parts, b"anything"));
+    }
+
+    #[test]
+    fn test_field_filter_matches_group_field_no_item_matches_is_false() {
+        let ff = compound(&[("operations.object_name", "txCarrier9")], None);
+        let parts = make_parts_with_group("operations", vec![vec![("object_name", "txCarrier1")]]);
+        assert!(!field_filter_matches(&ff, &parts, b"anything"));
+    }
+
+    #[test]
+    fn test_field_filter_matches_group_field_second_item_matches() {
+        let ff = compound(&[("operations.object_name", "txCarrier2")], None);
+        let parts = make_parts_with_group(
+            "operations",
+            vec![
+                vec![("object_name", "txCarrier1")],
+                vec![("object_name", "txCarrier2")],
+            ],
+        );
+        assert!(
+            field_filter_matches(&ff, &parts, b"anything"),
+            "should match the second item, proving 'any' not 'first' semantics"
+        );
+    }
+
+    #[test]
+    fn test_split_group_field_path_requires_declared_group_name() {
+        // "operations.object_name" looks group-shaped but no group named
+        // "operations" exists in `parts.field_groups` — must not be treated
+        // as a group path (falls through to `resolve_field` instead).
+        let parts = make_parts(Some("INFO"), None, None, None, vec![]);
+        assert_eq!(
+            split_group_field_path(&parts, "operations.object_name"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_resolve_field_unaffected_by_field_groups_present() {
+        // `resolve_field` is single-value/first-match by design (other
+        // callers, e.g. template rendering, need that) — it must never
+        // itself resolve a group-scoped path, even when the group exists.
+        let parts = make_parts_with_group("operations", vec![vec![("object_name", "txCarrier1")]]);
+        assert_eq!(resolve_field("operations.object_name", &parts), None);
+    }
+
+    #[test]
+    fn test_field_filter_matches_combines_group_and_flat_conditions() {
+        let ff = compound(
+            &[("level", "INFO"), ("operations.object_name", "txCarrier1")],
+            None,
+        );
+        let mut parts =
+            make_parts_with_group("operations", vec![vec![("object_name", "txCarrier1")]]);
+        parts.level = Some("INFO");
+        assert!(field_filter_matches(&ff, &parts, b"anything"));
+
+        parts.level = Some("ERROR");
+        assert!(!field_filter_matches(&ff, &parts, b"anything"));
     }
 
     // ── field_filters_visible ────────────────────────────────────────────────

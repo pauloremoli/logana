@@ -485,12 +485,11 @@ mod tests {
         let cfg = crate::config::CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
-            template: Some("{level} {message}".to_string()),
+            template: Some("{level} {message}".to_string().into()),
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
             multiline: true,
-            continuation: None,
             ..Default::default()
         };
         let parser = CustomParser::from_config(&cfg).unwrap();

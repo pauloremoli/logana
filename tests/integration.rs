@@ -832,7 +832,7 @@ fn test_build_continuation_map_basic() {
 /// instead of collapsing into the preceding record.
 #[test]
 fn test_build_continuation_map_end_pattern_never_starts_a_new_block() {
-    use logana::config::{ContinuationConfig, CustomSchemaConfig};
+    use logana::config::{CustomSchemaConfig, TemplateLine, TemplateValue};
     use logana::parser::CustomParser;
     use logana::ui::build_continuation_map;
 
@@ -841,17 +841,16 @@ fn test_build_continuation_map_end_pattern_never_starts_a_new_block() {
         name: "txn-overlap".to_string(),
         description: None,
         // Deliberately loose: matches both "started at" and "ended at" lines.
-        template: Some("### Transaction {rest}".to_string()),
+        template: Some(TemplateValue::Lines(vec![
+            TemplateLine::Str("### Transaction {rest}".to_string()),
+            TemplateLine::Str("### Transaction ended at: {ended_at}".to_string()),
+        ])),
         pattern: None,
         fields: [("rest".to_string(), "extra".to_string())]
             .into_iter()
             .collect(),
         levels: Default::default(),
         multiline: false,
-        continuation: Some(ContinuationConfig {
-            end_pattern: Some("### Transaction ended at: {ended_at}".to_string()),
-            fields: Vec::new(),
-        }),
     };
     let parser = CustomParser::from_config(&cfg).unwrap();
 
@@ -1038,7 +1037,7 @@ async fn test_include_filter_matching_only_continuation_shows_whole_record() {
 
 #[test]
 fn test_multiline_schema_transaction_end_to_end() {
-    use logana::config::{ContinuationConfig, ContinuationFieldSpec, CustomSchemaConfig};
+    use logana::config::{ContinuationFieldSpec, CustomSchemaConfig, TemplateLine, TemplateValue};
     use logana::parser::{CustomParser, LogFormatParser};
     use logana::ui::build_continuation_map;
 
@@ -1049,36 +1048,34 @@ fn test_multiline_schema_transaction_end_to_end() {
     let cfg = CustomSchemaConfig {
         name: "transaction".to_string(),
         description: None,
-        template: Some("### Start transaction {id}".to_string()),
+        template: Some(TemplateValue::Lines(vec![
+            TemplateLine::Str("### Start transaction {id}".to_string()),
+            TemplateLine::Plain(ContinuationFieldSpec {
+                template: Some("field1: {field1}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            }),
+            TemplateLine::Plain(ContinuationFieldSpec {
+                template: Some("field2: {field2}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            }),
+            TemplateLine::Plain(ContinuationFieldSpec {
+                template: Some("Object {payload}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: true,
+            }),
+            TemplateLine::Str("### End transaction".to_string()),
+        ])),
         pattern: None,
         fields: [("id".to_string(), "extra".to_string())]
             .into_iter()
             .collect(),
         levels: Default::default(),
         multiline: false,
-        continuation: Some(ContinuationConfig {
-            end_pattern: Some("### End transaction".to_string()),
-            fields: vec![
-                ContinuationFieldSpec {
-                    template: Some("field1: {field1}".to_string()),
-                    pattern: None,
-                    fields: Default::default(),
-                    json: false,
-                },
-                ContinuationFieldSpec {
-                    template: Some("field2: {field2}".to_string()),
-                    pattern: None,
-                    fields: Default::default(),
-                    json: false,
-                },
-                ContinuationFieldSpec {
-                    template: Some("Object {payload}".to_string()),
-                    pattern: None,
-                    fields: Default::default(),
-                    json: true,
-                },
-            ],
-        }),
         ..Default::default()
     };
     let parser = CustomParser::from_config(&cfg).expect("schema should compile");
@@ -1134,6 +1131,239 @@ fn test_multiline_schema_transaction_end_to_end() {
 
     let record2 = extract_record(5);
     assert_eq!(record2, vec![("field1".to_string(), "20".to_string())]);
+}
+
+/// The exact worked example from the "repeated field groups" / unified
+/// `template` array feature request: a transaction with one multi-line
+/// `operations` item, two single-line `votes` items and one single-line
+/// `abort_stage` item, using the schema shipped as
+/// `examples/custom-schema-transaction-groups.example.json`.
+const TRANSACTION_GROUPS_LOG: &str = r#"### Transaction 148 started at: 1980-01-06 00:00:22.234
+Status: FAILED
+User: syscom
+Operations:
+operation_type: CREATE
+object {
+  object_name: "txCarrier1"
+  class_name: "ECpriTxArrayCarrierConf"
+  [hlapi.ho.ECpriTxArrayCarrierConf.object] {
+    array: "txArray4a"
+    frequency_Hz: 634500000
+    bandwidth_Hz: 5000000
+    active: INACTIVE
+    type: NR_5G_FDD
+    sfn_offsets {
+      alpha: 0
+      beta: 0
+    }
+    default_subcarrier_spacing: KHZ_15
+    cyclic_prefix: NORMAL_CP
+    reference_level: 0
+    data_mode: TESTRAM
+    gain: 47
+  }
+}
+Voting Round 0:
+ReqId: 148001, Actor: l1low::@10120007, VotingStatus: YES
+ReqId: 148002, Actor: draco::instance1, VotingStatus: FAILED
+Abort stage:
+ReqId: 148003, Actor: l1low::@10120007, AbortStatus: OK
+### Transaction ended at: 1980-01-06 00:00:22.297
+"#;
+
+fn transaction_groups_parser() -> logana::parser::CustomParser {
+    let cfg: logana::config::CustomSchemaConfig = serde_json::from_str(include_str!(
+        "../examples/custom-schema-transaction-groups.example.json"
+    ))
+    .unwrap();
+    logana::parser::CustomParser::from_config(&cfg).expect("schema should compile")
+}
+
+/// Parses the header at line 0 and merges its continuation block, the same
+/// way `ui::tab_state::apply_continuation_fields` does — hand-rolled here
+/// (rather than calling that private function) using only the public
+/// `LogFormatParser` trait methods it's built from.
+fn parse_transaction_groups_header<'a>(
+    parser: &logana::parser::CustomParser,
+    reader: &'a FileReader,
+    cmap: &[usize],
+) -> logana::parser::DisplayParts<'a> {
+    use logana::parser::LogFormatParser;
+
+    let mut parts = parser
+        .parse_line(reader.get_line(0))
+        .expect("header line should parse");
+    let mut lines: Vec<&'a [u8]> = Vec::new();
+    let mut j = 1;
+    while j < cmap.len() && cmap[j] == 0 {
+        let line = reader.get_line(j);
+        if parser.is_continuation_end(line) {
+            break;
+        }
+        lines.push(line);
+        j += 1;
+    }
+    let result = parser.walk_continuation(&lines);
+    parts.extra_fields.extend(result.flat_fields);
+    parts.field_groups = result.groups;
+    parts
+}
+
+#[test]
+fn test_transaction_groups_schema_end_to_end() {
+    use logana::ui::build_continuation_map;
+
+    let parser = transaction_groups_parser();
+    let reader = FileReader::from_bytes(TRANSACTION_GROUPS_LOG.as_bytes().to_vec());
+    let cmap = build_continuation_map(&reader, &parser);
+
+    let parts = parse_transaction_groups_header(&parser, &reader, &cmap);
+
+    let group = |name: &str| {
+        parts
+            .field_groups
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("group '{name}' not found in {:?}", parts.field_groups))
+    };
+    fn field<'a>(
+        fields: &[(logana::parser::FieldSemantic, &'a str, &'a str)],
+        key: &str,
+    ) -> Option<&'a str> {
+        fields
+            .iter()
+            .find(|(_, k, _)| *k == key)
+            .map(|(_, _, v)| *v)
+    }
+
+    // "operations" has exactly one multi-line item. Every `key: value` line
+    // inside it is captured by `auto_fields` — regardless of brace nesting
+    // depth (object_name/class_name at depth 1, frequency_Hz/active/type at
+    // depth 2, alpha/beta at depth 3 under sfn_offsets) or of never having
+    // been declared in the schema — since the schema has no `fields[]` list
+    // at all for this group, only the default `auto_fields: true`.
+    let (_, operations) = group("operations");
+    assert_eq!(operations.len(), 1, "exactly one operation in this record");
+    let op = &operations[0].fields;
+    assert_eq!(field(op, "operation_type"), Some("CREATE"));
+    assert_eq!(field(op, "object_name"), Some("txCarrier1"));
+    assert_eq!(field(op, "class_name"), Some("ECpriTxArrayCarrierConf"));
+    assert_eq!(field(op, "array"), Some("txArray4a"));
+    assert_eq!(field(op, "frequency_Hz"), Some("634500000"));
+    assert_eq!(field(op, "bandwidth_Hz"), Some("5000000"));
+    assert_eq!(field(op, "active"), Some("INACTIVE"));
+    assert_eq!(field(op, "type"), Some("NR_5G_FDD"));
+    assert_eq!(field(op, "alpha"), Some("0"));
+    assert_eq!(field(op, "beta"), Some("0"));
+    assert_eq!(field(op, "default_subcarrier_spacing"), Some("KHZ_15"));
+    assert_eq!(field(op, "cyclic_prefix"), Some("NORMAL_CP"));
+    assert_eq!(field(op, "reference_level"), Some("0"));
+    assert_eq!(field(op, "data_mode"), Some("TESTRAM"));
+    assert_eq!(field(op, "gain"), Some("47"));
+    // Brace-only and bracketed-extension-name lines ("object {",
+    // "[hlapi.ho.ECpriTxArrayCarrierConf.object] {", "sfn_offsets {", "}")
+    // have no `key: value` shape and contribute nothing.
+    assert_eq!(
+        op.len(),
+        15,
+        "exactly the 15 key:value lines, nothing from brace/bracket lines: {op:?}"
+    );
+
+    // "votes" has two single-line items — each `ReqId:...VotingStatus:...`
+    // line is both its own start and its own complete item.
+    let (_, votes) = group("votes");
+    assert_eq!(votes.len(), 2);
+    assert_eq!(field(&votes[0].fields, "req_id"), Some("148001"));
+    assert_eq!(field(&votes[0].fields, "voting_status"), Some("YES"));
+    assert_eq!(field(&votes[1].fields, "req_id"), Some("148002"));
+    assert_eq!(field(&votes[1].fields, "voting_status"), Some("FAILED"));
+
+    // "abort_stage" has one single-line item.
+    let (_, abort_stage) = group("abort_stage");
+    assert_eq!(abort_stage.len(), 1);
+    assert_eq!(field(&abort_stage[0].fields, "req_id"), Some("148003"));
+    assert_eq!(field(&abort_stage[0].fields, "abort_status"), Some("OK"));
+
+    // Flat top-level fields (Status/User) and section-label lines
+    // ("Operations:", "Voting Round 0:", "Abort stage:") are unaffected —
+    // the labels contribute nothing anywhere.
+    assert_eq!(field(&parts.extra_fields, "status"), Some("FAILED"));
+    assert_eq!(field(&parts.extra_fields, "user"), Some("syscom"));
+    assert!(
+        !parts
+            .extra_fields
+            .iter()
+            .any(|(_, k, _)| k.contains("Round"))
+    );
+
+    // Rendered columns show the flattened operations.0.*/votes.0.*/votes.1.*/
+    // abort_stage.0.* shape via the same pipeline the log panel uses.
+    let layout = logana::ui::FieldLayout::default();
+    let hidden = std::collections::HashSet::new();
+    let cols = logana::ui::field_layout::apply_field_layout(&parts, &layout, &hidden, true, None);
+    assert!(
+        cols.contains(&"operations.0.object_name=txCarrier1".to_string()),
+        "{cols:?}"
+    );
+    assert!(
+        cols.contains(&"votes.0.req_id=148001".to_string()),
+        "{cols:?}"
+    );
+    assert!(
+        cols.contains(&"votes.1.req_id=148002".to_string()),
+        "{cols:?}"
+    );
+    assert!(
+        cols.contains(&"abort_stage.0.req_id=148003".to_string()),
+        "{cols:?}"
+    );
+}
+
+#[test]
+fn test_transaction_groups_field_filter_any_item_semantics_end_to_end() {
+    use logana::filters::{FilterDef, FilterType, extract_field_filters, field_filter_matches};
+    use logana::ui::build_continuation_map;
+
+    let parser = transaction_groups_parser();
+    let reader = FileReader::from_bytes(TRANSACTION_GROUPS_LOG.as_bytes().to_vec());
+    let cmap = build_continuation_map(&reader, &parser);
+    let parts = parse_transaction_groups_header(&parser, &reader, &cmap);
+
+    let filter_for = |field: &str, pattern: &str| -> logana::filters::FieldFilter {
+        let def = FilterDef {
+            id: 1,
+            pattern: logana::filters::encode_field_filter(
+                &[(field.to_string(), pattern.to_string())],
+                None,
+            ),
+            filter_type: FilterType::Include,
+            enabled: true,
+            color_config: None,
+            use_regex: false,
+            ignore_case: false,
+            group: None,
+        };
+        let (includes, _) = extract_field_filters(std::slice::from_ref(&def));
+        includes.into_iter().next().unwrap()
+    };
+
+    let matches_operation = filter_for("operations.object_name", "txCarrier1");
+    assert!(field_filter_matches(
+        &matches_operation,
+        &parts,
+        reader.get_line(0)
+    ));
+
+    // Matches only the *second* votes item — proves "any item", not "first".
+    let matches_second_vote = filter_for("votes.voting_status", "FAILED");
+    assert!(field_filter_matches(
+        &matches_second_vote,
+        &parts,
+        reader.get_line(0)
+    ));
+
+    let no_match = filter_for("operations.object_name", "no-such-carrier");
+    assert!(!field_filter_matches(&no_match, &parts, reader.get_line(0)));
 }
 
 /// `main.rs`'s `--headless` CLI path is glue code the library-level

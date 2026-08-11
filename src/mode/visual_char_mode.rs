@@ -1694,7 +1694,8 @@ mod tests {
                 description: None,
                 template: Some(
                     "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"
-                        .to_string(),
+                        .to_string()
+                        .into(),
                 ),
                 pattern: None,
                 fields: [
@@ -1705,7 +1706,6 @@ mod tests {
                 .collect(),
                 levels: Default::default(),
                 multiline: false,
-                continuation: None,
                 ..Default::default()
             })
             .unwrap(),
@@ -1748,7 +1748,6 @@ mod tests {
                 .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         };
         tab.display.format = Some(Arc::new(

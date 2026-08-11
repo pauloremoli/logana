@@ -48,12 +48,17 @@ pub struct CustomLevelValues {
     pub warning: Vec<String>,
 }
 
-/// One matcher tried against each continuation line following a matched
-/// header, in the order declared in `ContinuationConfig::fields`. Same
-/// `template`/`pattern` syntax as the top-level schema, but a continuation
-/// field can only resolve to `extra` or a non-slot semantic role (see
-/// `CustomParser::compile_matcher`'s `allow_slot_roles`) — `timestamp`,
-/// `level`, `target` and `message` belong to the header alone.
+/// One line-matcher: `template` OR `pattern` (mutually exclusive), an
+/// optional field-role map, and an optional JSON-unpack flag. Used
+/// wherever a single line-matcher is needed: the header (element 0 of a
+/// `TemplateValue::Lines` array, or the whole `TemplateValue::Single` case
+/// via `CustomSchemaConfig::template`/`pattern`), a flat line inside a
+/// `template` array (`TemplateLine::Plain`), a group's `template`
+/// (`TemplateGroupConfig::template`), or a group's `fields[]` entry
+/// (`TemplateGroupConfig::fields`). At most one of `template`/`pattern` may
+/// be set (validated in `compile_matcher`). Deserializable from either a
+/// bare JSON string (shorthand for `{"template": "<string>"}`) or the full
+/// object form — see `deserialize_field_spec`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContinuationFieldSpec {
@@ -70,23 +75,172 @@ pub struct ContinuationFieldSpec {
     pub json: bool,
 }
 
-/// Structured extraction for a multiline custom-schema record: fields
-/// carried on lines *after* the header, and where that record's
-/// continuation block ends. See [`CustomSchemaConfig::continuation`].
-#[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+/// String-or-object shorthand for a `ContinuationFieldSpec`-shaped value —
+/// used (via `#[serde(deserialize_with = ...)]` + `#[schemars(with = ...)]`)
+/// for `TemplateGroupConfig::template`/`fields`, the two sites where a bare
+/// `ContinuationFieldSpec` field needs the same leniency `TemplateLine`
+/// itself provides through its own `Str`/`Plain` variant split. Kept
+/// private — the public fields stay typed `ContinuationFieldSpec` (via
+/// `into_spec`), so this is purely a deserialization/schema-documentation
+/// detail, not part of the public config API.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum FieldSpecOrString {
+    Spec(ContinuationFieldSpec),
+    Str(String),
+}
+
+impl FieldSpecOrString {
+    fn into_spec(self) -> ContinuationFieldSpec {
+        match self {
+            FieldSpecOrString::Str(s) => ContinuationFieldSpec {
+                template: Some(s),
+                ..Default::default()
+            },
+            FieldSpecOrString::Spec(spec) => spec,
+        }
+    }
+}
+
+/// Accepts either a bare JSON string (shorthand for
+/// `ContinuationFieldSpec { template: Some(s), .. }`) or the full object
+/// form, for any field typed `ContinuationFieldSpec` that should support
+/// the shorthand (a group's `template`). Reused via
+/// `#[serde(deserialize_with = "...")]`.
+fn deserialize_field_spec<'de, D>(deserializer: D) -> Result<ContinuationFieldSpec, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(FieldSpecOrString::deserialize(deserializer)?.into_spec())
+}
+
+/// Same shorthand as [`deserialize_field_spec`], applied element-wise to a
+/// `Vec<ContinuationFieldSpec>` (used for `TemplateGroupConfig::fields`).
+fn deserialize_field_spec_vec<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ContinuationFieldSpec>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let items = Vec::<FieldSpecOrString>::deserialize(deserializer)?;
+    Ok(items
+        .into_iter()
+        .map(FieldSpecOrString::into_spec)
+        .collect())
+}
+
+/// One repeating group inside a `template` array (e.g. `{"vec":
+/// "operations", "template": "operation_type: {operation_type}"}`): a
+/// `template` matcher that opens a new item (and finalizes the previous
+/// one, if any), plus optional `fields` matchers tried against subsequent
+/// lines while this group's item is open. A group with no `fields` (only
+/// `template`) is a single-line-item group — every matching line closes
+/// the previous item and opens a new one from its own captures (e.g.
+/// "votes", where each line is a complete record on its own). See
+/// `CustomParser`'s continuation-group state machine.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ContinuationConfig {
-    /// Template/literal matched against a continuation line to mark the end
-    /// of this record's continuation block (e.g. `"### End transaction"`).
-    /// Compiled the same way as a header `template`. Optional — when
-    /// absent, the block still ends at the next line matching the header
-    /// (today's continuation-grouping behavior, unchanged).
-    #[serde(default)]
-    pub end_pattern: Option<String>,
-    /// Matchers tried in declared order against each continuation line; the
-    /// first one that matches extracts that line's fields.
-    #[serde(default)]
+pub struct TemplateGroupConfig {
+    /// Name of this group (e.g. `"operations"`) — becomes the dotted-index
+    /// column prefix in rendering (`operations.0.object_name`) and the
+    /// group-scoped filter path (`operations.object_name`).
+    pub vec: String,
+    /// Matcher that opens a new item in this group and finalizes the
+    /// previous one (if any). String-or-object shorthand. Required — every
+    /// group must have a way to detect a new item's start line.
+    /// `#[schemars(with)]` documents the shorthand accurately in the
+    /// generated JSON Schema (the field's actual Rust type stays
+    /// `ContinuationFieldSpec` — `deserialize_with` does the normalizing).
+    #[serde(deserialize_with = "deserialize_field_spec")]
+    #[schemars(with = "FieldSpecOrString")]
+    pub template: ContinuationFieldSpec,
+    /// Matchers tried in declared order (first match wins) against
+    /// subsequent continuation lines while this group has an open item;
+    /// matched fields merge into that item. Empty for a single-line-item
+    /// group. Each entry accepts the string-or-object shorthand.
+    #[serde(default, deserialize_with = "deserialize_field_spec_vec")]
+    #[schemars(with = "Vec<FieldSpecOrString>")]
     pub fields: Vec<ContinuationFieldSpec>,
+    /// When `true`, any continuation line inside this group's open item
+    /// that `fields` didn't already match — but that still looks like
+    /// `key: value` or `key: "value"` (any leading whitespace, quotes
+    /// stripped) — is captured automatically, without a declared matcher.
+    /// Useful when a nested block's field set varies too much per item to
+    /// enumerate. Lines with no `key: value` shape are still ignored.
+    /// Auto-extracted fields always resolve to `extra`. Defaults to `true`.
+    #[serde(default = "default_auto_fields")]
+    pub auto_fields: bool,
+}
+
+fn default_auto_fields() -> bool {
+    true
+}
+
+impl Default for TemplateGroupConfig {
+    fn default() -> Self {
+        TemplateGroupConfig {
+            vec: String::new(),
+            template: ContinuationFieldSpec::default(),
+            fields: Vec::new(),
+            auto_fields: default_auto_fields(),
+        }
+    }
+}
+
+/// One line inside a `TemplateValue::Lines` array. `vec` is the only
+/// reserved word — `Group` (an object shape with `deny_unknown_fields`) is
+/// tried before `Plain`/`Str`, so a malformed `{"vec": ...}` typo can't be
+/// silently absorbed as an empty flat line. There is no dedicated
+/// "terminator" variant: the terminator is inferred positionally by
+/// `CustomParser`'s compiler (the array's last element, if `Plain`/`Str`,
+/// not `Group`) rather than tagged in the type itself.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum TemplateLine {
+    Group(TemplateGroupConfig),
+    /// Full object form of a flat line (role overrides, raw `pattern`, `json`).
+    Plain(ContinuationFieldSpec),
+    /// Bare-string shorthand for `Plain(ContinuationFieldSpec{template:Some(s),..})`.
+    Str(String),
+}
+
+impl TemplateLine {
+    /// Normalizes `Str`/`Plain` into the `ContinuationFieldSpec` a flat
+    /// line (the header at element 0, an ordinary flat line, or the
+    /// positional terminator) compiles from; `None` for `Group`.
+    pub fn as_field_spec(&self) -> Option<ContinuationFieldSpec> {
+        match self {
+            TemplateLine::Str(s) => Some(ContinuationFieldSpec {
+                template: Some(s.clone()),
+                ..Default::default()
+            }),
+            TemplateLine::Plain(spec) => Some(spec.clone()),
+            TemplateLine::Group(_) => None,
+        }
+    }
+}
+
+/// A custom schema's `template`: either a plain single-line template string
+/// (no continuation content at all), or an array describing a full
+/// multi-line record from the header through its continuation lines. See
+/// [`CustomSchemaConfig::template`] for the confirmed shape and rules.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum TemplateValue {
+    Single(String),
+    Lines(Vec<TemplateLine>),
+}
+
+impl From<String> for TemplateValue {
+    fn from(s: String) -> Self {
+        TemplateValue::Single(s)
+    }
+}
+
+impl From<&str> for TemplateValue {
+    fn from(s: &str) -> Self {
+        TemplateValue::Single(s.to_string())
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -99,8 +253,16 @@ pub struct CustomSchemaConfig {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Either a plain single-line template string (no continuation at all)
+    /// or an array describing the full multi-line record: element 0 is
+    /// always the header; subsequent plain elements are flat fields;
+    /// `{"vec": name, "template": ..., "fields": [...], "auto_fields": ...}`
+    /// declares a repeating group; if the array's last element is a plain
+    /// line (not a group), it's the record's terminator, purely by
+    /// position (no marker needed) — symmetric with the header being
+    /// simply the first element. See [`TemplateValue`].
     #[serde(default)]
-    pub template: Option<String>,
+    pub template: Option<TemplateValue>,
     #[serde(default)]
     pub pattern: Option<String>,
     #[serde(default)]
@@ -113,11 +275,6 @@ pub struct CustomSchemaConfig {
     /// fields panel can see their content. See `merges_continuation_into_message`.
     #[serde(default)]
     pub multiline: bool,
-    /// Structured field extraction from continuation lines (as opposed to
-    /// `multiline`'s raw-text folding into `message`). See
-    /// [`ContinuationConfig`].
-    #[serde(default)]
-    pub continuation: Option<ContinuationConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1890,56 +2047,179 @@ mod tests {
     }
 
     #[test]
-    fn test_custom_schema_config_continuation_defaults_none() {
+    fn test_custom_schema_config_template_defaults_none() {
         let cfg: CustomSchemaConfig = serde_json::from_str(r#"{"name": "test"}"#).unwrap();
-        assert!(cfg.continuation.is_none());
+        assert!(cfg.template.is_none());
     }
 
     #[test]
-    fn test_custom_schema_config_continuation_deserializes_from_docs_example() {
-        // The exact JSON shape documented in docs/src/custom-schemas.md's
-        // "Multiline field extraction" section.
-        let json = "{
-            \"name\": \"transaction\",
-            \"template\": \"### Start transaction {id}\",
-            \"fields\": { \"id\": \"extra\" },
-            \"continuation\": {
-                \"end_pattern\": \"### End transaction\",
-                \"fields\": [
-                    { \"template\": \"field1: {field1}\" },
-                    { \"template\": \"field2: {field2}\" },
-                    { \"template\": \"Object {payload}\", \"json\": true }
-                ]
-            }
-        }";
-        let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
-
-        // Compiles successfully via the same path startup validation uses.
-        assert!(crate::parser::CustomParser::from_config(&cfg).is_ok());
-
-        let continuation = cfg.continuation.expect("continuation block should parse");
-        assert_eq!(
-            continuation.end_pattern.as_deref(),
-            Some("### End transaction")
-        );
-        assert_eq!(continuation.fields.len(), 3);
-        assert_eq!(
-            continuation.fields[0].template.as_deref(),
-            Some("field1: {field1}")
-        );
-        assert!(!continuation.fields[0].json);
-        assert_eq!(
-            continuation.fields[2].template.as_deref(),
-            Some("Object {payload}")
-        );
-        assert!(continuation.fields[2].json);
+    fn test_template_value_deserializes_plain_string() {
+        let cfg: CustomSchemaConfig =
+            serde_json::from_str(r#"{"name": "test", "template": "{message}"}"#).unwrap();
+        assert!(matches!(cfg.template, Some(TemplateValue::Single(ref s)) if s == "{message}"));
     }
 
     #[test]
-    fn test_continuation_config_end_pattern_optional() {
-        let json = r#"{"name": "test", "continuation": {"fields": []}}"#;
+    fn test_template_value_deserializes_array() {
+        let cfg: CustomSchemaConfig =
+            serde_json::from_str(r#"{"name": "test", "template": ["{message}"]}"#).unwrap();
+        assert!(matches!(cfg.template, Some(TemplateValue::Lines(ref l)) if l.len() == 1));
+    }
+
+    #[test]
+    fn test_template_line_str_shorthand() {
+        let cfg: CustomSchemaConfig = serde_json::from_str(
+            r#"{"name": "test", "template": ["Start {id}", "field1: {field1}"]}"#,
+        )
+        .unwrap();
+        let Some(TemplateValue::Lines(lines)) = &cfg.template else {
+            panic!("expected Lines")
+        };
+        assert!(matches!(lines[1], TemplateLine::Str(ref s) if s == "field1: {field1}"));
+    }
+
+    #[test]
+    fn test_template_line_plain_object_form() {
+        let json = r#"{"name": "test", "template": [
+            "Start {id}",
+            {"template": "field1: {field1}", "fields": {"field1": "component"}}
+        ]}"#;
         let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
-        assert!(cfg.continuation.unwrap().end_pattern.is_none());
+        let Some(TemplateValue::Lines(lines)) = &cfg.template else {
+            panic!("expected Lines")
+        };
+        let TemplateLine::Plain(spec) = &lines[1] else {
+            panic!("expected Plain")
+        };
+        assert_eq!(spec.template.as_deref(), Some("field1: {field1}"));
+        assert_eq!(
+            spec.fields.get("field1").map(String::as_str),
+            Some("component")
+        );
+    }
+
+    #[test]
+    fn test_template_line_group_shape() {
+        let json = r#"{"name": "test", "template": [
+            "Start {id}",
+            {"vec": "operations", "template": "operation_type: {operation_type}"}
+        ]}"#;
+        let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
+        let Some(TemplateValue::Lines(lines)) = &cfg.template else {
+            panic!("expected Lines")
+        };
+        let TemplateLine::Group(g) = &lines[1] else {
+            panic!("expected Group")
+        };
+        assert_eq!(g.vec, "operations");
+        assert_eq!(
+            g.template.template.as_deref(),
+            Some("operation_type: {operation_type}")
+        );
+    }
+
+    #[test]
+    fn test_template_line_group_template_accepts_object_form() {
+        let json = r#"{"name": "test", "template": [
+            "Start {id}",
+            {"vec": "operations", "template": {"template": "operation_type: {operation_type}", "json": false}}
+        ]}"#;
+        let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
+        let Some(TemplateValue::Lines(lines)) = &cfg.template else {
+            panic!("expected Lines")
+        };
+        let TemplateLine::Group(g) = &lines[1] else {
+            panic!("expected Group")
+        };
+        assert_eq!(
+            g.template.template.as_deref(),
+            Some("operation_type: {operation_type}")
+        );
+    }
+
+    #[test]
+    fn test_template_line_group_fields_accepts_mixed_string_and_object() {
+        let json = r#"{"name": "test", "template": [
+            "Start {id}",
+            {"vec": "operations", "template": "operation_type: {operation_type}",
+             "fields": ["a: {a}", {"template": "b: {b}", "json": true}]}
+        ]}"#;
+        let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
+        let Some(TemplateValue::Lines(lines)) = &cfg.template else {
+            panic!("expected Lines")
+        };
+        let TemplateLine::Group(g) = &lines[1] else {
+            panic!("expected Group")
+        };
+        assert_eq!(g.fields.len(), 2);
+        assert_eq!(g.fields[0].template.as_deref(), Some("a: {a}"));
+        assert!(!g.fields[0].json);
+        assert_eq!(g.fields[1].template.as_deref(), Some("b: {b}"));
+        assert!(g.fields[1].json);
+    }
+
+    #[test]
+    fn test_vec_group_auto_fields_defaults_to_true() {
+        let json = r#"{"name": "test", "template": [
+            "Start {id}",
+            {"vec": "operations", "template": "operation_type: {operation_type}"}
+        ]}"#;
+        let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
+        let Some(TemplateValue::Lines(lines)) = &cfg.template else {
+            panic!("expected Lines")
+        };
+        let TemplateLine::Group(g) = &lines[1] else {
+            panic!("expected Group")
+        };
+        assert!(g.auto_fields);
+    }
+
+    #[test]
+    fn test_vec_group_auto_fields_deserializes_false() {
+        let json = r#"{"name": "test", "template": [
+            "Start {id}",
+            {"vec": "operations", "template": "operation_type: {operation_type}", "auto_fields": false}
+        ]}"#;
+        let cfg: CustomSchemaConfig = serde_json::from_str(json).unwrap();
+        let Some(TemplateValue::Lines(lines)) = &cfg.template else {
+            panic!("expected Lines")
+        };
+        let TemplateLine::Group(g) = &lines[1] else {
+            panic!("expected Group")
+        };
+        assert!(!g.auto_fields);
+    }
+
+    #[test]
+    fn test_template_line_rejects_unknown_shape() {
+        let json = r#"{"name": "test", "template": [
+            "Start {id}",
+            {"typo_key": "oops"}
+        ]}"#;
+        let err = serde_json::from_str::<CustomSchemaConfig>(json).unwrap_err();
+        // A serde-generated "data did not match any variant" style error —
+        // not silently absorbed as an empty flat line.
+        assert!(err.to_string().contains("did not match"), "{err}");
+    }
+
+    #[test]
+    fn test_template_group_config_rejects_unknown_field() {
+        let json = r#"{"name": "test", "template": [
+            "Start {id}",
+            {"vec": "operations", "template": "operation_type: {operation_type}", "bogus": true}
+        ]}"#;
+        let err = serde_json::from_str::<CustomSchemaConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("did not match"), "{err}");
+    }
+
+    #[test]
+    fn test_custom_schema_config_template_field_accepts_bare_string_from_rust() {
+        let cfg = CustomSchemaConfig {
+            name: "test".to_string(),
+            template: Some("Start {id}".to_string().into()),
+            ..Default::default()
+        };
+        assert!(matches!(cfg.template, Some(TemplateValue::Single(_))));
     }
 
     #[test]
@@ -1970,18 +2250,24 @@ mod tests {
     }
 
     #[test]
-    fn test_continuation_config_rejects_unknown_field() {
-        let json = r#"{"name": "test", "continuation": {"fields": [], "bogus": true}}"#;
+    fn test_custom_schema_config_rejects_old_continuation_key() {
+        // The old `continuation: {end_pattern, fields, groups}` shape (a
+        // pre-redesign concept) is not recognized at all anymore — folded
+        // into `template`'s array form instead. A schema still using the
+        // old key gets a clear unknown-field error, not silent misbehavior.
+        let json = r#"{"name": "test", "continuation": {"fields": []}}"#;
         let err = serde_json::from_str::<CustomSchemaConfig>(json).unwrap_err();
-        assert!(err.to_string().contains("bogus"), "{err}");
+        assert!(err.to_string().contains("continuation"), "{err}");
     }
 
     #[test]
-    fn test_continuation_field_spec_rejects_unknown_field() {
-        let json =
-            r#"{"name": "test", "continuation": {"fields": [{"template": "{a}", "bogus": true}]}}"#;
+    fn test_template_line_plain_object_rejects_unknown_field() {
+        let json = r#"{"name": "test", "template": [
+            "Start {id}",
+            {"template": "{a}", "bogus": true}
+        ]}"#;
         let err = serde_json::from_str::<CustomSchemaConfig>(json).unwrap_err();
-        assert!(err.to_string().contains("bogus"), "{err}");
+        assert!(err.to_string().contains("did not match"), "{err}");
     }
 
     #[test]
@@ -2008,6 +2294,28 @@ mod tests {
         assert!(
             errors.is_empty(),
             "example custom schema failed schema validation:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    #[test]
+    fn transaction_groups_example_schema_validates_against_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../schema/custom-schema.schema.json")).unwrap();
+        let example: serde_json::Value = serde_json::from_str(include_str!(
+            "../../examples/custom-schema-transaction-groups.example.json"
+        ))
+        .unwrap();
+
+        let validator = jsonschema::validator_for(&schema).expect("invalid schema");
+        let errors: Vec<String> = validator
+            .iter_errors(&example)
+            .map(|e| format!("{} (path: {})", e, e.instance_path))
+            .collect();
+
+        assert!(
+            errors.is_empty(),
+            "transaction-groups example custom schema failed schema validation:\n{}",
             errors.join("\n")
         );
     }

@@ -1883,21 +1883,22 @@ mod tests {
     /// setup. Confirms the gutter marker survives that combination.
     #[tokio::test]
     async fn test_collapse_indicator_renders_with_nested_schema_and_active_filters() {
+        let lines = vec![
+            crate::config::TemplateLine::Str("### Transaction {id} started at: {ts}".to_string()),
+            crate::config::TemplateLine::Plain(crate::config::ContinuationFieldSpec {
+                template: Some("Status: {status}".to_string()),
+                fields: Default::default(),
+                pattern: None,
+                json: false,
+            }),
+            crate::config::TemplateLine::Str("### Transaction ended at: {ended_at}".to_string()),
+        ];
         let cfg = crate::config::CustomSchemaConfig {
             name: "txn".to_string(),
-            template: Some("### Transaction {id} started at: {ts}".to_string()),
+            template: Some(crate::config::TemplateValue::Lines(lines)),
             fields: [("id".to_string(), "extra".to_string())]
                 .into_iter()
                 .collect(),
-            continuation: Some(crate::config::ContinuationConfig {
-                end_pattern: Some("### Transaction ended at: {ended_at}".to_string()),
-                fields: vec![crate::config::ContinuationFieldSpec {
-                    template: Some("Status: {status}".to_string()),
-                    fields: Default::default(),
-                    pattern: None,
-                    json: false,
-                }],
-            }),
             ..Default::default()
         };
         let parser = crate::parser::CustomParser::from_config(&cfg).unwrap();
@@ -2255,7 +2256,8 @@ mod tests {
                 description: None,
                 template: Some(
                     "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"
-                        .to_string(),
+                        .to_string()
+                        .into(),
                 ),
                 pattern: None,
                 fields: [
@@ -2266,7 +2268,6 @@ mod tests {
                 .collect(),
                 levels: Default::default(),
                 multiline: false,
-                continuation: None,
                 ..Default::default()
             })
             .unwrap(),

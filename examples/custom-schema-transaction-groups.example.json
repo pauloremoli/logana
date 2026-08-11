@@ -1,0 +1,25 @@
+{
+  "name": "transaction-groups",
+  "description": "Transaction log with repeated continuation groups: a variable number of 'operations' (each a multi-line, arbitrarily nested key/value block extracted via auto_fields), 'votes' and 'abort_stage' entries (each one line).",
+  "template": [
+    "### Transaction {id} started at: {started_at}",
+    "Status: {status}",
+    "User: {user}",
+    { "vec": "operations", "template": "operation_type: {operation_type}" },
+    {
+      "vec": "votes",
+      "template": "ReqId: {req_id}, Actor: {actor}, VotingStatus: {voting_status}",
+      "auto_fields": false
+    },
+    {
+      "vec": "abort_stage",
+      "template": "ReqId: {req_id}, Actor: {actor}, AbortStatus: {abort_status}",
+      "auto_fields": false
+    },
+    "### Transaction ended at: {ended_at}"
+  ],
+  "fields": {
+    "id": "extra",
+    "started_at": "extra"
+  }
+}

@@ -17,10 +17,15 @@
       ]
     },
     "template": {
+      "description": "Either a plain single-line template string (no continuation at all) or an array describing the full multi-line record: element 0 is always the header; subsequent plain elements are flat fields; `{\"vec\": name, \"template\": ..., \"fields\": [...], \"auto_fields\": ...}` declares a repeating group; if the array's last element is a plain line (not a group), it's the record's terminator, purely by position (no marker needed) — symmetric with the header being simply the first element. See [`TemplateValue`].",
       "default": null,
-      "type": [
-        "string",
-        "null"
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TemplateValue"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "pattern": {
@@ -52,68 +57,93 @@
       "description": "When `true`, continuation lines that follow a matched record (lines that don't match this schema's `template`/`pattern`) are merged into the record's `message` field, so field filters and the structured fields panel can see their content. See `merges_continuation_into_message`.",
       "default": false,
       "type": "boolean"
-    },
-    "continuation": {
-      "description": "Structured field extraction from continuation lines (as opposed to `multiline`'s raw-text folding into `message`). See [`ContinuationConfig`].",
-      "default": null,
-      "anyOf": [
-        {
-          "$ref": "#/definitions/ContinuationConfig"
-        },
-        {
-          "type": "null"
-        }
-      ]
     }
   },
   "additionalProperties": false,
   "definitions": {
-    "CustomLevelValues": {
-      "description": "Raw `level` field values (case-insensitive) that a custom schema wants classified as Error/Warning, for schemas whose level values (e.g. `SEV1`) don't match any of the built-in keywords (`error`, `warn`, `fatal`, …) that `LogLevel::parse_level` recognizes. Drives both level coloring and the `e`/`w` error/warning navigation keys.",
-      "type": "object",
-      "properties": {
-        "error": {
-          "default": [],
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+    "TemplateValue": {
+      "description": "A custom schema's `template`: either a plain single-line template string (no continuation content at all), or an array describing a full multi-line record from the header through its continuation lines. See [`CustomSchemaConfig::template`] for the confirmed shape and rules.",
+      "anyOf": [
+        {
+          "type": "string"
         },
-        "warning": {
-          "default": [],
+        {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/TemplateLine"
           }
         }
-      },
-      "additionalProperties": false
+      ]
     },
-    "ContinuationConfig": {
-      "description": "Structured extraction for a multiline custom-schema record: fields carried on lines *after* the header, and where that record's continuation block ends. See [`CustomSchemaConfig::continuation`].",
+    "TemplateLine": {
+      "description": "One line inside a `TemplateValue::Lines` array. `vec` is the only reserved word — `Group` (an object shape with `deny_unknown_fields`) is tried before `Plain`/`Str`, so a malformed `{\"vec\": ...}` typo can't be silently absorbed as an empty flat line. There is no dedicated \"terminator\" variant: the terminator is inferred positionally by `CustomParser`'s compiler (the array's last element, if `Plain`/`Str`, not `Group`) rather than tagged in the type itself.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TemplateGroupConfig"
+        },
+        {
+          "description": "Full object form of a flat line (role overrides, raw `pattern`, `json`).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ContinuationFieldSpec"
+            }
+          ]
+        },
+        {
+          "description": "Bare-string shorthand for `Plain(ContinuationFieldSpec{template:Some(s),..})`.",
+          "type": "string"
+        }
+      ]
+    },
+    "TemplateGroupConfig": {
+      "description": "One repeating group inside a `template` array (e.g. `{\"vec\": \"operations\", \"template\": \"operation_type: {operation_type}\"}`): a `template` matcher that opens a new item (and finalizes the previous one, if any), plus optional `fields` matchers tried against subsequent lines while this group's item is open. A group with no `fields` (only `template`) is a single-line-item group — every matching line closes the previous item and opens a new one from its own captures (e.g. \"votes\", where each line is a complete record on its own). See `CustomParser`'s continuation-group state machine.",
       "type": "object",
+      "required": [
+        "template",
+        "vec"
+      ],
       "properties": {
-        "end_pattern": {
-          "description": "Template/literal matched against a continuation line to mark the end of this record's continuation block (e.g. `\"### End transaction\"`). Compiled the same way as a header `template`. Optional — when absent, the block still ends at the next line matching the header (today's continuation-grouping behavior, unchanged).",
-          "default": null,
-          "type": [
-            "string",
-            "null"
+        "vec": {
+          "description": "Name of this group (e.g. `\"operations\"`) — becomes the dotted-index column prefix in rendering (`operations.0.object_name`) and the group-scoped filter path (`operations.object_name`).",
+          "type": "string"
+        },
+        "template": {
+          "description": "Matcher that opens a new item in this group and finalizes the previous one (if any). String-or-object shorthand. Required — every group must have a way to detect a new item's start line. `#[schemars(with)]` documents the shorthand accurately in the generated JSON Schema (the field's actual Rust type stays `ContinuationFieldSpec` — `deserialize_with` does the normalizing).",
+          "allOf": [
+            {
+              "$ref": "#/definitions/FieldSpecOrString"
+            }
           ]
         },
         "fields": {
-          "description": "Matchers tried in declared order against each continuation line; the first one that matches extracts that line's fields.",
+          "description": "Matchers tried in declared order (first match wins) against subsequent continuation lines while this group has an open item; matched fields merge into that item. Empty for a single-line-item group. Each entry accepts the string-or-object shorthand.",
           "default": [],
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ContinuationFieldSpec"
+            "$ref": "#/definitions/FieldSpecOrString"
           }
+        },
+        "auto_fields": {
+          "description": "When `true`, any continuation line inside this group's open item that `fields` didn't already match — but that still looks like `key: value` or `key: \"value\"` (any leading whitespace, quotes stripped) — is captured automatically, without a declared matcher. Useful when a nested block's field set varies too much per item to enumerate. Lines with no `key: value` shape are still ignored. Auto-extracted fields always resolve to `extra`. Defaults to `true`.",
+          "default": true,
+          "type": "boolean"
         }
       },
       "additionalProperties": false
     },
+    "FieldSpecOrString": {
+      "description": "String-or-object shorthand for a `ContinuationFieldSpec`-shaped value — used (via `#[serde(deserialize_with = ...)]` + `#[schemars(with = ...)]`) for `TemplateGroupConfig::template`/`fields`, the two sites where a bare `ContinuationFieldSpec` field needs the same leniency `TemplateLine` itself provides through its own `Str`/`Plain` variant split. Kept private — the public fields stay typed `ContinuationFieldSpec` (via `into_spec`), so this is purely a deserialization/schema-documentation detail, not part of the public config API.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ContinuationFieldSpec"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
     "ContinuationFieldSpec": {
-      "description": "One matcher tried against each continuation line following a matched header, in the order declared in `ContinuationConfig::fields`. Same `template`/`pattern` syntax as the top-level schema, but a continuation field can only resolve to `extra` or a non-slot semantic role (see `CustomParser::compile_matcher`'s `allow_slot_roles`) — `timestamp`, `level`, `target` and `message` belong to the header alone.",
+      "description": "One line-matcher: `template` OR `pattern` (mutually exclusive), an optional field-role map, and an optional JSON-unpack flag. Used wherever a single line-matcher is needed: the header (element 0 of a `TemplateValue::Lines` array, or the whole `TemplateValue::Single` case via `CustomSchemaConfig::template`/`pattern`), a flat line inside a `template` array (`TemplateLine::Plain`), a group's `template` (`TemplateGroupConfig::template`), or a group's `fields[]` entry (`TemplateGroupConfig::fields`). At most one of `template`/`pattern` may be set (validated in `compile_matcher`). Deserializable from either a bare JSON string (shorthand for `{\"template\": \"<string>\"}`) or the full object form — see `deserialize_field_spec`.",
       "type": "object",
       "properties": {
         "template": {
@@ -141,6 +171,27 @@
           "description": "When `true`, this spec must have exactly one placeholder; its captured text is parsed as a JSON object and each key becomes its own `extra` field (the `fields` role map is unused in this case).",
           "default": false,
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CustomLevelValues": {
+      "description": "Raw `level` field values (case-insensitive) that a custom schema wants classified as Error/Warning, for schemas whose level values (e.g. `SEV1`) don't match any of the built-in keywords (`error`, `warn`, `fatal`, …) that `LogLevel::parse_level` recognizes. Drives both level coloring and the `e`/`w` error/warning navigation keys.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warning": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

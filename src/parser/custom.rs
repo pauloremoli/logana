@@ -2,11 +2,13 @@ use std::collections::HashSet;
 
 use regex::Regex;
 
-use crate::config::{ContinuationConfig, CustomSchemaConfig};
+use crate::config::{
+    ContinuationFieldSpec, CustomSchemaConfig, TemplateGroupConfig, TemplateLine, TemplateValue,
+};
 use crate::parser::json::parse_json_line;
 use crate::parser::types::{
-    DisplayParts, FieldSemantic, LogFormatParser, LogLevel, TemplateSegment, push_extra_field,
-    push_field_as,
+    ContinuationWalkResult, DisplayParts, FieldSemantic, GroupItem, LogFormatParser, LogLevel,
+    TemplateSegment, push_extra_field, push_field_as,
 };
 
 enum FieldRole {
@@ -34,7 +36,7 @@ struct LevelOverrides {
     warning: HashSet<String>,
 }
 
-/// One compiled `continuation.fields[]` entry: a matcher tried against each
+/// One compiled flat line-matcher: a matcher tried against each
 /// continuation line, extracting either plain fields via `field_map` or (when
 /// `json_capture` is `Some`) unpacking a single capture's text as JSON.
 #[derive(Debug)]
@@ -42,6 +44,17 @@ struct ContinuationMatcher {
     regex: Regex,
     field_map: Vec<(usize, &'static str, FieldRoleStored)>,
     json_capture: Option<usize>,
+}
+
+/// One compiled `vec` group: a `template` matcher that opens (and finalizes
+/// the previous) item in this group, plus matchers tried against subsequent
+/// lines while an item is open. See `CustomParser::walk_continuation`.
+#[derive(Debug)]
+struct CompiledGroup {
+    name: &'static str,
+    start: ContinuationMatcher,
+    fields: Vec<ContinuationMatcher>,
+    auto_fields: bool,
 }
 
 #[derive(Debug)]
@@ -55,6 +68,7 @@ pub struct CustomParser {
     level_overrides: LevelOverrides,
     multiline: bool,
     continuation_matchers: Vec<ContinuationMatcher>,
+    continuation_groups: Vec<CompiledGroup>,
     end_pattern: Option<Regex>,
 }
 
@@ -346,69 +360,194 @@ fn compile_matcher(
     })
 }
 
-/// Compiles a schema's `continuation` block (if any) into its runtime form.
-fn compile_continuation(
-    cfg: &CustomSchemaConfig,
-) -> Result<(Vec<ContinuationMatcher>, Option<Regex>), String> {
-    let Some(ContinuationConfig {
-        end_pattern,
-        fields,
-    }) = &cfg.continuation
-    else {
-        return Ok((Vec::new(), None));
+/// Compiles one `ContinuationFieldSpec` (a flat line, or a group's
+/// `template`/`fields[]` entry — same shape) into a `ContinuationMatcher`.
+/// Shared so the json-placeholder-count validation isn't duplicated across
+/// call sites.
+fn compile_continuation_matcher(
+    schema_name: &str,
+    spec: &ContinuationFieldSpec,
+) -> Result<ContinuationMatcher, String> {
+    let compiled = compile_matcher(
+        schema_name,
+        &spec.template,
+        &spec.pattern,
+        &spec.fields,
+        false,
+    )?;
+    let json_capture = if spec.json {
+        if compiled.field_map.len() != 1 {
+            return Err(format!(
+                "schema '{schema_name}': a 'json' continuation field must have exactly one placeholder"
+            ));
+        }
+        Some(compiled.field_map[0].0)
+    } else {
+        None
     };
+    Ok(ContinuationMatcher {
+        regex: compiled.regex,
+        field_map: compiled.field_map,
+        json_capture,
+    })
+}
 
-    let end_pattern = end_pattern
-        .as_ref()
-        .map(|p| -> Result<Regex, String> {
-            let pattern_str = compile_template(p)?;
-            Regex::new(&pattern_str).map_err(|e| {
-                format!(
-                    "schema '{}': invalid continuation end_pattern: {e}",
-                    cfg.name
-                )
-            })
-        })
-        .transpose()?;
+/// Compiles one `vec` group: validates its name is non-empty, then compiles
+/// its `template` and `fields` matchers.
+fn compile_template_group(
+    schema_name: &str,
+    group: &TemplateGroupConfig,
+) -> Result<CompiledGroup, String> {
+    if group.vec.is_empty() {
+        return Err(format!(
+            "schema '{schema_name}': 'vec' group name must not be empty"
+        ));
+    }
+    let start = compile_continuation_matcher(schema_name, &group.template)?;
+    let mut fields = Vec::with_capacity(group.fields.len());
+    for spec in &group.fields {
+        fields.push(compile_continuation_matcher(schema_name, spec)?);
+    }
+    let static_name: &'static str = Box::leak(group.vec.clone().into_boxed_str());
+    Ok(CompiledGroup {
+        name: static_name,
+        start,
+        fields,
+        auto_fields: group.auto_fields,
+    })
+}
 
-    let mut matchers = Vec::with_capacity(fields.len());
-    for spec in fields {
-        let compiled = compile_matcher(
-            &cfg.name,
-            &spec.template,
-            &spec.pattern,
-            &spec.fields,
-            false,
-        )?;
-        let json_capture = if spec.json {
-            if compiled.field_map.len() != 1 {
+/// Compiles a schema's `vec` groups, rejecting duplicate group names (a
+/// duplicate would silently merge two groups' items at runtime).
+fn compile_template_groups(
+    schema_name: &str,
+    groups: &[&TemplateGroupConfig],
+) -> Result<Vec<CompiledGroup>, String> {
+    let mut seen_names = HashSet::new();
+    let mut compiled = Vec::with_capacity(groups.len());
+    for group in groups {
+        if !seen_names.insert(group.vec.as_str()) {
+            return Err(format!(
+                "schema '{schema_name}': duplicate 'vec' group name '{}'",
+                group.vec
+            ));
+        }
+        compiled.push(compile_template_group(schema_name, group)?);
+    }
+    Ok(compiled)
+}
+
+/// A schema's compiled continuation data: flat matchers, group matchers,
+/// and the compiled terminator regex — the shape `CustomParser::from_config`
+/// assigns directly to its own fields.
+type CompiledContinuation = (Vec<ContinuationMatcher>, Vec<CompiledGroup>, Option<Regex>);
+
+/// Extracts the header `(template, pattern)` pair from `cfg`, handling both
+/// a `Single`-form `template` and a `Lines`-form `template`'s element 0;
+/// rejects `pattern` used together with a `Lines`-form `template` (the
+/// array's first element is already the header, so having both is
+/// ambiguous).
+fn header_template_and_pattern(
+    cfg: &CustomSchemaConfig,
+) -> Result<(Option<String>, Option<String>), String> {
+    match &cfg.template {
+        None => Ok((None, cfg.pattern.clone())),
+        Some(TemplateValue::Single(s)) => Ok((Some(s.clone()), cfg.pattern.clone())),
+        Some(TemplateValue::Lines(lines)) => {
+            if cfg.pattern.is_some() {
                 return Err(format!(
-                    "schema '{}': a 'json' continuation field must have exactly one placeholder",
+                    "schema '{}': cannot specify both 'pattern' and an array 'template' \
+                     — the array's first element is already the header",
                     cfg.name
                 ));
             }
-            Some(compiled.field_map[0].0)
-        } else {
-            None
-        };
-        matchers.push(ContinuationMatcher {
-            regex: compiled.regex,
-            field_map: compiled.field_map,
-            json_capture,
-        });
+            let Some(first) = lines.first() else {
+                return Err(format!(
+                    "schema '{}': template array must have at least one line (the header)",
+                    cfg.name
+                ));
+            };
+            let Some(spec) = first.as_field_spec() else {
+                return Err(format!(
+                    "schema '{}': the first template array element must be a header \
+                     line (not a 'vec' group)",
+                    cfg.name
+                ));
+            };
+            Ok((spec.template, spec.pattern))
+        }
+    }
+}
+
+/// Compiles everything after the header (element 0) of a `Lines`-form
+/// `template` into the same `(Vec<ContinuationMatcher>, Vec<CompiledGroup>,
+/// Option<Regex>)` triple a `Single`-form (or absent) `template` produces
+/// (all-empty/`None`, since there's no continuation content to compile). If
+/// the array's last element is a plain line (`Plain`/`Str`, not `Group`),
+/// it's popped off and compiled as the terminator instead of an ordinary
+/// flat matcher — purely positional, symmetric with the header being
+/// simply the first element.
+fn compile_template_lines(cfg: &CustomSchemaConfig) -> Result<CompiledContinuation, String> {
+    let Some(TemplateValue::Lines(lines)) = &cfg.template else {
+        return Ok((Vec::new(), Vec::new(), None));
+    };
+    let body = &lines[1..]; // element 0 is the header, handled separately
+
+    let (end_spec, remaining): (Option<ContinuationFieldSpec>, &[TemplateLine]) = match body.last()
+    {
+        Some(TemplateLine::Group(_)) | None => (None, body),
+        Some(line) => (line.as_field_spec(), &body[..body.len() - 1]),
+    };
+
+    let end_pattern = end_spec
+        .map(|spec| -> Result<Regex, String> {
+            let p = spec
+                .template
+                .as_deref()
+                .or(spec.pattern.as_deref())
+                .expect("Plain/Str always sets template or pattern");
+            let pattern_str = compile_template(p)?;
+            Regex::new(&pattern_str)
+                .map_err(|e| format!("schema '{}': invalid template terminator: {e}", cfg.name))
+        })
+        .transpose()?;
+
+    let mut flat_specs = Vec::new();
+    let mut groups = Vec::new();
+    for line in remaining {
+        match line {
+            TemplateLine::Group(g) => groups.push(g),
+            TemplateLine::Plain(_) | TemplateLine::Str(_) => {
+                flat_specs.push(line.as_field_spec().expect("Plain/Str always yield a spec"));
+            }
+        }
     }
 
-    Ok((matchers, end_pattern))
+    let mut matchers = Vec::with_capacity(flat_specs.len());
+    for spec in &flat_specs {
+        matchers.push(compile_continuation_matcher(&cfg.name, spec)?);
+    }
+    let compiled_groups = compile_template_groups(&cfg.name, &groups)?;
+
+    Ok((matchers, compiled_groups, end_pattern))
 }
 
 impl CustomParser {
     pub fn from_config(cfg: &CustomSchemaConfig) -> Result<Self, String> {
-        let header = compile_matcher(&cfg.name, &cfg.template, &cfg.pattern, &cfg.fields, true)?;
+        let (header_template, header_pattern) = header_template_and_pattern(cfg)?;
+        let header = compile_matcher(
+            &cfg.name,
+            &header_template,
+            &header_pattern,
+            &cfg.fields,
+            true,
+        )?;
         let template_segments = header
             .raw_segments
             .map(|raw| resolve_segments(raw, &header.field_map));
         let level_overrides = build_level_overrides(cfg)?;
-        let (continuation_matchers, end_pattern) = compile_continuation(cfg)?;
+        let (continuation_matchers, continuation_groups, end_pattern) =
+            compile_template_lines(cfg)?;
 
         Ok(CustomParser {
             name: cfg.name.clone(),
@@ -418,9 +557,122 @@ impl CustomParser {
             level_overrides,
             multiline: cfg.multiline,
             continuation_matchers,
+            continuation_groups,
             end_pattern,
         })
     }
+
+    /// Tries each declared group's `template` matcher, in declared order,
+    /// against `s`. On the first match, finalizes that group's currently
+    /// open item (if any) into `finished` and opens a new one seeded with
+    /// the matched fields. Returns `true` (line consumed) iff some group's
+    /// `template` matched.
+    fn try_group_starts<'a>(
+        &self,
+        s: &'a str,
+        open: &mut [Option<GroupItem<'a>>],
+        finished: &mut [Vec<GroupItem<'a>>],
+    ) -> bool {
+        for (idx, group) in self.continuation_groups.iter().enumerate() {
+            let Some(fields) = run_continuation_matcher(&group.start, s) else {
+                continue;
+            };
+            if let Some(prev) = open[idx].take() {
+                finished[idx].push(prev);
+            }
+            open[idx] = Some(GroupItem { fields });
+            return true;
+        }
+        false
+    }
+
+    /// Tries each *currently open* group's own `fields` matchers, in
+    /// declared order, against `s`, merging the first match into that
+    /// group's open item; falls back to the group's `auto_fields` generic
+    /// key:value extractor if none of its declared matchers claim the
+    /// line. Returns `true` (line consumed) iff some open group claimed it.
+    fn try_open_group_fields<'a>(&self, s: &'a str, open: &mut [Option<GroupItem<'a>>]) -> bool {
+        for (idx, group) in self.continuation_groups.iter().enumerate() {
+            let Some(item) = open[idx].as_mut() else {
+                continue;
+            };
+            for matcher in &group.fields {
+                if let Some(fields) = run_continuation_matcher(matcher, s) {
+                    item.fields.extend(fields);
+                    return true;
+                }
+            }
+            if group.auto_fields
+                && let Some((key, val)) = try_auto_field(s)
+            {
+                push_extra_field(&mut item.fields, key, val);
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Runs one compiled `ContinuationMatcher` against a line: `None` if the
+/// matcher's regex doesn't match at all (caller should try the next
+/// matcher); `Some(fields)` if it matches, where `fields` is empty only
+/// when the regex matched but a `json` matcher's payload failed to parse
+/// (a regex match still "wins" and stops the first-match-wins search, even
+/// if its json payload turned out to be unparseable).
+fn run_continuation_matcher<'a>(
+    matcher: &ContinuationMatcher,
+    s: &'a str,
+) -> Option<Vec<(FieldSemantic, &'a str, &'a str)>> {
+    let caps = matcher.regex.captures(s)?;
+    let mut out = Vec::new();
+    if let Some(json_idx) = matcher.json_capture {
+        if let Some(text) = caps.get(json_idx).map(|m| m.as_str().trim())
+            && let Some(json_fields) = parse_json_line(text.as_bytes())
+        {
+            for f in &json_fields {
+                push_extra_field(&mut out, f.key, f.value);
+            }
+        }
+        return Some(out);
+    }
+    for (idx, group_name, role) in &matcher.field_map {
+        let Some(val) = caps.get(*idx).map(|m| m.as_str()) else {
+            continue;
+        };
+        match role {
+            FieldRoleStored::Semantic(sem) => push_field_as(&mut out, *sem, val),
+            FieldRoleStored::Extra => push_extra_field(&mut out, group_name, val),
+            FieldRoleStored::Ignored => {}
+        }
+    }
+    Some(out)
+}
+
+/// Lazily-compiled regex backing a group's `auto_fields`: matches a line
+/// shaped like `key: value` or `key: "value"`, with arbitrary leading
+/// whitespace. Deliberately requires a literal `: ` so brace-delimiter
+/// lines (`object {`, `}`) and bracketed extension names (`[hlapi.ho.X] {`)
+/// — which have no colon — never match.
+fn generic_key_value_regex() -> &'static Regex {
+    static REGEX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r#"^\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*):\s+(?P<val>.+?)\s*$"#)
+            .expect("generic key:value regex is valid")
+    })
+}
+
+/// Tries the generic `key: value` auto-extractor (see
+/// `generic_key_value_regex`) against `s`, stripping surrounding quotes
+/// from a quoted value. `None` if `s` doesn't have that shape.
+fn try_auto_field(s: &str) -> Option<(&str, &str)> {
+    let caps = generic_key_value_regex().captures(s)?;
+    let key = caps.name("key")?.as_str();
+    let raw_val = caps.name("val")?.as_str();
+    let val = raw_val
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(raw_val);
+    Some((key, val))
 }
 
 fn named_capture_groups(regex: &Regex) -> Vec<(usize, &str)> {
@@ -452,7 +704,10 @@ impl LogFormatParser for CustomParser {
     }
 
     fn wants_continuation_walk(&self) -> bool {
-        self.multiline || !self.continuation_matchers.is_empty() || self.end_pattern.is_some()
+        self.multiline
+            || !self.continuation_matchers.is_empty()
+            || !self.continuation_groups.is_empty()
+            || self.end_pattern.is_some()
     }
 
     fn is_continuation_end(&self, line: &[u8]) -> bool {
@@ -472,35 +727,59 @@ impl LogFormatParser for CustomParser {
             return Vec::new();
         };
         for matcher in &self.continuation_matchers {
-            let Some(caps) = matcher.regex.captures(s) else {
-                continue;
-            };
-            let mut out = Vec::new();
-            if let Some(json_idx) = matcher.json_capture {
-                let Some(text) = caps.get(json_idx).map(|m| m.as_str().trim()) else {
-                    return out;
-                };
-                let Some(json_fields) = parse_json_line(text.as_bytes()) else {
-                    return out;
-                };
-                for f in &json_fields {
-                    push_extra_field(&mut out, f.key, f.value);
-                }
-                return out;
+            if let Some(fields) = run_continuation_matcher(matcher, s) {
+                return fields;
             }
-            for (idx, group_name, role) in &matcher.field_map {
-                let Some(val) = caps.get(*idx).map(|m| m.as_str()) else {
-                    continue;
-                };
-                match role {
-                    FieldRoleStored::Semantic(sem) => push_field_as(&mut out, *sem, val),
-                    FieldRoleStored::Extra => push_extra_field(&mut out, group_name, val),
-                    FieldRoleStored::Ignored => {}
-                }
-            }
-            return out;
         }
         Vec::new()
+    }
+
+    fn walk_continuation<'a>(&self, lines: &[&'a [u8]]) -> ContinuationWalkResult<'a> {
+        if self.continuation_groups.is_empty() {
+            let mut flat_fields = Vec::new();
+            for line in lines {
+                flat_fields.extend(self.extract_continuation_fields(line));
+            }
+            return ContinuationWalkResult {
+                flat_fields,
+                groups: Vec::new(),
+            };
+        }
+
+        let mut flat_fields = Vec::new();
+        let group_count = self.continuation_groups.len();
+        let mut open: Vec<Option<GroupItem<'a>>> = (0..group_count).map(|_| None).collect();
+        let mut finished: Vec<Vec<GroupItem<'a>>> = (0..group_count).map(|_| Vec::new()).collect();
+
+        for &line in lines {
+            let Ok(s) = std::str::from_utf8(line) else {
+                continue;
+            };
+            if self.try_group_starts(s, &mut open, &mut finished) {
+                continue;
+            }
+            if self.try_open_group_fields(s, &mut open) {
+                continue;
+            }
+            flat_fields.extend(self.extract_continuation_fields(line));
+        }
+
+        for (idx, slot) in open.into_iter().enumerate() {
+            if let Some(item) = slot {
+                finished[idx].push(item);
+            }
+        }
+
+        let groups = self
+            .continuation_groups
+            .iter()
+            .zip(finished)
+            .map(|(g, items)| (g.name, items))
+            .collect();
+        ContinuationWalkResult {
+            flat_fields,
+            groups,
+        }
     }
 
     fn parse_line<'a>(&self, line: &'a [u8]) -> Option<DisplayParts<'a>> {
@@ -639,15 +918,27 @@ impl CustomParser {
     /// already in `seen` (in first-seen order), and inserting them into
     /// `seen`. Shared by both `collect_field_names` branches.
     fn continuation_field_names(&self, lines: &[&[u8]], seen: &mut HashSet<String>) -> Vec<String> {
+        let result = self.walk_continuation(lines);
         let mut names = Vec::new();
-        for &line in lines {
-            for (sem, key, _) in self.extract_continuation_fields(line) {
-                let name = match sem {
-                    FieldSemantic::Extra => key.to_string(),
-                    other => other.canonical_name().to_string(),
-                };
-                if seen.insert(name.clone()) {
-                    names.push(name);
+        for (sem, key, _) in &result.flat_fields {
+            let name = match sem {
+                FieldSemantic::Extra => key.to_string(),
+                other => other.canonical_name().to_string(),
+            };
+            if seen.insert(name.clone()) {
+                names.push(name);
+            }
+        }
+        for (group_name, items) in &result.groups {
+            for item in items {
+                for (sem, key, _) in &item.fields {
+                    let name = match sem {
+                        FieldSemantic::Extra => format!("{group_name}.{key}"),
+                        other => format!("{group_name}.{}", other.canonical_name()),
+                    };
+                    if seen.insert(name.clone()) {
+                        names.push(name);
+                    }
                 }
             }
         }
@@ -665,7 +956,8 @@ mod tests {
             description: None,
             template: Some(
                 "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}"
-                    .to_string(),
+                    .to_string()
+                    .into(),
             ),
             pattern: None,
             fields: [
@@ -676,7 +968,6 @@ mod tests {
             .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         })
         .unwrap()
@@ -811,14 +1102,13 @@ mod tests {
         let parser = CustomParser::from_config(&CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
-            template: Some("{pid} {level} {message}".to_string()),
+            template: Some("{pid} {level} {message}".to_string().into()),
             pattern: None,
             fields: [("pid".to_string(), "ignored".to_string())]
                 .into_iter()
                 .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         })
         .unwrap();
@@ -850,7 +1140,6 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         })
         .unwrap();
@@ -874,7 +1163,6 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         });
         assert!(result.is_err());
@@ -886,12 +1174,11 @@ mod tests {
         let result = CustomParser::from_config(&CustomSchemaConfig {
             name: "bad".to_string(),
             description: None,
-            template: Some("{foo}".to_string()),
+            template: Some("{foo}".to_string().into()),
             pattern: Some("(?P<foo>.*)".to_string()),
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         });
         assert!(result.is_err());
@@ -908,7 +1195,6 @@ mod tests {
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         });
         assert!(result.is_err());
@@ -920,12 +1206,15 @@ mod tests {
         let parser = CustomParser::from_config(&CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
-            template: Some("{level} {component} {unknown_field} {message}".to_string()),
+            template: Some(
+                "{level} {component} {unknown_field} {message}"
+                    .to_string()
+                    .into(),
+            ),
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         })
         .unwrap();
@@ -972,14 +1261,13 @@ mod tests {
         let result = CustomParser::from_config(&CustomSchemaConfig {
             name: "bad".to_string(),
             description: None,
-            template: Some("{foo}".to_string()),
+            template: Some("{foo}".to_string().into()),
             pattern: None,
             fields: [("foo".to_string(), "not_a_role".to_string())]
                 .into_iter()
                 .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         });
         assert!(result.is_err());
@@ -1007,12 +1295,11 @@ mod tests {
         let parser = CustomParser::from_config(&CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
-            template: Some("{level} {message}".to_string()),
+            template: Some("{level} {message}".to_string().into()),
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
             multiline: true,
-            continuation: None,
             ..Default::default()
         })
         .unwrap();
@@ -1023,7 +1310,7 @@ mod tests {
         CustomParser::from_config(&CustomSchemaConfig {
             name: "sev".to_string(),
             description: None,
-            template: Some("{level} {message}".to_string()),
+            template: Some("{level} {message}".to_string().into()),
             pattern: None,
             fields: Default::default(),
             levels: crate::config::CustomLevelValues {
@@ -1031,7 +1318,6 @@ mod tests {
                 warning: warning.iter().map(|s| s.to_string()).collect(),
             },
             multiline: false,
-            continuation: None,
             ..Default::default()
         })
         .unwrap()
@@ -1075,7 +1361,7 @@ mod tests {
         let result = CustomParser::from_config(&CustomSchemaConfig {
             name: "bad".to_string(),
             description: None,
-            template: Some("{level} {message}".to_string()),
+            template: Some("{level} {message}".to_string().into()),
             pattern: None,
             fields: Default::default(),
             levels: crate::config::CustomLevelValues {
@@ -1083,7 +1369,6 @@ mod tests {
                 warning: vec!["sev1".to_string()],
             },
             multiline: false,
-            continuation: None,
             ..Default::default()
         });
         assert!(result.is_err());
@@ -1095,14 +1380,13 @@ mod tests {
         let parser = CustomParser::from_config(&CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
-            template: Some("{pid} {message}".to_string()),
+            template: Some("{pid} {message}".to_string().into()),
             pattern: None,
             fields: [("pid".to_string(), "ignored".to_string())]
                 .into_iter()
                 .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         })
         .unwrap();
@@ -1127,12 +1411,15 @@ mod tests {
         let parser = CustomParser::from_config(&CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
-            template: Some("{timestamp} {level} {target} {zebra} {alpha} {message}".to_string()),
+            template: Some(
+                "{timestamp} {level} {target} {zebra} {alpha} {message}"
+                    .to_string()
+                    .into(),
+            ),
             pattern: None,
             fields: Default::default(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         })
         .unwrap();
@@ -1182,14 +1469,13 @@ mod tests {
         let parser = CustomParser::from_config(&CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
-            template: Some("{host} {message}".to_string()),
+            template: Some("{host} {message}".to_string().into()),
             pattern: None,
             fields: [("host".to_string(), "hostname".to_string())]
                 .into_iter()
                 .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         })
         .unwrap();
@@ -1204,14 +1490,13 @@ mod tests {
         let parser = CustomParser::from_config(&CustomSchemaConfig {
             name: "test".to_string(),
             description: None,
-            template: Some("{pid} {message}".to_string()),
+            template: Some("{pid} {message}".to_string().into()),
             pattern: None,
             fields: [("pid".to_string(), "ignored".to_string())]
                 .into_iter()
                 .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: None,
             ..Default::default()
         })
         .unwrap();
@@ -1223,23 +1508,47 @@ mod tests {
 
     // ── continuation field extraction ────────────────────────────────────
 
-    use crate::config::ContinuationFieldSpec;
+    use crate::config::{ContinuationFieldSpec, TemplateGroupConfig, TemplateLine, TemplateValue};
 
+    /// Builds a `template` array: header line, each `fields` entry as a
+    /// flat `Plain` line, terminated by `"### End transaction"` (the
+    /// array's last element, purely positional — see `TemplateLine`).
     fn transaction_schema_config(fields: Vec<ContinuationFieldSpec>) -> CustomSchemaConfig {
+        let mut lines = vec![TemplateLine::Str("### Start transaction {id}".to_string())];
+        lines.extend(fields.into_iter().map(TemplateLine::Plain));
+        lines.push(TemplateLine::Str("### End transaction".to_string()));
         CustomSchemaConfig {
             name: "transaction".to_string(),
             description: None,
-            template: Some("### Start transaction {id}".to_string()),
+            template: Some(TemplateValue::Lines(lines)),
             pattern: None,
             fields: [("id".to_string(), "extra".to_string())]
                 .into_iter()
                 .collect(),
             levels: Default::default(),
             multiline: false,
-            continuation: Some(crate::config::ContinuationConfig {
-                end_pattern: Some("### End transaction".to_string()),
-                fields,
-            }),
+            ..Default::default()
+        }
+    }
+
+    /// Same shape as `transaction_schema_config`, plus a `vec` group
+    /// appended just before the terminator.
+    fn transaction_schema_config_with_group(group: TemplateGroupConfig) -> CustomSchemaConfig {
+        let lines = vec![
+            TemplateLine::Str("### Start transaction {id}".to_string()),
+            TemplateLine::Group(group),
+            TemplateLine::Str("### End transaction".to_string()),
+        ];
+        CustomSchemaConfig {
+            name: "transaction".to_string(),
+            description: None,
+            template: Some(TemplateValue::Lines(lines)),
+            pattern: None,
+            fields: [("id".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            levels: Default::default(),
+            multiline: false,
             ..Default::default()
         }
     }
@@ -1416,5 +1725,486 @@ mod tests {
         let sample: Vec<&[u8]> = vec![b"### Start transaction 42", b"field1: 10"];
         let names = parser.collect_field_names(&sample);
         assert_eq!(names, vec!["id".to_string(), "field1".to_string()]);
+    }
+
+    // ── vec groups ───────────────────────────────────────────────────────
+
+    fn plain_field_spec(template: &str) -> ContinuationFieldSpec {
+        ContinuationFieldSpec {
+            template: Some(template.to_string()),
+            pattern: None,
+            fields: Default::default(),
+            json: false,
+        }
+    }
+
+    fn votes_group() -> TemplateGroupConfig {
+        TemplateGroupConfig {
+            vec: "votes".to_string(),
+            template: plain_field_spec("ReqId: {req_id}, VotingStatus: {voting_status}"),
+            fields: Vec::new(),
+            auto_fields: false,
+        }
+    }
+
+    fn operations_group() -> TemplateGroupConfig {
+        TemplateGroupConfig {
+            vec: "operations".to_string(),
+            template: plain_field_spec("operation_type: {operation_type}"),
+            fields: vec![
+                plain_field_spec("object_name: {object_name}"),
+                plain_field_spec("frequency_Hz: {frequency_Hz}"),
+            ],
+            auto_fields: false,
+        }
+    }
+
+    fn operations_group_auto() -> TemplateGroupConfig {
+        TemplateGroupConfig {
+            vec: "operations".to_string(),
+            template: plain_field_spec("operation_type: {operation_type}"),
+            fields: Vec::new(),
+            auto_fields: true,
+        }
+    }
+
+    #[test]
+    fn test_template_group_start_rejects_slot_role() {
+        let group = TemplateGroupConfig {
+            vec: "operations".to_string(),
+            template: ContinuationFieldSpec {
+                template: Some("ts: {when}".to_string()),
+                pattern: None,
+                fields: [("when".to_string(), "timestamp".to_string())]
+                    .into_iter()
+                    .collect(),
+                json: false,
+            },
+            fields: Vec::new(),
+            auto_fields: false,
+        };
+        let result = CustomParser::from_config(&transaction_schema_config_with_group(group));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timestamp"));
+    }
+
+    #[test]
+    fn test_template_group_fields_entry_rejects_slot_role() {
+        let group = TemplateGroupConfig {
+            vec: "operations".to_string(),
+            template: plain_field_spec("operation_type: {operation_type}"),
+            fields: vec![ContinuationFieldSpec {
+                template: Some("ts: {when}".to_string()),
+                pattern: None,
+                fields: [("when".to_string(), "timestamp".to_string())]
+                    .into_iter()
+                    .collect(),
+                json: false,
+            }],
+            auto_fields: false,
+        };
+        let result = CustomParser::from_config(&transaction_schema_config_with_group(group));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timestamp"));
+    }
+
+    #[test]
+    fn test_template_group_duplicate_name_is_rejected() {
+        let lines = vec![
+            TemplateLine::Str("### Start transaction {id}".to_string()),
+            TemplateLine::Group(TemplateGroupConfig {
+                vec: "operations".to_string(),
+                template: plain_field_spec("a: {a}"),
+                fields: Vec::new(),
+                auto_fields: false,
+            }),
+            TemplateLine::Group(TemplateGroupConfig {
+                vec: "operations".to_string(),
+                template: plain_field_spec("b: {b}"),
+                fields: Vec::new(),
+                auto_fields: false,
+            }),
+            TemplateLine::Str("### End transaction".to_string()),
+        ];
+        let cfg = CustomSchemaConfig {
+            name: "transaction".to_string(),
+            template: Some(TemplateValue::Lines(lines)),
+            fields: [("id".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let result = CustomParser::from_config(&cfg);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("operations"), "{err}");
+        assert!(err.contains("duplicate"), "{err}");
+    }
+
+    #[test]
+    fn test_template_group_start_json_field_requires_exactly_one_placeholder() {
+        let group = TemplateGroupConfig {
+            vec: "operations".to_string(),
+            template: ContinuationFieldSpec {
+                template: Some("Object literal".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: true,
+            },
+            fields: Vec::new(),
+            auto_fields: false,
+        };
+        let result = CustomParser::from_config(&transaction_schema_config_with_group(group));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exactly one placeholder"));
+    }
+
+    #[test]
+    fn test_template_group_empty_name_is_rejected() {
+        let group = TemplateGroupConfig {
+            vec: String::new(),
+            template: plain_field_spec("operation_type: {operation_type}"),
+            fields: Vec::new(),
+            auto_fields: false,
+        };
+        let result = CustomParser::from_config(&transaction_schema_config_with_group(group));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn test_walk_continuation_single_line_group_each_match_is_its_own_item() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config_with_group(votes_group()))
+                .unwrap();
+
+        let lines: Vec<&[u8]> = vec![
+            b"ReqId: 1, VotingStatus: YES",
+            b"ReqId: 2, VotingStatus: FAILED",
+        ];
+        let result = parser.walk_continuation(&lines);
+        assert_eq!(result.groups.len(), 1);
+        let (name, items) = &result.groups[0];
+        assert_eq!(*name, "votes");
+        assert_eq!(items.len(), 2);
+        assert!(
+            items[0]
+                .fields
+                .contains(&(FieldSemantic::Extra, "req_id", "1"))
+        );
+        assert!(
+            items[0]
+                .fields
+                .contains(&(FieldSemantic::Extra, "voting_status", "YES"))
+        );
+        assert!(
+            items[1]
+                .fields
+                .contains(&(FieldSemantic::Extra, "req_id", "2"))
+        );
+        assert!(
+            items[1]
+                .fields
+                .contains(&(FieldSemantic::Extra, "voting_status", "FAILED"))
+        );
+    }
+
+    #[test]
+    fn test_walk_continuation_multi_line_group_accumulates_fields_until_next_start() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config_with_group(operations_group()))
+                .unwrap();
+
+        let lines: Vec<&[u8]> = vec![
+            b"operation_type: CREATE",
+            b"object_name: txCarrier1",
+            b"frequency_Hz: 634500000",
+            b"operation_type: DELETE",
+            b"object_name: txCarrier2",
+        ];
+        let result = parser.walk_continuation(&lines);
+        let (name, items) = &result.groups[0];
+        assert_eq!(*name, "operations");
+        assert_eq!(items.len(), 2);
+        assert!(
+            items[0]
+                .fields
+                .contains(&(FieldSemantic::Extra, "operation_type", "CREATE"))
+        );
+        assert!(
+            items[0]
+                .fields
+                .contains(&(FieldSemantic::Extra, "object_name", "txCarrier1"))
+        );
+        assert!(
+            items[0]
+                .fields
+                .contains(&(FieldSemantic::Extra, "frequency_Hz", "634500000"))
+        );
+        assert!(
+            items[1]
+                .fields
+                .contains(&(FieldSemantic::Extra, "operation_type", "DELETE"))
+        );
+        assert!(
+            items[1]
+                .fields
+                .contains(&(FieldSemantic::Extra, "object_name", "txCarrier2"))
+        );
+        assert!(!items[1].fields.iter().any(|(_, k, _)| *k == "frequency_Hz"));
+    }
+
+    #[test]
+    fn test_walk_continuation_finalizes_open_item_at_end_of_lines() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config_with_group(operations_group()))
+                .unwrap();
+
+        let lines: Vec<&[u8]> = vec![b"operation_type: CREATE", b"object_name: txCarrier1"];
+        let result = parser.walk_continuation(&lines);
+        let (_, items) = &result.groups[0];
+        assert_eq!(items.len(), 1);
+        assert!(
+            items[0]
+                .fields
+                .contains(&(FieldSemantic::Extra, "object_name", "txCarrier1"))
+        );
+    }
+
+    #[test]
+    fn test_walk_continuation_concurrent_groups_stay_independent() {
+        let lines = vec![
+            TemplateLine::Str("### Start transaction {id}".to_string()),
+            TemplateLine::Group(operations_group()),
+            TemplateLine::Group(votes_group()),
+            TemplateLine::Str("### End transaction".to_string()),
+        ];
+        let cfg = CustomSchemaConfig {
+            name: "transaction".to_string(),
+            template: Some(TemplateValue::Lines(lines)),
+            fields: [("id".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let parser = CustomParser::from_config(&cfg).unwrap();
+
+        let body: Vec<&[u8]> = vec![
+            b"operation_type: CREATE",
+            b"object_name: txCarrier1",
+            b"ReqId: 1, VotingStatus: YES",
+            b"ReqId: 2, VotingStatus: FAILED",
+        ];
+        let result = parser.walk_continuation(&body);
+
+        let ops = result
+            .groups
+            .iter()
+            .find(|(n, _)| *n == "operations")
+            .unwrap();
+        assert_eq!(ops.1.len(), 1, "operations item is finalized at record end");
+        assert!(
+            ops.1[0]
+                .fields
+                .contains(&(FieldSemantic::Extra, "object_name", "txCarrier1"))
+        );
+
+        let votes = result.groups.iter().find(|(n, _)| *n == "votes").unwrap();
+        assert_eq!(votes.1.len(), 2, "votes lines never leak into operations");
+    }
+
+    #[test]
+    fn test_walk_continuation_fallthrough_order_and_ignored_lines() {
+        let lines = vec![
+            TemplateLine::Str("### Start transaction {id}".to_string()),
+            TemplateLine::Str("Status: {status}".to_string()),
+            TemplateLine::Group(votes_group()),
+            TemplateLine::Str("### End transaction".to_string()),
+        ];
+        let cfg = CustomSchemaConfig {
+            name: "transaction".to_string(),
+            template: Some(TemplateValue::Lines(lines)),
+            fields: [("id".to_string(), "extra".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let parser = CustomParser::from_config(&cfg).unwrap();
+
+        let body: Vec<&[u8]> = vec![
+            b"Status: FAILED",
+            b"Voting Round 0:",
+            b"ReqId: 1, VotingStatus: YES",
+            b"nonsense line",
+        ];
+        let result = parser.walk_continuation(&body);
+
+        assert_eq!(
+            result.flat_fields,
+            vec![(FieldSemantic::Extra, "status", "FAILED")],
+            "only the flat Status line contributes — section labels and unmatched lines are ignored"
+        );
+        let (_, votes) = &result.groups[0];
+        assert_eq!(votes.len(), 1);
+    }
+
+    #[test]
+    fn test_walk_continuation_auto_fields_extracts_generic_key_value_lines() {
+        let parser = CustomParser::from_config(&transaction_schema_config_with_group(
+            operations_group_auto(),
+        ))
+        .unwrap();
+
+        let lines: Vec<&[u8]> = vec![
+            b"operation_type: CREATE",
+            b"object {",
+            b"  object_name: \"txCarrier1\"",
+            b"  [hlapi.ho.ECpriTxArrayCarrierConf.object] {",
+            b"    frequency_Hz: 634500000",
+            b"    sfn_offsets {",
+            b"      alpha: 0",
+            b"      beta: 0",
+            b"    }",
+            b"  }",
+            b"}",
+        ];
+        let result = parser.walk_continuation(&lines);
+        let (_, items) = &result.groups[0];
+        assert_eq!(items.len(), 1);
+        let fields = &items[0].fields;
+        assert!(fields.contains(&(FieldSemantic::Extra, "object_name", "txCarrier1")));
+        assert!(fields.contains(&(FieldSemantic::Extra, "frequency_Hz", "634500000")));
+        assert!(fields.contains(&(FieldSemantic::Extra, "alpha", "0")));
+        assert!(fields.contains(&(FieldSemantic::Extra, "beta", "0")));
+    }
+
+    #[test]
+    fn test_walk_continuation_auto_fields_strips_quotes_from_quoted_values() {
+        let parser = CustomParser::from_config(&transaction_schema_config_with_group(
+            operations_group_auto(),
+        ))
+        .unwrap();
+
+        let lines: Vec<&[u8]> = vec![
+            b"operation_type: CREATE",
+            b"  class_name: \"ECpriTxArrayCarrierConf\"",
+            b"  active: INACTIVE",
+        ];
+        let result = parser.walk_continuation(&lines);
+        let fields = &result.groups[0].1[0].fields;
+        assert!(fields.contains(&(
+            FieldSemantic::Extra,
+            "class_name",
+            "ECpriTxArrayCarrierConf"
+        )));
+        assert!(fields.contains(&(FieldSemantic::Extra, "active", "INACTIVE")));
+    }
+
+    #[test]
+    fn test_walk_continuation_auto_fields_ignores_brace_only_and_bracket_lines() {
+        let parser = CustomParser::from_config(&transaction_schema_config_with_group(
+            operations_group_auto(),
+        ))
+        .unwrap();
+
+        let lines: Vec<&[u8]> = vec![
+            b"operation_type: CREATE",
+            b"object {",
+            b"  [hlapi.ho.ECpriTxArrayCarrierConf.object] {",
+            b"  }",
+            b"}",
+        ];
+        let result = parser.walk_continuation(&lines);
+        let fields = &result.groups[0].1[0].fields;
+        assert_eq!(
+            fields,
+            &vec![(FieldSemantic::Extra, "operation_type", "CREATE")]
+        );
+    }
+
+    #[test]
+    fn test_walk_continuation_auto_fields_explicit_fields_take_priority_over_auto() {
+        let group = TemplateGroupConfig {
+            vec: "operations".to_string(),
+            template: plain_field_spec("operation_type: {operation_type}"),
+            fields: vec![ContinuationFieldSpec {
+                template: Some("gain: {gain}".to_string()),
+                pattern: None,
+                fields: [("gain".to_string(), "feature".to_string())]
+                    .into_iter()
+                    .collect(),
+                json: false,
+            }],
+            auto_fields: true,
+        };
+        let parser =
+            CustomParser::from_config(&transaction_schema_config_with_group(group)).unwrap();
+
+        let lines: Vec<&[u8]> = vec![b"operation_type: CREATE", b"gain: 47"];
+        let result = parser.walk_continuation(&lines);
+        let fields = &result.groups[0].1[0].fields;
+        assert!(fields.contains(&(FieldSemantic::Feature, "feature", "47")));
+        assert!(
+            !fields
+                .iter()
+                .any(|(sem, k, _)| *sem == FieldSemantic::Extra && *k == "gain")
+        );
+    }
+
+    #[test]
+    fn test_walk_continuation_auto_fields_false_by_default_ignores_unmatched_lines() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config_with_group(operations_group()))
+                .unwrap();
+
+        let lines: Vec<&[u8]> = vec![b"operation_type: CREATE", b"unrelated_key: some_value"];
+        let result = parser.walk_continuation(&lines);
+        let fields = &result.groups[0].1[0].fields;
+        assert_eq!(
+            fields,
+            &vec![(FieldSemantic::Extra, "operation_type", "CREATE")]
+        );
+    }
+
+    #[test]
+    fn test_walk_continuation_matches_legacy_extract_continuation_fields_loop_when_no_groups() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config(vec![ContinuationFieldSpec {
+                template: Some("field1: {field1}".to_string()),
+                pattern: None,
+                fields: Default::default(),
+                json: false,
+            }]))
+            .unwrap();
+        let lines: Vec<&[u8]> = vec![b"field1: 10", b"unmatched", b"field1: 20"];
+        let legacy: Vec<(FieldSemantic, &str, &str)> = lines
+            .iter()
+            .flat_map(|l| parser.extract_continuation_fields(l))
+            .collect();
+        let walked = parser.walk_continuation(&lines);
+        assert!(walked.groups.is_empty());
+        assert_eq!(legacy, walked.flat_fields);
+    }
+
+    #[test]
+    fn test_collect_field_names_includes_group_field_names() {
+        let parser =
+            CustomParser::from_config(&transaction_schema_config_with_group(operations_group()))
+                .unwrap();
+
+        let sample: Vec<&[u8]> = vec![
+            b"### Start transaction 42",
+            b"operation_type: CREATE",
+            b"object_name: txCarrier1",
+        ];
+        let names = parser.collect_field_names(&sample);
+        assert!(
+            names.contains(&"operations.operation_type".to_string()),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&"operations.object_name".to_string()),
+            "{names:?}"
+        );
     }
 }
