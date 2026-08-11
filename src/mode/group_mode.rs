@@ -123,7 +123,9 @@ impl Mode for GroupManagementMode {
         if kb.navigation.scroll_up.matches(key, modifiers) {
             return self.navigate(tab, -1);
         }
-        if kb.filter.toggle_all_filters.matches(key, modifiers) {
+        if kb.filter.toggle_all_filters.matches(key, modifiers)
+            || kb.filter.toggle_filter.matches(key, modifiers)
+        {
             return self.toggle_group(tab).await;
         }
         if kb.filter.edit_filter.matches(key, modifiers) {
@@ -159,7 +161,11 @@ impl Mode for GroupManagementMode {
         );
         status_entry(
             &mut spans,
-            kb.filter.toggle_all_filters.display(),
+            format!(
+                "{}/{}",
+                kb.filter.toggle_filter.display(),
+                kb.filter.toggle_all_filters.display()
+            ),
             "toggle",
             theme,
         );
@@ -286,6 +292,16 @@ mod tests {
         let mode = GroupManagementMode::new("alpha".to_string());
         press(mode, &mut tab, KeyCode::Char('A')).await;
         assert!(tab.log_manager.get_filters().iter().all(|f| f.enabled));
+    }
+
+    #[tokio::test]
+    async fn test_space_toggles_group_same_as_toggle_all_key() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "alpha", true).await;
+        add_filter(&mut tab, "b", "alpha", false).await;
+        let mode = GroupManagementMode::new("alpha".to_string());
+        press(mode, &mut tab, KeyCode::Char(' ')).await;
+        assert!(tab.log_manager.get_filters().iter().all(|f| !f.enabled));
     }
 
     #[tokio::test]
