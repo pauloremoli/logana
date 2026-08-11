@@ -3,7 +3,8 @@ use crate::{
     commands::auto_complete::{
         FieldCompletion, complete_color, complete_field_name, complete_field_value,
         complete_file_path, complete_flags, extract_color_partial, extract_field_partial,
-        extract_flag_partial, find_command_completions, fuzzy_match, shell_split,
+        extract_flag_partial, extract_group_partial, find_command_completions, fuzzy_match,
+        shell_split,
     },
     config::Keybindings,
     mode::{
@@ -112,6 +113,27 @@ impl CommandMode {
             };
             if !completions.is_empty() {
                 return completions;
+            }
+        }
+
+        // Group-name completion for --group/-g arguments
+        if let Some(partial) = extract_group_partial(input_ls) {
+            let completions: Vec<String> = tab
+                .log_manager
+                .group_names()
+                .into_iter()
+                .filter(|g| fuzzy_match(partial, g))
+                .collect();
+            if !completions.is_empty() {
+                let prefix = if partial.is_empty() {
+                    input_ls.to_string()
+                } else {
+                    input_ls[..input_ls.len() - partial.len()].to_string()
+                };
+                return completions
+                    .into_iter()
+                    .map(|g| format!("{}{}", prefix, g))
+                    .collect();
             }
         }
 
@@ -1197,6 +1219,35 @@ mod tests {
         assert!(
             completions.contains(&"toggle-group errors".to_string()),
             "Expected 'toggle-group errors' in completions, got: {completions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_group_flag_autocomplete_suggests_group_names() {
+        use crate::filters::{FilterOptions, FilterType};
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let fr = FileReader::from_bytes(b"line".to_vec());
+        let mut lm = LogManager::new(db, None).await;
+        lm.add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            FilterOptions::default().group("errors"),
+        )
+        .await;
+        let tab = TabState::new(fr, lm, "test".to_string());
+
+        let mode = CommandMode::with_history("filter --group ".to_string(), 16, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"filter --group errors".to_string()),
+            "Expected 'filter --group errors' in completions, got: {completions:?}"
+        );
+
+        let mode = CommandMode::with_history("filter -g er".to_string(), 12, vec![]);
+        let completions = mode.compute_completions(&tab);
+        assert!(
+            completions.contains(&"filter -g errors".to_string()),
+            "Expected 'filter -g errors' in completions, got: {completions:?}"
         );
     }
 

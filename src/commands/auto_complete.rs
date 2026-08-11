@@ -5,12 +5,12 @@ use super::{COMMANDS, command_names};
 pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
     (
         "filter",
-        &["--field", "-f", "--fg", "--bg", "-l", "--group"],
+        &["--field", "-f", "--fg", "--bg", "-l", "--group", "-g"],
     ),
-    ("exclude", &["--field", "-f", "--group"]),
+    ("exclude", &["--field", "-f", "--group", "-g"]),
     (
         "highlight",
-        &["--field", "-f", "--fg", "--bg", "-l", "--group"],
+        &["--field", "-f", "--fg", "--bg", "-l", "--group", "-g"],
     ),
     ("set-color", &["--fg", "--bg", "-l"]),
     ("date-filter", &["--fg", "--bg", "-l"]),
@@ -312,7 +312,7 @@ pub fn complete_schema_with_builtins(
         .collect()
 }
 
-/// If the input ends with `--group <partial>`, returns the partial group-name prefix.
+/// If the input ends with `--group <partial>` or `-g <partial>`, returns the partial group-name prefix.
 pub fn extract_group_partial(input: &str) -> Option<&str> {
     let group_commands = ["filter", "exclude", "highlight"];
     let trimmed = input.trim();
@@ -329,11 +329,11 @@ pub fn extract_group_partial(input: &str) -> Option<&str> {
     let last = tokens[tokens.len() - 1];
     let second_last = tokens[tokens.len() - 2];
 
-    if second_last == "--group" {
+    if second_last == "--group" || second_last == "-g" {
         return Some(last);
     }
 
-    if last == "--group" && input.ends_with(' ') {
+    if (last == "--group" || last == "-g") && input.ends_with(' ') {
         return Some("");
     }
 
@@ -802,6 +802,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_extract_group_partial_short_flag() {
+        assert_eq!(extract_group_partial("filter -g er"), Some("er"));
+        assert_eq!(extract_group_partial("exclude -g "), Some(""));
+    }
+
     // ── complete_color ───────────────────────────────────────────────────────
 
     #[test]
@@ -1235,13 +1241,14 @@ mod tests {
     #[test]
     fn test_complete_flags_filter_all() {
         let flags = complete_flags("filter", "-");
-        assert_eq!(flags.len(), 6);
+        assert_eq!(flags.len(), 7);
         assert!(flags.contains(&"--field"));
         assert!(flags.contains(&"-f"));
         assert!(flags.contains(&"--fg"));
         assert!(flags.contains(&"--bg"));
         assert!(flags.contains(&"-l"));
         assert!(flags.contains(&"--group"));
+        assert!(flags.contains(&"-g"));
     }
 
     #[test]

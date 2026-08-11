@@ -10,7 +10,7 @@ pub struct CommandInfo {
 pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "filter",
-        usage: "filter [-r] [-i] [-l] [--fg <color>] [--bg <color>] [-a] [--group <name>] [--field <key>=<value>] <pattern>",
+        usage: "filter [-r] [-i] [-l] [--fg <color>] [--bg <color>] [-a] [-g|--group <name>] [--field <key>=<value>] <pattern>",
         description: "Add an include filter — only matching lines stay visible.",
         examples: &[
             "filter ERROR",
@@ -24,7 +24,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "exclude",
-        usage: "exclude [-r] [-i] [--group <name>] [--field <key>=<value>] <pattern>",
+        usage: "exclude [-r] [-i] [-g|--group <name>] [--field <key>=<value>] <pattern>",
         description: "Add an exclude filter — matching lines are hidden.",
         examples: &[
             "exclude debug",
@@ -37,7 +37,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "highlight",
-        usage: "highlight [-r] [-i] [-l] [--fg <color>] [--bg <color>] [-a] [--group <name>] [--field <key>=<value>] <pattern>",
+        usage: "highlight [-r] [-i] [-l] [--fg <color>] [--bg <color>] [-a] [-g|--group <name>] [--field <key>=<value>] <pattern>",
         description: "Add a highlight filter — colors matches without hiding other lines.",
         examples: &[
             "highlight ERROR",

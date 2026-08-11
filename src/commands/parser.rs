@@ -34,7 +34,7 @@ pub enum Commands {
         #[arg(long = "ignore-case", short = 'i')]
         ignore_case: bool,
         /// Assign the filter to a named group, so it can be toggled together with others
-        #[arg(long)]
+        #[arg(long, short = 'g')]
         group: Option<String>,
         /// Generate a random readable fg/bg color pair instead of specifying --fg/--bg
         #[arg(long = "auto", short = 'a')]
@@ -56,7 +56,7 @@ pub enum Commands {
         #[arg(long = "ignore-case", short = 'i')]
         ignore_case: bool,
         /// Assign the filter to a named group, so it can be toggled together with others
-        #[arg(long)]
+        #[arg(long, short = 'g')]
         group: Option<String>,
     },
     /// Add a highlight filter (styling only, never affects visibility)
@@ -83,7 +83,7 @@ pub enum Commands {
         #[arg(long = "ignore-case", short = 'i')]
         ignore_case: bool,
         /// Assign the filter to a named group, so it can be toggled together with others
-        #[arg(long)]
+        #[arg(long, short = 'g')]
         group: Option<String>,
         /// Generate a random readable fg/bg color pair instead of specifying --fg/--bg
         #[arg(long = "auto", short = 'a')]
