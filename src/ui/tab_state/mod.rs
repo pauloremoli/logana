@@ -55,6 +55,7 @@ pub enum KeyResult {
     ToggleWrap,
     ToggleLineNumbers,
     ToggleRelativeLineNumbers,
+    ToggleGroupsPanel,
     AlwaysRestoreFile(Box<crate::db::FileContext>),
     NeverRestoreFile,
     AlwaysRestoreSession(Vec<String>),
@@ -154,6 +155,11 @@ pub struct FilterHandle {
     /// `highlight_mode` value at scan-start; part of the cache key so
     /// toggling it invalidates a cached scan computed under the other mode.
     pub scan_highlight_mode: bool,
+    /// Group style definitions at scan-start; part of the cache key so a
+    /// group-only style edit (e.g. `:group errors --fg Red`) — which leaves
+    /// every `FilterDef` untouched — still invalidates the cache instead of
+    /// replaying colors baked from the group's old style.
+    pub scan_group_fingerprint: Vec<crate::filters::GroupDef>,
 }
 
 /// Cached result of a completed background filter scan.
@@ -165,6 +171,10 @@ pub struct CachedScanResult {
     pub line_count: usize,
     pub raw_mode: bool,
     pub highlight_mode: bool,
+    /// Group style definitions at scan time — see
+    /// `FilterHandle::scan_group_fingerprint` for why this must be part of
+    /// the cache key alongside the filters themselves.
+    pub group_fingerprint: Vec<crate::filters::GroupDef>,
     pub view: FilterViewSnapshot,
     pub match_counts: Vec<usize>,
 }
@@ -1641,6 +1651,7 @@ impl TabState {
             && cached.line_count == current_line_count
             && cached.raw_mode == self.display.raw_mode
             && cached.highlight_mode == self.filter.highlight_mode
+            && cached.group_fingerprint == self.log_manager.get_group_styles()
         {
             let current_line = self
                 .filter
@@ -1948,6 +1959,7 @@ impl TabState {
             scan_line_count: current_line_count,
             scan_raw_mode: self.display.raw_mode,
             scan_highlight_mode: self.filter.highlight_mode,
+            scan_group_fingerprint: self.log_manager.get_group_styles().to_vec(),
         });
     }
 
@@ -4435,6 +4447,7 @@ mod tests {
             line_count: tab.file_reader.line_count(),
             raw_mode: false,
             highlight_mode: false,
+            group_fingerprint: vec![],
             view: (
                 VisibleLines::Filtered(vec![0, 2]),
                 tab.filter.manager.clone(),
@@ -4478,6 +4491,7 @@ mod tests {
             line_count: 999,
             raw_mode: false,
             highlight_mode: false,
+            group_fingerprint: vec![],
             view: (
                 VisibleLines::Filtered(vec![0]),
                 tab.filter.manager.clone(),
@@ -4489,6 +4503,53 @@ mod tests {
         });
         tab.begin_filter_refresh();
         // Cache miss: background scan is spawned.
+        assert!(tab.filter.handle.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_begin_filter_refresh_cache_miss_on_group_style_change() {
+        // Regression test: a filter with no color of its own falling back to
+        // its group's style must re-scan (and thus re-derive its highlight
+        // color) when the group's style changes, even though the filter
+        // definitions themselves (the old cache key) are unchanged.
+        let mut tab = make_tab(&["error line", "info line"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "error".to_string(),
+                FilterType::Include,
+                FilterOptions::default().group("errs"),
+            )
+            .await;
+        tab.log_manager
+            .set_group_style("errs", Some("Red"), None, true)
+            .await;
+        let fingerprint: Vec<crate::filters::FilterDef> = tab
+            .log_manager
+            .get_filters()
+            .iter()
+            .filter(|f| f.enabled)
+            .cloned()
+            .collect();
+        // Cache records the group's style *before* it was changed to Red —
+        // filters/line_count/etc. are otherwise identical to the current state.
+        tab.filter.cached_scan = Some(CachedScanResult {
+            filter_fingerprint: fingerprint,
+            line_count: tab.file_reader.line_count(),
+            raw_mode: false,
+            highlight_mode: false,
+            group_fingerprint: vec![],
+            view: (
+                VisibleLines::Filtered(vec![0]),
+                tab.filter.manager.clone(),
+                tab.filter.text_styles.clone(),
+                tab.filter.date_styles.clone(),
+                tab.filter.field_styles.clone(),
+            ),
+            match_counts: vec![1],
+        });
+        tab.begin_filter_refresh();
+        // Cache miss: background scan is spawned, so styles get rebuilt
+        // against the group's current (Red) style.
         assert!(tab.filter.handle.is_some());
     }
 
@@ -4518,6 +4579,7 @@ mod tests {
             line_count: tab.file_reader.line_count(),
             raw_mode: false,
             highlight_mode: false,
+            group_fingerprint: vec![],
             view: (
                 VisibleLines::Filtered(vec![]),
                 tab.filter.manager.clone(),
@@ -4554,6 +4616,7 @@ mod tests {
             line_count: tab.file_reader.line_count(),
             raw_mode: true,
             highlight_mode: false,
+            group_fingerprint: vec![],
             view: (
                 VisibleLines::Filtered(vec![0]),
                 tab.filter.manager.clone(),
@@ -4590,6 +4653,7 @@ mod tests {
             line_count: tab.file_reader.line_count(),
             raw_mode: false,
             highlight_mode: false,
+            group_fingerprint: vec![],
             view: (
                 VisibleLines::Filtered(vec![0]),
                 tab.filter.manager.clone(),

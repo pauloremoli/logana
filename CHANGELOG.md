@@ -8,8 +8,13 @@ All notable changes to logana will be documented in this file.
 ### Added
 - Add relative line numbers, toggleable via `:relative-line-numbers` and the UI options menu.
 - Add `:collapse`/`:expand` to hide or reveal continuation lines file-wide, with `>`/`<` to expand or collapse the entry under the cursor at any time.
+- Add a Groups section to the bottom of the filter sidebar (at least 8 rows even when empty), showing each group's filter count and style under a Groups label, clickable to toggle, recolor, or clear its style; toggleable via the UI options menu.
+- Allow `:group <name>` with no flags to create a group with no style.
+- Add `Ctrl+g` in normal mode to enter group management, and `a`/`e` inside it to add or edit a group.
 
 ### Fixed
+- Fix filter groups being shared across tabs/files instead of scoped per file like filters, including `:toggle-group` affecting other tabs and `:save-filters`/`:load-filters` leaking groups between them.
+- Fix a group's color not reapplying to lines already highlighted via that group's style after editing it.
 - Fix a multiline schema's `continuation.end_pattern` line becoming its own entry instead of collapsing with the block it terminates.
 - Fix `:collapse`/`:expand` not applying to lines appended to a live/watched file after the command ran.
 - Fix collapsed continuation lines not staying collapsed when reopening a file across sessions.

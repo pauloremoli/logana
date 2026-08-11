@@ -955,11 +955,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_group_with_no_flags_is_an_error() {
+    async fn test_group_with_no_flags_creates_style_less_group() {
         let mut app = make_app(&["line1"]).await;
         let result = app.run_command("group errors").await;
-        assert!(result.is_err());
-        assert!(app.tabs[0].log_manager.get_group_styles().is_empty());
+        assert!(result.is_ok());
+        assert_eq!(app.tabs[0].log_manager.group_names(), vec!["errors"]);
+        let cc = crate::filters::group_style(app.tabs[0].log_manager.get_group_styles(), "errors")
+            .expect("group should exist even with no style");
+        assert_eq!(cc.fg, None);
+        assert_eq!(cc.bg, None);
+    }
+
+    #[tokio::test]
+    async fn test_group_with_no_flags_on_existing_group_does_not_duplicate() {
+        let mut app = make_app(&["line1"]).await;
+        app.run_command("group errors --fg Red").await.unwrap();
+        app.run_command("group errors").await.unwrap();
+        assert_eq!(app.tabs[0].log_manager.get_group_styles().len(), 1);
     }
 
     #[tokio::test]

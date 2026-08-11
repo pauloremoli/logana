@@ -259,7 +259,7 @@ impl App {
             }
             return;
         }
-        let (scroll_pos, filter_idx, visible_idx) = {
+        let (scroll_pos, sidebar_hit, visible_idx) = {
             let tab = &self.tabs[self.active_tab];
             (
                 self.input.hit_test_scrollbar(col, row, tab),
@@ -271,9 +271,18 @@ impl App {
             self.tabs[self.active_tab].scroll.scroll_offset = pos;
             return;
         }
-        if let Some(idx) = filter_idx {
-            self.tabs[self.active_tab].interaction.mode = Box::new(FilterManagementMode::new(idx));
-            return;
+        match sidebar_hit {
+            Some(super::input_handler::SidebarHit::Filter(idx)) => {
+                self.tabs[self.active_tab].interaction.mode =
+                    Box::new(FilterManagementMode::new(idx));
+                return;
+            }
+            Some(super::input_handler::SidebarHit::Group(name)) => {
+                self.tabs[self.active_tab].interaction.mode =
+                    Box::new(crate::mode::group_mode::GroupManagementMode::new(name));
+                return;
+            }
+            None => {}
         }
         if let Some(idx) = visible_idx {
             self.tabs[self.active_tab].scroll.scroll_offset = idx;
@@ -340,6 +349,15 @@ impl App {
             self.display.relative_line_numbers,
         )
         .await;
+    }
+
+    async fn handle_toggle_groups_panel(&mut self) {
+        self.display.show_groups_panel = !self.display.show_groups_panel;
+        for tab in &mut self.tabs {
+            tab.display.show_groups_panel = self.display.show_groups_panel;
+        }
+        self.save_app_bool(SettingsKey::ShowGroupsPanel, self.display.show_groups_panel)
+            .await;
     }
 
     async fn handle_apply_value_colors(&mut self, disabled: std::collections::HashSet<String>) {
@@ -613,6 +631,7 @@ impl App {
             KeyResult::ToggleRelativeLineNumbers => {
                 self.handle_toggle_relative_line_numbers().await
             }
+            KeyResult::ToggleGroupsPanel => self.handle_toggle_groups_panel().await,
             KeyResult::OpenFiles(paths) => self.handle_open_files(paths).await,
             KeyResult::AlwaysRestoreFile(_) => {
                 self.session

@@ -121,7 +121,32 @@ A group can also have its own predefined color, used by any filter in the group 
 
 `--auto` generates a random readable color pair, same as `:filter --auto`. `--clear` removes the group's style. A filter's own color always takes priority over its group's — only filters with no color of their own fall back to it. Groups can be styled before any filter uses them.
 
+A style is optional — `:group <name>` with no flags registers the group with no predefined color, useful when you just want it to show up (and be manageable) in the sidebar's Groups section ahead of assigning any filters to it:
+
+```sh
+:group errors
+```
+
 The `[groupname]` tag in the sidebar is also colored with the group's style when it has one, regardless of whether the filter itself has its own color.
+
+### Groups Section
+
+Every known group also gets its own row in a Groups section at the bottom of the sidebar, below the filter list, under a `Groups [n]` label. Each row shows the group's name and how many filters belong to it, e.g. `errors (2)`. A group with a predefined style renders in that color.
+
+Click a group row, or press `Ctrl+g` in normal mode, to enter group management:
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Move to the next/previous group |
+| `A` | Toggle every filter in the group on/off together (same as `:toggle-group`) |
+| `e` | Edit the group's color, prefilling `:group <name> --fg ...` |
+| `x` | Clear the group's predefined style |
+| `a` | Add a new group, opening `:group ` for you to type a name |
+| `Esc` | Exit back to normal mode |
+
+With no groups yet, `Ctrl+g` still enters group management so `a` can create the first one.
+
+Press `g` in `:ui` mode to toggle the Groups section on/off.
 
 ## Highlight Colors
 

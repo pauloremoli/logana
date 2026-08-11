@@ -42,6 +42,13 @@ impl LogManager {
         self.source_file.as_deref()
     }
 
+    /// `source_file`, defaulting to `""` (the "no file" bucket filters
+    /// already use for sourceless/stdin tabs) — the scoping key every
+    /// group-related DB write/read needs to stay isolated per tab.
+    fn group_source(&self) -> &str {
+        self.source_file.as_deref().unwrap_or("")
+    }
+
     pub async fn set_source_file(&mut self, source: Option<String>) {
         self.source_file = source;
         self.reload_filters_from_db().await;
@@ -236,14 +243,17 @@ impl LogManager {
                 color_config: Some(cc.clone()),
             });
         }
-        let _ = self.db.upsert_group_style(name, &cc).await;
+        let _ = self
+            .db
+            .upsert_group_style(self.group_source(), name, &cc)
+            .await;
     }
 
     /// Remove group `name`'s predefined style, if any. A no-op if the group
     /// has no stored style.
     pub async fn clear_group_style(&mut self, name: &str) {
         self.group_defs.retain(|g| g.name != name);
-        let _ = self.db.clear_group_style(name).await;
+        let _ = self.db.clear_group_style(self.group_source(), name).await;
     }
 
     /// Set `enabled` on every filter belonging to `group`.
@@ -253,7 +263,10 @@ impl LogManager {
                 f.enabled = enabled;
             }
         }
-        let _ = self.db.set_filters_enabled_by_group(group, enabled).await;
+        let _ = self
+            .db
+            .set_filters_enabled_by_group(self.group_source(), group, enabled)
+            .await;
     }
 
     pub async fn move_filter_up(&mut self, id: usize) {
@@ -326,14 +339,21 @@ impl LogManager {
         self.db
             .replace_all_filters(&filters, source.as_deref())
             .await?;
-        self.db.replace_all_groups(&groups).await?;
+        self.db
+            .replace_all_groups(&groups, source.as_deref())
+            .await?;
         self.filter_defs = if let Some(src) = source.as_deref() {
             self.db.get_filters_for_source(src).await
         } else {
             self.db.get_filters().await
         }
         .unwrap_or_default();
-        self.reload_groups_from_db().await;
+        self.group_defs = if let Some(src) = source.as_deref() {
+            self.db.get_groups_for_source(src).await
+        } else {
+            self.db.get_groups().await
+        }
+        .unwrap_or_default();
         Ok(())
     }
 
@@ -533,10 +553,16 @@ impl LogManager {
             .unwrap_or_default();
     }
 
-    /// Groups are global (not scoped by `source_file` like filters), so this
-    /// always reloads the full set.
     async fn reload_groups_from_db(&mut self) {
-        self.group_defs = self.db.get_groups().await.unwrap_or_default();
+        let source = match self.source_file.as_deref() {
+            Some(src) => src.to_string(),
+            None => return,
+        };
+        self.group_defs = self
+            .db
+            .get_groups_for_source(&source)
+            .await
+            .unwrap_or_default();
     }
 }
 
@@ -565,6 +591,29 @@ mod tests {
         // A placeholder tab (no source) must not expose those filters.
         let mgr = LogManager::new(db, None).await;
         assert!(mgr.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_group_style_is_scoped_per_source_like_filters() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut a = LogManager::new(db.clone(), Some("a.log".into())).await;
+        let mut b = LogManager::new(db, Some("b.log".into())).await;
+
+        a.set_group_style("errors", Some("Red"), None, true).await;
+        b.set_group_style("errors", Some("Blue"), None, true).await;
+
+        let a_style = crate::filters::group_style(a.get_group_styles(), "errors").unwrap();
+        let b_style = crate::filters::group_style(b.get_group_styles(), "errors").unwrap();
+        assert_eq!(a_style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(b_style.fg, Some(ratatui::style::Color::Blue));
+
+        a.clear_group_style("errors").await;
+        assert!(a.get_group_styles().is_empty());
+        assert_eq!(
+            b.get_group_styles().len(),
+            1,
+            "clearing a's group must not affect b"
+        );
     }
 
     #[tokio::test]
@@ -936,6 +985,39 @@ mod tests {
             filterless.color_config.as_ref().unwrap().fg,
             Some(ratatui::style::Color::Blue)
         );
+    }
+
+    #[tokio::test]
+    async fn test_load_filters_does_not_wipe_another_tabs_groups() {
+        // Regression test for the reported bug: importing filters/groups
+        // into one tab must not clobber a different tab's (source file's)
+        // groups, since `load_filters` replaces the *current* source's rows
+        // only, not the whole `groups` table.
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut other = LogManager::new(db.clone(), Some("other.log".into())).await;
+        other
+            .set_group_style("kept", Some("Green"), None, true)
+            .await;
+
+        let mut source_mgr = make_manager().await;
+        source_mgr
+            .set_group_style("errs", Some("Red"), None, true)
+            .await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        source_mgr.save_filters(path).unwrap();
+
+        let mut target = LogManager::new(db, Some("target.log".into())).await;
+        target.load_filters(path).await.unwrap();
+
+        assert_eq!(target.get_group_styles().len(), 1);
+        assert_eq!(target.get_group_styles()[0].name, "errs");
+        assert_eq!(
+            other.get_group_styles().len(),
+            1,
+            "loading filters into `target` must not touch `other`'s groups"
+        );
+        assert_eq!(other.get_group_styles()[0].name, "kept");
     }
 
     #[tokio::test]

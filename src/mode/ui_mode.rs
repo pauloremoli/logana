@@ -15,6 +15,7 @@ pub struct UiMode {
     pub borders: bool,
     pub wrap: bool,
     pub relative_line_numbers: bool,
+    pub groups_panel: bool,
 }
 
 impl UiMode {
@@ -25,6 +26,7 @@ impl UiMode {
             borders: tab.display.show_borders,
             wrap: tab.display.wrap,
             relative_line_numbers: tab.display.relative_line_numbers,
+            groups_panel: tab.display.show_groups_panel,
         }
     }
 }
@@ -63,6 +65,13 @@ impl Mode for UiMode {
             return (
                 Box::new(NormalMode::default()),
                 KeyResult::ToggleRelativeLineNumbers,
+            );
+        }
+
+        if kb.ui.toggle_groups_panel.matches(key, modifiers) {
+            return (
+                Box::new(NormalMode::default()),
+                KeyResult::ToggleGroupsPanel,
             );
         }
 
@@ -111,6 +120,12 @@ impl Mode for UiMode {
             &mut spans,
             kb.ui.toggle_relative_line_numbers.display(),
             format!("relative numbers{}", on_off(self.relative_line_numbers)),
+            theme,
+        );
+        status_entry_dyn(
+            &mut spans,
+            kb.ui.toggle_groups_panel.display(),
+            format!("groups{}", on_off(self.groups_panel)),
             theme,
         );
         status_entry(&mut spans, kb.ui.exit.display(), "back", theme);
@@ -189,6 +204,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_g_returns_toggle_groups_panel() {
+        let mut tab = make_tab().await;
+        let (_, result) = press(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::ToggleGroupsPanel));
+    }
+
+    #[tokio::test]
     async fn test_returns_to_normal_mode_after_toggle() {
         let mut tab = make_tab().await;
         for key in [
@@ -196,6 +218,7 @@ mod tests {
             KeyCode::Char('B'),
             KeyCode::Char('w'),
             KeyCode::Char('r'),
+            KeyCode::Char('g'),
         ] {
             let (mode, _) = press(&mut tab, key, KeyModifiers::NONE).await;
             assert!(
@@ -223,6 +246,17 @@ mod tests {
         tab.display.show_sidebar = true;
         let mode = UiMode::from_tab(&tab);
         assert!(mode.sidebar);
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_reflects_groups_panel_state() {
+        let mut tab = make_tab().await;
+        tab.display.show_groups_panel = false;
+        let mode = UiMode::from_tab(&tab);
+        assert!(!mode.groups_panel);
+        tab.display.show_groups_panel = true;
+        let mode = UiMode::from_tab(&tab);
+        assert!(mode.groups_panel);
     }
 
     #[tokio::test]

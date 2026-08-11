@@ -34,7 +34,12 @@ pub trait FilterStore: Send + Sync {
     async fn delete_filter(&self, id: i64) -> Result<()>;
     async fn toggle_filter(&self, id: i64) -> Result<()>;
     async fn set_all_filters_enabled(&self, enabled: bool) -> Result<()>;
-    async fn set_filters_enabled_by_group(&self, group: &str, enabled: bool) -> Result<()>;
+    async fn set_filters_enabled_by_group(
+        &self,
+        source_file: &str,
+        group: &str,
+        enabled: bool,
+    ) -> Result<()>;
     async fn swap_filter_order(&self, id1: i64, id2: i64) -> Result<()>;
     async fn clear_filters(&self) -> Result<()>;
     async fn clear_filters_for_source(&self, source_file: &str) -> Result<()>;
@@ -47,10 +52,21 @@ pub trait FilterStore: Send + Sync {
 
 #[async_trait]
 pub trait GroupStore: Send + Sync {
+    /// Groups with no source file (the `''` bucket) — mirrors `FilterStore::get_filters`.
     async fn get_groups(&self) -> Result<Vec<GroupDef>>;
-    async fn upsert_group_style(&self, name: &str, color_config: &ColorConfig) -> Result<()>;
-    async fn clear_group_style(&self, name: &str) -> Result<()>;
-    async fn replace_all_groups(&self, groups: &[GroupDef]) -> Result<()>;
+    async fn get_groups_for_source(&self, source_file: &str) -> Result<Vec<GroupDef>>;
+    async fn upsert_group_style(
+        &self,
+        source_file: &str,
+        name: &str,
+        color_config: &ColorConfig,
+    ) -> Result<()>;
+    async fn clear_group_style(&self, source_file: &str, name: &str) -> Result<()>;
+    async fn replace_all_groups(
+        &self,
+        groups: &[GroupDef],
+        source_file: Option<&str>,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,6 +122,7 @@ pub enum SettingsKey {
     SidebarLeft,
     DefaultFilterFiles,
     CollapseContinuations,
+    ShowGroupsPanel,
 }
 
 impl SettingsKey {
@@ -123,6 +140,7 @@ impl SettingsKey {
             Self::SidebarLeft => "sidebar_left",
             Self::DefaultFilterFiles => "default_filter_files",
             Self::CollapseContinuations => "collapse_continuations",
+            Self::ShowGroupsPanel => "show_groups_panel",
         }
     }
 }
@@ -320,6 +338,13 @@ impl Database {
         if version < 14 {
             Self::migrate_to_v14(conn).await?;
             sqlx::query("PRAGMA user_version = 14")
+                .execute(&mut *conn)
+                .await?;
+        }
+
+        if version < 15 {
+            Self::migrate_to_v15(conn).await?;
+            sqlx::query("PRAGMA user_version = 15")
                 .execute(&mut *conn)
                 .await?;
         }
@@ -540,8 +565,7 @@ impl Database {
     }
 
     /// A predefined style for a filter group, independent of the `filters`
-    /// table — a row only exists once a style has been set via `:group`, so
-    /// unlike `filters` there's no "row present but colorless" state.
+    /// table.
     async fn migrate_to_v14(conn: &mut SqliteConnection) -> Result<()> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS groups (
@@ -553,6 +577,41 @@ impl Database {
         )
         .execute(&mut *conn)
         .await?;
+        Ok(())
+    }
+
+    /// Scopes `groups` by `source_file`, mirroring `filters` — groups were
+    /// originally a flat global namespace (`name` alone as primary key),
+    /// which let a group's style/membership leak across unrelated tabs.
+    /// SQLite can't add a column to a primary key in place, so the table is
+    /// rebuilt. Pre-existing rows land in the `''` bucket — the same "no
+    /// file" bucket `filters` already uses for sourceless (e.g. stdin) tabs
+    /// — rather than being deleted.
+    async fn migrate_to_v15(conn: &mut SqliteConnection) -> Result<()> {
+        let mut tx = conn.begin().await?;
+        sqlx::query(
+            "CREATE TABLE groups_new (
+                source_file TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL,
+                fg_color TEXT,
+                bg_color TEXT,
+                match_only INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (source_file, name)
+            )",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO groups_new (source_file, name, fg_color, bg_color, match_only)
+             SELECT '', name, fg_color, bg_color, match_only FROM groups",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE groups").execute(&mut *tx).await?;
+        sqlx::query("ALTER TABLE groups_new RENAME TO groups")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -796,10 +855,16 @@ impl FilterStore for Database {
         Ok(())
     }
 
-    async fn set_filters_enabled_by_group(&self, group: &str, enabled: bool) -> Result<()> {
-        sqlx::query("UPDATE filters SET enabled = ? WHERE group_name = ?")
+    async fn set_filters_enabled_by_group(
+        &self,
+        source_file: &str,
+        group: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        sqlx::query("UPDATE filters SET enabled = ? WHERE group_name = ? AND source_file = ?")
             .bind(enabled)
             .bind(group)
+            .bind(source_file)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -903,20 +968,31 @@ impl FilterStore for Database {
 #[async_trait]
 impl GroupStore for Database {
     async fn get_groups(&self) -> Result<Vec<GroupDef>> {
-        let rows = sqlx::query("SELECT * FROM groups ORDER BY name")
+        self.get_groups_for_source("").await
+    }
+
+    async fn get_groups_for_source(&self, source_file: &str) -> Result<Vec<GroupDef>> {
+        let rows = sqlx::query("SELECT * FROM groups WHERE source_file = ? ORDER BY name")
+            .bind(source_file)
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.iter().map(row_to_group_def).collect())
     }
 
-    async fn upsert_group_style(&self, name: &str, color_config: &ColorConfig) -> Result<()> {
+    async fn upsert_group_style(
+        &self,
+        source_file: &str,
+        name: &str,
+        color_config: &ColorConfig,
+    ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO groups (name, fg_color, bg_color, match_only) VALUES (?, ?, ?, ?)
-             ON CONFLICT(name) DO UPDATE SET
+            "INSERT INTO groups (source_file, name, fg_color, bg_color, match_only) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(source_file, name) DO UPDATE SET
                 fg_color = excluded.fg_color,
                 bg_color = excluded.bg_color,
                 match_only = excluded.match_only",
         )
+        .bind(source_file)
         .bind(name)
         .bind(color_config.fg.map(|c| c.to_string()))
         .bind(color_config.bg.map(|c| c.to_string()))
@@ -926,24 +1002,34 @@ impl GroupStore for Database {
         Ok(())
     }
 
-    async fn clear_group_style(&self, name: &str) -> Result<()> {
-        sqlx::query("DELETE FROM groups WHERE name = ?")
+    async fn clear_group_style(&self, source_file: &str, name: &str) -> Result<()> {
+        sqlx::query("DELETE FROM groups WHERE source_file = ? AND name = ?")
+            .bind(source_file)
             .bind(name)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
-    async fn replace_all_groups(&self, groups: &[GroupDef]) -> Result<()> {
+    async fn replace_all_groups(
+        &self,
+        groups: &[GroupDef],
+        source_file: Option<&str>,
+    ) -> Result<()> {
+        let source = source_file.unwrap_or("");
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM groups").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM groups WHERE source_file = ?")
+            .bind(source)
+            .execute(&mut *tx)
+            .await?;
         for group in groups {
             let Some(cc) = &group.color_config else {
                 continue;
             };
             sqlx::query(
-                "INSERT INTO groups (name, fg_color, bg_color, match_only) VALUES (?, ?, ?, ?)",
+                "INSERT INTO groups (source_file, name, fg_color, bg_color, match_only) VALUES (?, ?, ?, ?, ?)",
             )
+            .bind(source)
             .bind(&group.name)
             .bind(cc.fg.map(|c| c.to_string()))
             .bind(cc.bg.map(|c| c.to_string()))
@@ -1405,6 +1491,7 @@ mod tests {
         let db = Database::new(&path).await.unwrap();
         assert!(db.get_groups().await.unwrap().is_empty());
         db.upsert_group_style(
+            "",
             "errors",
             &ColorConfig {
                 fg: Some(ratatui::style::Color::Red),
@@ -1417,6 +1504,85 @@ mod tests {
         let groups = db.get_groups().await.unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "errors");
+    }
+
+    #[tokio::test]
+    async fn test_migrate_to_v15_scopes_groups_by_source_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        // Seed a v14-schema database (pre-scoping `groups` table, `name` as
+        // the bare primary key), then set user_version so run_migrations()
+        // only needs to apply v15.
+        let seed_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("sqlite:{path}?mode=rwc"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE groups (
+                name TEXT PRIMARY KEY,
+                fg_color TEXT,
+                bg_color TEXT,
+                match_only INTEGER NOT NULL DEFAULT 1
+            )",
+        )
+        .execute(&seed_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO groups (name, fg_color, bg_color, match_only) VALUES ('errors', 'Red', NULL, 1)",
+        )
+        .execute(&seed_pool)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version = 14")
+            .execute(&seed_pool)
+            .await
+            .unwrap();
+        seed_pool.close().await;
+
+        // Opening it the same way the app does must run migrate_to_v15 and
+        // land the pre-existing group in the '' (no source file) bucket —
+        // the same bucket filters already use for sourceless tabs — rather
+        // than deleting it.
+        let db = Database::new(&path).await.unwrap();
+        let groups = db.get_groups().await.unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "errors");
+        assert!(
+            db.get_groups_for_source("some_file.log")
+                .await
+                .unwrap()
+                .is_empty(),
+            "the migrated group must not leak into an unrelated source"
+        );
+
+        // A newly inserted group scoped to a real file round-trips
+        // independently of the migrated '' bucket group.
+        db.upsert_group_style(
+            "some_file.log",
+            "errors",
+            &ColorConfig {
+                fg: Some(ratatui::style::Color::Green),
+                bg: None,
+                match_only: true,
+            },
+        )
+        .await
+        .unwrap();
+        let scoped = db.get_groups_for_source("some_file.log").await.unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(
+            scoped[0].color_config.as_ref().unwrap().fg,
+            Some(ratatui::style::Color::Green)
+        );
+        // The '' bucket group is untouched by the source-scoped insert.
+        let global = db.get_groups().await.unwrap();
+        assert_eq!(
+            global[0].color_config.as_ref().unwrap().fg,
+            Some(ratatui::style::Color::Red)
+        );
     }
 
     #[tokio::test]
@@ -1433,7 +1599,7 @@ mod tests {
             bg: Some(ratatui::style::Color::Blue),
             match_only: false,
         };
-        db.upsert_group_style("errors", &cc).await.unwrap();
+        db.upsert_group_style("", "errors", &cc).await.unwrap();
         let groups = db.get_groups().await.unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "errors");
@@ -1447,6 +1613,7 @@ mod tests {
     async fn test_upsert_group_style_updates_existing() {
         let db = setup_db().await;
         db.upsert_group_style(
+            "",
             "errors",
             &ColorConfig {
                 fg: Some(ratatui::style::Color::Red),
@@ -1457,6 +1624,7 @@ mod tests {
         .await
         .unwrap();
         db.upsert_group_style(
+            "",
             "errors",
             &ColorConfig {
                 fg: Some(ratatui::style::Color::Green),
@@ -1478,6 +1646,7 @@ mod tests {
     async fn test_clear_group_style_removes_row() {
         let db = setup_db().await;
         db.upsert_group_style(
+            "",
             "errors",
             &ColorConfig {
                 fg: Some(ratatui::style::Color::Red),
@@ -1487,8 +1656,121 @@ mod tests {
         )
         .await
         .unwrap();
-        db.clear_group_style("errors").await.unwrap();
+        db.clear_group_style("", "errors").await.unwrap();
         assert!(db.get_groups().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_upsert_group_style_same_name_different_sources_do_not_collide() {
+        let db = setup_db().await;
+        db.upsert_group_style(
+            "a.log",
+            "errors",
+            &ColorConfig {
+                fg: Some(ratatui::style::Color::Red),
+                bg: None,
+                match_only: true,
+            },
+        )
+        .await
+        .unwrap();
+        db.upsert_group_style(
+            "b.log",
+            "errors",
+            &ColorConfig {
+                fg: Some(ratatui::style::Color::Blue),
+                bg: None,
+                match_only: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        let a_groups = db.get_groups_for_source("a.log").await.unwrap();
+        let b_groups = db.get_groups_for_source("b.log").await.unwrap();
+        assert_eq!(a_groups.len(), 1);
+        assert_eq!(b_groups.len(), 1);
+        assert_eq!(
+            a_groups[0].color_config.as_ref().unwrap().fg,
+            Some(ratatui::style::Color::Red)
+        );
+        assert_eq!(
+            b_groups[0].color_config.as_ref().unwrap().fg,
+            Some(ratatui::style::Color::Blue)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clear_group_style_only_affects_its_source() {
+        let db = setup_db().await;
+        let cc = ColorConfig {
+            fg: Some(ratatui::style::Color::Red),
+            bg: None,
+            match_only: true,
+        };
+        db.upsert_group_style("a.log", "errors", &cc).await.unwrap();
+        db.upsert_group_style("b.log", "errors", &cc).await.unwrap();
+        db.clear_group_style("a.log", "errors").await.unwrap();
+        assert!(db.get_groups_for_source("a.log").await.unwrap().is_empty());
+        assert_eq!(db.get_groups_for_source("b.log").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_replace_all_groups_only_touches_its_source() {
+        let db = setup_db().await;
+        let cc = ColorConfig {
+            fg: Some(ratatui::style::Color::Red),
+            bg: None,
+            match_only: true,
+        };
+        db.upsert_group_style("a.log", "errors", &cc).await.unwrap();
+        db.upsert_group_style("b.log", "kept", &cc).await.unwrap();
+
+        db.replace_all_groups(
+            &[GroupDef {
+                name: "replaced".to_string(),
+                color_config: Some(cc.clone()),
+            }],
+            Some("a.log"),
+        )
+        .await
+        .unwrap();
+
+        let a_groups = db.get_groups_for_source("a.log").await.unwrap();
+        assert_eq!(a_groups.len(), 1);
+        assert_eq!(a_groups[0].name, "replaced");
+        // b.log's groups are untouched by a replace scoped to a.log.
+        let b_groups = db.get_groups_for_source("b.log").await.unwrap();
+        assert_eq!(b_groups.len(), 1);
+        assert_eq!(b_groups[0].name, "kept");
+    }
+
+    #[tokio::test]
+    async fn test_set_filters_enabled_by_group_only_affects_its_source() {
+        let db = setup_db().await;
+        db.insert_filter(
+            "error",
+            &FilterType::Include,
+            FilterInsertOptions::new().source("a.log").group("errors"),
+        )
+        .await
+        .unwrap();
+        db.insert_filter(
+            "error",
+            &FilterType::Include,
+            FilterInsertOptions::new().source("b.log").group("errors"),
+        )
+        .await
+        .unwrap();
+
+        db.set_filters_enabled_by_group("a.log", "errors", false)
+            .await
+            .unwrap();
+
+        let a_filters = db.get_filters_for_source("a.log").await.unwrap();
+        let b_filters = db.get_filters_for_source("b.log").await.unwrap();
+        assert!(!a_filters[0].enabled, "a.log's filter should be disabled");
+        assert!(b_filters[0].enabled, "b.log's filter must be unaffected");
     }
 
     #[tokio::test]
@@ -1625,7 +1907,7 @@ mod tests {
         .await
         .unwrap();
 
-        db.set_filters_enabled_by_group("errors", false)
+        db.set_filters_enabled_by_group("", "errors", false)
             .await
             .unwrap();
 

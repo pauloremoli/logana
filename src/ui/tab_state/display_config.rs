@@ -49,6 +49,8 @@ pub struct DisplayConfig {
     /// hidden file-wide, leaving only each entry's first line visible.
     /// Toggled via `:collapse`.
     pub collapse_continuations: bool,
+    /// Whether the sidebar's bottom Groups section renders. Toggled via `:ui`.
+    pub show_groups_panel: bool,
 }
 
 impl Default for DisplayConfig {
@@ -69,6 +71,7 @@ impl Default for DisplayConfig {
             field_layout: FieldLayout::default(),
             level_colors_disabled: HashSet::new(),
             collapse_continuations: false,
+            show_groups_panel: true,
         }
     }
 }

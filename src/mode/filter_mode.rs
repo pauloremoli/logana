@@ -32,7 +32,7 @@ fn stay_at(idx: usize, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
     (Box::new(FilterManagementMode::new(idx)), KeyResult::Handled)
 }
 
-fn open_command(tab: &mut TabState, cmd: String) -> (Box<dyn Mode>, KeyResult) {
+pub(crate) fn open_command(tab: &mut TabState, cmd: String) -> (Box<dyn Mode>, KeyResult) {
     let len = cmd.len();
     let history = tab.interaction.command_history.clone();
     tab.interaction.command_error = None;
@@ -139,7 +139,11 @@ fn filter_command_prefix(ft: &FilterType) -> String {
     }
 }
 
-fn append_color_flags(cmd: &mut String, cc: &Option<ColorConfig>, include_line_flag: bool) {
+pub(crate) fn append_color_flags(
+    cmd: &mut String,
+    cc: &Option<ColorConfig>,
+    include_line_flag: bool,
+) {
     if let Some(cfg) = cc {
         if let Some(fg) = cfg.fg {
             cmd.push_str(&format!(" --fg {}", color_to_string(fg)));
@@ -153,16 +157,24 @@ fn append_color_flags(cmd: &mut String, cc: &Option<ColorConfig>, include_line_f
     }
 }
 
+/// Quotes `name` (escaping backslashes/quotes) if it contains whitespace, so
+/// it round-trips through `shell_split` as a single token; returned as-is
+/// otherwise. Shared by anything embedding a user-chosen name (filter group,
+/// etc.) as a bare or flag-valued command argument.
+pub(crate) fn quote_command_arg(name: &str) -> String {
+    if name.contains(char::is_whitespace) {
+        let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    } else {
+        name.to_string()
+    }
+}
+
 /// Append `--group <name>`, quoting the name if it contains whitespace so it
 /// round-trips through `shell_split` as a single token.
 fn append_group_flag(cmd: &mut String, group: &Option<String>) {
     if let Some(name) = group {
-        if name.contains(char::is_whitespace) {
-            let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
-            cmd.push_str(&format!(" --group \"{escaped}\""));
-        } else {
-            cmd.push_str(&format!(" --group {name}"));
-        }
+        cmd.push_str(&format!(" --group {}", quote_command_arg(name)));
     }
 }
 

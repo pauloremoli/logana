@@ -41,6 +41,9 @@ pub enum ModeRenderState {
         searching: bool,
     },
     FilterEdit,
+    GroupManagement {
+        selected_group: String,
+    },
     VisualLine {
         anchor: usize,
     },
@@ -151,6 +154,7 @@ impl ModeRenderState {
             ModeRenderState::Search { forward: false, .. } => "SEARCH↑",
             ModeRenderState::FilterManagement { .. } => "FILTER",
             ModeRenderState::FilterEdit => "FILTER EDIT",
+            ModeRenderState::GroupManagement { .. } => "GROUP",
             ModeRenderState::VisualLine { .. } => "VISUAL LINE",
             ModeRenderState::Visual { .. } => "VISUAL",
             ModeRenderState::Comment { .. } => "COMMENT",
@@ -769,6 +773,13 @@ mod tests {
             "FILTER"
         );
         assert_eq!(ModeRenderState::FilterEdit.mode_name(), "FILTER EDIT");
+        assert_eq!(
+            ModeRenderState::GroupManagement {
+                selected_group: String::new()
+            }
+            .mode_name(),
+            "GROUP"
+        );
         assert_eq!(
             ModeRenderState::VisualLine { anchor: 0 }.mode_name(),
             "VISUAL LINE"

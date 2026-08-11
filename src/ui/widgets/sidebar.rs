@@ -11,13 +11,25 @@ use crate::ui::field_layout::line_row_count;
 pub struct Sidebar<'a> {
     pub filters: &'a [FilterDef],
     pub groups: &'a [GroupDef],
+    /// Full, unnarrowed filter list — used for the Groups section's per-group
+    /// counts, which must not shrink just because a sidebar search narrowed
+    /// `filters` to a subset.
+    pub all_filters: &'a [FilterDef],
+    /// `LogManager::group_names()` — every known group, sorted.
+    pub group_names: &'a [String],
     pub match_counts: &'a [usize],
     pub selected_filter_idx: usize,
+    /// Name of the group selected in `GroupManagementMode`, or `None` when
+    /// not in that mode (the Groups section shows no highlight then).
+    pub selected_group: Option<&'a str>,
     pub filter_enabled: bool,
     pub show_marks_only: bool,
     pub filter_progress: Option<usize>,
     pub show_borders: bool,
     pub is_filter_mode: bool,
+    pub is_group_mode: bool,
+    /// Whether the bottom Groups section renders at all — toggled via `:ui`.
+    pub show_groups: bool,
     /// Row offset to scroll the filter list by, as computed by
     /// [`compute_scroll_offset`] and persisted across frames by the caller.
     pub scroll_offset: usize,
@@ -176,6 +188,65 @@ fn build_filter_row(
         Span::styled(value, value_style),
         Span::styled(suffix, default_style),
     ])
+}
+
+/// Builds one row for the bottom Groups section: `<name> (<count>)`, styled
+/// with the group's predefined style if any, bold+underlined when selected.
+/// A group row has no separately-colorable substring (unlike a filter row's
+/// pattern/tag split), so it's a single styled `Span`.
+fn build_group_row(
+    name: &str,
+    all_filters: &[FilterDef],
+    groups: &[GroupDef],
+    is_selected: bool,
+    theme: &Theme,
+) -> Line<'static> {
+    let count = all_filters
+        .iter()
+        .filter(|f| f.group.as_deref() == Some(name))
+        .count();
+    let mut style = Style::default().fg(theme.text);
+    if let Some(cfg) = crate::filters::group_style(groups, name) {
+        if let Some(fg) = cfg.fg {
+            style = style.fg(fg);
+        }
+        if let Some(bg) = cfg.bg {
+            style = style.bg(bg);
+        }
+    }
+    if is_selected {
+        style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    }
+    Line::from(Span::styled(format!("{name} ({count})"), style))
+}
+
+/// Builds the Groups section's title, mirroring [`build_sidebar_title`]'s
+/// `"Filters [n/n]"` shape with `"Groups [n]"` (groups have no per-group
+/// enabled/disabled count to show, unlike filters).
+fn build_groups_title(group_count: usize, title_style: Style) -> Line<'static> {
+    Line::from(Span::styled(format!("Groups [{group_count}]"), title_style))
+}
+
+/// The Groups section never shrinks below this many rows (label included)
+/// while it's shown, even with zero groups — keeps its position stable
+/// instead of the sidebar jumping around as groups are added/removed.
+const MIN_GROUPS_SECTION_HEIGHT: usize = 8;
+
+/// Splits the sidebar's total inner content height into `(filters_height,
+/// groups_height)`, reserving at least one row for the filter list.
+/// `groups_height` includes one row for the Groups section's own "Groups
+/// [n]" label (mirroring the Filters title) on top of its group rows, and
+/// never drops below [`MIN_GROUPS_SECTION_HEIGHT`] — callers that want the
+/// section hidden entirely (e.g. the `:ui` visibility toggle off) must skip
+/// calling this and use `(inner_height, 0)` directly rather than passing
+/// `group_count: 0`. Shared by [`Sidebar::render`] and
+/// [`crate::ui::input_handler::InputHandler::hit_test_sidebar`] so hit-testing
+/// agrees with what was actually rendered — same discipline as
+/// [`compute_scroll_offset`].
+pub(crate) fn split_sidebar_heights(inner_height: usize, group_count: usize) -> (usize, usize) {
+    let desired = (group_count + 1).max(MIN_GROUPS_SECTION_HEIGHT);
+    let groups_height = desired.min(inner_height.saturating_sub(1));
+    (inner_height.saturating_sub(groups_height), groups_height)
 }
 
 /// Content (width, height) of the sidebar's scrollable area for a given
@@ -361,11 +432,50 @@ impl<'a> Widget for Sidebar<'a> {
                 .title(sidebar_title)
         };
 
+        let inner_area = sidebar_block.inner(area);
+        sidebar_block.render(area, buf);
+
+        let (_, groups_height) = if self.show_groups {
+            split_sidebar_heights(inner_area.height as usize, self.group_names.len())
+        } else {
+            (inner_area.height as usize, 0)
+        };
+        let [filters_area, groups_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(groups_height as u16)])
+            .areas(inner_area);
+
         Paragraph::new(filters_text)
             .wrap(Wrap { trim: false })
             .scroll((self.scroll_offset.min(u16::MAX as usize) as u16, 0))
-            .block(sidebar_block)
-            .render(area, buf);
+            .render(filters_area, buf);
+
+        if groups_height > 0 {
+            let groups_title_style = if self.is_group_mode {
+                Style::default().fg(self.theme.text_highlight_fg)
+            } else {
+                Style::default().fg(self.theme.border_title)
+            };
+            let groups_block = Block::default()
+                .borders(Borders::NONE)
+                .title(build_groups_title(
+                    self.group_names.len(),
+                    groups_title_style,
+                ));
+            let groups_inner = groups_block.inner(groups_area);
+            groups_block.render(groups_area, buf);
+
+            let groups_text: Vec<Line> = self
+                .group_names
+                .iter()
+                .map(|name| {
+                    let is_selected =
+                        self.is_group_mode && self.selected_group == Some(name.as_str());
+                    build_group_row(name, self.all_filters, self.groups, is_selected, self.theme)
+                })
+                .collect();
+            Paragraph::new(groups_text).render(groups_inner, buf);
+        }
     }
 }
 
@@ -399,6 +509,11 @@ mod tests {
         let sidebar = Sidebar {
             filters: &filters,
             groups: &[],
+            all_filters: &[],
+            group_names: &[],
+            selected_group: None,
+            is_group_mode: false,
+            show_groups: false,
             match_counts: &[1, 2],
             selected_filter_idx: 0,
             filter_enabled: true,
@@ -441,6 +556,11 @@ mod tests {
         let sidebar = Sidebar {
             filters: &[],
             groups: &[],
+            all_filters: &[],
+            group_names: &[],
+            selected_group: None,
+            is_group_mode: false,
+            show_groups: true,
             match_counts: &[],
             selected_filter_idx: 0,
             filter_enabled: true,
@@ -501,6 +621,11 @@ mod tests {
         let sidebar = Sidebar {
             filters: &filters,
             groups: &[],
+            all_filters: &[],
+            group_names: &[],
+            selected_group: None,
+            is_group_mode: false,
+            show_groups: false,
             match_counts: &match_counts,
             selected_filter_idx: selected,
             filter_enabled: true,
@@ -543,6 +668,11 @@ mod tests {
         let sidebar = Sidebar {
             filters: &[],
             groups: &[],
+            all_filters: &[],
+            group_names: &[],
+            selected_group: None,
+            is_group_mode: false,
+            show_groups: true,
             match_counts: &[],
             selected_filter_idx: 0,
             filter_enabled: true,
@@ -573,6 +703,11 @@ mod tests {
         let sidebar = Sidebar {
             filters: &filters,
             groups: &[],
+            all_filters: &[],
+            group_names: &[],
+            selected_group: None,
+            is_group_mode: false,
+            show_groups: true,
             match_counts: &match_counts,
             selected_filter_idx: 0,
             filter_enabled: true,
@@ -1071,6 +1206,11 @@ mod tests {
                     Sidebar {
                         filters: &[],
                         groups: &[],
+                        all_filters: &[],
+                        group_names: &[],
+                        selected_group: None,
+                        is_group_mode: false,
+                        show_groups: true,
                         match_counts: &[],
                         selected_filter_idx: 0,
                         filter_enabled: true,
@@ -1105,6 +1245,11 @@ mod tests {
                     Sidebar {
                         filters: &[],
                         groups: &[],
+                        all_filters: &[],
+                        group_names: &[],
+                        selected_group: None,
+                        is_group_mode: false,
+                        show_groups: true,
                         match_counts: &[],
                         selected_filter_idx: 0,
                         filter_enabled: true,
@@ -1134,6 +1279,11 @@ mod tests {
                     Sidebar {
                         filters: &[],
                         groups: &[],
+                        all_filters: &[],
+                        group_names: &[],
+                        selected_group: None,
+                        is_group_mode: false,
+                        show_groups: true,
                         match_counts: &[],
                         selected_filter_idx: 0,
                         filter_enabled: true,
@@ -1161,6 +1311,320 @@ mod tests {
         assert_ne!(
             active_border, inactive_border,
             "text_highlight_fg and border must differ for the visual cue to be visible"
+        );
+    }
+
+    #[test]
+    fn test_build_group_row_shows_name_and_count() {
+        let theme = Theme::default();
+        let mut f0 = make_filter("a", true, FilterType::Include);
+        f0.group = Some("net".to_string());
+        let mut f1 = make_filter("b", true, FilterType::Include);
+        f1.group = Some("net".to_string());
+        let filters = vec![f0, f1];
+        let line = build_group_row("net", &filters, &[], false, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "net (2)");
+    }
+
+    #[test]
+    fn test_build_group_row_zero_filters_shows_zero_count() {
+        let theme = Theme::default();
+        let line = build_group_row("empty", &[], &[], false, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "empty (0)");
+    }
+
+    #[test]
+    fn test_build_group_row_uses_group_style() {
+        use crate::filters::ColorConfig;
+        let theme = Theme::default();
+        let groups = vec![GroupDef {
+            name: "net".to_string(),
+            color_config: Some(ColorConfig {
+                fg: Some(ratatui::style::Color::Red),
+                bg: None,
+                match_only: true,
+            }),
+        }];
+        let line = build_group_row("net", &[], &groups, false, &theme);
+        assert_eq!(line.spans[0].style.fg, Some(ratatui::style::Color::Red));
+    }
+
+    #[test]
+    fn test_build_group_row_no_style_uses_theme_default() {
+        let theme = Theme::default();
+        let line = build_group_row("net", &[], &[], false, &theme);
+        assert_eq!(line.spans[0].style.fg, Some(theme.text));
+    }
+
+    #[test]
+    fn test_build_group_row_selected_is_bold_and_underlined() {
+        let theme = Theme::default();
+        let selected = build_group_row("net", &[], &[], true, &theme);
+        assert!(
+            selected.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD | Modifier::UNDERLINED)
+        );
+        let unselected = build_group_row("net", &[], &[], false, &theme);
+        assert!(
+            !unselected.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn test_split_sidebar_heights_no_groups_still_reserves_minimum_height() {
+        // 0 groups + 1 label row = 1, but the section never shrinks below
+        // the 8-row minimum, even empty.
+        assert_eq!(split_sidebar_heights(20, 0), (12, 8));
+    }
+
+    #[test]
+    fn test_split_sidebar_heights_few_groups_still_reserves_minimum_height() {
+        // 3 group rows + 1 label row = 4, still below the 8-row minimum.
+        assert_eq!(split_sidebar_heights(20, 3), (12, 8));
+    }
+
+    #[test]
+    fn test_split_sidebar_heights_grows_past_minimum_for_many_groups() {
+        // 10 group rows + 1 label row = 11, above the 8-row minimum.
+        assert_eq!(split_sidebar_heights(20, 10), (9, 11));
+    }
+
+    #[test]
+    fn test_split_sidebar_heights_caps_groups_leaving_at_least_one_filter_row() {
+        assert_eq!(split_sidebar_heights(5, 20), (1, 4));
+    }
+
+    #[test]
+    fn test_split_sidebar_heights_zero_inner_height_does_not_panic() {
+        assert_eq!(split_sidebar_heights(0, 5), (0, 0));
+    }
+
+    #[test]
+    fn test_split_sidebar_heights_small_inner_height_caps_below_minimum() {
+        assert_eq!(split_sidebar_heights(10, 0), (2, 8));
+    }
+
+    fn render_to_screen(sidebar: Sidebar, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let buf = terminal
+            .draw(|f| f.render_widget(sidebar, f.area()))
+            .unwrap();
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|c| {
+                        buf.buffer
+                            .cell(ratatui::prelude::Position::new(c, row))
+                            .unwrap()
+                            .symbol()
+                            .to_string()
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_sidebar_renders_groups_section_below_filters() {
+        let theme = Theme::default();
+        let filters = vec![make_filter("foo", true, FilterType::Include)];
+        let group_names = vec!["net".to_string(), "sys".to_string()];
+        let sidebar = Sidebar {
+            filters: &filters,
+            groups: &[],
+            all_filters: &filters,
+            group_names: &group_names,
+            match_counts: &[1],
+            selected_filter_idx: 0,
+            selected_group: None,
+            filter_enabled: true,
+            show_marks_only: false,
+            filter_progress: None,
+            show_borders: false,
+            is_filter_mode: false,
+            is_group_mode: false,
+            show_groups: true,
+            scroll_offset: 0,
+            highlight_mode: false,
+            search: "",
+            searching: false,
+            theme: &theme,
+        };
+        let screen = render_to_screen(sidebar, 40, 10);
+        assert!(screen.contains("foo"), "filter row must render: {screen:?}");
+        assert!(screen.contains("net"), "group row must render: {screen:?}");
+        assert!(screen.contains("sys"), "group row must render: {screen:?}");
+    }
+
+    #[test]
+    fn test_sidebar_groups_section_shows_label_with_count() {
+        let theme = Theme::default();
+        let group_names = vec!["net".to_string(), "sys".to_string()];
+        let sidebar = Sidebar {
+            filters: &[],
+            groups: &[],
+            all_filters: &[],
+            group_names: &group_names,
+            match_counts: &[],
+            selected_filter_idx: 0,
+            selected_group: None,
+            filter_enabled: true,
+            show_marks_only: false,
+            filter_progress: None,
+            show_borders: false,
+            is_filter_mode: false,
+            is_group_mode: false,
+            show_groups: true,
+            scroll_offset: 0,
+            highlight_mode: false,
+            search: "",
+            searching: false,
+            theme: &theme,
+        };
+        let screen = render_to_screen(sidebar, 40, 10);
+        assert!(
+            screen.contains("Groups [2]"),
+            "groups label with count must render: {screen:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_groups_title_shows_count() {
+        let line = build_groups_title(3, Style::default());
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Groups [3]");
+    }
+
+    #[test]
+    fn test_sidebar_groups_section_empty_when_no_groups() {
+        let theme = Theme::default();
+        let filters = vec![make_filter("foo", true, FilterType::Include)];
+        let sidebar = Sidebar {
+            filters: &filters,
+            groups: &[],
+            all_filters: &filters,
+            group_names: &[],
+            match_counts: &[1],
+            selected_filter_idx: 0,
+            selected_group: None,
+            filter_enabled: true,
+            show_marks_only: false,
+            filter_progress: None,
+            show_borders: false,
+            is_filter_mode: false,
+            is_group_mode: false,
+            show_groups: true,
+            scroll_offset: 0,
+            highlight_mode: false,
+            search: "",
+            searching: false,
+            theme: &theme,
+        };
+        let screen = render_to_screen(sidebar, 40, 10);
+        // Filter row still gets the full remaining height when no groups exist.
+        assert!(screen.contains("foo"));
+    }
+
+    #[test]
+    fn test_sidebar_groups_section_hidden_when_show_groups_false() {
+        let theme = Theme::default();
+        let group_names = vec!["net".to_string()];
+        let sidebar = Sidebar {
+            filters: &[],
+            groups: &[],
+            all_filters: &[],
+            group_names: &group_names,
+            match_counts: &[],
+            selected_filter_idx: 0,
+            selected_group: None,
+            filter_enabled: true,
+            show_marks_only: false,
+            filter_progress: None,
+            show_borders: false,
+            is_filter_mode: false,
+            is_group_mode: false,
+            show_groups: false,
+            scroll_offset: 0,
+            highlight_mode: false,
+            search: "",
+            searching: false,
+            theme: &theme,
+        };
+        let screen = render_to_screen(sidebar, 40, 10);
+        assert!(
+            !screen.contains("net"),
+            "group section must be fully hidden when show_groups is false: {screen:?}"
+        );
+    }
+
+    #[test]
+    fn test_sidebar_selected_group_is_highlighted() {
+        let theme = Theme::default();
+        let group_names = vec!["net".to_string(), "sys".to_string()];
+        let sidebar = Sidebar {
+            filters: &[],
+            groups: &[],
+            all_filters: &[],
+            group_names: &group_names,
+            match_counts: &[],
+            selected_filter_idx: 0,
+            selected_group: Some("sys"),
+            filter_enabled: true,
+            show_marks_only: false,
+            filter_progress: None,
+            show_borders: false,
+            is_filter_mode: false,
+            is_group_mode: true,
+            show_groups: true,
+            scroll_offset: 0,
+            highlight_mode: false,
+            search: "",
+            searching: false,
+            theme: &theme,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let buf = terminal
+            .draw(|f| f.render_widget(sidebar, f.area()))
+            .unwrap();
+        let row_text = |row: u16| -> String {
+            (0..40u16)
+                .map(|c| {
+                    buf.buffer
+                        .cell(ratatui::prelude::Position::new(c, row))
+                        .unwrap()
+                        .symbol()
+                        .to_string()
+                })
+                .collect()
+        };
+        let find_cell_style = |needle: &str| -> ratatui::style::Modifier {
+            for row in 0..10u16 {
+                if let Some(col) = row_text(row).find(needle) {
+                    return buf
+                        .buffer
+                        .cell(ratatui::prelude::Position::new(col as u16, row))
+                        .unwrap()
+                        .style()
+                        .add_modifier;
+                }
+            }
+            panic!("{needle:?} row must render");
+        };
+        assert!(
+            find_cell_style("sys").contains(Modifier::BOLD),
+            "selected group row should be bold"
+        );
+        assert!(
+            !find_cell_style("net").contains(Modifier::BOLD),
+            "unselected group row should not be bold"
         );
     }
 }

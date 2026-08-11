@@ -163,8 +163,9 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "group",
         usage: "group <name> [--fg <color>] [--bg <color>] [-l] [-a] [--clear]",
-        description: "Set, update, or clear a predefined color style for a filter group; filters in the group with no color of their own fall back to it.",
+        description: "Create, set, update, or clear a predefined color style for a filter group; filters in the group with no color of their own fall back to it. With no flags, registers the group with no style.",
         examples: &[
+            "group errors",
             "group errors --fg Red",
             "group errors --fg Red --bg Black -l",
             "group errors --auto",

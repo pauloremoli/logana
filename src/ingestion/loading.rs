@@ -1528,6 +1528,7 @@ impl App {
                         line_count: h.scan_line_count,
                         raw_mode: h.scan_raw_mode,
                         highlight_mode: h.scan_highlight_mode,
+                        group_fingerprint: h.scan_group_fingerprint.clone(),
                         view: (
                             tab.filter.visible_indices.clone(),
                             tab.filter.manager.clone(),
@@ -2965,6 +2966,7 @@ mod tests {
             scan_line_count: 0,
             scan_raw_mode: false,
             scan_highlight_mode: false,
+            scan_group_fingerprint: Vec::new(),
         };
         for chunk in chunks {
             tx.try_send(chunk).unwrap();
@@ -3083,6 +3085,7 @@ mod tests {
             scan_line_count: 0,
             scan_raw_mode: false,
             scan_highlight_mode: false,
+            scan_group_fingerprint: Vec::new(),
         };
         app.tabs[0].filter.handle = Some(handle);
         app.advance_filter_computation();

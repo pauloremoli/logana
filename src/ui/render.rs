@@ -62,6 +62,8 @@ struct UiRenderState {
     filter_search: String,
     /// True while filter search is capturing input — see `ModeRenderState::FilterManagement`.
     filter_searching: bool,
+    /// Name of the group selected in `GroupManagement`, or `None` outside it.
+    selected_group: Option<String>,
     visual_anchor: Option<usize>,
     visual_char_selection: Option<(usize, usize)>,
     comment_popup: Option<(Vec<String>, usize, usize, usize, bool)>,
@@ -204,6 +206,8 @@ impl App {
                 render_state,
                 ModeRenderState::FilterManagement { .. } | ModeRenderState::FilterEdit
             );
+            let is_group_mode = matches!(render_state, ModeRenderState::GroupManagement { .. });
+            let show_groups = self.tabs[self.active_tab].display.show_groups_panel;
             self.render_sidebar(
                 frame,
                 sa,
@@ -212,6 +216,9 @@ impl App {
                 is_filter_mode,
                 &state.filter_search,
                 state.filter_searching,
+                state.selected_group.as_deref(),
+                is_group_mode,
+                show_groups,
             );
         }
 
@@ -291,6 +298,14 @@ impl App {
                 ..
             }
         );
+        // Unlike `selected_filter_idx`, this is intentionally not "sticky" —
+        // the Groups section shows no highlight once you leave
+        // `GroupManagement`, rather than remembering the last selection the
+        // way the filter list does via `last_selected_filter`.
+        let selected_group = match render_state {
+            ModeRenderState::GroupManagement { selected_group } => Some(selected_group.clone()),
+            _ => None,
+        };
         let keybindings = self.tabs[self.active_tab].interaction.keybindings.clone();
         let status_line = self.tabs[self.active_tab]
             .interaction
@@ -461,6 +476,7 @@ impl App {
             selected_filter_idx,
             filter_search,
             filter_searching,
+            selected_group,
             visual_anchor,
             visual_char_selection,
             comment_popup,
@@ -714,9 +730,13 @@ impl App {
         is_filter_mode: bool,
         search: &str,
         searching: bool,
+        selected_group: Option<&str>,
+        is_group_mode: bool,
+        show_groups: bool,
     ) {
         let tab = &mut self.tabs[self.active_tab];
         let all_filters = tab.log_manager.get_filters();
+        let group_names = tab.log_manager.group_names();
         let all_match_counts = &tab.filter.match_counts;
         // Narrowing to only the entries matching `search` (everything, when not
         // searching) is expressed uniformly here rather than branching, since
@@ -738,13 +758,16 @@ impl App {
             .map(|h| (h.displayed_progress * 100.0) as usize);
         let (content_w, content_h) =
             super::widgets::sidebar::sidebar_inner_dims(sidebar_area, show_borders);
-        tab.filter.sidebar_visible_height = content_h;
+        let group_count = if show_groups { group_names.len() } else { 0 };
+        let (filters_h, _groups_h) =
+            super::widgets::sidebar::split_sidebar_heights(content_h, group_count);
+        tab.filter.sidebar_visible_height = filters_h;
         let scroll_offset = super::widgets::sidebar::compute_scroll_offset(
             filters,
             selected_filter_idx,
             &match_counts,
             content_w,
-            content_h,
+            filters_h,
             tab.filter.sidebar_scroll,
         );
         tab.filter.sidebar_scroll = scroll_offset;
@@ -752,13 +775,18 @@ impl App {
             Sidebar {
                 filters,
                 groups: tab.log_manager.get_group_styles(),
+                all_filters,
+                group_names: &group_names,
                 match_counts: &match_counts,
                 selected_filter_idx,
+                selected_group,
                 filter_enabled: tab.filter.enabled,
                 show_marks_only: tab.filter.show_marks_only,
                 filter_progress,
                 show_borders,
                 is_filter_mode,
+                is_group_mode,
+                show_groups,
                 scroll_offset,
                 highlight_mode: tab.filter.highlight_mode,
                 search,
@@ -1830,6 +1858,7 @@ mod tests {
             scan_line_count: 0,
             scan_raw_mode: false,
             scan_highlight_mode: false,
+            scan_group_fingerprint: vec![],
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -1860,6 +1889,7 @@ mod tests {
             scan_line_count: 0,
             scan_raw_mode: false,
             scan_highlight_mode: false,
+            scan_group_fingerprint: vec![],
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -1890,6 +1920,7 @@ mod tests {
             scan_line_count: 0,
             scan_raw_mode: false,
             scan_highlight_mode: false,
+            scan_group_fingerprint: vec![],
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
@@ -1916,6 +1947,7 @@ mod tests {
             scan_line_count: 0,
             scan_raw_mode: false,
             scan_highlight_mode: false,
+            scan_group_fingerprint: vec![],
         });
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

@@ -340,10 +340,13 @@ impl App {
         Ok(false)
     }
 
-    /// Set, update, or clear the predefined style for group `name`. Filters
-    /// in the group with no `color_config` of their own fall back to it
-    /// (see `effective_color_config`). The group need not have any filters
-    /// yet — this is how a style gets predefined ahead of time.
+    /// Set, update, clear, or bare-create group `name`. Filters in the group
+    /// with no `color_config` of their own fall back to its style (see
+    /// `effective_color_config`). The group need not have any filters yet —
+    /// this is how a style (or just the group itself, with no style at all)
+    /// gets predefined ahead of time. With no `--fg`/`--bg`/`-l`/`--auto`,
+    /// the group is registered with no style, matching how a filter/group's
+    /// own color is optional everywhere else in the app.
     pub(super) async fn cmd_group(
         &mut self,
         name: String,
@@ -365,9 +368,6 @@ impl App {
             return Ok(false);
         }
         let (fg, bg) = resolve_auto_colors(auto, fg, bg)?;
-        if fg.is_none() && bg.is_none() && !line_mode {
-            return Err("Specify --fg/--bg, -l, or --auto".to_string());
-        }
         self.tabs[self.active_tab]
             .log_manager
             .set_group_style(&name, fg.as_deref(), bg.as_deref(), !line_mode)

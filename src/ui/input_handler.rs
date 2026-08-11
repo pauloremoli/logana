@@ -2,6 +2,16 @@ use ratatui::prelude::{Position, Rect};
 
 use super::TabState;
 
+/// What a sidebar click landed on — a filter row (by index into
+/// `LogManager::get_filters()`) or a Groups-section row (by group name, since
+/// `group_names()` is a recomputed, sorted list that can reorder as filters
+/// change groups).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidebarHit {
+    Filter(usize),
+    Group(String),
+}
+
 pub struct InputHandler {
     pub log_panel_area: Rect,
     pub sidebar_area: Option<Rect>,
@@ -32,7 +42,7 @@ impl InputHandler {
         Some(((pos * max_scroll) / bar_height.max(1)).min(max_scroll))
     }
 
-    pub fn hit_test_sidebar(&self, col: u16, row: u16, tab: &TabState) -> Option<usize> {
+    pub fn hit_test_sidebar(&self, col: u16, row: u16, tab: &TabState) -> Option<SidebarHit> {
         use crate::mode::app_mode::ModeRenderState;
 
         let area = self.sidebar_area?;
@@ -41,11 +51,21 @@ impl InputHandler {
         }
         let filters = tab.log_manager.get_filters();
         let num_filters = filters.len();
-        if num_filters == 0 {
+        let group_count = if tab.display.show_groups_panel {
+            tab.log_manager.group_names()
+        } else {
+            Vec::new()
+        };
+        if num_filters == 0 && group_count.is_empty() {
             return None;
         }
         let (inner_width, inner_height) =
             super::widgets::sidebar::sidebar_inner_dims(area, tab.display.show_borders);
+        let (filters_h, _groups_h) = if tab.display.show_groups_panel {
+            super::widgets::sidebar::split_sidebar_heights(inner_height, group_count.len())
+        } else {
+            (inner_height, 0)
+        };
         let selected = match tab.interaction.mode.render_state() {
             ModeRenderState::FilterManagement { selected_index, .. } => selected_index,
             _ => tab.filter.last_selected_filter,
@@ -58,10 +78,19 @@ impl InputHandler {
             selected,
             &tab.filter.match_counts,
             inner_width,
-            inner_height,
+            filters_h,
             tab.filter.sidebar_scroll,
         );
-        let target_row = row.saturating_sub(area.y + 1) as usize + scroll;
+        let raw_row = row.saturating_sub(area.y + 1) as usize;
+        if raw_row >= filters_h {
+            // Row 0 of the groups region is the "Groups [n]" label, mirroring
+            // the Filters title — it isn't a group row, so clicking it is a
+            // deliberate no-op rather than aliasing to the first group.
+            let offset = raw_row - filters_h;
+            let group_row = offset.checked_sub(1)?;
+            return group_count.get(group_row).cloned().map(SidebarHit::Group);
+        }
+        let target_row = raw_row + scroll;
         let mut accumulated = 0usize;
         for (idx, filter) in filters.iter().enumerate() {
             let text = super::widgets::sidebar::filter_row_display_text(
@@ -72,11 +101,14 @@ impl InputHandler {
             );
             let rc = super::field_layout::line_row_count(text.as_bytes(), inner_width);
             if accumulated + rc > target_row {
-                return Some(idx);
+                return Some(SidebarHit::Filter(idx));
             }
             accumulated += rc;
         }
-        Some(num_filters.saturating_sub(1))
+        if num_filters == 0 {
+            return None;
+        }
+        Some(SidebarHit::Filter(num_filters.saturating_sub(1)))
     }
 
     pub fn hit_test_log_panel(&self, col: u16, row: u16, tab: &TabState) -> Option<usize> {

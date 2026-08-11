@@ -67,6 +67,7 @@ struct StartupSettings {
     wrap: bool,
     sidebar_side: SidebarSide,
     collapse_continuations: bool,
+    show_groups_panel: bool,
 }
 
 async fn resolve_startup_settings(
@@ -127,6 +128,7 @@ async fn resolve_startup_settings(
             false,
         )
         .await,
+        show_groups_panel: resolve_bool_setting(db, SettingsKey::ShowGroupsPanel, None, true).await,
     }
 }
 
@@ -141,6 +143,7 @@ pub struct DisplaySettings {
     pub wrap: bool,
     pub sidebar_side: SidebarSide,
     pub collapse_continuations: bool,
+    pub show_groups_panel: bool,
 }
 
 pub struct App {
@@ -263,6 +266,7 @@ impl AppBuilder {
             wrap,
             sidebar_side,
             collapse_continuations,
+            show_groups_panel,
         } = settings;
 
         let title = self
@@ -290,6 +294,7 @@ impl AppBuilder {
         tab.display.wrap = wrap;
         tab.display.sidebar_side = sidebar_side;
         tab.display.collapse_continuations = collapse_continuations;
+        tab.display.show_groups_panel = show_groups_panel;
         let mut pending_session_restore: Option<Vec<String>> = None;
 
         // Check for saved context only when we have real data (not a placeholder
@@ -356,6 +361,7 @@ impl AppBuilder {
                 wrap,
                 sidebar_side,
                 collapse_continuations,
+                show_groups_panel,
             },
             preview_bytes: DEFAULT_PREVIEW_BYTES,
             dlt_devices: vec![],
@@ -1782,6 +1788,7 @@ mod tests {
             scan_line_count: 0,
             scan_raw_mode: false,
             scan_highlight_mode: false,
+            scan_group_fingerprint: vec![],
         });
         app.close_tab().await;
         assert!(cancel.load(Ordering::Relaxed));
@@ -2187,10 +2194,23 @@ mod tests {
         app.execute_command_str("filter foo".to_string()).await;
         app.execute_command_str("filter bar".to_string()).await;
         let tab = app.tab();
-        assert_eq!(app.input.hit_test_sidebar(65, 0, tab), Some(0));
-        assert_eq!(app.input.hit_test_sidebar(65, 1, tab), Some(0));
-        assert_eq!(app.input.hit_test_sidebar(65, 2, tab), Some(1));
-        assert_eq!(app.input.hit_test_sidebar(65, 5, tab), Some(1));
+        use crate::ui::input_handler::SidebarHit;
+        assert_eq!(
+            app.input.hit_test_sidebar(65, 0, tab),
+            Some(SidebarHit::Filter(0))
+        );
+        assert_eq!(
+            app.input.hit_test_sidebar(65, 1, tab),
+            Some(SidebarHit::Filter(0))
+        );
+        assert_eq!(
+            app.input.hit_test_sidebar(65, 2, tab),
+            Some(SidebarHit::Filter(1))
+        );
+        assert_eq!(
+            app.input.hit_test_sidebar(65, 5, tab),
+            Some(SidebarHit::Filter(1))
+        );
     }
 
     #[tokio::test]
@@ -2212,6 +2232,7 @@ mod tests {
         };
         let mut app = app_with_areas(10, 40, log_area, Some(sidebar_area)).await;
         app.tabs[0].display.show_borders = false;
+        app.tabs[0].display.show_groups_panel = false;
         for i in 0..30 {
             app.execute_command_str(format!("filter pattern_{i}")).await;
         }
@@ -2220,8 +2241,15 @@ mod tests {
         let tab = app.tab();
         // With 9 visible content rows and selection at 25, the sidebar scrolls
         // so filters 17..=25 occupy content rows 0..=8.
-        assert_eq!(app.input.hit_test_sidebar(65, 1, tab), Some(17));
-        assert_eq!(app.input.hit_test_sidebar(65, 9, tab), Some(25));
+        use crate::ui::input_handler::SidebarHit;
+        assert_eq!(
+            app.input.hit_test_sidebar(65, 1, tab),
+            Some(SidebarHit::Filter(17))
+        );
+        assert_eq!(
+            app.input.hit_test_sidebar(65, 9, tab),
+            Some(SidebarHit::Filter(25))
+        );
     }
 
     #[tokio::test]
@@ -2247,6 +2275,7 @@ mod tests {
         };
         let mut app = app_with_areas(10, 40, log_area, Some(sidebar_area)).await;
         app.tabs[0].display.show_borders = false;
+        app.tabs[0].display.show_groups_panel = false;
         // Each pattern uses a disjoint character so a rendered row can be
         // attributed to exactly one filter regardless of where it wraps.
         // 'b' and 'd' patterns are long enough to wrap across several rows.
@@ -2279,6 +2308,11 @@ mod tests {
         let sidebar = Sidebar {
             filters,
             groups: &[],
+            all_filters: &[],
+            group_names: &[],
+            selected_group: None,
+            is_group_mode: false,
+            show_groups: false,
             match_counts: &match_counts,
             selected_filter_idx: patterns.len() - 1,
             filter_enabled: tab.filter.enabled,
@@ -2319,7 +2353,7 @@ mod tests {
                 .hit_test_sidebar(sidebar_area.x, sidebar_area.y + row, tab);
             assert_eq!(
                 actual,
-                Some(expected_idx),
+                Some(crate::ui::input_handler::SidebarHit::Filter(expected_idx)),
                 "row {row} shows {row_text:?}, expected filter {expected_idx}"
             );
         }
@@ -2401,6 +2435,102 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_click_sidebar_group_enters_group_management_mode() {
+        use crate::mode::app_mode::ModeRenderState;
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter --group net foo".to_string())
+            .await;
+        // The Groups section is pinned to the bottom of the sidebar (fixed
+        // height, filters take the rest via Constraint::Min(0)) and never
+        // shrinks below its 8-row minimum — with borders off (the default
+        // here) that's rows 12..=19 of this 20-row area: row 12 is the
+        // "Groups [1]" label, row 13 is the single "net" row.
+        let group_row = 13;
+        app.handle_left_click(sidebar_area.x + 5, group_row).await;
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::GroupManagement { selected_group } if selected_group == "net"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_click_groups_label_row_is_a_noop() {
+        use crate::mode::app_mode::ModeRenderState;
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter --group net foo".to_string())
+            .await;
+        // The "Groups [n]" label sits one row above the group row itself
+        // (row 13, per test_click_sidebar_group_enters_group_management_mode).
+        let label_row = 12;
+        app.handle_left_click(sidebar_area.x + 5, label_row).await;
+        assert!(
+            !matches!(
+                app.tabs[0].interaction.mode.render_state(),
+                ModeRenderState::GroupManagement { .. }
+            ),
+            "clicking the Groups label must not select a group"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ui_toggle_groups_panel_hides_and_restores_groups_section() {
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter --group net foo".to_string())
+            .await;
+        assert!(app.tabs[0].display.show_groups_panel);
+        app.dispatch_key_result(
+            KeyResult::ToggleGroupsPanel,
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert!(!app.tabs[0].display.show_groups_panel);
+        app.dispatch_key_result(
+            KeyResult::ToggleGroupsPanel,
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert!(app.tabs[0].display.show_groups_panel);
     }
 
     #[tokio::test]

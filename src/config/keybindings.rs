@@ -347,6 +347,12 @@ fn default_filter_mode_key() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('f'), KeyModifiers::NONE)])
 }
 #[inline(always)]
+fn default_group_mode_key() -> KeyBindings {
+    // Plain 'g' is already the first key of the `gg` (go to top) chord
+    // (`go_to_top_chord`) — Ctrl+g keeps the mnemonic without colliding.
+    KeyBindings(vec![KeyBinding(KeyCode::Char('g'), KeyModifiers::CONTROL)])
+}
+#[inline(always)]
 fn default_toggle_filtering() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('F'), KeyModifiers::NONE)])
 }
@@ -409,6 +415,10 @@ fn default_toggle_wrap() -> KeyBindings {
 #[inline(always)]
 fn default_toggle_relative_line_numbers() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('r'), KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_toggle_groups_panel() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('g'), KeyModifiers::NONE)])
 }
 #[inline(always)]
 fn default_visual_mode() -> KeyBindings {
@@ -534,6 +544,8 @@ pub struct NormalKeybindings {
     pub command_mode: KeyBindings,
     #[serde(default = "default_filter_mode_key")]
     pub filter_mode: KeyBindings,
+    #[serde(default = "default_group_mode_key")]
+    pub group_mode: KeyBindings,
     #[serde(default = "default_toggle_filtering")]
     pub toggle_filtering: KeyBindings,
     #[serde(default = "default_toggle_highlight_mode")]
@@ -605,6 +617,7 @@ impl Default for NormalKeybindings {
             end_of_line: default_end_of_line(),
             command_mode: default_command_mode(),
             filter_mode: default_filter_mode_key(),
+            group_mode: default_group_mode_key(),
             toggle_filtering: default_toggle_filtering(),
             toggle_highlight_mode: default_toggle_highlight_mode(),
             go_to_top_chord: default_go_to_top_chord(),
@@ -1523,6 +1536,38 @@ impl Default for ArchivePickerKeybindings {
 }
 
 #[inline(always)]
+fn default_clear_group_style() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('x'), KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_add_group() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('a'), KeyModifiers::NONE)])
+}
+
+/// Keybindings scoped to `GroupManagementMode` beyond what it already reuses
+/// from `filter`/`navigation` (see `filter_mode.rs`'s doc comment on why
+/// those are shared rather than duplicated). "Clear style" has no sensible
+/// existing key to borrow — `filter.clear_all_filters` means something
+/// entirely different (wipe every filter) — so it gets this one dedicated
+/// field instead.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GroupKeybindings {
+    #[serde(default = "default_clear_group_style")]
+    pub clear_group_style: KeyBindings,
+    #[serde(default = "default_add_group")]
+    pub add_group: KeyBindings,
+}
+
+impl Default for GroupKeybindings {
+    fn default() -> Self {
+        Self {
+            clear_group_style: default_clear_group_style(),
+            add_group: default_add_group(),
+        }
+    }
+}
+
+#[inline(always)]
 fn default_help_close() -> KeyBindings {
     KeyBindings(vec![
         KeyBinding(KeyCode::Char('q'), KeyModifiers::NONE),
@@ -1602,6 +1647,8 @@ pub struct UiKeybindings {
     pub toggle_wrap: KeyBindings,
     #[serde(default = "default_toggle_relative_line_numbers")]
     pub toggle_relative_line_numbers: KeyBindings,
+    #[serde(default = "default_toggle_groups_panel")]
+    pub toggle_groups_panel: KeyBindings,
     #[serde(default = "default_ui_exit")]
     pub exit: KeyBindings,
 }
@@ -1614,6 +1661,7 @@ impl Default for UiKeybindings {
             toggle_borders: default_toggle_borders(),
             toggle_wrap: default_toggle_wrap(),
             toggle_relative_line_numbers: default_toggle_relative_line_numbers(),
+            toggle_groups_panel: default_toggle_groups_panel(),
             exit: default_ui_exit(),
         }
     }
@@ -1641,6 +1689,8 @@ pub struct Keybindings {
     pub normal: NormalKeybindings,
     #[serde(default)]
     pub filter: FilterKeybindings,
+    #[serde(default)]
+    pub group: GroupKeybindings,
     #[serde(default)]
     pub global: GlobalKeybindings,
     #[serde(default)]
@@ -1702,6 +1752,7 @@ impl Keybindings {
             ("normal.end_of_line", &self.normal.end_of_line),
             ("normal.command_mode", &self.normal.command_mode),
             ("normal.filter_mode", &self.normal.filter_mode),
+            ("normal.group_mode", &self.normal.group_mode),
             ("normal.toggle_filtering", &self.normal.toggle_filtering),
             (
                 "normal.toggle_highlight_mode",
@@ -1785,6 +1836,16 @@ impl Keybindings {
             ("global.next_tab", &self.global.next_tab),
             ("global.prev_tab", &self.global.prev_tab),
             ("global.file_switcher", &self.global.file_switcher),
+        ];
+
+        let group_actions: &[(&str, &KeyBindings)] = &[
+            ("navigation.scroll_down", &nav.scroll_down),
+            ("navigation.scroll_up", &nav.scroll_up),
+            ("filter.toggle_all_filters", &self.filter.toggle_all_filters),
+            ("filter.edit_filter", &self.filter.edit_filter),
+            ("filter.exit_mode", &self.filter.exit_mode),
+            ("group.clear_group_style", &self.group.clear_group_style),
+            ("group.add_group", &self.group.add_group),
         ];
 
         let visual_line_actions: &[(&str, &KeyBindings)] = &[
@@ -1918,6 +1979,11 @@ impl Keybindings {
             ("ui.toggle_mode_bar", &self.ui.toggle_mode_bar),
             ("ui.toggle_borders", &self.ui.toggle_borders),
             ("ui.toggle_wrap", &self.ui.toggle_wrap),
+            (
+                "ui.toggle_relative_line_numbers",
+                &self.ui.toggle_relative_line_numbers,
+            ),
+            ("ui.toggle_groups_panel", &self.ui.toggle_groups_panel),
             ("ui.exit", &self.ui.exit),
             ("global.quit", &self.global.quit),
             ("global.next_tab", &self.global.next_tab),
@@ -1944,6 +2010,7 @@ impl Keybindings {
         );
         check_conflicts(&normal_and_custom, &mut conflicts);
         check_conflicts(filter_actions, &mut conflicts);
+        check_conflicts(group_actions, &mut conflicts);
         check_conflicts(visual_line_actions, &mut conflicts);
         check_conflicts(visual_char_actions, &mut conflicts);
         check_conflicts(docker_select_actions, &mut conflicts);

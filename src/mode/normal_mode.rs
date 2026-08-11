@@ -5,6 +5,7 @@ use crate::{
         command_mode::CommandMode,
         comment_mode::CommentMode,
         filter_mode::FilterManagementMode,
+        group_mode::GroupManagementMode,
         keybindings_help_mode::KeybindingsHelpMode,
         search_mode::SearchMode,
         ui_mode::UiMode,
@@ -150,6 +151,21 @@ impl Mode for NormalMode {
                 .min(num_filters.saturating_sub(1));
             return (
                 Box::new(FilterManagementMode::new(selected_filter_index)),
+                KeyResult::Handled,
+            );
+        }
+
+        if kb.normal.group_mode.matches(key, modifiers) {
+            tab.interaction.g_key_pressed = false;
+            self.count = None;
+            let selected_group = tab
+                .log_manager
+                .group_names()
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            return (
+                Box::new(GroupManagementMode::new(selected_group)),
                 KeyResult::Handled,
             );
         }
@@ -645,6 +661,7 @@ impl Mode for NormalMode {
             "filters",
             theme,
         );
+        status_entry(&mut spans, kb.normal.group_mode.display(), "groups", theme);
         status_entry(
             &mut spans,
             kb.normal.toggle_filtering.display(),
@@ -1083,6 +1100,61 @@ mod tests {
         assert!(matches!(
             mode.render_state(),
             ModeRenderState::FilterManagement { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_g_transitions_to_group_mode() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, result) = press(&mut tab, KeyCode::Char('g'), KeyModifiers::CONTROL).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::GroupManagement { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_g_selects_first_group_alphabetically() {
+        use crate::filters::{FilterOptions, FilterType};
+        let mut tab = make_tab(&["line"]).await;
+        for (pattern, group) in [("a", "zebra"), ("b", "alpha")] {
+            tab.log_manager
+                .add_filter_with_color(
+                    pattern.to_string(),
+                    FilterType::Include,
+                    FilterOptions::default().group(group),
+                )
+                .await;
+        }
+        let (mode, _) = press(&mut tab, KeyCode::Char('g'), KeyModifiers::CONTROL).await;
+        match mode.render_state() {
+            ModeRenderState::GroupManagement { selected_group } => {
+                assert_eq!(selected_group, "alpha");
+            }
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_g_with_no_groups_still_enters_group_mode() {
+        let mut tab = make_tab(&["line"]).await;
+        let (mode, _) = press(&mut tab, KeyCode::Char('g'), KeyModifiers::CONTROL).await;
+        match mode.render_state() {
+            ModeRenderState::GroupManagement { selected_group } => {
+                assert_eq!(selected_group, "");
+            }
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_plain_g_still_starts_go_to_top_chord_not_group_mode() {
+        let mut tab = make_tab(&["line1", "line2", "line3"]).await;
+        let (mode, _) = press(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE).await;
+        assert!(!matches!(
+            mode.render_state(),
+            ModeRenderState::GroupManagement { .. }
         ));
     }
 
