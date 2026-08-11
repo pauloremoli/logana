@@ -190,10 +190,24 @@ fn build_filter_row(
     ])
 }
 
-/// Builds one row for the bottom Groups section: `<name> (<count>)`, styled
-/// with the group's predefined style if any, bold+underlined when selected.
-/// A group row has no separately-colorable substring (unlike a filter row's
-/// pattern/tag split), so it's a single styled `Span`.
+/// Tri-state: all enabled → `Some(true)`, all disabled or no filters →
+/// `Some(false)`, mixed → `None`.
+fn group_toggle_state(name: &str, all_filters: &[FilterDef]) -> Option<bool> {
+    let mut members = all_filters
+        .iter()
+        .filter(|f| f.group.as_deref() == Some(name));
+    let Some(first) = members.next() else {
+        return Some(false);
+    };
+    if members.all(|f| f.enabled == first.enabled) {
+        Some(first.enabled)
+    } else {
+        None
+    }
+}
+
+/// Builds one Groups-section row: checkbox, name, count. Checkbox stays
+/// plain-styled so it doesn't compete with the group's own color.
 fn build_group_row(
     name: &str,
     all_filters: &[FilterDef],
@@ -205,19 +219,28 @@ fn build_group_row(
         .iter()
         .filter(|f| f.group.as_deref() == Some(name))
         .count();
-    let mut style = Style::default().fg(theme.text);
+    let status = match group_toggle_state(name, all_filters) {
+        Some(true) => "[x]",
+        Some(false) => "[ ]",
+        None => "[-]",
+    };
+    let mut default_style = Style::default().fg(theme.text);
+    if is_selected {
+        default_style = default_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    }
+    let mut name_style = default_style;
     if let Some(cfg) = crate::filters::group_style(groups, name) {
         if let Some(fg) = cfg.fg {
-            style = style.fg(fg);
+            name_style = name_style.fg(fg);
         }
         if let Some(bg) = cfg.bg {
-            style = style.bg(bg);
+            name_style = name_style.bg(bg);
         }
     }
-    if is_selected {
-        style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    }
-    Line::from(Span::styled(format!("{name} ({count})"), style))
+    Line::from(vec![
+        Span::styled(format!("{status} "), default_style),
+        Span::styled(format!("{name} ({count})"), name_style),
+    ])
 }
 
 /// Builds the Groups section's title, mirroring [`build_sidebar_title`]'s
@@ -1324,7 +1347,7 @@ mod tests {
         let filters = vec![f0, f1];
         let line = build_group_row("net", &filters, &[], false, &theme);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "net (2)");
+        assert_eq!(text, "[x] net (2)");
     }
 
     #[test]
@@ -1332,7 +1355,29 @@ mod tests {
         let theme = Theme::default();
         let line = build_group_row("empty", &[], &[], false, &theme);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "empty (0)");
+        assert_eq!(text, "[ ] empty (0)");
+    }
+
+    #[test]
+    fn test_build_group_row_all_disabled_shows_unchecked_status() {
+        let theme = Theme::default();
+        let mut f0 = make_filter("a", false, FilterType::Include);
+        f0.group = Some("net".to_string());
+        let line = build_group_row("net", &[f0], &[], false, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "[ ] net (1)");
+    }
+
+    #[test]
+    fn test_build_group_row_mixed_enabled_shows_mixed_status() {
+        let theme = Theme::default();
+        let mut f0 = make_filter("a", true, FilterType::Include);
+        f0.group = Some("net".to_string());
+        let mut f1 = make_filter("b", false, FilterType::Include);
+        f1.group = Some("net".to_string());
+        let line = build_group_row("net", &[f0, f1], &[], false, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "[-] net (2)");
     }
 
     #[test]
@@ -1348,14 +1393,14 @@ mod tests {
             }),
         }];
         let line = build_group_row("net", &[], &groups, false, &theme);
-        assert_eq!(line.spans[0].style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(line.spans[1].style.fg, Some(ratatui::style::Color::Red));
     }
 
     #[test]
     fn test_build_group_row_no_style_uses_theme_default() {
         let theme = Theme::default();
         let line = build_group_row("net", &[], &[], false, &theme);
-        assert_eq!(line.spans[0].style.fg, Some(theme.text));
+        assert_eq!(line.spans[1].style.fg, Some(theme.text));
     }
 
     #[test]

@@ -11,6 +11,7 @@ All notable changes to logana will be documented in this file.
 - Add a Groups section to the bottom of the filter sidebar (at least 8 rows even when empty), showing each group's filter count and style under a Groups label, clickable to toggle, recolor, or clear its style; toggleable via the UI options menu.
 - Allow `:group <name>` with no flags to create a group with no style.
 - Add `Ctrl+g` in normal mode to enter group management, and `a`/`e` inside it to add or edit a group.
+- Show a `[x]`/`[ ]`/`[-]` toggle status on each Groups section row, matching the filter list.
 
 ### Fixed
 - Fix filter groups being shared across tabs/files instead of scoped per file like filters, including `:toggle-group` affecting other tabs and `:save-filters`/`:load-filters` leaking groups between them.
