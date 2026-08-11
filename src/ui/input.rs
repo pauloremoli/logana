@@ -151,19 +151,32 @@ impl App {
         let now = Instant::now();
         if let Some((t, c, r)) = self.input.last_click.take() {
             if t.elapsed().as_millis() < DOUBLE_CLICK_MS && c == col && r == row {
-                self.handle_double_click(col, row);
+                self.handle_double_click(col, row).await;
                 return;
             }
             self.handle_left_click(c, r).await;
         }
-        let hit_log_panel = {
+        let (hit_log_panel, hit_sidebar) = {
             let tab = &self.tabs[self.active_tab];
-            self.input.hit_test_log_panel(col, row, tab).is_some()
+            (
+                self.input.hit_test_log_panel(col, row, tab).is_some(),
+                self.input.hit_test_sidebar(col, row, tab).is_some(),
+            )
         };
         if hit_log_panel {
+            // Deferred: a log-panel click doesn't yet know if it's a
+            // select-line (single) or select-word (double) click, so the
+            // effect itself waits for `flush_pending_click`/a second click.
             self.input.last_click = Some((now, col, row));
         } else {
+            // A sidebar click's effect (entering management mode) applies
+            // immediately regardless of what follows, but the click is still
+            // remembered so a same-spot follow-up click within the window
+            // reads as a double-click toggle rather than a third selection.
             self.handle_left_click(col, row).await;
+            if hit_sidebar {
+                self.input.last_click = Some((now, col, row));
+            }
         }
     }
 
@@ -177,7 +190,15 @@ impl App {
         }
     }
 
-    pub(super) fn handle_double_click(&mut self, col: u16, row: u16) {
+    pub(super) async fn handle_double_click(&mut self, col: u16, row: u16) {
+        let sidebar_hit = {
+            let tab = &self.tabs[self.active_tab];
+            self.input.hit_test_sidebar(col, row, tab)
+        };
+        if let Some(hit) = sidebar_hit {
+            self.toggle_sidebar_hit(hit).await;
+            return;
+        }
         use crate::mode::visual_char_mode::{VisualMode, display_line_text, word_bounds_at};
         let (visible_idx_opt, char_col) = {
             let tab = &self.tabs[self.active_tab];
@@ -196,6 +217,33 @@ impl App {
             mode.anchor_col = Some(word_start);
             mode.cursor_col = word_end;
             self.tabs[self.active_tab].interaction.mode = Box::new(mode);
+        }
+    }
+
+    /// Double-clicking a sidebar row toggles that filter/group on/off,
+    /// mirroring the `toggle_filter`/`toggle_group` keybinding without
+    /// requiring the user to first enter management mode for it.
+    async fn toggle_sidebar_hit(&mut self, hit: super::input_handler::SidebarHit) {
+        let tab = &mut self.tabs[self.active_tab];
+        match hit {
+            super::input_handler::SidebarHit::Filter(idx) => {
+                let filter_id = tab.log_manager.get_filters().get(idx).map(|f| f.id);
+                if let Some(id) = filter_id {
+                    tab.log_manager.toggle_filter(id).await;
+                    tab.begin_filter_refresh();
+                }
+            }
+            super::input_handler::SidebarHit::Group(name) => {
+                let any_enabled = tab
+                    .log_manager
+                    .get_filters()
+                    .iter()
+                    .any(|f| f.group.as_deref() == Some(name.as_str()) && f.enabled);
+                tab.log_manager
+                    .set_filters_enabled_by_group(&name, !any_enabled)
+                    .await;
+                tab.begin_filter_refresh();
+            }
         }
     }
 

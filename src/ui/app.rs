@@ -2500,6 +2500,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_double_click_sidebar_filter_toggles_it() {
+        use crate::mode::app_mode::ModeRenderState;
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter foo".to_string()).await;
+        assert!(app.tabs[0].log_manager.get_filters()[0].enabled);
+        // row 1 = filter 0
+        app.handle_double_click(65, 1).await;
+        assert!(!app.tabs[0].log_manager.get_filters()[0].enabled);
+        assert!(
+            matches!(
+                app.tabs[0].interaction.mode.render_state(),
+                ModeRenderState::Normal
+            ),
+            "double-clicking a filter row toggles it without entering management mode"
+        );
+        app.handle_double_click(65, 1).await;
+        assert!(app.tabs[0].log_manager.get_filters()[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_double_click_sidebar_group_toggles_all_filters_in_group() {
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter --group net foo".to_string())
+            .await;
+        assert!(app.tabs[0].log_manager.get_filters()[0].enabled);
+        // group row, per test_click_sidebar_group_enters_group_management_mode
+        let group_row = 13;
+        app.handle_double_click(sidebar_area.x + 5, group_row).await;
+        assert!(!app.tabs[0].log_manager.get_filters()[0].enabled);
+    }
+
+    #[tokio::test]
     async fn test_ui_toggle_groups_panel_hides_and_restores_groups_section() {
         let log_area = Rect {
             x: 0,
@@ -2714,7 +2770,7 @@ mod tests {
         app.tabs[0].display.show_borders = false;
         app.tabs[0].display.show_line_numbers = false;
         // col 3 is inside "line 0" at visible row 0 → char_col = 3 → 'e' in "line"
-        app.handle_double_click(3, 0);
+        app.handle_double_click(3, 0).await;
         assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
         match app.tabs[0].interaction.mode.render_state() {
             ModeRenderState::Visual {
@@ -2742,7 +2798,7 @@ mod tests {
         app.tabs[0].display.show_borders = false;
         app.tabs[0].display.show_line_numbers = false;
         // col 4 is the space in "line 0"
-        app.handle_double_click(4, 0);
+        app.handle_double_click(4, 0).await;
         assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
         assert!(
             matches!(
@@ -2837,11 +2893,40 @@ mod tests {
         app.execute_command_str("filter foo".to_string()).await;
         // sidebar click should take effect immediately, not be deferred
         app.handle_left_down(65, 1).await;
-        assert!(app.input.last_click.is_none());
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::FilterManagement { .. }
         ));
+        // still remembered (same spot, same window) so a follow-up click
+        // reads as a double-click toggle instead of a plain third click
+        assert!(app.input.last_click.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_left_down_double_click_on_sidebar_filter_toggles_it() {
+        let log_area = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 20,
+        };
+        let sidebar_area = Rect {
+            x: 60,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+        let mut app = app_with_areas(10, 20, log_area, Some(sidebar_area)).await;
+        app.execute_command_str("filter foo".to_string()).await;
+        assert!(app.tabs[0].log_manager.get_filters()[0].enabled);
+        // first click: applies immediately (enters management mode) and is remembered
+        app.handle_left_down(65, 1).await;
+        assert!(app.input.last_click.is_some());
+        assert!(app.tabs[0].log_manager.get_filters()[0].enabled);
+        // second click at same spot within the window: reads as a double-click toggle
+        app.handle_left_down(65, 1).await;
+        assert!(app.input.last_click.is_none());
+        assert!(!app.tabs[0].log_manager.get_filters()[0].enabled);
     }
 
     #[tokio::test]
