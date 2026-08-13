@@ -47,11 +47,10 @@ An unrecognized key (e.g. a typo like `"templte"`) is rejected at load time — 
 |---|---|---|
 | `name` | yes | Identifier used by `:schema <name>` and shown in the status bar |
 | `description` | no | Free-form description; not used by logana |
-| `template` | one of `template` / `pattern` | Template string with `{field}` placeholders |
+| `template` | one of `template` / `pattern` | A single-line template string, or an array describing a full multi-line record — see [Multiline records](#multiline-records) |
 | `pattern` | one of `template` / `pattern` | Raw regex with named capture groups |
 | `fields` | no | Overrides the automatic role for named placeholders/groups |
-| `multiline` | no | When `true`, folds continuation lines into the record's `message` field — see [Multiline records](#multiline-records) |
-| `continuation` | no | Extracts structured fields from continuation lines (and optionally where the record ends) — see [Multiline field extraction](#multiline-field-extraction) |
+| `multiline` | no | When `true` (and `template` is a plain string), folds continuation lines into the record's `message` field — see [Folding continuation text into `message`](#folding-continuation-text-into-message) |
 
 ## Template syntax
 
@@ -167,7 +166,16 @@ A default filter file can also be configured per schema — see [Default filter 
 
 A line that doesn't match the schema's `template`/`pattern` is already treated as a continuation of the previous matched line — it's shown right below its parent and inherits the parent's level and visibility. This covers most multiline formats (stack traces, wrapped messages) automatically, with no schema changes needed.
 
-By default, though, continuation lines stay unstructured: their content isn't part of the parsed `message`, so `--field message`/`fields.message` filters can't see it. Set `"multiline": true` to fold continuation lines into the record's `message` field:
+By default, continuation lines stay unstructured: their content isn't part of any parsed field, so field filters can't see it. Two independent ways to give them structure:
+
+- **`"multiline": true`** — fold all continuation text into the record's `message` field as one blob. Simplest option; use it when you just want the continuation text searchable, not broken into individual fields.
+- **An array `template`** — describe the continuation lines' own shape, extracting each into its own field (or a repeating group of sub-records). Use this when continuation lines carry structured `key: value` data you want to filter on individually.
+
+The two can be combined: an array `template` structures what it recognizes, and `multiline` still folds any unrecognized trailing continuation lines into `message`.
+
+### Folding continuation text into `message`
+
+Set `"multiline": true` to fold continuation lines into the record's `message` field:
 
 ```json
 {
@@ -192,34 +200,30 @@ Only the first line matches this schema's template — the two indented `_KEY=VA
 
 This only changes what field filters and the structured fields panel see for the record — each physical line still renders as its own row in the log panel, exactly as before.
 
-## Multiline field extraction
+## Structured continuation lines
 
-`multiline` only folds continuation text into `message` as one blob. For formats where each continuation line carries its own field — or where the record has an explicit terminator instead of just running until the next header — use `continuation` alongside (or instead of) `multiline`:
+For formats where each continuation line carries its own field — or where the record has an explicit terminator instead of just running until the next header — make `template` an array instead of a single string. Each element describes one line of the record, in order:
+
+- **Element 0** is always the header (the line that starts a new record) — same rules as a plain string `template`.
+- **A plain string or object** after the header is a flat continuation line, extracting its own fields.
+- **`{"vec": "<name>", "template": ..., "fields": [...], "auto_fields": ...}`** declares a repeating group — see [Repeating groups](#repeating-groups) below.
+- **If the last element is a plain line** (not a group), it's the record's terminator: extraction stops once that line is seen, purely by its position as the last array element — no separate marker needed. Without one, the record runs until the next line matching the header.
 
 ```json
 {
   "name": "transaction",
-  "template": "### Start transaction {id}",
-  "fields": { "id": "extra" },
-  "continuation": {
-    "end_pattern": "### End transaction",
-    "fields": [
-      { "template": "field1: {field1}" },
-      { "template": "field2: {field2}" },
-      { "template": "Object {payload}", "json": true }
-    ]
-  }
+  "template": [
+    "### Start transaction {id}",
+    "field1: {field1}",
+    "field2: {field2}",
+    { "template": "Object {payload}", "json": true },
+    "### End transaction"
+  ],
+  "fields": { "id": "extra" }
 }
 ```
 
-| Key | Required | Description |
-|---|---|---|
-| `end_pattern` | no | Template/literal matching the line that ends this record's continuation block. Compiled the same way as a header `template`. When absent, the block still ends at the next line matching the header, same as `multiline` today. |
-| `fields` | no | List of matchers tried in order against each continuation line; the first one that matches extracts that line's fields |
-
-Each entry in `continuation.fields` uses the same `template`/`pattern`/`fields` syntax as the top-level schema, with one restriction: a continuation field can't be mapped to `timestamp`, `level`, `target`, or `message` — those belong to the header alone. Map it to `extra` (the default) or any other field role instead.
-
-Set `"json": true` on an entry to treat its single placeholder as an embedded JSON object instead of a plain string — each key in the object becomes its own `extra` field, using the JSON key's own name.
+Each flat line accepts the same shorthand as the top-level schema: a bare string (template syntax), or an object with `template`/`pattern`/`fields`/`json` for more control. A continuation field can't be mapped to `timestamp`, `level`, `target`, or `message` — those belong to the header alone; map it to `extra` (the default) or any other field role instead. Set `"json": true` on an entry to treat its single placeholder as an embedded JSON object instead of a plain string — each key in the object becomes its own `extra` field, using the JSON key's own name.
 
 Given:
 
@@ -231,7 +235,35 @@ Object { "user": "alice", "amount": 99 }
 ### End transaction
 ```
 
-the record is parsed with extra fields `id=42, field1=10, field2=3, user=alice, amount=99`. `end_pattern` also bounds where extraction stops — any lines between `### End transaction` and the next `### Start transaction` (stray blank lines, unrelated output, etc.) aren't scanned for fields.
+the record is parsed with extra fields `id=42, field1=10, field2=3, user=alice, amount=99`. The terminator (`"### End transaction"`) also bounds where extraction stops — any lines between it and the next `### Start transaction` (stray blank lines, unrelated output, etc.) aren't scanned for fields.
+
+### Repeating groups
+
+Use a `{"vec": ...}` entry when a record contains a variable number of nested sub-records — e.g. a batch job with any number of `workers`. Its `template` matcher opens a new item in the group (and finalizes the previous one, if any); its optional `fields` are matchers tried in order against subsequent lines while that item is open.
+
+```json
+{
+  "name": "batch-job",
+  "template": [
+    "### Job {job_id} started",
+    "Owner: {owner}",
+    { "vec": "workers", "template": "worker: {hostname}" },
+    {
+      "vec": "checkpoints",
+      "template": "checkpoint: {name}, status: {status}",
+      "auto_fields": false
+    },
+    "### Job {job_id} finished"
+  ],
+  "fields": { "job_id": "extra" }
+}
+```
+
+A group with only `template` (no `fields`) is a single-line-item group — every matching line closes the previous item and opens a new one from its own captures (`checkpoints` above: each line is a complete record). A group with `fields` opens an item on `template` and keeps extracting fields from subsequent lines into that same item until the next line that matches `template` (a new item), a different group's `template`, or the terminator.
+
+`auto_fields` (default `true`) captures any continuation line inside a group's open item that looks like `key: value` (or `key: "value"`) but wasn't matched by a declared `fields` entry — useful when a nested block's field set varies too much to enumerate. Lines with no `key: value` shape are still ignored. Set it to `false` (as `checkpoints` does above) to only extract explicitly declared fields. `workers` above relies entirely on `auto_fields`: any `key: value` line following a `worker: {hostname}` line (e.g. `cpu: 87%`, `status: running`) is captured automatically into that worker's item.
+
+A group's name becomes the dotted-index column prefix in rendering (`workers.0.hostname`, `workers.1.hostname`, …) and the group-scoped path for field filters (`workers.hostname` — see [Field Filters](filtering/field-filters.md#group-scoped-fields)).
 
 ## Full example — Acme node log
 

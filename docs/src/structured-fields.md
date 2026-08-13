@@ -29,11 +29,12 @@ Use `:select-fields` to open an interactive column picker:
 Or use commands directly:
 
 ```sh
-:fields timestamp level message       # show only these columns, in this order
 :hide-field span                      # hide a single column
 :show-field span                      # show a previously hidden column
 :show-all-fields                      # reset to default display — clears both hidden fields and any custom column order
 ```
+
+Use `:select-fields` for reordering columns or changing several at once.
 
 ## Field Key Display
 
@@ -61,6 +62,10 @@ Span sub-fields can also be selected as individual columns:
 :fields timestamp level span.method span.uri message
 ```
 
+## Repeating Groups
+
+A [custom schema](custom-schemas.md#repeating-groups) can declare a repeating group of sub-records inside a multiline entry (e.g. a batch job's `workers`). Each item shows as its own indexed column, e.g. `workers.0.hostname`, `workers.1.hostname`. Filter across every item in a group at once with a group-scoped field filter — see [Field Filters](filtering/field-filters.md#group-scoped-fields).
+
 ## Value Coloring
 
 Even within structured columns, known value patterns are colored automatically:
@@ -74,4 +79,4 @@ Configure which categories are colored via `:value-colors`.
 
 ## Tab Completion for Field Names
 
-The `:fields` command and `:hide-field` / `:show-field` commands complete against the field names discovered from the first 200 visible log lines, so you don't need to remember exact field names.
+The `:hide-field` / `:show-field` commands complete against the field names discovered from the first 200 visible log lines, so you don't need to remember exact field names.

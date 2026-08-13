@@ -37,7 +37,7 @@ Filters are saved to SQLite and automatically restored the next time you open th
 
 ## Filter Manager
 
-Press `f` to open the filter manager popup, which lists all active filters. Navigation matches the log panel: count-prefixed motions, page scrolling, jump-to-top/bottom, and search.
+Press `f` to open the filter manager popup, which lists all active filters. Navigation matches the log panel: count-prefixed motions, page scrolling, jump-to-top/bottom, and search. A filter row can also be double-clicked directly in the sidebar (without opening the filter manager first) to toggle it.
 
 | Key | Action |
 |---|---|
@@ -81,6 +81,47 @@ When multiple filters overlap on the same text segment, their `fg` and `bg` attr
 ### Color priority
 
 Filter colors take priority over automatic value colors (HTTP methods, status codes, IPs, UUIDs) and log-level colors. Value colors are applied only to spans that are not already covered by a filter — they can still appear alongside filter colors on the same line, just not on the same character span. Log-level colors are the lowest-priority fallback and apply only to text that carries no explicit color from any other source.
+
+## Filter Groups
+
+Assign filters to a named group to manage several of them together:
+
+```sh
+:filter --group errors ERROR
+:filter --group errors -r "FATAL|CRITICAL"
+:exclude --group noise debug
+```
+
+`--group`/`-g <name>` works on `:filter`, `:exclude`, and `:highlight`. Toggle every filter in a group on/off together:
+
+```sh
+:toggle-group errors
+```
+
+A group can also have its own predefined color, used by any filter in the group that doesn't set its own `--fg`/`--bg`:
+
+```sh
+:group errors --fg Red
+:group errors --fg Red --bg Black -l
+:group errors --auto        # random readable fg/bg pair
+:group errors --clear       # remove the group's style
+:group errors                # register the group with no style yet
+```
+
+### Groups Sidebar
+
+A **Groups** section at the bottom of the filter sidebar lists every group with its filter count and style — toggle it on/off from the UI options menu (`u` → `g`). Each row shows a `[x]`/`[ ]`/`[-]` status matching the filter list (all enabled / all disabled / mixed). Click a row to select it, double-click to toggle every filter in that group.
+
+Press `Ctrl+g` in normal mode to enter group management, scoped to the selected group:
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Select next / previous group |
+| `Space` / `A` | Toggle every filter in the group on/off |
+| `e` | Edit the group's color style |
+| `x` | Clear the group's color style |
+| `a` | Add a new group |
+| `Esc` | Exit |
 
 ## Save and Load Filters
 

@@ -84,6 +84,17 @@ Jump directly between error and warning lines without scrolling:
 
 Navigation wraps to the nearest visible line that matches the level. Positions are pre-indexed whenever the visible set changes, so each jump is O(log n) regardless of file size.
 
+## Continuation Lines
+
+Multiline entries (stack traces, wrapped messages, or a custom schema's structured continuation lines) can be collapsed to just their first line:
+
+| Key | Action |
+|---|---|
+| `>` | Collapse the entry under the cursor |
+| `<` | Expand the entry under the cursor |
+
+`:collapse` and `:expand` apply the same fold/reveal file-wide instead of to a single entry. `>`/`<` still work afterward to flip an individual entry against whatever the file-wide default currently is.
+
 ## Line Wrap
 
 Toggle line wrapping with `:wrap` or via the UI menu (`u` → `w`). When wrap is enabled, long lines flow onto multiple terminal rows and all viewport math accounts for the extra rows automatically.

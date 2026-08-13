@@ -36,32 +36,31 @@ Multiple alternatives:
 
 ```json
 "normal": {
-  "filter_include": "i",
-  "filter_include_auto": "a",
-  "filter_exclude": "o",
-  "open_filter_manager": "f",
-  "toggle_filters": "F",
-  "toggle_highlight_mode": "H",
-  "search_forward": "/",
-  "search_backward": "?",
-  "next_match": "n",
-  "prev_match": "N",
-  "mark_line": "m",
-  "toggle_marks_view": "M",
-  "enter_visual_mode": "V",
-  "visual_char": "v",
-  "yank_marked": "Y",
-  "open_ui_options": "u",
-  "show_keybindings": "F1",
-  "open_command_mode": ":",
   "scroll_left": ["h", "Left"],
   "scroll_right": ["l", "Right"],
   "start_of_line": "0",
   "end_of_line": "$",
-  "goto_first_line": "g",
-  "goto_last_line": "G",
-  "toggle_status_bar": "b",
-  "toggle_borders": "B",
+  "command_mode": ":",
+  "filter_mode": "f",
+  "group_mode": "Ctrl+g",
+  "toggle_filtering": "F",
+  "toggle_highlight_mode": "H",
+  "go_to_top_chord": "g",
+  "go_to_bottom": "G",
+  "mark_line": "m",
+  "expand_continuation": ">",
+  "collapse_continuation": "<",
+  "search_forward": "/",
+  "search_backward": "?",
+  "next_match": "n",
+  "prev_match": "N",
+  "visual_mode": "V",
+  "visual_char": "v",
+  "toggle_marks_only": "M",
+  "yank_line": "y",
+  "yank_marked": "Y",
+  "show_keybindings": "F1",
+  "clear_all": "C",
   "edit_comment": "r",
   "delete_comment": "d",
   "comment_line": "c",
@@ -69,9 +68,15 @@ Multiple alternatives:
   "prev_error": "E",
   "next_warning": "w",
   "prev_warning": "W",
-  "clear_all": "C"
+  "filter_include": "i",
+  "filter_include_auto": "a",
+  "filter_exclude": "o",
+  "enter_ui_mode": "u",
+  "clear_search": "Esc"
 }
 ```
+
+`filter_mode` opens the filter manager; `group_mode` opens [group management](../filtering/index.md#filter-groups) scoped to the selected group. `go_to_top_chord` is the first key of the `gg` chord — pressing it twice jumps to the first line, matching `go_to_bottom`'s single-press jump to the last line. `clear_search` clears an active search highlight when nothing else is open.
 
 ## Global (always active)
 
@@ -81,7 +86,8 @@ Multiple alternatives:
   "next_tab": "Tab",
   "prev_tab": "Shift+Tab",
   "new_tab": "Ctrl+t",
-  "close_tab": "Ctrl+w"
+  "close_tab": "Ctrl+w",
+  "file_switcher": "Ctrl+p"
 }
 ```
 
@@ -89,9 +95,9 @@ Multiple alternatives:
 
 ```json
 "filter": {
-  "toggle": "Space",
-  "edit": "e",
-  "delete": "d",
+  "toggle_filter": "Space",
+  "edit_filter": "e",
+  "delete_filter": "d",
   "set_color": "c",
   "add_include_filter": "i",
   "add_include_filter_auto": "a",
@@ -99,25 +105,47 @@ Multiple alternatives:
   "add_date_filter": "t",
   "add_highlight_filter": "h",
   "search": "/",
-  "move_down": "J",
-  "move_up": "K",
-  "toggle_all": "A",
-  "clear_all": "C"
+  "move_filter_down": "J",
+  "move_filter_up": "K",
+  "toggle_all_filters": "A",
+  "clear_all_filters": "C",
+  "exit_mode": "Esc",
+  "sidebar_grow": ">",
+  "sidebar_shrink": "<"
 }
 ```
 
-The filter manager also reuses the shared `navigation` group above (`scroll_down`/`scroll_up`/`half_page_down`/`half_page_up`/`page_down`/`page_up`) and, for jump-to-top/bottom, the `normal.go_to_top_chord`/`normal.go_to_bottom` bindings — no separate fields needed for those.
+The filter manager also reuses the shared `navigation` group above (`scroll_down`/`scroll_up`/`half_page_down`/`half_page_up`/`page_down`/`page_up`) and, for jump-to-top/bottom, the `normal.go_to_top_chord`/`normal.go_to_bottom` bindings — no separate fields needed for those. `sidebar_grow`/`sidebar_shrink` resize the sidebar while it's focused.
 
-## Search Confirm/Cancel
+## Group Mode
+
+```json
+"group": {
+  "clear_group_style": "x",
+  "add_group": "a"
+}
+```
+
+[Group management](../filtering/index.md#filter-groups) (`Ctrl+g`) reuses several `filter`/`navigation` bindings rather than duplicating them: `filter.toggle_all_filters`/`filter.toggle_filter` to toggle the selected group, `filter.edit_filter` to edit its style, `filter.exit_mode` to exit, and `navigation.scroll_down`/`scroll_up` to move between groups. `clear_group_style` has no sensible existing key to borrow, so it gets this dedicated field.
+
+## Search / Filter Edit / Command Confirm & Cancel
 
 ```json
 "search": {
   "confirm": "Enter",
   "cancel": "Esc"
+},
+"filter_edit": {
+  "confirm": "Enter",
+  "cancel": "Esc"
+},
+"command": {
+  "confirm": "Enter",
+  "cancel": "Esc"
 }
 ```
 
-Shared by both the log panel's `/`/`?` search and the filter manager's `/` search — confirms or cancels whichever one is currently active.
+`search` confirms or cancels the log panel's `/`/`?` search or the filter manager's `/` search. `filter_edit` confirms or cancels an in-place filter pattern edit. `command` confirms or cancels the `:` command line.
 
 ## Visual Line Mode
 
@@ -126,9 +154,8 @@ Shared by both the log panel's `/`/`?` search and the filter manager's `/` searc
   "comment": "c",
   "mark": "m",
   "yank": "y",
-  "filter_include": "i",
-  "filter_exclude": "o",
-  "search": "/"
+  "search": "/",
+  "exit": "Esc"
 }
 ```
 
@@ -177,18 +204,26 @@ Shared by both the log panel's `/`/`?` search and the filter manager's `/` searc
 
 ```json
 "confirm": {
-  "yes": "y",
-  "no": "n"
+  "yes": ["y", "Enter"],
+  "no": ["n", "Esc"],
+  "always": "Shift+Y",
+  "never": "Shift+N"
 }
 ```
+
+`always`/`never` apply the same choice automatically to every future prompt of that kind, where the dialog supports it (e.g. session restore).
 
 ## UI Options Mode
 
 ```json
 "ui": {
   "toggle_sidebar": "s",
-  "toggle_status_bar": "b",
-  "toggle_borders": "B"
+  "toggle_mode_bar": "b",
+  "toggle_borders": "B",
+  "toggle_wrap": "w",
+  "toggle_relative_line_numbers": "r",
+  "toggle_groups_panel": "g",
+  "exit": "Esc"
 }
 ```
 
@@ -283,7 +318,34 @@ count-prefixed, e.g. `25G`) to jump to the first/last or a specific row.
 
 ```json
 "docker_select": {
-  "confirm": "Enter"
+  "confirm": "Enter",
+  "cancel": "Esc"
+}
+```
+
+## DLT Select Mode
+
+```json
+"dlt_select": {
+  "confirm": "Enter",
+  "cancel": "Esc",
+  "delete": "d",
+  "next_field": "Tab",
+  "prev_field": "Shift+Tab"
+}
+```
+
+`next_field`/`prev_field` move between the connection form's input fields (host, port, …) before confirming.
+
+## Value Colors Mode
+
+```json
+"value_colors": {
+  "toggle": "Space",
+  "all": "a",
+  "none": "n",
+  "apply": "Enter",
+  "cancel": "Esc"
 }
 ```
 

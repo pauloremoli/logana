@@ -92,6 +92,10 @@
           "prev_tab": "Shift+Tab",
           "quit": "q"
         },
+        "group": {
+          "add_group": "a",
+          "clear_group_style": "x"
+        },
         "help": {
           "close": [
             "q",
@@ -115,18 +119,21 @@
         "normal": {
           "clear_all": "C",
           "clear_search": "Esc",
+          "collapse_continuation": "<",
           "command_mode": ":",
           "comment_line": "c",
           "delete_comment": "d",
           "edit_comment": "r",
           "end_of_line": "$",
           "enter_ui_mode": "u",
+          "expand_continuation": ">",
           "filter_exclude": "o",
           "filter_include": "i",
           "filter_include_auto": "a",
           "filter_mode": "f",
           "go_to_bottom": "G",
           "go_to_top_chord": "g",
+          "group_mode": "Ctrl+g",
           "mark_line": "m",
           "next_error": "e",
           "next_match": "n",
@@ -172,6 +179,7 @@
         "ui": {
           "exit": "Esc",
           "toggle_borders": "B",
+          "toggle_groups_panel": "g",
           "toggle_mode_bar": "b",
           "toggle_relative_line_numbers": "r",
           "toggle_sidebar": "s",
@@ -382,18 +390,21 @@
           "default": {
             "clear_all": "C",
             "clear_search": "Esc",
+            "collapse_continuation": "<",
             "command_mode": ":",
             "comment_line": "c",
             "delete_comment": "d",
             "edit_comment": "r",
             "end_of_line": "$",
             "enter_ui_mode": "u",
+            "expand_continuation": ">",
             "filter_exclude": "o",
             "filter_include": "i",
             "filter_include_auto": "a",
             "filter_mode": "f",
             "go_to_bottom": "G",
             "go_to_top_chord": "g",
+            "group_mode": "Ctrl+g",
             "mark_line": "m",
             "next_error": "e",
             "next_match": "n",
@@ -450,6 +461,17 @@
           "allOf": [
             {
               "$ref": "#/definitions/FilterKeybindings"
+            }
+          ]
+        },
+        "group": {
+          "default": {
+            "add_group": "a",
+            "clear_group_style": "x"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/GroupKeybindings"
             }
           ]
         },
@@ -681,6 +703,7 @@
           "default": {
             "exit": "Esc",
             "toggle_borders": "B",
+            "toggle_groups_panel": "g",
             "toggle_mode_bar": "b",
             "toggle_relative_line_numbers": "r",
             "toggle_sidebar": "s",
@@ -832,6 +855,14 @@
             }
           ]
         },
+        "group_mode": {
+          "default": "Ctrl+g",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
         "toggle_filtering": {
           "default": "F",
           "allOf": [
@@ -866,6 +897,22 @@
         },
         "mark_line": {
           "default": "m",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "expand_continuation": {
+          "default": ">",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "collapse_continuation": {
+          "default": "<",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"
@@ -1191,6 +1238,28 @@
         },
         "search": {
           "default": "/",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "GroupKeybindings": {
+      "description": "Keybindings scoped to `GroupManagementMode` beyond what it already reuses from `filter`/`navigation` (see `filter_mode.rs`'s doc comment on why those are shared rather than duplicated). \"Clear style\" has no sensible existing key to borrow — `filter.clear_all_filters` means something entirely different (wipe every filter) — so it gets this one dedicated field instead.",
+      "type": "object",
+      "properties": {
+        "clear_group_style": {
+          "default": "x",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "add_group": {
+          "default": "a",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"
@@ -1876,7 +1945,7 @@
           ]
         },
         "search_merge_toggle": {
-          "description": "Toggles the selected row's merge mark while searching — same reasoning as `search_toggle`, for `merge_toggle`'s key (`m`).\n\nDefaults to `Alt+m` — deliberately not a `Ctrl`-chord at all: outside an enhanced-keyboard terminal protocol, a terminal cannot distinguish Ctrl+M from a plain Enter keypress — both send the same carriage-return byte — so crossterm reports Ctrl+M as `KeyCode::Enter` with no modifiers, and a bare `Ctrl+m` binding here would therefore never fire (`apply`'s `Enter` binding would consume the keypress instead). `Alt+m` sidesteps that entirely.",
+          "description": "Toggles the selected row's merge mark while searching — same reasoning as `search_toggle`, for `merge_toggle`'s key (`m`).\n\nDefaults to `Alt+m`, deliberately not a `Ctrl`-chord: outside an enhanced-keyboard terminal protocol, Ctrl+M and Enter send the same carriage-return byte, so crossterm reports Ctrl+M as a plain `KeyCode::Enter` and a `Ctrl+m` binding here would never fire.",
           "default": "Alt+m",
           "allOf": [
             {
@@ -2000,6 +2069,14 @@
         },
         "toggle_relative_line_numbers": {
           "default": "r",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "toggle_groups_panel": {
+          "default": "g",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"

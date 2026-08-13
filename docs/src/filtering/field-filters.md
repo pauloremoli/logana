@@ -82,6 +82,17 @@ Field filters appear in the filter manager sidebar with a `[field]` tag. A filte
 [x] In: level=INFO, component=Draco, Power measurements: [field]
 ```
 
+## Group-Scoped Fields
+
+A [custom schema](../custom-schemas.md#repeating-groups) can declare a repeating group of sub-records (e.g. a batch job's `workers`). Filter on a field inside any item of the group with `<group>.<field>=<value>` — it matches if **any** item in the group has that field:
+
+```sh
+:filter --field workers.hostname=worker-3
+# shows records where any worker's hostname contains "worker-3"
+```
+
+This is "any item matches" semantics, independent from plain field lookup — an indexed path like `workers.0.hostname` (as shown in the structured fields columns) is display-only and can't be used as a filter path.
+
 ## Requires a Detected Format
 
 Field filters only have an effect when logana has detected a structured log format (JSON, logfmt, syslog, etc.). On plain-text files with no detected format, all lines pass through field filters unchanged.

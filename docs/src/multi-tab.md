@@ -10,6 +10,9 @@ logana supports multiple tabs, each showing an independent log file, directory, 
 | `Shift+Tab` | Switch to previous tab |
 | `Ctrl+t` | Open a new (empty) tab |
 | `Ctrl+w` | Close the current tab |
+| `Ctrl+p` | Open a searchable popup to switch between open files |
+
+A tab can also be clicked directly in the tab bar to switch to it.
 
 ## Opening Files in Tabs
 

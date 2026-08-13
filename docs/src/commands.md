@@ -24,19 +24,29 @@ Press `:` in normal mode to open command mode. Tab completes commands, flags, co
 
 | Command | Description |
 |---|---|
-| `:filter [--regex\|-r] [-l] [--fg COLOR] [--bg COLOR] <pattern>` | Add an include filter (show only matching lines) |
-| `:filter --field <key>=<value>` | Add a field-scoped include filter (e.g. `level=error`) |
+| `:filter [--regex\|-r] [--ignore-case\|-i] [-l] [--fg COLOR] [--bg COLOR] <pattern>` | Add an include filter (show only matching lines) |
+| `:filter --field <key>=<value>` | Add a field-scoped include filter (e.g. `level=error`); repeat to require several fields at once |
+| `:filter --group\|-g <name> <pattern>` | Assign the filter to a named group, toggleable together via `:toggle-group` |
 | `:filter --auto\|-a <pattern>` | Add an include filter with a randomly generated, readable fg/bg color pair instead of specifying `--fg`/`--bg` |
-| `:exclude [--regex\|-r] <pattern>` | Add an exclude filter (hide matching lines) |
+| `:exclude [--regex\|-r] [--ignore-case\|-i] <pattern>` | Add an exclude filter (hide matching lines) |
 | `:exclude --field <key>=<value>` | Add a field-scoped exclude filter (e.g. `level=debug`) |
-| `:highlight [--regex\|-r] [-l] [--fg COLOR] [--bg COLOR] <pattern>` (alias `:h`) | Add a highlight filter — colors matches without affecting visibility |
+| `:exclude --group\|-g <name> <pattern>` | Assign the exclude filter to a named group |
+| `:highlight [--regex\|-r] [--ignore-case\|-i] [-l] [--fg COLOR] [--bg COLOR] <pattern>` (alias `:h`) | Add a highlight filter — colors matches without affecting visibility |
 | `:highlight --auto\|-a <pattern>` | Add a highlight filter with a randomly generated, readable fg/bg color pair |
 | `:date-filter <expr>` | Add a date/time range filter |
 | `:set-color [--fg COLOR] [--bg COLOR]` | Set highlight color for the selected filter |
+| `:toggle-group <name>` | Toggle every filter in a named group on/off together |
+| `:group <name> [--fg COLOR] [--bg COLOR] [-l] [--auto] [--clear]` | Set, update, or clear a group's predefined color style, used by filters in the group with no color of their own |
+| `:filtering` | Toggle all filtering on/off (bypass every filter) |
+| `:clear-filters` | Remove all filter definitions |
+| `:disable-filters` | Disable all filters without removing them |
+| `:enable-filters` | Enable all disabled filters |
 | `:save-filters <file>` | Save current filters to a JSON file |
 | `:load-filters <file>` | Load filters from a JSON file |
 
-> **Flag ordering:** All options (`--regex`, `--fg`, `--bg`, `-l`, `--field`, `--auto`) must appear **before** the pattern. Everything after the first pattern word is treated as part of the pattern text. `--auto` cannot be combined with `--fg`/`--bg`.
+> **Flag ordering:** All options (`--regex`, `--fg`, `--bg`, `-l`, `--field`, `--group`/`-g`, `--ignore-case`/`-i`, `--auto`) must appear **before** the pattern. Everything after the first pattern word is treated as part of the pattern text. `--auto` cannot be combined with `--fg`/`--bg`.
+
+See [Filter Groups](filtering/index.md#filter-groups) for the Groups sidebar and group management mode (`Ctrl+g`).
 
 See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filters.md), and [Field Filters](filtering/field-filters.md) for full details.
 
@@ -51,7 +61,12 @@ See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filter
 | Command | Description |
 |---|---|
 | `:open <path>` | Open a file, directory, or compressed/archive file. Directories and archives both show the same contents picker first — see [Quick Start](quick-start.md#opening-compressed-and-archive-files) |
-| `:close-tab` | Close the current tab |
+| `:close-tab` | Close the current tab (quits if it's the last tab) |
+| `:save <path>` | Save the currently visible (filtered) lines to a file in raw format |
+| `:export-marked <path>` | Export marked lines to a file |
+| `:run <program> [args...]` | Execute a command and stream its output to a new tab; stderr lines show as errors |
+| `:schema [name]` | Show the active schema, or switch this tab to a named custom or built-in schema. Use `:schema none` to treat the file as plain text |
+| `:default-filters [format] [path]` | Configure a filter file to auto-load whenever a format is assigned to a tab with no filters yet. No args opens a popup listing every format |
 
 ## Display
 
@@ -62,6 +77,8 @@ See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filter
 | `:relative-line-numbers` | Toggle relative line numbers — other rows show their distance from the selected row (persisted across sessions) |
 | `:tail` | Toggle tail mode (auto-scroll on new content) |
 | `:raw` | Toggle raw mode — bypass the format parser and show unformatted log lines; title shows `[RAW]` when active |
+| `:collapse` | Hide continuation lines file-wide, showing only each entry's first line |
+| `:expand` | Reveal continuation lines previously hidden by `:collapse` |
 | `:level-colors` | Open the level colors dialog — toggle coloring per level (TRACE, DEBUG, INFO, NOTICE, WARNING, ERROR, FATAL); INFO/TRACE/DEBUG/NOTICE are off by default |
 | `:value-colors` | Open the value colors dialog — toggle coloring for HTTP methods, status codes, IPs, UUIDs, and process/logger names |
 | `:set-theme <name>` | Switch the color theme (persisted across sessions) |
@@ -102,7 +119,6 @@ These commands control how the current tab handles incoming data from a file wat
 
 | Command | Description |
 |---|---|
-| `:fields [col ...]` | Set visible columns (e.g. `:fields timestamp level message`) |
 | `:hide-field <col>` | Hide a single column |
 | `:show-field <col>` | Show a previously hidden column |
 | `:show-all-fields` | Reset to default column display |
