@@ -31,18 +31,12 @@ pub fn mark_glyph(check_state: CheckState, merge_check_state: CheckState) -> &'s
 }
 
 /// The topmost visible row index for a `content_h`-row viewport over
-/// `rows`, keeping `selected` on screen — same as plain "keep the cursor
-/// visible" scrolling, except biased to also reveal as many of `selected`'s
-/// children (the rows immediately after it at greater depth) as fit, up to
-/// `content_h`. This is what makes expanding a container (or landing on one
-/// via search) scroll the view down just enough to show what was just
-/// revealed, exactly as if the user had pressed scroll-down — `selected`
-/// itself never moves and rows are never reordered, only which slice of
-/// `rows` is drawn changes. A no-op (returns the same value as the plain
-/// "keep visible" case) for a row with no children, so ordinary navigation
-/// is unaffected. Pure and stateless — recomputed fresh every frame from
-/// `rows` and `selected` alone, so it needs no persisted scroll state and
-/// naturally stops applying once `selected` moves off the container.
+/// `rows`, keeping `selected` on screen — like plain "keep cursor visible"
+/// scrolling, but biased to also reveal as many of `selected`'s children as
+/// fit. This makes expanding a container (or landing on one via search)
+/// scroll down just enough to show what was revealed. A no-op for a row
+/// with no children. Pure and stateless — recomputed fresh each frame, so
+/// it needs no persisted scroll state.
 fn scroll_offset(rows: &[ArchiveRow], selected: usize, content_h: usize) -> usize {
     if rows.is_empty() || content_h == 0 {
         return 0;

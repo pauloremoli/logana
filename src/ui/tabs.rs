@@ -7,14 +7,12 @@ use crate::parser::LogFormatParser;
 use crate::ui::tab_state::year_map::YearMap;
 use std::sync::Arc;
 
-/// Everything [`App::build_merged_tab`] needs to build a merged tab's index,
-/// regardless of whether each source came from an already-open tab (see
-/// [`App::merge_inputs_from_tabs`], used by `:merge`) or from a
-/// freshly-extracted-and-detected archive or directory file (see
-/// [`App::merge_inputs_from_extracted`]). `pub(crate)` (and likewise its
-/// fields) so a picker-triggered merge's Phase 1 — reading/extracting each
-/// source, which lives in `crate::ingestion::loading` (archive) and
-/// `crate::ui::input` (directory) — can hand its result straight to
+/// Everything [`App::build_merged_tab`] needs to build a merged tab's
+/// index, regardless of whether each source came from an already-open tab
+/// ([`App::merge_inputs_from_tabs`], used by `:merge`) or a
+/// freshly-extracted archive/directory file
+/// ([`App::merge_inputs_from_extracted`]). `pub(crate)` so a
+/// picker-triggered merge's Phase 1 can hand its result straight to
 /// [`App::start_merge_build_streaming`].
 pub(crate) struct MergeSourceInputs {
     pub(crate) sources: Vec<FileReader>,
@@ -87,15 +85,11 @@ impl App {
     }
 
     /// [`Self::pending_default_filter_path`]'s counterpart for a merged tab:
-    /// a merged tab deliberately never sets `display.format` (see
-    /// `open_merge_tab`'s doc comment — it combines possibly-heterogeneous
-    /// sources, so there's no single format to inherit), so the
-    /// `tab.display.format`-keyed lookup `pending_default_filter_path` does
-    /// can never find anything for one. This instead derives the same
-    /// "format name" from `parsers` — the per-source parsers a merge's
-    /// sources were detected with — only when every source agrees on one
-    /// recognized format; a merge of genuinely mixed formats has no single
-    /// default filter file that would make sense to apply.
+    /// a merged tab never sets `display.format` (it combines possibly
+    /// heterogeneous sources), so that lookup can never find anything for
+    /// one. This instead derives the format name from `parsers` — only
+    /// when every source agrees on one recognized format; a genuinely mixed
+    /// merge has no single default filter file to apply.
     fn pending_default_filter_path_for_merge(
         &self,
         tab: &TabState,
@@ -162,18 +156,14 @@ impl App {
     }
 
     /// Removes the tab at `idx` and fixes up every in-flight background
-    /// operation that tracks a tab index by position
-    /// (`pending_merge_builds`, `pending_archive`'s merge tab,
-    /// `pending_directory_merge`, and every remaining tab's own
-    /// `load_state.on_complete`) so they keep pointing at the right tab.
-    /// Removing any tab shifts every later index down by one; without this,
-    /// a background merge build or file load racing with an unrelated tab
-    /// close/removal (a placeholder cleanup, `:close-tab`, another merge
-    /// finishing) would silently start writing its results into the wrong
-    /// tab.
+    /// operation that tracks a tab index by position (`pending_merge_builds`,
+    /// `pending_archive`/`pending_directory_merge`'s merge tab, every
+    /// remaining tab's `load_state.on_complete`), since removal shifts every
+    /// later index down by one. Without this, a background merge or load
+    /// racing an unrelated tab close would silently write into the wrong tab.
     ///
-    /// This is the only place that should call `self.tabs.remove` —
-    /// removing a tab any other way risks exactly that desync.
+    /// The only place that should call `self.tabs.remove` — any other way
+    /// risks that desync.
     pub(crate) fn remove_tab_at(&mut self, idx: usize) {
         if idx >= self.tabs.len() {
             return;
@@ -288,14 +278,12 @@ impl App {
     }
 
     /// A source tab's parser for a nested `merge_inputs_from_tabs` build. A
-    /// plain tab uses its own detected `display.format`. A merged tab
-    /// always has `display.format == None` (it may combine heterogeneous
-    /// sources — see `pending_default_filter_path_for_merge`'s doc comment),
-    /// so using that directly would silently contribute zero lines to the
-    /// new merge (`append_source_entries` skips every line when `parser` is
-    /// `None`). Falling back to its `MergedState::uniform_parser` instead
-    /// lets a previously-merged tab (e.g. from the archive picker) be
-    /// merged again when its own sources agreed on one format.
+    /// plain tab uses its own `display.format`. A merged tab always has
+    /// `display.format == None`, so using that directly would silently
+    /// contribute zero lines (`append_source_entries` skips lines when
+    /// `parser` is `None`). Falls back to `MergedState::uniform_parser`
+    /// instead, letting an already-merged tab be merged again when its
+    /// sources agreed on one format.
     fn merge_source_parser(&self, tab_idx: usize) -> Option<Arc<dyn LogFormatParser>> {
         let tab = &self.tabs[tab_idx];
         match &tab.merged {
@@ -418,20 +406,16 @@ impl App {
     }
 
     /// Creates an empty, "pending" merged tab immediately and makes it
-    /// active — before either phase of a picker-triggered merge (archive
-    /// entry extraction / directory file copy, or the index build once
-    /// sources are ready) has produced anything. For a merge of big files,
-    /// reading/extracting the sources is the slow part; without this, the
-    /// destination tab wouldn't appear at all until that finished, leaving
-    /// the user with no visible sign the merge is happening. `labels` (the
-    /// eventual source filenames) are known upfront from the archive
-    /// tree/directory listing alone, with no reading needed, so the tab can
-    /// show real source names immediately.
+    /// active, before either phase of a picker-triggered merge has produced
+    /// anything. For big files, extracting the sources is the slow part;
+    /// without this the tab wouldn't appear until that finished, giving no
+    /// visible sign a merge is happening. `labels` are known upfront from
+    /// the archive tree/directory listing, so the tab can show real source
+    /// names immediately.
     ///
-    /// The caller is responsible for reporting Phase 1 progress on this
-    /// tab (e.g. via `TabState::set_notification`) and, once sources are
-    /// ready, calling [`Self::start_merge_build_streaming`] to fill it in —
-    /// or removing the tab if Phase 1 fails before ever producing sources.
+    /// The caller must report Phase 1 progress on this tab and, once
+    /// sources are ready, call [`Self::start_merge_build_streaming`] to
+    /// fill it in — or remove the tab if Phase 1 fails first.
     pub(crate) async fn create_pending_merged_tab(&mut self, labels: Vec<String>) -> usize {
         use crate::ui::tab_state::merged::MergedState;
 

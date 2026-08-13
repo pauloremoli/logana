@@ -362,8 +362,6 @@ pub fn is_level_keyword(token: &str) -> bool {
 mod tests {
     use super::*;
 
-    // ── ISO timestamp ─────────────────────────────────────────────────
-
     #[test]
     fn test_parse_iso_timestamp_basic() {
         let (ts, consumed) = parse_iso_timestamp("2024-02-22T10:15:30+0000 rest").unwrap();
@@ -399,8 +397,6 @@ mod tests {
         assert!(parse_iso_timestamp("Feb 22 10:15:30 host").is_none());
     }
 
-    // ── BSD precise timestamp ─────────────────────────────────────────
-
     #[test]
     fn test_parse_bsd_precise_basic() {
         let (ts, consumed) = parse_bsd_precise_timestamp("Feb 22 10:15:30.123456 rest").unwrap();
@@ -421,8 +417,6 @@ mod tests {
         assert_eq!(consumed, 15);
     }
 
-    // ── Full timestamp ────────────────────────────────────────────────
-
     #[test]
     fn test_parse_full_timestamp_basic() {
         let (ts, consumed) = parse_full_timestamp("Mon 2024-02-22 10:15:30 UTC rest").unwrap();
@@ -440,8 +434,6 @@ mod tests {
     fn test_parse_full_timestamp_not_weekday() {
         assert!(parse_full_timestamp("Xxx 2024-02-22 10:15:30 UTC rest").is_none());
     }
-
-    // ── Datetime timestamp ────────────────────────────────────────────
 
     #[test]
     fn test_parse_datetime_basic() {
@@ -485,8 +477,6 @@ mod tests {
         assert!(parse_datetime_timestamp("2024-01-15T10:30:00 rest").is_none());
     }
 
-    // ── BSD plain timestamp ───────────────────────────────────────────
-
     #[test]
     fn test_parse_bsd_plain_basic() {
         let (ts, consumed) = parse_bsd_plain_timestamp("Jul 12 22:23:01 rest").unwrap();
@@ -515,8 +505,6 @@ mod tests {
     fn test_parse_bsd_plain_too_short() {
         assert!(parse_bsd_plain_timestamp("Jul 12 22:2").is_none());
     }
-
-    // ── Monotonic timestamp ───────────────────────────────────────────
 
     #[test]
     fn test_parse_monotonic_basic() {
@@ -547,8 +535,6 @@ mod tests {
         assert!(parse_monotonic_timestamp("[1234.567890 rest").is_none());
     }
 
-    // ── Unix epoch timestamp ──────────────────────────────────────────
-
     #[test]
     fn test_parse_unix_basic() {
         let (ts, consumed) = parse_unix_timestamp("1436735381.000000 rest").unwrap();
@@ -576,8 +562,6 @@ mod tests {
     fn test_parse_unix_requires_decimal() {
         assert!(parse_unix_timestamp("1436735381. rest").is_none());
     }
-
-    // ── normalize_level ───────────────────────────────────────────────
 
     #[test]
     fn test_normalize_level_standard() {
@@ -623,8 +607,6 @@ mod tests {
         assert!(!is_level_keyword("myhost"));
         assert!(!is_level_keyword("sshd"));
     }
-
-    // ── parse_nano_timestamp ──────────────────────────────────────────
 
     #[test]
     fn test_parse_nano_timestamp_basic() {

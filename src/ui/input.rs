@@ -438,18 +438,13 @@ impl App {
         self.remove_empty_placeholder();
     }
 
-    /// Applies a directory-sourced archive picker (`:open`'d a directory —
-    /// reuses the archive picker's tree/checkbox/merge-mark UI, see
-    /// `ArchiveTree::list_directory_tree`). Most files are `disk_path: true`
-    /// (plain files anywhere under the directory, including inside
-    /// subdirectories) — ticked ones are opened directly via the same path
-    /// `handle_open_files` uses, merge-marked ones are read directly into a
-    /// temp copy, in the background so a large file can't stall the UI, then
-    /// merged exactly like an archive picker's merge-marked files are. A
-    /// file found inside an archive discovered along the way is
-    /// `disk_path: false` — its `full_path` is only meaningful relative to
-    /// that archive's own bytes, so it's routed through the same
-    /// extract-to-temp path `apply_archive_picker` uses instead.
+    /// Applies a directory-sourced archive picker (`:open`'d a directory,
+    /// reusing the archive picker's tree/checkbox/merge-mark UI). Most
+    /// files are `disk_path: true`: ticked ones open directly, merge-marked
+    /// ones are read into a temp copy in the background and merged like an
+    /// archive picker's. A file found inside a nested archive is
+    /// `disk_path: false` and routed through the same extract-to-temp path
+    /// `apply_archive_picker` uses.
     pub(super) async fn apply_directory_picker(
         &mut self,
         source_path: String,
@@ -928,15 +923,11 @@ mod tests {
     }
 
     /// The merged tab must appear the instant `apply_directory_picker`
-    /// returns — before the (potentially slow, for big files) background
-    /// read/copy phase has even started polling — with real source
-    /// filenames already shown, not just once that phase finishes.
-    /// A tab removed anywhere else (a placeholder cleanup, `:close-tab`, a
-    /// different merge finishing) while THIS merge's index build is still
-    /// running in the background must not desync `pending_merge_builds`'
-    /// tracked tab index — otherwise the next update lands on the wrong
-    /// tab, corrupting it (or, if that tab's line count doesn't match,
-    /// crashing on the next render).
+    /// returns, with real source filenames shown before the slow background
+    /// read/copy phase even starts. A tab removed elsewhere while this
+    /// merge's index build is still running must not desync
+    /// `pending_merge_builds`'s tracked tab index, or the next update lands
+    /// on — and corrupts — the wrong tab.
     #[tokio::test]
     async fn test_removing_an_earlier_tab_keeps_a_still_building_merge_pointed_at_the_right_tab() {
         let mut app = make_app().await;

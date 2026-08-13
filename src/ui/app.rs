@@ -937,8 +937,6 @@ mod tests {
         assert_eq!(cc.fg, Some(ratatui::style::Color::Blue));
     }
 
-    // ── close_tab ───────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_close_tab_single_tab_returns_true() {
         let mut app = make_app(&["line"]).await;
@@ -977,8 +975,6 @@ mod tests {
         assert!(!should_quit);
         assert!(app.active_tab < app.tabs.len());
     }
-
-    // ── handle_global_key ───────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_handle_global_key_quit() {
@@ -1046,8 +1042,6 @@ mod tests {
         }
     }
 
-    // ── execute_command_str ─────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_execute_command_str_success_pushes_history() {
         let mut app = make_app(&["INFO a", "WARN b"]).await;
@@ -1097,8 +1091,6 @@ mod tests {
             ModeRenderState::FilterManagement { .. }
         ));
     }
-
-    // ── tab() / tab_mut() ───────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_tab_accessors() {

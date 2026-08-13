@@ -405,8 +405,6 @@ mod tests {
         assert!(DltParser.parse_line(line).is_none());
     }
 
-    // ── parse_timestamp ────────────────────────────────────────────────
-
     #[test]
     fn test_parse_timestamp_returns_correct_slice() {
         let parser = DltParser;

@@ -330,8 +330,6 @@ mod tests {
         assert_eq!(parts.target, Some("systemd"));
     }
 
-    // ── JournalctlParser: short-precise format ─────────────────────────
-
     #[test]
     fn test_short_precise_full_line() {
         let line = b"Feb 22 10:15:30.123456 myhost sshd[5678]: Connection closed";
@@ -355,8 +353,6 @@ mod tests {
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.timestamp, Some("Feb  5 10:15:30.999"));
     }
-
-    // ── JournalctlParser: short-full format ────────────────────────────
 
     #[test]
     fn test_short_full_full_line() {
@@ -391,8 +387,6 @@ mod tests {
         );
         assert_eq!(parts.target, Some("app"));
     }
-
-    // ── Edge cases ─────────────────────────────────────────────────────
 
     #[test]
     fn test_parse_empty_line() {
@@ -456,8 +450,6 @@ mod tests {
         assert_eq!(parts.message, Some("kernel"));
     }
 
-    // ── JournalctlParser: short format (plain BSD, no microseconds) ────
-
     #[test]
     fn test_short_full_line() {
         let line = b"Jul 12 22:23:01 hostname sshd[1234]: Accepted password";
@@ -499,8 +491,6 @@ mod tests {
         assert_eq!(parts.timestamp, Some("Feb 22 10:15:30.123456"));
     }
 
-    // ── JournalctlParser: short-monotonic format ────────────────────
-
     #[test]
     fn test_short_monotonic_basic() {
         let line = b"[     0.000000] myhost sshd[1]: Started";
@@ -519,8 +509,6 @@ mod tests {
         assert_eq!(parts.timestamp, Some("[12345.678901]"));
         assert_eq!(parts.target, Some("kernel"));
     }
-
-    // ── JournalctlParser: short-unix format ─────────────────────────
 
     #[test]
     fn test_short_unix_basic() {
@@ -546,8 +534,6 @@ mod tests {
                 .any(|(_, k, v)| *k == "pid" && *v == "1")
         );
     }
-
-    // ── False positive rejection ──────────────────────────────────────
 
     #[test]
     fn test_reject_common_log_format_line() {
@@ -581,8 +567,6 @@ mod tests {
         );
     }
 
-    // ── is_likely_hostname ────────────────────────────────────────────
-
     #[test]
     fn test_is_likely_hostname_valid() {
         assert!(is_likely_hostname("myhost"));
@@ -611,8 +595,6 @@ mod tests {
         assert!(!is_likely_hostname("ABC"));
         assert!(!is_likely_hostname("MYAPP"));
     }
-
-    // ── detect_score ───────────────────────────────────────────────────
 
     #[test]
     fn test_detect_score_short_format() {
@@ -685,8 +667,6 @@ mod tests {
         assert!((score - 0.0).abs() < 0.001);
     }
 
-    // ── collect_field_names ────────────────────────────────────────────
-
     #[test]
     fn test_collect_field_names_iso() {
         let parser = JournalctlParser::default();
@@ -708,15 +688,11 @@ mod tests {
         assert!(!names.contains(&"pid".to_string()));
     }
 
-    // ── name ───────────────────────────────────────────────────────────
-
     #[test]
     fn test_name() {
         let parser = JournalctlParser::default();
         assert_eq!(parser.name(), "journalctl");
     }
-
-    // ── short default format (plain BSD timestamp, no decimal seconds) ─
 
     #[test]
     fn test_short_default_format() {
@@ -773,8 +749,6 @@ mod tests {
         assert!((score - 1.0).abs() < 0.001);
     }
 
-    // ── rsyslog RSYSLOG_FileFormat (ISO 8601 with microseconds) ───────
-
     #[test]
     fn test_rsyslog_file_format_parse() {
         let parser = JournalctlParser::default();
@@ -801,8 +775,6 @@ mod tests {
         let score = parser.detect_score(&lines);
         assert!(score > 0.9, "Expected high score, got {}", score);
     }
-
-    // ── parse_timestamp ────────────────────────────────────────────────
 
     #[test]
     fn test_parse_timestamp_iso() {

@@ -262,15 +262,13 @@ impl<'a> CommandBar<'a> {
 }
 
 /// Builds the styled, structured help block for a command: a "Usage:" line,
-/// the description, and — if any — an "Examples:" section with one example
-/// per line. Section labels are bold/highlighted, usage and example command
-/// text share a distinct "code" color, and the description is plain — a
-/// deliberately different look per section so the three are easy to tell
-/// apart at a glance instead of running together as one wrapped paragraph.
+/// the description, and, if any, an "Examples:" section. Section labels are
+/// bold, usage/example text share a "code" color, and the description is
+/// plain — deliberately distinct so the three don't run together.
 ///
-/// Used both to render the actual widget and (in `render.rs`'s
-/// `compute_hint_height`) to size the area it's rendered into — one
-/// function computing both keeps them from silently drifting apart.
+/// Used both to render the widget and (in `render.rs`'s
+/// `compute_hint_height`) to size the area it renders into, so the two
+/// can't drift apart.
 pub fn command_help_lines(cmd: &crate::commands::CommandInfo, theme: &Theme) -> Vec<Line<'static>> {
     let label_style = Style::default()
         .fg(theme.text_highlight_fg)

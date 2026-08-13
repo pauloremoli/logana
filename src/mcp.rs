@@ -332,8 +332,6 @@ mod tests {
         (server, rx)
     }
 
-    // ── build_marked_lines ───────────────────────────────────────────
-
     #[test]
     fn test_build_marked_lines_empty() {
         let reader = make_reader(&["a", "b", "c"]);
@@ -371,8 +369,6 @@ mod tests {
         assert_eq!(result[0].line_indices, vec![0, 1]);
     }
 
-    // ── format helpers ───────────────────────────────────────────────
-
     #[test]
     fn test_read_resource_marks_uri() {
         let snap = McpSnapshot {
@@ -406,8 +402,6 @@ mod tests {
         let tools = server.tool_router.list_all();
         assert_eq!(tools.len(), 3);
     }
-
-    // ── tool command dispatch ────────────────────────────────────────
 
     #[tokio::test]
     async fn test_toggle_mark_sends_command() {
@@ -450,8 +444,6 @@ mod tests {
             _ => panic!("expected RemoveAnnotation"),
         }
     }
-
-    // ── start_mcp_server ─────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_start_mcp_server_binds_successfully() {

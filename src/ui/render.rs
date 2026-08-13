@@ -1980,9 +1980,6 @@ mod tests {
         terminal.draw(|f| app.ui(f)).unwrap();
     }
 
-    // -----------------------------------------------------------------------
-    // find_token_offset
-    // -----------------------------------------------------------------------
     #[test]
     fn test_find_token_offset_simple() {
         assert_eq!(find_token_offset("abc def ghi", "abc"), Some(0));
@@ -2070,10 +2067,6 @@ mod tests {
         }
         None
     }
-
-    // -----------------------------------------------------------------------
-    // stable_hash
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_stable_hash_consistent() {
@@ -2200,8 +2193,6 @@ mod tests {
              without={height_without_bar}, with={height_with_bar}"
         );
     }
-
-    // ── Tab bar mode label ─────────────────────────────────────────────────
 
     async fn make_two_tab_app() -> App {
         let mut app = make_app(&["line 0", "line 1"]).await;

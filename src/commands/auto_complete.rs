@@ -502,8 +502,6 @@ pub fn regex_search_match(needle: &str, haystack: &str) -> bool {
 mod tests {
     use super::*;
 
-    // ── shell_split ──────────────────────────────────────────────────────────
-
     #[test]
     fn test_shell_split_basic() {
         assert_eq!(shell_split("filter foo"), vec!["filter", "foo"]);
@@ -611,8 +609,6 @@ mod tests {
         );
     }
 
-    // ── find_command_completions ─────────────────────────────────────────────
-
     #[test]
     fn test_find_command_completions_empty_returns_all() {
         let results = find_command_completions("");
@@ -697,8 +693,6 @@ mod tests {
         assert!(!results.contains(&"filter"));
     }
 
-    // ── extract_color_partial ────────────────────────────────────────────────
-
     #[test]
     fn test_extract_color_partial_fg_with_partial_value() {
         assert_eq!(extract_color_partial("filter --fg Re"), Some("Re"));
@@ -757,8 +751,6 @@ mod tests {
         );
     }
 
-    // ── extract_group_partial ───────────────────────────────────────────────
-
     #[test]
     fn test_extract_group_partial_filter_with_partial_value() {
         assert_eq!(extract_group_partial("filter --group er"), Some("er"));
@@ -807,8 +799,6 @@ mod tests {
         assert_eq!(extract_group_partial("filter -g er"), Some("er"));
         assert_eq!(extract_group_partial("exclude -g "), Some(""));
     }
-
-    // ── complete_color ───────────────────────────────────────────────────────
 
     #[test]
     fn test_color_names_sorted_alphabetically() {
@@ -1187,8 +1177,6 @@ mod tests {
         drop(dir);
     }
 
-    // ── extract_flag_partial ──────────────────────────────────────────────────
-
     #[test]
     fn test_extract_flag_partial_none_when_trailing_space() {
         assert_eq!(extract_flag_partial("filter "), None);
@@ -1235,8 +1223,6 @@ mod tests {
             Some(("filter --fg Blue ".to_string(), "-".to_string()))
         );
     }
-
-    // ── complete_flags ────────────────────────────────────────────────────────
 
     #[test]
     fn test_complete_flags_filter_all() {
@@ -1302,8 +1288,6 @@ mod tests {
         assert!(!fuzzy_match("xyz", "dracula"));
     }
 
-    // ── regex_search_match ───────────────────────────────────────────────────
-
     #[test]
     fn test_regex_search_match_empty_needle_matches_anything() {
         assert!(regex_search_match("", "anything"));
@@ -1343,8 +1327,6 @@ mod tests {
         assert!(regex_search_match("(err", "a line with (err in it"));
         assert!(!regex_search_match("(err", "no match here"));
     }
-
-    // ── extract_field_partial ─────────────────────────────────────────────────
 
     #[test]
     fn test_field_partial_name_empty_after_space() {
@@ -1418,8 +1400,6 @@ mod tests {
         );
     }
 
-    // ── complete_field_name ───────────────────────────────────────────────────
-
     fn make_index(names: &[&str], values: &[(&str, &[&str])]) -> FieldIndex {
         let mut idx = FieldIndex {
             names: names.iter().map(|s| s.to_string()).collect(),
@@ -1456,8 +1436,6 @@ mod tests {
         let result = complete_field_name("zzz", &idx);
         assert!(result.is_empty());
     }
-
-    // ── complete_field_value ──────────────────────────────────────────────────
 
     #[test]
     fn test_complete_field_value_empty_partial_returns_all() {

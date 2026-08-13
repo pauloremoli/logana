@@ -82,21 +82,14 @@ fn prepend_collapse_indicator(
 }
 
 /// Whether — and how — to render the collapse indicator for file line
-/// `line_idx`. `<`/`>` work regardless of `collapse_continuations`'s value
-/// (see `TabState::set_continuation_collapsed`), so this always reflects
-/// the entry's actual effective state — `default_collapsed XOR
-/// overridden_groups.contains(line_idx)` — rather than gating on the
-/// global default: `Some('+')` when currently collapsed, `Some('-')` when
-/// individually flipped away from the default but currently expanded,
-/// `None` when it's not a collapsible parent line or is expanded with no
-/// override (the common, unaffected case — kept marker-free to avoid
-/// clutter on ordinary multiline entries).
+/// `line_idx`: reflects the entry's actual effective state
+/// (`default_collapsed XOR overridden_groups.contains(line_idx)`), not the
+/// global default. `Some('+')` collapsed, `Some('-')` individually flipped
+/// but expanded, `None` for the common unaffected case (kept clutter-free).
 ///
 /// Uses raw `cmap` adjacency rather than the post-filter visible set, so a
-/// marker can show even if every continuation line of that entry happens to
-/// be excluded by an unrelated active filter — a known, accepted
-/// simplification that mirrors how the comment-bar indicator already
-/// ignores filter state.
+/// marker can show even if every continuation line is filtered out —
+/// mirrors how the comment-bar indicator already ignores filter state.
 fn collapse_indicator_for_line(
     default_collapsed: bool,
     cmap: Option<&[usize]>,
@@ -435,17 +428,13 @@ fn populate_parse_cache(
             && let Some(parser) = parser
             && let Some(parts) = parser.parse_line(line_bytes)
         {
-            // Only use the parser's own field order/separators (e.g. a custom
-            // schema's `{level}/{component}/{feature}` template) when there's
-            // no explicit *reordered* column layout — genuinely moving a
-            // field via `:select-fields` can't be represented in a fixed
-            // template, so that still falls back to the generic column
-            // layout. A hidden field, however, is handled by
-            // `reconstructed_line_text` itself: it drops the field's value
-            // and collapses the separator that follows it, instead of
-            // disabling reconstruction outright. This is the same function
-            // Visual Char Mode's word motions use (`render_line_text`), so
-            // the two can never disagree about what's on screen.
+            // Only use the parser's own field order/separators when there's
+            // no explicit *reordered* column layout — a genuine reorder via
+            // `:select-fields` can't be represented in a fixed template. A
+            // hidden field is instead handled by `reconstructed_line_text`
+            // itself, which drops its value and collapses the trailing
+            // separator. Same function Visual Char Mode's word motions use
+            // (`render_line_text`), so the two can't disagree.
             let reconstructed =
                 reconstructed_line_text(parser, &parts, field_layout, hidden_fields);
             let cols = if reconstructed.is_none() {

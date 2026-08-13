@@ -30,7 +30,6 @@ impl Mode for VisualLineMode {
     ) -> (Box<dyn Mode>, KeyResult) {
         let kb = &tab.interaction.keybindings;
 
-        // ── Digit accumulation for count prefix ─────────────────────────
         if let KeyCode::Char(c @ '1'..='9') = key
             && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
         {
@@ -618,8 +617,6 @@ mod tests {
         );
     }
 
-    // ── Count prefix tests ───────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_visual_count_5j_moves_down_5() {
         let lines: Vec<&str> = (0..20).map(|_| "line").collect();
@@ -789,8 +786,6 @@ mod tests {
             other => panic!("expected Search, got {:?}", other),
         }
     }
-
-    // ── New motion tests ─────────────────────────────────────────────────
 
     async fn press_ctrl(
         mode: VisualLineMode,

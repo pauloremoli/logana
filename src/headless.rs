@@ -85,16 +85,11 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
     .await?;
 
     // Write to a sibling temp file, then rename it over the final path.
-    //
-    // Writing directly to the output file with O_TRUNC forces ext4 (data=ordered)
-    // to flush all dirty pages of the *previous* output to disk before it can
-    // truncate — blocking for tens of seconds on slow disks.  Writing without
-    // O_TRUNC and calling set_len() afterward has the same problem: ftruncate
-    // also requires a full data flush before the journal can record the new size.
-    //
-    // With temp+rename: the old output file is unlinked by rename(), which lets
-    // the kernel discard its dirty pages without a flush; the new file's dirty
-    // pages are written by the kernel in the background after the process returns.
+    // Writing directly with O_TRUNC (or set_len() afterward) forces ext4
+    // (data=ordered) to flush all of the *previous* output's dirty pages
+    // before truncating — blocking for tens of seconds on slow disks.
+    // Temp+rename instead unlinks the old file, letting the kernel discard
+    // its dirty pages without a flush.
     let (mut writer, tmp_path): (Box<dyn Write>, Option<(PathBuf, PathBuf)>) = match &args.output {
         Some(path) => {
             let mut tmp = path.as_os_str().to_owned();

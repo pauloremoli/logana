@@ -233,8 +233,6 @@ mod tests {
         LogfmtParser::default()
     }
 
-    // ── parse_pair ────────────────────────────────────────────────────
-
     #[test]
     fn test_parse_pair_simple() {
         let (k, v, pos) = parse_pair("key=value rest", 0).unwrap();
@@ -275,8 +273,6 @@ mod tests {
     fn test_parse_pair_no_equals() {
         assert!(parse_pair("no_equals", 0).is_none());
     }
-
-    // ── LogfmtParser ─────────────────────────────────────────────────
 
     #[test]
     fn test_parse_line_full() {
@@ -345,8 +341,6 @@ mod tests {
         assert!(parts.extra_fields.len() > 3);
     }
 
-    // ── detect_score ─────────────────────────────────────────────────
-
     #[test]
     fn test_detect_score_full_logfmt() {
         let lines: Vec<&[u8]> = vec![
@@ -379,8 +373,6 @@ mod tests {
         assert!((score - 0.0).abs() < 0.001);
     }
 
-    // ── collect_field_names ──────────────────────────────────────────
-
     #[test]
     fn test_collect_field_names() {
         let lines: Vec<&[u8]> = vec![
@@ -395,14 +387,10 @@ mod tests {
         assert_eq!(*names.last().unwrap(), "message");
     }
 
-    // ── name ─────────────────────────────────────────────────────────
-
     #[test]
     fn test_name() {
         assert_eq!(parser().name(), "logfmt");
     }
-
-    // ── level normalization ──────────────────────────────────────────
 
     #[test]
     fn test_level_normalization() {

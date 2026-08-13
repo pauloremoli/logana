@@ -436,8 +436,6 @@ mod tests {
         ));
     }
 
-    // ── Edit mode tests ─────────────────────────────────────────────────
-
     #[test]
     fn test_edit_constructor_prefills_text() {
         let mode = CommentMode::edit(0, "hello\nworld".to_string(), vec![1, 2]);

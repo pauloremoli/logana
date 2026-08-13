@@ -1385,8 +1385,6 @@ mod tests {
         assert_eq!(parse_color("Brown"), Some(Color::Rgb(165, 42, 42)));
     }
 
-    // ── contrast_ratio / random_readable_color_pair ─────────────────────
-
     #[test]
     fn test_contrast_ratio_black_on_white_is_maximal() {
         let ratio = contrast_ratio((0, 0, 0), (255, 255, 255));

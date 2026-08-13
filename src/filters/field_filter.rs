@@ -115,16 +115,13 @@ fn split_group_field_path<'p>(
         .then_some((group, key))
 }
 
-/// Whether `parts.field_groups` contains a group named `group` with at
-/// least one item whose `key` field's value contains `pattern` — "any item
-/// matches" semantics for a group-scoped filter condition (e.g.
-/// `operations.object_name=txCarrier1` matching a transaction with several
-/// operations, as long as one of them is `txCarrier1`). Deliberately
-/// independent of [`resolve_field`]'s first-match-only semantics, which
-/// stays untouched for every other field path (its other callers need
-/// single-value resolution). Indexed paths (`operations.0.object_name`) are
-/// out of scope here — group-scoped filtering is "any item" only; per-index
-/// filtering is not supported (display-only, see `field_layout.rs`).
+/// Whether `parts.field_groups` has a group named `group` with at least
+/// one item whose `key` field contains `pattern` — "any item matches"
+/// semantics for a group-scoped condition (e.g.
+/// `operations.object_name=txCarrier1` matches if any operation is
+/// `txCarrier1`). Independent of [`resolve_field`]'s first-match-only
+/// semantics used elsewhere. Indexed paths are out of scope — group-scoped
+/// filtering is "any item" only; per-index filtering isn't supported.
 fn group_field_condition_matches(
     parts: &DisplayParts<'_>,
     group: &str,
@@ -348,8 +345,6 @@ mod tests {
     use crate::filters::{FilterDef, FilterType};
     use crate::parser::DisplayParts;
 
-    // ── parse_field_filter ───────────────────────────────────────────────────
-
     #[test]
     fn test_parse_field_filter_valid() {
         let (k, v) = parse_field_filter("level:error").unwrap();
@@ -378,8 +373,6 @@ mod tests {
     fn test_parse_field_filter_empty_value() {
         assert!(parse_field_filter("level:").is_err());
     }
-
-    // ── parse_field_filter_expr / encode_field_filter ───────────────────────
 
     #[test]
     fn test_parse_field_filter_expr_single_condition_old_format() {
@@ -444,8 +437,6 @@ mod tests {
         assert_eq!(parsed_text.as_deref(), Some("Power measuments:"));
     }
 
-    // ── field_filter_matches ─────────────────────────────────────────────────
-
     fn compound(conditions: &[(&str, &str)], text: Option<&str>) -> FieldFilter {
         FieldFilter {
             conditions: conditions
@@ -497,8 +488,6 @@ mod tests {
         let parts = make_parts(Some("INFO"), None, None, None, vec![]);
         assert!(field_filter_matches(&ff, &parts, b"anything at all"));
     }
-
-    // ── group-scoped field filtering (any-item semantics) ───────────────────
 
     fn make_parts_with_group<'a>(
         group_name: &'static str,
@@ -588,8 +577,6 @@ mod tests {
         assert!(!field_filter_matches(&ff, &parts, b"anything"));
     }
 
-    // ── field_filters_visible ────────────────────────────────────────────────
-
     fn make_parts<'a>(
         level: Option<&'a str>,
         timestamp: Option<&'a str>,
@@ -626,8 +613,6 @@ mod tests {
             decision: FilterDecision::Exclude,
         }
     }
-
-    // ── any_field_exclude_matches ─────────────────────────────────────────────
 
     #[test]
     fn test_exclude_match_hides() {
@@ -668,8 +653,6 @@ mod tests {
             b""
         ));
     }
-
-    // ── field_include_vote ────────────────────────────────────────────────────
 
     #[test]
     fn test_include_match_vote() {
@@ -794,8 +777,6 @@ mod tests {
         );
     }
 
-    // ── alias resolution ─────────────────────────────────────────────────────
-
     #[test]
     fn test_alias_lvl() {
         let parts = make_parts(Some("warn"), None, None, None, vec![]);
@@ -822,8 +803,6 @@ mod tests {
             FieldVote::Match
         );
     }
-
-    // ── dotted path resolution ────────────────────────────────────────────────
 
     fn make_parts_with_span<'a>(
         extra: Vec<(&'a str, &'a str)>,
@@ -894,8 +873,6 @@ mod tests {
             FieldVote::Miss
         );
     }
-
-    // ── extract_field_filters ────────────────────────────────────────────────
 
     fn make_def(id: usize, pattern: &str, filter_type: FilterType, enabled: bool) -> FilterDef {
         FilterDef {
@@ -971,8 +948,6 @@ mod tests {
         assert!(exc.is_empty(), "highlight must not join the exclude vote");
     }
 
-    // ── extract_field_filters_ordered ─────────────────────────────────────────
-
     #[test]
     fn test_extract_field_filters_ordered_includes_highlight() {
         // Contrast with test_extract_field_filters_skips_highlight: counting
@@ -1026,8 +1001,6 @@ mod tests {
         assert_eq!(ordered.len(), 1);
         assert_eq!(ordered[0].conditions[0].0, "level");
     }
-
-    // ── count_field_filter_matches ────────────────────────────────────────────
 
     #[test]
     fn test_count_field_filter_matches_increments_on_match() {

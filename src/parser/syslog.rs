@@ -718,8 +718,6 @@ mod tests {
         assert_eq!(severity_to_level(7), "DEBUG"); // debug
     }
 
-    // ── RFC 3164 parsing ─────────────────────────────────────────────────
-
     #[test]
     fn test_rfc3164_full() {
         let line = b"<134>Oct 11 22:14:15 myhost sshd[1234]: Accepted password for user";
@@ -819,8 +817,6 @@ mod tests {
         assert_eq!(parts.level, Some("DEBUG"));
     }
 
-    // ── RFC 5424 parsing ─────────────────────────────────────────────────
-
     #[test]
     fn test_rfc5424_full() {
         let line = b"<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\"] An application event log entry...";
@@ -899,8 +895,6 @@ mod tests {
         assert_eq!(parts.message, Some("msg"));
     }
 
-    // ── detect_score ─────────────────────────────────────────────────────
-
     #[test]
     fn test_detect_score_all_syslog() {
         let parser = SyslogParser::default();
@@ -939,8 +933,6 @@ mod tests {
         assert!((score - 0.0).abs() < 0.001);
     }
 
-    // ── collect_field_names ──────────────────────────────────────────────
-
     #[test]
     fn test_collect_field_names_rfc3164() {
         let parser = SyslogParser::default();
@@ -966,8 +958,6 @@ mod tests {
         assert!(names.contains(&"key".to_string()));
     }
 
-    // ── Edge cases ───────────────────────────────────────────────────────
-
     #[test]
     fn test_parse_empty_line() {
         let parser = SyslogParser::default();
@@ -989,8 +979,6 @@ mod tests {
         let parser = SyslogParser::default();
         assert!(parser.parse_line(b"just plain text").is_none());
     }
-
-    // ── parse_timestamp ────────────────────────────────────────────────
 
     #[test]
     fn test_parse_timestamp_rfc3164_with_priority() {
@@ -1075,8 +1063,6 @@ mod tests {
         assert_eq!(before.level, after.level);
         assert_eq!(before.target, after.target);
     }
-
-    // ── Unix epoch (rsyslog custom template) ─────────────────────────
 
     #[test]
     fn test_unix_epoch_basic() {

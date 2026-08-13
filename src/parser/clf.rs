@@ -333,8 +333,6 @@ mod tests {
         );
     }
 
-    // ── Combined Log Format ────────────────────────────────────────────
-
     #[test]
     fn test_combined_full_line() {
         let line = b"127.0.0.1 - jane [10/Oct/2000:13:55:36 -0700] \"GET /index.html HTTP/1.0\" 200 2326 \"http://www.example.com/start.html\" \"Mozilla/4.08 [en] (Win98; I ;Nav)\"";
@@ -392,8 +390,6 @@ mod tests {
         );
     }
 
-    // ── Date validation ────────────────────────────────────────────────
-
     #[test]
     fn test_validate_clf_date_valid() {
         assert!(validate_clf_date("10/Oct/2000:13:55:36 -0700"));
@@ -415,8 +411,6 @@ mod tests {
     fn test_validate_clf_date_bad_format() {
         assert!(!validate_clf_date("2024-01-15T10:00:00+0000aaaa"));
     }
-
-    // ── Edge cases ─────────────────────────────────────────────────────
 
     #[test]
     fn test_parse_empty_line() {
@@ -497,8 +491,6 @@ mod tests {
         );
     }
 
-    // ── detect_score ───────────────────────────────────────────────────
-
     #[test]
     fn test_detect_score_all_clf() {
         let parser = ClfParser;
@@ -536,8 +528,6 @@ mod tests {
         let score = parser.detect_score(&lines);
         assert!((score - 0.0).abs() < 0.001);
     }
-
-    // ── collect_field_names ────────────────────────────────────────────
 
     #[test]
     fn test_collect_field_names_clf() {
@@ -586,15 +576,11 @@ mod tests {
         );
     }
 
-    // ── name ───────────────────────────────────────────────────────────
-
     #[test]
     fn test_name() {
         let parser = ClfParser;
         assert_eq!(parser.name(), "clf");
     }
-
-    // ── parse_timestamp ────────────────────────────────────────────────
 
     #[test]
     fn test_parse_timestamp_returns_correct_slice() {

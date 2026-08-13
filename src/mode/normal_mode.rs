@@ -36,7 +36,6 @@ impl Mode for NormalMode {
         // Clone the Arc so we can mutate `tab` freely in each branch.
         let kb = tab.interaction.keybindings.clone();
 
-        // ── Digit accumulation for count prefix ─────────────────────────────
         // Digits 1-9 start a count; 0 appends when count is already active.
         if let KeyCode::Char(c @ '1'..='9') = key
             && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
@@ -1741,8 +1740,6 @@ mod tests {
         assert!(text.contains("marks only"));
     }
 
-    // ── Count prefix tests ───────────────────────────────────────────────
-
     async fn press_mode(
         mode: NormalMode,
         tab: &mut TabState,
@@ -1887,8 +1884,6 @@ mod tests {
         assert_eq!(tab.scroll.scroll_offset, 20);
     }
 
-    // ── Clear all marks and comments ────────────────────────────────
-
     #[tokio::test]
     async fn test_shift_c_clears_marks_and_comments() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
@@ -1906,8 +1901,6 @@ mod tests {
             Some("Cleared all marks and comments")
         );
     }
-
-    // ── Edit comment ────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_r_on_commented_line_opens_edit_mode() {
@@ -1938,8 +1931,6 @@ mod tests {
             Some("No comment on this line")
         );
     }
-
-    // ── Delete comment ──────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_d_on_commented_line_deletes_comment() {
@@ -1983,8 +1974,6 @@ mod tests {
         assert!(matches!(mode.render_state(), ModeRenderState::Normal));
     }
 
-    // ── Comment line ─────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_c_opens_comment_mode_for_current_line() {
         let mut tab = make_tab(&["line0", "line1", "line2"]).await;
@@ -2020,8 +2009,6 @@ mod tests {
             .await;
         assert_eq!(tab.comment_manager.get().len(), 1);
     }
-
-    // ── Error / warning navigation ────────────────────────────────────────
 
     #[tokio::test]
     async fn test_e_navigates_to_next_error() {
@@ -2100,8 +2087,6 @@ mod tests {
             Some("No previous warning")
         );
     }
-
-    // ── Marked-line navigation (n/N without an active search) ──────────────
 
     #[tokio::test]
     async fn test_n_navigates_to_next_marked_line_when_no_search() {

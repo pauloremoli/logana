@@ -520,15 +520,12 @@ pub(crate) fn bsd_month_from_timestamp(ts: &str) -> Option<u32> {
 }
 
 /// Normalize a raw timestamp string (as produced by a log format parser's
-/// `DisplayParts.timestamp`) into a canonical form for comparison.
-///
-/// If `year_override` is `Some(y)`, it is used in place of the current year
-/// for BSD-format timestamps (those stored with year `0000`).
-/// Pass `None` to fall back to the current year (streaming/stdin behaviour).
+/// `DisplayParts.timestamp`) into a canonical form for comparison, filling
+/// in the year when the source format omits it (BSD syslog, etc.).
+/// `year_override`, if `Some`, replaces the current year for such
+/// year-`0000` timestamps; `None` falls back to the current year.
 ///
 /// Returns `None` for dmesg-style boot-relative timestamps or unparseable input.
-/// Return the raw `CanonicalTs` bytes for `ts`, filling in the year when
-/// the source format omits it (BSD syslog, etc.).
 pub fn timestamp_to_canonical(ts: &str, year_override: Option<i32>) -> Option<CanonicalTs> {
     normalize_log_timestamp(ts).map(|n| {
         let mut c = n.canonical;
@@ -1214,8 +1211,6 @@ mod tests {
         assert!(parse_bound("25:00:00").is_err());
     }
 
-    // ── parse_date_filter ─────────────────────────────────────────────
-
     #[test]
     fn test_parse_time_range() {
         let df = parse_date_filter("01:00:00 .. 02:00:00").unwrap();
@@ -1342,8 +1337,6 @@ mod tests {
         assert!(parse_date_filter("02:00:00 .. 01:00:00").is_err());
     }
 
-    // ── equals expansion ──────────────────────────────────────────────
-
     #[test]
     fn test_equals_time_hms_matches_exact_second() {
         let df = parse_date_filter("09:00:30").unwrap();
@@ -1432,8 +1425,6 @@ mod tests {
         assert!(!df.matches("2024-02-22T10:15:31Z", None));
         assert!(!df.matches("2024-02-22T10:15:29Z", None));
     }
-
-    // ── normalize_log_timestamp ───────────────────────────────────────
 
     #[test]
     fn test_normalize_iso() {
@@ -1536,8 +1527,6 @@ mod tests {
         assert!(normalize_log_timestamp("170004601023400000").is_none());
     }
 
-    // ── Unix epoch (seconds / milliseconds / microseconds / decimal) ──
-
     #[test]
     fn test_normalize_epoch_micros_journalctl_json() {
         // journalctl JSON __REALTIME_TIMESTAMP (16 digits = microseconds)
@@ -1603,8 +1592,6 @@ mod tests {
         let current_year = time::OffsetDateTime::now_utc().year();
         assert!(result.starts_with(&format!("{:04}-02-14 22:11:26.", current_year)));
     }
-
-    // ── DateFilter::matches ────────────────────────────────────────────
 
     #[test]
     fn test_matches_time_range_inside() {
@@ -1712,8 +1699,6 @@ mod tests {
         assert!(!df.matches("2024-01-01T12:30:00Z", None));
     }
 
-    // ── extract_date_filters ──────────────────────────────────────────
-
     #[test]
     fn test_extract_date_filters_empty() {
         let filters = extract_date_filters(&[]);
@@ -1783,8 +1768,6 @@ mod tests {
         let filters = extract_date_filters(&defs);
         assert!(filters.is_empty());
     }
-
-    // ── Edge cases ────────────────────────────────────────────────────
 
     #[test]
     fn test_time_only_midnight_boundary() {

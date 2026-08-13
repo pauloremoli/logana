@@ -755,8 +755,6 @@ impl LogFormatParser for CommonLogParser {
 mod tests {
     use super::*;
 
-    // ── env_logger ────────────────────────────────────────────────────
-
     #[test]
     fn test_env_logger_iso() {
         let line = b"[2024-07-24T10:00:00Z INFO  myapp] Starting server";
@@ -787,8 +785,6 @@ mod tests {
         assert_eq!(parts.level, Some("ERROR"));
         assert_eq!(parts.message, Some("Something failed"));
     }
-
-    // ── tracing fmt / generic ─────────────────────────────────────────
 
     #[test]
     fn test_tracing_fmt_with_module_path() {
@@ -840,8 +836,6 @@ mod tests {
         assert_eq!(parts.message, Some("starting up"));
     }
 
-    // ── logback/log4j2 ───────────────────────────────────────────────
-
     #[test]
     fn test_logback_basic() {
         let line = b"2024-07-24 10:00:00.123 [main] INFO  com.example.App - Application started";
@@ -869,8 +863,6 @@ mod tests {
         assert_eq!(parts.level, Some("WARN"));
         assert_eq!(parts.target, Some("c.e.security.AuthFilter"));
     }
-
-    // ── Spring Boot ──────────────────────────────────────────────────
 
     #[test]
     fn test_spring_boot_basic() {
@@ -902,8 +894,6 @@ mod tests {
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("WARN"));
     }
-
-    // ── Python formats ───────────────────────────────────────────────
 
     #[test]
     fn test_python_basic_level_target_msg() {
@@ -945,8 +935,6 @@ mod tests {
         assert_eq!(parts.target, Some("myapp.db"));
     }
 
-    // ── loguru ───────────────────────────────────────────────────────
-
     #[test]
     fn test_loguru_basic() {
         let line = b"2024-07-24 10:00:00.123 | INFO     | myapp.main - Starting application";
@@ -966,8 +954,6 @@ mod tests {
         assert_eq!(parts.level, Some("DEBUG"));
     }
 
-    // ── structlog ────────────────────────────────────────────────────
-
     #[test]
     fn test_structlog_basic() {
         let line = b"2024-07-24 10:00:00 [info     ] request handled              key=val";
@@ -985,8 +971,6 @@ mod tests {
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("WARN"));
     }
-
-    // ── Extended levels ──────────────────────────────────────────────
 
     #[test]
     fn test_trace_level() {
@@ -1011,8 +995,6 @@ mod tests {
         let parts = parser.parse_line(line).unwrap();
         assert_eq!(parts.level, Some("FATAL"));
     }
-
-    // ── Negative cases ───────────────────────────────────────────────
 
     #[test]
     fn test_parse_empty() {
@@ -1046,8 +1028,6 @@ mod tests {
                 .is_none()
         );
     }
-
-    // ── detect_score ─────────────────────────────────────────────────
 
     #[test]
     fn test_detect_score_all_common() {
@@ -1084,8 +1064,6 @@ mod tests {
         let score = parser.detect_score(&lines);
         assert!((score - 0.0).abs() < 0.001);
     }
-
-    // ── collect_field_names ──────────────────────────────────────────
 
     #[test]
     fn test_collect_field_names() {
@@ -1128,8 +1106,6 @@ mod tests {
         assert!(names.contains(&"thread".to_string()));
     }
 
-    // ── nano timestamp ───────────────────────────────────────────────
-
     #[test]
     fn test_nano_timestamp_level_target_message() {
         let line = b"1700046000000000000 INFO  api-gateway server started on 0.0.0.0:8080";
@@ -1149,15 +1125,11 @@ mod tests {
         assert_eq!(parts.level, Some("INFO"));
     }
 
-    // ── name ─────────────────────────────────────────────────────────
-
     #[test]
     fn test_name() {
         let parser = CommonLogParser::default();
         assert_eq!(parser.name(), "common-log");
     }
-
-    // ── tracing-subscriber span helpers ──────────────────────────────
 
     #[test]
     fn test_parse_tracing_span_fields_unquoted() {
@@ -1226,8 +1198,6 @@ mod tests {
         assert!(span.is_none());
         assert_eq!(rest, "something{foo=bar}message");
     }
-
-    // ── try_tracing_fmt ───────────────────────────────────────────────
 
     #[test]
     fn test_tracing_fmt_request_span() {
@@ -1308,8 +1278,6 @@ mod tests {
         assert!(parser.parse_line(span_line).is_some());
     }
 
-    // ── Priority: CommonLogParser should NOT match journalctl lines ──
-
     #[test]
     fn test_journalctl_line_no_level_rejected() {
         let parser = CommonLogParser::default();
@@ -1331,8 +1299,6 @@ mod tests {
                 .is_none()
         );
     }
-
-    // ── parse_timestamp ────────────────────────────────────────────────
 
     #[test]
     fn test_parse_timestamp_iso_prefix() {

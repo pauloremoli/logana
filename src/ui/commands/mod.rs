@@ -1256,8 +1256,6 @@ mod tests {
         }
     }
 
-    // ── goto line ─────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_goto_line_command() {
         let mut app = make_app(&["a", "b", "c", "d", "e"]).await;
@@ -1290,8 +1288,6 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(app.tab().scroll.scroll_offset, 3);
     }
-
-    // ── stop ──────────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_stop_clears_watch_state() {
@@ -1334,8 +1330,6 @@ mod tests {
         assert!(app.tab().stream.watch.is_none());
     }
 
-    // ── pause / resume ────────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_pause_sets_paused_flag() {
         let mut app = make_app(&["line1"]).await;
@@ -1360,8 +1354,6 @@ mod tests {
         app.run_command("resume").await.unwrap();
         assert!(!app.tab().stream.paused);
     }
-
-    // ── save ──────────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_save_writes_all_visible_lines() {
@@ -1569,8 +1561,6 @@ mod tests {
             assert!(!tab.display.raw_mode);
         }
     }
-
-    // ── same-file guard ───────────────────────────────────────────────────────
 
     async fn make_app_with_file(tmp: &tempfile::NamedTempFile) -> App {
         use std::io::Write as _;

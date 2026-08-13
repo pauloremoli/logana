@@ -567,21 +567,16 @@ pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser)
 }
 
 /// Walks forward from `line_idx + 1` while `cmap` marks each line as a
-/// continuation of `line_idx` (`build_continuation_map`'s convention: a
-/// continuation line's entry equals its parent's index), collecting lines up
-/// to (and including) the first one `parser.is_continuation_end` matches, if
-/// any — otherwise every continuation line `cmap` groups with `line_idx`.
-/// The collected lines are handed to `parser.walk_continuation` in one
-/// batch, merging its flat fields into `parts.extra_fields` and its
-/// per-group items into `parts.field_groups`. Returns the index of the last
-/// line still considered part of this record, or `line_idx` itself if there
-/// are no continuation lines.
+/// continuation of `line_idx`, collecting up to (and including) the first
+/// line `parser.is_continuation_end` matches, or every continuation line
+/// otherwise. The batch is handed to `parser.walk_continuation`, merging
+/// its flat fields into `parts.extra_fields` and per-group items into
+/// `parts.field_groups`. Returns the index of the last line still part of
+/// this record, or `line_idx` if there are none.
 ///
-/// For a schema with no flat/`vec` continuation content declared,
-/// `walk_continuation`'s default reduces to `extract_continuation_fields`
-/// per line with no groups and `is_continuation_end` defaults to `false`,
-/// so this returns exactly what the old `last_continuation_line` helper did
-/// and leaves `parts.extra_fields`/`parts.field_groups` untouched.
+/// For a schema with no flat/`vec` continuation content declared, this
+/// reduces to exactly what the old `last_continuation_line` helper did,
+/// leaving `parts.extra_fields`/`parts.field_groups` untouched.
 fn apply_continuation_fields<'a>(
     parser: &dyn LogFormatParser,
     reader: &'a FileReader,
@@ -733,18 +728,15 @@ pub fn apply_continuation_correction(
 
 /// Removes continuation lines whose parent is effectively collapsed from
 /// `visible`. A parent `p`'s effective state is `default_collapsed XOR
-/// overridden_groups.contains(p)`, so `overridden_groups` acts as a
-/// per-parent override in either direction regardless of the global
-/// default — this is what lets the normal-mode `<`/`>` keys collapse or
-/// expand a single entry independent of whether `:collapse` has ever run.
-/// Parent lines (`cmap[i] == i`) are always kept, as are indices beyond
-/// `cmap`'s range (file grew after the map was built). Must run after
-/// `apply_continuation_correction` — it further restricts an
-/// already-correct filtered view, it doesn't re-derive filter matches.
+/// overridden_groups.contains(p)`, letting the normal-mode `<`/`>` keys
+/// collapse or expand a single entry regardless of the global default.
+/// Parent lines and indices beyond `cmap`'s range are always kept. Must
+/// run after `apply_continuation_correction`, which it only restricts
+/// further rather than re-deriving.
 ///
 /// Unlike `apply_continuation_correction`, this also applies to
-/// `VisibleLines::All`: collapsing continuation lines on an otherwise
-/// unfiltered file is the primary use case for `:collapse`.
+/// `VisibleLines::All`, since collapsing on an otherwise unfiltered file
+/// is the primary use case for `:collapse`.
 pub fn apply_collapse_correction(
     visible: &mut VisibleLines,
     cmap: &[usize],
@@ -2438,14 +2430,11 @@ impl TabState {
 
     /// Sets the tab's format (or clears it to `None`) and rebuilds the
     /// derived continuation/year maps to match, then re-scans active
-    /// filters against the new format.
-    ///
-    /// Without rebuilding these, manually switching schemas (`:schema
-    /// <name>` / `:schema none`) left the continuation map from whatever
-    /// format was previously active in place; filter visibility is gated
-    /// on it every scan, so a line that individually matches a filter
-    /// stayed hidden because its old structured "parent" line (under a
-    /// format the tab no longer uses) didn't match.
+    /// filters against the new format. Without this, switching schemas via
+    /// `:schema` left the old continuation map in place; since filter
+    /// visibility is gated on it, a line matching a filter could still
+    /// stay hidden because its old structured "parent" line no longer
+    /// matched under the new format.
     pub fn apply_format(&mut self, parser: Option<Arc<dyn LogFormatParser>>) {
         let (continuation_map, year_map) =
             crate::ingestion::format_detect::derive_format_structures(
@@ -2474,16 +2463,11 @@ impl TabState {
 
     /// Snapshots the just-recomputed `visible_indices` into
     /// `pre_collapse_visible` and applies the collapse mask on top, when
-    /// there's anything to collapse (`collapse_continuations` is on, or an
-    /// individual `<` override is active despite the default being
-    /// expanded). Otherwise clears `pre_collapse_visible` so later filter
-    /// refreshes can skip collapse work entirely — cheap, since
-    /// `visible_indices` is already correct in that case. Must run last in
-    /// every place that (re)computes `visible_indices` fresh from the
-    /// filter pipeline (both `refresh_visible_inner`'s exit points and the
-    /// async `advance_filter_computation` path), so `:collapse`/`:expand`
-    /// and `<`/`>` always have an accurate uncollapsed baseline to work
-    /// from.
+    /// there's anything to collapse. Otherwise clears `pre_collapse_visible`
+    /// so later filter refreshes can skip collapse work entirely. Must run
+    /// last in every place that (re)computes `visible_indices` fresh from
+    /// the filter pipeline, so `:collapse`/`:expand` and `<`/`>` always have
+    /// an accurate uncollapsed baseline.
     pub(crate) fn sync_collapse_mask(&mut self) {
         if !self.display.collapse_continuations && self.filter.overridden_groups.is_empty() {
             self.filter.pre_collapse_visible = None;
@@ -2520,23 +2504,16 @@ impl TabState {
         }
     }
 
-    /// Sets whether `parent` (a line with at least one continuation line)
-    /// is collapsed, independent of the global `collapse_continuations`
-    /// default — the entry point for the normal-mode `<`/`>` keys, which
-    /// must work whether or not `:collapse` has ever run. Lazily
-    /// establishes `pre_collapse_visible` the first time an override is
-    /// introduced while nothing was collapsed before (at that point
-    /// `visible_indices` is still the pristine baseline, per
-    /// `sync_collapse_mask`'s early-return case).
+    /// Sets whether `parent` is collapsed, independent of the global
+    /// `collapse_continuations` default — entry point for the normal-mode
+    /// `<`/`>` keys. Lazily establishes `pre_collapse_visible` the first
+    /// time an override is introduced while nothing was collapsed before.
     ///
-    /// Re-pins the cursor to `parent` afterward (parent lines are always
-    /// visible, per `apply_collapse_correction`) — without this, collapsing
-    /// an entry the cursor was sitting inside (e.g. on one of its now-hidden
-    /// continuation lines) would leave `scroll_offset` resolving to
-    /// whatever line slides into that screen position once the file
-    /// shrinks, silently retargeting the *next* `<`/`>` press at a
-    /// different, unrelated entry — from the user's perspective, `>` then
-    /// does nothing and the view looks permanently stuck collapsed.
+    /// Re-pins the cursor to `parent` afterward: without this, collapsing
+    /// an entry the cursor sat inside would leave `scroll_offset` resolving
+    /// to whatever line slides into that screen position once the file
+    /// shrinks, silently retargeting the next `<`/`>` press at an unrelated
+    /// entry — `>` would appear to do nothing.
     pub(crate) fn set_continuation_collapsed(&mut self, parent: usize, collapsed: bool) {
         if self.filter.pre_collapse_visible.is_none() {
             self.filter.pre_collapse_visible = Some(self.filter.visible_indices.clone());
@@ -3513,8 +3490,6 @@ mod tests {
         assert_eq!(tab.scroll.scroll_offset, 0);
     }
 
-    // ── show_mode_bar / show_borders ───────────────────────────────────
-
     #[tokio::test]
     async fn test_tabstate_show_mode_bar_default_true() {
         let tab = make_tab(&["line"]).await;
@@ -3628,7 +3603,6 @@ mod tests {
         );
     }
 
-    // ── date filter integration with refresh_visible ──────────────────
     // OR combination logic is unit-tested in date_filter::tests::matches_any.
     // These tests verify that refresh_visible correctly applies date filters.
 
@@ -4271,8 +4245,6 @@ mod tests {
         );
     }
 
-    // ── field filter OR semantics with text filters ───────────────────────────
-
     #[tokio::test]
     async fn test_field_include_or_with_text_include() {
         // Field include and text include should be OR: a line visible if EITHER matches.
@@ -4340,8 +4312,6 @@ mod tests {
         // Line 1: text Include, no field exclude match → visible.
         assert_eq!(tab.filter.visible_indices, VisibleLines::Filtered(vec![1]));
     }
-
-    // ── begin_filter_refresh ─────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_begin_filter_refresh_fast_path_no_filters() {
@@ -4826,8 +4796,6 @@ mod tests {
             VisibleLines::Filtered(vec![0, 2])
         );
     }
-
-    // ── Lazy level scan ──────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_next_error_position_finds_forward() {
@@ -5840,8 +5808,6 @@ mod tests {
         assert!(!index.values.get("level").unwrap_or(&vec![]).is_empty());
     }
 
-    // ── skip-parse optimisation ──────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_refresh_visible_skip_parse_for_neutral_with_text_include() {
         // text include + date filter: lines not matching the include are Neutral
@@ -5911,8 +5877,6 @@ mod tests {
         }
         assert_eq!(all_visible, vec![1]);
     }
-
-    // ── date-only fast path (parse_timestamp instead of parse_line) ──────────
 
     const CLF_IN: &str = r#"127.0.0.1 - - [10/Oct/2000:13:00:00 -0700] "GET /a HTTP/1.0" 200 100"#;
     const CLF_OUT: &str = r#"127.0.0.1 - - [10/Oct/2000:20:00:00 -0700] "GET /b HTTP/1.0" 200 200"#;
@@ -6373,8 +6337,6 @@ mod tests {
             b"",
         ));
     }
-
-    // ── filter_new_lines ─────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_filter_new_lines_no_filters_updates_all() {

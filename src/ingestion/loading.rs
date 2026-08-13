@@ -541,16 +541,13 @@ impl App {
     }
 
     /// Spawn extraction of just the files the user confirmed in the archive
-    /// picker popup. Reuses the same `pending_archive`/[`Self::poll_archive_extraction`]
-    /// machinery as [`Self::begin_archive_extraction`] — only the extraction
-    /// closure differs (selected files only, instead of everything).
-    /// Extracts every Space-ticked file (opened as its own tab, unchanged
-    /// from before) and, independently, every 'm'-marked file (merged into
-    /// one timestamp-sorted tab) — both in a single background task so
-    /// large archives don't block the UI thread twice. The two outcomes
-    /// are independent: a merge-marked file with an unrecognized format
-    /// only skips the merge (with a clear error), it never blocks the
-    /// ticked files from extracting and opening normally.
+    /// picker popup, reusing the same `pending_archive`/
+    /// [`Self::poll_archive_extraction`] machinery as
+    /// [`Self::begin_archive_extraction`]. Extracts every Space-ticked file
+    /// (its own tab) and every 'm'-marked file (merged into one tab) in a
+    /// single background task; the two outcomes are independent, so an
+    /// unrecognized merge format only skips the merge, never the ticked
+    /// files.
     pub async fn apply_archive_picker(
         &mut self,
         source_path: String,
@@ -1788,7 +1785,6 @@ mod tests {
         assert!(app.tabs[0].file_reader.line_count() > original_count);
     }
 
-    // ── tail mode: file-streaming tests ─────────────────────────────────────
     //
     // These tests simulate the file-watcher channel delivering new bytes (as the
     // real FileReader::spawn_file_watcher would) and assert that tail_mode
@@ -2209,16 +2205,12 @@ mod tests {
         );
     }
 
-    /// Regression test: `handle_open_files` (the directory/archive picker's
-    /// "open these ticked files as their own tabs" path) opens every file
-    /// first — each capturing its own `tab_idx` in `load_state.on_complete`
-    /// — and only removes the empty initial placeholder tab afterward, via
-    /// `remove_empty_placeholder`. Before this was fixed, that removal
-    /// shifted every later tab's real index without updating the `tab_idx`
-    /// already captured in its still-in-flight `load_state`, so a load
-    /// finishing after the removal wrote its result into whatever tab now
-    /// sat at its stale index — a different file's tab, or (once shifted
-    /// out of range) nowhere at all, silently dropping that file's load.
+    /// Regression test: `handle_open_files` opens every file first, each
+    /// capturing its own `tab_idx` in `load_state.on_complete`, then removes
+    /// the empty placeholder tab via `remove_empty_placeholder`. That
+    /// removal used to shift every later tab's real index without updating
+    /// the already-captured `tab_idx`, so a load finishing afterward wrote
+    /// its result into the wrong (or an out-of-range) tab.
     #[tokio::test]
     async fn test_remove_empty_placeholder_does_not_misroute_in_flight_loads() {
         let tmp_a = tempfile::NamedTempFile::new().unwrap();
@@ -2948,8 +2940,6 @@ mod tests {
         assert_eq!(app.tabs[0].next_warning_position(0), Some(2));
     }
 
-    // ── advance_filter_computation streaming ─────────────────────────────────
-
     fn make_filter_handle_with_chunks(
         chunks: Vec<FilterChunk>,
     ) -> (FilterHandle, tokio::sync::mpsc::Sender<FilterChunk>) {
@@ -3159,8 +3149,6 @@ mod tests {
             "visible_indices must be All when filtering is disabled"
         );
     }
-
-    // ── Stream retry ──────────────────────────────────────────────────────────
 
     fn make_dummy_connect_fn() -> ConnectFn {
         std::sync::Arc::new(|| Box::pin(async { Err("test".to_string()) }))
@@ -3391,8 +3379,6 @@ mod tests {
         assert_eq!(app.tabs[tab_idx].stream.retry.as_ref().unwrap().attempt, 1);
         assert!(app.tabs[tab_idx].stream.watch.is_none());
     }
-
-    // ── Journalctl JSON default hidden fields ─────────────────────────────────
 
     #[tokio::test]
     async fn test_journalctl_json_hidden_fields_applied_on_stdin() {

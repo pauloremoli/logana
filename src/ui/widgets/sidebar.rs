@@ -257,15 +257,12 @@ const MIN_GROUPS_SECTION_HEIGHT: usize = 8;
 
 /// Splits the sidebar's total inner content height into `(filters_height,
 /// groups_height)`, reserving at least one row for the filter list.
-/// `groups_height` includes one row for the Groups section's own "Groups
-/// [n]" label (mirroring the Filters title) on top of its group rows, and
+/// `groups_height` includes one row for the Groups section's own label and
 /// never drops below [`MIN_GROUPS_SECTION_HEIGHT`] — callers that want the
-/// section hidden entirely (e.g. the `:ui` visibility toggle off) must skip
-/// calling this and use `(inner_height, 0)` directly rather than passing
-/// `group_count: 0`. Shared by [`Sidebar::render`] and
-/// [`crate::ui::input_handler::InputHandler::hit_test_sidebar`] so hit-testing
-/// agrees with what was actually rendered — same discipline as
-/// [`compute_scroll_offset`].
+/// section hidden entirely must skip this and use `(inner_height, 0)`
+/// directly rather than passing `group_count: 0`. Shared by
+/// [`Sidebar::render`] and `hit_test_sidebar` so hit-testing agrees with
+/// what was rendered.
 pub(crate) fn split_sidebar_heights(inner_height: usize, group_count: usize) -> (usize, usize) {
     let desired = (group_count + 1).max(MIN_GROUPS_SECTION_HEIGHT);
     let groups_height = desired.min(inner_height.saturating_sub(1));
@@ -293,16 +290,11 @@ pub(crate) fn sidebar_inner_dims(area: Rect, show_borders: bool) -> (usize, usiz
 }
 
 /// Row offset (in wrapped display rows) to scroll the filter list by, given
-/// the viewport it was previously scrolled to (`prev_scroll`).
-///
-/// Scrolls just enough to bring the selected filter's rows into a viewport
-/// of `content_h` rows at wrap width `content_w` — if it's already fully
-/// visible at `prev_scroll`, the offset is left unchanged, so moving the
-/// selection within the current view never re-scrolls it.
-///
-/// Shared with [`crate::ui::input_handler::InputHandler::hit_test_sidebar`],
-/// which must replicate this exact scroll to map a click's screen row back
-/// to a filter index.
+/// the viewport it was previously scrolled to (`prev_scroll`). Scrolls just
+/// enough to bring the selected filter into a `content_h`-row viewport at
+/// wrap width `content_w`; already-visible selections leave the offset
+/// unchanged. `hit_test_sidebar` replicates this exact scroll to map a
+/// click's screen row back to a filter index.
 pub(crate) fn compute_scroll_offset(
     filters: &[FilterDef],
     selected: usize,

@@ -1054,8 +1054,6 @@ mod tests {
         }
     }
 
-    // ── quote_for_command unit tests ─────────────────────────────────────────
-
     #[test]
     fn test_quote_for_command_no_spaces() {
         assert_eq!(quote_for_command("hello"), "hello");
@@ -1339,8 +1337,6 @@ mod tests {
                 .contains(Modifier::REVERSED)
         );
     }
-
-    // ── Line navigation ──────────────────────────────────────────────────────
 
     async fn make_multi_tab(lines: &[&str]) -> TabState {
         let data = lines.join("\n").into_bytes();

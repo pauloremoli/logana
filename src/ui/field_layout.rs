@@ -124,16 +124,13 @@ pub fn effective_row_count(
     line_row_count(line_bytes, inner_width)
 }
 
-/// Flattens `field_groups` into `(indexed_key, bare_key, value)` triples, in
-/// declared-group, then-item, then-field order — e.g.
-/// `("operations.0.object_name", "operations.object_name", "txCarrier1")`.
-/// `indexed_key` is the exact dotted-index name used for lookup/rendering
-/// (`get_col`, explicit column lists); `bare_key` is the group-scoped name
-/// with no item index, used to hide a field across every item at once
-/// (mirrors how a bare `span.<key>` hides a span sub-field regardless of how
-/// many fields the span has). Shared by `get_col`'s dotted-group lookup and
-/// both branches of `apply_field_layout`. Empty when `groups` is empty —
-/// i.e. always empty for a schema without a `vec` group.
+/// Flattens `field_groups` into `(indexed_key, bare_key, value)` triples,
+/// e.g. `("operations.0.object_name", "operations.object_name",
+/// "txCarrier1")`. `indexed_key` is used for lookup/rendering; `bare_key`
+/// is the group-scoped name with no item index, used to hide a field
+/// across every item at once (like a bare `span.<key>`). Shared by
+/// `get_col`'s dotted-group lookup and both branches of
+/// `apply_field_layout`. Empty for a schema without a `vec` group.
 fn flatten_field_groups<'a>(
     groups: &'a [(&'static str, Vec<GroupItem<'a>>)],
 ) -> Vec<(String, String, &'a str)> {
@@ -395,19 +392,15 @@ fn render_template_segments(
     out
 }
 
-/// Whether `parser`'s own template reconstruction (see
-/// `render_template_segments`) applies for the current `field_layout`, and
-/// the reconstructed text if so. `None` means the generic column layout
-/// (`apply_field_layout`) applies instead — either because an explicit
-/// column *order* is set (a template can't represent an arbitrary reorder),
-/// or because `parser` has no template to reconstruct from at all (every
-/// non-custom-schema parser, and a `pattern`-based custom schema).
+/// Whether `parser`'s own template reconstruction applies for the current
+/// `field_layout`, and the reconstructed text if so. `None` means the
+/// generic column layout (`apply_field_layout`) applies instead — either
+/// an explicit column order is set (a template can't represent an
+/// arbitrary reorder), or `parser` has no template at all.
 ///
-/// This is the single source of truth for "does this line use its schema's
-/// own structure or the generic column layout" — both `populate_parse_cache`
-/// (what's drawn) and `render_line_text` (what Visual Char Mode's word
-/// motions and selection operate on) call this, so the two can never drift
-/// out of sync with each other.
+/// The single source of truth for "schema structure vs. generic column
+/// layout": both `populate_parse_cache` and `render_line_text` call this,
+/// so they can never drift out of sync.
 pub fn reconstructed_line_text(
     parser: &dyn LogFormatParser,
     parts: &DisplayParts<'_>,
@@ -442,10 +435,6 @@ pub fn render_line_text(
 mod tests {
     use super::*;
     use crate::parser::SpanInfo;
-
-    // -----------------------------------------------------------------------
-    // render_template_segments
-    // -----------------------------------------------------------------------
 
     fn acme_segments() -> Vec<TemplateSegment> {
         vec![
@@ -541,10 +530,6 @@ mod tests {
         assert_eq!(rendered, "INFO/StateChange: ok");
     }
 
-    // -----------------------------------------------------------------------
-    // line_row_count
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_line_row_count_zero_width() {
         assert_eq!(line_row_count(b"hello", 0), 1);
@@ -598,10 +583,6 @@ mod tests {
         assert_eq!(line_row_count(b"12345", 5), 1);
     }
 
-    // -----------------------------------------------------------------------
-    // count_wrapped_lines
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_count_wrapped_lines_empty() {
         assert_eq!(count_wrapped_lines("", 80), 1);
@@ -628,10 +609,6 @@ mod tests {
         // "ab cd" = 5 chars content, width 5 → fits in 1 line
         assert_eq!(count_wrapped_lines("ab cd", 5), 1);
     }
-
-    // -----------------------------------------------------------------------
-    // get_col
-    // -----------------------------------------------------------------------
 
     fn make_parts<'a>() -> DisplayParts<'a> {
         DisplayParts {
@@ -890,10 +867,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // default_cols
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_default_cols_all_fields() {
         let p = make_parts();
@@ -921,10 +894,6 @@ mod tests {
         assert_eq!(cols.len(), 1);
         assert_eq!(cols[0], "only message");
     }
-
-    // -----------------------------------------------------------------------
-    // apply_field_layout
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_apply_field_layout_default_no_hidden() {
@@ -972,10 +941,6 @@ mod tests {
         let cols = apply_field_layout(&p, &layout, &hidden, false, None);
         assert_eq!(cols.len(), 2); // level + message
     }
-
-    // -----------------------------------------------------------------------
-    // effective_row_count
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_effective_row_count_no_parser_uses_raw_bytes() {

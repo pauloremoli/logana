@@ -49,16 +49,12 @@ pub struct CustomLevelValues {
 }
 
 /// One line-matcher: `template` OR `pattern` (mutually exclusive), an
-/// optional field-role map, and an optional JSON-unpack flag. Used
-/// wherever a single line-matcher is needed: the header (element 0 of a
-/// `TemplateValue::Lines` array, or the whole `TemplateValue::Single` case
-/// via `CustomSchemaConfig::template`/`pattern`), a flat line inside a
-/// `template` array (`TemplateLine::Plain`), a group's `template`
-/// (`TemplateGroupConfig::template`), or a group's `fields[]` entry
-/// (`TemplateGroupConfig::fields`). At most one of `template`/`pattern` may
-/// be set (validated in `compile_matcher`). Deserializable from either a
-/// bare JSON string (shorthand for `{"template": "<string>"}`) or the full
-/// object form — see `deserialize_field_spec`.
+/// optional field-role map, and an optional JSON-unpack flag. Used wherever
+/// a single line-matcher is needed — the header, a flat `template` line, a
+/// group's `template`, or a group's `fields[]` entry. At most one of
+/// `template`/`pattern` may be set (validated in `compile_matcher`).
+/// Deserializable from a bare JSON string (shorthand for `{"template":
+/// "<string>"}`) or the full object form — see `deserialize_field_spec`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContinuationFieldSpec {

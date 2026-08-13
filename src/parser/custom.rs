@@ -829,16 +829,12 @@ impl LogFormatParser for CustomParser {
     }
 
     fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String> {
-        // A `template`-based schema has its own declared field order (see
-        // `TemplateSegment`/`resolve_segments`) — surface fields in that
-        // order so the Select Fields popup (and its "reset" default) matches
-        // what the schema describes, consistent with how the log panel
-        // already renders the line in template order (see log_panel.rs).
-        // `pattern`-based schemas have no such order to draw from, so they
-        // fall back to the canonical-slot order below. Either way, any
-        // `continuation.fields`/embedded-JSON names actually observed in
-        // `lines` are appended last (dynamic — a sample-dependent set, like
-        // JsonParser's extras), so they show up in the Select Fields popup.
+        // A `template`-based schema has its own declared field order, so
+        // fields surface in that order for the Select Fields popup, matching
+        // how the log panel renders the line. `pattern`-based schemas have
+        // no such order and fall back to the canonical-slot order below.
+        // Either way, any names actually observed in `lines` (continuation
+        // fields, embedded JSON) are appended last.
         if let Some(segments) = &self.template_segments {
             let mut seen = HashSet::new();
             let mut result: Vec<String> = segments
@@ -1506,8 +1502,6 @@ mod tests {
         assert!(names.contains(&"message".to_string()));
     }
 
-    // ── continuation field extraction ────────────────────────────────────
-
     use crate::config::{ContinuationFieldSpec, TemplateGroupConfig, TemplateLine, TemplateValue};
 
     /// Builds a `template` array: header line, each `fields` entry as a
@@ -1726,8 +1720,6 @@ mod tests {
         let names = parser.collect_field_names(&sample);
         assert_eq!(names, vec!["id".to_string(), "field1".to_string()]);
     }
-
-    // ── vec groups ───────────────────────────────────────────────────────
 
     fn plain_field_spec(template: &str) -> ContinuationFieldSpec {
         ContinuationFieldSpec {

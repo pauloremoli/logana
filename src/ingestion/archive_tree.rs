@@ -6,33 +6,20 @@ use std::sync::Arc;
 use crate::ingestion::archive::{decompress_to_temp, detect_archive_type, stem};
 use crate::ingestion::{ArchiveExtractionProgress, ArchiveType, ExtractedFile};
 
-/// Maximum total entries (across all nesting levels) a single listing pass
-/// will walk, to bound pathological/zip-bomb-style archives. Archives-
-/// within-archives are descended into with no nesting-depth limit of their
-/// own — this entry cap is what bounds a listing pass, regardless of how
-/// deeply nested the entries that hit it are.
-///
-/// Real-world archives (dozens of top-level zips each containing hundreds
-/// of entries, many of which are themselves further-nested zips of
-/// compressed logs) can easily total tens of thousands of entries once
-/// fully expanded. Once the shared budget runs out mid-listing, every
-/// *remaining* sibling of whichever container hit the cap — not just its
-/// own descendants — is silently swallowed into one generic "entry limit
-/// reached" marker (see `entry_budget_exhausted`), so a too-low cap can
-/// make specific nested files vanish from the listing entirely with no
-/// indication of where. 10,000 was hit by ordinary real-world archives of
-/// this shape; this is deliberately generous.
+/// Caps total entries walked across one listing pass (all nesting levels
+/// combined), to bound zip-bomb-style archives; there's no separate
+/// depth limit. When the cap is hit mid-listing, every *remaining* sibling
+/// of whichever container hit it — not just its descendants — is folded
+/// into one generic "entry limit reached" marker, so lowering this can
+/// make files vanish from the listing with no indication of where.
 pub const MAX_TOTAL_ENTRIES: usize = 250_000;
 /// Maximum cumulative bytes of streaming-source (TarGz/TarBz2/TarXz) entry
 /// content retained in memory during listing for reuse at extraction time.
 pub const MAX_CACHED_BYTES: u64 = 256 * 1024 * 1024;
-/// Deepest nesting level a listing pass recurses into automatically — depth
-/// 0 (the opened file's own entries) and depth 1 (one layer of nested-archive
-/// contents). A nested archive found any deeper becomes a [`NodeKind::LazyContainer`]
-/// placeholder instead of being eagerly decompressed and parsed: still fully
-/// reachable and lossless (unlike the old fixed recursion cap this replaced,
-/// which showed an [`NodeKind::UnreadableContainer`] dead end), just deferred
-/// until the user expands it.
+/// Deepest nesting level auto-expanded during listing (0 = the opened
+/// file's own entries, 1 = one layer of nested archives). Anything deeper
+/// becomes a lazy [`NodeKind::LazyContainer`] placeholder, expanded on
+/// demand via [`ArchiveTree::expand_lazy_node`] instead of eagerly parsed.
 pub const AUTO_EXPAND_DEPTH: usize = 1;
 
 #[derive(Debug, Clone, Copy)]
@@ -82,15 +69,12 @@ pub struct ArchiveNode {
     /// of its own: having no children yet already keeps it out of the row
     /// list until it's expanded.
     pub collapsed: bool,
-    /// True when `full_path` is a real, directly-openable filesystem path
-    /// rather than a path relative to some ancestor archive's decoded bytes
-    /// — every node a directory listing produces (plain files, subdirectory
-    /// containers, and archive files found inside the directory) is
-    /// `disk_path: true`; everything produced while parsing an archive's own
-    /// contents (including the contents of an archive discovered inside a
-    /// directory, once past that archive's own node) is `false`. See
-    /// [`resolve_node_bytes`], which branches on this to know whether to
-    /// read fresh from disk or decode from a parent's buffered bytes.
+    /// True when `full_path` is a real filesystem path rather than a path
+    /// relative to an ancestor archive's decoded bytes. Set for everything a
+    /// directory listing produces directly; false for anything produced
+    /// while parsing an archive's own contents. See [`resolve_node_bytes`],
+    /// which branches on this to decide whether to read from disk or decode
+    /// from a parent's buffered bytes.
     pub disk_path: bool,
 }
 
@@ -99,10 +83,8 @@ pub enum NodeKind {
     File,
     Container {
         children: Vec<NodeId>,
-        /// `None` for a plain directory container; `Some(t)` for an archive
-        /// container, whether nested inside another archive or discovered
-        /// as a file sitting inside a directory listing — both look
-        /// identical from here on.
+        /// `None` for a plain directory container; `Some` for an archive
+        /// container, whether nested or discovered inside a directory listing.
         archive_type: Option<ArchiveType>,
     },
     /// A nested archive found past [`AUTO_EXPAND_DEPTH`] whose contents
@@ -127,11 +109,9 @@ pub enum CheckState {
     Partial,
 }
 
-/// Selects which of `ArchiveNode`'s two independent per-file flags a
-/// tree-walking method operates on — lets `container_check_state`/
-/// `check_states`/`toggle_subtree` share one implementation each between
-/// `selected` (extraction) and `merge_marked` (merge) instead of being
-/// duplicated wholesale for the second flag.
+/// Selects which of `ArchiveNode`'s two per-file flags a tree-walking
+/// method operates on, so `check_state`/`toggle_subtree` share one
+/// implementation between `selected` and `merge_marked`.
 #[derive(Debug, Clone, Copy)]
 enum MarkField {
     Selected,
@@ -184,9 +164,8 @@ impl ArchiveTree {
         }
     }
 
-    /// Every `File` descendant of `id` (including `id` itself if it is a
-    /// `File`). `UnreadableContainer`/`LazyContainer` subtrees contribute no
-    /// files, since they have no known children to select.
+    /// Every `File` descendant of `id` (including `id` itself). Lazy/
+    /// unreadable subtrees contribute none, having no known children.
     fn descendant_files(&self, id: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
         self.collect_descendant_files(id, &mut out);
@@ -224,17 +203,10 @@ impl ArchiveTree {
         }
     }
 
-    /// Bulk equivalent of calling [`Self::check_state_for`] once per node —
-    /// for rendering a full row list, that naive approach re-walks each
-    /// container's descendants from scratch, so nested containers pay for
-    /// their shared descendants over and over (worst case `O(n * depth)`
-    /// for a chain of containers each wrapping the same underlying files).
-    /// This computes every node's state in a single `O(n)` pass instead, by
-    /// relying on the arena invariant that a node's id is always smaller
-    /// than any of its descendants' ids (parents are pushed before their
-    /// children while listing) — iterating ids from highest to lowest is
-    /// therefore a valid bottom-up (children-before-parents) order without
-    /// needing recursion.
+    /// Bulk equivalent of calling [`Self::check_state_for`] once per node,
+    /// but `O(n)` total instead of `O(n * depth)`: relies on the arena
+    /// invariant that a node's id is always smaller than its descendants',
+    /// so iterating ids highest-to-lowest is a valid bottom-up pass.
     fn check_states_for(&self, field: MarkField) -> Vec<CheckState> {
         let mut total_files = vec![0usize; self.nodes.len()];
         let mut set_files = vec![0usize; self.nodes.len()];
@@ -270,11 +242,10 @@ impl ArchiveTree {
             .collect()
     }
 
-    /// Toggling a `File` row flips just that node. Toggling a `Container`
-    /// row is a "select all in this subtree" shortcut: if every descendant
-    /// file is already set, unset them all; otherwise set them all.
-    /// `LazyContainer`/`UnreadableContainer` rows have nothing to toggle —
-    /// a lazy one must be expanded first before its files can be selected.
+    /// Toggling a `File` flips just that node. Toggling a `Container` is a
+    /// "select all in this subtree" shortcut: if every descendant file is
+    /// already set, unset them all; otherwise set them all. Lazy/unreadable
+    /// nodes have nothing to toggle.
     fn toggle_subtree_for(&mut self, id: NodeId, field: MarkField) {
         match &self.nodes[id].kind {
             NodeKind::File => {
@@ -291,12 +262,10 @@ impl ArchiveTree {
         }
     }
 
-    /// Unconditionally marks every file in `id`'s subtree (or `id` itself,
-    /// if it's a `File`) — unlike [`Self::toggle_subtree_for`], this never
-    /// flips an already-set file back off, since it's used to bulk-select
-    /// every row matching a search query in one pass, where "already
-    /// selected from an earlier match" must stay selected rather than
-    /// being toggled off by a later, unrelated match sharing a container.
+    /// Unconditionally marks every file in `id`'s subtree. Unlike
+    /// [`Self::toggle_subtree_for`], never flips an already-set file back
+    /// off — used to bulk-select every row matching a search query without
+    /// a later match undoing an earlier one that shares a container.
     fn set_subtree_for(&mut self, id: NodeId, field: MarkField) {
         match &self.nodes[id].kind {
             NodeKind::File => field.set(&mut self.nodes[id], true),
@@ -353,14 +322,12 @@ impl ArchiveTree {
             .any(|n| matches!(n.kind, NodeKind::File) && n.merge_marked)
     }
 
-    /// Parses `bytes` (the lazy node's own raw archive bytes, fetched via
-    /// [`resolve_node_bytes`]) into real children, turning `node_id` from a
-    /// `LazyContainer` into a `Container` — exactly what listing would have
-    /// done for it eagerly, had it not been deferred past `AUTO_EXPAND_DEPTH`.
-    /// Falls back to a plain `File` if `bytes` doesn't actually parse as the
-    /// claimed archive type (mirrors the eager path's "named like an archive
-    /// but isn't one" fallback). A no-op if `node_id` isn't currently a
-    /// `LazyContainer` (a stale/duplicate expand request).
+    /// Parses `bytes` (fetched via [`resolve_node_bytes`]) into real
+    /// children, turning `node_id` from a `LazyContainer` into a
+    /// `Container` — what eager listing would have done had it not been
+    /// deferred. Falls back to `File` if `bytes` doesn't actually parse.
+    /// A no-op if `node_id` isn't currently a `LazyContainer` (a stale
+    /// expand request).
     pub fn expand_lazy_node(&mut self, node_id: NodeId, bytes: Vec<u8>) {
         let (archive_type, depth) = match &self.nodes[node_id].kind {
             NodeKind::LazyContainer { archive_type } => {
@@ -385,11 +352,9 @@ impl ArchiveTree {
         };
     }
 
-    /// Marks `node_id` as failed to even read (as opposed to
-    /// [`Self::expand_lazy_node`]'s parse-failure fallback to `File`) — used
-    /// when the background fetch behind a manual expand can't get the node's
-    /// bytes at all, mirroring the eager listing path's own read-failure
-    /// handling.
+    /// Marks `node_id` as failed to even read, as opposed to
+    /// [`Self::expand_lazy_node`]'s parse-failure fallback to `File` — used
+    /// when a manual expand's background fetch can't get the node's bytes.
     pub fn mark_unreadable(&mut self, node_id: NodeId, error: String) {
         self.nodes[node_id].kind = NodeKind::UnreadableContainer { error };
     }
@@ -404,10 +369,9 @@ impl ArchiveTree {
     }
 }
 
-/// Returns true for archive types that contain multiple independently
-/// selectable entries — only these trigger recursion when found nested
-/// inside another archive. A lone `.gz`/`.bz2`/`.xz` entry wraps exactly one
-/// file, so it's shown as an ordinary leaf rather than an expandable node.
+/// True for archive types with multiple independently selectable entries;
+/// a lone `.gz`/`.bz2`/`.xz` entry wraps exactly one file and is shown as
+/// an ordinary leaf instead.
 fn is_multi_entry_archive(t: &ArchiveType) -> bool {
     matches!(
         t,
@@ -427,14 +391,10 @@ fn basename(full_path: &str) -> String {
         .to_string()
 }
 
-/// Reserves `nodes[id]` as a `Container` with no children yet — the caller
-/// fills in `children`/`archive_type` (or replaces the whole `kind` with
-/// `UnreadableContainer`) once recursion into it finishes. Needed because a
-/// node's `id` must equal its final index in `nodes`, but its children (with
-/// `parent: Some(id)`) are appended *after* this reservation. `disk_path` is
-/// true for a plain directory container or an archive file discovered inside
-/// a directory (both have a real path in `full_path`), false for an archive
-/// nested inside another archive.
+/// Reserves `nodes[id]` as a `Container` with no children yet; the caller
+/// fills in `children`/`archive_type` once recursion into it finishes.
+/// Needed because a node's `id` must equal its final index in `nodes`,
+/// but its children are appended *after* this reservation.
 fn placeholder_container_node(
     id: NodeId,
     parent: Option<NodeId>,
@@ -553,10 +513,9 @@ fn push_truncated_marker(
     id
 }
 
-/// Mutable bookkeeping threaded through a whole listing pass: how many
-/// entries have been walked (against [`ListLimits::max_entries`]) and how
-/// many bytes have been retained in [`ArchiveNode::cached_bytes`] so far
-/// (against [`ListLimits::max_cached_bytes`]).
+/// Mutable bookkeeping threaded through a listing pass: entries walked so
+/// far (against `max_entries`) and bytes cached so far (against
+/// `max_cached_bytes`).
 struct ListingState {
     entry_count: usize,
     cached_bytes_used: u64,
@@ -593,25 +552,19 @@ pub fn list_archive_tree(path: &str) -> Result<ArchiveTree, String> {
     list_archive_tree_with_limits(path, &ListLimits::default())
 }
 
-/// Builds an `ArchiveTree` from a directory's own contents — reused so
-/// opening a directory gets the same tree/checkbox/merge-mark picker UI as
-/// opening an archive, instead of a separate "open everything or nothing"
-/// prompt. See [`list_directory_tree_with_limits`] for the recursive shape.
+/// Builds an `ArchiveTree` from a directory's own contents, so opening a
+/// directory gets the same tree/checkbox/merge-mark picker UI as opening
+/// an archive. See [`list_directory_tree_with_limits`] for the recursive shape.
 pub fn list_directory_tree(dir: &str) -> Result<ArchiveTree, String> {
     list_directory_tree_with_limits(dir, &ListLimits::default())
 }
 
 /// Builds an `ArchiveTree` from a directory's contents, recursively:
-/// subdirectories become plain `Container` nodes (nesting depth is
-/// unbounded — only archive-within-archive nesting is capped by
-/// `AUTO_EXPAND_DEPTH`, since that's the expensive/pathological case this
-/// tree building already guards against for archives), and a file whose
-/// name matches a multi-entry archive format gets its own contents listed
-/// inline too, exactly as if it had been `:open`ed on its own (via
-/// [`list_top_level`], nesting depth reset to 0), rather than shown as an
-/// inert file. Everything else is a plain `disk_path: true` `File` —
-/// `full_path` is always a real, directly-openable on-disk path (see
-/// [`ArchiveNode::disk_path`]).
+/// subdirectories become plain `Container` nodes (nesting depth here is
+/// unbounded; only archive-within-archive nesting is capped by
+/// `AUTO_EXPAND_DEPTH`), and a file matching a multi-entry archive format
+/// gets its contents listed inline too, as if `:open`ed on its own.
+/// Everything else is a plain `disk_path: true` `File`.
 pub fn list_directory_tree_with_limits(
     dir: &str,
     limits: &ListLimits,
@@ -625,10 +578,9 @@ pub fn list_directory_tree_with_limits(
     Ok(ArchiveTree { nodes, roots })
 }
 
-/// The basename of a real filesystem path — unlike [`basename`] (which
-/// splits on a literal `/`, correct for archive-internal entry paths), this
-/// goes through `std::path::Path` so it's meaningful for actual on-disk
-/// paths.
+/// The basename of a real filesystem path — unlike [`basename`] (a literal
+/// `/`-split, correct for archive-internal paths), this goes through
+/// `std::path::Path` for actual on-disk paths.
 fn path_basename(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
@@ -638,13 +590,11 @@ fn path_basename(path: &str) -> String {
 }
 
 /// Recursively lists `dir`'s entries into `nodes`, anchored at `parent`/
-/// `depth` (tree depth, used for indentation — independent of the
-/// archive-nesting `depth` `list_top_level` tracks, which always resets to 0
-/// for a freshly-discovered archive file regardless of how deep it sits in
-/// the directory tree). Subdirectories are listed before files, both sorted
-/// by name (see `utils::filesystem::list_dir_entries`). Shares `state` with
-/// any archive discovered along the way, so a pathological directory tree is
-/// bounded by the same [`ListLimits::max_entries`] budget.
+/// `depth` (tree depth for indentation, independent of the archive-nesting
+/// depth `list_top_level` tracks). Subdirectories are listed before files,
+/// both sorted by name. Shares `state` with any archive discovered along
+/// the way, so a pathological directory tree is bounded by the same
+/// [`ListLimits::max_entries`] budget.
 fn list_directory_entries(
     dir: &str,
     parent: Option<NodeId>,
@@ -703,11 +653,8 @@ fn list_directory_entries(
                             children: archive_children,
                             archive_type: Some(archive_type),
                         },
-                        // Named like an archive but didn't actually parse as
-                        // one (or couldn't even be opened) — fall back to a
-                        // plain, selectable file rather than a dead-end row,
-                        // mirroring the nested-archive fallback in
-                        // `list_zip_entries`/`list_tar_entries`.
+                        // Named like an archive but didn't parse as one — fall
+                        // back to a plain, selectable file, not a dead end.
                         Err(_) => NodeKind::File,
                     };
                 children.push(id);
@@ -736,12 +683,10 @@ pub fn list_archive_tree_with_limits(
     Ok(ArchiveTree { nodes, roots })
 }
 
-/// Parses `path`'s own top-level entries into `nodes`, anchored at `parent`/
-/// `depth` — `(None, 0)` for a freestanding `:open some.zip`, or an
-/// already-reserved container id/depth-0 when this archive was instead
-/// discovered as a file sitting inside a directory listing (see
-/// `list_directory_entries`), so it gets the exact same
-/// `AUTO_EXPAND_DEPTH`/`LazyContainer` treatment either way.
+/// Parses `path`'s own top-level entries into `nodes`, anchored at
+/// `parent`/`depth` — `(None, 0)` for a freestanding `:open some.zip`, or
+/// an already-reserved container id/depth-0 when discovered inside a
+/// directory listing, so both get the same `AUTO_EXPAND_DEPTH` treatment.
 fn list_top_level(
     path: &str,
     archive_type: &ArchiveType,
@@ -803,8 +748,7 @@ fn list_top_level(
 }
 
 /// Lists entries of a nested archive whose full bytes have already been
-/// buffered (`buf`) — used for anything found *inside* another archive,
-/// regardless of what format the outer archive was.
+/// buffered (`buf`) — used for anything found inside another archive.
 fn list_nested(
     archive_type: &ArchiveType,
     buf: Vec<u8>,
@@ -874,9 +818,8 @@ fn list_zip_entries<R: Read + Seek>(
         }
         let name = basename(&full_path);
 
-        // Zip supports cheap by-index re-reads, so nothing here is ever
-        // cached for reuse at extraction time (unlike the streaming tar
-        // formats handled in `list_tar_entries`).
+        // Zip supports cheap by-index re-reads, so nothing here is cached
+        // (unlike the streaming tar formats in `list_tar_entries`).
         match detect_archive_type(&name).filter(is_multi_entry_archive) {
             Some(nested_type) if depth < state.limits.auto_expand_depth => {
                 let mut buf = Vec::new();
@@ -898,9 +841,8 @@ fn list_zip_entries<R: Read + Seek>(
                                     children: nested_children,
                                     archive_type: Some(nested_type),
                                 },
-                                // Named like an archive but didn't actually parse as one
-                                // (garbage bytes, or an empty placeholder file) — fall back
-                                // to a plain, selectable file rather than a dead-end row.
+                                // Named like an archive but didn't parse as one — fall
+                                // back to a plain, selectable file, not a dead end.
                                 Err(_) => NodeKind::File,
                             };
                     }
@@ -908,10 +850,9 @@ fn list_zip_entries<R: Read + Seek>(
                 }
                 children.push(id);
             }
-            // Past the auto-expand depth — deferred rather than eagerly
-            // decompressed. Zip's cheap by-index re-reads mean the entry's
-            // bytes don't even need to be read here; `expand_lazy_node` reads
-            // them later, on demand, via `resolve_node_bytes`.
+            // Past the auto-expand depth — deferred. Zip's cheap by-index
+            // re-reads mean the bytes don't need to be read here;
+            // `expand_lazy_node` reads them later via `resolve_node_bytes`.
             Some(nested_type) => {
                 let id = nodes.len();
                 state.entry_count += 1;
@@ -937,10 +878,9 @@ fn list_zip_entries<R: Read + Seek>(
 }
 
 /// Lists entries of a tar stream. `should_cache` is true only for the
-/// streaming formats (TarGz/TarBz2/TarXz) where a second listing/extraction
-/// pass would mean decompressing the whole stream again from the start —
-/// there, every entry's bytes are read once here and retained (budget
-/// permitting) on the node for extraction to reuse directly.
+/// streaming formats (TarGz/TarBz2/TarXz), where a second pass would mean
+/// decompressing from the start — there, entry bytes are cached (budget
+/// permitting) for extraction to reuse directly.
 fn list_tar_entries<R: Read>(
     reader: R,
     parent: Option<NodeId>,
@@ -992,9 +932,8 @@ fn list_tar_entries<R: Read>(
                                     children: nested_children,
                                     archive_type: Some(nested_type),
                                 },
-                                // Named like an archive but didn't actually parse as one
-                                // (garbage bytes, or an empty placeholder file) — fall back
-                                // to a plain, selectable file rather than a dead-end row.
+                                // Named like an archive but didn't parse as one — fall
+                                // back to a plain, selectable file, not a dead end.
                                 Err(_) => NodeKind::File,
                             };
                     }
@@ -1003,11 +942,9 @@ fn list_tar_entries<R: Read>(
                 children.push(id);
             }
             // Past the auto-expand depth. Unlike zip, a tar stream is
-            // sequential — the entry's bytes must still be consumed to reach
-            // whatever follows it — but the recursive parse into its
-            // contents is skipped, deferred to `expand_lazy_node`. Cached
-            // (budget permitting) so a later expand doesn't need to
-            // re-decompress the outer stream from scratch.
+            // sequential, so the bytes must still be consumed here even
+            // though parsing them is deferred to `expand_lazy_node`.
+            // Cached (budget permitting) so expand needn't re-decompress.
             Some(nested_type) => {
                 let mut buf = Vec::new();
                 let read_result = entry.read_to_end(&mut buf).map_err(|e| e.to_string());
@@ -1044,13 +981,11 @@ fn list_tar_entries<R: Read>(
     Ok(children)
 }
 
-/// Extracts each of `ids` (assumed to be `File` nodes) to its own temp file,
-/// in order, reporting progress as it goes. Shared by [`extract_by_flag`]
-/// (which resolves `ids` from a whole tree's `selected`/`merge_marked`
-/// flags) and the directory picker's own apply path (`ui::input`), which
-/// needs to extract only the subset of selected/merge-marked files that live
-/// inside a directory-discovered archive — everything else it opens/copies
-/// directly since `full_path` is already a real disk file for those.
+/// Extracts each of `ids` (`File` nodes) to its own temp file, in order,
+/// reporting progress as it goes. Shared by [`extract_by_flag`] and the
+/// directory picker's apply path, which only needs to extract the subset
+/// of selected/merge-marked files living inside a directory-discovered
+/// archive — everything else is already a real disk file.
 pub(crate) fn extract_ids(
     path: &str,
     tree: &ArchiveTree,
@@ -1100,10 +1035,9 @@ pub fn extract_selected(
 }
 
 /// The display labels every merge-marked file will extract to — same
-/// disambiguation `extract_and_detect_merge_marked` produces, but computed
-/// from the tree alone (no reading/decompressing), so the destination
-/// merged tab can be created and titled immediately, before the slow read
-/// phase for big files has produced anything.
+/// disambiguation as `extract_and_detect_merge_marked`, but computed from
+/// the tree alone, so the destination tab can be titled immediately,
+/// before the slow read phase produces anything.
 pub fn merge_marked_labels(tree: &ArchiveTree) -> Vec<String> {
     let mut used_names: HashMap<String, usize> = HashMap::new();
     tree.nodes
@@ -1114,26 +1048,23 @@ pub fn merge_marked_labels(tree: &ArchiveTree) -> Vec<String> {
 }
 
 /// A merge-marked file's extracted, format-detected form — ready to feed
-/// directly into building a merged tab without needing its own `TabState`/
-/// `LogManager`/DB row (only the final merged tab needs one of those).
+/// into building a merged tab without its own `TabState`/`LogManager`/DB row.
 pub struct MergeMarkedSource {
     /// Same disambiguated display name `extract_selected` produces.
     pub label: String,
     pub reader: crate::ingestion::FileReader,
     pub detected: crate::ingestion::format_detect::DetectedFormat,
     /// Owns the on-disk temp copy `reader` was built from, so the merged
-    /// tab this source feeds into is self-contained — it never needs to
-    /// re-open the original archive entry or directory file. Dropping it
-    /// deletes the temp copy, so the merged tab that ends up owning this
-    /// (see `TabState::merge_source_temps`) must outlive it.
+    /// tab is self-contained and never re-opens the original entry.
+    /// Dropping it deletes the temp copy, so the owning tab (see
+    /// `TabState::merge_source_temps`) must outlive it.
     pub temp_file: tempfile::NamedTempFile,
 }
 
-/// Extracts every `merge_marked` file in `tree`, exactly like
-/// `extract_selected` extracts `selected` ones, but additionally loads each
-/// extracted file into a `FileReader` and runs format detection on it —
-/// letting the caller decide, before building any tab, whether every
-/// merge-marked file's format was recognized.
+/// Extracts every `merge_marked` file in `tree`, like `extract_selected`
+/// does for `selected` ones, but also loads each into a `FileReader` and
+/// runs format detection, letting the caller check recognition before
+/// building any tab.
 pub fn extract_and_detect_merge_marked(
     path: &str,
     tree: &ArchiveTree,
@@ -1157,11 +1088,10 @@ pub fn extract_and_detect_merge_marked(
         .collect())
 }
 
-/// A selected file's display name: its basename (with any lone-compression
-/// suffix stripped, see [`display_name_for_extraction`]), or — only once a
-/// later selected file collides with an earlier one's basename — the
-/// basename suffixed with its immediate containing archive's name, to keep
-/// the common case (no collisions) free of visual noise.
+/// A selected file's display name: its basename (compression suffix
+/// stripped, see [`display_name_for_extraction`]), or — only once a later
+/// file collides with an earlier basename — the basename suffixed with
+/// its containing archive's name, keeping the no-collision case clean.
 fn disambiguated_name(
     tree: &ArchiveTree,
     node_id: NodeId,
@@ -1182,10 +1112,8 @@ fn disambiguated_name(
 
 /// The name to show for an extracted file: for a nested lone-compressed
 /// entry (e.g. "app.log.gz"), the compression suffix is stripped since
-/// [`resolve_node_bytes`] already decompresses it — the extracted content is
-/// the same as if the entry had never been compressed. Any other name
-/// (including root-level entries, already stripped during listing, and
-/// entries merely named like a multi-entry archive) is returned unchanged.
+/// [`resolve_node_bytes`] already decompresses it. Any other name is
+/// returned unchanged.
 fn display_name_for_extraction(name: &str) -> String {
     match detect_archive_type(name) {
         Some(ArchiveType::Gz | ArchiveType::Bz2 | ArchiveType::Xz) => stem(name),
@@ -1193,14 +1121,11 @@ fn display_name_for_extraction(name: &str) -> String {
     }
 }
 
-/// Resolves a node's own *final* bytes — decompressed, if it's a nested lone
-/// Gz/Bz2/Xz entry (see [`decompress_if_lone_compressed`]) — as stored
-/// inside its immediate parent: via `cached_bytes` when available, otherwise
-/// by walking down from the root, re-opening/re-decoding one archive layer
-/// at a time. Also used to fetch a `LazyContainer`'s own raw archive bytes
-/// ahead of [`ArchiveTree::expand_lazy_node`] — for a multi-entry archive
-/// name, `decompress_if_lone_compressed` is a no-op, so this returns exactly
-/// the nested archive's own bytes.
+/// Resolves a node's own final bytes — decompressed if it's a nested lone
+/// Gz/Bz2/Xz entry (see [`decompress_if_lone_compressed`]) — via
+/// `cached_bytes` when available, otherwise by walking down from the root,
+/// re-decoding one archive layer at a time. Also used to fetch a
+/// `LazyContainer`'s raw bytes ahead of [`ArchiveTree::expand_lazy_node`].
 pub(crate) fn resolve_node_bytes(
     tree: &ArchiveTree,
     node_id: NodeId,
@@ -1210,11 +1135,10 @@ pub(crate) fn resolve_node_bytes(
     if let Some(cached) = &node.cached_bytes {
         return decompress_if_lone_compressed(&node.name, (**cached).clone());
     }
-    // A real, directly-openable path — either a plain file/subdirectory from
-    // a directory listing, or an archive discovered inside one (its own raw
-    // bytes, which the `Some(parent_id)` branch below then decodes an entry
-    // out of for anything nested underneath it). No `path`/decompression
-    // needed, unlike the archive-picker `None` case below.
+    // A real, directly-openable path — a plain file/subdirectory, or an
+    // archive discovered inside one (the `Some(parent_id)` branch below
+    // then decodes entries out of it). No decompression needed here,
+    // unlike the archive-picker `None` case below.
     if node.disk_path {
         return std::fs::read(&node.full_path).map_err(|e| e.to_string());
     }
@@ -1240,14 +1164,11 @@ pub(crate) fn resolve_node_bytes(
     }
 }
 
-/// If `name` indicates a single-file compressed format (Gz/Bz2/Xz) — the
-/// shape `list_zip_entries`/`list_tar_entries` leave as a plain `File` leaf
-/// rather than expanding into a `Container`, since it wraps exactly one file
-/// — decompresses `raw` to that file's actual content. Root-level entries of
-/// this shape are already decompressed by [`resolve_root_entry_bytes`]
-/// before reaching here, so this only ever fires for nested entries. Any
-/// other name (including one merely *named* like a multi-entry archive that
-/// failed to parse as one during listing) is returned unchanged.
+/// If `name` indicates a single-file compressed format (Gz/Bz2/Xz),
+/// decompresses `raw` to that file's actual content. Root-level entries of
+/// this shape are already decompressed by [`resolve_root_entry_bytes`], so
+/// this only ever fires for nested entries. Any other name is returned
+/// unchanged.
 fn decompress_if_lone_compressed(name: &str, raw: Vec<u8>) -> Result<Vec<u8>, String> {
     match detect_archive_type(name) {
         Some(ArchiveType::Gz) => read_to_end(flate2::read::GzDecoder::new(Cursor::new(raw))),
@@ -1257,13 +1178,11 @@ fn decompress_if_lone_compressed(name: &str, raw: Vec<u8>) -> Result<Vec<u8>, St
     }
 }
 
-/// Resolves `full_path`'s bytes from the top-level archive at `path`. For a
-/// multi-entry container (Zip/Tar/...), that entry may itself be a lone
-/// Gz/Bz2/Xz-compressed file (see [`decompress_if_lone_compressed`]) — e.g.
-/// `path` is a `.zip` whose sole top-level entry is `app.log.gz` — so the
-/// raw entry bytes get the same follow-up decompression check applied. For a
-/// lone-compressed `path` itself, `full_path` was already stripped of its
-/// compression suffix by `list_top_level`, so the check is a harmless no-op.
+/// Resolves `full_path`'s bytes from the top-level archive at `path`. A
+/// multi-entry container's entry may itself be a lone Gz/Bz2/Xz-compressed
+/// file (e.g. a `.zip` whose sole entry is `app.log.gz`), so the raw bytes
+/// get the same decompression check applied (see
+/// [`decompress_if_lone_compressed`]; a no-op for other shapes).
 fn resolve_root_entry_bytes(path: &str, full_path: &str) -> Result<Vec<u8>, String> {
     let archive_type = detect_archive_type(path)
         .ok_or_else(|| format!("'{}' is not a recognised archive format", path))?;
@@ -1790,11 +1709,9 @@ mod tests {
 
     #[test]
     fn test_corrupt_nested_archive_falls_back_to_plain_file() {
-        // An entry named like an archive but whose content doesn't actually parse as
-        // one (garbage bytes, or an empty/placeholder file some log-packaging script
-        // accidentally created) must still be a selectable, extractable File — not a
-        // dead-end row nobody can toggle. Only genuine I/O failures (can't even read
-        // the entry's bytes) or policy limits (depth/entry caps) become UnreadableContainer.
+        // An entry named like an archive but whose content doesn't actually
+        // parse as one must still be a selectable File, not a dead end.
+        // Only genuine I/O failures or policy limits become UnreadableContainer.
         let outer_tmp = make_zip(&[
             ("bad.zip", b"this is not a valid zip file".as_slice()),
             ("empty.tar.gz", b"".as_slice()),
@@ -1843,12 +1760,10 @@ mod tests {
 
     #[test]
     fn test_deeply_nested_archives_become_lazy_past_auto_expand_depth_not_truncated() {
-        // 25 levels of zip-in-zip nesting. Under the default `auto_expand_depth`
-        // (1), listing stops eagerly recursing after depth 0/1 — but unlike the
-        // old fixed recursion cap this replaced, nothing deeper is lost or
-        // shown as an error: it's simply not read yet (`LazyContainer`),
-        // reachable on demand via `expand_lazy_node` (see the dedicated
-        // `test_expand_lazy_node_*` tests below).
+        // 25 levels of zip-in-zip nesting. Under the default auto_expand_depth
+        // (1), listing stops eagerly recursing after depth 0/1, but nothing
+        // deeper is lost — it's just `LazyContainer`, reachable via
+        // `expand_lazy_node` (see `test_expand_lazy_node_*` below).
         fn wrap_in_zip(entry_name: &str, bytes: Vec<u8>) -> Vec<u8> {
             let tmp = make_zip(&[(entry_name, bytes.as_slice())]);
             std::fs::read(tmp.path()).unwrap()
@@ -1901,12 +1816,10 @@ mod tests {
     #[test]
     fn test_lazy_zip_entry_content_is_never_read_at_listing_time() {
         // A depth-1 entry named like a zip but containing garbage bytes: if
-        // it had been eagerly read+parsed (as it would be at depth 0), the
-        // "named like an archive but isn't one" fallback would turn it into
-        // a plain `File`. It staying `LazyContainer` after listing is the
-        // proof its bytes were never even opened yet — the actual "limit
-        // automatic decompression" win for zip (which supports free by-index
-        // re-reads, so nothing needs to be pre-buffered for later expansion).
+        // eagerly parsed (as at depth 0), the fallback would turn it into a
+        // plain `File`. Staying `LazyContainer` proves its bytes were never
+        // opened — zip's free by-index re-reads mean nothing needs
+        // pre-buffering for later expansion.
         let middle = make_zip(&[("archive2.zip", b"not a valid zip".as_slice())]);
         let middle_bytes = std::fs::read(middle.path()).unwrap();
         let outer_tmp = make_zip(&[("archive1.zip", middle_bytes.as_slice())]);
@@ -1927,10 +1840,9 @@ mod tests {
     #[test]
     fn test_lazy_tar_entry_still_consumes_stream_but_does_not_recurse() {
         // Unlike zip, a tar stream is sequential: a lazy entry's bytes must
-        // still be consumed to reach whatever follows it in the same
-        // stream. This proves the sibling *after* a lazy entry is still
-        // discovered (stream position advanced correctly), while the lazy
-        // entry itself doesn't get its own contents recursively parsed.
+        // still be consumed to reach what follows. This proves the sibling
+        // after it is still discovered, while the lazy entry itself isn't
+        // recursively parsed.
         let middle = make_tar(&[("archive2.tar", b"nested content".as_slice())]);
         let middle_bytes = std::fs::read(middle.path()).unwrap();
         let outer_tmp = make_tar(&[
@@ -2115,16 +2027,12 @@ mod tests {
 
     #[test]
     fn test_entry_budget_exhausted_by_earlier_sibling_truncates_a_later_sibling_entirely() {
-        // A large "big_sibling.zip" is listed first and alone consumes the
-        // whole (small, test-only) entry budget. "target.zip" — a LATER
-        // sibling in the same outer zip — never even gets its own node:
-        // the outer zip's loop hits the exhausted-budget check on its very
-        // next iteration and swallows every remaining sibling into one
-        // generic truncation marker. This is the exact mechanism behind a
-        // reported real-world case: a large nested archive (tens of
-        // thousands of entries total) silently dropped a `.xz` file nested
-        // a few levels down, once an earlier-listed sibling used up the
-        // (too small, at the time — see `MAX_TOTAL_ENTRIES`) shared budget.
+        // "big_sibling.zip" is listed first and alone consumes the whole
+        // (small, test-only) entry budget, so "target.zip" — a later sibling
+        // — never gets its own node: the outer loop hits the exhausted-budget
+        // check and swallows every remaining sibling into one truncation
+        // marker. Mirrors a real-world case where a `.xz` file nested a few
+        // levels down silently vanished this way.
         let big_entries: Vec<(String, Vec<u8>)> = (0..10)
             .map(|i| (format!("f{i}.log"), b"x".to_vec()))
             .collect();
@@ -2197,10 +2105,8 @@ mod tests {
 
     #[test]
     fn test_default_entry_budget_is_generous_enough_for_large_real_world_archives() {
-        // Locks in the raised cap (see `MAX_TOTAL_ENTRIES`'s doc comment)
-        // so a future accidental revert back toward the old 10,000 doesn't
-        // silently reintroduce the "later sibling's contents vanish"
-        // truncation for realistically large nested archives.
+        // Locks in the raised cap (see `MAX_TOTAL_ENTRIES`) so an accidental
+        // revert doesn't silently reintroduce the vanishing-sibling truncation.
         assert_eq!(ListLimits::default().max_entries, 250_000);
     }
 
@@ -2741,10 +2647,9 @@ mod tests {
 
     #[test]
     fn test_extract_selected_two_levels_deep_uses_cached_bytes() {
-        // TarGz caches each of its own entries' raw bytes during listing —
-        // for a nested zip entry, that means the *container's* bytes are
-        // cached (the leaf inside it is then resolved from those cached
-        // bytes via a cheap zip lookup, not a second tar.gz decompression).
+        // TarGz caches each entry's raw bytes during listing — for a nested
+        // zip, the container's bytes are cached, and the leaf inside is
+        // resolved from those via a cheap zip lookup, not a re-decompress.
         let inner = make_zip(&[("a.log", b"inner-a")]);
         let inner_bytes = std::fs::read(inner.path()).unwrap();
         let outer_tmp = make_tar_gz(&[("nested/inner.zip", inner_bytes.as_slice())]);
@@ -2778,11 +2683,10 @@ mod tests {
         let outer_tmp = make_zip(&[("outer.zip", middle_bytes.as_slice())]);
         let path = path_with_ext(&outer_tmp, ".zip");
 
-        // Zip never populates cached_bytes (see test_zip_source_never_caches_entry_bytes),
-        // so listing this three-level-deep zip-in-zip-in-zip forces every level of
-        // `extract_selected` to re-open/re-decode from `path` on demand. Uses a
-        // raised `auto_expand_depth` to keep this fully eager (unrelated to
-        // laziness — this test is about `resolve_node_bytes`'s multi-level walk).
+        // Zip never populates cached_bytes, so this three-level-deep
+        // zip-in-zip-in-zip forces every level of `extract_selected` to
+        // re-decode from `path` on demand. Raised `auto_expand_depth` keeps
+        // this fully eager; the test is about the multi-level walk, not laziness.
         let limits = ListLimits {
             auto_expand_depth: 2,
             ..ListLimits::default()
@@ -2854,11 +2758,9 @@ mod tests {
 
     #[test]
     fn test_extract_selected_lone_gz_at_zip_top_level_is_decompressed() {
-        // "app.log.gz" inside the zip is a lone single-file compressed entry
-        // (not a multi-entry archive), so listing shows it as a plain File
-        // leaf rather than expanding it — but its bytes as stored in the zip
-        // are still gzip-compressed. Extracting it must yield the original
-        // decompressed text, the same as if it had never been compressed.
+        // "app.log.gz" inside the zip is a lone compressed entry, so listing
+        // shows it as a plain File leaf, but its stored bytes are still
+        // gzip-compressed. Extracting it must yield the decompressed text.
         let gz = make_gz(b"decompressed content");
         let gz_bytes = std::fs::read(gz.path()).unwrap();
         let outer_tmp = make_zip(&[("app.log.gz", gz_bytes.as_slice())]);
@@ -2875,10 +2777,9 @@ mod tests {
 
     #[test]
     fn test_extract_selected_lone_gz_two_levels_deep_is_decompressed() {
-        // Same shape as above, but "app.log.gz" is inside an inner zip that's
-        // itself nested inside an outer zip — exercising the resolve path
-        // that walks down through a real `Container` ancestor (`Some(parent_id)`
-        // in `resolve_node_bytes`), not just the top-level-archive path.
+        // Same shape as above, but "app.log.gz" is nested two levels deep —
+        // exercising the resolve path that walks down through a real
+        // `Container` ancestor, not just the top-level-archive path.
         let gz = make_gz(b"deeply nested content");
         let gz_bytes = std::fs::read(gz.path()).unwrap();
         let inner = make_zip(&[("app.log.gz", gz_bytes.as_slice())]);
@@ -2942,10 +2843,9 @@ mod tests {
 
     #[test]
     fn test_extract_selected_nested_lone_gz_via_cached_bytes_is_decompressed() {
-        // Nested inside a TarGz stream, "app.log.gz"'s raw (still-compressed)
-        // bytes get cached during listing for reuse at extraction time — the
-        // decompression must still apply on that fast path too, not just the
-        // fresh-read path exercised by the zip-based tests above.
+        // Nested inside a TarGz stream, "app.log.gz"'s raw bytes get cached
+        // during listing — decompression must still apply on that cached
+        // fast path too, not just the fresh-read path above.
         let gz = make_gz(b"cached path content");
         let gz_bytes = std::fs::read(gz.path()).unwrap();
         let outer_tmp = make_tar_gz(&[("app.log.gz", gz_bytes.as_slice())]);

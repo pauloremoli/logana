@@ -494,8 +494,6 @@ mod tests {
         assert_eq!(parts.message, Some("server started"));
     }
 
-    // ── New journalctl format detection tests ─────────────────────────
-
     #[test]
     fn test_detect_format_journalctl_short() {
         // Plain BSD lines without priority — syslog does not claim these for
@@ -562,8 +560,6 @@ mod tests {
         let parser = detect_format(&lines).unwrap();
         assert_eq!(parser.name(), "syslog");
     }
-
-    // ── Priority: specific parsers beat common-log ────────────────────
 
     #[test]
     fn test_detect_format_journalctl_wins_plain_bsd_without_priority() {

@@ -716,8 +716,6 @@ mod tests {
         assert_eq!(log_line.text, line);
     }
 
-    // ── parse_json_line ──────────────────────────────────────────────────────
-
     #[test]
     fn test_parse_json_plain_not_json() {
         assert!(parse_json_line(b"not json").is_none());
@@ -848,8 +846,6 @@ mod tests {
         assert_eq!(fields[2].key, "m");
     }
 
-    // ── build_display_json ───────────────────────────────────────────────────
-
     #[test]
     fn test_build_display_json_no_hidden() {
         let line = br#"{"level":"INFO","msg":"hello"}"#;
@@ -916,8 +912,6 @@ mod tests {
         assert!(display.contains("MESSAGE=hello"));
         assert!(display.contains("PRIORITY=6"));
     }
-
-    // ── JsonParser::classify_fields ──────────────────────────────────────────
 
     #[test]
     fn test_classify_known_fields_extracted() {
@@ -1065,8 +1059,6 @@ mod tests {
         assert_eq!(parts.message, Some("A short message"));
     }
 
-    // ── JsonParser trait impl ────────────────────────────────────────────────
-
     #[test]
     fn test_json_parser_parse_line() {
         let parser = generic_parser();
@@ -1187,8 +1179,6 @@ mod tests {
         assert_eq!(gelf_parser().name(), "gelf");
     }
 
-    // ── json-sse (Server-Sent Events) support ────────────────────────────────
-
     #[test]
     fn test_json_sse_parse_line() {
         let parser = generic_parser();
@@ -1219,8 +1209,6 @@ mod tests {
         assert!(names.contains(&"message".to_string()));
     }
 
-    // ── json-seq (RFC 7464 JSON Sequence) support ────────────────────────────
-
     #[test]
     fn test_json_seq_parse_line() {
         let parser = generic_parser();
@@ -1242,8 +1230,6 @@ mod tests {
         let score = parser.detect_score(&lines);
         assert!((score - 1.0).abs() < 0.001);
     }
-
-    // ── journalctl JSON default_hidden_fields ────────────────────────────────
 
     #[test]
     fn test_default_hidden_fields_journalctl_json() {
@@ -1303,8 +1289,6 @@ mod tests {
         assert!(!hidden.contains("hostname"));
         assert!(!hidden.contains("pid"));
     }
-
-    // ── strip_json_prefixes ──────────────────────────────────────────────────
 
     #[test]
     fn test_strip_sse_prefix() {

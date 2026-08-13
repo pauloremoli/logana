@@ -2075,8 +2075,6 @@ mod tests {
         assert_eq!(counts[1].load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
-    // ── evaluate_and_count ────────────────────────────────────────────
-
     #[test]
     fn test_evaluate_and_count_returns_include_decision() {
         let f = SubstringFilter::new("ERROR", FilterDecision::Include, false, 0, false).unwrap();
@@ -2252,8 +2250,6 @@ mod tests {
         assert!(fm.is_visible(b"status 200 OK"));
         assert!(!fm.is_visible(b"INFO: plain"));
     }
-
-    // ── evaluate_chunk_wholefile ─────────────────────────────────────
 
     fn make_wholefile_data(lines: &[&str]) -> (Vec<u8>, Vec<usize>) {
         let mut data = Vec::new();

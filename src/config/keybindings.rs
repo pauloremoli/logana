@@ -1487,13 +1487,10 @@ pub struct ArchivePickerKeybindings {
     /// Toggles the selected row's merge mark while searching — same
     /// reasoning as `search_toggle`, for `merge_toggle`'s key (`m`).
     ///
-    /// Defaults to `Alt+m` — deliberately not a `Ctrl`-chord at all: outside
-    /// an enhanced-keyboard terminal protocol, a terminal cannot distinguish
-    /// Ctrl+M from a plain Enter keypress — both send the same
-    /// carriage-return byte — so crossterm reports Ctrl+M as
-    /// `KeyCode::Enter` with no modifiers, and a bare `Ctrl+m` binding here
-    /// would therefore never fire (`apply`'s `Enter` binding would consume
-    /// the keypress instead). `Alt+m` sidesteps that entirely.
+    /// Defaults to `Alt+m`, deliberately not a `Ctrl`-chord: outside an
+    /// enhanced-keyboard terminal protocol, Ctrl+M and Enter send the same
+    /// carriage-return byte, so crossterm reports Ctrl+M as a plain
+    /// `KeyCode::Enter` and a `Ctrl+m` binding here would never fire.
     #[serde(default = "default_ap_search_merge_toggle")]
     pub search_merge_toggle: KeyBindings,
     /// Marks every row whose name currently matches the search query for

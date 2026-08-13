@@ -354,8 +354,6 @@ fn format_date() -> String {
 mod tests {
     use super::*;
 
-    // ── parse_template ────────────────────────────────────────────────
-
     #[test]
     fn test_parse_template_all_sections() {
         let raw = "{{#header}}H{{/header}}{{#comment_group}}C{{/comment_group}}{{#marked_lines}}O{{/marked_lines}}{{#footer}}F{{/footer}}";
@@ -405,8 +403,6 @@ mod tests {
         assert_eq!(tpl.header, "");
         assert_eq!(tpl.comment_group, "");
     }
-
-    // ── render_export ─────────────────────────────────────────────────
 
     fn make_reader(lines: &[&str]) -> FileReader {
         let data = lines.join("\n").into_bytes();
@@ -801,8 +797,6 @@ mod tests {
         assert!(!output.contains("Conclusion"));
     }
 
-    // ── render with parser ────────────────────────────────────────────
-
     #[test]
     fn test_render_with_parser_uses_formatted_output() {
         let json_line = r#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","msg":"hello"}"#;
@@ -881,8 +875,6 @@ mod tests {
         assert!(output.contains("hello"));
     }
 
-    // ── load_template ─────────────────────────────────────────────────
-
     #[test]
     fn test_load_template_nonexistent() {
         let result = load_template("nonexistent_xyz_template");
@@ -919,8 +911,6 @@ mod tests {
         assert!(tpl.header.contains("h1."));
     }
 
-    // ── list_templates ────────────────────────────────────────────────
-
     #[test]
     fn test_list_templates_includes_bundled() {
         let templates = list_templates();
@@ -938,8 +928,6 @@ mod tests {
         };
         assert_eq!(templates, sorted);
     }
-
-    // ── complete_template ─────────────────────────────────────────────
 
     #[test]
     fn test_complete_template_empty_returns_all() {
@@ -960,8 +948,6 @@ mod tests {
         let results = complete_template("zzznomatch");
         assert!(results.is_empty());
     }
-
-    // ── format_date ───────────────────────────────────────────────────
 
     #[test]
     fn test_format_date_pattern() {

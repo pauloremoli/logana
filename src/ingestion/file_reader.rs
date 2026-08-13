@@ -55,10 +55,9 @@ pub struct MergedEntry {
 
 #[derive(Clone)]
 enum Storage {
-    /// Heap-owned file content.  The `File` handle is kept open so that
+    /// Heap-owned file content. The `File` handle stays open so
     /// `try_extend_from_read` can `pread` new bytes without re-opening the
-    /// path (which could race with log rotation).
-    /// `inode` and `device` are used to detect rotation-by-rename on Unix.
+    /// path. `inode`/`device` detect rotation-by-rename on Unix.
     File {
         data: Arc<Vec<u8>>,
         file: Arc<File>,
@@ -107,12 +106,9 @@ impl FileReader {
             use rayon::prelude::*;
             use std::os::unix::fs::FileExt;
             let mut v = vec![0u8; size];
-            // SAFETY: `v.as_mut_ptr()` is a valid, writable mapping of exactly
-            // `size` bytes.  `madvise(MADV_POPULATE_WRITE)`
-            // only touches the kernel's page tables — it does not read or write
-            // user memory — so calling it on initialized bytes is safe.
-            // On kernels < 5.14 it returns EINVAL; we ignore the return value
-            // intentionally (demand-paging fallback).
+            // SAFETY: madvise only touches kernel page tables for this valid,
+            // writable `size`-byte mapping; it never reads/writes user memory.
+            // EINVAL on kernels < 5.14 is ignored (demand-paging fallback).
             #[cfg(target_os = "linux")]
             unsafe {
                 libc::madvise(
@@ -238,10 +234,9 @@ impl FileReader {
         }
     }
 
-    /// Build a `FileReader` backed by a merged sorted index over multiple sources.
-    ///
-    /// Line access is delegated to the appropriate source reader via the compound
-    /// key stored in each `MergedEntry`.
+    /// Build a `FileReader` backed by a merged sorted index over multiple
+    /// sources. Line access is delegated to the source reader named by the
+    /// compound key in each `MergedEntry`.
     pub fn from_merged(entries: Arc<Vec<MergedEntry>>, sources: Arc<Vec<FileReader>>) -> Self {
         let line_count = entries.len();
         FileReader {
@@ -251,22 +246,17 @@ impl FileReader {
         }
     }
 
-    /// Read the last `preview_bytes` of `path` synchronously and return a
-    /// `FileReader` containing only those lines.
-    ///
-    /// This is used by the `--tail` fast path to display the end of a large
-    /// file immediately while the full background index is still being built.
-    /// Because we seek to near the end of the file the call returns in
-    /// milliseconds regardless of file size.
-    ///
-    /// The first (potentially partial) line of the read chunk is dropped so
-    /// that every line in the returned reader is complete.
+    /// Read the last `preview_bytes` of `path` and return a `FileReader`
+    /// with just those lines — the `--tail` fast path, showing the file's
+    /// end immediately while the full background index builds. Seeking
+    /// near the end keeps this fast regardless of file size; the first
+    /// (likely partial) line of the read chunk is dropped.
     pub async fn from_file_tail(path: &str, preview_bytes: u64) -> io::Result<Self> {
         let mut file = tokio::fs::File::open(path).await?;
         let total_len = file.metadata().await?.len();
 
-        // For DLT binary files, read the full file and convert, then take tail lines.
-        // We need to peek at the beginning to check for the DLT magic.
+        // DLT binary: read the whole file and convert, then take tail lines.
+        // Peek the start to check for the DLT magic.
         let mut magic_buf = [0u8; 4];
         let is_binary = if total_len >= 4 {
             file.read_exact(&mut magic_buf).await?;
@@ -302,13 +292,10 @@ impl FileReader {
         Ok(Self::from_bytes(buf[start..].to_vec()))
     }
 
-    /// Read the first `preview_bytes` of `path` synchronously and return a
-    /// `FileReader` containing only those complete lines.
-    ///
-    /// Used by the non-tail fast path to display the beginning of a large file
-    /// immediately while the full background index is still being built.
-    /// The last (potentially partial) line of the read chunk is dropped so that
-    /// every line in the returned reader is complete.
+    /// Read the first `preview_bytes` of `path` and return a `FileReader`
+    /// with just those complete lines — the non-tail fast path, showing the
+    /// file's start while the full background index builds. The last
+    /// (likely partial) line of the read chunk is dropped.
     pub async fn from_file_head(path: &str, preview_bytes: u64) -> io::Result<Self> {
         let mut file = tokio::fs::File::open(path).await?;
         let total_len = file.metadata().await?.len();
@@ -434,11 +421,10 @@ impl FileReader {
         Ok(true)
     }
 
-    /// Stream stdin asynchronously, appending complete lines to a temp file every second.
-    ///
-    /// Returns a `watch::Receiver<()>` that fires each time new data is written
-    /// and the `NamedTempFile` that owns the on-disk bytes.  When stdin closes
-    /// the sender is dropped, which callers detect via `has_changed() == Err(_)`.
+    /// Stream stdin asynchronously, appending complete lines to a temp file
+    /// every second. Returns a `watch::Receiver<()>` that fires on each
+    /// write and the `NamedTempFile` owning the bytes. When stdin closes,
+    /// the sender drops — callers detect this via `has_changed() == Err(_)`.
     pub async fn stream_stdin() -> (watch::Receiver<()>, tempfile::NamedTempFile) {
         use std::io::Write as _;
         use std::time::Duration;
@@ -498,19 +484,15 @@ impl FileReader {
         (snapshot_rx, temp_file)
     }
 
-    /// Start loading `path` on tokio's blocking thread pool.
+    /// Start loading `path` on tokio's blocking thread pool. Returns a
+    /// [`FileLoadHandle`] immediately; indexing happens in the background,
+    /// polled via `handle.result_rx`/`progress_rx`.
     ///
-    /// Returns a [`FileLoadHandle`] immediately; the actual indexing happens
-    /// in the background.  The caller polls `handle.result_rx.try_recv()` each
-    /// frame and reads `*handle.progress_rx.borrow()` for live progress.
-    ///
-    /// `predicate` — when `Some`, each line is tested after indexing and the
-    /// matching indices are stored in [`FileLoadResult::precomputed_visible`],
-    /// avoiding a separate `compute_visible` call after the load completes.
-    ///
-    /// `tail` — when `true`, the predicate is evaluated from the last line
-    /// backward so that lines near the end of the file are confirmed visible
-    /// first; the result is always returned in ascending order.
+    /// `predicate`, when `Some`, is tested per line during indexing and
+    /// stored in [`FileLoadResult::precomputed_visible`], skipping a
+    /// separate `compute_visible` call. `tail` evaluates it from the last
+    /// line backward so tail lines are confirmed first; the result is
+    /// still returned in ascending order.
     pub async fn load(
         path: String,
         predicate: Option<VisibilityPredicate>,
@@ -543,20 +525,18 @@ impl FileReader {
         })
     }
 
-    /// Index the file using a parallel Rayon scan, sending progress updates as
-    /// chunks complete.  Produces the same `line_starts` as `compute_line_starts`.
+    /// Index the file using a parallel Rayon scan, sending progress updates
+    /// as chunks complete. Produces the same `line_starts` as
+    /// `compute_line_starts`.
     ///
-    /// Phase 1 (always): parallel scan building `line_starts` + ANSI detection.
-    ///   The mmap is divided into `rayon::current_num_threads()` equal chunks;
-    ///   each thread runs `memchr3_iter` independently.  When all threads finish
-    ///   the per-chunk results are concatenated in order (no sort needed) to form
-    ///   the final `line_starts`.  If any chunk detects an ESC/CR byte the ANSI
-    ///   fallback runs serially over the full mmap.
+    /// Phase 1 (always): parallel scan building `line_starts` + ANSI
+    /// detection, one equal chunk per thread, concatenated in order (no
+    /// sort needed). Any ESC/CR byte found triggers a serial ANSI fallback
+    /// over the full mmap.
     ///
-    /// Phase 2 (when `predicate` is `Some`): evaluate visibility on each line.
-    ///   - `tail=false`: forward parallel scan via rayon.
-    ///   - `tail=true`: backward sequential scan so tail lines are evaluated first;
-    ///     result is reversed to restore ascending order.
+    /// Phase 2 (when `predicate` is `Some`): forward parallel scan, or for
+    /// `tail=true` a backward sequential scan (tail lines evaluated first,
+    /// result reversed back to ascending order).
     fn index_chunked(
         path: &str,
         total_bytes: u64,
@@ -575,20 +555,16 @@ impl FileReader {
         let file = Arc::new(File::open(path)?);
         let size = total_bytes as usize;
 
-        // Pre-allocate the file buffer.  On Unix we fill it via parallel pread
-        // (one chunk per rayon worker) so that I/O and the newline scan run in the
-        // same parallel pass.  On non-Unix we fall back to sequential read_to_end.
+        // Pre-allocate the file buffer. On Unix we fill it via parallel pread
+        // (one chunk per rayon worker) so I/O and the newline scan run in the
+        // same pass; non-Unix falls back to sequential read_to_end.
         #[cfg(unix)]
         let mut file_data: Vec<u8> = {
             let mut v = vec![0u8; size];
-            // SAFETY: `v.as_mut_ptr()` is a valid, writable mapping of exactly
-            // `size` bytes.  `madvise(MADV_POPULATE_WRITE)`
-            // only touches the kernel's page tables — it does not read or write
-            // user memory — so calling it on initialized bytes is safe.
-            // Pre-faulting all pages before the parallel pread eliminates
-            // per-page page-fault stalls, letting memcpy run at full bandwidth.
-            // On kernels < 5.14 it returns EINVAL; we ignore the return value
-            // intentionally (demand-paging fallback).
+            // SAFETY: madvise only touches kernel page tables for this valid,
+            // writable `size`-byte mapping. Pre-faulting pages before the
+            // parallel pread avoids per-page fault stalls during memcpy.
+            // EINVAL on kernels < 5.14 is ignored (demand-paging fallback).
             #[cfg(target_os = "linux")]
             unsafe {
                 libc::madvise(
@@ -670,15 +646,10 @@ impl FileReader {
         }
 
         // Phase 1: parallel pread + scan for '\n', '\x1b', '\r' in one pass.
-        //
-        // Each rayon worker fills its chunk via pread (parallelising I/O) then
-        // immediately scans it while the data is hot in L2/L3 cache.  This avoids
-        // the sequential read_to_end bottleneck: with mmap the kernel page-faults
-        // occurred in parallel across rayon workers; here pread achieves the same
-        // effect without the SIGBUS risk.
-        //
-        // chunk_size is one slice per rayon thread (minimum 4 MiB).
-        // bytes_done is a shared counter for fractional progress updates.
+        // Each worker fills its chunk via pread (parallel I/O) then scans it
+        // while hot in cache — same parallelism as mmap page-faulting, but
+        // without the SIGBUS risk. chunk_size is one slice per rayon thread
+        // (min 4 MiB); bytes_done is a shared counter for progress updates.
         let num_threads = rayon::current_num_threads().max(1);
         let chunk_size = len.div_ceil(num_threads).max(4 * 1024 * 1024);
         let bytes_done = AtomicUsize::new(0);
@@ -1008,15 +979,14 @@ impl FileReader {
         self.storage = Storage::Bytes(std::sync::Arc::new(data));
     }
 
-    /// Spawn a child process and stream its output.
+    /// Spawn a child process and stream its output. Appends ANSI-stripped
+    /// complete lines to a `NamedTempFile` every 500 ms, returning a
+    /// `watch::Receiver<()>` that fires on each flush; the sender drops
+    /// when the process exits.
     ///
-    /// Appends ANSI-stripped complete lines to a `NamedTempFile` every 500 ms.
-    /// Returns a `watch::Receiver<()>` that fires on each flush and the temp
-    /// file.  When the process exits the sender is dropped.
-    ///
-    /// When `tag_stderr` is `true`, every stderr line is prefixed with
-    /// `"ERROR "` before being written so that log parsers show it at error
-    /// level.  Stdout lines are written unchanged.
+    /// When `tag_stderr` is `true`, stderr lines are prefixed with
+    /// `"ERROR "` so log parsers show them at error level; stdout is
+    /// written unchanged.
     pub async fn spawn_process_stream(
         program: &str,
         args: &[&str],
@@ -1314,18 +1284,12 @@ impl FileReader {
     }
 
     /// Spawn a background task that polls `path` for new bytes every 50 ms.
-    ///
-    /// `initial_offset` must be the **original** (unstripped) file size in
-    /// bytes at the time the file was first loaded (from
-    /// `std::fs::metadata(path)?.len()`).
-    ///
-    /// Returns a `watch::Receiver<()>` that fires when the file grows, is
-    /// truncated, or is replaced (inode change on Unix).
-    /// The caller should call `FileReader::try_extend_from_read` to apply the
-    /// update.  For ANSI-containing files (where `try_extend_from_read` returns
-    /// `false`), `FileReader::new` will re-load and strip the whole file.
-    ///
-    /// When the background task stops (receiver dropped), the sender is dropped.
+    /// `initial_offset` must be the original (unstripped) file size at load
+    /// time. Returns a `watch::Receiver<()>` that fires when the file
+    /// grows, is truncated, or is replaced (inode change on Unix); the
+    /// caller applies the update via `FileReader::try_extend_from_read`
+    /// (or, for ANSI files where that returns `false`, a full reload via
+    /// `FileReader::new`).
     pub async fn spawn_file_watcher(path: String, initial_offset: u64) -> watch::Receiver<()> {
         let (tx, rx) = watch::channel(());
 
@@ -1403,15 +1367,10 @@ impl FileReader {
     }
 }
 
-/// Strip ANSI/VT escape sequences and bare `\r` characters from `input`.
-///
-/// Handles:
-/// * CSI sequences  (`ESC [` … final_byte in 0x40–0x7E)
-/// * OSC sequences  (`ESC ]` … BEL or `ESC \`)
-/// * All other two-byte ESC sequences (`ESC` + one byte)
-/// * Bare `\r` (so `\r\n` line endings become `\n`)
-///
-/// Returns a new `Vec<u8>` with the sequences removed.
+/// Strip ANSI/VT escape sequences and bare `\r` from `input`: CSI
+/// sequences (`ESC [` … final byte 0x40–0x7E), OSC sequences (`ESC ]` …
+/// BEL or `ESC \`), other two-byte ESC sequences, and bare `\r` (so
+/// `\r\n` becomes `\n`).
 fn strip_ansi_escapes(input: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len());
     let mut i = 0;
@@ -1882,10 +1841,6 @@ mod tests {
         assert_eq!(r.line_count(), 1);
     }
 
-    // -----------------------------------------------------------------------
-    // strip_ansi_escapes – OSC sequences
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_strip_osc_terminated_by_bel() {
         // OSC: ESC ] ... BEL (0x07)
@@ -1911,10 +1866,6 @@ mod tests {
         assert_eq!(r.get_line(0), b"GREEN");
     }
 
-    // -----------------------------------------------------------------------
-    // strip_ansi_escapes – two-byte ESC sequences
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_strip_two_byte_esc_sequence() {
         // ESC M (reverse index), ESC = (keypad mode), etc.
@@ -1929,10 +1880,6 @@ mod tests {
         let r = make(input);
         assert_eq!(r.get_line(0), b"hello");
     }
-
-    // -----------------------------------------------------------------------
-    // strip_ansi_escapes – edge / truncation cases
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_strip_esc_at_end_of_input() {
@@ -1974,10 +1921,6 @@ mod tests {
         let out = strip_ansi_escapes(b"hello\rworld");
         assert_eq!(out, b"helloworld");
     }
-
-    // -----------------------------------------------------------------------
-    // FileReader – content edge cases
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_only_newlines() {
@@ -2024,10 +1967,6 @@ mod tests {
         assert!(r.line_count() >= 1);
     }
 
-    // -----------------------------------------------------------------------
-    // append_bytes – advanced scenarios
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_append_bytes_multiple_times() {
         let mut r = make(b"a\n");
@@ -2066,10 +2005,6 @@ mod tests {
         assert_eq!(r.get_line(0), b"hello");
     }
 
-    // -----------------------------------------------------------------------
-    // FileReader::new – file with ANSI codes
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_file_reader_from_path_with_ansi() {
         let mut f = NamedTempFile::new().unwrap();
@@ -2097,10 +2032,6 @@ mod tests {
         let result = FileReader::new("/tmp/nonexistent_logana_test_file.log");
         assert!(result.is_err());
     }
-
-    // -----------------------------------------------------------------------
-    // compute_line_starts – direct tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_compute_line_starts_empty() {
@@ -2131,10 +2062,6 @@ mod tests {
         let starts = compute_line_starts(b"\n\n\n");
         assert_eq!(starts, vec![0, 1, 2, 3]);
     }
-
-    // -----------------------------------------------------------------------
-    // Async: load + index_chunked
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn test_load_basic() {
@@ -2230,10 +2157,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // try_extend_from_read
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_try_extend_from_read_bytes_returns_false() {
         let mut reader = make(b"line1\nline2\n");
@@ -2291,10 +2214,6 @@ mod tests {
         assert!(!reader.try_extend_from_read().unwrap());
     }
 
-    // -----------------------------------------------------------------------
-    // Async: spawn_file_watcher
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn test_spawn_file_watcher_detects_new_data() {
         use std::io::{Seek, SeekFrom};
@@ -2327,10 +2246,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // iter – additional coverage
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_iter_empty() {
         let r = make(b"");
@@ -2344,10 +2259,6 @@ mod tests {
         let collected: Vec<_> = r.iter().collect();
         assert_eq!(collected, vec![(0, b"only".as_ref())]);
     }
-
-    // -----------------------------------------------------------------------
-    // spawn_process_stream
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn test_spawn_process_stream_basic() {
@@ -2425,10 +2336,6 @@ mod tests {
             "ANSI codes should be stripped, got: {text}"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // strip_ansi_and_index
-    // -----------------------------------------------------------------------
 
     fn strip_bytes(input: &[u8]) -> Vec<u8> {
         strip_ansi_and_index(input).0
@@ -2577,10 +2484,6 @@ mod tests {
         assert_eq!(starts, compute_line_starts(expected));
     }
 
-    // -----------------------------------------------------------------------
-    // from_file_tail
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn test_from_file_tail_returns_last_lines() {
         let mut f = NamedTempFile::new().unwrap();
@@ -2638,10 +2541,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -----------------------------------------------------------------------
-    // from_file_head
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn test_from_file_head_returns_first_lines() {
         let mut f = NamedTempFile::new().unwrap();
@@ -2698,10 +2597,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -----------------------------------------------------------------------
-    // append_bytes – Mmap → Vec conversion branch
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_append_bytes_on_file_backed_reader() {
         // FileReader::new uses File storage. Appending should convert to Bytes.
@@ -2720,10 +2615,6 @@ mod tests {
         assert_eq!(reader.get_line(0), b"mmap line");
         assert_eq!(reader.get_line(1), b"appended");
     }
-
-    // -----------------------------------------------------------------------
-    // spawn_file_watcher – truncation detection
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn test_spawn_file_watcher_truncation() {
@@ -2760,10 +2651,6 @@ mod tests {
             "file should contain data written after truncation, got: {text}"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Parallel Phase-1 indexing via index_chunked
-    // -----------------------------------------------------------------------
 
     /// Build a file whose byte size exceeds the 4 MiB minimum chunk size so
     /// the parallel scan exercises at least two chunks on any machine.

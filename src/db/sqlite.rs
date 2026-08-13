@@ -2369,8 +2369,6 @@ mod tests {
         assert!(loaded2.filtering_enabled);
     }
 
-    // ── AppSettingsStore ─────────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_app_setting_load_returns_none_when_not_set() {
         let db = setup_db().await;

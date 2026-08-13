@@ -378,8 +378,6 @@ mod tests {
         assert_eq!(severity_number_to_level("abc"), None);
     }
 
-    // ── extract_any_value_str ────────────────────────────────────────────────
-
     #[test]
     fn test_extract_any_value_string_value() {
         assert_eq!(
@@ -405,8 +403,6 @@ mod tests {
     fn test_extract_any_value_empty_object() {
         assert_eq!(extract_any_value_str(r#"{"other":"x"}"#), None);
     }
-
-    // ── parse_otlp_attr_array ────────────────────────────────────────────────
 
     #[test]
     fn test_parse_otlp_attr_array_string_values() {
@@ -434,8 +430,6 @@ mod tests {
         assert!(parse_otlp_attr_array(r#"{"key":"v"}"#).is_empty());
     }
 
-    // ── parse_sdk_attr_dict ──────────────────────────────────────────────────
-
     #[test]
     fn test_parse_sdk_attr_dict() {
         let input = r#"{"http.method":"GET","service.name":"svc","http.status_code":"200"}"#;
@@ -447,8 +441,6 @@ mod tests {
                 .any(|&(k, v)| k == "service.name" && v == "svc")
         );
     }
-
-    // ── parse_line: OTLP/JSON ────────────────────────────────────────────────
 
     #[test]
     fn test_parse_otlp_json_full() {
@@ -497,8 +489,6 @@ mod tests {
         assert_eq!(parts.message, Some("disk full"));
     }
 
-    // ── parse_line: OTel SDK JSON ────────────────────────────────────────────
-
     #[test]
     fn test_parse_sdk_json_flat() {
         let line = br#"{"timestamp":"2024-01-15T10:00:00Z","severity_text":"INFO","severity_number":9,"body":"user logged in","attributes":{"user.id":"u123","service.name":"auth-svc"},"trace_id":"abc","span_id":"def"}"#;
@@ -533,8 +523,6 @@ mod tests {
         assert_eq!(parts.target, Some("worker"));
     }
 
-    // ── Non-OTLP lines are rejected ──────────────────────────────────────────
-
     #[test]
     fn test_parse_plain_json_not_otlp() {
         let line = br#"{"level":"INFO","msg":"hello","time":"2024-01-01"}"#;
@@ -547,8 +535,6 @@ mod tests {
         let parser = OtlpParser;
         assert!(parser.parse_line(b"plain text log line").is_none());
     }
-
-    // ── detect_score ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_detect_score_otlp_lines() {
@@ -578,8 +564,6 @@ mod tests {
         assert_eq!(parser.detect_score(&[]), 0.0);
     }
 
-    // ── collect_field_names ──────────────────────────────────────────────────
-
     #[test]
     fn test_collect_field_names_includes_attributes() {
         let parser = OtlpParser;
@@ -594,8 +578,6 @@ mod tests {
         assert!(names.contains(&"http.status_code".to_string()));
         assert_eq!(*names.last().unwrap(), "message");
     }
-
-    // ── detect_format integration ────────────────────────────────────────────
 
     #[test]
     fn test_detect_format_prefers_otlp_over_json() {
@@ -623,8 +605,6 @@ mod tests {
     fn test_otlp_name() {
         assert_eq!(OtlpParser.name(), "otlp");
     }
-
-    // ── top-level service.name → target ──────────────────────────────────────
 
     #[test]
     fn test_parse_otlp_json_top_level_service_name() {
@@ -672,8 +652,6 @@ mod tests {
         );
         assert_eq!(*names.last().unwrap(), "message");
     }
-
-    // ── default_hidden_fields ─────────────────────────────────────────────────
 
     #[test]
     fn test_otlp_default_hidden_fields() {
