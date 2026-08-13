@@ -84,8 +84,6 @@ pub struct FileContext {
     pub show_keys: bool,
     /// When true, the format parser is bypassed and lines are shown as raw bytes.
     pub raw_mode: bool,
-    /// Width in terminal columns of the filter sidebar (default 30, min 10).
-    pub sidebar_width: u16,
     /// Set of hidden field names (e.g. `"span.request_id"`, `"level"`).
     pub hidden_fields: HashSet<String>,
     /// Ordered list of all column names from the select-fields modal (visible + hidden).
@@ -120,6 +118,7 @@ pub enum SettingsKey {
     RelativeLineNumbers,
     ShowSidebar,
     SidebarLeft,
+    SidebarWidth,
     DefaultFilterFiles,
     CollapseContinuations,
     ShowGroupsPanel,
@@ -138,6 +137,7 @@ impl SettingsKey {
             Self::RelativeLineNumbers => "relative_line_numbers",
             Self::ShowSidebar => "show_sidebar",
             Self::SidebarLeft => "sidebar_left",
+            Self::SidebarWidth => "sidebar_width",
             Self::DefaultFilterFiles => "default_filter_files",
             Self::CollapseContinuations => "collapse_continuations",
             Self::ShowGroupsPanel => "show_groups_panel",
@@ -345,6 +345,13 @@ impl Database {
         if version < 15 {
             Self::migrate_to_v15(conn).await?;
             sqlx::query("PRAGMA user_version = 15")
+                .execute(&mut *conn)
+                .await?;
+        }
+
+        if version < 16 {
+            Self::migrate_to_v16(conn).await?;
+            sqlx::query("PRAGMA user_version = 16")
                 .execute(&mut *conn)
                 .await?;
         }
@@ -612,6 +619,16 @@ impl Database {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Sidebar width moved from a per-file setting to a single global one
+    /// (see `SettingsKey::SidebarWidth`), so the per-file column is dropped.
+    async fn migrate_to_v16(conn: &mut SqliteConnection) -> Result<()> {
+        sqlx::query("ALTER TABLE file_context DROP COLUMN sidebar_width")
+            .execute(&mut *conn)
+            .await
+            .ok();
         Ok(())
     }
 
@@ -1062,8 +1079,8 @@ impl FileContextStore for Database {
         // Also keep the legacy `level_colors` column up-to-date for any old readers.
         let level_colors_legacy = ctx.level_colors_disabled.is_empty() as i32;
         sqlx::query(
-            "INSERT INTO file_context (source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width, hidden_fields, field_layout_columns, filtering_enabled)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO file_context (source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, hidden_fields, field_layout_columns, filtering_enabled)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_file) DO UPDATE SET
                 scroll_offset = excluded.scroll_offset,
                 search_query = excluded.search_query,
@@ -1075,7 +1092,6 @@ impl FileContextStore for Database {
                 show_keys = excluded.show_keys,
                 level_colors_disabled = excluded.level_colors_disabled,
                 raw_mode = excluded.raw_mode,
-                sidebar_width = excluded.sidebar_width,
                 hidden_fields = excluded.hidden_fields,
                 field_layout_columns = excluded.field_layout_columns,
                 filtering_enabled = excluded.filtering_enabled",
@@ -1091,7 +1107,6 @@ impl FileContextStore for Database {
         .bind(ctx.show_keys as i32)
         .bind(&level_colors_disabled_json)
         .bind(ctx.raw_mode as i32)
-        .bind(ctx.sidebar_width as i64)
         .bind(&hidden_fields_json)
         .bind(&field_layout_columns_json)
         .bind(ctx.filtering_enabled as i32)
@@ -1102,7 +1117,7 @@ impl FileContextStore for Database {
 
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>> {
         let row = sqlx::query(
-            "SELECT source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, sidebar_width, hidden_fields, field_layout_columns, filtering_enabled
+            "SELECT source_file, scroll_offset, search_query, level_colors, horizontal_scroll, marked_lines, file_hash, annotations_json, show_keys, level_colors_disabled, raw_mode, hidden_fields, field_layout_columns, filtering_enabled
              FROM file_context WHERE source_file = ?",
         )
         .bind(source_file)
@@ -1152,10 +1167,6 @@ impl FileContextStore for Database {
                 comments,
                 show_keys: r.try_get::<i32, _>("show_keys").unwrap_or(0) != 0,
                 raw_mode: r.try_get::<i32, _>("raw_mode").unwrap_or(0) != 0,
-                sidebar_width: r
-                    .try_get::<i64, _>("sidebar_width")
-                    .unwrap_or(30)
-                    .clamp(10, 200) as u16,
                 hidden_fields,
                 field_layout_columns,
                 filtering_enabled: r.try_get::<i32, _>("filtering_enabled").unwrap_or(1) != 0,
@@ -2066,7 +2077,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -2101,7 +2111,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -2124,7 +2133,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -2173,7 +2181,6 @@ mod tests {
             ],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -2208,7 +2215,6 @@ mod tests {
             comments: vec![],
             show_keys: true,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -2239,7 +2245,6 @@ mod tests {
             comments: vec![],
             show_keys: true,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -2256,33 +2261,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sidebar_width_round_trips() {
+    async fn test_sidebar_width_setting_round_trips() {
         let db = setup_db().await;
-        let ctx = FileContext {
-            source_file: "/tmp/sidebar.log".to_string(),
-            scroll_offset: 0,
-            search_query: String::new(),
-            level_colors_disabled: HashSet::new(),
-            horizontal_scroll: 0,
-            marked_lines: vec![],
-            file_hash: None,
-            comments: vec![],
-            show_keys: false,
-            raw_mode: false,
-            sidebar_width: 45,
-            hidden_fields: HashSet::new(),
-            field_layout_columns: None,
-            filtering_enabled: true,
-        };
-        db.save_file_context(&ctx).await.unwrap();
+        db.save_app_setting(SettingsKey::SidebarWidth, "45")
+            .await
+            .unwrap();
 
         let loaded = db
-            .load_file_context("/tmp/sidebar.log")
+            .load_app_setting(SettingsKey::SidebarWidth)
             .await
-            .unwrap()
-            .expect("context should exist");
+            .unwrap();
 
-        assert_eq!(loaded.sidebar_width, 45);
+        assert_eq!(loaded, Some("45".to_string()));
     }
 
     #[tokio::test]
@@ -2307,7 +2297,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: hidden.clone(),
             field_layout_columns: columns.clone(),
             filtering_enabled: true,
@@ -2339,7 +2328,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: false,
@@ -2526,7 +2514,6 @@ mod tests {
             comments: Vec::new(),
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             level_colors_disabled: HashSet::new(),
             hidden_fields: HashSet::new(),
             field_layout_columns: None,

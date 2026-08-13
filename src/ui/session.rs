@@ -49,6 +49,10 @@ impl SessionManager {
             .await;
     }
 
+    pub async fn save_app_u16(&self, key: SettingsKey, value: u16) {
+        let _ = self.db.save_app_setting(key, &value.to_string()).await;
+    }
+
     pub async fn set_restore_file_policy(&mut self, policy: RestoreSessionPolicy) {
         self.restore_file_policy = policy;
         let _ = self

@@ -418,12 +418,14 @@ impl FilterManagementMode {
 
     fn sidebar_grow(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
         tab.display.sidebar_width = tab.display.sidebar_width.saturating_add(2);
-        stay_at(self.selected_filter_index, tab)
+        let (mode, _) = stay_at(self.selected_filter_index, tab);
+        (mode, KeyResult::ResizeSidebar(tab.display.sidebar_width))
     }
 
     fn sidebar_shrink(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
         tab.display.sidebar_width = tab.display.sidebar_width.saturating_sub(2).max(10);
-        stay_at(self.selected_filter_index, tab)
+        let (mode, _) = stay_at(self.selected_filter_index, tab);
+        (mode, KeyResult::ResizeSidebar(tab.display.sidebar_width))
     }
 }
 
@@ -838,6 +840,33 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let (_, result) = press(filter_mode(0), &mut tab, KeyCode::BackTab).await;
         assert!(matches!(result, KeyResult::Ignored));
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_grow_emits_resize_sidebar_with_new_width() {
+        let mut tab = make_tab(&["line"]).await;
+        let before = tab.display.sidebar_width;
+        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::Char('>')).await;
+        assert_eq!(tab.display.sidebar_width, before + 2);
+        assert!(matches!(result, KeyResult::ResizeSidebar(w) if w == before + 2));
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_shrink_emits_resize_sidebar_with_new_width() {
+        let mut tab = make_tab(&["line"]).await;
+        let before = tab.display.sidebar_width;
+        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::Char('<')).await;
+        assert_eq!(tab.display.sidebar_width, before - 2);
+        assert!(matches!(result, KeyResult::ResizeSidebar(w) if w == before - 2));
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_shrink_stops_at_minimum_width() {
+        let mut tab = make_tab(&["line"]).await;
+        tab.display.sidebar_width = 10;
+        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::Char('<')).await;
+        assert_eq!(tab.display.sidebar_width, 10);
+        assert!(matches!(result, KeyResult::ResizeSidebar(10)));
     }
 
     #[tokio::test]

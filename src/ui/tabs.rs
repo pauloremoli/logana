@@ -35,6 +35,7 @@ impl App {
         tab.display.show_sidebar = self.display.show_sidebar;
         tab.display.wrap = self.display.wrap;
         tab.display.sidebar_side = self.display.sidebar_side;
+        tab.display.sidebar_width = self.display.sidebar_width;
         tab.display.collapse_continuations = self.display.collapse_continuations;
         tab.display.show_groups_panel = self.display.show_groups_panel;
         tab.sync_collapse_mask();

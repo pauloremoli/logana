@@ -56,6 +56,7 @@ pub enum KeyResult {
     ToggleLineNumbers,
     ToggleRelativeLineNumbers,
     ToggleGroupsPanel,
+    ResizeSidebar(u16),
     AlwaysRestoreFile(Box<crate::db::FileContext>),
     NeverRestoreFile,
     AlwaysRestoreSession(Vec<String>),
@@ -2557,7 +2558,6 @@ impl TabState {
             comments,
             show_keys: self.display.show_keys,
             raw_mode: self.display.raw_mode,
-            sidebar_width: self.display.sidebar_width,
             hidden_fields: self.display.hidden_fields.clone(),
             field_layout_columns: self.display.field_layout.columns.clone(),
             filtering_enabled: self.filter.enabled,
@@ -2570,7 +2570,6 @@ impl TabState {
         self.scroll.horizontal_scroll = ctx.horizontal_scroll;
         self.display.show_keys = ctx.show_keys;
         self.display.raw_mode = ctx.raw_mode;
-        self.display.sidebar_width = ctx.sidebar_width;
         // Only restore hidden_fields from the saved context when it is non-empty.
         // An empty set in the DB either means the context was saved before
         // format-specific defaults were introduced, or the session was first
@@ -3294,7 +3293,6 @@ mod tests {
             }],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -3322,7 +3320,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -3350,7 +3347,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: false,

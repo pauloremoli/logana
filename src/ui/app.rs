@@ -30,6 +30,15 @@ async fn resolve_bool_setting(
     default
 }
 
+async fn resolve_u16_setting(db: &crate::db::Database, key: SettingsKey, default: u16) -> u16 {
+    if let Ok(Some(val)) = db.load_app_setting(key).await
+        && let Ok(parsed) = val.parse::<u16>()
+    {
+        return parsed.clamp(10, 200);
+    }
+    default
+}
+
 async fn resolve_policy_setting(
     db: &crate::db::Database,
     key: SettingsKey,
@@ -66,6 +75,7 @@ struct StartupSettings {
     show_sidebar: bool,
     wrap: bool,
     sidebar_side: SidebarSide,
+    sidebar_width: u16,
     collapse_continuations: bool,
     show_groups_panel: bool,
 }
@@ -121,6 +131,7 @@ async fn resolve_startup_settings(
             .await,
         wrap: resolve_bool_setting(db, SettingsKey::Wrap, ov.wrap, false).await,
         sidebar_side,
+        sidebar_width: resolve_u16_setting(db, SettingsKey::SidebarWidth, 30).await,
         collapse_continuations: resolve_bool_setting(
             db,
             SettingsKey::CollapseContinuations,
@@ -142,6 +153,7 @@ pub struct DisplaySettings {
     pub show_sidebar: bool,
     pub wrap: bool,
     pub sidebar_side: SidebarSide,
+    pub sidebar_width: u16,
     pub collapse_continuations: bool,
     pub show_groups_panel: bool,
 }
@@ -265,6 +277,7 @@ impl AppBuilder {
             show_sidebar,
             wrap,
             sidebar_side,
+            sidebar_width,
             collapse_continuations,
             show_groups_panel,
         } = settings;
@@ -293,6 +306,7 @@ impl AppBuilder {
         tab.display.show_sidebar = show_sidebar;
         tab.display.wrap = wrap;
         tab.display.sidebar_side = sidebar_side;
+        tab.display.sidebar_width = sidebar_width;
         tab.display.collapse_continuations = collapse_continuations;
         tab.display.show_groups_panel = show_groups_panel;
         let mut pending_session_restore: Option<Vec<String>> = None;
@@ -360,6 +374,7 @@ impl AppBuilder {
                 show_sidebar,
                 wrap,
                 sidebar_side,
+                sidebar_width,
                 collapse_continuations,
                 show_groups_panel,
             },
@@ -1223,7 +1238,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: std::collections::HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -1451,6 +1465,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dispatch_resize_sidebar_updates_all_tabs_and_persists() {
+        let mut app = make_app(&["line"]).await;
+        app.dispatch_key_result(
+            KeyResult::ResizeSidebar(42),
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        assert_eq!(app.display.sidebar_width, 42);
+        for tab in &app.tabs {
+            assert_eq!(tab.display.sidebar_width, 42);
+        }
+        let saved = app
+            .db
+            .load_app_setting(SettingsKey::SidebarWidth)
+            .await
+            .unwrap();
+        assert_eq!(saved, Some("42".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_app_new_sidebar_width_from_db() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        db.save_app_setting(SettingsKey::SidebarWidth, "50")
+            .await
+            .unwrap();
+        let fr = FileReader::from_bytes(vec![]);
+        let lm = LogManager::new(db, None).await;
+        let app = App::builder(lm, fr, Theme::default(), Arc::new(Keybindings::default()))
+            .build()
+            .await;
+        assert_eq!(app.display.sidebar_width, 50);
+        assert_eq!(app.tabs[0].display.sidebar_width, 50);
+    }
+
+    #[tokio::test]
     async fn test_dispatch_open_files_nonexistent_sets_error() {
         let mut app = make_app(&["line"]).await;
         let paths = vec!["/nonexistent/missing.log".to_string()];
@@ -1640,7 +1690,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: std::collections::HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -1670,7 +1719,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: std::collections::HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,
@@ -1701,7 +1749,6 @@ mod tests {
             comments: vec![],
             show_keys: false,
             raw_mode: false,
-            sidebar_width: 30,
             hidden_fields: std::collections::HashSet::new(),
             field_layout_columns: None,
             filtering_enabled: true,

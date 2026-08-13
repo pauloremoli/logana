@@ -22,6 +22,7 @@ All notable changes to logana will be documented in this file.
 - Fix collapsed continuation lines not staying collapsed when reopening a file across sessions.
 - Fix `e`/`w` error/warning navigation in a merged tab misclassifying lines by ignoring each line's own source format.
 - Fix a crash when opening multiple files at once from the directory or archive picker.
+- Fix the filter sidebar's width not being remembered as a single setting shared across files, restored on the next run.
 
 ## [0.7.6] - 2026-08-06
 

@@ -360,6 +360,16 @@ impl App {
             .await;
     }
 
+    async fn handle_resize_sidebar(&mut self, width: u16) {
+        self.display.sidebar_width = width;
+        for tab in &mut self.tabs {
+            tab.display.sidebar_width = width;
+        }
+        self.session
+            .save_app_u16(SettingsKey::SidebarWidth, width)
+            .await;
+    }
+
     async fn handle_toggle_borders(&mut self) {
         self.display.show_borders_default = !self.display.show_borders_default;
         for tab in &mut self.tabs {
@@ -675,6 +685,7 @@ impl App {
                 self.handle_toggle_relative_line_numbers().await
             }
             KeyResult::ToggleGroupsPanel => self.handle_toggle_groups_panel().await,
+            KeyResult::ResizeSidebar(width) => self.handle_resize_sidebar(width).await,
             KeyResult::OpenFiles(paths) => self.handle_open_files(paths).await,
             KeyResult::AlwaysRestoreFile(_) => {
                 self.session
