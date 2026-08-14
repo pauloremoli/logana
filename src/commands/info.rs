@@ -77,6 +77,15 @@ pub const COMMANDS: &[CommandInfo] = &[
         examples: &["load-filters filters.json"],
     },
     CommandInfo {
+        name: "import-filters",
+        usage: "import-filters <path> [-a|--append]",
+        description: "Import a Notepad++ Analyze-plugin or User-Defined-Language XML config as Include filters. Replaces current filters by default; --append merges instead.",
+        examples: &[
+            "import-filters npp-config.xml",
+            "import-filters npp-config.xml --append",
+        ],
+    },
+    CommandInfo {
         name: "wrap",
         usage: "wrap",
         description: "Toggle line wrapping on/off.",
@@ -346,6 +355,7 @@ pub const FILE_PATH_COMMANDS: &[&str] = &[
     "open",
     "load-filters",
     "save-filters",
+    "import-filters",
     "export-marked",
     "export",
     "save",
@@ -392,6 +402,7 @@ mod tests {
             "export-marked",
             "save-filters",
             "load-filters",
+            "import-filters",
             "reset",
             "schema",
             "default-filters",

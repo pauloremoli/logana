@@ -203,6 +203,23 @@ impl App {
         Ok(false)
     }
 
+    pub(super) async fn cmd_import_filters(
+        &mut self,
+        path: String,
+        append: bool,
+    ) -> Result<bool, String> {
+        if !path.is_empty() {
+            let expanded = expand_tilde(&path);
+            self.tabs[self.active_tab]
+                .log_manager
+                .import_npp_filters(&expanded, append)
+                .await
+                .map_err(|e| format!("Failed to import filters from '{}': {}", expanded, e))?;
+            self.tabs[self.active_tab].begin_filter_refresh();
+        }
+        Ok(false)
+    }
+
     pub(super) async fn cmd_open(&mut self, path: String) -> Result<bool, String> {
         let path = expand_tilde(&path);
         if std::path::Path::new(&path).is_dir() {

@@ -16,6 +16,7 @@ pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
     ("date-filter", &["--fg", "--bg", "-l"]),
     ("export", &["-t", "--template"]),
     ("group", &["--fg", "--bg", "-l", "--auto", "--clear"]),
+    ("import-filters", &["--append", "-a"]),
 ];
 
 /// If the current token being typed starts with `-` and there is at least one

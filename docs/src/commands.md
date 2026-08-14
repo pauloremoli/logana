@@ -43,6 +43,7 @@ Press `:` in normal mode to open command mode. Tab completes commands, flags, co
 | `:enable-filters` | Enable all disabled filters |
 | `:save-filters <file>` | Save current filters to a JSON file |
 | `:load-filters <file>` | Load filters from a JSON file |
+| `:import-filters <file> [-a\|--append]` | Import a Notepad++ Analyze-plugin or User-Defined-Language XML config as Include filters. Replaces current filters by default; `--append` merges instead |
 
 > **Flag ordering:** All options (`--regex`, `--fg`, `--bg`, `-l`, `--field`, `--group`/`-g`, `--ignore-case`/`-i`, `--auto`) must appear **before** the pattern. Everything after the first pattern word is treated as part of the pattern text. `--auto` cannot be combined with `--fg`/`--bg`.
 
@@ -154,7 +155,7 @@ Command mode supports multi-tier tab completion:
 
 1. **Color names** — after `--fg` or `--bg` flags
 2. **Template names** — after `-t` / `--template` flags in `:export`
-3. **File paths** — for `:open`, `:save-filters`, `:load-filters`, `:export`
+3. **File paths** — for `:open`, `:save-filters`, `:load-filters`, `:import-filters`, `:export`
 4. **Theme names** — for `:set-theme`
 5. **Command names** — for everything else
 

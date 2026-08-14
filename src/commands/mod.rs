@@ -1,6 +1,7 @@
 pub mod auto_complete;
 pub mod export;
 pub mod info;
+pub mod npp_import;
 pub mod parser;
 
 pub use export::{
@@ -8,4 +9,5 @@ pub use export::{
     load_template, parse_template, render_export,
 };
 pub use info::{COMMANDS, CommandInfo, FILE_PATH_COMMANDS, command_names, find_matching_command};
+pub use npp_import::convert_npp_xml;
 pub use parser::{CommandLine, Commands};

@@ -335,6 +335,56 @@ impl LogManager {
             Ok(export) => (export.filters, export.groups),
             Err(_) => (serde_json::from_str::<Vec<FilterDef>>(&json)?, Vec::new()),
         };
+        self.replace_filters_and_reload(filters, groups).await
+    }
+
+    /// Imports a Notepad++ Analyze-plugin XML config (AnalyseDoc or User
+    /// Defined Language export) from `path` as `Include` filters. With
+    /// `append`, converted entries are merged into the current filters
+    /// (added, or updated in place if a same-pattern-and-type filter already
+    /// exists); otherwise the current filters and groups are replaced
+    /// entirely, same as `load_filters`.
+    pub async fn import_npp_filters(&mut self, path: &str, append: bool) -> anyhow::Result<()> {
+        let xml = std::fs::read_to_string(path)?;
+        let filters = crate::commands::convert_npp_xml(&xml).map_err(anyhow::Error::msg)?;
+        if append {
+            for def in filters {
+                let mut options = FilterOptions::default();
+                if let Some(cc) = def.color_config {
+                    if let Some(fg) = cc.fg {
+                        options = options.fg(&crate::theme::color_to_string(fg));
+                    }
+                    if let Some(bg) = cc.bg {
+                        options = options.bg(&crate::theme::color_to_string(bg));
+                    }
+                    if !cc.match_only {
+                        options = options.line_mode();
+                    }
+                }
+                if def.use_regex {
+                    options = options.regex();
+                }
+                if let Some(group) = def.group {
+                    options = options.group(&group);
+                }
+                self.add_filter_with_color(def.pattern, def.filter_type, options)
+                    .await;
+            }
+            Ok(())
+        } else {
+            self.replace_filters_and_reload(filters, Vec::new()).await
+        }
+    }
+
+    /// Replaces all filters/groups for the current source with `filters`/
+    /// `groups`, persists to the db, and reloads `self.filter_defs`/
+    /// `self.group_defs` from it. Shared tail of `load_filters` and
+    /// `import_npp_filters`'s replace mode.
+    async fn replace_filters_and_reload(
+        &mut self,
+        filters: Vec<FilterDef>,
+        groups: Vec<GroupDef>,
+    ) -> anyhow::Result<()> {
         let source = self.source_file.clone();
         self.db
             .replace_all_filters(&filters, source.as_deref())
@@ -1039,6 +1089,56 @@ mod tests {
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].pattern, "ERROR");
         assert!(mgr.get_group_styles().is_empty());
+    }
+
+    const NPP_ANALYSEDOC_XML: &str = r##"
+        <AnalyseDoc>
+            <SearchText bgColor="green" group="errs">error</SearchText>
+        </AnalyseDoc>
+    "##;
+
+    #[tokio::test]
+    async fn test_import_npp_filters_replaces_existing_filters_by_default() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color("old".into(), FilterType::Include, FilterOptions::default())
+            .await;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        std::fs::write(path, NPP_ANALYSEDOC_XML).unwrap();
+
+        mgr.import_npp_filters(path, false).await.unwrap();
+
+        let filters = mgr.get_filters();
+        // catch-all "^" + "error" — the pre-existing "old" filter is gone.
+        assert_eq!(filters.len(), 2);
+        assert!(filters.iter().all(|f| f.pattern != "old"));
+        assert!(filters.iter().any(|f| f.pattern == "error"));
+    }
+
+    #[tokio::test]
+    async fn test_import_npp_filters_append_merges_into_existing_filters() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color("old".into(), FilterType::Include, FilterOptions::default())
+            .await;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        std::fs::write(path, NPP_ANALYSEDOC_XML).unwrap();
+
+        mgr.import_npp_filters(path, true).await.unwrap();
+
+        let filters = mgr.get_filters();
+        // "old" + catch-all "^" + "error" — nothing removed.
+        assert_eq!(filters.len(), 3);
+        assert!(filters.iter().any(|f| f.pattern == "old"));
+        assert!(filters.iter().any(|f| f.pattern == "error"));
+        let error_filter = filters.iter().find(|f| f.pattern == "error").unwrap();
+        assert_eq!(error_filter.group.as_deref(), Some("errs"));
+        assert_eq!(
+            error_filter.color_config.as_ref().unwrap().bg,
+            Some(ratatui::style::Color::Green)
+        );
     }
 
     #[tokio::test]

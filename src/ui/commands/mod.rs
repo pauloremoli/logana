@@ -130,6 +130,9 @@ impl App {
             Some(Commands::Export { path, template }) => return self.cmd_export(path, template),
             Some(Commands::SaveFilters { path }) => return self.cmd_save_filters(path),
             Some(Commands::LoadFilters { path }) => return self.cmd_load_filters(path).await,
+            Some(Commands::ImportFilters { path, append }) => {
+                return self.cmd_import_filters(path, append).await;
+            }
             Some(Commands::Wrap) => self.cmd_wrap().await,
             Some(Commands::LineNumbers) => self.cmd_line_numbers().await,
             Some(Commands::RelativeLineNumbers) => self.cmd_relative_line_numbers().await,
@@ -783,6 +786,66 @@ mod tests {
         // with a not-found error naming the expanded path, not a literal '~'.
         let result = app
             .run_command("load-filters ~/nonexistent_dir_logana_test/filters.json")
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        let home = dirs::home_dir().unwrap();
+        let expected_path = format!("{}/nonexistent_dir_logana_test", home.display());
+        assert!(
+            msg.contains(&expected_path),
+            "expected the expanded home path in the error, got: {msg}"
+        );
+        assert!(
+            !msg.contains('~'),
+            "tilde should have been expanded, got: {msg}"
+        );
+    }
+
+    const NPP_ANALYSEDOC_XML: &str = r##"
+        <AnalyseDoc>
+            <SearchText bgColor="green" group="errs">error</SearchText>
+        </AnalyseDoc>
+    "##;
+
+    #[tokio::test]
+    async fn test_import_filters_replaces_existing_filters_by_default() {
+        let mut app = make_app(&["line"]).await;
+        app.execute_command_str("filter old".to_string()).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        std::fs::write(&path, NPP_ANALYSEDOC_XML).unwrap();
+
+        let result = app.run_command(&format!("import-filters {}", path)).await;
+        assert!(result.is_ok());
+
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert!(filters.iter().all(|f| f.pattern != "old"));
+        assert!(filters.iter().any(|f| f.pattern == "error"));
+    }
+
+    #[tokio::test]
+    async fn test_import_filters_append_merges_into_existing_filters() {
+        let mut app = make_app(&["line"]).await;
+        app.execute_command_str("filter old".to_string()).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        std::fs::write(&path, NPP_ANALYSEDOC_XML).unwrap();
+
+        let result = app
+            .run_command(&format!("import-filters {} --append", path))
+            .await;
+        assert!(result.is_ok());
+
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert!(filters.iter().any(|f| f.pattern == "old"));
+        assert!(filters.iter().any(|f| f.pattern == "error"));
+    }
+
+    #[tokio::test]
+    async fn test_import_filters_tilde_path_is_expanded() {
+        let mut app = make_app(&["line"]).await;
+        let result = app
+            .run_command("import-filters ~/nonexistent_dir_logana_test/filters.xml")
             .await;
         assert!(result.is_err());
         let msg = result.unwrap_err();

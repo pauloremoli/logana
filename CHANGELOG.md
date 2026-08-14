@@ -13,6 +13,7 @@ All notable changes to logana will be documented in this file.
 - Add `Ctrl+g` in normal mode to enter group management, and `a`/`e` inside it to add or edit a group.
 - Show a `[x]`/`[ ]`/`[-]` toggle status on each Groups section row, matching the filter list.
 - Bind Space to toggle the selected group in group mode, matching the filter list's toggle key.
+- Add `:import-filters` to import a Notepad++ Analyze-plugin or User-Defined-Language XML config directly as filters.
 
 ### Fixed
 - Fix filter groups being shared across tabs/files instead of scoped per file like filters, including `:toggle-group` affecting other tabs and `:save-filters`/`:load-filters` leaking groups between them.
