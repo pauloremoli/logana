@@ -285,7 +285,7 @@ async fn build_app(log_manager: LogManager, config: Config) -> App {
 
 async fn apply_cli_args_to_app(app: &mut App, args: &Args) {
     if let Some(ref fpath) = args.filters
-        && let Err(e) = app.tabs[0].log_manager.load_filters(fpath).await
+        && let Err(e) = app.tabs[0].log_manager.load_filters(fpath, false).await
     {
         app.session
             .startup_warnings

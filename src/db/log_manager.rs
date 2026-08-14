@@ -18,6 +18,34 @@ struct FiltersExport {
     groups: Vec<GroupDef>,
 }
 
+/// Rebuilds the `FilterOptions` a `FilterDef` was originally created with, so
+/// append-merge paths (`load_filters`, `import_npp_filters`) can feed it back
+/// through `add_filter_with_color`.
+fn filter_options_from_def(def: &FilterDef) -> FilterOptions {
+    let mut options = FilterOptions::default();
+    if let Some(cc) = &def.color_config {
+        if let Some(fg) = cc.fg {
+            options = options.fg(&crate::theme::color_to_string(fg));
+        }
+        if let Some(bg) = cc.bg {
+            options = options.bg(&crate::theme::color_to_string(bg));
+        }
+        if !cc.match_only {
+            options = options.line_mode();
+        }
+    }
+    if def.use_regex {
+        options = options.regex();
+    }
+    if def.ignore_case {
+        options = options.ignore_case();
+    }
+    if let Some(group) = &def.group {
+        options = options.group(group);
+    }
+    options
+}
+
 pub struct LogManager {
     pub db: Arc<Database>,
     source_file: Option<String>,
@@ -364,13 +392,45 @@ impl LogManager {
     /// Tries the current `{ filters, groups }` object shape first; a bare
     /// `[...]` array — the pre-groups format — can never deserialize into
     /// that struct, so falling back to it is deterministic, not heuristic.
-    pub async fn load_filters(&mut self, path: &str) -> anyhow::Result<()> {
+    /// With `append`, entries are merged into the current filters/groups
+    /// (added, or updated in place if a same-pattern-and-type filter or
+    /// same-name group already exists); otherwise the current filters and
+    /// groups are replaced entirely.
+    pub async fn load_filters(&mut self, path: &str, append: bool) -> anyhow::Result<()> {
         let json = std::fs::read_to_string(path)?;
         let (filters, groups) = match serde_json::from_str::<FiltersExport>(&json) {
             Ok(export) => (export.filters, export.groups),
             Err(_) => (serde_json::from_str::<Vec<FilterDef>>(&json)?, Vec::new()),
         };
-        self.replace_filters_and_reload(filters, groups).await
+        if append {
+            self.merge_filters_and_groups(filters, groups).await;
+            Ok(())
+        } else {
+            self.replace_filters_and_reload(filters, groups).await
+        }
+    }
+
+    /// Adds/updates each of `filters` and `groups` in place, leaving
+    /// everything else untouched. Shared merge logic for `load_filters` and
+    /// `import_npp_filters`'s append mode.
+    async fn merge_filters_and_groups(&mut self, filters: Vec<FilterDef>, groups: Vec<GroupDef>) {
+        for def in filters {
+            let options = filter_options_from_def(&def);
+            self.add_filter_with_color(def.pattern, def.filter_type, options)
+                .await;
+        }
+        for group in groups {
+            if let Some(cc) = &group.color_config {
+                self.set_group_style(
+                    &group.name,
+                    cc.fg.map(crate::theme::color_to_string).as_deref(),
+                    cc.bg.map(crate::theme::color_to_string).as_deref(),
+                    cc.match_only,
+                )
+                .await;
+            }
+            self.set_group_enabled(&group.name, group.enabled).await;
+        }
     }
 
     /// Imports a Notepad++ Analyze-plugin XML config (AnalyseDoc or User
@@ -383,28 +443,7 @@ impl LogManager {
         let xml = std::fs::read_to_string(path)?;
         let filters = crate::commands::convert_npp_xml(&xml).map_err(anyhow::Error::msg)?;
         if append {
-            for def in filters {
-                let mut options = FilterOptions::default();
-                if let Some(cc) = def.color_config {
-                    if let Some(fg) = cc.fg {
-                        options = options.fg(&crate::theme::color_to_string(fg));
-                    }
-                    if let Some(bg) = cc.bg {
-                        options = options.bg(&crate::theme::color_to_string(bg));
-                    }
-                    if !cc.match_only {
-                        options = options.line_mode();
-                    }
-                }
-                if def.use_regex {
-                    options = options.regex();
-                }
-                if let Some(group) = def.group {
-                    options = options.group(&group);
-                }
-                self.add_filter_with_color(def.pattern, def.filter_type, options)
-                    .await;
-            }
+            self.merge_filters_and_groups(filters, Vec::new()).await;
             Ok(())
         } else {
             self.replace_filters_and_reload(filters, Vec::new()).await
@@ -1027,7 +1066,7 @@ mod tests {
         mgr.save_filters(path).unwrap();
 
         let mut mgr2 = make_manager().await;
-        mgr2.load_filters(path).await.unwrap();
+        mgr2.load_filters(path, false).await.unwrap();
 
         let filters = mgr2.get_filters();
         assert_eq!(filters.len(), 2);
@@ -1056,7 +1095,7 @@ mod tests {
         mgr.save_filters(path).unwrap();
 
         let mut mgr2 = make_manager().await;
-        mgr2.load_filters(path).await.unwrap();
+        mgr2.load_filters(path, false).await.unwrap();
 
         let groups = mgr2.get_group_styles();
         assert_eq!(groups.len(), 2);
@@ -1093,7 +1132,7 @@ mod tests {
         source_mgr.save_filters(path).unwrap();
 
         let mut target = LogManager::new(db, Some("target.log".into())).await;
-        target.load_filters(path).await.unwrap();
+        target.load_filters(path, false).await.unwrap();
 
         assert_eq!(target.get_group_styles().len(), 1);
         assert_eq!(target.get_group_styles()[0].name, "errs");
@@ -1118,12 +1157,57 @@ mod tests {
         )
         .unwrap();
 
-        mgr.load_filters(path).await.unwrap();
+        mgr.load_filters(path, false).await.unwrap();
 
         let filters = mgr.get_filters();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].pattern, "ERROR");
         assert!(mgr.get_group_styles().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_load_filters_append_merges_into_existing_filters_and_groups() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color("old".into(), FilterType::Include, FilterOptions::default())
+            .await;
+        mgr.set_group_style("kept", Some("Green"), None, true).await;
+
+        let mut other = make_manager().await;
+        other
+            .add_filter_with_color(
+                "error".into(),
+                FilterType::Include,
+                FilterOptions::default().group("errs"),
+            )
+            .await;
+        other.set_group_style("errs", Some("Red"), None, true).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        other.save_filters(path).unwrap();
+
+        mgr.load_filters(path, true).await.unwrap();
+
+        let filters = mgr.get_filters();
+        assert_eq!(
+            filters.len(),
+            2,
+            "append must not remove the existing filter"
+        );
+        assert!(filters.iter().any(|f| f.pattern == "old"));
+        assert!(filters.iter().any(|f| f.pattern == "error"));
+
+        let groups = mgr.get_group_styles();
+        assert_eq!(groups.len(), 2, "append must not remove the existing group");
+        let kept = groups.iter().find(|g| g.name == "kept").unwrap();
+        assert_eq!(
+            kept.color_config.as_ref().unwrap().fg,
+            Some(ratatui::style::Color::Green)
+        );
+        let errs = groups.iter().find(|g| g.name == "errs").unwrap();
+        assert_eq!(
+            errs.color_config.as_ref().unwrap().fg,
+            Some(ratatui::style::Color::Red)
+        );
     }
 
     const NPP_ANALYSEDOC_XML: &str = r##"

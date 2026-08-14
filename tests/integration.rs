@@ -594,7 +594,7 @@ async fn test_headless_filter_file_roundtrip() {
     }
 
     let (_db, mut manager) = setup().await;
-    manager.load_filters(&filter_path).await.unwrap();
+    manager.load_filters(&filter_path, false).await.unwrap();
 
     let reader = FileReader::from_bytes(b"INFO line\nERROR line\nDEBUG line\n".to_vec());
     let mut out = Vec::new();

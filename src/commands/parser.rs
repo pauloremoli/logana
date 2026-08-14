@@ -106,7 +106,12 @@ pub enum Commands {
     /// Save filters to file
     SaveFilters { path: String },
     /// Load filters from file
-    LoadFilters { path: String },
+    LoadFilters {
+        path: String,
+        /// Merge into existing filters instead of replacing them
+        #[arg(long, short = 'a')]
+        append: bool,
+    },
     /// Import a Notepad++ Analyze-plugin XML config as Include filters
     ImportFilters {
         path: String,

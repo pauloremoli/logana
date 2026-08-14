@@ -62,7 +62,7 @@ impl App {
             return;
         };
         let expanded = crate::commands::auto_complete::expand_tilde(&path);
-        if let Err(e) = tab.log_manager.load_filters(&expanded).await {
+        if let Err(e) = tab.log_manager.load_filters(&expanded, false).await {
             tab.set_notification(format!("default filter file '{path}': {e}"));
         }
     }
@@ -80,7 +80,11 @@ impl App {
             return;
         };
         let expanded = crate::commands::auto_complete::expand_tilde(&path);
-        if let Err(e) = self.tabs[tab_idx].log_manager.load_filters(&expanded).await {
+        if let Err(e) = self.tabs[tab_idx]
+            .log_manager
+            .load_filters(&expanded, false)
+            .await
+        {
             self.tabs[tab_idx].set_notification(format!("default filter file '{path}': {e}"));
         }
     }
@@ -122,7 +126,7 @@ impl App {
             return;
         };
         let expanded = crate::commands::auto_complete::expand_tilde(&path);
-        if let Err(e) = tab.log_manager.load_filters(&expanded).await {
+        if let Err(e) = tab.log_manager.load_filters(&expanded, false).await {
             tab.set_notification(format!("default filter file '{path}': {e}"));
         }
     }
@@ -143,7 +147,11 @@ impl App {
             return;
         };
         let expanded = crate::commands::auto_complete::expand_tilde(&path);
-        if let Err(e) = self.tabs[tab_idx].log_manager.load_filters(&expanded).await {
+        if let Err(e) = self.tabs[tab_idx]
+            .log_manager
+            .load_filters(&expanded, false)
+            .await
+        {
             self.tabs[tab_idx].set_notification(format!("default filter file '{path}': {e}"));
         }
     }

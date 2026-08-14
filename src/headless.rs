@@ -73,7 +73,7 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
     let mut log_manager = LogManager::new(db, None).await;
 
     if let Some(ref fpath) = args.filters {
-        log_manager.load_filters(fpath).await?;
+        log_manager.load_filters(fpath, false).await?;
     }
 
     apply_inline_filters(

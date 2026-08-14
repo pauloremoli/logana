@@ -129,7 +129,9 @@ impl App {
             Some(Commands::Save { path }) => return self.cmd_save(path).await,
             Some(Commands::Export { path, template }) => return self.cmd_export(path, template),
             Some(Commands::SaveFilters { path }) => return self.cmd_save_filters(path),
-            Some(Commands::LoadFilters { path }) => return self.cmd_load_filters(path).await,
+            Some(Commands::LoadFilters { path, append }) => {
+                return self.cmd_load_filters(path, append).await;
+            }
             Some(Commands::ImportFilters { path, append }) => {
                 return self.cmd_import_filters(path, append).await;
             }

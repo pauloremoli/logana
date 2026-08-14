@@ -17,6 +17,7 @@ pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
     ("export", &["-t", "--template"]),
     ("group", &["--fg", "--bg", "-l", "--auto", "--clear"]),
     ("import-filters", &["--append", "-a"]),
+    ("load-filters", &["--append", "-a"]),
 ];
 
 /// If the current token being typed starts with `-` and there is at least one

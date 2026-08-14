@@ -72,9 +72,12 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "load-filters",
-        usage: "load-filters <path>",
-        description: "Load filters from a file.",
-        examples: &["load-filters filters.json"],
+        usage: "load-filters <path> [-a|--append]",
+        description: "Load filters from a file. Replaces current filters by default; --append merges instead.",
+        examples: &[
+            "load-filters filters.json",
+            "load-filters filters.json --append",
+        ],
     },
     CommandInfo {
         name: "import-filters",

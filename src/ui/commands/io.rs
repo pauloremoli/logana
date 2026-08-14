@@ -190,12 +190,16 @@ impl App {
         Ok(false)
     }
 
-    pub(super) async fn cmd_load_filters(&mut self, path: String) -> Result<bool, String> {
+    pub(super) async fn cmd_load_filters(
+        &mut self,
+        path: String,
+        append: bool,
+    ) -> Result<bool, String> {
         if !path.is_empty() {
             let expanded = expand_tilde(&path);
             self.tabs[self.active_tab]
                 .log_manager
-                .load_filters(&expanded)
+                .load_filters(&expanded, append)
                 .await
                 .map_err(|e| format!("Failed to load filters from '{}': {}", expanded, e))?;
             self.tabs[self.active_tab].begin_filter_refresh();
