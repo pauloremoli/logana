@@ -21,10 +21,6 @@ static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(\w+)="([^"]*)"
 
 /// Converts a Notepad++ Analyze-plugin XML config into logana `Include`
 /// filters, auto-detecting AnalyseDoc vs. User Defined Language exports.
-/// A synthetic catch-all filter (`^`) is always prepended, since logana's
-/// `Include` type hides non-matching lines — Notepad++'s highlighting never
-/// does — so the catch-all keeps every line visible while the real entries
-/// only add highlighting.
 pub fn convert_npp_xml(xml_text: &str) -> Result<Vec<FilterDef>, String> {
     if is_userlang(xml_text) {
         convert_userlang(xml_text)
@@ -37,19 +33,6 @@ fn is_userlang(xml_text: &str) -> bool {
     xml_text.contains("<UserLang") || xml_text.contains("<KeywordLists")
 }
 
-fn catch_all_filter() -> FilterDef {
-    FilterDef {
-        id: 0,
-        pattern: "^".to_string(),
-        filter_type: FilterType::Include,
-        enabled: true,
-        color_config: None,
-        use_regex: true,
-        ignore_case: false,
-        group: None,
-    }
-}
-
 fn parse_attrs(attrs_str: &str) -> HashMap<String, String> {
     ATTR_RE
         .captures_iter(attrs_str)
@@ -58,7 +41,7 @@ fn parse_attrs(attrs_str: &str) -> HashMap<String, String> {
 }
 
 fn convert_analysedoc(xml_text: &str) -> Result<Vec<FilterDef>, String> {
-    let mut filters = vec![catch_all_filter()];
+    let mut filters = Vec::new();
     for caps in SEARCH_TEXT_RE.captures_iter(xml_text) {
         let attrs = parse_attrs(&caps[1]);
         let bg = attrs
@@ -84,7 +67,7 @@ fn convert_analysedoc(xml_text: &str) -> Result<Vec<FilterDef>, String> {
 }
 
 fn convert_userlang(xml_text: &str) -> Result<Vec<FilterDef>, String> {
-    let mut filters = vec![catch_all_filter()];
+    let mut filters = Vec::new();
 
     let mut styles: HashMap<u32, (String, String)> = HashMap::new();
     for caps in WORDS_STYLE_RE.captures_iter(xml_text) {
@@ -218,18 +201,9 @@ mod tests {
     "#;
 
     #[test]
-    fn test_analysedoc_prepends_catch_all_include_filter() {
-        let filters = convert_npp_xml(ANALYSEDOC_XML).unwrap();
-        assert_eq!(filters[0].pattern, "^");
-        assert_eq!(filters[0].filter_type, FilterType::Include);
-        assert!(filters[0].use_regex);
-        assert!(filters[0].color_config.is_none());
-    }
-
-    #[test]
     fn test_analysedoc_maps_named_color_and_group() {
         let filters = convert_npp_xml(ANALYSEDOC_XML).unwrap();
-        let error_filter = &filters[1];
+        let error_filter = &filters[0];
         assert_eq!(error_filter.pattern, "error");
         assert_eq!(error_filter.filter_type, FilterType::Include);
         assert_eq!(error_filter.group.as_deref(), Some("errs"));
@@ -243,7 +217,7 @@ mod tests {
     #[test]
     fn test_analysedoc_passes_through_hex_color_and_unescapes_text() {
         let filters = convert_npp_xml(ANALYSEDOC_XML).unwrap();
-        let warn_filter = &filters[2];
+        let warn_filter = &filters[1];
         assert_eq!(warn_filter.pattern, "warn&ing");
         assert_eq!(warn_filter.group, None);
         let cc = warn_filter.color_config.as_ref().unwrap();
@@ -253,11 +227,11 @@ mod tests {
     #[test]
     fn test_udl_expands_keywords_into_one_filter_per_token() {
         let filters = convert_npp_xml(UDL_XML).unwrap();
-        // catch-all + "foo" + "bar" ("baz" is skipped: no matching WordsStyle)
-        assert_eq!(filters.len(), 3);
-        assert_eq!(filters[1].pattern, "foo");
-        assert_eq!(filters[2].pattern, "bar");
-        for f in &filters[1..] {
+        // "foo" + "bar" ("baz" is skipped: no matching WordsStyle)
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].pattern, "foo");
+        assert_eq!(filters[1].pattern, "bar");
+        for f in &filters {
             assert_eq!(f.group.as_deref(), Some("Keywords1"));
             assert_eq!(f.filter_type, FilterType::Include);
             let cc = f.color_config.as_ref().unwrap();

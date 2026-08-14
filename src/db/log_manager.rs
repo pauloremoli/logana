@@ -1110,8 +1110,8 @@ mod tests {
         mgr.import_npp_filters(path, false).await.unwrap();
 
         let filters = mgr.get_filters();
-        // catch-all "^" + "error" — the pre-existing "old" filter is gone.
-        assert_eq!(filters.len(), 2);
+        // "error" only — the pre-existing "old" filter is gone.
+        assert_eq!(filters.len(), 1);
         assert!(filters.iter().all(|f| f.pattern != "old"));
         assert!(filters.iter().any(|f| f.pattern == "error"));
     }
@@ -1129,8 +1129,8 @@ mod tests {
         mgr.import_npp_filters(path, true).await.unwrap();
 
         let filters = mgr.get_filters();
-        // "old" + catch-all "^" + "error" — nothing removed.
-        assert_eq!(filters.len(), 3);
+        // "old" + "error" — nothing removed.
+        assert_eq!(filters.len(), 2);
         assert!(filters.iter().any(|f| f.pattern == "old"));
         assert!(filters.iter().any(|f| f.pattern == "error"));
         let error_filter = filters.iter().find(|f| f.pattern == "error").unwrap();
