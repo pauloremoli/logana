@@ -13,7 +13,7 @@ use ratatui::{Terminal, prelude::*};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub(super) const DOUBLE_CLICK_MS: u128 = 300;
+pub(super) const DOUBLE_CLICK_MS: u128 = 180;
 
 async fn resolve_bool_setting(
     db: &crate::db::Database,
