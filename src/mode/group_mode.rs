@@ -1,7 +1,9 @@
 use crate::config::Keybindings;
 use crate::filters::ColorConfig;
 use crate::mode::app_mode::{Mode, ModeRenderState, status_entry};
-use crate::mode::filter_mode::{append_color_flags, open_command, quote_command_arg};
+use crate::mode::filter_mode::{
+    append_color_flags, open_command, quote_command_arg, toggle_all_filters,
+};
 use crate::mode::normal_mode::NormalMode;
 use crate::theme::Theme;
 use crate::ui::KeyResult;
@@ -173,6 +175,27 @@ impl GroupManagementMode {
         stay_at_group(self.selected_group.clone(), tab)
     }
 
+    /// Deletes the selected group: every filter in it plus its predefined
+    /// style. Selection moves to whatever group now sits at the deleted
+    /// group's old position, mirroring `FilterManagementMode::delete_filter`'s
+    /// clamp-to-remaining behavior.
+    async fn delete_group(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
+        let names = tab.log_manager.group_names();
+        let pos = names
+            .iter()
+            .position(|n| n == &self.selected_group)
+            .unwrap_or(0);
+        tab.log_manager.remove_group(&self.selected_group).await;
+        tab.begin_filter_refresh();
+        let remaining = tab.log_manager.group_names();
+        let target = remaining
+            .get(pos)
+            .or_else(|| remaining.last())
+            .cloned()
+            .unwrap_or_default();
+        stay_at_group(target, tab)
+    }
+
     fn edit_group_style(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
         let cc =
             crate::filters::group_style(tab.log_manager.get_group_styles(), &self.selected_group)
@@ -269,10 +292,15 @@ impl Mode for GroupManagementMode {
             tab.interaction.g_key_pressed = true;
             return (self, KeyResult::Handled);
         }
-        if kb.filter.toggle_all_filters.matches(key, modifiers)
-            || kb.filter.toggle_filter.matches(key, modifiers)
-        {
+        if kb.filter.toggle_filter.matches(key, modifiers) {
             return self.toggle_group(tab).await;
+        }
+        if kb.filter.toggle_all_filters.matches(key, modifiers) {
+            toggle_all_filters(tab).await;
+            return stay_at_group(self.selected_group.clone(), tab);
+        }
+        if kb.filter.delete_filter.matches(key, modifiers) {
+            return self.delete_group(tab).await;
         }
         if kb.filter.edit_filter.matches(key, modifiers) {
             return self.edit_group_style(tab);
@@ -313,6 +341,12 @@ impl Mode for GroupManagementMode {
                 kb.filter.toggle_all_filters.display()
             ),
             "toggle",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.filter.delete_filter.display(),
+            "delete",
             theme,
         );
         status_entry(&mut spans, kb.filter.edit_filter.display(), "edit", theme);
@@ -451,27 +485,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_toggle_disables_when_any_filter_enabled() {
-        let mut tab = make_tab().await;
-        add_filter(&mut tab, "a", "alpha", true).await;
-        add_filter(&mut tab, "b", "alpha", false).await;
-        let mode = GroupManagementMode::new("alpha".to_string());
-        press(mode, &mut tab, KeyCode::Char('A')).await;
-        assert!(tab.log_manager.get_filters().iter().all(|f| !f.enabled));
-    }
-
-    #[tokio::test]
-    async fn test_toggle_enables_when_all_disabled() {
-        let mut tab = make_tab().await;
-        add_filter(&mut tab, "a", "alpha", false).await;
-        add_filter(&mut tab, "b", "alpha", false).await;
-        let mode = GroupManagementMode::new("alpha".to_string());
-        press(mode, &mut tab, KeyCode::Char('A')).await;
-        assert!(tab.log_manager.get_filters().iter().all(|f| f.enabled));
-    }
-
-    #[tokio::test]
-    async fn test_space_toggles_group_same_as_toggle_all_key() {
+    async fn test_space_disables_group_when_any_filter_enabled() {
         let mut tab = make_tab().await;
         add_filter(&mut tab, "a", "alpha", true).await;
         add_filter(&mut tab, "b", "alpha", false).await;
@@ -481,13 +495,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_space_enables_group_when_all_disabled() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "alpha", false).await;
+        add_filter(&mut tab, "b", "alpha", false).await;
+        let mode = GroupManagementMode::new("alpha".to_string());
+        press(mode, &mut tab, KeyCode::Char(' ')).await;
+        assert!(tab.log_manager.get_filters().iter().all(|f| f.enabled));
+    }
+
+    #[tokio::test]
+    async fn test_space_toggle_only_affects_selected_group() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "alpha", true).await;
+        add_filter(&mut tab, "b", "beta", true).await;
+        let mode = GroupManagementMode::new("alpha".to_string());
+        press(mode, &mut tab, KeyCode::Char(' ')).await;
+        let filters = tab.log_manager.get_filters();
+        assert!(!filters.iter().find(|f| f.pattern == "a").unwrap().enabled);
+        assert!(filters.iter().find(|f| f.pattern == "b").unwrap().enabled);
+    }
+
+    #[tokio::test]
+    async fn test_shift_a_toggles_every_group_not_just_selected() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "alpha", true).await;
+        add_filter(&mut tab, "b", "beta", true).await;
+        let mode = GroupManagementMode::new("alpha".to_string());
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Char('A')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(tab.log_manager.get_filters().iter().all(|f| !f.enabled));
+        assert_eq!(expect_selected(mode2.render_state()), "alpha");
+    }
+
+    #[tokio::test]
+    async fn test_shift_a_enables_every_group_when_all_disabled() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "alpha", false).await;
+        add_filter(&mut tab, "b", "beta", false).await;
+        let mode = GroupManagementMode::new("alpha".to_string());
+        press(mode, &mut tab, KeyCode::Char('A')).await;
+        assert!(tab.log_manager.get_filters().iter().all(|f| f.enabled));
+    }
+
+    #[tokio::test]
     async fn test_toggle_on_group_with_zero_filters_is_noop() {
         let mut tab = make_tab().await;
         tab.log_manager
             .set_group_style("empty", Some("red"), None, true)
             .await;
         let mode = GroupManagementMode::new("empty".to_string());
-        let (mode2, result) = press(mode, &mut tab, KeyCode::Char('A')).await;
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Char(' ')).await;
         assert!(matches!(result, KeyResult::Handled));
         assert!(matches!(
             mode2.render_state(),
@@ -590,6 +648,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_d_deletes_group_and_its_filters() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "alpha", true).await;
+        add_filter(&mut tab, "b", "alpha", true).await;
+        add_filter(&mut tab, "c", "beta", true).await;
+        let mode = GroupManagementMode::new("alpha".to_string());
+        let (mode2, result) = press(mode, &mut tab, KeyCode::Char('d')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(!tab.log_manager.group_names().contains(&"alpha".to_string()));
+        let patterns: Vec<_> = tab
+            .log_manager
+            .get_filters()
+            .iter()
+            .map(|f| f.pattern.clone())
+            .collect();
+        assert_eq!(patterns, vec!["c".to_string()]);
+        assert_eq!(expect_selected(mode2.render_state()), "beta");
+    }
+
+    #[tokio::test]
+    async fn test_d_deletes_group_style_too() {
+        let mut tab = make_tab().await;
+        tab.log_manager
+            .set_group_style("empty", Some("red"), None, true)
+            .await;
+        let mode = GroupManagementMode::new("empty".to_string());
+        press(mode, &mut tab, KeyCode::Char('d')).await;
+        assert!(!tab.log_manager.group_names().contains(&"empty".to_string()));
+        assert!(crate::filters::group_style(tab.log_manager.get_group_styles(), "empty").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_d_on_last_group_selects_previous() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "alpha", true).await;
+        add_filter(&mut tab, "b", "beta", true).await;
+        let mode = GroupManagementMode::new("beta".to_string());
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('d')).await;
+        assert_eq!(expect_selected(mode2.render_state()), "alpha");
+    }
+
+    #[tokio::test]
+    async fn test_d_on_only_group_leaves_empty_selection() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "alpha", true).await;
+        let mode = GroupManagementMode::new("alpha".to_string());
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('d')).await;
+        assert_eq!(expect_selected(mode2.render_state()), "");
+        assert!(tab.log_manager.group_names().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_exit_returns_normal_mode() {
         let mut tab = make_tab().await;
         let mode = GroupManagementMode::new("net".to_string());
@@ -619,6 +729,7 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("GROUP"));
         assert!(text.contains("toggle"));
+        assert!(text.contains("delete"));
         assert!(text.contains("edit"));
         assert!(text.contains("clear style"));
         assert!(text.contains("add"));
@@ -772,6 +883,20 @@ mod tests {
         ));
         match mode.render_state() {
             ModeRenderState::GroupManagement { search, .. } => assert_eq!(search, "e"),
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_d_goes_to_query_while_searching_instead_of_deleting() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "net", true).await;
+        let mut mode = GroupManagementMode::new("net".to_string());
+        mode.searching = true;
+        let (mode, _) = press(mode, &mut tab, KeyCode::Char('d')).await;
+        assert!(tab.log_manager.group_names().contains(&"net".to_string()));
+        match mode.render_state() {
+            ModeRenderState::GroupManagement { search, .. } => assert_eq!(search, "d"),
             other => panic!("expected GroupManagement, got {:?}", other),
         }
     }

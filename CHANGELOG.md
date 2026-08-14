@@ -15,6 +15,8 @@ All notable changes to logana will be documented in this file.
 - Bind Space to toggle the selected group in group mode, matching the filter list's toggle key.
 - Add `:import-filters` to import a Notepad++ Analyze-plugin or User-Defined-Language XML config directly as filters.
 - Support Page Up/Down, half-page scrolling, `gg`/`G`, and `/` search in group mode, matching filter mode's navigation.
+- Bind `A` in group mode to toggle every filter across every group.
+- Bind `d` in group mode to delete the selected group and its filters.
 
 ### Fixed
 - Fix filter groups being shared across tabs/files instead of scoped per file like filters, including `:toggle-group` affecting other tabs and `:save-filters`/`:load-filters` leaking groups between them.

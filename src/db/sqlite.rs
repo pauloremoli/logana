@@ -40,6 +40,7 @@ pub trait FilterStore: Send + Sync {
         group: &str,
         enabled: bool,
     ) -> Result<()>;
+    async fn remove_filters_by_group(&self, source_file: &str, group: &str) -> Result<()>;
     async fn swap_filter_order(&self, id1: i64, id2: i64) -> Result<()>;
     async fn clear_filters(&self) -> Result<()>;
     async fn clear_filters_for_source(&self, source_file: &str) -> Result<()>;
@@ -880,6 +881,15 @@ impl FilterStore for Database {
     ) -> Result<()> {
         sqlx::query("UPDATE filters SET enabled = ? WHERE group_name = ? AND source_file = ?")
             .bind(enabled)
+            .bind(group)
+            .bind(source_file)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn remove_filters_by_group(&self, source_file: &str, group: &str) -> Result<()> {
+        sqlx::query("DELETE FROM filters WHERE group_name = ? AND source_file = ?")
             .bind(group)
             .bind(source_file)
             .execute(&self.pool)

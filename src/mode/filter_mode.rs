@@ -32,6 +32,19 @@ fn stay_at(idx: usize, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
     (Box::new(FilterManagementMode::new(idx)), KeyResult::Handled)
 }
 
+/// Flips every filter on if any is off, off if all are already on. Shared by
+/// `FilterManagementMode::toggle_all_filters` and `GroupManagementMode`'s `A`
+/// binding, which both act on the whole filter set rather than a subset.
+pub(crate) async fn toggle_all_filters(tab: &mut TabState) {
+    let any_enabled = tab.log_manager.get_filters().iter().any(|f| f.enabled);
+    if any_enabled {
+        tab.log_manager.disable_all_filters().await;
+    } else {
+        tab.log_manager.enable_all_filters().await;
+    }
+    tab.begin_filter_refresh();
+}
+
 pub(crate) fn open_command(tab: &mut TabState, cmd: String) -> (Box<dyn Mode>, KeyResult) {
     let len = cmd.len();
     let history = tab.interaction.command_history.clone();
@@ -380,13 +393,7 @@ impl FilterManagementMode {
     }
 
     async fn toggle_all_filters(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
-        let any_enabled = tab.log_manager.get_filters().iter().any(|f| f.enabled);
-        if any_enabled {
-            tab.log_manager.disable_all_filters().await;
-        } else {
-            tab.log_manager.enable_all_filters().await;
-        }
-        tab.begin_filter_refresh();
+        toggle_all_filters(tab).await;
         stay_at(self.selected_filter_index, tab)
     }
 

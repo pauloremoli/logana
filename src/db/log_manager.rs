@@ -256,6 +256,20 @@ impl LogManager {
         let _ = self.db.clear_group_style(self.group_source(), name).await;
     }
 
+    /// Removes group `name` entirely: every filter belonging to it plus its
+    /// predefined style, if any. Mirrors `clear_group_style` + a bulk
+    /// `remove_filter` over the group's members.
+    pub async fn remove_group(&mut self, name: &str) {
+        self.filter_defs
+            .retain(|f| f.group.as_deref() != Some(name));
+        self.group_defs.retain(|g| g.name != name);
+        let _ = self
+            .db
+            .remove_filters_by_group(self.group_source(), name)
+            .await;
+        let _ = self.db.clear_group_style(self.group_source(), name).await;
+    }
+
     /// Set `enabled` on every filter belonging to `group`.
     pub async fn set_filters_enabled_by_group(&mut self, group: &str, enabled: bool) {
         for f in self.filter_defs.iter_mut() {
@@ -1282,6 +1296,49 @@ mod tests {
         assert!(!by_pattern("error").enabled);
         assert!(!by_pattern("warn").enabled);
         assert!(by_pattern("debug").enabled);
+    }
+
+    #[tokio::test]
+    async fn test_remove_group_deletes_its_filters_and_style() {
+        let mut mgr = make_manager().await;
+        let opts = FilterOptions::default().group("errors");
+        mgr.add_filter_with_color("error".into(), FilterType::Include, opts.clone())
+            .await;
+        mgr.add_filter_with_color("warn".into(), FilterType::Include, opts)
+            .await;
+        mgr.add_filter_with_color(
+            "debug".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
+        .await;
+        mgr.set_group_style("errors", Some("red"), None, true).await;
+
+        mgr.remove_group("errors").await;
+
+        let patterns: Vec<_> = mgr
+            .get_filters()
+            .iter()
+            .map(|f| f.pattern.clone())
+            .collect();
+        assert_eq!(patterns, vec!["debug".to_string()]);
+        assert!(!mgr.group_names().contains(&"errors".to_string()));
+        assert!(crate::filters::group_style(mgr.get_group_styles(), "errors").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_remove_group_on_unknown_group_is_noop() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            FilterOptions::default().group("errors"),
+        )
+        .await;
+
+        mgr.remove_group("missing").await;
+
+        assert_eq!(mgr.get_filters().len(), 1);
     }
 
     #[tokio::test]
