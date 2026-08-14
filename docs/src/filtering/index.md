@@ -134,6 +134,87 @@ Export the current filter set to a JSON file, and reload it later:
 
 This is useful for sharing filter sets across machines or between log files with similar structure.
 
+### File Format
+
+A filter file is a JSON object with a `filters` array and an optional `groups` array:
+
+```json
+{
+  "filters": [
+    {
+      "id": 0,
+      "pattern": "error",
+      "filter_type": "Include",
+      "enabled": true,
+      "color_config": { "fg": "Red", "match_only": true },
+      "use_regex": false,
+      "ignore_case": true,
+      "group": "errors"
+    },
+    {
+      "id": 0,
+      "pattern": "debug",
+      "filter_type": "Exclude",
+      "enabled": true
+    },
+    {
+      "id": 0,
+      "pattern": "@field:level:WARN",
+      "filter_type": "Highlight",
+      "enabled": true,
+      "color_config": { "bg": "#282A36", "match_only": false }
+    },
+    {
+      "id": 0,
+      "pattern": "@date:> 2024-02-21",
+      "filter_type": "Include",
+      "enabled": true
+    }
+  ],
+  "groups": [
+    { "name": "errors", "color_config": { "fg": "Red" } }
+  ]
+}
+```
+
+Each entry in `filters`:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `id` | number | yes | Ignored on load — filters are re-assigned real IDs when imported. Any placeholder value (e.g. `0`) works. |
+| `pattern` | string | yes | The match text. For field or date filters, this is a special encoded string — see below. |
+| `filter_type` | string | yes | One of `"Include"`, `"Exclude"`, `"Highlight"` (see [How Filters Work](#how-filters-work)). |
+| `enabled` | boolean | yes | Whether the filter is active. |
+| `color_config` | object | no | Highlight color, omit for none — see below. |
+| `use_regex` | boolean | no | Treat `pattern` as a regex. Defaults to `false`. |
+| `ignore_case` | boolean | no | Case-insensitive matching. Defaults to `false`. Has no effect on field filters. |
+| `group` | string | no | Group name, for toggling several filters together — see [Filter Groups](#filter-groups). |
+
+`color_config`, when present:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `fg` | string | no | Foreground color. |
+| `bg` | string | no | Background color. |
+| `match_only` | boolean | no | `true` (default) highlights only the matched text; `false` highlights the whole line. |
+
+`fg`/`bg` in a hand-written filter file only accept ratatui's 16 built-in color names (`Black`, `Red`, `Green`, `Yellow`, `Blue`, `Magenta`, `Cyan`, `Gray`, `DarkGray`, `LightRed`, `LightGreen`, `LightYellow`, `LightBlue`, `LightMagenta`, `LightCyan`, `White`) or `"#RRGGBB"` hex — not the extended names (`orange`, `pink`, `purple`, …) that `--fg`/`--bg` accept on the command line. Colors set via `:set-color`/`--fg`/`--bg` are always saved back out as one of these two forms, so a file produced by `:save-filters` never needs the extended names either way.
+
+Each entry in `groups`:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string | yes | Group name, matched against filters' `group` field. |
+| `color_config` | object | no | Same shape as above — the group's fallback style. |
+
+A bare array of filter objects (`[{...}, {...}]`, with no `groups`) is also accepted, for files saved before group support was added.
+
+#### Field and date filter patterns
+
+A plain text/regex filter's `pattern` is just the search text. A **field filter** (see [Field Filters](field-filters.md)) instead stores `@field:<key>:<value>` — for example `@field:level:ERROR` matches `:filter --field level=ERROR`. A **date filter** (see [Date & Time Filters](date-filters.md)) stores `@date:<expression>`, using the exact same expression syntax as `:date-filter` — for example `@date:> 2024-02-21` or `@date:09:00 .. 17:00`.
+
+Only single-condition field filters round-trip through this simple `@field:key:value` form. Field filters combining several `--field` conditions and/or trailing free text use an internal encoding not meant to be hand-written — create those in the TUI or with `:filter --field ...` and use `:save-filters` to export them instead.
+
 ## Inline Filters at Startup
 
 Add filters directly on the command line without creating a JSON file first:
