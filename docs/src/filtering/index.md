@@ -206,6 +206,7 @@ Each entry in `groups`:
 |---|---|---|---|
 | `name` | string | yes | Group name, matched against filters' `group` field. |
 | `color_config` | object | no | Same shape as above — the group's fallback style. |
+| `enabled` | boolean | no | `true` (default) if the group's toggle state should start on. |
 
 A bare array of filter objects (`[{...}, {...}]`, with no `groups`) is also accepted, for files saved before group support was added.
 

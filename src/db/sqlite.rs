@@ -63,6 +63,7 @@ pub trait GroupStore: Send + Sync {
         color_config: &ColorConfig,
     ) -> Result<()>;
     async fn clear_group_style(&self, source_file: &str, name: &str) -> Result<()>;
+    async fn set_group_enabled(&self, source_file: &str, name: &str, enabled: bool) -> Result<()>;
     async fn replace_all_groups(
         &self,
         groups: &[GroupDef],
@@ -357,6 +358,13 @@ impl Database {
                 .await?;
         }
 
+        if version < 17 {
+            Self::migrate_to_v17(conn).await?;
+            sqlx::query("PRAGMA user_version = 17")
+                .execute(&mut *conn)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -633,6 +641,16 @@ impl Database {
         Ok(())
     }
 
+    /// A group's enabled state now lives independently of its member
+    /// filters, so a zero-filter group has somewhere to store a toggle.
+    async fn migrate_to_v17(conn: &mut SqliteConnection) -> Result<()> {
+        sqlx::query("ALTER TABLE groups ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+            .execute(&mut *conn)
+            .await
+            .ok();
+        Ok(())
+    }
+
     pub async fn reset_all(&self) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM filters").execute(&mut *tx).await?;
@@ -677,6 +695,7 @@ fn row_to_group_def(row: &sqlx::sqlite::SqliteRow) -> GroupDef {
             bg: bg_str.and_then(|s| s.parse().ok()),
             match_only,
         }),
+        enabled: row.try_get::<i32, _>("enabled").unwrap_or(1) != 0,
     }
 }
 
@@ -1039,6 +1058,19 @@ impl GroupStore for Database {
         Ok(())
     }
 
+    async fn set_group_enabled(&self, source_file: &str, name: &str, enabled: bool) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO groups (source_file, name, enabled) VALUES (?, ?, ?)
+             ON CONFLICT(source_file, name) DO UPDATE SET enabled = excluded.enabled",
+        )
+        .bind(source_file)
+        .bind(name)
+        .bind(enabled as i32)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn replace_all_groups(
         &self,
         groups: &[GroupDef],
@@ -1051,17 +1083,23 @@ impl GroupStore for Database {
             .execute(&mut *tx)
             .await?;
         for group in groups {
-            let Some(cc) = &group.color_config else {
-                continue;
+            let (fg, bg, match_only) = match &group.color_config {
+                Some(cc) => (
+                    cc.fg.map(|c| c.to_string()),
+                    cc.bg.map(|c| c.to_string()),
+                    cc.match_only,
+                ),
+                None => (None, None, true),
             };
             sqlx::query(
-                "INSERT INTO groups (source_file, name, fg_color, bg_color, match_only) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO groups (source_file, name, fg_color, bg_color, match_only, enabled) VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(source)
             .bind(&group.name)
-            .bind(cc.fg.map(|c| c.to_string()))
-            .bind(cc.bg.map(|c| c.to_string()))
-            .bind(cc.match_only as i32)
+            .bind(fg)
+            .bind(bg)
+            .bind(match_only as i32)
+            .bind(group.enabled as i32)
             .execute(&mut *tx)
             .await?;
         }
@@ -1608,6 +1646,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_migrate_to_v17_adds_enabled_column_defaulting_true() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        // Seed a v16-schema `groups` table (no `enabled` column yet) with a
+        // pre-existing row, then set user_version so run_migrations() only
+        // needs to apply v17.
+        let seed_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("sqlite:{path}?mode=rwc"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE groups (
+                source_file TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL,
+                fg_color TEXT,
+                bg_color TEXT,
+                match_only INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (source_file, name)
+            )",
+        )
+        .execute(&seed_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO groups (source_file, name, fg_color, bg_color, match_only) VALUES ('', 'errors', 'Red', NULL, 1)",
+        )
+        .execute(&seed_pool)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version = 16")
+            .execute(&seed_pool)
+            .await
+            .unwrap();
+        seed_pool.close().await;
+
+        let db = Database::new(&path).await.unwrap();
+        let groups = db.get_groups().await.unwrap();
+        assert_eq!(groups.len(), 1);
+        assert!(
+            groups[0].enabled,
+            "a pre-existing group must default to enabled after the migration"
+        );
+
+        db.set_group_enabled("", "errors", false).await.unwrap();
+        let updated = db.get_groups().await.unwrap();
+        assert!(!updated[0].enabled);
+    }
+
+    #[tokio::test]
     async fn test_get_groups_empty_by_default() {
         let db = setup_db().await;
         assert!(db.get_groups().await.unwrap().is_empty());
@@ -1752,6 +1841,7 @@ mod tests {
             &[GroupDef {
                 name: "replaced".to_string(),
                 color_config: Some(cc.clone()),
+                ..Default::default()
             }],
             Some("a.log"),
         )

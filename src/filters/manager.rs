@@ -1294,6 +1294,27 @@ pub fn known_groups(filters: &[FilterDef]) -> Vec<String> {
 pub struct GroupDef {
     pub name: String,
     pub color_config: Option<ColorConfig>,
+    /// The group's own enabled/disabled state, independent of its member
+    /// filters' individual `enabled` flags — the source of truth for a
+    /// group with no filters yet, which otherwise has nothing to toggle.
+    /// Defaults to `true` so a freshly created group starts enabled, and
+    /// older saved filter files (missing this field) load as enabled too.
+    #[serde(default = "default_group_enabled")]
+    pub enabled: bool,
+}
+
+impl Default for GroupDef {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            color_config: None,
+            enabled: true,
+        }
+    }
+}
+
+fn default_group_enabled() -> bool {
+    true
 }
 
 /// The predefined style for group `name`, if one has been set.
@@ -1302,6 +1323,17 @@ pub fn group_style<'a>(groups: &'a [GroupDef], name: &str) -> Option<&'a ColorCo
         .iter()
         .find(|g| g.name == name)
         .and_then(|g| g.color_config.as_ref())
+}
+
+/// Whether group `name`'s own enabled flag is set — the fallback source of
+/// truth when the group has no filters to derive a state from. `true` if
+/// the group has no stored definition at all.
+pub fn group_enabled(groups: &[GroupDef], name: &str) -> bool {
+    groups
+        .iter()
+        .find(|g| g.name == name)
+        .map(|g| g.enabled)
+        .unwrap_or(true)
 }
 
 /// Resolves the `ColorConfig` that should actually style `filter`: its own
@@ -1359,6 +1391,7 @@ mod tests {
         let groups = vec![GroupDef {
             name: "g".to_string(),
             color_config: Some(cc.clone()),
+            ..Default::default()
         }];
         assert_eq!(group_style(&groups, "g"), Some(&cc));
     }
@@ -1385,6 +1418,7 @@ mod tests {
         let groups = vec![GroupDef {
             name: "g".to_string(),
             color_config: Some(group_cc),
+            ..Default::default()
         }];
         assert_eq!(effective_color_config(&filter, &groups), Some(&filter_cc));
     }
@@ -1400,6 +1434,7 @@ mod tests {
         let groups = vec![GroupDef {
             name: "g".to_string(),
             color_config: Some(group_cc.clone()),
+            ..Default::default()
         }];
         assert_eq!(effective_color_config(&filter, &groups), Some(&group_cc));
     }
@@ -1410,6 +1445,7 @@ mod tests {
         let groups = vec![GroupDef {
             name: "g".to_string(),
             color_config: None,
+            ..Default::default()
         }];
         assert_eq!(effective_color_config(&filter, &groups), None);
     }
@@ -1431,6 +1467,7 @@ mod tests {
                 bg: None,
                 match_only: true,
             }),
+            ..Default::default()
         }];
         assert_eq!(effective_color_config(&filter, &groups), None);
     }

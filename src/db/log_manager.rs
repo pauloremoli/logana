@@ -241,6 +241,7 @@ impl LogManager {
             self.group_defs.push(GroupDef {
                 name: name.to_string(),
                 color_config: Some(cc.clone()),
+                ..Default::default()
             });
         }
         let _ = self
@@ -268,6 +269,26 @@ impl LogManager {
             .remove_filters_by_group(self.group_source(), name)
             .await;
         let _ = self.db.clear_group_style(self.group_source(), name).await;
+    }
+
+    /// Sets group `name`'s own `enabled` flag, creating a bare (styleless)
+    /// entry for it if none exists yet. This is the source of truth `A`/space
+    /// falls back to in `GroupManagementMode` when the group has no filters
+    /// of its own to derive a toggle state from.
+    pub async fn set_group_enabled(&mut self, name: &str, enabled: bool) {
+        if let Some(g) = self.group_defs.iter_mut().find(|g| g.name == name) {
+            g.enabled = enabled;
+        } else {
+            self.group_defs.push(GroupDef {
+                name: name.to_string(),
+                enabled,
+                ..Default::default()
+            });
+        }
+        let _ = self
+            .db
+            .set_group_enabled(self.group_source(), name, enabled)
+            .await;
     }
 
     /// Set `enabled` on every filter belonging to `group`.
@@ -1339,6 +1360,42 @@ mod tests {
         mgr.remove_group("missing").await;
 
         assert_eq!(mgr.get_filters().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_set_group_enabled_creates_bare_entry_for_unknown_group() {
+        let mut mgr = make_manager().await;
+        assert!(crate::filters::group_enabled(
+            mgr.get_group_styles(),
+            "empty"
+        ));
+
+        mgr.set_group_enabled("empty", false).await;
+
+        assert!(!crate::filters::group_enabled(
+            mgr.get_group_styles(),
+            "empty"
+        ));
+        assert!(mgr.group_names().contains(&"empty".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_set_group_enabled_preserves_existing_style() {
+        let mut mgr = make_manager().await;
+        mgr.set_group_style("errors", Some("red"), None, true).await;
+
+        mgr.set_group_enabled("errors", false).await;
+
+        assert!(!crate::filters::group_enabled(
+            mgr.get_group_styles(),
+            "errors"
+        ));
+        assert_eq!(
+            crate::filters::group_style(mgr.get_group_styles(), "errors")
+                .unwrap()
+                .fg,
+            Some(ratatui::style::Color::Red)
+        );
     }
 
     #[tokio::test]

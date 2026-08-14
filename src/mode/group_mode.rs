@@ -156,20 +156,33 @@ impl GroupManagementMode {
         stay_at_group(names[next_pos].clone(), tab)
     }
 
-    /// Toggles every filter in the selected group on/off together,
-    /// replicating `cmd_toggle_group`'s any-enabled logic exactly (flip to
-    /// the opposite of "any filter in the group is currently enabled"). A
-    /// zero-filter group (one that exists only via a predefined style) is a
-    /// silent no-op here rather than the CLI command's hard error, since a
-    /// keypress in this mode has no natural place to surface an error.
+    /// Toggles the selected group on/off, flipping to the opposite of its
+    /// current state. For a group with filters, "current state" is "any
+    /// member filter enabled" (mirroring `cmd_toggle_group`), and every
+    /// member flips together. A zero-filter group (one that exists only via
+    /// a predefined style) has no filters to derive a state from or flip, so
+    /// it falls back to — and persists — its own stored enabled flag instead
+    /// of silently doing nothing.
     async fn toggle_group(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
-        let any_enabled = tab
+        let has_filters = tab
             .log_manager
             .get_filters()
             .iter()
-            .any(|f| f.group.as_deref() == Some(self.selected_group.as_str()) && f.enabled);
+            .any(|f| f.group.as_deref() == Some(self.selected_group.as_str()));
+        let currently_enabled = if has_filters {
+            tab.log_manager
+                .get_filters()
+                .iter()
+                .any(|f| f.group.as_deref() == Some(self.selected_group.as_str()) && f.enabled)
+        } else {
+            crate::filters::group_enabled(tab.log_manager.get_group_styles(), &self.selected_group)
+        };
+        let new_state = !currently_enabled;
         tab.log_manager
-            .set_filters_enabled_by_group(&self.selected_group, !any_enabled)
+            .set_filters_enabled_by_group(&self.selected_group, new_state)
+            .await;
+        tab.log_manager
+            .set_group_enabled(&self.selected_group, new_state)
             .await;
         tab.begin_filter_refresh();
         stay_at_group(self.selected_group.clone(), tab)
@@ -539,7 +552,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_toggle_on_group_with_zero_filters_is_noop() {
+    async fn test_toggle_on_group_with_zero_filters_flips_stored_state() {
         let mut tab = make_tab().await;
         tab.log_manager
             .set_group_style("empty", Some("red"), None, true)
@@ -550,6 +563,28 @@ mod tests {
         assert!(matches!(
             mode2.render_state(),
             ModeRenderState::GroupManagement { selected_group, .. } if selected_group == "empty"
+        ));
+        // Newly created groups default to enabled, so one press disables it.
+        assert!(!crate::filters::group_enabled(
+            tab.log_manager.get_group_styles(),
+            "empty"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_toggling_zero_filter_group_twice_restores_enabled_state() {
+        let mut tab = make_tab().await;
+        tab.log_manager
+            .set_group_style("empty", Some("red"), None, true)
+            .await;
+        let mode = GroupManagementMode::new("empty".to_string());
+        let (mode, _) = press(mode, &mut tab, KeyCode::Char(' ')).await;
+        let (_, _) = mode
+            .handle_key(&mut tab, KeyCode::Char(' '), KeyModifiers::NONE)
+            .await;
+        assert!(crate::filters::group_enabled(
+            tab.log_manager.get_group_styles(),
+            "empty"
         ));
     }
 

@@ -26,6 +26,7 @@ All notable changes to logana will be documented in this file.
 - Fix a crash when opening multiple files at once from the directory or archive picker.
 - Fix the filter sidebar's width not being remembered as a single setting shared across files, restored on the next run.
 - Fix `:load-filters` dropping each filter's case-insensitive flag.
+- Fix toggling a group with no filters yet in group mode being a silent no-op instead of enabling/disabling it.
 
 ## [0.7.6] - 2026-08-06
 

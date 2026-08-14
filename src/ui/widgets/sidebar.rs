@@ -211,14 +211,15 @@ fn build_filter_row(
     ])
 }
 
-/// Tri-state: all enabled → `Some(true)`, all disabled or no filters →
-/// `Some(false)`, mixed → `None`.
-fn group_toggle_state(name: &str, all_filters: &[FilterDef]) -> Option<bool> {
+/// Tri-state: all enabled → `Some(true)`, all disabled → `Some(false)`,
+/// mixed → `None`. A group with no filters has nothing to derive a state
+/// from, so it falls back to its own stored `enabled` flag.
+fn group_toggle_state(name: &str, all_filters: &[FilterDef], groups: &[GroupDef]) -> Option<bool> {
     let mut members = all_filters
         .iter()
         .filter(|f| f.group.as_deref() == Some(name));
     let Some(first) = members.next() else {
-        return Some(false);
+        return Some(crate::filters::group_enabled(groups, name));
     };
     if members.all(|f| f.enabled == first.enabled) {
         Some(first.enabled)
@@ -240,7 +241,7 @@ fn build_group_row(
         .iter()
         .filter(|f| f.group.as_deref() == Some(name))
         .count();
-    let status = match group_toggle_state(name, all_filters) {
+    let status = match group_toggle_state(name, all_filters, groups) {
         Some(true) => "[x]",
         Some(false) => "[ ]",
         None => "[-]",
@@ -978,6 +979,7 @@ mod tests {
                 bg: None,
                 match_only: true,
             }),
+            ..Default::default()
         }];
         let line = build_filter_row(&filter, 0, 0, &[3], &theme, &groups);
 
@@ -1007,6 +1009,7 @@ mod tests {
                 bg: Some(ratatui::style::Color::Black),
                 match_only: true,
             }),
+            ..Default::default()
         }];
         let line = build_filter_row(&filter, 0, 0, &[3], &theme, &groups);
 
@@ -1034,6 +1037,7 @@ mod tests {
                 bg: Some(ratatui::style::Color::Black),
                 match_only: true,
             }),
+            ..Default::default()
         }];
         let line = build_filter_row(&filter, 0, 0, &[3], &theme, &groups);
 
@@ -1064,6 +1068,7 @@ mod tests {
                 bg: None,
                 match_only: true,
             }),
+            ..Default::default()
         }];
         let line = build_filter_row(&filter, 0, 0, &[3], &theme, &groups);
 
@@ -1407,7 +1412,35 @@ mod tests {
         let theme = Theme::default();
         let line = build_group_row("empty", &[], &[], false, &theme);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        // No filters and no stored `GroupDef` at all: falls back to the
+        // default-enabled state, same as a freshly created group.
+        assert_eq!(text, "[x] empty (0)");
+    }
+
+    #[test]
+    fn test_build_group_row_zero_filters_uses_stored_disabled_state() {
+        let theme = Theme::default();
+        let groups = vec![GroupDef {
+            name: "empty".to_string(),
+            enabled: false,
+            ..Default::default()
+        }];
+        let line = build_group_row("empty", &[], &groups, false, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "[ ] empty (0)");
+    }
+
+    #[test]
+    fn test_build_group_row_zero_filters_uses_stored_enabled_state() {
+        let theme = Theme::default();
+        let groups = vec![GroupDef {
+            name: "empty".to_string(),
+            enabled: true,
+            ..Default::default()
+        }];
+        let line = build_group_row("empty", &[], &groups, false, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "[x] empty (0)");
     }
 
     #[test]
@@ -1443,6 +1476,7 @@ mod tests {
                 bg: None,
                 match_only: true,
             }),
+            ..Default::default()
         }];
         let line = build_group_row("net", &[], &groups, false, &theme);
         assert_eq!(line.spans[1].style.fg, Some(ratatui::style::Color::Red));
