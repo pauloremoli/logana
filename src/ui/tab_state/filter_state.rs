@@ -21,6 +21,10 @@ pub struct FilterState {
     /// Persisted sidebar viewport row count, mirrors `ScrollState::visible_height`.
     /// Set during `render_sidebar`; used by filter-mode half/full-page motions.
     pub sidebar_visible_height: usize,
+    /// Persisted Groups-section viewport row count, `sidebar_visible_height`'s
+    /// counterpart for the Groups section. Set during `render_sidebar`; used
+    /// by `GroupManagementMode`'s half/full-page motions.
+    pub groups_visible_height: usize,
     /// Index of the last-highlighted filter in the sidebar, persisted so
     /// leaving and re-entering filter management mode (or just browsing
     /// with the mode bar closed) keeps the same row selected instead of
@@ -72,6 +76,7 @@ impl Default for FilterState {
             editing_filter_id: None,
             sidebar_scroll: 0,
             sidebar_visible_height: 0,
+            groups_visible_height: 0,
             last_selected_filter: 0,
             highlight_mode: false,
             manager: Arc::new(FilterManager::empty()),

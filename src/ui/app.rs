@@ -2363,6 +2363,8 @@ mod tests {
             highlight_mode: false,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &app.theme,
         };
         let mut terminal =
@@ -2503,7 +2505,7 @@ mod tests {
         app.handle_left_click(sidebar_area.x + 5, group_row).await;
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
-            ModeRenderState::GroupManagement { selected_group } if selected_group == "net"
+            ModeRenderState::GroupManagement { selected_group, .. } if selected_group == "net"
         ));
     }
 

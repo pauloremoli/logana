@@ -1128,7 +1128,7 @@ mod tests {
         }
         let (mode, _) = press(&mut tab, KeyCode::Char('g'), KeyModifiers::CONTROL).await;
         match mode.render_state() {
-            ModeRenderState::GroupManagement { selected_group } => {
+            ModeRenderState::GroupManagement { selected_group, .. } => {
                 assert_eq!(selected_group, "alpha");
             }
             other => panic!("expected GroupManagement, got {:?}", other),
@@ -1140,7 +1140,7 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let (mode, _) = press(&mut tab, KeyCode::Char('g'), KeyModifiers::CONTROL).await;
         match mode.render_state() {
-            ModeRenderState::GroupManagement { selected_group } => {
+            ModeRenderState::GroupManagement { selected_group, .. } => {
                 assert_eq!(selected_group, "");
             }
             other => panic!("expected GroupManagement, got {:?}", other),

@@ -18,11 +18,105 @@ use ratatui::text::{Line, Span};
 #[derive(Debug)]
 pub struct GroupManagementMode {
     pub selected_group: String,
+    /// Live typeahead query; non-empty narrows the Groups section to matching names.
+    pub search: String,
+    /// True while capturing raw text input for `search` (gates all other bound keys).
+    pub searching: bool,
+    /// Selection to restore if search is cancelled with `Esc`.
+    pub pre_search_selected: Option<String>,
 }
 
 impl GroupManagementMode {
     pub fn new(selected_group: String) -> Self {
-        Self { selected_group }
+        Self {
+            selected_group,
+            search: String::new(),
+            searching: false,
+            pre_search_selected: None,
+        }
+    }
+
+    /// Returns to group mode at `name` while preserving the in-progress
+    /// search — unlike `stay_at_group`, which always resets back to a
+    /// non-searching mode. Used for navigation (`j`/`k`) within the narrowed
+    /// list while `searching` is active.
+    fn stay_searching(&self, name: String) -> (Box<dyn Mode>, KeyResult) {
+        (
+            Box::new(GroupManagementMode {
+                selected_group: name,
+                search: self.search.clone(),
+                searching: true,
+                pre_search_selected: self.pre_search_selected.clone(),
+            }),
+            KeyResult::Handled,
+        )
+    }
+
+    /// Group names matching the current search query — every known group
+    /// when not searching or the query is empty.
+    fn narrowed_group_names(&self, tab: &TabState) -> Vec<String> {
+        crate::ui::widgets::sidebar::narrowed_group_names(
+            &tab.log_manager.group_names(),
+            &self.search,
+        )
+    }
+
+    /// Handles a key while `searching` is active: raw text capture for the
+    /// query plus single-step navigation within the narrowed list. Mirrors
+    /// `FilterManagementMode::handle_search_key`.
+    fn handle_search_key(
+        mut self: Box<Self>,
+        tab: &mut TabState,
+        kb: &Keybindings,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        if kb.search.confirm.matches(key, modifiers) {
+            return stay_at_group(self.selected_group.clone(), tab);
+        }
+        if kb.search.cancel.matches(key, modifiers) {
+            let restore = self.pre_search_selected.clone().unwrap_or_default();
+            return stay_at_group(restore, tab);
+        }
+        if kb.navigation.scroll_down.matches(key, modifiers) {
+            let narrowed = self.narrowed_group_names(tab);
+            let pos = narrowed
+                .iter()
+                .position(|n| n == &self.selected_group)
+                .unwrap_or(0);
+            let next = narrowed
+                .get(pos + 1)
+                .or_else(|| narrowed.last())
+                .cloned()
+                .unwrap_or_else(|| self.selected_group.clone());
+            return self.stay_searching(next);
+        }
+        if kb.navigation.scroll_up.matches(key, modifiers) {
+            let narrowed = self.narrowed_group_names(tab);
+            let pos = narrowed
+                .iter()
+                .position(|n| n == &self.selected_group)
+                .unwrap_or(0);
+            let prev = narrowed
+                .get(pos.saturating_sub(1))
+                .cloned()
+                .unwrap_or_else(|| self.selected_group.clone());
+            return self.stay_searching(prev);
+        }
+        match key {
+            KeyCode::Backspace => {
+                self.search.pop();
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                self.search.push(c);
+            }
+            _ => return (self, KeyResult::Ignored),
+        }
+        let narrowed = self.narrowed_group_names(tab);
+        if !narrowed.iter().any(|n| n == &self.selected_group) {
+            self.selected_group = narrowed.first().cloned().unwrap_or_default();
+        }
+        (self, KeyResult::Handled)
     }
 }
 
@@ -113,15 +207,67 @@ impl Mode for GroupManagementMode {
     ) -> (Box<dyn Mode>, KeyResult) {
         let kb = tab.interaction.keybindings.clone();
 
+        if self.searching {
+            return self.handle_search_key(tab, &kb, key, modifiers);
+        }
+
         if kb.filter.exit_mode.matches(key, modifiers) {
             tab.interaction.g_key_pressed = false;
             return (Box::new(NormalMode::default()), KeyResult::Handled);
+        }
+        if kb.filter.search.matches(key, modifiers) {
+            tab.interaction.g_key_pressed = false;
+            return (
+                Box::new(GroupManagementMode {
+                    selected_group: self.selected_group.clone(),
+                    search: String::new(),
+                    searching: true,
+                    pre_search_selected: Some(self.selected_group.clone()),
+                }),
+                KeyResult::Handled,
+            );
         }
         if kb.navigation.scroll_down.matches(key, modifiers) {
             return self.navigate(tab, 1);
         }
         if kb.navigation.scroll_up.matches(key, modifiers) {
             return self.navigate(tab, -1);
+        }
+        if kb.navigation.half_page_up.matches(key, modifiers) {
+            let half = (tab.filter.groups_visible_height / 2).max(1) as i64;
+            return self.navigate(tab, -half);
+        }
+        if kb.navigation.half_page_down.matches(key, modifiers) {
+            let half = (tab.filter.groups_visible_height / 2).max(1) as i64;
+            return self.navigate(tab, half);
+        }
+        if kb.navigation.page_up.matches(key, modifiers) {
+            let page = tab.filter.groups_visible_height.max(1) as i64;
+            return self.navigate(tab, -page);
+        }
+        if kb.navigation.page_down.matches(key, modifiers) {
+            let page = tab.filter.groups_visible_height.max(1) as i64;
+            return self.navigate(tab, page);
+        }
+        if kb.normal.go_to_bottom.matches(key, modifiers) {
+            let names = tab.log_manager.group_names();
+            let target = names
+                .last()
+                .cloned()
+                .unwrap_or_else(|| self.selected_group.clone());
+            return stay_at_group(target, tab);
+        }
+        if kb.normal.go_to_top_chord.matches(key, modifiers) {
+            if tab.interaction.g_key_pressed {
+                let names = tab.log_manager.group_names();
+                let target = names
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| self.selected_group.clone());
+                return stay_at_group(target, tab);
+            }
+            tab.interaction.g_key_pressed = true;
+            return (self, KeyResult::Handled);
         }
         if kb.filter.toggle_all_filters.matches(key, modifiers)
             || kb.filter.toggle_filter.matches(key, modifiers)
@@ -177,6 +323,7 @@ impl Mode for GroupManagementMode {
             theme,
         );
         status_entry(&mut spans, kb.group.add_group.display(), "add", theme);
+        status_entry(&mut spans, kb.filter.search.display(), "search", theme);
         status_entry(&mut spans, kb.filter.exit_mode.display(), "exit", theme);
         Line::from(spans)
     }
@@ -184,6 +331,8 @@ impl Mode for GroupManagementMode {
     fn render_state(&self) -> ModeRenderState {
         ModeRenderState::GroupManagement {
             selected_group: self.selected_group.clone(),
+            search: self.search.clone(),
+            searching: self.searching,
         }
     }
 }
@@ -228,6 +377,33 @@ mod tests {
             .await
     }
 
+    async fn press_mod(
+        mode: GroupManagementMode,
+        tab: &mut TabState,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> (Box<dyn Mode>, KeyResult) {
+        Box::new(mode).handle_key(tab, code, modifiers).await
+    }
+
+    /// Adds `n` single-filter groups named `g00`, `g01`, ... so
+    /// `LogManager::group_names()`'s alphabetical sort matches index order.
+    async fn add_n_groups(tab: &mut TabState, n: usize) {
+        for i in 0..n {
+            // Distinct patterns: `add_filter_with_color` dedups by
+            // `(pattern, filter_type)`, so a shared pattern would just keep
+            // updating one filter's group instead of creating `n` of them.
+            add_filter(tab, &format!("x{i}"), &format!("g{i:02}"), true).await;
+        }
+    }
+
+    fn expect_selected(state: ModeRenderState) -> String {
+        match state {
+            ModeRenderState::GroupManagement { selected_group, .. } => selected_group,
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
+    }
+
     #[test]
     fn test_new_sets_selected_group() {
         let mode = GroupManagementMode::new("net".to_string());
@@ -244,7 +420,7 @@ mod tests {
         assert!(matches!(result, KeyResult::Handled));
         assert!(matches!(
             mode2.render_state(),
-            ModeRenderState::GroupManagement { selected_group } if selected_group == "beta"
+            ModeRenderState::GroupManagement { selected_group, .. } if selected_group == "beta"
         ));
     }
 
@@ -257,7 +433,7 @@ mod tests {
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
         assert!(matches!(
             mode2.render_state(),
-            ModeRenderState::GroupManagement { selected_group } if selected_group == "beta"
+            ModeRenderState::GroupManagement { selected_group, .. } if selected_group == "beta"
         ));
     }
 
@@ -270,7 +446,7 @@ mod tests {
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('k')).await;
         assert!(matches!(
             mode2.render_state(),
-            ModeRenderState::GroupManagement { selected_group } if selected_group == "alpha"
+            ModeRenderState::GroupManagement { selected_group, .. } if selected_group == "alpha"
         ));
     }
 
@@ -315,7 +491,7 @@ mod tests {
         assert!(matches!(result, KeyResult::Handled));
         assert!(matches!(
             mode2.render_state(),
-            ModeRenderState::GroupManagement { selected_group } if selected_group == "empty"
+            ModeRenderState::GroupManagement { selected_group, .. } if selected_group == "empty"
         ));
     }
 
@@ -409,7 +585,7 @@ mod tests {
         assert!(crate::filters::group_style(tab.log_manager.get_group_styles(), "net").is_none());
         assert!(matches!(
             mode2.render_state(),
-            ModeRenderState::GroupManagement { selected_group } if selected_group == "net"
+            ModeRenderState::GroupManagement { selected_group, .. } if selected_group == "net"
         ));
     }
 
@@ -430,7 +606,7 @@ mod tests {
         assert!(matches!(result, KeyResult::Ignored));
         assert!(matches!(
             mode2.render_state(),
-            ModeRenderState::GroupManagement { selected_group } if selected_group == "net"
+            ModeRenderState::GroupManagement { selected_group, .. } if selected_group == "net"
         ));
     }
 
@@ -446,6 +622,7 @@ mod tests {
         assert!(text.contains("edit"));
         assert!(text.contains("clear style"));
         assert!(text.contains("add"));
+        assert!(text.contains("search"));
         assert!(text.contains("exit"));
     }
 
@@ -454,7 +631,239 @@ mod tests {
         let mode = GroupManagementMode::new("sys".to_string());
         assert!(matches!(
             mode.render_state(),
-            ModeRenderState::GroupManagement { selected_group } if selected_group == "sys"
+            ModeRenderState::GroupManagement { selected_group, .. } if selected_group == "sys"
         ));
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_d_half_page_down_group() {
+        let mut tab = make_tab().await;
+        add_n_groups(&mut tab, 20).await;
+        tab.filter.groups_visible_height = 10;
+        let mode = GroupManagementMode::new("g00".to_string());
+        let (mode2, _) = press_mod(mode, &mut tab, KeyCode::Char('d'), KeyModifiers::CONTROL).await;
+        assert_eq!(expect_selected(mode2.render_state()), "g05");
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_u_half_page_up_group() {
+        let mut tab = make_tab().await;
+        add_n_groups(&mut tab, 20).await;
+        tab.filter.groups_visible_height = 10;
+        let mode = GroupManagementMode::new("g15".to_string());
+        let (mode2, _) = press_mod(mode, &mut tab, KeyCode::Char('u'), KeyModifiers::CONTROL).await;
+        assert_eq!(expect_selected(mode2.render_state()), "g10");
+    }
+
+    #[tokio::test]
+    async fn test_page_down_moves_by_visible_height_group() {
+        let mut tab = make_tab().await;
+        add_n_groups(&mut tab, 30).await;
+        tab.filter.groups_visible_height = 10;
+        let mode = GroupManagementMode::new("g00".to_string());
+        let (mode2, _) = press(mode, &mut tab, KeyCode::PageDown).await;
+        assert_eq!(expect_selected(mode2.render_state()), "g10");
+    }
+
+    #[tokio::test]
+    async fn test_page_up_moves_by_visible_height_group() {
+        let mut tab = make_tab().await;
+        add_n_groups(&mut tab, 30).await;
+        tab.filter.groups_visible_height = 10;
+        let mode = GroupManagementMode::new("g25".to_string());
+        let (mode2, _) = press(mode, &mut tab, KeyCode::PageUp).await;
+        assert_eq!(expect_selected(mode2.render_state()), "g15");
+    }
+
+    #[tokio::test]
+    async fn test_page_down_clamps_at_last_group() {
+        let mut tab = make_tab().await;
+        add_n_groups(&mut tab, 5).await;
+        tab.filter.groups_visible_height = 10;
+        let mode = GroupManagementMode::new("g00".to_string());
+        let (mode2, _) = press(mode, &mut tab, KeyCode::PageDown).await;
+        assert_eq!(expect_selected(mode2.render_state()), "g04");
+    }
+
+    #[tokio::test]
+    async fn test_bare_shift_g_jumps_to_last_group() {
+        let mut tab = make_tab().await;
+        add_n_groups(&mut tab, 10).await;
+        let mode = GroupManagementMode::new("g00".to_string());
+        let (mode2, _) = press(mode, &mut tab, KeyCode::Char('G')).await;
+        assert_eq!(expect_selected(mode2.render_state()), "g09");
+    }
+
+    #[tokio::test]
+    async fn test_bare_g_jumps_to_first_group() {
+        let mut tab = make_tab().await;
+        add_n_groups(&mut tab, 10).await;
+        let mode = GroupManagementMode::new("g05".to_string());
+        let (mode, result) = press(mode, &mut tab, KeyCode::Char('g')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(
+            tab.interaction.g_key_pressed,
+            "first 'g' should arm the chord"
+        );
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('g'), KeyModifiers::NONE)
+            .await;
+        assert!(
+            !tab.interaction.g_key_pressed,
+            "second 'g' should complete and disarm the chord"
+        );
+        assert_eq!(expect_selected(mode.render_state()), "g00");
+    }
+
+    #[tokio::test]
+    async fn test_slash_enters_search_mode_with_empty_query() {
+        let mut tab = make_tab().await;
+        add_n_groups(&mut tab, 3).await;
+        let mode = GroupManagementMode::new("g00".to_string());
+        let (mode, result) = press(mode, &mut tab, KeyCode::Char('/')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        match mode.render_state() {
+            ModeRenderState::GroupManagement {
+                search, searching, ..
+            } => {
+                assert_eq!(search, "");
+                assert!(searching);
+            }
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_typing_while_searching_narrows_and_moves_off_nonmatching_selection() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "alpha", true).await;
+        add_filter(&mut tab, "b", "beta", true).await;
+        let mut mode = GroupManagementMode::new("alpha".to_string());
+        mode.searching = true;
+        let (mode, _) = press(mode, &mut tab, KeyCode::Char('b')).await;
+        match mode.render_state() {
+            ModeRenderState::GroupManagement {
+                selected_group,
+                search,
+                ..
+            } => {
+                assert_eq!(search, "b");
+                assert_eq!(selected_group, "beta");
+            }
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_action_letter_goes_to_query_while_searching_not_triggered() {
+        let mut tab = make_tab().await;
+        tab.log_manager
+            .set_group_style("net", Some("red"), None, true)
+            .await;
+        let mut mode = GroupManagementMode::new("net".to_string());
+        mode.searching = true;
+        // 'e' is normally bound to edit_group_style — while searching it must
+        // be captured as query text instead, mirroring `FilterManagementMode`.
+        let (mode, result) = press(mode, &mut tab, KeyCode::Char('e')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::GroupManagement { .. }
+        ));
+        match mode.render_state() {
+            ModeRenderState::GroupManagement { search, .. } => assert_eq!(search, "e"),
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_backspace_removes_last_search_char() {
+        let mut tab = make_tab().await;
+        add_n_groups(&mut tab, 3).await;
+        let mut mode = GroupManagementMode::new("g00".to_string());
+        mode.searching = true;
+        mode.search = "ab".to_string();
+        let (mode, _) = press(mode, &mut tab, KeyCode::Backspace).await;
+        match mode.render_state() {
+            ModeRenderState::GroupManagement { search, .. } => assert_eq!(search, "a"),
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_enter_confirms_search_and_exits_searching() {
+        let mut tab = make_tab().await;
+        add_n_groups(&mut tab, 3).await;
+        let mut mode = GroupManagementMode::new("g00".to_string());
+        mode.searching = true;
+        mode.search = "g02".to_string();
+        let (mode, _) = press(mode, &mut tab, KeyCode::Enter).await;
+        match mode.render_state() {
+            ModeRenderState::GroupManagement {
+                selected_group,
+                search,
+                searching,
+            } => {
+                assert_eq!(selected_group, "g00");
+                assert_eq!(search, "", "confirming search must un-narrow the sidebar");
+                assert!(!searching);
+            }
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_esc_cancels_search_and_restores_original_selection() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "alpha", true).await;
+        add_filter(&mut tab, "b", "beta", true).await;
+        add_filter(&mut tab, "c", "candy", true).await;
+        let mut mode = GroupManagementMode::new("alpha".to_string());
+        mode.searching = true;
+        mode.pre_search_selected = Some("alpha".to_string());
+        mode.search = "c".to_string();
+        let (mode, result) = press(mode, &mut tab, KeyCode::Esc).await;
+        assert!(matches!(result, KeyResult::Handled));
+        match mode.render_state() {
+            ModeRenderState::GroupManagement {
+                selected_group,
+                search,
+                searching,
+            } => {
+                assert_eq!(
+                    selected_group, "alpha",
+                    "Esc must restore the pre-search selection"
+                );
+                assert_eq!(search, "");
+                assert!(!searching);
+            }
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_j_navigates_within_narrowed_list_while_searching() {
+        let mut tab = make_tab().await;
+        add_filter(&mut tab, "a", "car", true).await;
+        add_filter(&mut tab, "b", "cat", true).await;
+        add_filter(&mut tab, "c", "dog", true).await;
+        let mut mode = GroupManagementMode::new("car".to_string());
+        mode.searching = true;
+        mode.search = "ca".to_string();
+        let (mode, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
+        match mode.render_state() {
+            ModeRenderState::GroupManagement {
+                selected_group,
+                searching,
+                ..
+            } => {
+                assert_eq!(
+                    selected_group, "cat",
+                    "only 'car'/'cat' match 'ca', not 'dog'"
+                );
+                assert!(searching, "navigating within search must stay searching");
+            }
+            other => panic!("expected GroupManagement, got {:?}", other),
+        }
     }
 }

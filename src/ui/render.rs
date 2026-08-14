@@ -64,6 +64,10 @@ struct UiRenderState {
     filter_searching: bool,
     /// Name of the group selected in `GroupManagement`, or `None` outside it.
     selected_group: Option<String>,
+    /// Live typeahead query narrowing the Groups section; empty when not searching.
+    group_search: String,
+    /// True while group search is capturing input — see `ModeRenderState::GroupManagement`.
+    group_searching: bool,
     visual_anchor: Option<usize>,
     visual_char_selection: Option<(usize, usize)>,
     comment_popup: Option<(Vec<String>, usize, usize, usize, bool)>,
@@ -219,6 +223,8 @@ impl App {
                 state.selected_group.as_deref(),
                 is_group_mode,
                 show_groups,
+                &state.group_search,
+                state.group_searching,
             );
         }
 
@@ -303,9 +309,20 @@ impl App {
         // `GroupManagement`, rather than remembering the last selection the
         // way the filter list does via `last_selected_filter`.
         let selected_group = match render_state {
-            ModeRenderState::GroupManagement { selected_group } => Some(selected_group.clone()),
+            ModeRenderState::GroupManagement { selected_group, .. } => Some(selected_group.clone()),
             _ => None,
         };
+        let group_search = match render_state {
+            ModeRenderState::GroupManagement { search, .. } => search.clone(),
+            _ => String::new(),
+        };
+        let group_searching = matches!(
+            render_state,
+            ModeRenderState::GroupManagement {
+                searching: true,
+                ..
+            }
+        );
         let keybindings = self.tabs[self.active_tab].interaction.keybindings.clone();
         let status_line = self.tabs[self.active_tab]
             .interaction
@@ -477,6 +494,8 @@ impl App {
             filter_search,
             filter_searching,
             selected_group,
+            group_search,
+            group_searching,
             visual_anchor,
             visual_char_selection,
             comment_popup,
@@ -733,6 +752,8 @@ impl App {
         selected_group: Option<&str>,
         is_group_mode: bool,
         show_groups: bool,
+        group_search: &str,
+        group_searching: bool,
     ) {
         let tab = &mut self.tabs[self.active_tab];
         let all_filters = tab.log_manager.get_filters();
@@ -759,9 +780,12 @@ impl App {
         let (content_w, content_h) =
             super::widgets::sidebar::sidebar_inner_dims(sidebar_area, show_borders);
         let group_count = if show_groups { group_names.len() } else { 0 };
-        let (filters_h, _groups_h) =
+        let (filters_h, groups_h) =
             super::widgets::sidebar::split_sidebar_heights(content_h, group_count);
         tab.filter.sidebar_visible_height = filters_h;
+        // `groups_h` includes the section's own title row; the list itself
+        // gets one row less, matching `Sidebar::render`'s `groups_block.inner`.
+        tab.filter.groups_visible_height = groups_h.saturating_sub(1);
         let scroll_offset = super::widgets::sidebar::compute_scroll_offset(
             filters,
             selected_filter_idx,
@@ -791,6 +815,8 @@ impl App {
                 highlight_mode: tab.filter.highlight_mode,
                 search,
                 searching,
+                group_search,
+                group_searching,
                 theme: &self.theme,
             },
             sidebar_area,

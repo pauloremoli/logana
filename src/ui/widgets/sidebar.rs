@@ -44,6 +44,12 @@ pub struct Sidebar<'a> {
     /// `/` is pressed, before any character is typed — otherwise there's no
     /// visible cue that the app is now waiting for search text.
     pub searching: bool,
+    /// Live typeahead query narrowing `group_names`; `GroupManagementMode`'s
+    /// counterpart to `search`. Shown in the Groups section title.
+    pub group_search: &'a str,
+    /// True while group search is capturing input; `GroupManagementMode`'s
+    /// counterpart to `searching`.
+    pub group_searching: bool,
     pub theme: &'a Theme,
 }
 
@@ -147,6 +153,21 @@ pub fn narrowed_filter_indices(
         .collect()
 }
 
+/// Names (from `group_names`) matching the `search` regex, in original list
+/// order. Empty `search` means "everything matches" — `GroupManagementMode`'s
+/// counterpart to `narrowed_filter_indices`, returning names directly since
+/// groups are selected by name rather than index.
+pub fn narrowed_group_names(group_names: &[String], search: &str) -> Vec<String> {
+    if search.is_empty() {
+        return group_names.to_vec();
+    }
+    group_names
+        .iter()
+        .filter(|name| regex_search_match(search, name))
+        .cloned()
+        .collect()
+}
+
 fn build_filter_row(
     filter: &FilterDef,
     idx: usize,
@@ -243,11 +264,43 @@ fn build_group_row(
     ])
 }
 
+/// Appends the "type to search..." / "/query" cue shared by the Filters and
+/// Groups section titles. Gated on `searching` rather than `search.is_empty()`:
+/// the moment right after pressing `/` has an empty query but must still show
+/// a visible cue that the app is now capturing search text. The placeholder
+/// is dimmed to read as a hint rather than active content; the query itself
+/// keeps the normal title style once something's been typed.
+fn push_search_span(
+    spans: &mut Vec<Span<'static>>,
+    search: &str,
+    searching: bool,
+    title_style: Style,
+) {
+    if !searching {
+        return;
+    }
+    if search.is_empty() {
+        spans.push(Span::styled(
+            " type to search...",
+            title_style.add_modifier(Modifier::DIM),
+        ));
+    } else {
+        spans.push(Span::styled(format!(" /{search}"), title_style));
+    }
+}
+
 /// Builds the Groups section's title, mirroring [`build_sidebar_title`]'s
 /// `"Filters [n/n]"` shape with `"Groups [n]"` (groups have no per-group
 /// enabled/disabled count to show, unlike filters).
-fn build_groups_title(group_count: usize, title_style: Style) -> Line<'static> {
-    Line::from(Span::styled(format!("Groups [{group_count}]"), title_style))
+fn build_groups_title(
+    group_count: usize,
+    search: &str,
+    searching: bool,
+    title_style: Style,
+) -> Line<'static> {
+    let mut spans = vec![Span::styled(format!("Groups [{group_count}]"), title_style)];
+    push_search_span(&mut spans, search, searching, title_style);
+    Line::from(spans)
 }
 
 /// The Groups section never shrinks below this many rows (label included)
@@ -364,22 +417,7 @@ fn build_sidebar_title(
     }
 
     let mut spans = vec![Span::styled(prefix, title_style)];
-
-    // Gate on `searching` rather than `search.is_empty()`: the moment right
-    // after pressing `/` has an empty query but must still show a visible
-    // cue that the app is now capturing search text. The placeholder is
-    // dimmed to read as a hint rather than active content; the query itself
-    // keeps the normal title style once something's been typed.
-    if searching {
-        if search.is_empty() {
-            spans.push(Span::styled(
-                " type to search...",
-                title_style.add_modifier(Modifier::DIM),
-            ));
-        } else {
-            spans.push(Span::styled(format!(" /{search}"), title_style));
-        }
-    }
+    push_search_span(&mut spans, search, searching, title_style);
 
     let progress_suffix = match filter_progress {
         Some(pct) if pct < 100 => Some(format!(" {pct}%")),
@@ -466,6 +504,11 @@ impl<'a> Widget for Sidebar<'a> {
             .render(filters_area, buf);
 
         if groups_height > 0 {
+            // Narrowed for display only — the section's own height stays
+            // anchored to the full group count (above) so it doesn't resize
+            // as the user types a query, mirroring why `MIN_GROUPS_SECTION_HEIGHT`
+            // exists in the first place.
+            let narrowed_names = narrowed_group_names(self.group_names, self.group_search);
             let groups_title_style = if self.is_group_mode {
                 Style::default().fg(self.theme.text_highlight_fg)
             } else {
@@ -474,14 +517,15 @@ impl<'a> Widget for Sidebar<'a> {
             let groups_block = Block::default()
                 .borders(Borders::NONE)
                 .title(build_groups_title(
-                    self.group_names.len(),
+                    narrowed_names.len(),
+                    self.group_search,
+                    self.group_searching,
                     groups_title_style,
                 ));
             let groups_inner = groups_block.inner(groups_area);
             groups_block.render(groups_area, buf);
 
-            let groups_text: Vec<Line> = self
-                .group_names
+            let groups_text: Vec<Line> = narrowed_names
                 .iter()
                 .map(|name| {
                     let is_selected =
@@ -540,6 +584,8 @@ mod tests {
             highlight_mode: false,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -587,6 +633,8 @@ mod tests {
             highlight_mode: true,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -652,6 +700,8 @@ mod tests {
             highlight_mode: false,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -699,6 +749,8 @@ mod tests {
             highlight_mode: false,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -734,6 +786,8 @@ mod tests {
             highlight_mode: false,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -1237,6 +1291,8 @@ mod tests {
                         highlight_mode: false,
                         search: "",
                         searching: false,
+                        group_search: "",
+                        group_searching: false,
                         theme: &theme,
                     },
                     f.area(),
@@ -1276,6 +1332,8 @@ mod tests {
                         highlight_mode: false,
                         search: "",
                         searching: false,
+                        group_search: "",
+                        group_searching: false,
                         theme: &theme,
                     },
                     f.area(),
@@ -1310,6 +1368,8 @@ mod tests {
                         highlight_mode: false,
                         search: "",
                         searching: false,
+                        group_search: "",
+                        group_searching: false,
                         theme: &theme,
                     },
                     f.area(),
@@ -1493,6 +1553,8 @@ mod tests {
             highlight_mode: false,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &theme,
         };
         let screen = render_to_screen(sidebar, 40, 10);
@@ -1524,6 +1586,8 @@ mod tests {
             highlight_mode: false,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &theme,
         };
         let screen = render_to_screen(sidebar, 40, 10);
@@ -1535,9 +1599,88 @@ mod tests {
 
     #[test]
     fn test_build_groups_title_shows_count() {
-        let line = build_groups_title(3, Style::default());
+        let line = build_groups_title(3, "", false, Style::default());
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "Groups [3]");
+    }
+
+    #[test]
+    fn test_build_groups_title_search_placeholder_is_dimmed() {
+        let title_style = Style::default().fg(Color::Cyan);
+        let line = build_groups_title(2, "", true, title_style);
+        let placeholder_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("type to search"))
+            .expect("placeholder span should be present while searching with an empty query");
+        assert!(placeholder_span.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn test_build_groups_title_search_query_shown() {
+        let line = build_groups_title(1, "net", true, Style::default());
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("/net"));
+    }
+
+    #[test]
+    fn test_narrowed_group_names_empty_search_returns_all() {
+        let names = vec!["alpha".to_string(), "beta".to_string()];
+        assert_eq!(narrowed_group_names(&names, ""), names);
+    }
+
+    #[test]
+    fn test_narrowed_group_names_matches_substring() {
+        let names = vec!["alpha".to_string(), "beta".to_string(), "candy".to_string()];
+        assert_eq!(
+            narrowed_group_names(&names, "a"),
+            vec!["alpha".to_string(), "beta".to_string(), "candy".to_string()]
+        );
+        assert_eq!(
+            narrowed_group_names(&names, "^a"),
+            vec!["alpha".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_narrowed_group_names_no_match_returns_empty() {
+        let names = vec!["alpha".to_string()];
+        assert!(narrowed_group_names(&names, "zzz").is_empty());
+    }
+
+    #[test]
+    fn test_sidebar_groups_section_narrows_by_group_search() {
+        let theme = Theme::default();
+        let group_names = vec!["alpha".to_string(), "beta".to_string()];
+        let sidebar = Sidebar {
+            filters: &[],
+            groups: &[],
+            all_filters: &[],
+            group_names: &group_names,
+            match_counts: &[],
+            selected_filter_idx: 0,
+            selected_group: None,
+            filter_enabled: true,
+            show_marks_only: false,
+            filter_progress: None,
+            show_borders: false,
+            is_filter_mode: false,
+            is_group_mode: true,
+            show_groups: true,
+            scroll_offset: 0,
+            highlight_mode: false,
+            search: "",
+            searching: false,
+            group_search: "beta",
+            group_searching: true,
+            theme: &theme,
+        };
+        let screen = render_to_screen(sidebar, 40, 12);
+        assert!(screen.contains("beta"), "matching group must render");
+        assert!(
+            !screen.contains("alpha"),
+            "non-matching group must be narrowed out: {screen:?}"
+        );
     }
 
     #[test]
@@ -1563,6 +1706,8 @@ mod tests {
             highlight_mode: false,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &theme,
         };
         let screen = render_to_screen(sidebar, 40, 10);
@@ -1593,6 +1738,8 @@ mod tests {
             highlight_mode: false,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &theme,
         };
         let screen = render_to_screen(sidebar, 40, 10);
@@ -1625,6 +1772,8 @@ mod tests {
             highlight_mode: false,
             search: "",
             searching: false,
+            group_search: "",
+            group_searching: false,
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();

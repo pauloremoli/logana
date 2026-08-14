@@ -43,6 +43,12 @@ pub enum ModeRenderState {
     FilterEdit,
     GroupManagement {
         selected_group: String,
+        /// Live typeahead query narrowing the Groups section; empty when not
+        /// searching or when search is active but nothing has been typed yet.
+        search: String,
+        /// True while capturing search input — distinct from `search.is_empty()`,
+        /// mirrors `FilterManagement`'s `searching` field.
+        searching: bool,
     },
     VisualLine {
         anchor: usize,
@@ -774,7 +780,9 @@ mod tests {
         assert_eq!(ModeRenderState::FilterEdit.mode_name(), "FILTER EDIT");
         assert_eq!(
             ModeRenderState::GroupManagement {
-                selected_group: String::new()
+                selected_group: String::new(),
+                search: String::new(),
+                searching: false,
             }
             .mode_name(),
             "GROUP"
