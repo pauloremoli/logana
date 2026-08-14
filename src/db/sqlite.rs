@@ -960,8 +960,8 @@ impl FilterStore for Database {
             };
 
             sqlx::query(
-                "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex, group_name)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO filters (pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex, ignore_case, group_name)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&filter.pattern)
             .bind(filter_type_to_str(&filter.filter_type))
@@ -972,6 +972,7 @@ impl FilterStore for Database {
             .bind(source)
             .bind(match_only as i32)
             .bind(filter.use_regex as i32)
+            .bind(filter.ignore_case as i32)
             .bind(&filter.group)
             .execute(&mut *tx)
             .await?;
@@ -2010,6 +2011,26 @@ mod tests {
         assert_eq!(filters[0].pattern, "new1");
         assert_eq!(filters[1].pattern, "new2");
         assert!(!filters[1].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_replace_all_filters_persists_ignore_case() {
+        let db = setup_db().await;
+        let new_filters = vec![FilterDef {
+            id: 0,
+            pattern: "error".to_string(),
+            filter_type: FilterType::Include,
+            enabled: true,
+            color_config: None,
+            use_regex: false,
+            ignore_case: true,
+            group: None,
+        }];
+
+        db.replace_all_filters(&new_filters, None).await.unwrap();
+        let filters = db.get_filters().await.unwrap();
+        assert_eq!(filters.len(), 1);
+        assert!(filters[0].ignore_case);
     }
 
     #[tokio::test]
