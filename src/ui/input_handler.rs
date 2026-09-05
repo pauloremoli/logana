@@ -171,7 +171,7 @@ impl InputHandler {
                     .file_reader
                     .get_line(tab.filter.visible_indices.get(idx));
                 super::field_layout::effective_row_count(
-                    line_bytes,
+                    &line_bytes,
                     inner_width,
                     parser,
                     field_layout,

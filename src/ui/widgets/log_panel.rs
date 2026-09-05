@@ -269,7 +269,7 @@ fn compute_viewport(
     let content_rows = |li: usize| -> usize {
         if use_wrap {
             effective_row_count(
-                tab.file_reader.get_line(li),
+                &tab.file_reader.get_line(li),
                 inner_width,
                 parser,
                 field_layout,
@@ -405,7 +405,8 @@ fn populate_parse_cache(
             continue;
         }
 
-        let line_bytes = tab.file_reader.get_line(line_idx);
+        let owned_line_bytes = tab.file_reader.get_line(line_idx);
+        let line_bytes: &[u8] = &owned_line_bytes;
 
         let parser: Option<&dyn crate::parser::LogFormatParser> =
             if let (Some(entries), Some(parsers)) =
@@ -746,7 +747,8 @@ pub fn prepare_log_panel(
 
     for abs_vis_idx in start..end {
         let line_idx = tab.filter.visible_indices.get(abs_vis_idx);
-        let line_bytes = tab.file_reader.get_line(line_idx);
+        let owned_line_bytes = tab.file_reader.get_line(line_idx);
+        let line_bytes: &[u8] = &owned_line_bytes;
         let is_current = abs_vis_idx == current_scroll;
         let is_marked = tab.mark_manager.is_marked(line_idx);
         let is_visual_selected = visual_range
@@ -785,9 +787,9 @@ pub fn prepare_log_panel(
                             }
                             // Parent not cached (outside viewport) — parse just
                             // the level from its raw bytes without full layout.
+                            let parent_line = tab.file_reader.get_line(parent);
                             if let Some(parser) = format_parser
-                                && let Some(parts) =
-                                    parser.parse_line(tab.file_reader.get_line(parent))
+                                && let Some(parts) = parser.parse_line(&parent_line)
                                 && let Some(lvl) = parts.level
                             {
                                 return classify_level(format_parser, lvl);
@@ -2066,7 +2068,7 @@ mod tests {
         for i in start..end {
             let li = tab.filter.visible_indices.get(i);
             total_rows += effective_row_count(
-                tab.file_reader.get_line(li),
+                &tab.file_reader.get_line(li),
                 inner_width,
                 None,
                 &tab.display.field_layout,

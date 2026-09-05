@@ -329,7 +329,7 @@ fn format_lines(indices: &[usize], data: &ExportData) -> String {
         .iter()
         .map(|&idx| {
             let content = if idx < data.file_reader.line_count() {
-                render_line_content(data.file_reader.get_line(idx), data)
+                render_line_content(&data.file_reader.get_line(idx), data)
             } else {
                 String::new()
             };

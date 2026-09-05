@@ -308,8 +308,54 @@ fn write_visible_lines(
         return Ok(());
     }
 
-    let data = reader.data();
     let line_starts = reader.line_starts();
+
+    let mut i = 0;
+    while i < visible.len() {
+        let mut j = i + 1;
+        while j < visible.len() && visible[j] == visible[j - 1] + 1 {
+            j += 1;
+        }
+
+        let first = visible[i];
+        let last = visible[j - 1];
+        let byte_start = line_starts[first];
+        let byte_end = if last + 1 < line_starts.len() {
+            line_starts[last + 1]
+        } else {
+            reader.line_byte_range(last).end
+        };
+
+        // `materialize_range` (rather than `data()`) works for both
+        // resident and paged (large-file) storage, fetching only the bytes
+        // this coalesced run actually needs.
+        let chunk = reader.materialize_range(byte_start..byte_end);
+        writer.write_all(&chunk)?;
+        if !chunk.ends_with(b"\n") {
+            writer.write_all(b"\n")?;
+        }
+
+        i = j;
+    }
+
+    Ok(())
+}
+
+/// Same coalesce-and-write behavior as [`write_visible_lines`], but writes
+/// directly from an already-resident `data` slice instead of fetching each
+/// run through `FileReader::materialize_range`. For paged (large-file)
+/// storage, `materialize_chunk` already reads the whole chunk once for the
+/// Aho-Corasick scan — reusing that buffer here avoids reading the same
+/// bytes from disk a second time through the page cache.
+fn write_visible_lines_from_slice(
+    writer: &mut dyn Write,
+    data: &[u8],
+    line_starts: &[usize],
+    visible: &[usize],
+) -> Result<()> {
+    if visible.is_empty() {
+        return Ok(());
+    }
 
     let mut i = 0;
     while i < visible.len() {
@@ -339,13 +385,63 @@ fn write_visible_lines(
     Ok(())
 }
 
+/// Runs the whole-buffer Aho-Corasick fast path for a paged (large-file)
+/// reader, chunk by chunk, writing matches as it goes.
+///
+/// A dedicated thread reads chunk N+1 (`materialize_chunk`'s blocking
+/// `pread`) while this thread scans and writes chunk N, so disk I/O
+/// overlaps with the parallel AC scan instead of serializing with it. The
+/// bounded (depth-1) channel caps how far the reader can run ahead, keeping
+/// at most two chunks' worth of bytes resident at once.
+fn run_paged_wholefile_chunks(
+    reader: &FileReader,
+    fm: &crate::filters::FilterManager,
+    writer: &mut dyn Write,
+    line_count: usize,
+    chunk_lines: usize,
+) -> Result<()> {
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::sync_channel::<(usize, usize, Arc<[u8]>, Vec<usize>)>(1);
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut chunk_start = 0;
+            while chunk_start < line_count {
+                let chunk_end = (chunk_start + chunk_lines).min(line_count);
+                #[cfg(unix)]
+                reader.advise_for_scan(chunk_start..chunk_end);
+                let (chunk_bytes, local_starts) = reader.materialize_chunk(chunk_start, chunk_end);
+                if tx
+                    .send((chunk_start, chunk_end, chunk_bytes, local_starts))
+                    .is_err()
+                {
+                    return;
+                }
+                chunk_start = chunk_end;
+            }
+        });
+
+        for (chunk_start, chunk_end, chunk_bytes, local_starts) in rx {
+            let (vis, _) = fm.evaluate_chunk_wholefile(
+                &chunk_bytes,
+                &local_starts,
+                0..(chunk_end - chunk_start),
+            );
+            write_visible_lines_from_slice(writer, &chunk_bytes, &local_starts, &vis)?;
+        }
+        Ok(())
+    })
+}
+
 pub fn run_headless_to_writer(
     reader: FileReader,
     log_manager: &LogManager,
     writer: &mut dyn Write,
 ) -> Result<()> {
     let sample_limit = reader.line_count().min(200);
-    let sample: Vec<&[u8]> = (0..sample_limit).map(|i| reader.get_line(i)).collect();
+    let sample_lines: Vec<_> = (0..sample_limit).map(|i| reader.get_line(i)).collect();
+    let sample: Vec<&[u8]> = sample_lines.iter().map(|l| &**l).collect();
     let parser = detect_format(&sample);
     let parser_ref = parser.as_deref();
 
@@ -362,6 +458,11 @@ pub fn run_headless_to_writer(
         !date_filters.is_empty() && inc_ff.is_empty() && exc_ff.is_empty() && !synthetic_level;
     let n_date = date_filters.len();
     let line_count = reader.line_count();
+    // The Aho-Corasick whole-buffer fast path needs a contiguous slice of
+    // bytes for the chunk being scanned. A paged (large-file) reader can't
+    // hand out the whole file that way, but it can materialize one bounded
+    // chunk at a time via `materialize_chunk` — see the `use_wholefile`
+    // branch below.
     let use_wholefile = !needs_parse && fm.has_combined_ac();
 
     use rayon::prelude::*;
@@ -370,6 +471,10 @@ pub fn run_headless_to_writer(
     // Bounds peak memory to one chunk's worth of visible indices instead of
     // accumulating all of them before the first byte is written.
     const CHUNK_LINES: usize = 16_384;
+
+    if use_wholefile && reader.is_paged() {
+        return run_paged_wholefile_chunks(&reader, &fm, writer, line_count, CHUNK_LINES);
+    }
 
     let mut chunk_start = 0;
     while chunk_start < line_count {
@@ -392,7 +497,8 @@ pub fn run_headless_to_writer(
                 .fold(
                     || (Vec::new(), vec![0usize; n_date]),
                     |(mut vis, mut dc), idx| {
-                        let line = reader.get_line(idx);
+                        let line_bytes = reader.get_line(idx);
+                        let line: &[u8] = &line_bytes;
                         let mut text_dec = fm.evaluate_text(line);
                         let can_skip = text_dec == FilterDecision::Exclude
                             || (text_dec == FilterDecision::Neutral
@@ -586,6 +692,33 @@ mod tests {
         let reader = make_reader(&["a", "b"]);
         let mut out = Vec::new();
         write_visible_lines(&mut out, &reader, &[]).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_write_visible_lines_from_slice_coalesces_consecutive() {
+        let data = b"aaa\nbbb\nccc\nddd\n";
+        let line_starts = vec![0, 4, 8, 12];
+        let mut out = Vec::new();
+        write_visible_lines_from_slice(&mut out, data, &line_starts, &[0, 1, 3]).unwrap();
+        assert_eq!(out, b"aaa\nbbb\nddd\n");
+    }
+
+    #[test]
+    fn test_write_visible_lines_from_slice_last_line_without_trailing_newline() {
+        let data = b"aaa\nbbb\nccc";
+        let line_starts = vec![0, 4, 8];
+        let mut out = Vec::new();
+        write_visible_lines_from_slice(&mut out, data, &line_starts, &[0, 2]).unwrap();
+        assert_eq!(out, b"aaa\nccc\n");
+    }
+
+    #[test]
+    fn test_write_visible_lines_from_slice_empty() {
+        let data = b"a\nb\n";
+        let line_starts = vec![0, 2];
+        let mut out = Vec::new();
+        write_visible_lines_from_slice(&mut out, data, &line_starts, &[]).unwrap();
         assert!(out.is_empty());
     }
 

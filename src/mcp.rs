@@ -261,7 +261,7 @@ pub fn build_marked_lines(reader: &FileReader, marks: &MarkManager) -> Vec<(usiz
         .into_iter()
         .filter(|&i| i < reader.line_count())
         .map(|i| {
-            let text = String::from_utf8_lossy(reader.get_line(i)).into_owned();
+            let text = String::from_utf8_lossy(&reader.get_line(i)).into_owned();
             (i + 1, text)
         })
         .collect()

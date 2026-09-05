@@ -33,7 +33,7 @@ impl YearMap {
             .map(|i| {
                 let line = file_reader.get_line(i);
                 parser
-                    .parse_timestamp(line)
+                    .parse_timestamp(&line)
                     .and_then(bsd_month_from_timestamp)
             })
             .collect();

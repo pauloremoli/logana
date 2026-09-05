@@ -340,7 +340,8 @@ pub fn quote_for_command(pattern: &str) -> String {
 /// field-layout (if available) or raw bytes as fallback.
 pub fn display_line_text(tab: &TabState) -> String {
     if let Some(idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
-        let bytes = tab.file_reader.get_line(idx);
+        let owned_bytes = tab.file_reader.get_line(idx);
+        let bytes: &[u8] = &owned_bytes;
         if !tab.display.raw_mode
             && let Some(parser) = tab.display.format.as_ref()
             && let Some(parts) = parser.parse_line(bytes)

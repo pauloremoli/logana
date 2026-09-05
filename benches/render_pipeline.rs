@@ -43,7 +43,8 @@ fn bench_collect_field_names(c: &mut Criterion) {
     for &lines in &[50usize, 200] {
         let data = json_log_bytes(lines);
         let reader = FileReader::from_bytes(data);
-        let sample: Vec<&[u8]> = (0..lines).map(|i| reader.get_line(i)).collect();
+        let sample_lines: Vec<_> = (0..lines).map(|i| reader.get_line(i)).collect();
+        let sample: Vec<&[u8]> = sample_lines.iter().map(|l| &**l).collect();
         let parser = detect_format(&sample).expect("JSON must be detected");
         let bench_lines: Vec<&[u8]> = sample.clone();
 
@@ -71,7 +72,8 @@ fn bench_date_filter_timestamp_parse(c: &mut Criterion) {
         let data = json_log_bytes(lines);
         let reader = FileReader::from_bytes(data);
         let sample_limit = lines.min(200);
-        let sample: Vec<&[u8]> = (0..sample_limit).map(|i| reader.get_line(i)).collect();
+        let sample_lines: Vec<_> = (0..sample_limit).map(|i| reader.get_line(i)).collect();
+        let sample: Vec<&[u8]> = sample_lines.iter().map(|l| &**l).collect();
         let parser = detect_format(&sample).expect("JSON must be detected");
 
         group.throughput(Throughput::Elements(lines as u64));
@@ -84,7 +86,7 @@ fn bench_date_filter_timestamp_parse(c: &mut Criterion) {
                     let mut hits = 0usize;
                     for i in 0..lines {
                         let line = reader.get_line(black_box(i));
-                        if let Some(parts) = parser.parse_line(line)
+                        if let Some(parts) = parser.parse_line(&line)
                             && parts.timestamp.is_some()
                         {
                             hits += 1;
@@ -103,7 +105,7 @@ fn bench_date_filter_timestamp_parse(c: &mut Criterion) {
                     let mut hits = 0usize;
                     for i in 0..lines {
                         let line = reader.get_line(black_box(i));
-                        if let Some(parts) = parser.parse_line(line)
+                        if let Some(parts) = parser.parse_line(&line)
                             && parts.timestamp.is_some()
                         {
                             hits += 1;
@@ -111,7 +113,7 @@ fn bench_date_filter_timestamp_parse(c: &mut Criterion) {
                     }
                     for i in 0..lines {
                         let line = reader.get_line(black_box(i));
-                        if let Some(parts) = parser.parse_line(line)
+                        if let Some(parts) = parser.parse_line(&line)
                             && parts.timestamp.is_some()
                         {
                             hits += 1;
@@ -175,7 +177,8 @@ fn bench_incremental_include_vs_full(c: &mut Criterion) {
                 b.iter(|| {
                     let mut visible = VisibleLines::Filtered(black_box(pre_filtered.clone()));
                     visible.retain(|li| {
-                        let line = reader.get_line(li);
+                        let owned_line = reader.get_line(li);
+                        let line: &[u8] = &owned_line;
                         let mut dummy = MatchCollector::new(line);
                         matches!(
                             include_filter.evaluate(line, &mut dummy),
@@ -196,7 +199,8 @@ fn bench_render_line_pipeline(c: &mut Criterion) {
 
     let data = json_log_bytes(1);
     let reader = FileReader::from_bytes(data);
-    let line_bytes = reader.get_line(0);
+    let owned_line_bytes = reader.get_line(0);
+    let line_bytes: &[u8] = &owned_line_bytes;
     let styles = default_styles();
     let value_colors = ValueColors::default();
 

@@ -4,6 +4,7 @@ pub mod file_reader;
 pub mod format_detect;
 pub mod loading;
 pub mod otlp_receiver;
+pub mod paged_file;
 
 pub use archive::{
     ArchiveExtractionProgress, ArchiveType, ExtractedFile, detect_archive_type, extract,
@@ -15,7 +16,7 @@ pub use archive_tree::{
     merge_marked_labels,
 };
 pub use file_reader::{
-    FileLoadHandle, FileLoadResult, FileReader, MergedEntry, VisibilityPredicate,
+    FileLoadHandle, FileLoadResult, FileReader, LineBytes, MergedEntry, VisibilityPredicate,
 };
 pub use format_detect::DetectedFormat;
 pub use otlp_receiver::{

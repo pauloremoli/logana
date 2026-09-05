@@ -161,7 +161,7 @@ fn write_merged_temp_file(
     {
         let mut writer = std::io::BufWriter::new(temp.as_file());
         for entry in entries {
-            writer.write_all(sources[entry.source_idx].get_line(entry.line_idx))?;
+            writer.write_all(&sources[entry.source_idx].get_line(entry.line_idx))?;
             writer.write_all(b"\n")?;
         }
         writer.flush()?;
@@ -187,7 +187,8 @@ fn seed_current_key(
     if parent_idx >= from_line {
         return None;
     }
-    let ts = parser?.parse_timestamp(source.get_line(parent_idx))?;
+    let parent_line = source.get_line(parent_idx);
+    let ts = parser?.parse_timestamp(&parent_line)?;
     let year_override = year_map.map(|ym| ym.year_for_line(parent_idx));
     timestamp_to_canonical(ts, year_override)
 }
@@ -206,7 +207,7 @@ fn append_source_entries(
 
     for line_idx in from_line..count {
         let line = source.get_line(line_idx);
-        let ts = parser.and_then(|p| p.parse_timestamp(line));
+        let ts = parser.and_then(|p| p.parse_timestamp(&line));
 
         if let Some(ts_str) = ts {
             let year_override = year_map.map(|ym| ym.year_for_line(line_idx));

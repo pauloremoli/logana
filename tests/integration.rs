@@ -70,15 +70,18 @@ fn test_file_reader_get_line() {
     let path = file.path().to_str().unwrap();
     let reader = FileReader::new(path).unwrap();
 
-    let line0 = std::str::from_utf8(reader.get_line(0)).unwrap();
+    let owned0 = reader.get_line(0);
+    let line0 = std::str::from_utf8(&owned0).unwrap();
     assert!(line0.contains("INFO"));
     assert!(line0.contains("Application started"));
 
-    let line1 = std::str::from_utf8(reader.get_line(1)).unwrap();
+    let owned1 = reader.get_line(1);
+    let line1 = std::str::from_utf8(&owned1).unwrap();
     assert!(line1.contains("ERROR"));
     assert!(line1.contains("Connection failed"));
 
-    let line6 = std::str::from_utf8(reader.get_line(6)).unwrap();
+    let owned6 = reader.get_line(6);
+    let line6 = std::str::from_utf8(&owned6).unwrap();
     assert_eq!(line6, "plain text log line with no format");
 }
 
@@ -409,7 +412,7 @@ async fn test_search_on_visible_lines() {
     let mut search = Search::new();
     search
         .search("Application", visible.iter().copied(), |li| {
-            Some(String::from_utf8_lossy(reader.get_line(li)).into_owned())
+            Some(String::from_utf8_lossy(&reader.get_line(li)).into_owned())
         })
         .unwrap();
     let results = search.get_results();
@@ -752,7 +755,7 @@ fn test_dlt_binary_roundtrip() {
     let parser = DltParser;
     for i in 0..reader.line_count() {
         let line = reader.get_line(i);
-        let parts = parser.parse_line(line);
+        let parts = parser.parse_line(&line);
         assert!(parts.is_some(), "Line {} should be parseable", i);
         let parts = parts.unwrap();
         assert_eq!(parts.level, Some("INFO"));
@@ -808,9 +811,10 @@ fn test_build_continuation_map_basic() {
     use logana::ui::build_continuation_map;
 
     let reader = make_multiline_log();
-    let sample: Vec<&[u8]> = (0..reader.line_count())
+    let sample_lines: Vec<_> = (0..reader.line_count())
         .map(|i| reader.get_line(i))
         .collect();
+    let sample: Vec<&[u8]> = sample_lines.iter().map(|l| &**l).collect();
     let parser = detect_format(&sample).expect("format should be detected");
 
     let cmap = build_continuation_map(&reader, parser.as_ref());
@@ -914,9 +918,10 @@ async fn test_exclude_filter_hides_continuation_lines() {
 
     let (_db, mut manager) = setup().await;
     let reader = make_multiline_log();
-    let sample: Vec<&[u8]> = (0..reader.line_count())
+    let sample_lines: Vec<_> = (0..reader.line_count())
         .map(|i| reader.get_line(i))
         .collect();
+    let sample: Vec<&[u8]> = sample_lines.iter().map(|l| &**l).collect();
     let parser = detect_format(&sample).expect("format detected");
     let cmap = build_continuation_map(&reader, parser.as_ref());
 
@@ -954,9 +959,10 @@ async fn test_include_filter_shows_continuations_with_parent() {
 
     let (_db, mut manager) = setup().await;
     let reader = make_multiline_log();
-    let sample: Vec<&[u8]> = (0..reader.line_count())
+    let sample_lines: Vec<_> = (0..reader.line_count())
         .map(|i| reader.get_line(i))
         .collect();
+    let sample: Vec<&[u8]> = sample_lines.iter().map(|l| &**l).collect();
     let parser = detect_format(&sample).expect("format detected");
     let cmap = build_continuation_map(&reader, parser.as_ref());
 
@@ -1001,9 +1007,10 @@ async fn test_include_filter_matching_only_continuation_shows_whole_record() {
 
     let (_db, mut manager) = setup().await;
     let reader = make_multiline_log();
-    let sample: Vec<&[u8]> = (0..reader.line_count())
+    let sample_lines: Vec<_> = (0..reader.line_count())
         .map(|i| reader.get_line(i))
         .collect();
+    let sample: Vec<&[u8]> = sample_lines.iter().map(|l| &**l).collect();
     let parser = detect_format(&sample).expect("format detected");
     let cmap = build_continuation_map(&reader, parser.as_ref());
 
@@ -1093,7 +1100,8 @@ fn test_multiline_schema_transaction_end_to_end() {
         let mut fields = Vec::new();
         let mut j = header_idx + 1;
         while j < cmap.len() && cmap[j] == header_idx {
-            let line = reader.get_line(j);
+            let owned_line = reader.get_line(j);
+            let line: &[u8] = &owned_line;
             if parser.is_continuation_end(line) {
                 break;
             }
@@ -1111,7 +1119,8 @@ fn test_multiline_schema_transaction_end_to_end() {
     assert!(record1.contains(&("user".to_string(), "alice".to_string())));
     assert!(record1.contains(&("amount".to_string(), "99".to_string())));
 
-    let header1 = parser.parse_line(reader.get_line(0)).unwrap();
+    let header1_line = reader.get_line(0);
+    let header1 = parser.parse_line(&header1_line).unwrap();
     let id1 = header1
         .extra_fields
         .iter()
@@ -1121,7 +1130,8 @@ fn test_multiline_schema_transaction_end_to_end() {
 
     // The second transaction parses independently: its own id and field1,
     // with nothing leaked from the first record.
-    let header2 = parser.parse_line(reader.get_line(5)).unwrap();
+    let header2_line = reader.get_line(5);
+    let header2 = parser.parse_line(&header2_line).unwrap();
     let id2 = header2
         .extra_fields
         .iter()
@@ -1191,12 +1201,12 @@ fn parse_transaction_groups_header<'a>(
     use logana::parser::LogFormatParser;
 
     let mut parts = parser
-        .parse_line(reader.get_line(0))
+        .parse_line(reader.get_line_zero_copy(0))
         .expect("header line should parse");
     let mut lines: Vec<&'a [u8]> = Vec::new();
     let mut j = 1;
     while j < cmap.len() && cmap[j] == 0 {
-        let line = reader.get_line(j);
+        let line = reader.get_line_zero_copy(j);
         if parser.is_continuation_end(line) {
             break;
         }
@@ -1351,7 +1361,7 @@ fn test_transaction_groups_field_filter_any_item_semantics_end_to_end() {
     assert!(field_filter_matches(
         &matches_operation,
         &parts,
-        reader.get_line(0)
+        &reader.get_line(0)
     ));
 
     // Matches only the *second* votes item — proves "any item", not "first".
@@ -1359,11 +1369,15 @@ fn test_transaction_groups_field_filter_any_item_semantics_end_to_end() {
     assert!(field_filter_matches(
         &matches_second_vote,
         &parts,
-        reader.get_line(0)
+        &reader.get_line(0)
     ));
 
     let no_match = filter_for("operations.object_name", "no-such-carrier");
-    assert!(!field_filter_matches(&no_match, &parts, reader.get_line(0)));
+    assert!(!field_filter_matches(
+        &no_match,
+        &parts,
+        &reader.get_line(0)
+    ));
 }
 
 /// `main.rs`'s `--headless` CLI path is glue code the library-level

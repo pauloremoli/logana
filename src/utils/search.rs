@@ -300,7 +300,7 @@ mod tests {
 
     /// Helper: build a `get_text` closure from a `FileReader` (raw bytes).
     fn raw_text(reader: &FileReader) -> impl Fn(usize) -> Option<String> + '_ {
-        |line_idx| Some(String::from_utf8_lossy(reader.get_line(line_idx)).into_owned())
+        |line_idx| Some(String::from_utf8_lossy(&reader.get_line(line_idx)).into_owned())
     }
 
     #[test]

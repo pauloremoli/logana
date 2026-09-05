@@ -51,7 +51,8 @@ pub fn detect_format_for_reader(reader: &FileReader) -> DetectedFormat {
     if limit == 0 {
         return DetectedFormat::default();
     }
-    let sample: Vec<&[u8]> = (0..limit).map(|j| reader.get_line(j)).collect();
+    let sample_lines: Vec<_> = (0..limit).map(|j| reader.get_line(j)).collect();
+    let sample: Vec<&[u8]> = sample_lines.iter().map(|l| &**l).collect();
     let format: Option<Arc<dyn LogFormatParser>> = detect_format(&sample).map(Arc::from);
     let (continuation_map, year_map) = derive_format_structures(reader, format.as_deref());
     DetectedFormat {

@@ -551,7 +551,7 @@ impl App {
                     self.apply_default_filters_if_empty_at(0).await;
                     if let Some(ref pred) = predicate {
                         let visible: Vec<usize> = (0..self.tabs[0].file_reader.line_count())
-                            .filter(|&i| pred.is_visible(self.tabs[0].file_reader.get_line(i)))
+                            .filter(|&i| pred.is_visible(&self.tabs[0].file_reader.get_line(i)))
                             .collect();
                         self.tabs[0].filter.visible_indices = VisibleLines::Filtered(visible);
                         self.tabs[0].rebuild_filter_manager_cache();
@@ -4707,8 +4707,8 @@ mod tests {
 
         let merged_tab = app.tabs.last().unwrap();
         assert_eq!(merged_tab.file_reader.line_count(), 2);
-        let line0 = String::from_utf8_lossy(merged_tab.file_reader.get_line(0)).into_owned();
-        let line1 = String::from_utf8_lossy(merged_tab.file_reader.get_line(1)).into_owned();
+        let line0 = String::from_utf8_lossy(&merged_tab.file_reader.get_line(0)).into_owned();
+        let line1 = String::from_utf8_lossy(&merged_tab.file_reader.get_line(1)).into_owned();
         assert!(
             line0.contains("earlier") && line1.contains("later"),
             "lines must be sorted by timestamp across the merged sources: {line0:?}, {line1:?}"

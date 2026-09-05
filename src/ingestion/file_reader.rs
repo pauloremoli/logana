@@ -16,6 +16,76 @@ fn is_any_dlt_binary(data: &[u8]) -> bool {
     dlt_binary::is_dlt_binary(data) || dlt_binary::is_dlt_wire_format(data)
 }
 
+/// Files at or above this size use `Storage::Paged` (disk-backed, bounded
+/// memory) instead of reading the whole file into one resident buffer.
+pub const PAGED_STORAGE_THRESHOLD_BYTES: u64 = 256 * 1024 * 1024;
+const PAGED_PAGE_SIZE: usize = 2 * 1024 * 1024;
+const PAGED_MAX_CACHED_PAGES: usize = 64;
+/// Fixed (not thread-count-scaled) chunk size for the parallel index-build
+/// scan in `FileReader::try_new_paged`. Deliberately small and constant —
+/// unlike `index_chunked`'s full-materialization scan, which sizes chunks as
+/// `file_size / num_threads` because it keeps every byte anyway, this scan
+/// discards each chunk after scanning, so peak extra memory here is bounded
+/// by `num_threads * PAGED_INDEX_SCAN_CHUNK_SIZE`, not file size.
+const PAGED_INDEX_SCAN_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+
+/// A line's bytes, returned by [`FileReader::get_line`]. `Borrowed` for
+/// small/fully-resident storage (zero-copy, exactly as before); `Owned` for
+/// `Storage::Paged`, where the bytes can't be borrowed from `&self` since a
+/// later cache eviction could otherwise invalidate them.
+#[derive(Clone)]
+pub enum LineBytes<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Arc<[u8]>),
+}
+
+impl<'a> std::ops::Deref for LineBytes<'a> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            LineBytes::Borrowed(b) => b,
+            LineBytes::Owned(a) => a,
+        }
+    }
+}
+
+impl<'a> AsRef<[u8]> for LineBytes<'a> {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl<'a> std::fmt::Debug for LineBytes<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<'a> PartialEq for LineBytes<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl<'a> PartialEq<[u8]> for LineBytes<'a> {
+    fn eq(&self, other: &[u8]) -> bool {
+        **self == *other
+    }
+}
+
+impl<'a> PartialEq<&[u8]> for LineBytes<'a> {
+    fn eq(&self, other: &&[u8]) -> bool {
+        **self == **other
+    }
+}
+
+impl<'a, const N: usize> PartialEq<&[u8; N]> for LineBytes<'a> {
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        **self == other[..]
+    }
+}
+
+#[derive(Clone)]
 pub struct VisibilityPredicate {
     fm: std::sync::Arc<crate::filters::FilterManager>,
 }
@@ -73,14 +143,33 @@ enum Storage {
         entries: Arc<Vec<MergedEntry>>,
         sources: Arc<Vec<FileReader>>,
     },
+    /// Disk-backed, bounded-memory storage for large files (see
+    /// `PAGED_STORAGE_THRESHOLD_BYTES`). No resident byte buffer — reads go
+    /// through `paged`'s page cache. `inode`/`device`/`mtime` mirror `File`'s
+    /// rotation-detection fields, but growth (tail-follow) isn't supported
+    /// yet: `try_extend_from_read` falls back to a full reload, same as
+    /// `Bytes`/`Merged` today.
+    Paged {
+        paged: Arc<crate::ingestion::paged_file::PagedFile>,
+        path: Arc<std::path::PathBuf>,
+        inode: u64,
+        device: u64,
+        mtime: Option<std::time::SystemTime>,
+    },
 }
 
 impl Storage {
+    /// Panics for `Paged` — there is no resident buffer to hand back; use
+    /// `FileReader::materialize_range` instead. Every caller of this method
+    /// dispatches around `Paged` first, so this arm should be unreachable.
     fn as_bytes(&self) -> &[u8] {
         match self {
             Storage::File { data, .. } => data.as_slice(),
             Storage::Bytes(v) => v.as_slice(),
             Storage::Merged { .. } => &[],
+            Storage::Paged { .. } => {
+                unreachable!("Storage::Paged has no resident buffer; use materialize_range")
+            }
         }
     }
 }
@@ -99,6 +188,12 @@ impl FileReader {
         );
         let file = Arc::new(File::open(path)?);
         let size = file.metadata()?.len() as usize;
+
+        if size as u64 >= PAGED_STORAGE_THRESHOLD_BYTES
+            && let Some(reader) = Self::try_new_paged(path, Arc::clone(&canonical_path))?
+        {
+            return Ok(reader);
+        }
 
         // Parallel pread + MADV_POPULATE_WRITE, same as index_chunked.
         #[cfg(unix)]
@@ -203,6 +298,113 @@ impl FileReader {
             line_starts: std::sync::Arc::new(starts),
             is_binary: false,
         })
+    }
+
+    /// Attempts to build a `Storage::Paged`-backed reader for a large,
+    /// plain-text file via a streaming pass — bounded memory, never reads
+    /// the whole file into one resident buffer. Returns `Ok(None)` if the
+    /// file turns out to be DLT-binary or contains ANSI escapes/`\r`: both
+    /// need a full materialization pass anyway
+    /// (`convert_dlt_binary_to_text`/`strip_ansi_and_index`), so the caller
+    /// falls back to the ordinary full-read path for those, exactly as
+    /// before.
+    pub(crate) fn try_new_paged(
+        path: &str,
+        canonical_path: Arc<std::path::PathBuf>,
+    ) -> io::Result<Option<Self>> {
+        use crate::ingestion::paged_file::{PagedFile, pread};
+        use rayon::prelude::*;
+
+        let file_handle = File::open(path)?;
+        let paged = PagedFile::open(path, PAGED_PAGE_SIZE, PAGED_MAX_CACHED_PAGES)?;
+        let total = paged.size() as usize;
+
+        // Parallel pread + scan, same idea as `index_chunked`'s phase 1, but
+        // with a small FIXED chunk size (not file_size / num_threads): each
+        // chunk's bytes are discarded once scanned, so peak extra memory is
+        // bounded by num_threads * PAGED_INDEX_SCAN_CHUNK_SIZE regardless of
+        // file size, instead of needing the whole file resident.
+        let chunk_size = PAGED_INDEX_SCAN_CHUNK_SIZE;
+        let num_chunks = total.div_ceil(chunk_size).max(1);
+
+        // Each element: (needs full-materialization fallback, i.e. DLT/ANSI
+        // detected, absolute next-line offsets for this chunk).
+        let chunk_results: Vec<io::Result<(bool, Vec<usize>)>> = (0..num_chunks)
+            .into_par_iter()
+            .map(|chunk_idx| -> io::Result<(bool, Vec<usize>)> {
+                let chunk_start = chunk_idx * chunk_size;
+                let this_len = chunk_size.min(total - chunk_start);
+                let mut buf = vec![0u8; this_len];
+                let mut filled = 0usize;
+                while filled < buf.len() {
+                    match pread(
+                        &file_handle,
+                        &mut buf[filled..],
+                        (chunk_start + filled) as u64,
+                    ) {
+                        Ok(0) => break,
+                        Ok(n) => filled += n,
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                let chunk = &buf[..filled];
+                let needs_fallback = (chunk_idx == 0 && is_any_dlt_binary(chunk))
+                    || memchr2(b'\x1b', b'\r', chunk).is_some();
+                let mut local_starts = Vec::new();
+                if !needs_fallback {
+                    for pos in memchr_iter(b'\n', chunk) {
+                        let next = chunk_start + pos + 1;
+                        if next <= total {
+                            local_starts.push(next);
+                        }
+                    }
+                }
+                Ok((needs_fallback, local_starts))
+            })
+            .collect();
+        let chunk_results = chunk_results.into_iter().collect::<io::Result<Vec<_>>>()?;
+
+        if chunk_results
+            .iter()
+            .any(|(needs_fallback, _)| *needs_fallback)
+        {
+            return Ok(None);
+        }
+
+        // Chunks are non-overlapping and processed in order, so simple
+        // concatenation preserves ascending order — no sort needed.
+        let mut starts =
+            Vec::with_capacity(1 + chunk_results.iter().map(|(_, v)| v.len()).sum::<usize>());
+        starts.push(0usize);
+        for (_, local) in chunk_results {
+            starts.extend(local);
+        }
+
+        #[cfg(unix)]
+        let (inode, device, mtime) = {
+            use std::os::unix::fs::MetadataExt;
+            let m = file_handle.metadata()?;
+            (m.ino(), m.dev(), m.modified().ok())
+        };
+        #[cfg(not(unix))]
+        let (inode, device, mtime) = (
+            0u64,
+            0u64,
+            file_handle.metadata().ok().and_then(|m| m.modified().ok()),
+        );
+
+        Ok(Some(FileReader {
+            storage: Storage::Paged {
+                paged: Arc::new(paged),
+                path: canonical_path,
+                inode,
+                device,
+                mtime,
+            },
+            line_starts: Arc::new(starts),
+            is_binary: false,
+        }))
     }
 
     /// Build a `FileReader` from an in-memory byte buffer (e.g. stdin content).
@@ -327,6 +529,17 @@ impl FileReader {
     ///   - file was truncated (`new_size < old_size`) — caller does a full reload.
     ///   - file identity changed (inode/device mismatch) — caller does a full reload.
     pub fn try_extend_from_read(&mut self) -> io::Result<bool> {
+        if let Storage::Paged {
+            paged,
+            path,
+            inode,
+            device,
+            ..
+        } = &self.storage
+        {
+            return self.try_extend_paged(Arc::clone(paged), Arc::clone(path), *inode, *device);
+        }
+
         let (file, data, path, old_size, old_inode, old_device, old_mtime) = match &self.storage {
             Storage::File {
                 file,
@@ -344,7 +557,11 @@ impl FileReader {
                 *device,
                 *mtime,
             ),
-            Storage::Bytes(_) | Storage::Merged { .. } => return Ok(false),
+            // ANSI/merged storage still has no incremental-extend path — a
+            // full reload is needed for those.
+            Storage::Bytes(_) | Storage::Merged { .. } | Storage::Paged { .. } => {
+                return Ok(false);
+            }
         };
 
         // Stat the path (not the fd) so rotation-by-rename is detectable:
@@ -418,6 +635,62 @@ impl FileReader {
             device: current_device,
             mtime: old_mtime,
         };
+        Ok(true)
+    }
+
+    /// `Storage::Paged` counterpart of `try_extend_from_read`'s growth
+    /// handling. Unlike `File`, there's no resident buffer to reallocate:
+    /// just bump the known size and stream-scan the newly-added bytes for
+    /// `\n` (via `paged.read_range`, which pulls only that span from disk).
+    /// Already-cached pages stay valid since content before the old size
+    /// never changes.
+    fn try_extend_paged(
+        &mut self,
+        paged: Arc<crate::ingestion::paged_file::PagedFile>,
+        path: Arc<std::path::PathBuf>,
+        old_inode: u64,
+        old_device: u64,
+    ) -> io::Result<bool> {
+        let old_size = paged.size();
+
+        #[cfg(unix)]
+        let (new_size, current_inode, current_device) = {
+            use std::os::unix::fs::MetadataExt;
+            match std::fs::metadata(&*path) {
+                Ok(m) => (m.len(), m.ino(), m.dev()),
+                Err(_) => return Ok(false), // path gone — rotation or deletion
+            }
+        };
+        #[cfg(not(unix))]
+        let (new_size, current_inode, current_device) = {
+            let sz = std::fs::metadata(&*path)
+                .map(|m| m.len())
+                .unwrap_or(old_size);
+            (sz, 0u64, 0u64)
+        };
+
+        #[cfg(unix)]
+        if current_inode != old_inode || current_device != old_device {
+            return Ok(false);
+        }
+        #[cfg(not(unix))]
+        let _ = (old_inode, old_device, current_inode, current_device);
+
+        if new_size == old_size {
+            return Ok(true);
+        }
+        if new_size < old_size {
+            // Truncation: caller must do a full reload.
+            return Ok(false);
+        }
+
+        paged.set_size(new_size);
+        let new_bytes = paged.read_range(old_size as usize..new_size as usize)?;
+
+        let starts = Arc::make_mut(&mut self.line_starts);
+        for pos in memchr_iter(b'\n', &new_bytes) {
+            starts.push(old_size as usize + pos + 1);
+        }
         Ok(true)
     }
 
@@ -537,6 +810,89 @@ impl FileReader {
     /// Phase 2 (when `predicate` is `Some`): forward parallel scan, or for
     /// `tail=true` a backward sequential scan (tail lines evaluated first,
     /// result reversed back to ascending order).
+    /// Async-load counterpart of `try_new_paged`: builds a `Storage::Paged`
+    /// reader via the same streaming pass (bounded memory), then evaluates
+    /// `predicate` (if any) using `reader.get_line()`, which is safe to call
+    /// from many rayon threads at once since it returns owned `Arc` data.
+    /// Returns `Ok(None)` to signal "fall back to the full-materialization
+    /// path" for DLT-binary/ANSI files, same as `try_new_paged`.
+    fn try_index_paged(
+        path: &str,
+        progress_tx: &watch::Sender<f64>,
+        predicate: Option<VisibilityPredicate>,
+        tail: bool,
+        cancel: &AtomicBool,
+    ) -> io::Result<Option<FileLoadResult>> {
+        use rayon::prelude::*;
+
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
+        }
+        let canonical_path = Arc::new(
+            std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path)),
+        );
+        let Some(reader) = Self::try_new_paged(path, canonical_path)? else {
+            return Ok(None);
+        };
+        let _ = progress_tx.send(0.5);
+
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
+        }
+
+        let (precomputed_visible, precomputed_text_counts) = if let Some(pred) = predicate {
+            let count = reader.line_count();
+            let n = pred.fm.filter_count();
+            let has_include = pred.fm.has_include();
+            let (visible, text_counts) = if tail {
+                let mut text_counts = vec![0usize; n];
+                let mut visible: Vec<usize> = (0..count)
+                    .rev()
+                    .filter(|&i| {
+                        pred.fm
+                            .evaluate_and_count(&reader.get_line(i), &mut text_counts)
+                            .to_visibility(has_include)
+                    })
+                    .collect();
+                visible.reverse();
+                (visible, text_counts)
+            } else {
+                (0..count)
+                    .into_par_iter()
+                    .fold(
+                        || (Vec::new(), vec![0usize; n]),
+                        |(mut vis, mut tc), i| {
+                            let dec = pred.fm.evaluate_and_count(&reader.get_line(i), &mut tc);
+                            if dec.to_visibility(has_include) {
+                                vis.push(i);
+                            }
+                            (vis, tc)
+                        },
+                    )
+                    .reduce(
+                        || (Vec::new(), vec![0usize; n]),
+                        |(mut va, mut ta), (vb, tb)| {
+                            va.extend(vb);
+                            for (a, b) in ta.iter_mut().zip(tb) {
+                                *a += b;
+                            }
+                            (va, ta)
+                        },
+                    )
+            };
+            (Some(visible), Some(text_counts))
+        } else {
+            (None, None)
+        };
+
+        let _ = progress_tx.send(1.0);
+        Ok(Some(FileLoadResult {
+            reader,
+            precomputed_visible,
+            precomputed_text_counts,
+        }))
+    }
+
     fn index_chunked(
         path: &str,
         total_bytes: u64,
@@ -548,6 +904,13 @@ impl FileReader {
     ) -> io::Result<FileLoadResult> {
         use rayon::prelude::*;
         use std::sync::atomic::AtomicUsize;
+
+        if total_bytes >= PAGED_STORAGE_THRESHOLD_BYTES
+            && let Some(result) =
+                Self::try_index_paged(path, &progress_tx, predicate.clone(), tail, cancel)?
+        {
+            return Ok(result);
+        }
 
         let canonical_path = Arc::new(
             std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path)),
@@ -602,7 +965,7 @@ impl FileReader {
                         .rev()
                         .filter(|&i| {
                             pred.fm
-                                .evaluate_and_count(reader.get_line(i), &mut text_counts)
+                                .evaluate_and_count(&reader.get_line(i), &mut text_counts)
                                 .to_visibility(has_include)
                         })
                         .collect();
@@ -615,7 +978,7 @@ impl FileReader {
                         .fold(
                             || (Vec::new(), vec![0usize; n]),
                             |(mut vis, mut tc), i| {
-                                let dec = pred.fm.evaluate_and_count(reader.get_line(i), &mut tc);
+                                let dec = pred.fm.evaluate_and_count(&reader.get_line(i), &mut tc);
                                 if dec.to_visibility(has_include) {
                                     vis.push(i);
                                 }
@@ -790,7 +1153,7 @@ impl FileReader {
                     .rev()
                     .filter(|&i| {
                         pred.fm
-                            .evaluate_and_count(reader.get_line(i), &mut text_counts)
+                            .evaluate_and_count(&reader.get_line(i), &mut text_counts)
                             .to_visibility(has_include)
                     })
                     .collect();
@@ -803,7 +1166,7 @@ impl FileReader {
                     .fold(
                         || (Vec::new(), vec![0usize; n]),
                         |(mut vis, mut tc), i| {
-                            let dec = pred.fm.evaluate_and_count(reader.get_line(i), &mut tc);
+                            let dec = pred.fm.evaluate_and_count(&reader.get_line(i), &mut tc);
                             if dec.to_visibility(has_include) {
                                 vis.push(i);
                             }
@@ -837,7 +1200,17 @@ impl FileReader {
     pub fn mtime(&self) -> Option<std::time::SystemTime> {
         match &self.storage {
             Storage::File { mtime, .. } => *mtime,
+            Storage::Paged { mtime, .. } => *mtime,
             _ => None,
+        }
+    }
+
+    /// Total byte length of the backing content. Unlike `data().len()`, this
+    /// works for `Storage::Paged` too, which has no resident buffer.
+    pub fn total_len(&self) -> usize {
+        match &self.storage {
+            Storage::Paged { paged, .. } => paged.size() as usize,
+            _ => self.storage.as_bytes().len(),
         }
     }
 
@@ -846,18 +1219,44 @@ impl FileReader {
         if let Storage::Merged { entries, .. } = &self.storage {
             return entries.len();
         }
-        let data = self.storage.as_bytes();
-        if data.is_empty() {
+        let total = self.total_len();
+        if total == 0 {
             return 0;
         }
         // line_starts has one entry per newline + the initial 0.
         // If the file ends with '\n', the last start points to data.len() (empty slice).
         // We skip that phantom empty line.
         let n = self.line_starts.len();
-        if n > 0 && self.line_starts[n - 1] == data.len() {
+        if n > 0 && self.line_starts[n - 1] == total {
             n - 1
         } else {
             n
+        }
+    }
+
+    /// True when this reader is backed by `Storage::Paged` (a large,
+    /// disk-backed file) — no resident buffer, so [`Self::data`] can't be
+    /// used and the whole-file Aho-Corasick fast path isn't available.
+    pub fn is_paged(&self) -> bool {
+        matches!(self.storage, Storage::Paged { .. })
+    }
+
+    /// Like [`Self::get_line`], but requires a genuine zero-copy borrow
+    /// tied to `&self`'s lifetime rather than `get_line`'s owned-or-borrowed
+    /// [`LineBytes`]. Needed by continuation-group handling, which collects
+    /// borrowed lines into a caller-lifetime'd `DisplayParts` — something an
+    /// owned `Arc<[u8]>` can't satisfy. Not supported for `Storage::Paged`
+    /// (large files): callers must check `reader.is_paged()` first and skip
+    /// continuation handling for those instead (see `build_continuation_map`).
+    ///
+    /// # Panics
+    /// Panics if `idx >= line_count()`, or if this reader is `Storage::Paged`.
+    pub fn get_line_zero_copy(&self, idx: usize) -> &[u8] {
+        match self.get_line(idx) {
+            LineBytes::Borrowed(b) => b,
+            LineBytes::Owned(_) => {
+                panic!("get_line_zero_copy is not supported for paged (large-file) storage")
+            }
         }
     }
 
@@ -875,14 +1274,25 @@ impl FileReader {
     /// For `Storage::Merged`, `idx` is interpreted as a compound key
     /// `source_idx << SOURCE_IDX_SHIFT | line_idx`.
     ///
+    /// Returns owned, `Arc`-backed bytes for `Storage::Paged` (large files);
+    /// a zero-copy borrow otherwise. See [`LineBytes`].
+    ///
     /// # Panics
-    /// Panics if `idx >= line_count()`.
-    pub fn get_line(&self, idx: usize) -> &[u8] {
+    /// Panics if `idx >= line_count()`, or if the underlying file shrank out
+    /// from under a `Storage::Paged` reader (rotation mid-read).
+    pub fn get_line(&self, idx: usize) -> LineBytes<'_> {
         if let Storage::Merged { entries, sources } = &self.storage {
             let entry = &entries[idx];
             return sources[entry.source_idx].get_line(entry.line_idx);
         }
-        &self.storage.as_bytes()[self.line_byte_range(idx)]
+        if let Storage::Paged { paged, .. } = &self.storage {
+            return LineBytes::Owned(
+                paged
+                    .get_line(&self.line_starts, idx)
+                    .unwrap_or_else(|e| panic!("paged line {idx} read failed: {e}")),
+            );
+        }
+        LineBytes::Borrowed(&self.storage.as_bytes()[self.line_byte_range(idx)])
     }
 
     /// Byte range of line `idx` within [`data()`] (without the trailing
@@ -893,18 +1303,26 @@ impl FileReader {
     /// # Panics
     /// Panics if `idx >= line_count()`.
     pub fn line_byte_range(&self, idx: usize) -> std::ops::Range<usize> {
-        let data = self.storage.as_bytes();
         let start = self.line_starts[idx];
         let end = if idx + 1 < self.line_starts.len() {
-            // End is the start of the next line, minus the newline character.
             let next = self.line_starts[idx + 1];
-            if next > 0 && data.get(next - 1) == Some(&b'\n') {
-                next - 1
-            } else {
-                next
+            match &self.storage {
+                // `line_starts` entries are always right after a '\n' by
+                // construction (see `PagedFile::build_line_starts`), so no
+                // need to read a byte back just to confirm it — that would
+                // cost an extra page fetch per line for no benefit.
+                Storage::Paged { .. } => next - 1,
+                _ => {
+                    let data = self.storage.as_bytes();
+                    if next > 0 && data.get(next - 1) == Some(&b'\n') {
+                        next - 1
+                    } else {
+                        next
+                    }
+                }
             }
         } else {
-            data.len()
+            self.total_len()
         };
         start..end
     }
@@ -912,9 +1330,83 @@ impl FileReader {
     /// The contiguous backing data buffer (mmap or in-memory bytes).
     ///
     /// Used by whole-file scanning paths (e.g. Aho-Corasick over the entire
-    /// buffer) that avoid per-line `get_line()` overhead.
+    /// buffer) that avoid per-line `get_line()` overhead. Not supported for
+    /// `Storage::Paged` (large files) — use [`Self::materialize_range`]
+    /// instead, which only fetches the bytes actually needed.
+    ///
+    /// # Panics
+    /// Panics if this reader is backed by `Storage::Paged`.
     pub fn data(&self) -> &[u8] {
+        assert!(
+            !matches!(self.storage, Storage::Paged { .. }),
+            "FileReader::data() is not supported for paged (large-file) storage — use materialize_range() instead"
+        );
         self.storage.as_bytes()
+    }
+
+    /// Returns an owned copy of the bytes in `byte_range`. For small/resident
+    /// storage this is a cheap slice-copy; for `Storage::Paged` (large files)
+    /// it fetches/concatenates only the needed pages, unlike [`Self::data`].
+    pub fn materialize_range(&self, byte_range: std::ops::Range<usize>) -> Arc<[u8]> {
+        match &self.storage {
+            Storage::Paged { paged, .. } => paged
+                .read_range(byte_range)
+                .unwrap_or_else(|e| panic!("paged range read failed: {e}")),
+            _ => Arc::from(&self.storage.as_bytes()[byte_range]),
+        }
+    }
+
+    /// Materializes the byte range for lines `[chunk_start, chunk_end)` and
+    /// returns it alongside a *rebased* line_starts table — index 0 lines up
+    /// with `chunk_start`, and every value is relative to the chunk's first
+    /// byte — suitable for `FilterManager::evaluate_chunk_wholefile`, which
+    /// only ever indexes within the `line_range` it's given.
+    ///
+    /// Works for any storage kind, but exists specifically so paged
+    /// (large-file) readers can use the whole-buffer fast path one bounded
+    /// chunk at a time instead of needing the whole file resident. Callers
+    /// must add `chunk_start` back onto any line indices
+    /// `evaluate_chunk_wholefile` returns to get real, file-absolute ones.
+    ///
+    /// # Panics
+    /// Panics if `chunk_start >= chunk_end` or `chunk_end > line_count()`.
+    pub fn materialize_chunk(
+        &self,
+        chunk_start: usize,
+        chunk_end: usize,
+    ) -> (Arc<[u8]>, Vec<usize>) {
+        assert!(chunk_start < chunk_end, "empty or inverted chunk range");
+        assert!(chunk_end <= self.line_count(), "chunk_end past line_count");
+
+        let byte_start = self.line_starts[chunk_start];
+        let byte_end = if chunk_end < self.line_starts.len() {
+            self.line_starts[chunk_end]
+        } else {
+            self.total_len()
+        };
+
+        // Bypasses the page cache for `Storage::Paged`: a whole-file filter
+        // chunk reads every byte exactly once (nothing is reused), so the
+        // cache's per-page bookkeeping is pure overhead here — see
+        // `PagedFile::read_range_uncached`.
+        let chunk_bytes = match &self.storage {
+            Storage::Paged { paged, .. } => paged
+                .read_range_uncached(byte_start..byte_end)
+                .unwrap_or_else(|e| panic!("paged range read failed: {e}")),
+            _ => self.materialize_range(byte_start..byte_end),
+        };
+        // One entry per line's start in [chunk_start, chunk_end), plus a
+        // trailing sentinel at the chunk's end — `chunk_end` may or may not
+        // land on a real `line_starts` entry (no trailing newline on the
+        // file's last line), so the sentinel is computed explicitly from
+        // `byte_end` rather than reused from `line_starts` itself.
+        let mut local_starts: Vec<usize> = self.line_starts[chunk_start..chunk_end]
+            .iter()
+            .map(|&s| s - byte_start)
+            .collect();
+        local_starts.push(byte_end - byte_start);
+
+        (chunk_bytes, local_starts)
     }
 
     /// The sorted byte-offset table: `line_starts()[i]` is the byte offset
@@ -933,7 +1425,7 @@ impl FileReader {
     pub fn advise_viewport(&self, _first_line: usize, _last_line: usize) {}
 
     /// Iterate over `(line_index, line_bytes)` pairs.
-    pub fn iter(&self) -> impl Iterator<Item = (usize, &[u8])> {
+    pub fn iter(&self) -> impl Iterator<Item = (usize, LineBytes<'_>)> {
         (0..self.line_count()).map(move |i| (i, self.get_line(i)))
     }
 
@@ -964,7 +1456,10 @@ impl FileReader {
             Storage::File { data, .. } => {
                 std::sync::Arc::try_unwrap(data).unwrap_or_else(|arc| (*arc).clone())
             }
-            Storage::Merged { .. } => return,
+            // Streaming/append use is only for small in-memory (Bytes/File)
+            // readers (e.g. `:run` command output); large paged/merged
+            // readers don't support in-place growth this way.
+            Storage::Merged { .. } | Storage::Paged { .. } => return,
         };
         let offset = data.len();
         data.extend_from_slice(effective_data);
@@ -1539,7 +2034,7 @@ mod tests {
         let reader = make(b"first\nsecond\nthird\n");
         for idx in 0..reader.line_count() {
             let range = reader.line_byte_range(idx);
-            assert_eq!(&reader.data()[range], reader.get_line(idx));
+            assert_eq!(reader.get_line(idx), &reader.data()[range]);
         }
     }
 
@@ -1747,11 +2242,14 @@ mod tests {
     #[test]
     fn test_iter() {
         let r = make(b"a\nb\nc\n");
-        let collected: Vec<(usize, &[u8])> = r.iter().collect();
+        let collected: Vec<(usize, LineBytes<'_>)> = r.iter().collect();
         assert_eq!(collected.len(), 3);
-        assert_eq!(collected[0], (0, b"a".as_ref()));
-        assert_eq!(collected[1], (1, b"b".as_ref()));
-        assert_eq!(collected[2], (2, b"c".as_ref()));
+        assert_eq!(collected[0].0, 0);
+        assert_eq!(collected[0].1, b"a".as_ref());
+        assert_eq!(collected[1].0, 1);
+        assert_eq!(collected[1].1, b"b".as_ref());
+        assert_eq!(collected[2].0, 2);
+        assert_eq!(collected[2].1, b"c".as_ref());
     }
 
     #[test]
@@ -1764,9 +2262,11 @@ mod tests {
         let reader = FileReader::new(path).unwrap();
         assert_eq!(reader.line_count(), 2);
 
-        let l0 = std::str::from_utf8(reader.get_line(0)).unwrap();
+        let line0 = reader.get_line(0);
+        let l0 = std::str::from_utf8(&line0).unwrap();
         assert!(l0.contains("INFO"));
-        let l1 = std::str::from_utf8(reader.get_line(1)).unwrap();
+        let line1 = reader.get_line(1);
+        let l1 = std::str::from_utf8(&line1).unwrap();
         assert!(l1.contains("DEBUG"));
     }
 
@@ -2214,6 +2714,285 @@ mod tests {
         assert!(!reader.try_extend_from_read().unwrap());
     }
 
+    #[test]
+    fn test_try_new_paged_builds_storage_paged_and_matches_full_read() {
+        let data = (0..5000)
+            .map(|i| format!("line-{i:05}-payload"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let mut f = NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, data.as_bytes()).unwrap();
+        f.flush().unwrap();
+
+        let path = f.path().to_str().unwrap();
+        let canonical = Arc::new(std::fs::canonicalize(path).unwrap());
+        let paged_reader = FileReader::try_new_paged(path, canonical)
+            .unwrap()
+            .expect("plain text file should build Storage::Paged");
+        let full_reader = FileReader::new(path).unwrap();
+
+        assert!(paged_reader.is_paged());
+        assert_eq!(paged_reader.line_count(), full_reader.line_count());
+        for idx in [0usize, 1, 2500, 4999] {
+            assert_eq!(paged_reader.get_line(idx), full_reader.get_line(idx));
+        }
+    }
+
+    #[test]
+    fn test_try_new_paged_index_build_spans_multiple_parallel_chunks() {
+        // Each line is ~20 bytes; enough lines to exceed
+        // PAGED_INDEX_SCAN_CHUNK_SIZE (8MB) several times over, so the
+        // parallel index-build scan actually exercises multiple chunks
+        // merged back together in order — not just the single-chunk case
+        // every other small-file test in this module hits.
+        let line_count = 1_500_000;
+        let data = (0..line_count)
+            .map(|i| format!("line-{i:07}-payload"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        assert!(
+            data.len() > PAGED_INDEX_SCAN_CHUNK_SIZE * 3,
+            "test data too small to force multiple index-scan chunks"
+        );
+
+        let mut f = NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, data.as_bytes()).unwrap();
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap();
+        let canonical = Arc::new(std::fs::canonicalize(path).unwrap());
+
+        let paged_reader = FileReader::try_new_paged(path, canonical)
+            .unwrap()
+            .expect("plain text file should build Storage::Paged");
+        let full_reader = FileReader::new(path).unwrap();
+
+        assert_eq!(paged_reader.line_starts(), full_reader.line_starts());
+        assert_eq!(paged_reader.line_count(), line_count);
+        for idx in [0usize, 1, 250_000, line_count - 1] {
+            assert_eq!(paged_reader.get_line(idx), full_reader.get_line(idx));
+        }
+    }
+
+    fn make_multiline_reader(lines: usize) -> (FileReader, FileReader, String) {
+        let data = (0..lines)
+            .map(|i| format!("line-{i:06}-payload"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let mut f = NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, data.as_bytes()).unwrap();
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+
+        let canonical = Arc::new(std::fs::canonicalize(&path).unwrap());
+        let paged = FileReader::try_new_paged(&path, canonical)
+            .unwrap()
+            .expect("plain text file should build Storage::Paged");
+        let full = FileReader::new(&path).unwrap();
+        // Keep the temp file alive for the caller by leaking it into `path`'s
+        // scope via NamedTempFile's Drop — instead, persist it so it isn't
+        // deleted before the caller is done using the readers.
+        let _ = f.into_temp_path().keep().unwrap();
+        (paged, full, path)
+    }
+
+    #[test]
+    fn test_materialize_chunk_matches_manual_slice_mid_file() {
+        let (paged, full, path) = make_multiline_reader(5000);
+        let chunk_start = 1200;
+        let chunk_end = 1800;
+
+        let (chunk_bytes, local_starts) = paged.materialize_chunk(chunk_start, chunk_end);
+
+        let global_starts = full.line_starts();
+        let byte_start = global_starts[chunk_start];
+        let byte_end = global_starts[chunk_end];
+        let expected_bytes = full.materialize_range(byte_start..byte_end);
+        assert_eq!(&*chunk_bytes, &*expected_bytes);
+
+        let expected_local_starts: Vec<usize> = global_starts[chunk_start..=chunk_end]
+            .iter()
+            .map(|&s| s - byte_start)
+            .collect();
+        assert_eq!(local_starts, expected_local_starts);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_materialize_chunk_last_chunk_with_trailing_newline() {
+        // File ends with '\n', so line_starts has a phantom entry at
+        // data.len() past the last real line — chunk_end lands exactly on
+        // it (the `chunk_end < line_starts.len()` branch).
+        let (paged, full, path) = make_multiline_reader(100);
+        let line_count = paged.line_count();
+        let chunk_start = 90;
+        let chunk_end = line_count;
+
+        let (chunk_bytes, local_starts) = paged.materialize_chunk(chunk_start, chunk_end);
+
+        let byte_start = full.line_starts()[chunk_start];
+        let expected_bytes = full.materialize_range(byte_start..full.total_len());
+        assert_eq!(&*chunk_bytes, &*expected_bytes);
+        assert_eq!(*local_starts.last().unwrap(), chunk_bytes.len());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_materialize_chunk_last_chunk_without_trailing_newline() {
+        // No trailing '\n' on the last line — line_starts has NO phantom
+        // entry past it, so chunk_end == line_starts.len(), exercising the
+        // `chunk_end >= line_starts.len()` fallback to total_len().
+        let data = (0..100)
+            .map(|i| format!("line-{i:06}-payload"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut f = NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, data.as_bytes()).unwrap();
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        let canonical = Arc::new(std::fs::canonicalize(&path).unwrap());
+        let paged = FileReader::try_new_paged(&path, canonical)
+            .unwrap()
+            .expect("plain text file should build Storage::Paged");
+        let full = FileReader::new(&path).unwrap();
+        assert_eq!(paged.line_starts().len(), paged.line_count());
+
+        let chunk_start = 90;
+        let chunk_end = paged.line_count();
+        let (chunk_bytes, local_starts) = paged.materialize_chunk(chunk_start, chunk_end);
+
+        let byte_start = full.line_starts()[chunk_start];
+        let expected_bytes = full.materialize_range(byte_start..full.total_len());
+        assert_eq!(&*chunk_bytes, &*expected_bytes);
+        assert_eq!(*local_starts.last().unwrap(), chunk_bytes.len());
+    }
+
+    /// End-to-end check of the paged whole-file fast path: a file with more
+    /// lines than `headless::run_headless_to_writer`'s internal
+    /// `CHUNK_LINES` (16_384) forces at least 2 chunks — including a match
+    /// straddling the chunk boundary — and the paged reader's output must be
+    /// byte-identical to the same filter run against a fully-resident
+    /// reader over the same content.
+    #[tokio::test]
+    async fn test_run_headless_wholefile_paged_matches_non_paged_across_chunks() {
+        use crate::db::{Database, LogManager};
+        use crate::filters::{FilterOptions, FilterType};
+
+        let total_lines = 20_000;
+        let mut data = String::new();
+        for i in 0..total_lines {
+            // Deliberately place matches right around the 16_384-line chunk
+            // boundary, not just scattered uniformly, so a rebasing bug at
+            // the boundary would actually be exercised.
+            let marker = if (16_380..16_388).contains(&i) || i % 37 == 0 {
+                "MATCH"
+            } else {
+                "skip"
+            };
+            data.push_str(&format!("line-{i:06}-{marker}\n"));
+        }
+        let mut f = NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, data.as_bytes()).unwrap();
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        let canonical = Arc::new(std::fs::canonicalize(&path).unwrap());
+
+        let paged_reader = FileReader::try_new_paged(&path, canonical)
+            .unwrap()
+            .expect("plain text file should build Storage::Paged");
+        assert!(paged_reader.is_paged());
+        let plain_reader = FileReader::new(&path).unwrap();
+        assert!(!plain_reader.is_paged());
+
+        let mut lm_paged =
+            LogManager::new(Arc::new(Database::in_memory().await.unwrap()), None).await;
+        lm_paged
+            .add_filter_with_color(
+                "MATCH".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        let mut lm_plain =
+            LogManager::new(Arc::new(Database::in_memory().await.unwrap()), None).await;
+        lm_plain
+            .add_filter_with_color(
+                "MATCH".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+
+        let mut paged_out = Vec::new();
+        crate::headless::run_headless_to_writer(paged_reader, &lm_paged, &mut paged_out).unwrap();
+        let mut plain_out = Vec::new();
+        crate::headless::run_headless_to_writer(plain_reader, &lm_plain, &mut plain_out).unwrap();
+
+        assert!(!paged_out.is_empty());
+        assert_eq!(paged_out, plain_out);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_try_extend_from_read_paged_growth_appends_new_lines() {
+        use std::io::Write;
+
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "line1\nline2\n").unwrap();
+        f.flush().unwrap();
+
+        let path = f.path().to_str().unwrap();
+        let canonical = Arc::new(std::fs::canonicalize(path).unwrap());
+        let mut reader = FileReader::try_new_paged(path, canonical)
+            .unwrap()
+            .expect("plain text file should build Storage::Paged");
+        assert!(reader.is_paged());
+        assert_eq!(reader.line_count(), 2);
+
+        write!(f, "line3\nline4\n").unwrap();
+        f.flush().unwrap();
+
+        assert!(reader.try_extend_from_read().unwrap());
+        assert!(reader.is_paged(), "growth must stay on Storage::Paged");
+        assert_eq!(reader.line_count(), 4);
+        assert_eq!(reader.get_line(2), b"line3");
+        assert_eq!(reader.get_line(3), b"line4");
+    }
+
+    #[test]
+    fn test_try_extend_from_read_paged_growth_within_cached_page_is_visible() {
+        use std::io::Write;
+
+        // The whole file is a handful of bytes — well within page 0's
+        // 2MB span — so reading line 0 caches page 0 at its OLD (short)
+        // length. Growing the file and re-reading exercises exactly the
+        // stale-cached-page bug `PagedFile::set_size` guards against: the
+        // grown bytes must be visible, not silently dropped by a stale
+        // cache hit.
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "line1\nline2\n").unwrap();
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap();
+        let canonical = Arc::new(std::fs::canonicalize(path).unwrap());
+        let mut reader = FileReader::try_new_paged(path, canonical)
+            .unwrap()
+            .expect("plain text file should build Storage::Paged");
+
+        // Touch line 0 so its (default-sized, 2MB) page gets cached.
+        assert_eq!(reader.get_line(0), b"line1");
+
+        writeln!(f, "line3").unwrap();
+        f.flush().unwrap();
+        assert!(reader.try_extend_from_read().unwrap());
+        assert_eq!(reader.line_count(), 3);
+        assert_eq!(reader.get_line(2), b"line3");
+    }
+
     #[tokio::test]
     async fn test_spawn_file_watcher_detects_new_data() {
         use std::io::{Seek, SeekFrom};
@@ -2257,7 +3036,9 @@ mod tests {
     fn test_iter_single_no_newline() {
         let r = make(b"only");
         let collected: Vec<_> = r.iter().collect();
-        assert_eq!(collected, vec![(0, b"only".as_ref())]);
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].0, 0);
+        assert_eq!(collected[0].1, b"only".as_ref());
     }
 
     #[tokio::test]
@@ -2517,7 +3298,7 @@ mod tests {
             assert!(
                 line.starts_with(b"entry "),
                 "partial line leaked: {:?}",
-                std::str::from_utf8(line)
+                std::str::from_utf8(&line)
             );
         }
     }
@@ -2573,7 +3354,7 @@ mod tests {
             assert!(
                 line.starts_with(b"entry "),
                 "partial line leaked: {:?}",
-                std::str::from_utf8(line)
+                std::str::from_utf8(&line)
             );
         }
     }
@@ -2871,12 +3652,12 @@ mod tests {
 
         for i in 0..reader.line_count() {
             let line = reader.get_line(i);
-            let parts = parser.parse_line(line);
+            let parts = parser.parse_line(&line);
             assert!(
                 parts.is_some(),
                 "Line {} should be parseable: {:?}",
                 i,
-                std::str::from_utf8(line)
+                std::str::from_utf8(&line)
             );
         }
     }

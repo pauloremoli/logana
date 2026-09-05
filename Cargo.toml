@@ -54,6 +54,7 @@ tonic = { version = "0.14", default-features = false, features = ["transport", "
 tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
 strum = { version = "0.28.0", features = ["derive"] }
 schemars = { version = "0.8", default-features = false, features = ["derive", "preserve_order"] }
+arc-swap = { version = "1.9", default-features = false }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["rayon", "html_reports"] }
@@ -75,6 +76,10 @@ harness = false
 
 [[bench]]
 name = "headless"
+harness = false
+
+[[bench]]
+name = "paged_file"
 harness = false
 
 [profile.release]

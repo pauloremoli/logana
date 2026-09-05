@@ -21,7 +21,7 @@ impl App {
             let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
             for line in marked_lines {
                 writer
-                    .write_all(line)
+                    .write_all(&line)
                     .and_then(|_| writer.write_all(b"\n"))
                     .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
             }
@@ -51,7 +51,7 @@ impl App {
         let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
         for file_idx in tab.filter.visible_indices.iter() {
             writer
-                .write_all(tab.file_reader.get_line(file_idx))
+                .write_all(&tab.file_reader.get_line(file_idx))
                 .and_then(|_| writer.write_all(b"\n"))
                 .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
         }

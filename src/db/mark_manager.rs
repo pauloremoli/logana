@@ -29,7 +29,7 @@ impl MarkManager {
         self.marks = indices.into_iter().collect();
     }
 
-    pub fn get_lines<'a>(&self, reader: &'a FileReader) -> Vec<&'a [u8]> {
+    pub fn get_lines<'a>(&self, reader: &'a FileReader) -> Vec<crate::ingestion::LineBytes<'a>> {
         let mut indices: Vec<usize> = self.marks.iter().copied().collect();
         indices.sort_unstable();
         indices

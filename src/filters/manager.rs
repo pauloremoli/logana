@@ -796,7 +796,7 @@ impl FilterManager {
         let count = reader.line_count();
         (0..count)
             .into_par_iter()
-            .filter(|&idx| self.is_visible(reader.get_line(idx)))
+            .filter(|&idx| self.is_visible(&reader.get_line(idx)))
             .collect()
     }
 

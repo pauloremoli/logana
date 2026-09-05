@@ -486,7 +486,8 @@ pub fn display_text_for_line(
     hidden_fields: &HashSet<String>,
     show_keys: bool,
 ) -> String {
-    let bytes = file_reader.get_line(line_idx);
+    let owned_bytes = file_reader.get_line(line_idx);
+    let bytes: &[u8] = &owned_bytes;
     if let Some(parser) = detected_format
         && let Some(parts) = parser.parse_line(bytes)
     {
@@ -517,6 +518,16 @@ pub fn display_text_for_line(
 
 pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser) -> Vec<usize> {
     let count = reader.line_count();
+
+    // Continuation-group merging needs a genuine `&'a [u8]` borrow per line
+    // (see `apply_continuation_fields`), which `Storage::Paged` (large
+    // files) can't provide without materializing everything — an identity
+    // map (every line is its own record) degrades gracefully to "treat
+    // every line as standalone" instead.
+    if reader.is_paged() {
+        return (0..count).collect();
+    }
+
     let chunk_size = 1024;
 
     // Phase 1: process chunks in parallel
@@ -530,6 +541,7 @@ pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser)
 
             for i in start..end {
                 let line = reader.get_line(i);
+                let line: &[u8] = &line;
                 // A line matching the schema's declared `continuation.end_pattern`
                 // is, by definition, the terminator of the block already open —
                 // it must never start a new one, even if it also happens to
@@ -589,7 +601,7 @@ fn apply_continuation_fields<'a>(
     let mut lines: Vec<&'a [u8]> = Vec::new();
     let mut j = line_idx + 1;
     while j < cmap.len() && cmap[j] == line_idx {
-        let line = reader.get_line(j);
+        let line = reader.get_line_zero_copy(j);
         block_end = j;
         if parser.is_continuation_end(line) {
             break;
@@ -634,13 +646,14 @@ fn merged_message_range(
 /// range to cover them too (zero-copy, since consecutive file lines are
 /// contiguous in `reader`'s backing buffer — see `merged_message_range`), so
 /// field filters and the structured fields panel can see their content.
-pub fn parse_line_with_continuation<'a>(
+pub fn parse_line_with_continuation<'a, 'r: 'a>(
     parser: &dyn LogFormatParser,
-    reader: &'a FileReader,
+    reader: &'r FileReader,
+    line: &'a [u8],
     cmap: Option<&[usize]>,
     line_idx: usize,
 ) -> Option<crate::parser::DisplayParts<'a>> {
-    let mut parts = parser.parse_line(reader.get_line(line_idx))?;
+    let mut parts = parser.parse_line(line)?;
     if !parser.wants_continuation_walk() {
         return Some(parts);
     }
@@ -803,7 +816,8 @@ impl TabState {
     pub fn new(file_reader: FileReader, log_manager: LogManager, title: String) -> Self {
         // Sample up to 200 lines for format detection.
         let sample_limit = file_reader.line_count().min(200);
-        let sample: Vec<&[u8]> = (0..sample_limit).map(|i| file_reader.get_line(i)).collect();
+        let sample_lines: Vec<_> = (0..sample_limit).map(|i| file_reader.get_line(i)).collect();
+        let sample: Vec<&[u8]> = sample_lines.iter().map(|l| &**l).collect();
         let detected_format = detect_format(&sample).map(Arc::from);
 
         // Apply format-specific default hidden fields (e.g. journalctl JSON hides
@@ -1007,7 +1021,8 @@ impl TabState {
     fn pos_matches_level(&self, pos: usize, errors: bool) -> bool {
         use crate::parser::LogLevel;
         let file_idx = self.filter.visible_indices.get(pos);
-        let bytes = self.file_reader.get_line(file_idx);
+        let owned_bytes = self.file_reader.get_line(file_idx);
+        let bytes: &[u8] = &owned_bytes;
         let level = self
             .parser_for_line(file_idx)
             .and_then(|p| {
@@ -1137,8 +1152,9 @@ impl TabState {
             let line_count = self.file_reader.line_count();
 
             // Choose scan strategy: whole-file AC when text-only filters and
-            // combined AC available.
-            let use_wholefile = !needs_parse && fm.has_combined_ac();
+            // combined AC available. Not for paged (large-file) storage,
+            // which has no resident buffer for `data()` to hand back.
+            let use_wholefile = !needs_parse && fm.has_combined_ac() && !file_reader.is_paged();
 
             #[cfg(unix)]
             file_reader.advise_for_scan(0..line_count);
@@ -1164,7 +1180,8 @@ impl TabState {
                             )
                         },
                         |(mut vis, mut tc, mut fc, mut dc), idx| {
-                            let line = file_reader.get_line(idx);
+                            let owned_line = file_reader.get_line(idx);
+                            let line: &[u8] = &owned_line;
                             if parser.is_some() && line.is_empty() {
                                 return (vis, tc, fc, dc);
                             }
@@ -1192,7 +1209,13 @@ impl TabState {
                             } else {
                                 let parts = if needs_parse && !can_skip {
                                     parser.and_then(|p| {
-                                        parse_line_with_continuation(p, file_reader, cmap, idx)
+                                        parse_line_with_continuation(
+                                            p,
+                                            file_reader,
+                                            line,
+                                            cmap,
+                                            idx,
+                                        )
                                     })
                                 } else {
                                     None
@@ -1732,7 +1755,9 @@ impl TabState {
             // per-line iterator calls.  Used when only text filters are active
             // and a combined Aho-Corasick automaton is available.
             // Disabled for merged readers: their data() is empty and line_starts
-            // are dummy sequential indices, not byte offsets.
+            // are dummy sequential indices, not byte offsets. Paged
+            // (large-file) readers use it too, materializing one bounded
+            // chunk at a time instead of the whole file — see below.
             let use_wholefile = !needs_parse && fm_arc.has_combined_ac() && !is_merged_reader;
 
             let mut total_text_counts = vec![0usize; n_text];
@@ -1759,14 +1784,29 @@ impl TabState {
 
                 let (visible, text_counts, field_counts, date_counts) = if use_wholefile {
                     // Fast path: whole-buffer AC scan with rayon sub-chunking.
-                    let (vis, tc) = fm_arc.evaluate_chunk_wholefile(
-                        file_reader.data(),
-                        file_reader.line_starts(),
-                        chunk_start..chunk_end,
-                    );
+                    // Paged (large-file) readers materialize just this
+                    // chunk's bytes instead of needing the whole file
+                    // resident; the returned indices are chunk-local and
+                    // need `chunk_start` added back.
+                    let (vis, tc) = if file_reader.is_paged() {
+                        let (chunk_bytes, local_starts) =
+                            file_reader.materialize_chunk(chunk_start, chunk_end);
+                        let (vis, tc) = fm_arc.evaluate_chunk_wholefile(
+                            &chunk_bytes,
+                            &local_starts,
+                            0..(chunk_end - chunk_start),
+                        );
+                        (vis.into_iter().map(|i| i + chunk_start).collect(), tc)
+                    } else {
+                        fm_arc.evaluate_chunk_wholefile(
+                            file_reader.data(),
+                            file_reader.line_starts(),
+                            chunk_start..chunk_end,
+                        )
+                    };
                     // Highlight mode bypasses visibility but keeps counts,
                     // which evaluate_chunk_wholefile already computed accurately.
-                    let vis = if highlight_mode {
+                    let vis: Vec<usize> = if highlight_mode {
                         (chunk_start..chunk_end).collect()
                     } else {
                         vis
@@ -1787,7 +1827,8 @@ impl TabState {
                                 )
                             },
                             |(mut vis, mut tc, mut fc, mut dc), i| {
-                                let line = file_reader.get_line(i);
+                                let owned_line = file_reader.get_line(i);
+                                let line: &[u8] = &owned_line;
                                 let year_override =
                                     year_map.as_deref().map(|ym| ym.year_for_line(i));
                                 let mut text_dec = fm_arc.evaluate_and_count(line, &mut tc);
@@ -2003,7 +2044,8 @@ impl TabState {
             let map = Arc::make_mut(cmap);
             let mut last_parent = map.last().copied().unwrap_or(0);
             for i in old_line_count..new_count {
-                let line = self.file_reader.get_line(i);
+                let owned_line = self.file_reader.get_line(i);
+                let line: &[u8] = &owned_line;
                 // See `build_continuation_map`: an `end_pattern` match must
                 // never start a new block, even if it also happens to
                 // satisfy the schema's main `parse_line` pattern.
@@ -2093,7 +2135,8 @@ impl TabState {
         let mut dummy_text_counts = vec![0usize; self.filter.manager.filter_count()];
 
         for i in old_line_count..new_count {
-            let line = self.file_reader.get_line(i);
+            let owned_line = self.file_reader.get_line(i);
+            let line: &[u8] = &owned_line;
             if parser.is_some() && line.is_empty() {
                 continue;
             }
@@ -2279,7 +2322,8 @@ impl TabState {
                 .par_iter()
                 .copied()
                 .filter(|&line_idx| {
-                    let line = file_reader.get_line(line_idx);
+                    let owned_line = file_reader.get_line(line_idx);
+                    let line: &[u8] = &owned_line;
                     let mut dummy = MatchCollector::new(line);
                     keep_fn(filter.evaluate(line, &mut dummy))
                 })
@@ -2405,7 +2449,8 @@ impl TabState {
     pub fn detect_and_apply_format(&mut self) {
         let limit = self.file_reader.line_count().min(200);
         if limit > 0 {
-            let sample: Vec<&[u8]> = (0..limit).map(|j| self.file_reader.get_line(j)).collect();
+            let sample_lines: Vec<_> = (0..limit).map(|j| self.file_reader.get_line(j)).collect();
+            let sample: Vec<&[u8]> = sample_lines.iter().map(|l| &**l).collect();
             let detected =
                 crate::ingestion::format_detect::detect_format_for_reader(&self.file_reader);
             // Apply default hidden fields only when the tab currently has none
@@ -2622,12 +2667,13 @@ impl TabState {
         let mut names = if let Some(parser) = &self.display.format {
             const SAMPLE_LIMIT: usize = 200;
             let limit = self.filter.visible_indices.len().min(SAMPLE_LIMIT);
-            let lines: Vec<&[u8]> = (0..limit)
+            let owned_lines: Vec<_> = (0..limit)
                 .map(|i| {
                     self.file_reader
                         .get_line(self.filter.visible_indices.get(i))
                 })
                 .collect();
+            let lines: Vec<&[u8]> = owned_lines.iter().map(|l| &**l).collect();
             parser.collect_field_names(&lines)
         } else {
             Vec::new()
@@ -2660,16 +2706,18 @@ impl TabState {
         // Step 1: Discover canonical names from raw file lines.
         const NAME_SAMPLE: usize = 200;
         let name_sample = total.min(NAME_SAMPLE);
-        let name_lines: Vec<&[u8]> = (0..name_sample)
+        let owned_name_lines: Vec<_> = (0..name_sample)
             .map(|i| self.file_reader.get_line(i))
             .collect();
+        let name_lines: Vec<&[u8]> = owned_name_lines.iter().map(|l| &**l).collect();
         let names = parser.collect_field_names(&name_lines);
         // Step 2: Scan raw lines to collect values and per-name frequency counts.
         let mut name_freq: HashMap<String, usize> = HashMap::new();
         let mut value_map: HashMap<String, HashSet<String>> = HashMap::new();
 
         for i in 0..limit {
-            let line = self.file_reader.get_line(i);
+            let owned_line = self.file_reader.get_line(i);
+            let line: &[u8] = &owned_line;
             let Some(parts) = parser.parse_line(line) else {
                 continue;
             };
@@ -3022,6 +3070,166 @@ mod tests {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, Some(source.to_string())).await;
         TabState::new(file_reader, log_manager, "test".to_string())
+    }
+
+    /// Manual timing harness (not asserted on) for "open a large file with a
+    /// pre-existing persisted filter" — mirrors `loading.rs`'s
+    /// `LoadContext::ReplaceInitialTab` completion handler exactly (empty
+    /// placeholder tab, then swap in the loaded reader and call
+    /// `detect_and_apply_format` + `begin_filter_refresh`, skipping the
+    /// initial `TabState::new`-time `refresh_visible()` which only ever
+    /// runs against the empty placeholder in the real app) so this measures
+    /// app logic only, with no real terminal/rendering involved. Run with
+    /// `cargo test -- --ignored test_timing_apply_persisted_filter`.
+    #[tokio::test]
+    #[ignore]
+    async fn test_timing_apply_persisted_filter_on_load_for_real_file() {
+        use std::sync::atomic::AtomicBool;
+
+        let Ok(home) = std::env::var("HOME") else {
+            return;
+        };
+        let path = format!("{home}/logs/access.log");
+        if !std::path::Path::new(&path).exists() {
+            eprintln!("skipping: {path} not found");
+            return;
+        }
+
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut log_manager = LogManager::new(db, Some(path.clone())).await;
+        for pattern in ["food", "GET", "product", "bingbot"] {
+            log_manager
+                .add_filter_with_color(
+                    pattern.to_string(),
+                    FilterType::Include,
+                    FilterOptions::default(),
+                )
+                .await;
+        }
+
+        let t_start = std::time::Instant::now();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let handle = FileReader::load(path.clone(), None, false, cancel, false)
+            .await
+            .unwrap();
+        let result = handle.result_rx.await.unwrap().unwrap();
+        let t_load = t_start.elapsed();
+
+        let mut tab = TabState::new(
+            FileReader::from_bytes(vec![]),
+            log_manager,
+            "access.log".to_string(),
+        );
+        tab.file_reader = result.reader;
+        tab.filter.visible_indices = VisibleLines::All(tab.file_reader.line_count());
+
+        let t_filter_start = std::time::Instant::now();
+        tab.detect_and_apply_format();
+        tab.begin_filter_refresh();
+        let mut total_visible = 0usize;
+        if let Some(mut h) = tab.filter.handle.take() {
+            while let Some(chunk) = h.result_rx.recv().await {
+                total_visible += chunk.visible.len();
+                if chunk.is_last {
+                    break;
+                }
+            }
+        } else {
+            total_visible = tab.filter.visible_indices.len();
+        }
+        let t_filter = t_filter_start.elapsed();
+
+        println!(
+            "PAGED   -- index build: {t_load:?}, filter refresh: {t_filter:?}, total: {:?}, matches={total_visible}",
+            t_start.elapsed()
+        );
+
+        // Manual breakdown of the PAGED path's per-chunk cost: how much is
+        // materialize_chunk (I/O + copy) vs evaluate_chunk_wholefile (the
+        // actual AC scan), holding chunk size fixed at begin_filter_refresh's
+        // steady-state MAX_CHUNK_SIZE. Runs before the FULL comparison below
+        // (which holds 3.5GB resident) so that doesn't evict the OS page
+        // cache mid-measurement and confound this timing.
+        let (fm, _, _, _) = tab.log_manager.build_filter_manager();
+        let line_count = tab.file_reader.line_count();
+        const CHUNK: usize = 500_000;
+        let mut materialize_total = std::time::Duration::ZERO;
+        let mut evaluate_total = std::time::Duration::ZERO;
+        let mut chunk_start = 0usize;
+        let mut matched = 0usize;
+        while chunk_start < line_count {
+            let chunk_end = (chunk_start + CHUNK).min(line_count);
+            let t_m = std::time::Instant::now();
+            let (chunk_bytes, local_starts) =
+                tab.file_reader.materialize_chunk(chunk_start, chunk_end);
+            materialize_total += t_m.elapsed();
+            let t_e = std::time::Instant::now();
+            let (vis, _) = fm.evaluate_chunk_wholefile(
+                &chunk_bytes,
+                &local_starts,
+                0..(chunk_end - chunk_start),
+            );
+            evaluate_total += t_e.elapsed();
+            matched += vis.len();
+            chunk_start = chunk_end;
+        }
+        println!(
+            "BREAKDOWN -- materialize_chunk total: {materialize_total:?}, evaluate_chunk_wholefile total: {evaluate_total:?}, matches={matched}"
+        );
+        drop(tab);
+
+        // Same file, same filters, but fully materialized (non-paged) —
+        // isolates whether the filter-refresh cost is inherent to
+        // near-100%-match-density AC scanning, or specific to paged
+        // storage's per-chunk materialize_range copy.
+        let db2 = Arc::new(Database::in_memory().await.unwrap());
+        let mut log_manager2 = LogManager::new(db2, Some(path.clone())).await;
+        for pattern in ["food", "GET", "product", "bingbot"] {
+            log_manager2
+                .add_filter_with_color(
+                    pattern.to_string(),
+                    FilterType::Include,
+                    FilterOptions::default(),
+                )
+                .await;
+        }
+
+        let t2_start = std::time::Instant::now();
+        // `FileReader::new`/`load` route through the same size threshold as
+        // production code, so force genuine full materialization via
+        // `from_bytes` (always `Storage::Bytes`) for a clean comparison.
+        let full_reader = FileReader::from_bytes(std::fs::read(&path).unwrap());
+        assert!(!full_reader.is_paged());
+        let t2_load = t2_start.elapsed();
+
+        let mut tab2 = TabState::new(
+            FileReader::from_bytes(vec![]),
+            log_manager2,
+            "access.log".to_string(),
+        );
+        tab2.file_reader = full_reader;
+        tab2.filter.visible_indices = VisibleLines::All(tab2.file_reader.line_count());
+
+        let t2_filter_start = std::time::Instant::now();
+        tab2.detect_and_apply_format();
+        tab2.begin_filter_refresh();
+        let mut total_visible2 = 0usize;
+        if let Some(mut h) = tab2.filter.handle.take() {
+            while let Some(chunk) = h.result_rx.recv().await {
+                total_visible2 += chunk.visible.len();
+                if chunk.is_last {
+                    break;
+                }
+            }
+        } else {
+            total_visible2 = tab2.filter.visible_indices.len();
+        }
+        let t2_filter = t2_filter_start.elapsed();
+
+        println!(
+            "FULL    -- index build: {t2_load:?}, filter refresh: {t2_filter:?}, total: {:?}, matches={total_visible2}",
+            t2_start.elapsed()
+        );
     }
 
     #[tokio::test]
@@ -4700,6 +4908,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_begin_filter_refresh_paged_matches_non_paged_across_chunks() {
+        // INITIAL_CHUNK_SIZE is 5_000, so 12_000 lines forces at least two
+        // chunks through the paged branch of `begin_filter_refresh`'s scan
+        // loop, exercising the rebasing at the chunk boundary the same way
+        // the headless equivalent
+        // (`test_run_headless_wholefile_paged_matches_non_paged_across_chunks`)
+        // does.
+        let total_lines = 12_000;
+        let mut data = String::new();
+        for i in 0..total_lines {
+            let marker = if (4_998..5_003).contains(&i) || i % 37 == 0 {
+                "MATCH"
+            } else {
+                "skip"
+            };
+            data.push_str(&format!("line-{i:06}-{marker}\n"));
+        }
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, data.as_bytes()).unwrap();
+        std::io::Write::flush(&mut f).unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        let canonical = Arc::new(std::fs::canonicalize(&path).unwrap());
+
+        let paged_reader = FileReader::try_new_paged(&path, canonical)
+            .unwrap()
+            .expect("plain text file should build Storage::Paged");
+        assert!(paged_reader.is_paged());
+
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut lm_paged = LogManager::new(db, None).await;
+        lm_paged
+            .add_filter_with_color(
+                "MATCH".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        let mut tab_paged = TabState::new(paged_reader, lm_paged, "paged".to_string());
+        tab_paged.begin_filter_refresh();
+        let mut h_paged = tab_paged.filter.handle.take().unwrap();
+        let mut paged_visible = Vec::new();
+        while let Some(chunk) = h_paged.result_rx.recv().await {
+            paged_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+
+        let non_paged_reader = FileReader::from_bytes(data.into_bytes());
+        assert!(!non_paged_reader.is_paged());
+        let db2 = Arc::new(Database::in_memory().await.unwrap());
+        let mut lm_plain = LogManager::new(db2, None).await;
+        lm_plain
+            .add_filter_with_color(
+                "MATCH".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        let mut tab_plain = TabState::new(non_paged_reader, lm_plain, "plain".to_string());
+        tab_plain.begin_filter_refresh();
+        let mut h_plain = tab_plain.filter.handle.take().unwrap();
+        let mut plain_visible = Vec::new();
+        while let Some(chunk) = h_plain.result_rx.recv().await {
+            plain_visible.extend(chunk.visible);
+            if chunk.is_last {
+                break;
+            }
+        }
+
+        assert!(!paged_visible.is_empty());
+        assert_eq!(paged_visible, plain_visible);
+    }
+
+    #[tokio::test]
     async fn test_highlight_mode_bypasses_visibility_per_line_path() {
         let mut tab = make_tab(&["ERROR a", "INFO b", "ERROR c"]).await;
         tab.log_manager
@@ -5155,7 +5438,14 @@ mod tests {
         let cmap = build_continuation_map(&reader, &parser);
         assert_eq!(cmap, vec![0, 0, 0]);
 
-        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        let parts = parse_line_with_continuation(
+            &parser,
+            &reader,
+            reader.get_line_zero_copy(0),
+            Some(&cmap),
+            0,
+        )
+        .unwrap();
         assert_eq!(parts.message, Some("hello"));
     }
 
@@ -5169,7 +5459,14 @@ mod tests {
         let cmap = build_continuation_map(&reader, &parser);
         assert_eq!(cmap, vec![0, 0, 0]);
 
-        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        let parts = parse_line_with_continuation(
+            &parser,
+            &reader,
+            reader.get_line_zero_copy(0),
+            Some(&cmap),
+            0,
+        )
+        .unwrap();
         assert_eq!(
             parts.message,
             Some("hello\n  stack trace line 1\n  stack trace line 2")
@@ -5192,7 +5489,14 @@ mod tests {
         let cmap = build_continuation_map(&reader, &parser);
         assert_eq!(cmap, vec![0, 0, 0]);
 
-        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        let parts = parse_line_with_continuation(
+            &parser,
+            &reader,
+            reader.get_line_zero_copy(0),
+            Some(&cmap),
+            0,
+        )
+        .unwrap();
         assert_eq!(parts.message, Some("  KEY1=val1\n  KEY2=val2"));
     }
 
@@ -5204,7 +5508,14 @@ mod tests {
         let cmap = build_continuation_map(&reader, &parser);
         assert_eq!(cmap, vec![0, 1]); // both lines parse; neither is a continuation
 
-        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        let parts = parse_line_with_continuation(
+            &parser,
+            &reader,
+            reader.get_line_zero_copy(0),
+            Some(&cmap),
+            0,
+        )
+        .unwrap();
         assert_eq!(parts.message, Some("hello"));
     }
 
@@ -5214,7 +5525,9 @@ mod tests {
         let parser =
             crate::parser::CustomParser::from_config(&multiline_schema_config(true)).unwrap();
 
-        let parts = parse_line_with_continuation(&parser, &reader, None, 0).unwrap();
+        let parts =
+            parse_line_with_continuation(&parser, &reader, reader.get_line_zero_copy(0), None, 0)
+                .unwrap();
         assert_eq!(parts.message, Some("hello"));
     }
 
@@ -5303,7 +5616,14 @@ mod tests {
         let cmap = build_continuation_map(&reader, &parser);
         assert_eq!(cmap, vec![0, 0, 0, 0]);
 
-        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        let parts = parse_line_with_continuation(
+            &parser,
+            &reader,
+            reader.get_line_zero_copy(0),
+            Some(&cmap),
+            0,
+        )
+        .unwrap();
         let extra = |k: &str| {
             parts
                 .extra_fields
@@ -5327,7 +5647,14 @@ mod tests {
         .unwrap();
         let cmap = build_continuation_map(&reader, &parser);
 
-        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        let parts = parse_line_with_continuation(
+            &parser,
+            &reader,
+            reader.get_line_zero_copy(0),
+            Some(&cmap),
+            0,
+        )
+        .unwrap();
         assert_eq!(parts.field_groups.len(), 1);
         let (name, items) = &parts.field_groups[0];
         assert_eq!(*name, "operations");
@@ -5399,7 +5726,14 @@ mod tests {
         assert!(!parser.merges_continuation_into_message());
         let cmap = build_continuation_map(&reader, &parser);
 
-        let parts = parse_line_with_continuation(&parser, &reader, Some(&cmap), 0).unwrap();
+        let parts = parse_line_with_continuation(
+            &parser,
+            &reader,
+            reader.get_line_zero_copy(0),
+            Some(&cmap),
+            0,
+        )
+        .unwrap();
         assert_eq!(parts.message, None, "no message field declared or merged");
         assert!(
             parts
