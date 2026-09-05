@@ -17,6 +17,8 @@ All notable changes to logana will be documented in this file.
 - Support Page Up/Down, half-page scrolling, `gg`/`G`, and `/` search in group mode, matching filter mode's navigation.
 - Bind `A` in group mode to toggle every filter across every group.
 - Bind `d` in group mode to delete the selected group and its filters.
+- Accept multiple file paths on the command line, each opening in its own tab.
+- Support `*`, `?`, and `[]` glob patterns in `:open` and command-line file arguments, opening every match as its own tab.
 
 ### Fixed
 - Fix filter groups being shared across tabs/files instead of scoped per file like filters, including `:toggle-group` affecting other tabs and `:save-filters`/`:load-filters` leaking groups between them.
@@ -27,6 +29,7 @@ All notable changes to logana will be documented in this file.
 - Fix the filter sidebar's width not being remembered as a single setting shared across files, restored on the next run.
 - Fix `:load-filters` dropping each filter's case-insensitive flag.
 - Fix toggling a group with no filters yet in group mode being a silent no-op instead of enabling/disabling it.
+- Fix the command line losing the tail of a long `:open` path once it no longer fit the terminal width.
 
 ## [0.7.6] - 2026-08-06
 

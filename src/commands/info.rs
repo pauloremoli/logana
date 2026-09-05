@@ -115,8 +115,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "open",
         usage: "open <path>",
-        description: "Open a file in a new tab.",
-        examples: &["open /var/log/syslog"],
+        description: "Open a file in a new tab. A path with *, ?, or [] wildcards opens every matching file, each in its own tab.",
+        examples: &["open /var/log/syslog", "open /var/log/syslog*"],
     },
     CommandInfo {
         name: "close-tab",

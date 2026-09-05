@@ -16,17 +16,22 @@ A tab can also be clicked directly in the tab bar to switch to it.
 
 ## Opening Files in Tabs
 
-**From the command line**, a file argument opens in its own tab; a directory argument shows a picker to choose which files to open (not yet supported for multiple positional args):
+**From the command line**, each file argument opens in its own tab; a directory argument shows a picker to choose which files to open. A file argument can also be a glob pattern, which opens every match, each in its own tab:
 
 ```sh
-logana /var/log/         # shows a picker — pick which files to open, each in its own tab
+logana app.log system.log        # two tabs, one per file
+logana /var/log/                 # shows a picker — pick which files to open, each in its own tab
+logana '/var/log/system.log*'    # opens system.log, system.log.1, system.log.2.gz, ... each in its own tab
 ```
+
+Quote a glob pattern so the shell passes it through as-is; an unquoted pattern is expanded by the shell first, which works the same way.
 
 **From within logana**, use the `:open` command:
 
 ```sh
-:open app.log            # opens in the current tab
-:open /var/log/          # shows the same picker (directory)
+:open app.log                    # opens in a new tab
+:open /var/log/                  # shows the same picker (directory)
+:open /var/log/system.log*       # opens every matching file, each in its own tab
 ```
 
 ## Tab State

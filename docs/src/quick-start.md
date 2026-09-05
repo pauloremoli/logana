@@ -6,6 +6,12 @@
 # Open a file
 logana app.log
 
+# Open multiple files — each opens in its own tab
+logana app.log system.log
+
+# Open every file matching a glob pattern, each in its own tab
+logana '/var/log/system.log*'
+
 # Open a directory — pick which files to open from a file picker
 logana /var/log/
 
