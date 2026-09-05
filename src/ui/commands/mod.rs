@@ -1211,6 +1211,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_open_glob_pattern_opens_each_match_as_a_tab() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("system.log"), b"a").unwrap();
+        std::fs::write(tmp.path().join("system.log.1"), b"b").unwrap();
+        std::fs::write(tmp.path().join("other.log"), b"c").unwrap();
+        let pattern = tmp.path().join("system.log*");
+        let initial_tabs = app.tabs.len();
+        let result = app
+            .run_command(&format!("open {}", pattern.to_str().unwrap()))
+            .await;
+        assert!(result.is_ok(), "{:?}", result);
+        assert_eq!(app.tabs.len(), initial_tabs + 2);
+        let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert!(titles.contains(&"system.log"));
+        assert!(titles.contains(&"system.log.1"));
+        assert!(!titles.contains(&"other.log"));
+    }
+
+    #[tokio::test]
+    async fn test_open_glob_pattern_no_matches_errors() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let pattern = tmp.path().join("nomatch*");
+        let result = app
+            .run_command(&format!("open {}", pattern.to_str().unwrap()))
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No files match"));
+    }
+
+    #[tokio::test]
     async fn test_export_opens_footer_overlay() {
         let mut app = make_app(&["line0", "line1", "line2"]).await;
         app.tabs[0].mark_manager.toggle(0);

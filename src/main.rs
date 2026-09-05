@@ -124,6 +124,28 @@ fn get_db_path() -> String {
     }
 }
 
+/// Expands any glob-pattern entry in `files` (e.g. `system.log*`) into its
+/// sorted list of matching paths, leaving literal paths untouched. A pattern
+/// that matches nothing is an error naming the pattern, since the user
+/// clearly meant to reference files that don't exist rather than pass a
+/// literal `*` through.
+fn expand_cli_files(files: Vec<String>) -> std::result::Result<Vec<String>, String> {
+    let mut expanded = Vec::with_capacity(files.len());
+    for f in files {
+        if logana::utils::filesystem::has_glob_metachars(&f) {
+            let matches =
+                logana::utils::filesystem::expand_glob(&f).map_err(|e| format!("Error: {e}"))?;
+            if matches.is_empty() {
+                return Err(format!("Error: No files match '{}'.", f));
+            }
+            expanded.extend(matches);
+        } else {
+            expanded.push(f);
+        }
+    }
+    Ok(expanded)
+}
+
 fn validate_file_arg(path: &str) -> std::result::Result<(), String> {
     let p = std::path::Path::new(path);
     if !p.exists() {
@@ -446,7 +468,14 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    args.files = match expand_cli_files(args.files) {
+        Ok(files) => files,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            std::process::exit(1);
+        }
+    };
 
     let db = init_database().await?;
     if let Err(msg) = validate_startup_args(&args) {
@@ -496,6 +525,34 @@ mod tests {
                 "c.log".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn test_expand_cli_files_expands_glob_sorted() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("system.log"), b"a").unwrap();
+        std::fs::write(tmp.path().join("system.log.1"), b"b").unwrap();
+        std::fs::write(tmp.path().join("other.log"), b"c").unwrap();
+        let pattern = tmp.path().join("system.log*").to_str().unwrap().to_string();
+        let expanded = expand_cli_files(vec![pattern]).unwrap();
+        assert_eq!(expanded.len(), 2);
+        assert!(expanded[0].ends_with("system.log"));
+        assert!(expanded[1].ends_with("system.log.1"));
+    }
+
+    #[test]
+    fn test_expand_cli_files_no_matches_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pattern = tmp.path().join("nomatch*").to_str().unwrap().to_string();
+        let result = expand_cli_files(vec![pattern]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No files match"));
+    }
+
+    #[test]
+    fn test_expand_cli_files_literal_path_untouched() {
+        let expanded = expand_cli_files(vec!["file.log".to_string()]).unwrap();
+        assert_eq!(expanded, vec!["file.log".to_string()]);
     }
 
     #[test]

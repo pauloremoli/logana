@@ -61,6 +61,25 @@ pub fn list_dir_entries(path: &str) -> (Vec<String>, Vec<String>) {
     (files, dirs)
 }
 
+/// True if `path` contains glob wildcard metacharacters (`*`, `?`, `[`).
+pub fn has_glob_metachars(path: &str) -> bool {
+    path.contains(['*', '?', '['])
+}
+
+/// Expands a glob pattern (e.g. `/var/log/syslog*`) into the sorted list of
+/// matching paths. A pattern with no matches returns `Ok(vec![])` — it's up
+/// to the caller to decide whether that's an error. Only successfully
+/// resolved entries are included (permission-denied entries are skipped).
+pub fn expand_glob(pattern: &str) -> Result<Vec<String>, String> {
+    let paths = glob::glob(pattern).map_err(|e| format!("Invalid pattern '{pattern}': {e}"))?;
+    let mut matches: Vec<String> = paths
+        .filter_map(|entry| entry.ok())
+        .filter_map(|p| p.to_str().map(|s| s.to_string()))
+        .collect();
+    matches.sort();
+    Ok(matches)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +172,40 @@ mod tests {
         let (files, dirs) = list_dir_entries("/nonexistent/path/xyz123");
         assert!(files.is_empty());
         assert!(dirs.is_empty());
+    }
+
+    #[test]
+    fn test_has_glob_metachars() {
+        assert!(has_glob_metachars("/var/log/system.log*"));
+        assert!(has_glob_metachars("file?.log"));
+        assert!(has_glob_metachars("file[0-9].log"));
+        assert!(!has_glob_metachars("/var/log/system.log"));
+    }
+
+    #[test]
+    fn test_expand_glob_matches_sorted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("system.log"), b"a").unwrap();
+        std::fs::write(dir.join("system.log.1"), b"b").unwrap();
+        std::fs::write(dir.join("other.log"), b"c").unwrap();
+        let pattern = dir.join("system.log*").to_str().unwrap().to_string();
+        let matches = expand_glob(&pattern).unwrap();
+        assert_eq!(matches.len(), 2);
+        assert!(matches[0].ends_with("system.log"));
+        assert!(matches[1].ends_with("system.log.1"));
+    }
+
+    #[test]
+    fn test_expand_glob_no_matches_is_empty_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pattern = tmp.path().join("nomatch*").to_str().unwrap().to_string();
+        let matches = expand_glob(&pattern).unwrap();
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_expand_glob_invalid_pattern_errors() {
+        assert!(expand_glob("file[").is_err());
     }
 }

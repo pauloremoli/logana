@@ -186,9 +186,38 @@ pub struct CommandBar<'a> {
     pub theme: &'a Theme,
 }
 
+/// Slices `input_text` down to the window that fits in `width` columns
+/// (minus one, for the leading `:` prompt) while keeping `cursor_pos`
+/// visible, and returns `(visible_slice, window_start_char_index)`. Without
+/// this, rendering the full text with word-wrap in a one-row area makes an
+/// overlong path vanish entirely once it doesn't fit — wrapping moves the
+/// whole token to a second line the single-row area can't show — rather
+/// than scrolling like a normal single-line text field.
+fn visible_window(input_text: &str, cursor_pos: usize, width: u16) -> (&str, usize) {
+    let usable = width.saturating_sub(1) as usize;
+    if usable == 0 {
+        return ("", cursor_pos);
+    }
+    let char_count = input_text.chars().count();
+    let start = cursor_pos.saturating_sub(usable - 1).min(char_count);
+    let end = (start + usable).min(char_count);
+    let slice_start = input_text
+        .char_indices()
+        .nth(start)
+        .map(|(i, _)| i)
+        .unwrap_or(input_text.len());
+    let slice_end = input_text
+        .char_indices()
+        .nth(end)
+        .map(|(i, _)| i)
+        .unwrap_or(input_text.len());
+    (&input_text[slice_start..slice_end], start)
+}
+
 impl<'a> CommandBar<'a> {
     pub fn cursor_position(&self, input_area: Rect) -> Option<(u16, u16)> {
-        let cursor_x = input_area.x + 1 + self.cursor_pos as u16;
+        let (_, start) = visible_window(self.input_text, self.cursor_pos, input_area.width);
+        let cursor_x = input_area.x + 1 + (self.cursor_pos - start) as u16;
         if cursor_x < input_area.x + input_area.width {
             Some((cursor_x, input_area.y))
         } else {
@@ -342,13 +371,12 @@ impl<'a> Widget for CommandBar<'a> {
             .constraints([Constraint::Length(1), Constraint::Min(1)])
             .split(area);
 
-        let command_line = Paragraph::new(format!(":{}", self.input_text))
-            .style(
-                Style::default()
-                    .fg(self.theme.cursor_fg)
-                    .bg(self.theme.cursor_bg),
-            )
-            .wrap(Wrap { trim: false });
+        let (visible_text, _) = visible_window(self.input_text, self.cursor_pos, chunks[0].width);
+        let command_line = Paragraph::new(format!(":{}", visible_text)).style(
+            Style::default()
+                .fg(self.theme.cursor_fg)
+                .bg(self.theme.cursor_bg),
+        );
         command_line.render(chunks[0], buf);
 
         self.render_hints(chunks[1], buf);
@@ -426,6 +454,56 @@ mod tests {
         };
         let area = Rect::new(0, 0, 10, 1);
         assert_eq!(bar.cursor_position(area), None);
+    }
+
+    /// Regression guard: a `:open <long path>` that's longer than the
+    /// command bar's width must scroll to keep the cursor visible, not lose
+    /// the tail of what was typed. Before the horizontal-scroll fix, once
+    /// the full `":{input}"` line no longer fit the one-row area, ratatui's
+    /// word-wrap moved the entire overlong token to an (invisible) second
+    /// line, so the input appeared to have been chopped down to just
+    /// `:open` the moment it grew past the visible width.
+    #[test]
+    fn test_cursor_position_scrolls_to_keep_cursor_visible_for_long_input() {
+        let theme = Theme::default();
+        let input = "open /var/log/system.log*";
+        let bar = CommandBar {
+            input_text: input,
+            cursor_pos: input.chars().count(),
+            completion: CompletionSource::Items(vec![]),
+            theme: &theme,
+        };
+        let area = Rect::new(0, 0, 20, 1);
+        let pos = bar.cursor_position(area);
+        assert!(
+            pos.is_some(),
+            "cursor must stay visible once the input outgrows the area width"
+        );
+        let (cx, _) = pos.unwrap();
+        assert!(cx < 20, "cursor column must be within the rendered area");
+    }
+
+    #[test]
+    fn test_render_scrolls_long_input_to_show_text_around_cursor() {
+        let theme = Theme::default();
+        let input = "open /var/log/system.log*";
+        let bar = CommandBar {
+            input_text: input,
+            cursor_pos: input.chars().count(),
+            completion: CompletionSource::Items(vec![]),
+            theme: &theme,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(20, 2)).unwrap();
+        terminal.draw(|f| f.render_widget(bar, f.area())).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let first_row: String = (0..20)
+            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            first_row.trim_end().ends_with("log*"),
+            "expected the text around the cursor to stay visible, got {:?}",
+            first_row
+        );
     }
 
     #[test]

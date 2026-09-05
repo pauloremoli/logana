@@ -36,6 +36,7 @@ rmcp = { version = "1.2", default-features = false, features = ["server", "trans
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tower-log"] }
 async-trait = "0.1"
 dirs = "6.0.0"
+glob = "0.3"
 memchr = { version = "2", default-features = false, features = ["std"] }
 aho-corasick = { version = "1", default-features = false, features = ["std", "perf-literal"] }
 rayon = "1"

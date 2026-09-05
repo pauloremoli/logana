@@ -226,18 +226,39 @@ impl App {
 
     pub(super) async fn cmd_open(&mut self, path: String) -> Result<bool, String> {
         let path = expand_tilde(&path);
-        if std::path::Path::new(&path).is_dir() {
-            let tree = crate::ingestion::list_directory_tree(&path)?;
+        if crate::utils::filesystem::has_glob_metachars(&path) {
+            let matches = crate::utils::filesystem::expand_glob(&path)?;
+            if matches.is_empty() {
+                return Err(format!("No files match '{}'.", path));
+            }
+            let mut mode_was_set = false;
+            for m in matches {
+                mode_was_set = self.open_glob_match(&m).await?;
+            }
+            return Ok(mode_was_set);
+        }
+        self.open_glob_match(&path).await
+    }
+
+    /// Opens a single resolved path (directory -> archive picker, archive ->
+    /// listing, else a regular file). Shared by `cmd_open`'s plain
+    /// single-path case and by each match of a glob pattern. Returns whether
+    /// the active tab's mode was already set explicitly, so a caller looping
+    /// over multiple matches knows whether the *last* one needs that
+    /// treatment too.
+    async fn open_glob_match(&mut self, path: &str) -> Result<bool, String> {
+        if std::path::Path::new(path).is_dir() {
+            let tree = crate::ingestion::list_directory_tree(path)?;
             self.tabs[self.active_tab].interaction.mode = Box::new(
-                crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path),
+                crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.to_string()),
             );
             return Ok(true);
         }
-        if crate::ingestion::detect_archive_type(&path).is_some() {
-            self.begin_archive_listing(&path).await;
+        if crate::ingestion::detect_archive_type(path).is_some() {
+            self.begin_archive_listing(path).await;
             return Ok(true);
         }
-        self.open_file(&path).await?;
+        self.open_file(path).await?;
         Ok(false)
     }
 
