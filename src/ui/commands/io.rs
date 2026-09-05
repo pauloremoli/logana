@@ -226,7 +226,7 @@ impl App {
 
     pub(super) async fn cmd_open(&mut self, path: String) -> Result<bool, String> {
         let path = expand_tilde(&path);
-        if crate::utils::filesystem::has_glob_metachars(&path) {
+        if crate::utils::filesystem::should_glob_expand(&path) {
             let matches = crate::utils::filesystem::expand_glob(&path)?;
             if matches.is_empty() {
                 return Err(format!("No files match '{}'.", path));

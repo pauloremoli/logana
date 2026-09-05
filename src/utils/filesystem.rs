@@ -66,6 +66,16 @@ pub fn has_glob_metachars(path: &str) -> bool {
     path.contains(['*', '?', '['])
 }
 
+/// True if `path` should be treated as a glob pattern to expand, rather than
+/// a literal path. A real file or directory that happens to exist at `path`
+/// always wins, even if its name contains `*`/`?`/`[` — so e.g. a file
+/// literally named `weird[1].log` is opened directly instead of being
+/// misparsed as the character class `[1]` (which would silently match a
+/// different file, like `weird1.log`, or none at all).
+pub fn should_glob_expand(path: &str) -> bool {
+    has_glob_metachars(path) && !std::path::Path::new(path).exists()
+}
+
 /// Expands a glob pattern (e.g. `/var/log/syslog*`) into the sorted list of
 /// matching paths. A pattern with no matches returns `Ok(vec![])` — it's up
 /// to the caller to decide whether that's an error. Only successfully
@@ -180,6 +190,26 @@ mod tests {
         assert!(has_glob_metachars("file?.log"));
         assert!(has_glob_metachars("file[0-9].log"));
         assert!(!has_glob_metachars("/var/log/system.log"));
+    }
+
+    #[test]
+    fn test_should_glob_expand_true_when_no_literal_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pattern = tmp.path().join("system.log*").to_str().unwrap().to_string();
+        assert!(should_glob_expand(&pattern));
+    }
+
+    #[test]
+    fn test_should_glob_expand_false_for_literal_file_with_metachars_in_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("weird[1].log");
+        std::fs::write(&path, b"a").unwrap();
+        assert!(!should_glob_expand(path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_should_glob_expand_false_for_plain_path_without_metachars() {
+        assert!(!should_glob_expand("/var/log/system.log"));
     }
 
     #[test]

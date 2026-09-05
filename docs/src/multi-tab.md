@@ -26,6 +26,8 @@ logana '/var/log/system.log*'    # opens system.log, system.log.1, system.log.2.
 
 Quote a glob pattern so the shell passes it through as-is; an unquoted pattern is expanded by the shell first, which works the same way.
 
+If a file that actually exists on disk happens to have `*`, `?`, or `[` in its name, its literal name always takes priority over the glob interpretation — so `logana 'weird[1].log'` opens that exact file rather than being parsed as the character class `[1]`.
+
 **From within logana**, use the `:open` command:
 
 ```sh

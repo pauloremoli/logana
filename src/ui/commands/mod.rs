@@ -1243,6 +1243,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_open_literal_file_with_metachars_in_name_is_not_glob_expanded() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("weird[1].log"), b"target").unwrap();
+        // A sibling that the char-class `[1]` would otherwise match instead.
+        std::fs::write(tmp.path().join("weird1.log"), b"wrong").unwrap();
+        let path = tmp.path().join("weird[1].log");
+        let initial_tabs = app.tabs.len();
+        let result = app
+            .run_command(&format!("open {}", path.to_str().unwrap()))
+            .await;
+        assert!(result.is_ok(), "{:?}", result);
+        assert_eq!(app.tabs.len(), initial_tabs + 1);
+        assert_eq!(app.tabs.last().unwrap().title, "weird[1].log");
+    }
+
+    #[tokio::test]
     async fn test_export_opens_footer_overlay() {
         let mut app = make_app(&["line0", "line1", "line2"]).await;
         app.tabs[0].mark_manager.toggle(0);

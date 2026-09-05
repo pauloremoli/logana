@@ -128,11 +128,12 @@ fn get_db_path() -> String {
 /// sorted list of matching paths, leaving literal paths untouched. A pattern
 /// that matches nothing is an error naming the pattern, since the user
 /// clearly meant to reference files that don't exist rather than pass a
-/// literal `*` through.
+/// literal `*` through. A file that literally exists on disk is always
+/// passed through as-is, even if its name contains `*`/`?`/`[`.
 fn expand_cli_files(files: Vec<String>) -> std::result::Result<Vec<String>, String> {
     let mut expanded = Vec::with_capacity(files.len());
     for f in files {
-        if logana::utils::filesystem::has_glob_metachars(&f) {
+        if logana::utils::filesystem::should_glob_expand(&f) {
             let matches =
                 logana::utils::filesystem::expand_glob(&f).map_err(|e| format!("Error: {e}"))?;
             if matches.is_empty() {
@@ -553,6 +554,18 @@ mod tests {
     fn test_expand_cli_files_literal_path_untouched() {
         let expanded = expand_cli_files(vec!["file.log".to_string()]).unwrap();
         assert_eq!(expanded, vec!["file.log".to_string()]);
+    }
+
+    #[test]
+    fn test_expand_cli_files_literal_file_with_metachars_in_name_is_not_glob_expanded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("weird[1].log");
+        std::fs::write(&path, b"a").unwrap();
+        // A sibling that the char-class `[1]` would otherwise match instead.
+        std::fs::write(tmp.path().join("weird1.log"), b"b").unwrap();
+        let path_str = path.to_str().unwrap().to_string();
+        let expanded = expand_cli_files(vec![path_str.clone()]).unwrap();
+        assert_eq!(expanded, vec![path_str]);
     }
 
     #[test]
