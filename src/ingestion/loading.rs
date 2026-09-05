@@ -86,6 +86,72 @@ impl App {
         Ok(())
     }
 
+    /// Opens `path` as a brand-new tab, mirroring `:open`'s dispatch
+    /// (directory or archive -> picker, otherwise a regular file) but always
+    /// targeting a freshly created tab instead of the currently active one.
+    /// Used for command-line paths beyond the first.
+    pub async fn open_path_as_tab(&mut self, path: &str) -> Result<(), String> {
+        if std::path::Path::new(path).is_dir() {
+            let tree = crate::ingestion::list_directory_tree(path)?;
+            let tab_idx = self.push_blank_tab(path).await;
+            self.tabs[tab_idx].interaction.mode = Box::new(
+                crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.to_string()),
+            );
+            return Ok(());
+        }
+
+        if crate::ingestion::detect_archive_type(path).is_some() {
+            self.push_blank_tab(path).await;
+            self.load_archive_listing_now(path).await;
+            return Ok(());
+        }
+
+        self.open_file(path).await
+    }
+
+    /// Pushes an empty tab with no source file, makes it active, and returns
+    /// its index. Used as the target for a directory or archive picker
+    /// opened from the command line, before the user has picked anything.
+    async fn push_blank_tab(&mut self, path: &str) -> usize {
+        let title = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(path)
+            .to_string();
+        let log_manager = LogManager::new(self.db.clone(), None).await;
+        let mut tab = TabState::new(FileReader::from_bytes(vec![]), log_manager, title);
+        self.apply_tab_defaults(&mut tab).await;
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+        self.active_tab
+    }
+
+    /// Like `begin_archive_listing`, but awaits the listing synchronously
+    /// instead of going through the single `pending_archive_listing` slot —
+    /// used when opening several archive paths back-to-back at startup would
+    /// otherwise race for that slot.
+    async fn load_archive_listing_now(&mut self, path: &str) {
+        let path_owned = path.to_string();
+        let result =
+            tokio::task::spawn_blocking(move || crate::ingestion::list_archive_tree(&path_owned))
+                .await;
+        let tab_idx = self.active_tab;
+        match result {
+            Ok(Ok(tree)) if !tree.nodes.is_empty() => {
+                self.tabs[tab_idx].interaction.mode =
+                    Box::new(crate::mode::archive_picker_mode::ArchivePickerMode::new(
+                        tree,
+                        path.to_string(),
+                    ));
+            }
+            Ok(Ok(_)) => self.tabs[tab_idx].set_notification("Archive contains no files."),
+            Ok(Err(e)) => {
+                self.tabs[tab_idx].set_notification(format!("Failed to read archive: {e}"))
+            }
+            Err(e) => self.tabs[tab_idx].set_notification(format!("Failed to read archive: {e}")),
+        }
+    }
+
     /// Create a new streaming tab from a pre-spawned `StreamConnection` (or an
     /// error from the spawn attempt).  Shared by Docker, `:run`, and any future
     /// process-based streaming source.
@@ -2301,6 +2367,78 @@ mod tests {
         let result = app.open_file("/tmp").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_lowercase().contains("directory"));
+    }
+
+    #[tokio::test]
+    async fn test_open_path_as_tab_opens_regular_files_in_new_tabs() {
+        let mut app = make_app(&[]).await;
+        assert_eq!(app.tabs.len(), 1);
+
+        let tmp_a = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp_a.path(), b"a\n").unwrap();
+        let tmp_b = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp_b.path(), b"b\n").unwrap();
+
+        app.open_path_as_tab(tmp_a.path().to_str().unwrap())
+            .await
+            .unwrap();
+        app.open_path_as_tab(tmp_b.path().to_str().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(app.tabs.len(), 3);
+        assert_eq!(app.active_tab, 2, "last-opened tab should be active");
+    }
+
+    #[tokio::test]
+    async fn test_open_path_as_tab_directory_opens_picker_in_new_tab() {
+        let mut app = make_app(&[]).await;
+        let initial_tab_count = app.tabs.len();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.log"), b"one\n").unwrap();
+
+        app.open_path_as_tab(dir.path().to_str().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(app.tabs.len(), initial_tab_count + 1);
+        assert_eq!(app.active_tab, app.tabs.len() - 1);
+        assert!(matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            ModeRenderState::ArchivePicker { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_open_path_as_tab_two_archives_do_not_race() {
+        let mut app = make_app(&[]).await;
+
+        let tmp1 = crate::ingestion::archive::test_helpers::make_zip(&[("a.log", b"one")]);
+        let path1 = tmp1.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp1.path(), &path1).unwrap();
+
+        let tmp2 = crate::ingestion::archive::test_helpers::make_zip(&[("b.log", b"two")]);
+        let path2 = tmp2.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp2.path(), &path2).unwrap();
+
+        app.open_path_as_tab(&path1).await.unwrap();
+        let first_tab = app.active_tab;
+        app.open_path_as_tab(&path2).await.unwrap();
+        let second_tab = app.active_tab;
+
+        std::fs::remove_file(&path1).unwrap();
+        std::fs::remove_file(&path2).unwrap();
+
+        assert_ne!(first_tab, second_tab);
+        assert!(matches!(
+            app.tabs[first_tab].interaction.mode.render_state(),
+            ModeRenderState::ArchivePicker { .. }
+        ));
+        assert!(matches!(
+            app.tabs[second_tab].interaction.mode.render_state(),
+            ModeRenderState::ArchivePicker { .. }
+        ));
     }
 
     #[tokio::test]

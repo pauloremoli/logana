@@ -17,7 +17,7 @@ use crate::parser::detect_format;
 
 /// Arguments required to run logana in headless mode.
 pub struct HeadlessArgs {
-    pub file: Option<String>,
+    pub files: Vec<String>,
     pub filters: Option<String>,
     pub include_filters: Vec<String>,
     pub exclude_filters: Vec<String>,
@@ -60,13 +60,15 @@ fn finalize_output(tmp_path: Option<(PathBuf, PathBuf)>) -> Result<()> {
 }
 
 pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
-    if let (Some(input), Some(output)) = (&args.file, &args.output)
-        && same_file(input.as_str(), output)
-    {
-        anyhow::bail!(
-            "Output path '{}' is the same as the input file — writing would destroy it",
-            output.display()
-        );
+    if let Some(output) = &args.output {
+        for input in &args.files {
+            if same_file(input.as_str(), output) {
+                anyhow::bail!(
+                    "Output path '{}' is the same as the input file — writing would destroy it",
+                    output.display()
+                );
+            }
+        }
     }
 
     let db = Arc::new(Database::in_memory().await?);
@@ -104,7 +106,7 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
         None => (Box::new(BufWriter::new(io::stdout())), None),
     };
 
-    let Some(ref path) = args.file else {
+    if args.files.is_empty() {
         let mut bytes = Vec::new();
         io::stdin().read_to_end(&mut bytes)?;
         let reader = FileReader::from_bytes(bytes);
@@ -112,15 +114,28 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
         writer.flush()?;
         finalize_output(tmp_path)?;
         return Ok(());
-    };
-
-    if crate::ingestion::detect_archive_type(path).is_some() {
-        run_headless_archive(path, &log_manager, &mut *writer).await?;
-        writer.flush()?;
-        finalize_output(tmp_path)?;
-        return Ok(());
     }
 
+    for path in &args.files {
+        if crate::ingestion::detect_archive_type(path).is_some() {
+            run_headless_archive(path, &log_manager, &mut *writer).await?;
+        } else {
+            run_headless_file(path, &log_manager, &mut *writer).await?;
+        }
+    }
+
+    writer.flush()?;
+    finalize_output(tmp_path)?;
+    Ok(())
+}
+
+/// Loads a single regular (non-archive) file, applies `log_manager`'s
+/// filters, and writes the matching lines to `writer`.
+async fn run_headless_file(
+    path: &str,
+    log_manager: &LogManager,
+    writer: &mut dyn Write,
+) -> Result<()> {
     let (fm, _, _, _) = log_manager.build_filter_manager();
     let needs_parse = {
         let filter_defs = log_manager.get_filters();
@@ -132,20 +147,18 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
     let cancel = Arc::new(AtomicBool::new(false));
     let predicate = (!needs_parse).then(|| VisibilityPredicate::new(fm));
     let keep_pages = predicate.is_some();
-    let handle = FileReader::load(path.clone(), predicate, false, cancel, keep_pages).await?;
+    let handle = FileReader::load(path.to_string(), predicate, false, cancel, keep_pages).await?;
     let result = handle
         .result_rx
         .await
         .map_err(|_| io::Error::other("file load cancelled"))??;
 
     if let Some(visible) = result.precomputed_visible {
-        write_visible_lines(&mut *writer, &result.reader, &visible)?;
+        write_visible_lines(writer, &result.reader, &visible)?;
     } else {
-        run_headless_to_writer(result.reader, &log_manager, &mut *writer)?;
+        run_headless_to_writer(result.reader, log_manager, writer)?;
     }
 
-    writer.flush()?;
-    finalize_output(tmp_path)?;
     Ok(())
 }
 
@@ -657,7 +670,7 @@ mod tests {
         let out_tmp = tempfile::NamedTempFile::new().unwrap();
 
         run_headless(&HeadlessArgs {
-            file: Some(tmp.path().to_str().unwrap().to_string()),
+            files: vec![tmp.path().to_str().unwrap().to_string()],
             filters: None,
             include_filters: vec![],
             exclude_filters: vec![],
@@ -669,6 +682,71 @@ mod tests {
 
         let result = std::fs::read_to_string(out_tmp.path()).unwrap();
         assert_eq!(result, "INFO foo\nERROR bar\nDEBUG baz\n");
+    }
+
+    #[tokio::test]
+    async fn test_headless_multiple_files_concatenates_in_order() {
+        use std::io::Write as _;
+
+        let mut tmp_a = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp_a, "INFO alpha").unwrap();
+        writeln!(tmp_a, "ERROR beta").unwrap();
+        tmp_a.flush().unwrap();
+
+        let mut tmp_b = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp_b, "INFO gamma").unwrap();
+        writeln!(tmp_b, "ERROR delta").unwrap();
+        tmp_b.flush().unwrap();
+
+        let out_tmp = tempfile::NamedTempFile::new().unwrap();
+
+        run_headless(&HeadlessArgs {
+            files: vec![
+                tmp_a.path().to_str().unwrap().to_string(),
+                tmp_b.path().to_str().unwrap().to_string(),
+            ],
+            filters: None,
+            include_filters: vec!["ERROR".to_string()],
+            exclude_filters: vec![],
+            timestamp_filters: vec![],
+            output: Some(out_tmp.path().to_path_buf()),
+        })
+        .await
+        .unwrap();
+
+        let result = std::fs::read_to_string(out_tmp.path()).unwrap();
+        assert_eq!(result, "ERROR beta\nERROR delta\n");
+    }
+
+    #[tokio::test]
+    async fn test_headless_multiple_files_mixed_regular_and_archive() {
+        use std::io::Write as _;
+
+        let mut tmp_a = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp_a, "INFO alpha").unwrap();
+        writeln!(tmp_a, "ERROR beta").unwrap();
+        tmp_a.flush().unwrap();
+
+        let gz_tmp = make_gz(b"INFO gamma\nERROR delta\n");
+        let gz_path = gz_tmp.path().to_str().unwrap().to_string() + ".gz";
+        std::fs::copy(gz_tmp.path(), &gz_path).unwrap();
+
+        let out_tmp = tempfile::NamedTempFile::new().unwrap();
+
+        let result = run_headless(&HeadlessArgs {
+            files: vec![tmp_a.path().to_str().unwrap().to_string(), gz_path.clone()],
+            filters: None,
+            include_filters: vec!["ERROR".to_string()],
+            exclude_filters: vec![],
+            timestamp_filters: vec![],
+            output: Some(out_tmp.path().to_path_buf()),
+        })
+        .await;
+        std::fs::remove_file(&gz_path).unwrap();
+        result.unwrap();
+
+        let output = std::fs::read_to_string(out_tmp.path()).unwrap();
+        assert_eq!(output, "ERROR beta\nERROR delta\n");
     }
 
     #[tokio::test]
@@ -701,7 +779,7 @@ mod tests {
         let out_tmp = tempfile::NamedTempFile::new().unwrap();
 
         run_headless(&HeadlessArgs {
-            file: Some(tmp.path().to_str().unwrap().to_string()),
+            files: vec![tmp.path().to_str().unwrap().to_string()],
             filters: None,
             include_filters: vec![],
             exclude_filters: vec![],
@@ -726,7 +804,7 @@ mod tests {
 
         let path = tmp.path().to_path_buf();
         let result = run_headless(&HeadlessArgs {
-            file: Some(path.to_str().unwrap().to_string()),
+            files: vec![path.to_str().unwrap().to_string()],
             filters: None,
             include_filters: vec![],
             exclude_filters: vec![],

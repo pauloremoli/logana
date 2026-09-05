@@ -22,8 +22,11 @@ use std::sync::Arc;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Optional file to process. If not provided, reads from stdin.
-    file: Option<String>,
+    /// Files to process. If none are given, reads from stdin. Each
+    /// additional path beyond the first opens in its own tab (in --headless
+    /// mode, its matching lines are appended to the output after the
+    /// previous file's).
+    files: Vec<String>,
 
     /// Path to a JSON filter file to preload (e.g. saved with :save-filters).
     /// Filters are applied in a single pass during file indexing.
@@ -84,7 +87,7 @@ struct Args {
     /// (no shell); arguments are separated by whitespace.
     /// Example: logana --run "docker logs -f mycontainer"
     /// Stderr lines are prefixed with "ERROR " for visibility.
-    #[arg(long, value_name = "COMMAND", conflicts_with = "file")]
+    #[arg(long, value_name = "COMMAND", conflicts_with = "files")]
     run: Option<String>,
 }
 
@@ -140,7 +143,7 @@ fn validate_inline_filter(prefix: &str, args_str: &str) -> std::result::Result<(
         .map_err(|e| e.to_string())
 }
 
-fn resolve_source(file_path: &Option<String>) -> (Option<String>, bool) {
+fn resolve_source(file_path: Option<&String>) -> (Option<String>, bool) {
     if let Some(path) = file_path {
         let p = std::path::Path::new(path);
         if p.is_dir() {
@@ -173,10 +176,10 @@ async fn init_database() -> Result<Arc<Database>> {
 }
 
 fn validate_startup_args(args: &Args) -> std::result::Result<(), String> {
-    if let Some(ref path) = args.file
-        && let Err(msg) = validate_file_arg(path)
-    {
-        return Err(format!("Error: {}", msg));
+    for path in &args.files {
+        if let Err(msg) = validate_file_arg(path) {
+            return Err(format!("Error: {}", msg));
+        }
     }
 
     if let Some(ref fpath) = args.filters
@@ -204,14 +207,14 @@ fn validate_startup_args(args: &Args) -> std::result::Result<(), String> {
 }
 
 async fn run_headless_mode(args: Args) -> Result<()> {
-    if let Some(ref path) = args.file
-        && std::path::Path::new(path).is_dir()
-    {
-        eprintln!(
-            "Error: '{}' is a directory. --headless requires a file path or stdin.",
-            path
-        );
-        std::process::exit(1);
+    for path in &args.files {
+        if std::path::Path::new(path).is_dir() {
+            eprintln!(
+                "Error: '{}' is a directory. --headless requires file paths or stdin.",
+                path
+            );
+            std::process::exit(1);
+        }
     }
 
     let mut schema_warnings = init_schemas();
@@ -223,7 +226,7 @@ async fn run_headless_mode(args: Args) -> Result<()> {
     }
 
     logana::headless::run_headless(&logana::headless::HeadlessArgs {
-        file: args.file,
+        files: args.files,
         filters: args.filters,
         include_filters: args.include_filters,
         exclude_filters: args.exclude_filters,
@@ -362,14 +365,14 @@ async fn begin_initial_load(
         app.begin_stdin_load().await;
     }
 
-    if let Some(ref path) = args.file
+    if let Some(path) = args.files.first()
         && std::path::Path::new(path).is_dir()
         && let Ok(tree) = logana::ingestion::list_directory_tree(path)
     {
         // A directory was explicitly given, so this isn't a bare "resume
         // where I left off" launch — cancel any queued session restore
         // (`AppBuilder::build` can't tell a directory apart from "no
-        // argument at all", since it never sees `args.file` directly) so it
+        // argument at all", since it never sees `args.files` directly) so it
         // doesn't overwrite this mode the moment `app.run()` starts.
         app.session.pending_session_restore = None;
         app.tabs[0].interaction.mode = Box::new(
@@ -389,8 +392,8 @@ fn install_panic_hook() {
 
 async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
     install_panic_hook();
-    let stdin_is_piped = args.file.is_none() && !stdin().is_terminal();
-    let (source_path, background_file_load) = resolve_source(&args.file);
+    let stdin_is_piped = args.files.is_empty() && !stdin().is_terminal();
+    let (source_path, background_file_load) = resolve_source(args.files.first());
 
     let log_manager = LogManager::new(db, source_path.clone()).await;
     let (config, config_error) = match Config::load() {
@@ -412,6 +415,14 @@ async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
         &args,
     )
     .await;
+
+    for path in args.files.iter().skip(1) {
+        if let Err(msg) = app.open_path_as_tab(path).await {
+            app.session
+                .startup_warnings
+                .push(format!("could not open '{}': {}", path, msg));
+        }
+    }
 
     if let Some(cmd) = args.run {
         let tokens: Vec<String> = cmd.split_whitespace().map(str::to_string).collect();
@@ -447,12 +458,11 @@ async fn run() -> Result<()> {
         return run_headless_mode(args).await;
     }
 
-    if let Some(ref path) = args.file
-        && std::path::Path::new(path).is_dir()
-        && list_dir_files(path).is_empty()
-    {
-        eprintln!("Error: '{}' contains no files.", path);
-        std::process::exit(1);
+    for path in &args.files {
+        if std::path::Path::new(path).is_dir() && list_dir_files(path).is_empty() {
+            eprintln!("Error: '{}' contains no files.", path);
+            std::process::exit(1);
+        }
     }
     run_tui(args, db).await
 }
@@ -464,7 +474,7 @@ mod tests {
     #[test]
     fn test_args_no_file() {
         let args = Args::try_parse_from(["logana"]).unwrap();
-        assert!(args.file.is_none());
+        assert!(args.files.is_empty());
         assert!(args.filters.is_none());
         assert!(!args.tail);
     }
@@ -472,7 +482,20 @@ mod tests {
     #[test]
     fn test_args_with_file() {
         let args = Args::try_parse_from(["logana", "/var/log/syslog"]).unwrap();
-        assert_eq!(args.file, Some("/var/log/syslog".to_string()));
+        assert_eq!(args.files, vec!["/var/log/syslog".to_string()]);
+    }
+
+    #[test]
+    fn test_args_with_multiple_files() {
+        let args = Args::try_parse_from(["logana", "a.log", "b.log", "c.log"]).unwrap();
+        assert_eq!(
+            args.files,
+            vec![
+                "a.log".to_string(),
+                "b.log".to_string(),
+                "c.log".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -625,9 +648,9 @@ mod tests {
     }
 
     #[test]
-    fn test_args_rejects_multiple_positional() {
+    fn test_args_accepts_multiple_positional() {
         let result = Args::try_parse_from(["logana", "file1.log", "file2.log"]);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -720,16 +743,14 @@ mod tests {
     fn test_resolve_source_with_file() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
-        let file_path = Some(path.clone());
-        let (source, bg_load) = resolve_source(&file_path);
+        let (source, bg_load) = resolve_source(Some(&path));
         assert_eq!(source, Some(path));
         assert!(bg_load);
     }
 
     #[test]
     fn test_resolve_source_without_file() {
-        let file_path: Option<String> = None;
-        let (source, bg_load) = resolve_source(&file_path);
+        let (source, bg_load) = resolve_source(None);
         assert!(source.is_none());
         assert!(!bg_load);
     }
@@ -738,10 +759,19 @@ mod tests {
     fn test_resolve_source_with_dir_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_str().unwrap().to_string();
-        let file_path = Some(dir);
-        let (source, bg_load) = resolve_source(&file_path);
+        let (source, bg_load) = resolve_source(Some(&dir));
         assert!(source.is_none());
         assert!(!bg_load);
+    }
+
+    #[test]
+    fn test_validate_startup_args_checks_every_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let good = tmp.path().to_str().unwrap().to_string();
+        let args = Args::try_parse_from(["logana", &good, "/nonexistent/bad.log"]).unwrap();
+        let result = validate_startup_args(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
     }
 
     async fn make_test_app() -> App {
