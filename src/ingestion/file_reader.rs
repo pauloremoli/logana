@@ -1434,14 +1434,13 @@ impl FileReader {
             return;
         }
 
-        let effective_data;
         let converted;
-        if self.is_binary {
+        let effective_data = if self.is_binary {
             converted = dlt_binary::convert_dlt_binary_to_text(new_data);
-            effective_data = converted.as_slice();
+            converted.as_slice()
         } else {
-            effective_data = new_data;
-        }
+            new_data
+        };
 
         if effective_data.is_empty() {
             return;

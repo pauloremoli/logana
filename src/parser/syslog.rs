@@ -161,8 +161,7 @@ fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
         return Some(parts);
     }
 
-    let msg_start;
-    if rest.starts_with('[') {
+    let msg_start = if rest.starts_with('[') {
         let mut pos = 0;
         let rest_bytes = rest.as_bytes();
         while pos < rest_bytes.len() && rest_bytes[pos] == b'[' {
@@ -196,16 +195,16 @@ fn parse_rfc5424<'a>(s: &'a str, priority: u8) -> Option<DisplayParts<'a>> {
                 break;
             }
         }
-        msg_start = pos;
+        pos
     } else if rest.starts_with('-') {
-        msg_start = if rest.len() > 1 && rest.as_bytes()[1] == b' ' {
+        if rest.len() > 1 && rest.as_bytes()[1] == b' ' {
             2
         } else {
             1
-        };
+        }
     } else {
-        msg_start = 0;
-    }
+        0
+    };
 
     let msg = rest[msg_start..].trim_start();
     if !msg.is_empty() {
