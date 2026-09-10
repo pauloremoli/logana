@@ -30,6 +30,7 @@ All notable changes to logana will be documented in this file.
 - Fix `:load-filters` dropping each filter's case-insensitive flag.
 - Fix toggling a group with no filters yet in group mode being a silent no-op instead of enabling/disabling it.
 - Fix the command line losing the tail of a long `:open` path once it no longer fit the terminal width.
+- Fix archive entries with the same file name in different folders getting indistinguishable extracted names.
 
 ## [0.7.6] - 2026-08-06
 

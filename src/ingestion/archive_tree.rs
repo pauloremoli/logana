@@ -1090,8 +1090,12 @@ pub fn extract_and_detect_merge_marked(
 
 /// A selected file's display name: its basename (compression suffix
 /// stripped, see [`display_name_for_extraction`]), or — only once a later
-/// file collides with an earlier basename — the basename suffixed with
-/// its containing archive's name, keeping the no-collision case clean.
+/// file collides with an earlier basename — the basename suffixed with its
+/// full ancestry path, keeping the no-collision case clean. The ancestry
+/// path (not just the immediate parent's name) matters because two nested
+/// containers can share a name too, e.g. `"2023/logs.zip"` and
+/// `"2024/logs.zip"` both containing an `"app.log"` — suffixing with just
+/// the parent name ("logs.zip") would leave them colliding with each other.
 fn disambiguated_name(
     tree: &ArchiveTree,
     node_id: NodeId,
@@ -1104,10 +1108,25 @@ fn disambiguated_name(
     if *seen_before == 1 {
         return display_name;
     }
-    match node.parent {
-        Some(parent_id) => format!("{} ({})", display_name, tree.nodes[parent_id].name),
+    match full_ancestry_path(tree, node_id).rsplit_once('/') {
+        Some((dir, _)) => format!("{} ({})", display_name, dir),
         None => display_name,
     }
+}
+
+/// `node_id`'s path from the tree's root, joining each ancestor's own
+/// `full_path` — unlike a single node's `full_path` (relative only to its
+/// *own* containing archive), this stays unique across arbitrarily nested
+/// archives, since no two nodes anywhere in the tree can share it.
+fn full_ancestry_path(tree: &ArchiveTree, node_id: NodeId) -> String {
+    let mut segments = Vec::new();
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        segments.push(tree.nodes[id].full_path.as_str());
+        current = tree.nodes[id].parent;
+    }
+    segments.reverse();
+    segments.join("/")
 }
 
 /// The name to show for an extracted file: for a nested lone-compressed
@@ -2754,6 +2773,42 @@ mod tests {
         let mut names: Vec<&str> = extracted.iter().map(|f| f.name.as_str()).collect();
         names.sort();
         assert_eq!(names, vec!["app.log", "app.log (b.zip)"]);
+    }
+
+    #[test]
+    fn test_extract_selected_disambiguates_same_named_containers_in_different_dirs() {
+        let inner_2023 = make_zip(&[("app.log", b"from-2023")]);
+        let inner_2023_bytes = std::fs::read(inner_2023.path()).unwrap();
+        let inner_2024 = make_zip(&[("app.log", b"from-2024")]);
+        let inner_2024_bytes = std::fs::read(inner_2024.path()).unwrap();
+        let outer_tmp = make_zip(&[
+            ("2023/logs.zip", inner_2023_bytes.as_slice()),
+            ("2024/logs.zip", inner_2024_bytes.as_slice()),
+        ]);
+        let path = path_with_ext(&outer_tmp, ".zip");
+        let mut tree = list_archive_tree(&path).unwrap();
+        for id in tree
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::File))
+            .map(|n| n.id)
+            .collect::<Vec<_>>()
+        {
+            tree.nodes[id].selected = true;
+        }
+
+        let mut extracted = extract_selected(&path, &tree, no_progress()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        extracted.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Both nested containers are named "logs.zip", so disambiguating the
+        // second occurrence by the immediate parent's bare name alone would
+        // produce "app.log (logs.zip)" — indistinguishable from what a third
+        // same-named container would also produce. The full archive-relative
+        // ancestry path keeps it unique.
+        let mut names: Vec<&str> = extracted.iter().map(|f| f.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["app.log", "app.log (2024/logs.zip)"]);
     }
 
     #[test]

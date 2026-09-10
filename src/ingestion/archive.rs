@@ -155,7 +155,7 @@ pub fn extract_with_progress(
                 }
                 let name = entry
                     .enclosed_name()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_else(|| format!("file_{i}"));
                 file_index.store(logical_idx, Ordering::Relaxed);
                 let _ = progress_tx.send(ArchiveExtractionProgress {
@@ -216,9 +216,8 @@ fn extract_tar_entries_with_progress<R: Read>(
         let name = entry
             .path()
             .map_err(|e| e.to_string())?
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "file".to_string());
+            .to_string_lossy()
+            .into_owned();
         if let Some(tx) = name_tx {
             let _ = tx.send(name.clone());
         }
@@ -238,7 +237,9 @@ pub fn uses_streaming_path(archive_type: &ArchiveType) -> bool {
     )
 }
 
-/// List file names contained in an archive without full decompression.
+/// List archive-relative file paths contained in an archive without full
+/// decompression (e.g. `"logs/app.log"`, not just `"app.log"` — entries in
+/// different directories can share a basename).
 /// Only valid for two-pass formats (GZ, BZ2, XZ single-file; ZIP; uncompressed TAR).
 /// Returns an error for streaming TAR variants — use `uses_streaming_path` to check first.
 pub fn list_archive_files(path: &str) -> Result<Vec<String>, String> {
@@ -265,7 +266,7 @@ fn list_zip_names(path: &str) -> Result<Vec<String>, String> {
         }
         let name = entry
             .enclosed_name()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| format!("file_{i}"));
         names.push(name);
     }
@@ -284,9 +285,8 @@ fn list_tar_names(path: &str) -> Result<Vec<String>, String> {
         let name = entry
             .path()
             .map_err(|e| e.to_string())?
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "file".to_string());
+            .to_string_lossy()
+            .into_owned();
         names.push(name);
     }
     Ok(names)
@@ -584,7 +584,31 @@ mod tests {
         let files = extract(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].name, "app.log");
+        assert_eq!(files[0].name, "logs/app.log");
+    }
+
+    #[test]
+    fn test_extract_zip_preserves_archive_relative_path_for_nested_entries() {
+        let tmp = make_zip(&[("2023/app.log", b"old\n"), ("2024/app.log", b"new\n")]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+        let files = extract(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let mut names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["2023/app.log", "2024/app.log"]);
+    }
+
+    #[test]
+    fn test_extract_tar_preserves_archive_relative_path_for_nested_entries() {
+        let tmp = make_tar(&[("2023/app.log", b"old\n"), ("2024/app.log", b"new\n")]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".tar";
+        std::fs::copy(tmp.path(), &path).unwrap();
+        let files = extract(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let mut names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["2023/app.log", "2024/app.log"]);
     }
 
     #[test]
@@ -778,6 +802,28 @@ mod tests {
         let mut names = names;
         names.sort();
         assert_eq!(names, vec!["x.log", "y.log"]);
+    }
+
+    #[test]
+    fn test_list_zip_files_preserves_archive_relative_path() {
+        let tmp = make_zip(&[("2023/app.log", b"old"), ("2024/app.log", b"new")]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+        let mut names = list_archive_files(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        names.sort();
+        assert_eq!(names, vec!["2023/app.log", "2024/app.log"]);
+    }
+
+    #[test]
+    fn test_list_tar_files_preserves_archive_relative_path() {
+        let tmp = make_tar(&[("2023/app.log", b"old"), ("2024/app.log", b"new")]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".tar";
+        std::fs::copy(tmp.path(), &path).unwrap();
+        let mut names = list_archive_files(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        names.sort();
+        assert_eq!(names, vec!["2023/app.log", "2024/app.log"]);
     }
 
     #[test]
