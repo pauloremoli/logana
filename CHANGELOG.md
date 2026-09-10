@@ -19,6 +19,10 @@ All notable changes to logana will be documented in this file.
 - Bind `d` in group mode to delete the selected group and its filters.
 - Accept multiple file paths on the command line, each opening in its own tab.
 - Support `*`, `?`, and `[]` glob patterns in `:open` and command-line file arguments, opening every match as its own tab.
+- Add `:file-picker` to open a directory or archive's interactive picker to choose which files to open.
+
+### Changed
+- `:open` and a directory command-line argument now open every file inside the directory by default, each in its own tab, instead of showing a picker. Use `:file-picker` to choose which files to open instead.
 
 ### Fixed
 - Fix filter groups being shared across tabs/files instead of scoped per file like filters, including `:toggle-group` affecting other tabs and `:save-filters`/`:load-filters` leaking groups between them.

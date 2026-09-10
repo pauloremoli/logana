@@ -12,8 +12,11 @@ logana app.log system.log
 # Open every file matching a glob pattern, each in its own tab
 logana '/var/log/system.log*'
 
-# Open a directory — pick which files to open from a file picker
+# Open a directory — every file inside it opens, each in its own tab
 logana /var/log/
+
+# Open a directory with a picker instead, to choose which files to open
+logana            # then type :file-picker /var/log/
 
 # Pipe from stdin
 journalctl -f | logana

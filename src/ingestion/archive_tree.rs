@@ -322,6 +322,17 @@ impl ArchiveTree {
             .any(|n| matches!(n.kind, NodeKind::File) && n.merge_marked)
     }
 
+    /// Sets every `File` node's `selected` flag, regardless of nesting depth
+    /// — used both by the archive picker's select-all/select-none keys and
+    /// by opening a directory's default "every file gets a tab" behavior.
+    pub fn set_all_files_selected(&mut self, selected: bool) {
+        for node in &mut self.nodes {
+            if matches!(node.kind, NodeKind::File) {
+                node.selected = selected;
+            }
+        }
+    }
+
     /// Parses `bytes` (fetched via [`resolve_node_bytes`]) into real
     /// children, turning `node_id` from a `LazyContainer` into a
     /// `Container` — what eager listing would have done had it not been
@@ -2422,6 +2433,30 @@ mod tests {
         let mut tree = build_test_tree();
         tree.select_subtree(0);
         assert!(tree.nodes[0].selected);
+    }
+
+    #[test]
+    fn test_set_all_files_selected_true_selects_every_file_at_any_depth() {
+        let mut tree = build_test_tree();
+        tree.set_all_files_selected(true);
+        let file_ids = [0, 2, 3, 5, 6];
+        for id in file_ids {
+            assert!(tree.nodes[id].selected, "node {id} should be selected");
+        }
+        assert!(
+            !tree.nodes[1].selected,
+            "container nodes have no meaningful `selected` of their own"
+        );
+    }
+
+    #[test]
+    fn test_set_all_files_selected_false_deselects_every_file() {
+        let mut tree = build_test_tree();
+        tree.set_all_files_selected(true);
+        tree.set_all_files_selected(false);
+        for id in [0, 2, 3, 5, 6] {
+            assert!(!tree.nodes[id].selected, "node {id} should be deselected");
+        }
     }
 
     #[test]

@@ -147,6 +147,7 @@ impl App {
                 return self.cmd_sidebar_position(side).await;
             }
             Some(Commands::Open { path }) => return self.cmd_open(path).await,
+            Some(Commands::FilePicker { path }) => return self.cmd_file_picker(path).await,
             Some(Commands::CloseTab) => return self.cmd_close_tab(),
             Some(Commands::ClearFilters) => return self.cmd_clear_filters().await,
             Some(Commands::DisableFilters) => return self.cmd_disable_filters().await,
@@ -1185,17 +1186,37 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Waits for `app.pending_archive` to clear, mirroring the polling loop
+    /// `apply_archive_picker`'s own tests use in `ingestion::loading`.
+    async fn drain_pending_archive(app: &mut App) {
+        for _ in 0..100 {
+            app.poll_archive_extraction().await;
+            if app.pending_archive.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     #[tokio::test]
-    async fn test_open_dir_opens_archive_picker_mode() {
+    async fn test_open_dir_opens_every_file_as_its_own_tab() {
         let mut app = make_app(&["line"]).await;
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.log"), b"hello").unwrap();
         std::fs::write(tmp.path().join("b.log"), b"world").unwrap();
         let dir = tmp.path().to_str().unwrap();
         let result = app.run_command(&format!("open {}", dir)).await.unwrap();
-        assert!(result, "open <dir> should return true (mode was set)");
-        assert!(matches!(
-            app.tabs[0].interaction.mode.render_state(),
+        assert!(
+            !result,
+            "open <dir> sets no explicit mode itself; extraction happens in the background"
+        );
+        drain_pending_archive(&mut app).await;
+
+        let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert!(titles.contains(&"a.log"));
+        assert!(titles.contains(&"b.log"));
+        assert!(!matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
             ModeRenderState::ArchivePicker { .. }
         ));
     }
@@ -1208,6 +1229,70 @@ mod tests {
         let result = app.run_command(&format!("open {}", dir)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("contains no files"));
+    }
+
+    #[tokio::test]
+    async fn test_file_picker_dir_opens_archive_picker_mode() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.log"), b"hello").unwrap();
+        std::fs::write(tmp.path().join("b.log"), b"world").unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let result = app
+            .run_command(&format!("file-picker {}", dir))
+            .await
+            .unwrap();
+        assert!(
+            result,
+            "file-picker <dir> should return true (mode was set)"
+        );
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::ArchivePicker { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_file_picker_empty_dir_returns_error() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let result = app.run_command(&format!("file-picker {}", dir)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("contains no files"));
+    }
+
+    #[tokio::test]
+    async fn test_file_picker_archive_opens_archive_picker_mode() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = crate::ingestion::archive::test_helpers::make_zip(&[("a.log", b"hello")]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+        app.run_command(&format!("file-picker {}", path))
+            .await
+            .unwrap();
+        for _ in 0..100 {
+            app.poll_archive_listing().await;
+            if app.pending_archive_listing.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            app.tabs[0].interaction.mode.render_state(),
+            ModeRenderState::ArchivePicker { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_file_picker_plain_file_returns_error() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"hello").unwrap();
+        let path = tmp.path().to_str().unwrap();
+        let result = app.run_command(&format!("file-picker {}", path)).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

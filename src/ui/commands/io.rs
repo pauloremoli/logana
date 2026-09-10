@@ -240,19 +240,18 @@ impl App {
         self.open_glob_match(&path).await
     }
 
-    /// Opens a single resolved path (directory -> archive picker, archive ->
-    /// listing, else a regular file). Shared by `cmd_open`'s plain
-    /// single-path case and by each match of a glob pattern. Returns whether
-    /// the active tab's mode was already set explicitly, so a caller looping
-    /// over multiple matches knows whether the *last* one needs that
-    /// treatment too.
+    /// Opens a single resolved path (directory -> every file inside it, each
+    /// its own tab; archive -> its interactive picker; else a regular file).
+    /// Shared by `cmd_open`'s plain single-path case and by each match of a
+    /// glob pattern. Returns whether the active tab's mode was already set
+    /// explicitly, so a caller looping over multiple matches knows whether
+    /// the *last* one needs that treatment too.
     async fn open_glob_match(&mut self, path: &str) -> Result<bool, String> {
         if std::path::Path::new(path).is_dir() {
-            let tree = crate::ingestion::list_directory_tree(path)?;
-            self.tabs[self.active_tab].interaction.mode = Box::new(
-                crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.to_string()),
-            );
-            return Ok(true);
+            let mut tree = crate::ingestion::list_directory_tree(path)?;
+            tree.set_all_files_selected(true);
+            self.apply_archive_picker(path.to_string(), tree).await;
+            return Ok(false);
         }
         if crate::ingestion::detect_archive_type(path).is_some() {
             self.begin_archive_listing(path).await;
@@ -260,6 +259,28 @@ impl App {
         }
         self.open_file(path).await?;
         Ok(false)
+    }
+
+    /// Opens the interactive picker for `path` — a directory or an archive —
+    /// so the user can choose which files to open instead of `:open`'s
+    /// default of opening everything.
+    pub(super) async fn cmd_file_picker(&mut self, path: String) -> Result<bool, String> {
+        let path = expand_tilde(&path);
+        if std::path::Path::new(&path).is_dir() {
+            let tree = crate::ingestion::list_directory_tree(&path)?;
+            self.tabs[self.active_tab].interaction.mode = Box::new(
+                crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path),
+            );
+            return Ok(true);
+        }
+        if crate::ingestion::detect_archive_type(&path).is_some() {
+            self.begin_archive_listing(&path).await;
+            return Ok(true);
+        }
+        Err(format!(
+            "'{}' is not a directory or a recognised archive format",
+            path
+        ))
     }
 
     pub(super) fn cmd_close_tab(&mut self) -> Result<bool, String> {

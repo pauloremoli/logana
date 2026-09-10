@@ -6,7 +6,7 @@ These flags are passed when launching logana from the shell:
 
 | Flag | Description |
 |---|---|
-| `<file>...` | One or more files or a directory to open, each file in its own tab. A file argument with `*`, `?`, or `[]` wildcards expands to every matching file. Omit to read from stdin. |
+| `<file>...` | One or more files or a directory to open. A directory opens every file inside it (including inside any archives found there), each in its own tab. A file argument with `*`, `?`, or `[]` wildcards expands to every matching file. Omit to read from stdin. |
 | `-f`, `--filters <path>` | Preload a saved filter set (JSON). Filters are applied in a single pass during indexing and remain active for interactive use. |
 | `-i`, `--include <args>` | Add an include filter. Accepts the same arguments as `:filter`. May be repeated. Examples: `-i "error"`, `-i "--field level=ERROR"` |
 | `-o`, `--exclude <args>` | Add an exclude filter. Accepts the same arguments as `:exclude`. May be repeated. Examples: `-o "debug"`, `-o "--field level=debug"` |
@@ -61,7 +61,8 @@ See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filter
 
 | Command | Description |
 |---|---|
-| `:open <path>` | Open a file, directory, or compressed/archive file. A path with `*`, `?`, or `[]` wildcards opens every matching file, each in its own tab. Directories and archives both show the same contents picker first — see [Quick Start](quick-start.md#opening-compressed-and-archive-files) |
+| `:open <path>` | Open a file, directory, or compressed/archive file. A path with `*`, `?`, or `[]` wildcards opens every matching file, each in its own tab. A directory opens every file inside it, each in its own tab; an archive shows its contents picker first — see [Quick Start](quick-start.md#opening-compressed-and-archive-files) |
+| `:file-picker <path>` | Open a picker to choose which files to open from a directory or archive, instead of `:open`'s default of opening everything |
 | `:close-tab` | Close the current tab (quits if it's the last tab) |
 | `:save <path>` | Save the currently visible (filtered) lines to a file in raw format |
 | `:export-marked <path>` | Export marked lines to a file |
@@ -155,7 +156,7 @@ Command mode supports multi-tier tab completion:
 
 1. **Color names** — after `--fg` or `--bg` flags
 2. **Template names** — after `-t` / `--template` flags in `:export`
-3. **File paths** — for `:open`, `:save-filters`, `:load-filters`, `:import-filters`, `:export`
+3. **File paths** — for `:open`, `:file-picker`, `:save-filters`, `:load-filters`, `:import-filters`, `:export`
 4. **Theme names** — for `:set-theme`
 5. **Command names** — for everything else
 

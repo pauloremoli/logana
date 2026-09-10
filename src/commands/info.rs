@@ -115,8 +115,18 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "open",
         usage: "open <path>",
-        description: "Open a file in a new tab. A path with *, ?, or [] wildcards opens every matching file, each in its own tab.",
-        examples: &["open /var/log/syslog", "open /var/log/syslog*"],
+        description: "Open a file in a new tab. A path with *, ?, or [] wildcards opens every matching file, each in its own tab. A directory opens every file inside it (including inside any archives found there), each in its own tab; use file-picker to choose which ones instead.",
+        examples: &[
+            "open /var/log/syslog",
+            "open /var/log/syslog*",
+            "open /var/log",
+        ],
+    },
+    CommandInfo {
+        name: "file-picker",
+        usage: "file-picker <path>",
+        description: "Open a picker to choose which files to open from a directory or archive, instead of open's default of opening everything.",
+        examples: &["file-picker /var/log", "file-picker logs.tar.gz"],
     },
     CommandInfo {
         name: "close-tab",
@@ -356,6 +366,7 @@ pub const COMMANDS: &[CommandInfo] = &[
 /// Commands whose last argument is a file path and should receive path auto-completion.
 pub const FILE_PATH_COMMANDS: &[&str] = &[
     "open",
+    "file-picker",
     "load-filters",
     "save-filters",
     "import-filters",
@@ -399,6 +410,7 @@ mod tests {
             "theme",
             "level-colors",
             "open",
+            "file-picker",
             "close-tab",
             "line-numbers",
             "relative-line-numbers",

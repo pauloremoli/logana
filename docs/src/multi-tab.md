@@ -16,11 +16,11 @@ A tab can also be clicked directly in the tab bar to switch to it.
 
 ## Opening Files in Tabs
 
-**From the command line**, each file argument opens in its own tab; a directory argument shows a picker to choose which files to open. A file argument can also be a glob pattern, which opens every match, each in its own tab:
+**From the command line**, each file argument opens in its own tab; a directory argument opens every file inside it (including files inside any archives found there), each in its own tab. A file argument can also be a glob pattern, which opens every match, each in its own tab:
 
 ```sh
 logana app.log system.log        # two tabs, one per file
-logana /var/log/                 # shows a picker — pick which files to open, each in its own tab
+logana /var/log/                 # opens every file under /var/log, each in its own tab
 logana '/var/log/system.log*'    # opens system.log, system.log.1, system.log.2.gz, ... each in its own tab
 ```
 
@@ -32,8 +32,15 @@ If a file that actually exists on disk happens to have `*`, `?`, or `[` in its n
 
 ```sh
 :open app.log                    # opens in a new tab
-:open /var/log/                  # shows the same picker (directory)
+:open /var/log/                  # opens every file under /var/log, each in its own tab
 :open /var/log/system.log*       # opens every matching file, each in its own tab
+```
+
+To choose which files to open instead of opening everything, use `:file-picker` on a directory or archive:
+
+```sh
+:file-picker /var/log            # shows a picker — pick which files to open, each in its own tab
+:file-picker logs.tar.gz         # same picker, for an archive's contents
 ```
 
 ## Tab State

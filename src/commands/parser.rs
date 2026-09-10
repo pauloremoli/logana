@@ -137,6 +137,8 @@ pub enum Commands {
     LevelColors,
     /// Open a file in a new tab
     Open { path: String },
+    /// Open a picker to choose which files to open from a directory or archive
+    FilePicker { path: String },
     /// Close the current tab
     CloseTab,
     /// Remove all filter definitions

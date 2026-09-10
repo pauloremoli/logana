@@ -238,14 +238,6 @@ impl ArchivePickerMode {
         }
     }
 
-    fn set_all_files_selected(&mut self, selected: bool) {
-        for node in &mut self.tree.nodes {
-            if matches!(node.kind, NodeKind::File) {
-                node.selected = selected;
-            }
-        }
-    }
-
     /// Recomputes `all_ids` from the tree and re-clamps `selected` — call
     /// after any tree mutation that can change which rows exist (expanding
     /// a lazy node, collapsing/uncollapsing a container). `pub(crate)` so
@@ -517,11 +509,11 @@ impl Mode for ArchivePickerMode {
             return (self, KeyResult::Handled);
         }
         if kb.archive_picker.all.matches(key, modifiers) {
-            self.set_all_files_selected(true);
+            self.tree.set_all_files_selected(true);
             return (self, KeyResult::Handled);
         }
         if kb.archive_picker.none.matches(key, modifiers) {
-            self.set_all_files_selected(false);
+            self.tree.set_all_files_selected(false);
             return (self, KeyResult::Handled);
         }
 

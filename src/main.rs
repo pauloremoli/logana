@@ -390,17 +390,17 @@ async fn begin_initial_load(
 
     if let Some(path) = args.files.first()
         && std::path::Path::new(path).is_dir()
-        && let Ok(tree) = logana::ingestion::list_directory_tree(path)
+        && let Ok(mut tree) = logana::ingestion::list_directory_tree(path)
     {
         // A directory was explicitly given, so this isn't a bare "resume
         // where I left off" launch — cancel any queued session restore
         // (`AppBuilder::build` can't tell a directory apart from "no
         // argument at all", since it never sees `args.files` directly) so it
-        // doesn't overwrite this mode the moment `app.run()` starts.
+        // doesn't overwrite the tabs the extraction below produces the
+        // moment `app.run()` starts.
         app.session.pending_session_restore = None;
-        app.tabs[0].interaction.mode = Box::new(
-            logana::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.clone()),
-        );
+        tree.set_all_files_selected(true);
+        app.apply_archive_picker(path.clone(), tree).await;
     }
 }
 
@@ -881,5 +881,33 @@ mod tests {
             "expected a startup warning naming the failed filters path, got: {:?}",
             app.session.startup_warnings
         );
+    }
+
+    #[tokio::test]
+    async fn test_begin_initial_load_with_dir_opens_every_file_as_its_own_tab() {
+        let mut app = make_test_app().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.log"), b"hello").unwrap();
+        std::fs::write(tmp.path().join("b.log"), b"world").unwrap();
+        let dir = tmp.path().to_str().unwrap().to_string();
+        let args = Args::try_parse_from(["logana", &dir]).unwrap();
+        let (source_path, background_file_load) = resolve_source(args.files.first());
+
+        begin_initial_load(&mut app, source_path, background_file_load, false, &args).await;
+        for _ in 0..100 {
+            app.poll_archive_extraction().await;
+            if app.pending_archive.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert!(titles.contains(&"a.log"));
+        assert!(titles.contains(&"b.log"));
+        assert!(!matches!(
+            app.tabs[app.active_tab].interaction.mode.render_state(),
+            logana::mode::app_mode::ModeRenderState::ArchivePicker { .. }
+        ));
     }
 }
