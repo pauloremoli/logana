@@ -204,7 +204,11 @@ mod tests {
     use crate::config::Keybindings;
     use crate::db::AppSettingsStore;
     use crate::db::Database;
+    use crate::db::FileContextStore;
+    use crate::db::FilterStore;
+    use crate::db::GroupStore;
     use crate::db::LogManager;
+    use crate::db::SessionStore;
     use crate::filters::FilterType;
     use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
@@ -1682,6 +1686,149 @@ mod tests {
         assert!(app.tabs[0].merged.is_none());
         assert!(app.tabs[0].merged_temp.is_none());
         assert!(!app.tabs[0].is_temp_backed());
+    }
+
+    /// Builds an app whose single tab is backed by a real temp file (as an
+    /// archive-extracted tab would be), with its `LogManager` scoped to that
+    /// temp path — unlike `make_app`'s sourceless tab, this lets a `:save`
+    /// migrate filters/groups/context away from a real DB key.
+    async fn make_temp_backed_app(lines: &[&str]) -> (App, Arc<Database>, String) {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let temp_source = tempfile::NamedTempFile::new().unwrap();
+        let old_source = temp_source.path().to_str().unwrap().to_string();
+        let data: Vec<u8> = lines.join("\n").into_bytes();
+        let file_reader = FileReader::from_bytes(data);
+        let log_manager = LogManager::new(db.clone(), Some(old_source.clone())).await;
+        let mut app = App::builder(
+            log_manager,
+            file_reader,
+            Theme::default(),
+            Arc::new(Keybindings::default()),
+        )
+        .build()
+        .await;
+        app.tabs[0].archive_temp = Some(temp_source);
+        assert!(app.tabs[0].is_temp_backed());
+        (app, db, old_source)
+    }
+
+    #[tokio::test]
+    async fn test_save_on_temp_backed_tab_writes_full_content_ignoring_active_filter() {
+        let (mut app, _db, _old_source) =
+            make_temp_backed_app(&["keep this", "skip this", "keep too"]).await;
+        app.run_command("filter keep".to_string().as_str())
+            .await
+            .unwrap();
+        await_filter_computations(&mut app).await;
+        assert_eq!(
+            app.tabs[0].filter.visible_indices.len(),
+            2,
+            "precondition: the active filter hides one of the three lines"
+        );
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("save {path}")).await.unwrap();
+        drain_active_tab_load(&mut app).await;
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            written, "keep this\nskip this\nkeep too\n",
+            "a temp-backed tab's save must write every line, not just what the active filter shows"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_on_temp_backed_tab_migrates_marks_comments_filters_and_groups() {
+        let (mut app, db, old_source) =
+            make_temp_backed_app(&["keep this", "skip this", "keep too"]).await;
+        app.run_command("filter keep".to_string().as_str())
+            .await
+            .unwrap();
+        await_filter_computations(&mut app).await;
+        app.tabs[0]
+            .log_manager
+            .set_group_style("g", Some("Red"), None, true)
+            .await;
+        // Mark and comment a line the active filter currently hides, to prove
+        // it survives even though it's absent from the *filtered* view.
+        app.tabs[0].mark_manager.mark(1);
+        app.tabs[0].comment_manager.add("note".to_string(), vec![1]);
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        app.run_command(&format!("save {path}")).await.unwrap();
+        drain_active_tab_load(&mut app).await;
+        let new_source = app.tabs[0].log_manager.source_file().unwrap().to_string();
+
+        // In-memory state on the (reused) tab is untouched by the switch.
+        assert!(app.tabs[0].mark_manager.is_marked(1));
+        assert_eq!(app.tabs[0].comment_manager.get().len(), 1);
+        assert_eq!(app.tabs[0].log_manager.get_filters().len(), 1);
+        assert_eq!(app.tabs[0].log_manager.get_group_styles().len(), 1);
+
+        // The DB-persisted context/filters/groups moved to the new path...
+        let ctx = db
+            .load_file_context(&new_source)
+            .await
+            .unwrap()
+            .expect("context must be persisted under the new path");
+        assert_eq!(ctx.marked_lines, vec![1]);
+        assert_eq!(ctx.comments.len(), 1);
+        assert_eq!(
+            db.get_filters_for_source(&new_source).await.unwrap().len(),
+            1
+        );
+        assert_eq!(
+            db.get_groups_for_source(&new_source).await.unwrap().len(),
+            1
+        );
+
+        // ...and no longer linger under the old, now-deleted temp path.
+        assert!(db.load_file_context(&old_source).await.unwrap().is_none());
+        assert!(
+            db.get_filters_for_source(&old_source)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.get_groups_for_source(&old_source)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A saved-to path is a real, permanent file now — the next startup with
+    /// no path argument must be able to pick it back up, exactly like any
+    /// other file the user had open (see `SessionManager::save_all_contexts`,
+    /// which excludes temp/archive paths from the restorable session list).
+    #[tokio::test]
+    async fn test_save_on_temp_backed_tab_makes_it_eligible_for_session_restore() {
+        let (mut app, db, old_source) = make_temp_backed_app(&["line one"]).await;
+
+        // Deliberately outside the OS temp dir (unlike `NamedTempFile`) —
+        // `save_all_contexts` excludes tmp_dir-backed sources on purpose, so
+        // the destination here must look like a real, permanent path for
+        // this test to actually exercise that inclusion logic.
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let path = dir.path().join("saved.log").to_str().unwrap().to_string();
+        app.run_command(&format!("save {path}")).await.unwrap();
+        drain_active_tab_load(&mut app).await;
+        let new_source = app.tabs[0].log_manager.source_file().unwrap().to_string();
+
+        app.save_all_contexts().await;
+
+        let session_files = db.load_session().await.unwrap();
+        assert!(
+            session_files.contains(&new_source),
+            "the saved file must be part of the restorable session, got: {session_files:?}"
+        );
+        assert!(
+            !session_files.contains(&old_source),
+            "the old temp path must not linger in the session list, got: {session_files:?}"
+        );
     }
 
     #[tokio::test]

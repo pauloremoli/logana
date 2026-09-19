@@ -1,4 +1,5 @@
 use crate::commands::auto_complete::expand_tilde;
+use crate::db::{FileContextStore, FilterStore, GroupStore};
 use crate::ui::App;
 use std::io::{BufWriter, Write};
 
@@ -46,14 +47,29 @@ impl App {
                 expanded
             ));
         }
+        let is_temp_backed = tab.is_temp_backed();
         let file = std::fs::File::create(&expanded)
             .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
         let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
-        for file_idx in tab.filter.visible_indices.iter() {
-            writer
-                .write_all(&tab.file_reader.get_line(file_idx))
-                .and_then(|_| writer.write_all(b"\n"))
-                .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
+        if is_temp_backed {
+            // A temp-backed tab is being given a permanent home (see below),
+            // not exported — every line goes out, not just what the active
+            // filter currently shows. Marks and comments are keyed by raw
+            // file-line index, so writing anything less than the full
+            // content would desync them from the saved file.
+            for file_idx in 0..tab.file_reader.line_count() {
+                writer
+                    .write_all(&tab.file_reader.get_line(file_idx))
+                    .and_then(|_| writer.write_all(b"\n"))
+                    .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
+            }
+        } else {
+            for file_idx in tab.filter.visible_indices.iter() {
+                writer
+                    .write_all(&tab.file_reader.get_line(file_idx))
+                    .and_then(|_| writer.write_all(b"\n"))
+                    .map_err(|e| format!("Failed to write '{}': {}", expanded, e))?;
+            }
         }
         writer
             .flush()
@@ -64,19 +80,26 @@ impl App {
         // behind it; now that its content has been saved somewhere real,
         // that's its new home. Re-point the tab at it instead of leaving it
         // tied to a temp file the user can no longer see or find again.
-        if self.tabs[self.active_tab].is_temp_backed() {
+        if is_temp_backed {
             self.switch_tab_to_saved_file(self.active_tab, expanded)
                 .await;
         }
         Ok(false)
     }
 
-    /// Re-points a temp-backed tab at the file it was just saved to: drops
-    /// the temp copies (`archive_temp`/`merge_source_temps`/`merged_temp`)
-    /// and, for a picker-triggered merge, the multi-source `merged` state
-    /// too (the saved file is a single flat file now, not several sources to
-    /// track), then reloads the tab's content from the saved path — same as
-    /// opening it fresh, including live tail-watching for future growth.
+    /// Re-points a temp-backed tab at the file it was just saved to: moves
+    /// its filters/groups from the old (ephemeral) source key to the new
+    /// path, drops the temp copies (`archive_temp`/`merge_source_temps`/
+    /// `merged_temp`) and, for a picker-triggered merge, the multi-source
+    /// `merged` state too (the saved file is a single flat file now, not
+    /// several sources to track), then reloads the tab's content from the
+    /// saved path — same as opening it fresh, including live tail-watching
+    /// for future growth.
+    ///
+    /// Marks/comments/hidden-fields need no special handling here: they live
+    /// on the tab itself (not the `LogManager` being replaced), and `:save`
+    /// just wrote out the tab's full, unfiltered content, so they still line
+    /// up with the saved file exactly as they did with the temp one.
     async fn switch_tab_to_saved_file(&mut self, tab_idx: usize, path: String) {
         let abs_path = std::fs::canonicalize(&path)
             .ok()
@@ -88,6 +111,20 @@ impl App {
             .unwrap_or(&abs_path)
             .to_string();
 
+        if let Some(old_source) = self.tabs[tab_idx]
+            .log_manager
+            .source_file()
+            .map(|s| s.to_string())
+        {
+            let filters = self.tabs[tab_idx].log_manager.get_filters().to_vec();
+            let groups = self.tabs[tab_idx].log_manager.get_group_styles().to_vec();
+            let _ = self.db.replace_all_filters(&filters, Some(&abs_path)).await;
+            let _ = self.db.replace_all_groups(&groups, Some(&abs_path)).await;
+            let _ = self.db.replace_all_filters(&[], Some(&old_source)).await;
+            let _ = self.db.replace_all_groups(&[], Some(&old_source)).await;
+            let _ = self.db.delete_file_context(&old_source).await;
+        }
+
         self.tabs[tab_idx].title = title;
         self.tabs[tab_idx].archive_temp = None;
         self.tabs[tab_idx].merge_source_temps = Vec::new();
@@ -95,6 +132,12 @@ impl App {
         self.tabs[tab_idx].merged = None;
         self.tabs[tab_idx].log_manager =
             crate::db::LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
+
+        // Persist the tab's live context (marks, comments, hidden fields,
+        // etc. — already correct in memory) under the new path right away,
+        // rather than waiting for the next periodic autosave, so it isn't
+        // lost if the app closes before then.
+        self.save_tab_context(&self.tabs[tab_idx]).await;
 
         let tab_id = self.tabs[tab_idx].id;
         self.begin_file_load(

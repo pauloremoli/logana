@@ -98,6 +98,7 @@ pub struct FileContext {
 pub trait FileContextStore: Send + Sync {
     async fn save_file_context(&self, ctx: &FileContext) -> Result<()>;
     async fn load_file_context(&self, source_file: &str) -> Result<Option<FileContext>>;
+    async fn delete_file_context(&self, source_file: &str) -> Result<()>;
 }
 
 #[async_trait]
@@ -1222,6 +1223,14 @@ impl FileContextStore for Database {
             }
         }))
     }
+
+    async fn delete_file_context(&self, source_file: &str) -> Result<()> {
+        sqlx::query("DELETE FROM file_context WHERE source_file = ?")
+            .bind(source_file)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -2275,6 +2284,42 @@ mod tests {
         let db = setup_db().await;
         let result = db.load_file_context("/nonexistent").await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_file_context_removes_it() {
+        let db = setup_db().await;
+        let ctx = FileContext {
+            source_file: "/tmp/test.log".to_string(),
+            scroll_offset: 10,
+            search_query: "".to_string(),
+            level_colors_disabled: HashSet::new(),
+            horizontal_scroll: 0,
+            marked_lines: vec![0, 3],
+            file_hash: None,
+            comments: vec![],
+            show_keys: false,
+            raw_mode: false,
+            hidden_fields: HashSet::new(),
+            field_layout_columns: None,
+            filtering_enabled: true,
+        };
+        db.save_file_context(&ctx).await.unwrap();
+
+        db.delete_file_context("/tmp/test.log").await.unwrap();
+
+        assert!(
+            db.load_file_context("/tmp/test.log")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_file_context_missing_source_is_a_no_op() {
+        let db = setup_db().await;
+        db.delete_file_context("/nonexistent").await.unwrap();
     }
 
     #[tokio::test]
