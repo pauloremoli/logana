@@ -1113,23 +1113,44 @@ pub fn extract_and_detect_merge_marked(
 }
 
 /// A selected file's display name: its path relative to the opened
-/// archive/directory root (e.g. `"folder1/runtime.log"`, or
-/// `"a.zip/app.log"` for an entry nested inside a nested archive), with any
-/// compression suffix on the leaf stripped (see
-/// [`display_name_for_extraction`]). Always the full relative path — not
-/// just the basename — so entries that share a basename in different
-/// folders/archives (e.g. `"2023/logs.zip"` and `"2024/logs.zip"` both
-/// containing an `"app.log"`) stay distinguishable as tab names.
+/// directory root (e.g. `"folder1/runtime.log"`), or — when `root_path` is
+/// a directly-`:open`ed archive rather than a directory — its path relative
+/// to that archive's *parent*, so the archive's own name stays on the front
+/// (e.g. `"bundle.zip/app.log"`, or `"a.zip/app.log"` for an entry nested
+/// inside a further archive). Any compression suffix on the leaf is
+/// stripped (see [`display_name_for_extraction`]). Always the full relative
+/// path — not just the basename — so entries that share a basename in
+/// different folders/archives (e.g. `"2023/logs.zip"` and `"2024/logs.zip"`
+/// both containing an `"app.log"`) stay distinguishable as tab names.
 fn relative_name(tree: &ArchiveTree, node_id: NodeId, root_path: &str) -> String {
     let source_path = node_source_path(tree, node_id, root_path);
-    let root = root_path.trim_end_matches('/');
+    let root = root_strip_prefix(root_path);
     let relative = source_path
-        .strip_prefix(root)
+        .strip_prefix(root.as_str())
         .unwrap_or(&source_path)
         .trim_start_matches('/');
     match relative.rsplit_once('/') {
         Some((dir, leaf)) => format!("{dir}/{}", display_name_for_extraction(leaf)),
         None => display_name_for_extraction(relative),
+    }
+}
+
+/// The prefix to strip from a node's absolute source path to get its
+/// tab-relative display name. When `root_path` is a directory, that's the
+/// whole directory path — every entry already sits *under* it, so the
+/// directory's own name would be redundant on every tab. When `root_path`
+/// is an archive file (a direct `:open some.zip`), only its *parent*
+/// directory is stripped, so the archive's own basename is kept — it's the
+/// only thing identifying which archive a top-level entry came from.
+fn root_strip_prefix(root_path: &str) -> String {
+    let trimmed = root_path.trim_end_matches('/');
+    if std::path::Path::new(root_path).is_dir() {
+        trimmed.to_string()
+    } else {
+        std::path::Path::new(trimmed)
+            .parent()
+            .map(|p| p.to_string_lossy().trim_end_matches('/').to_string())
+            .unwrap_or_default()
     }
 }
 
@@ -1332,6 +1353,17 @@ mod tests {
         let path = tmp.path().to_str().unwrap().to_string() + ext;
         std::fs::copy(tmp.path(), &path).unwrap();
         path
+    }
+
+    /// The basename `relative_name` keeps on the front of a directly-opened
+    /// archive's top-level entries (see `root_strip_prefix`), for building
+    /// expected names in tests without hardcoding the random tmp filename.
+    fn archive_basename(path: &str) -> &str {
+        std::path::Path::new(path)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
     }
 
     fn read_extracted(file: &mut ExtractedFile) -> String {
@@ -2768,16 +2800,21 @@ mod tests {
 
     #[test]
     fn test_extract_selected_single_top_level_file() {
-        let tmp = make_zip(&[("a.log", b"hello"), ("b.log", b"world")]);
-        let path = path_with_ext(&tmp, ".zip");
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let zip_tmp = make_zip(&[("a.log", b"hello"), ("b.log", b"world")]);
+        let path = tmp_dir.path().join("bundle.zip");
+        std::fs::copy(zip_tmp.path(), &path).unwrap();
+        let path = path.to_str().unwrap().to_string();
         let mut tree = list_archive_tree(&path).unwrap();
         select_by_full_path(&mut tree, "a.log");
 
         let mut extracted = extract_selected(&path, &tree, no_progress()).files;
-        std::fs::remove_file(&path).unwrap();
 
         assert_eq!(extracted.len(), 1);
-        assert_eq!(extracted[0].name, "a.log");
+        assert_eq!(
+            extracted[0].name, "bundle.zip/a.log",
+            "a directly-opened archive's own name must prefix its top-level entries"
+        );
         assert_eq!(read_extracted(&mut extracted[0]), "hello");
     }
 
@@ -2790,11 +2827,16 @@ mod tests {
         select_by_full_path(&mut tree, "c.log");
 
         let extracted = extract_selected(&path, &tree, no_progress()).files;
+        let archive_name = archive_basename(&path);
+        let expected = vec![
+            format!("{archive_name}/a.log"),
+            format!("{archive_name}/c.log"),
+        ];
         std::fs::remove_file(&path).unwrap();
 
         let mut names: Vec<&str> = extracted.iter().map(|f| f.name.as_str()).collect();
         names.sort();
-        assert_eq!(names, vec!["a.log", "c.log"]);
+        assert_eq!(names, expected);
     }
 
     #[test]
@@ -2899,13 +2941,20 @@ mod tests {
         tree.toggle_subtree(bundle_id);
 
         let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
         extracted.sort_by(|a, b| a.name.cmp(&b.name));
 
         assert_eq!(extracted.len(), 2);
-        assert_eq!(extracted[0].name, "bundle.zip/a.log");
+        assert_eq!(
+            extracted[0].name,
+            format!("{archive_name}/bundle.zip/a.log")
+        );
         assert_eq!(read_extracted(&mut extracted[0]), "one");
-        assert_eq!(extracted[1].name, "bundle.zip/b.log");
+        assert_eq!(
+            extracted[1].name,
+            format!("{archive_name}/bundle.zip/b.log")
+        );
         assert_eq!(read_extracted(&mut extracted[1]), "two");
     }
 
@@ -2932,12 +2981,17 @@ mod tests {
         }
 
         let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
         extracted.sort_by(|a, b| a.name.cmp(&b.name));
 
+        let expected = vec![
+            format!("{archive_name}/a.zip/app.log"),
+            format!("{archive_name}/b.zip/app.log"),
+        ];
         let mut names: Vec<&str> = extracted.iter().map(|f| f.name.as_str()).collect();
         names.sort();
-        assert_eq!(names, vec!["a.zip/app.log", "b.zip/app.log"]);
+        assert_eq!(names, expected);
     }
 
     #[test]
@@ -2963,6 +3017,7 @@ mod tests {
         }
 
         let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
         extracted.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -2970,7 +3025,10 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["2023/logs.zip/app.log", "2024/logs.zip/app.log"]
+            vec![
+                format!("{archive_name}/2023/logs.zip/app.log"),
+                format!("{archive_name}/2024/logs.zip/app.log"),
+            ]
         );
     }
 
@@ -3012,10 +3070,14 @@ mod tests {
         );
 
         let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(extracted.len(), 1);
-        assert_eq!(extracted[0].name, "inner.zip/app.log");
+        assert_eq!(
+            extracted[0].name,
+            format!("{archive_name}/inner.zip/app.log")
+        );
         assert_eq!(read_extracted(&mut extracted[0]), "deeply nested content");
     }
 
@@ -3029,9 +3091,10 @@ mod tests {
         select_by_full_path(&mut tree, "app.log.gz");
 
         let extracted = extract_selected(&path, &tree, no_progress()).files;
+        let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
 
-        assert_eq!(extracted[0].name, "app.log");
+        assert_eq!(extracted[0].name, format!("{archive_name}/app.log"));
     }
 
     #[test]
@@ -3050,12 +3113,13 @@ mod tests {
         select_by_full_path(&mut tree, "b.log.xz");
 
         let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
         extracted.sort_by(|a, b| a.name.cmp(&b.name));
 
-        assert_eq!(extracted[0].name, "a.log");
+        assert_eq!(extracted[0].name, format!("{archive_name}/a.log"));
         assert_eq!(read_extracted(&mut extracted[0]), "bz2 content");
-        assert_eq!(extracted[1].name, "b.log");
+        assert_eq!(extracted[1].name, format!("{archive_name}/b.log"));
         assert_eq!(read_extracted(&mut extracted[1]), "xz content");
     }
 
@@ -3076,10 +3140,11 @@ mod tests {
         );
 
         let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(extracted.len(), 1);
-        assert_eq!(extracted[0].name, "app.log");
+        assert_eq!(extracted[0].name, format!("{archive_name}/app.log"));
         assert_eq!(read_extracted(&mut extracted[0]), "cached path content");
     }
 

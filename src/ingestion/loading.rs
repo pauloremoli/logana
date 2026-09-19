@@ -1704,6 +1704,19 @@ mod tests {
         f.flush().unwrap();
     }
 
+    /// The basename a directly-opened archive's own top-level entries are
+    /// now prefixed with in their tab title (see `archive_tree::relative_name`),
+    /// for building expected titles in tests without hardcoding the random
+    /// tmp filename these tests copy their fixture archives to.
+    fn archive_basename(path: &str) -> String {
+        std::path::Path::new(path)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
     async fn make_app(lines: &[&str]) -> App {
         let data: Vec<u8> = lines.join("\n").into_bytes();
         let file_reader = FileReader::from_bytes(data);
@@ -4523,11 +4536,12 @@ mod tests {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
 
+        let archive_name = archive_basename(&path);
         std::fs::remove_file(&path).unwrap();
 
         assert!(app.pending_archive.is_none());
         let last_tab = app.tabs.last().unwrap();
-        assert_eq!(last_tab.title, "a.log");
+        assert_eq!(last_tab.title, format!("{archive_name}/a.log"));
     }
 
     /// Waits for `app.pending_archive` to clear (mirrors the polling loop
@@ -4632,12 +4646,13 @@ mod tests {
 
         app.apply_archive_picker(path.clone(), tree).await;
         drain_pending_archive(&mut app).await;
+        let archive_name = archive_basename(&path);
         std::fs::remove_file(&path).unwrap();
 
         assert!(app.pending_archive.is_none());
         let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
-        assert!(titles.contains(&"ticked1.log"));
-        assert!(titles.contains(&"ticked2.log"));
+        assert!(titles.contains(&format!("{archive_name}/ticked1.log").as_str()));
+        assert!(titles.contains(&format!("{archive_name}/ticked2.log").as_str()));
         assert_eq!(
             app.tabs.iter().filter(|t| t.merged.is_some()).count(),
             1,
@@ -4680,6 +4695,7 @@ mod tests {
 
         app.apply_archive_picker(path.clone(), tree).await;
         drain_pending_archive(&mut app).await;
+        let archive_name = archive_basename(&path);
         std::fs::remove_file(&path).unwrap();
 
         assert!(app.pending_archive.is_none());
@@ -4687,7 +4703,10 @@ mod tests {
         // unrecognized-format member) contributed zero tabs, but that
         // failure must not block the unrelated ticked-file extraction.
         let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
-        assert!(titles.contains(&"ticked.log"), "{titles:?}");
+        assert!(
+            titles.contains(&format!("{archive_name}/ticked.log").as_str()),
+            "{titles:?}"
+        );
         assert!(
             !app.tabs.iter().any(|t| t.merged.is_some()),
             "no merged tab must be created when a merge-marked file's format is unrecognized"
@@ -4837,6 +4856,7 @@ mod tests {
 
         let initial_tabs = app.tabs.len();
         app.apply_archive_picker(path.clone(), tree).await;
+        let archive_name = archive_basename(&path);
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(
@@ -4846,7 +4866,13 @@ mod tests {
         );
         let merged_tab = app.tabs.last().unwrap();
         let merged = merged_tab.merged.as_ref().unwrap();
-        assert_eq!(merged.source_labels, vec!["later.log", "earlier.log"]);
+        assert_eq!(
+            merged.source_labels,
+            vec![
+                format!("{archive_name}/later.log"),
+                format!("{archive_name}/earlier.log"),
+            ]
+        );
         assert_eq!(merged_tab.file_reader.line_count(), 0);
         assert_eq!(app.active_tab, app.tabs.len() - 1);
 
@@ -5056,6 +5082,7 @@ mod tests {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
 
+        let archive_name = archive_basename(&path);
         std::fs::remove_file(&path).unwrap();
 
         assert!(app.pending_archive.is_none());
@@ -5065,7 +5092,13 @@ mod tests {
             "exactly the 2 confirmed files should have been extracted, not b.log"
         );
         let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(titles, vec!["top.log", "nested/inner.zip/a.log"]);
+        assert_eq!(
+            titles,
+            vec![
+                format!("{archive_name}/top.log"),
+                format!("{archive_name}/nested/inner.zip/a.log"),
+            ]
+        );
         for tab in &app.tabs {
             assert!(
                 tab.file_reader.line_count() > 0 || tab.load_state.is_some(),
