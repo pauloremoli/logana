@@ -135,6 +135,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         examples: &[],
     },
     CommandInfo {
+        name: "path",
+        usage: "path",
+        description: "Show the active tab's real source path — its actual location on disk or inside an archive, even when the tab was opened from a directory or archive and reads from a temp copy.",
+        examples: &["path"],
+    },
+    CommandInfo {
         name: "line-numbers",
         usage: "line-numbers",
         description: "Toggle line numbers on/off.",

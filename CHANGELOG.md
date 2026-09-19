@@ -20,6 +20,7 @@ All notable changes to logana will be documented in this file.
 - Accept multiple file paths on the command line, each opening in its own tab.
 - Support `*`, `?`, and `[]` glob patterns in `:open` and command-line file arguments, opening every match as its own tab.
 - Add `:file-picker` to open a directory or archive's interactive picker to choose which files to open.
+- Add `:path` to show the active tab's real source file location.
 
 ### Changed
 - `:open` and a directory command-line argument now open every file inside the directory by default, each in its own tab, instead of showing a picker. Use `:file-picker` to choose which files to open instead.
@@ -35,6 +36,7 @@ All notable changes to logana will be documented in this file.
 - Fix toggling a group with no filters yet in group mode being a silent no-op instead of enabling/disabling it.
 - Fix the command line losing the tail of a long `:open` path once it no longer fit the terminal width.
 - Fix archive entries with the same file name in different folders getting indistinguishable extracted names.
+- Fix opening multiple files, a directory, or an archive aborting the whole batch when a single file failed to open or extract.
 
 ## [0.7.6] - 2026-08-06
 

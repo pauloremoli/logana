@@ -78,6 +78,12 @@ pub enum ArchiveType {
 
 pub struct ExtractedFile {
     pub name: String,
+    /// Where this entry actually lives — an absolute disk path, or an
+    /// archive path suffixed with its internal entry path (e.g.
+    /// `/var/log/bundle.zip/app.log`) — distinct from `temp_file`, which is
+    /// just a scratch copy of the bytes. Lets a tab report its real source
+    /// even after extraction moved the content to a temp file.
+    pub full_path: String,
     pub temp_file: NamedTempFile,
 }
 
@@ -135,19 +141,31 @@ pub fn extract_with_progress(
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index, progress_tx);
             let mut decoder = flate2::read::GzDecoder::new(reader);
-            Ok(vec![decompress_to_temp(&mut decoder, stem(&stem(path)))?])
+            Ok(vec![decompress_to_temp(
+                &mut decoder,
+                stem(&stem(path)),
+                path.to_string(),
+            )?])
         }
         ArchiveType::Bz2 => {
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index, progress_tx);
             let mut decoder = bzip2::read::BzDecoder::new(reader);
-            Ok(vec![decompress_to_temp(&mut decoder, stem(&stem(path)))?])
+            Ok(vec![decompress_to_temp(
+                &mut decoder,
+                stem(&stem(path)),
+                path.to_string(),
+            )?])
         }
         ArchiveType::Xz => {
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index, progress_tx);
             let mut decoder = xz2::read::XzDecoder::new(reader);
-            Ok(vec![decompress_to_temp(&mut decoder, stem(&stem(path)))?])
+            Ok(vec![decompress_to_temp(
+                &mut decoder,
+                stem(&stem(path)),
+                path.to_string(),
+            )?])
         }
         ArchiveType::Zip => {
             let file = File::open(path).map_err(|e| e.to_string())?;
@@ -170,7 +188,8 @@ pub fn extract_with_progress(
                     file_index: logical_idx,
                     fraction: 0.0,
                 });
-                results.push(decompress_to_temp(&mut entry, name)?);
+                let full_path = format!("{path}/{name}");
+                results.push(decompress_to_temp(&mut entry, name, full_path)?);
                 let _ = progress_tx.send(ArchiveExtractionProgress {
                     file_index: logical_idx,
                     fraction: 1.0,
@@ -183,33 +202,34 @@ pub fn extract_with_progress(
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index.clone(), progress_tx);
             let mut archive = tar::Archive::new(reader);
-            extract_tar_entries_with_progress(&mut archive, &file_index, &name_tx)
+            extract_tar_entries_with_progress(path, &mut archive, &file_index, &name_tx)
         }
         ArchiveType::TarGz => {
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index.clone(), progress_tx);
             let decoder = flate2::read::GzDecoder::new(reader);
             let mut archive = tar::Archive::new(decoder);
-            extract_tar_entries_with_progress(&mut archive, &file_index, &name_tx)
+            extract_tar_entries_with_progress(path, &mut archive, &file_index, &name_tx)
         }
         ArchiveType::TarBz2 => {
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index.clone(), progress_tx);
             let decoder = bzip2::read::BzDecoder::new(reader);
             let mut archive = tar::Archive::new(decoder);
-            extract_tar_entries_with_progress(&mut archive, &file_index, &name_tx)
+            extract_tar_entries_with_progress(path, &mut archive, &file_index, &name_tx)
         }
         ArchiveType::TarXz => {
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index.clone(), progress_tx);
             let decoder = xz2::read::XzDecoder::new(reader);
             let mut archive = tar::Archive::new(decoder);
-            extract_tar_entries_with_progress(&mut archive, &file_index, &name_tx)
+            extract_tar_entries_with_progress(path, &mut archive, &file_index, &name_tx)
         }
     }
 }
 
 fn extract_tar_entries_with_progress<R: Read>(
+    path: &str,
     archive: &mut tar::Archive<R>,
     file_index: &Arc<AtomicUsize>,
     name_tx: &Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -230,7 +250,8 @@ fn extract_tar_entries_with_progress<R: Read>(
             let _ = tx.send(name.clone());
         }
         file_index.store(idx, Ordering::Relaxed);
-        results.push(decompress_to_temp(&mut entry, name)?);
+        let full_path = format!("{path}/{name}");
+        results.push(decompress_to_temp(&mut entry, name, full_path)?);
         idx += 1;
     }
     Ok(results)
@@ -311,12 +332,14 @@ pub(crate) fn stem(path: &str) -> String {
 pub(crate) fn decompress_to_temp(
     reader: &mut dyn Read,
     name: String,
+    full_path: String,
 ) -> Result<ExtractedFile, String> {
     let mut tmp = NamedTempFile::new().map_err(|e| e.to_string())?;
     io::copy(reader, &mut tmp).map_err(|e| e.to_string())?;
     tmp.flush().map_err(|e| e.to_string())?;
     Ok(ExtractedFile {
         name,
+        full_path,
         temp_file: tmp,
     })
 }

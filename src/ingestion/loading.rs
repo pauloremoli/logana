@@ -762,6 +762,7 @@ impl App {
                     .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
                 let log_manager = LogManager::new(self.db.clone(), Some(tmp_path.clone())).await;
                 let mut tab = TabState::new(preview, log_manager, file.name);
+                tab.source_path = Some(file.full_path);
                 tab.archive_temp = Some(file.temp_file);
                 self.apply_tab_defaults(&mut tab).await;
                 self.tabs.push(tab);

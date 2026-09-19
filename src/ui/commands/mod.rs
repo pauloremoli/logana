@@ -149,6 +149,7 @@ impl App {
             Some(Commands::Open { path }) => return self.cmd_open(path).await,
             Some(Commands::FilePicker { path }) => return self.cmd_file_picker(path).await,
             Some(Commands::CloseTab) => return self.cmd_close_tab(),
+            Some(Commands::Path) => return self.cmd_path(),
             Some(Commands::ClearFilters) => return self.cmd_clear_filters().await,
             Some(Commands::DisableFilters) => return self.cmd_disable_filters().await,
             Some(Commands::EnableFilters) => return self.cmd_enable_filters().await,
@@ -1219,6 +1220,47 @@ mod tests {
             app.tabs[app.active_tab].interaction.mode.render_state(),
             ModeRenderState::ArchivePicker { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_path_command_shows_original_path_for_directory_opened_file() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.log"), b"hello").unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        app.run_command(&format!("open {}", dir)).await.unwrap();
+        drain_pending_archive(&mut app).await;
+
+        let a_idx = app
+            .tabs
+            .iter()
+            .position(|t| t.title == "a.log")
+            .expect("a.log tab must exist");
+        app.active_tab = a_idx;
+        app.run_command("path").await.unwrap();
+
+        let expected = tmp.path().join("a.log").to_str().unwrap().to_string();
+        assert_eq!(
+            app.tabs[a_idx].interaction.notification.as_deref(),
+            Some(expected.as_str()),
+            "path must show the real original file, not the extracted temp copy"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_path_command_shows_log_manager_source_for_a_plain_open() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("a.log");
+        std::fs::write(&file_path, b"hello").unwrap();
+        app.open_file(file_path.to_str().unwrap()).await.unwrap();
+
+        app.run_command("path").await.unwrap();
+
+        assert_eq!(
+            app.tabs[app.active_tab].interaction.notification.as_deref(),
+            Some(file_path.to_str().unwrap())
+        );
     }
 
     #[tokio::test]

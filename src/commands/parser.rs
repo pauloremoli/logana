@@ -141,6 +141,8 @@ pub enum Commands {
     FilePicker { path: String },
     /// Close the current tab
     CloseTab,
+    /// Show the active tab's real source path
+    Path,
     /// Remove all filter definitions
     ClearFilters,
     /// Disable all filters without removing them

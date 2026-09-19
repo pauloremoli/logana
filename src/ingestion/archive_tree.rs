@@ -1013,8 +1013,9 @@ pub(crate) fn extract_ids(
     let total = ids.len().max(1);
     for (i, &node_id) in ids.iter().enumerate() {
         let name = disambiguated_name(tree, node_id, &mut used_names);
+        let full_path = node_source_path(tree, node_id, path);
         let result = resolve_node_bytes(tree, node_id, path)
-            .and_then(|bytes| decompress_to_temp(&mut Cursor::new(bytes), name.clone()));
+            .and_then(|bytes| decompress_to_temp(&mut Cursor::new(bytes), name.clone(), full_path));
         match result {
             Ok(extracted) => files.push(extracted),
             Err(e) => errors.push(format!("{name}: {e}")),
@@ -1150,6 +1151,36 @@ fn full_ancestry_path(tree: &ArchiveTree, node_id: NodeId) -> String {
     while let Some(id) = current {
         segments.push(tree.nodes[id].full_path.as_str());
         current = tree.nodes[id].parent;
+    }
+    segments.reverse();
+    segments.join("/")
+}
+
+/// The real, human-facing location of `node_id`'s content — an absolute
+/// disk path for a plain file (or one inside a real subdirectory), or an
+/// archive's disk path suffixed with each nested entry's own path (e.g.
+/// `/var/log/bundle.zip/app.log`). Unlike [`full_ancestry_path`], ascent
+/// stops at the first `disk_path` ancestor instead of continuing past it —
+/// that ancestor's `full_path` is already a complete absolute path (see
+/// `list_directory_entries`), so joining it under a further-up segment
+/// would duplicate it (e.g. `/var/log//var/log/app.log`). `root_path` is
+/// only used when the tree has no disk-anchored ancestor at all — a
+/// directly-`:open`ed archive's own root entries.
+fn node_source_path(tree: &ArchiveTree, node_id: NodeId, root_path: &str) -> String {
+    let mut segments = Vec::new();
+    let mut current = Some(node_id);
+    let mut anchored = false;
+    while let Some(id) = current {
+        let node = &tree.nodes[id];
+        segments.push(node.full_path.clone());
+        if node.disk_path {
+            anchored = true;
+            break;
+        }
+        current = node.parent;
+    }
+    if !anchored {
+        segments.push(root_path.to_string());
     }
     segments.reverse();
     segments.join("/")
@@ -2681,6 +2712,81 @@ mod tests {
             .find(|s| s.label.contains("unrecognized"))
             .unwrap();
         assert!(unrecognized_src.detected.format.is_none());
+    }
+
+    #[test]
+    fn test_extract_ids_full_path_for_plain_directory_file_is_its_own_absolute_path() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(tmp_dir.path().join("a.log"), b"hello").unwrap();
+        let dir_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut tree = list_directory_tree(&dir_path).unwrap();
+        tree.set_all_files_selected(true);
+
+        let outcome = extract_selected(&dir_path, &tree, no_progress());
+
+        assert_eq!(outcome.files.len(), 1);
+        let expected = tmp_dir.path().join("a.log").to_str().unwrap().to_string();
+        assert_eq!(outcome.files[0].full_path, expected);
+    }
+
+    #[test]
+    fn test_extract_ids_full_path_for_file_in_subdirectory_is_not_doubled() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp_dir.path().join("subdir")).unwrap();
+        std::fs::write(tmp_dir.path().join("subdir/a.log"), b"hello").unwrap();
+        let dir_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut tree = list_directory_tree(&dir_path).unwrap();
+        tree.set_all_files_selected(true);
+
+        let outcome = extract_selected(&dir_path, &tree, no_progress());
+
+        assert_eq!(outcome.files.len(), 1);
+        let expected = tmp_dir
+            .path()
+            .join("subdir/a.log")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            outcome.files[0].full_path, expected,
+            "a disk-anchored full_path must not be prefixed with an ancestor's own absolute path"
+        );
+    }
+
+    #[test]
+    fn test_extract_ids_full_path_for_entry_inside_archive_discovered_in_directory() {
+        let zip_tmp = make_zip(&[("a.log", b"hello")]);
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let zip_path = tmp_dir.path().join("bundle.zip");
+        std::fs::copy(zip_tmp.path(), &zip_path).unwrap();
+        let dir_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut tree = list_directory_tree(&dir_path).unwrap();
+        tree.set_all_files_selected(true);
+
+        let outcome = extract_selected(&dir_path, &tree, no_progress());
+
+        assert_eq!(outcome.files.len(), 1);
+        let expected = format!("{}/a.log", zip_path.to_str().unwrap());
+        assert_eq!(outcome.files[0].full_path, expected);
+    }
+
+    #[test]
+    fn test_extract_ids_full_path_for_entry_in_directly_opened_archive_uses_root_path() {
+        let zip_tmp = make_zip(&[("a.log", b"hello")]);
+        let renamed = format!("{}.zip", zip_tmp.path().to_str().unwrap());
+        std::fs::copy(zip_tmp.path(), &renamed).unwrap();
+
+        let mut tree = list_archive_tree(&renamed).unwrap();
+        tree.set_all_files_selected(true);
+
+        let outcome = extract_selected(&renamed, &tree, no_progress());
+        std::fs::remove_file(&renamed).unwrap();
+
+        assert_eq!(outcome.files.len(), 1);
+        assert_eq!(outcome.files[0].full_path, format!("{renamed}/a.log"));
     }
 
     #[test]

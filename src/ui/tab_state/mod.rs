@@ -810,6 +810,13 @@ pub struct TabState {
     pub year_map: Option<Arc<year_map::YearMap>>,
     /// State for a merged (interleaved) view tab.  `None` for regular tabs.
     pub merged: Option<merged::MergedState>,
+    /// This tab's real source location, when it differs from what
+    /// `log_manager.source_file()` reports — set for a directory/archive
+    /// picker-extracted tab, whose `log_manager` instead points at a
+    /// throwaway temp copy of the bytes. `None` for a tab opened directly
+    /// from a real path, where `log_manager.source_file()` is already
+    /// correct; see [`TabState::display_source_path`].
+    pub source_path: Option<String>,
 }
 
 impl TabState {
@@ -892,6 +899,7 @@ impl TabState {
             continuation_map,
             year_map,
             merged: None,
+            source_path: None,
         };
         tab.refresh_visible();
         tab
@@ -904,6 +912,16 @@ impl TabState {
     /// file is cleaned up, unlike a normally opened file.
     pub fn is_temp_backed(&self) -> bool {
         self.archive_temp.is_some() || self.merged_temp.is_some()
+    }
+
+    /// This tab's real source location: `source_path` when set (a
+    /// directory/archive picker-extracted tab, whose `log_manager` only
+    /// knows about a throwaway temp copy), otherwise whatever
+    /// `log_manager.source_file()` reports.
+    pub fn display_source_path(&self) -> Option<&str> {
+        self.source_path
+            .as_deref()
+            .or_else(|| self.log_manager.source_file())
     }
 
     /// Show a transient notification bar message (auto-dismisses after 10s or on Esc).

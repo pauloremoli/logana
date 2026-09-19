@@ -290,4 +290,17 @@ impl App {
         self.remove_tab_at(self.active_tab);
         Ok(false)
     }
+
+    /// Shows the active tab's real source path — its actual location on
+    /// disk (or inside an archive), rather than the throwaway temp copy a
+    /// directory/archive picker extraction reads from.
+    pub(super) fn cmd_path(&mut self) -> Result<bool, String> {
+        let tab = &mut self.tabs[self.active_tab];
+        let msg = tab
+            .display_source_path()
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "This tab has no source file (e.g. stdin).".to_string());
+        tab.set_notification(msg);
+        Ok(false)
+    }
 }
