@@ -28,11 +28,13 @@ Press `:` in normal mode to open command mode. Tab completes commands, flags, co
 | `:filter --field <key>=<value>` | Add a field-scoped include filter (e.g. `level=error`); repeat to require several fields at once |
 | `:filter --group\|-g <name> <pattern>` | Assign the filter to a named group, toggleable together via `:toggle-group` |
 | `:filter --auto\|-a <pattern>` | Add an include filter with a randomly generated, readable fg/bg color pair instead of specifying `--fg`/`--bg` |
+| `:filter --fga <pattern>` | Add an include filter with a random, colorful fg color readable against the current theme background; `bg` is left as given |
 | `:exclude [--regex\|-r] [--ignore-case\|-i] <pattern>` | Add an exclude filter (hide matching lines) |
 | `:exclude --field <key>=<value>` | Add a field-scoped exclude filter (e.g. `level=debug`) |
 | `:exclude --group\|-g <name> <pattern>` | Assign the exclude filter to a named group |
 | `:highlight [--regex\|-r] [--ignore-case\|-i] [-l] [--fg COLOR] [--bg COLOR] <pattern>` (alias `:h`) | Add a highlight filter — colors matches without affecting visibility |
 | `:highlight --auto\|-a <pattern>` | Add a highlight filter with a randomly generated, readable fg/bg color pair |
+| `:highlight --fga <pattern>` | Add a highlight filter with a random, colorful fg color readable against the current theme background |
 | `:date-filter <expr>` | Add a date/time range filter |
 | `:set-color [--fg COLOR] [--bg COLOR]` | Set highlight color for the selected filter |
 | `:toggle-group <name>` | Toggle every filter in a named group on/off together |
@@ -45,7 +47,7 @@ Press `:` in normal mode to open command mode. Tab completes commands, flags, co
 | `:load-filters <file>` | Load filters from a JSON file |
 | `:import-filters <file> [-a\|--append]` | Import a Notepad++ Analyze-plugin or User-Defined-Language XML config as Include filters. Replaces current filters by default; `--append` merges instead |
 
-> **Flag ordering:** All options (`--regex`, `--fg`, `--bg`, `-l`, `--field`, `--group`/`-g`, `--ignore-case`/`-i`, `--auto`) must appear **before** the pattern. Everything after the first pattern word is treated as part of the pattern text. `--auto` cannot be combined with `--fg`/`--bg`.
+> **Flag ordering:** All options (`--regex`, `--fg`, `--bg`, `-l`, `--field`, `--group`/`-g`, `--ignore-case`/`-i`, `--auto`, `--fga`) must appear **before** the pattern. Everything after the first pattern word is treated as part of the pattern text. `--auto` cannot be combined with `--fg`/`--bg`. `--fga` cannot be combined with `--fg` or `--auto`.
 
 See [Filter Groups](filtering/index.md#filter-groups) for the Groups sidebar and group management mode (`Ctrl+g`).
 

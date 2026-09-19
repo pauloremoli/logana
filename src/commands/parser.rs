@@ -39,6 +39,10 @@ pub enum Commands {
         /// Generate a random readable fg/bg color pair instead of specifying --fg/--bg
         #[arg(long = "auto", short = 'a')]
         auto: bool,
+        /// Auto-pick only fg, readable against the current theme background,
+        /// instead of specifying --fg. Unlike --auto, bg is left as given.
+        #[arg(long = "fga")]
+        fga: bool,
     },
     /// Add an exclude filter
     Exclude {
@@ -88,6 +92,10 @@ pub enum Commands {
         /// Generate a random readable fg/bg color pair instead of specifying --fg/--bg
         #[arg(long = "auto", short = 'a')]
         auto: bool,
+        /// Auto-pick only fg, readable against the current theme background,
+        /// instead of specifying --fg. Unlike --auto, bg is left as given.
+        #[arg(long = "fga")]
+        fga: bool,
     },
     /// Set color for the selected filter
     SetColor {

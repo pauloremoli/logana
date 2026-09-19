@@ -51,7 +51,7 @@ Multiple alternatives:
   "expand_continuation": ">",
   "collapse_continuation": "<",
   "search_forward": "/",
-  "search_backward": "?",
+  "search_backward": [],
   "next_match": "n",
   "prev_match": "N",
   "visual_mode": "V",
@@ -59,7 +59,7 @@ Multiple alternatives:
   "toggle_marks_only": "M",
   "yank_line": "y",
   "yank_marked": "Y",
-  "show_keybindings": "F1",
+  "show_keybindings": "?",
   "clear_all": "C",
   "edit_comment": "r",
   "delete_comment": "d",
@@ -76,7 +76,7 @@ Multiple alternatives:
 }
 ```
 
-`filter_mode` opens the filter manager; `group_mode` opens [group management](../filtering/index.md#filter-groups) scoped to the selected group. `go_to_top_chord` is the first key of the `gg` chord — pressing it twice jumps to the first line, matching `go_to_bottom`'s single-press jump to the last line. `clear_search` clears an active search highlight when nothing else is open.
+`filter_mode` opens the filter manager; `group_mode` opens [group management](../filtering/index.md#filter-groups) scoped to the selected group. `go_to_top_chord` is the first key of the `gg` chord — pressing it twice jumps to the first line, matching `go_to_bottom`'s single-press jump to the last line. `clear_search` clears an active search highlight when nothing else is open. `search_backward` has no default key, since `?` opens the keybindings help overlay (`show_keybindings`) instead — reverse through matches with `search_forward` (`/`) followed by `prev_match` (`N`), or rebind `search_backward` yourself.
 
 ## Global (always active)
 
@@ -355,9 +355,11 @@ count-prefixed, e.g. `25G`) to jump to the first/last or a specific row.
 
 ```json
 "help": {
-  "close": ["Esc", "q", "F1"]
+  "close": ["Esc", "q"]
 }
 ```
+
+`normal.show_keybindings` (`?` by default) also closes the overlay, in addition to `help.close`.
 
 ## Custom Commands
 

@@ -12,21 +12,43 @@ pub(super) struct FilterArgs {
     pub ignore_case: bool,
     pub group: Option<String>,
     /// Generate a random, readable fg/bg pair instead of `fg`/`bg`.
-    /// Mutually exclusive with them — see `resolve_auto_colors`.
+    /// Mutually exclusive with them and with `fga` — see `resolve_colors`.
     pub auto: bool,
+    /// Auto-pick only `fg`, readable against the current theme background.
+    /// Mutually exclusive with `fg` and with `auto` — see `resolve_colors`.
+    pub fga: bool,
 }
 
-/// Resolves `fg`/`bg` when `--auto` is set: generates a random, readable
-/// color pair (see `theme::random_readable_color_pair`) and formats it as
-/// `[r,g,b]` strings, the same shape `FilterOptions::fg`/`bg` already
-/// accept from `--fg`/`--bg`. Errors if `--auto` is combined with an
-/// explicit `--fg`/`--bg` — silently overriding one or the other would be
-/// more surprising than just asking the user to pick one.
-fn resolve_auto_colors(
+/// Resolves `fg`/`bg` for `--auto`/`--fga`.
+///
+/// `--auto` generates a random, readable fg/bg pair (see
+/// `theme::random_readable_color_pair`). `--fga` sets only `fg`, to a color
+/// readable against `theme_bg` (the app's current theme background,
+/// typically its `root_bg`) — unlike `--auto`, `bg` is left as given. Both
+/// are formatted as `[r,g,b]` strings, the shape `FilterOptions::fg`/`bg`
+/// already accept from `--fg`/`--bg`.
+///
+/// Errors if `--auto`/`--fga` are combined with each other, or with an
+/// explicit `--fg` (and, for `--auto`, `--bg` too) — silently overriding one
+/// or the other would be more surprising than just asking the user to pick
+/// one.
+fn resolve_colors(
     auto: bool,
+    fga: bool,
     fg: Option<String>,
     bg: Option<String>,
+    theme_bg: (u8, u8, u8),
 ) -> Result<(Option<String>, Option<String>), String> {
+    if auto && fga {
+        return Err("--auto cannot be combined with --fga".to_string());
+    }
+    if fga {
+        if fg.is_some() {
+            return Err("--fga cannot be combined with --fg".to_string());
+        }
+        let (r, g, b) = crate::theme::random_readable_foreground_for(theme_bg);
+        return Ok((Some(format!("[{r},{g},{b}]")), bg));
+    }
     if !auto {
         return Ok((fg, bg));
     }
@@ -76,8 +98,10 @@ impl App {
             ignore_case,
             group,
             auto,
+            fga,
         } = args;
-        let (fg, bg) = resolve_auto_colors(auto, fg, bg)?;
+        let theme_bg = crate::theme::color_to_rgb(self.theme.root_bg);
+        let (fg, bg) = resolve_colors(auto, fga, fg, bg, theme_bg)?;
         let is_field = !field.is_empty();
         let stored_pattern = if is_field {
             build_field_filter_pattern(&field, &pattern)?
@@ -210,8 +234,10 @@ impl App {
             ignore_case,
             group,
             auto,
+            fga,
         } = args;
-        let (fg, bg) = resolve_auto_colors(auto, fg, bg)?;
+        let theme_bg = crate::theme::color_to_rgb(self.theme.root_bg);
+        let (fg, bg) = resolve_colors(auto, fga, fg, bg, theme_bg)?;
         let stored_pattern = if !field.is_empty() {
             build_field_filter_pattern(&field, &pattern)?
         } else {
@@ -367,7 +393,7 @@ impl App {
             self.tabs[self.active_tab].begin_filter_refresh();
             return Ok(false);
         }
-        let (fg, bg) = resolve_auto_colors(auto, fg, bg)?;
+        let (fg, bg) = resolve_colors(auto, false, fg, bg, (0, 0, 0))?;
         self.tabs[self.active_tab]
             .log_manager
             .set_group_style(&name, fg.as_deref(), bg.as_deref(), !line_mode)

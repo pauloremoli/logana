@@ -5,17 +5,59 @@ use super::{COMMANDS, command_names};
 pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
     (
         "filter",
-        &["--field", "-f", "--fg", "--bg", "-l", "--group", "-g"],
+        &[
+            "--field",
+            "-f",
+            "--fg",
+            "--bg",
+            "-l",
+            "--group",
+            "-g",
+            "--regex",
+            "-r",
+            "--ignore-case",
+            "-i",
+            "--auto",
+            "-a",
+            "--fga",
+        ],
     ),
-    ("exclude", &["--field", "-f", "--group", "-g"]),
+    (
+        "exclude",
+        &[
+            "--field",
+            "-f",
+            "--group",
+            "-g",
+            "--regex",
+            "-r",
+            "--ignore-case",
+            "-i",
+        ],
+    ),
     (
         "highlight",
-        &["--field", "-f", "--fg", "--bg", "-l", "--group", "-g"],
+        &[
+            "--field",
+            "-f",
+            "--fg",
+            "--bg",
+            "-l",
+            "--group",
+            "-g",
+            "--regex",
+            "-r",
+            "--ignore-case",
+            "-i",
+            "--auto",
+            "-a",
+            "--fga",
+        ],
     ),
     ("set-color", &["--fg", "--bg", "-l"]),
     ("date-filter", &["--fg", "--bg", "-l"]),
     ("export", &["-t", "--template"]),
-    ("group", &["--fg", "--bg", "-l", "--auto", "--clear"]),
+    ("group", &["--fg", "--bg", "-l", "--auto", "-a", "--clear"]),
     ("import-filters", &["--append", "-a"]),
     ("load-filters", &["--append", "-a"]),
 ];
@@ -1229,7 +1271,7 @@ mod tests {
     #[test]
     fn test_complete_flags_filter_all() {
         let flags = complete_flags("filter", "-");
-        assert_eq!(flags.len(), 7);
+        assert_eq!(flags.len(), 14);
         assert!(flags.contains(&"--field"));
         assert!(flags.contains(&"-f"));
         assert!(flags.contains(&"--fg"));
@@ -1237,6 +1279,13 @@ mod tests {
         assert!(flags.contains(&"-l"));
         assert!(flags.contains(&"--group"));
         assert!(flags.contains(&"-g"));
+        assert!(flags.contains(&"--regex"));
+        assert!(flags.contains(&"-r"));
+        assert!(flags.contains(&"--ignore-case"));
+        assert!(flags.contains(&"-i"));
+        assert!(flags.contains(&"--auto"));
+        assert!(flags.contains(&"-a"));
+        assert!(flags.contains(&"--fga"));
     }
 
     #[test]
@@ -1256,6 +1305,29 @@ mod tests {
     }
 
     #[test]
+    fn test_complete_flags_highlight_all_includes_auto_and_fga() {
+        let flags = complete_flags("highlight", "-");
+        assert!(flags.contains(&"--auto"));
+        assert!(flags.contains(&"-a"));
+        assert!(flags.contains(&"--fga"));
+        assert!(flags.contains(&"--regex"));
+        assert!(flags.contains(&"--ignore-case"));
+    }
+
+    #[test]
+    fn test_complete_flags_exclude_all() {
+        let flags = complete_flags("exclude", "-");
+        assert!(flags.contains(&"--field"));
+        assert!(flags.contains(&"-f"));
+        assert!(flags.contains(&"--group"));
+        assert!(flags.contains(&"-g"));
+        assert!(flags.contains(&"--regex"));
+        assert!(flags.contains(&"-r"));
+        assert!(flags.contains(&"--ignore-case"));
+        assert!(flags.contains(&"-i"));
+    }
+
+    #[test]
     fn test_complete_flags_set_color() {
         let flags = complete_flags("set-color", "-");
         assert!(flags.contains(&"--fg"));
@@ -1267,6 +1339,14 @@ mod tests {
     fn test_complete_flags_group() {
         let flags = complete_flags("group", "--f");
         assert!(flags.contains(&"--fg"));
+    }
+
+    #[test]
+    fn test_complete_flags_group_all_includes_short_auto() {
+        let flags = complete_flags("group", "-");
+        assert!(flags.contains(&"--auto"));
+        assert!(flags.contains(&"-a"));
+        assert!(flags.contains(&"--clear"));
     }
 
     #[test]

@@ -398,7 +398,10 @@ fn default_search_forward() -> KeyBindings {
 }
 #[inline(always)]
 fn default_search_backward() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('?'), KeyModifiers::NONE)])
+    // No default key: `?` now opens the keybindings help overlay (see
+    // `default_show_keybindings`). Backward search is still reachable via
+    // `/` followed by `N`, and this binding remains user-configurable.
+    KeyBindings(vec![])
 }
 #[inline(always)]
 fn default_next_match() -> KeyBindings {
@@ -450,7 +453,7 @@ fn default_yank_marked() -> KeyBindings {
 }
 #[inline(always)]
 fn default_show_keybindings() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::F(1), KeyModifiers::NONE)])
+    KeyBindings(vec![KeyBinding(KeyCode::Char('?'), KeyModifiers::NONE)])
 }
 #[inline(always)]
 fn default_clear_all() -> KeyBindings {

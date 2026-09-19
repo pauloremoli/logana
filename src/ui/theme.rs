@@ -860,14 +860,56 @@ fn random_readable_pair_from(rng: &mut SmallRng) -> ((u8, u8, u8), (u8, u8, u8))
     }
     // Fallback: black or white text, whichever contrasts more against `bg` —
     // always readable, since one of the two always is for any `bg`.
+    (readable_foreground_for(bg), bg)
+}
+
+/// The higher-contrast of black/white text against `bg` — a deterministic,
+/// guaranteed-readable fallback used when [`random_readable_foreground_for`]
+/// exhausts its attempts.
+pub fn readable_foreground_for(bg: (u8, u8, u8)) -> (u8, u8, u8) {
     let white = (255, 255, 255);
     let black = (0, 0, 0);
-    let fg = if contrast_ratio(white, bg) >= contrast_ratio(black, bg) {
+    if contrast_ratio(white, bg) >= contrast_ratio(black, bg) {
         white
     } else {
         black
-    };
-    (fg, bg)
+    }
+}
+
+/// A random full-hue `fg` meeting [`MIN_READABLE_CONTRAST`] against a
+/// *fixed* `bg` — the core of `random_readable_foreground_for`, split out
+/// so tests can fix the seed instead of depending on real randomness.
+/// Unlike `--auto`'s `fg` (a random gray shade, since its `bg` is also
+/// random and the pair just needs to be *a* readable body-text color),
+/// this draws a full RGB color — `--fga` is meant to produce colorful
+/// highlight text against a background that's already fixed.
+fn random_readable_foreground_from(rng: &mut SmallRng, bg: (u8, u8, u8)) -> (u8, u8, u8) {
+    for _ in 0..MAX_CONTRAST_ATTEMPTS {
+        let fg = rng.next_rgb();
+        if contrast_ratio(fg, bg) >= MIN_READABLE_CONTRAST {
+            return fg;
+        }
+    }
+    readable_foreground_for(bg)
+}
+
+/// A random, readable, full-hue `fg` for `:filter`/`:highlight --fga` —
+/// unlike `--auto`'s `random_readable_color_pair`, `bg` is fixed to the
+/// app's current theme background (e.g. `Theme::root_bg`) instead of also
+/// being randomized, so every draw stays readable against what's actually
+/// behind the text while still varying from call to call.
+pub fn random_readable_foreground_for(bg: (u8, u8, u8)) -> (u8, u8, u8) {
+    let mut rng = SmallRng::seeded();
+    random_readable_foreground_from(&mut rng, bg)
+}
+
+/// Extracts the `(r, g, b)` triplet from an RGB `Color`. Theme colors are
+/// always constructed as `Color::Rgb`, so this is total in practice.
+pub fn color_to_rgb(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
+    }
 }
 
 /// A random, readable `(fg, bg)` RGB color pair for `:filter`/`:highlight --auto`
@@ -1479,5 +1521,108 @@ mod tests {
         let (fg, bg) = random_readable_color_pair();
         let ratio = contrast_ratio(fg, bg);
         assert!(ratio >= MIN_READABLE_CONTRAST, "got {ratio}");
+    }
+
+    #[test]
+    fn test_readable_foreground_for_dark_bg_is_white() {
+        assert_eq!(readable_foreground_for((0, 0, 0)), (255, 255, 255));
+    }
+
+    #[test]
+    fn test_readable_foreground_for_light_bg_is_black() {
+        assert_eq!(readable_foreground_for((255, 255, 255)), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_readable_foreground_for_picks_higher_contrast_option() {
+        for bg in [(20, 20, 20), (200, 200, 200), (128, 64, 32), (10, 250, 10)] {
+            let fg = readable_foreground_for(bg);
+            let white_ratio = contrast_ratio((255, 255, 255), bg);
+            let black_ratio = contrast_ratio((0, 0, 0), bg);
+            let expected = if white_ratio >= black_ratio {
+                (255, 255, 255)
+            } else {
+                (0, 0, 0)
+            };
+            assert_eq!(fg, expected, "bg={bg:?}");
+        }
+    }
+
+    #[test]
+    fn test_color_to_rgb_extracts_triplet() {
+        assert_eq!(color_to_rgb(Color::Rgb(10, 20, 30)), (10, 20, 30));
+    }
+
+    #[test]
+    fn test_color_to_rgb_non_rgb_variant_defaults_to_black() {
+        assert_eq!(color_to_rgb(Color::Red), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_random_readable_foreground_meets_contrast_threshold_across_many_seeds() {
+        for seed in 0..500u64 {
+            let mut rng = SmallRng::from_seed(seed);
+            let bg = (30, 30, 30);
+            let fg = random_readable_foreground_from(&mut rng, bg);
+            let ratio = contrast_ratio(fg, bg);
+            assert!(
+                ratio >= MIN_READABLE_CONTRAST,
+                "seed {seed}: fg={fg:?} bg={bg:?} ratio={ratio} below {MIN_READABLE_CONTRAST}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_random_readable_foreground_is_full_hue_not_grayscale_only() {
+        // Unlike --auto's fg, --fga is meant to produce colorful highlight
+        // text, not just black/white/gray shades. Across enough seeds at
+        // least some readable draws must be non-grayscale.
+        let bg = (100, 100, 100);
+        let has_color = (0..500u64).any(|seed| {
+            let mut rng = SmallRng::from_seed(seed);
+            let fg = random_readable_foreground_from(&mut rng, bg);
+            !(fg.0 == fg.1 && fg.1 == fg.2)
+        });
+        assert!(has_color, "expected at least one non-grayscale fg draw");
+    }
+
+    #[test]
+    fn test_random_readable_foreground_varies_across_seeds() {
+        let bg = (40, 40, 40);
+        let mut rng_a = SmallRng::from_seed(1);
+        let mut rng_b = SmallRng::from_seed(2);
+        let fg_a = random_readable_foreground_from(&mut rng_a, bg);
+        let fg_b = random_readable_foreground_from(&mut rng_b, bg);
+        assert_ne!(
+            fg_a, fg_b,
+            "different seeds should (almost always) produce different fg colors"
+        );
+    }
+
+    #[test]
+    fn test_random_readable_foreground_is_deterministic_for_a_fixed_seed() {
+        let bg = (40, 40, 40);
+        let fg1 = random_readable_foreground_from(&mut SmallRng::from_seed(42), bg);
+        let fg2 = random_readable_foreground_from(&mut SmallRng::from_seed(42), bg);
+        assert_eq!(fg1, fg2);
+    }
+
+    #[test]
+    fn test_random_readable_foreground_for_public_api_meets_contrast() {
+        let bg = (12, 24, 36);
+        let fg = random_readable_foreground_for(bg);
+        let ratio = contrast_ratio(fg, bg);
+        assert!(ratio >= MIN_READABLE_CONTRAST, "got {ratio}");
+    }
+
+    #[test]
+    fn test_random_readable_foreground_for_varies_across_real_calls() {
+        // Not fully deterministic (uses real per-call randomness), but with
+        // 16M+ possible RGB values the odds of a false failure are
+        // negligible across enough draws.
+        let bg = (50, 50, 50);
+        let first = random_readable_foreground_for(bg);
+        let differs = (0..20).any(|_| random_readable_foreground_for(bg) != first);
+        assert!(differs, "expected fg to vary across repeated calls");
     }
 }

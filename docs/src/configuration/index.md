@@ -68,7 +68,7 @@ The path depends on the operating system:
       "toggle_marks_only": "M",
       "visual_mode": "V",
       "enter_ui_mode": "u",
-      "show_keybindings": "F1",
+      "show_keybindings": "?",
       "scroll_left": "h",
       "scroll_right": "l"
     },

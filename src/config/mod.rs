@@ -1198,10 +1198,7 @@ mod tests {
             kb.search_forward
                 .matches(KeyCode::Char('/'), KeyModifiers::NONE)
         );
-        assert!(
-            kb.search_backward
-                .matches(KeyCode::Char('?'), KeyModifiers::NONE)
-        );
+        assert!(kb.search_backward.0.is_empty());
         assert!(
             kb.next_match
                 .matches(KeyCode::Char('n'), KeyModifiers::NONE)
@@ -1225,7 +1222,7 @@ mod tests {
         );
         assert!(
             kb.show_keybindings
-                .matches(KeyCode::F(1), KeyModifiers::NONE)
+                .matches(KeyCode::Char('?'), KeyModifiers::NONE)
         );
         assert!(kb.clear_all.matches(KeyCode::Char('C'), KeyModifiers::NONE));
         assert!(

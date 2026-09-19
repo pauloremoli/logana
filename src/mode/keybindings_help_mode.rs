@@ -691,7 +691,7 @@ impl Mode for KeybindingsHelpMode {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
 
-        // The show_keybindings key (F1 by default) also closes
+        // The show_keybindings key (`?` by default) also closes
         if kb.normal.show_keybindings.matches(key, modifiers) && self.search.is_empty() {
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }

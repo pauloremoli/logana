@@ -1220,13 +1220,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_question_mark_transitions_to_backward_search() {
+    async fn test_question_mark_opens_keybindings_help() {
+        // `?` is the default show_keybindings key; search_backward has no
+        // default key (see default_search_backward).
         let mut tab = make_tab(&["line"]).await;
         let (mode, _) = press(&mut tab, KeyCode::Char('?'), KeyModifiers::NONE).await;
-        match mode.render_state() {
-            ModeRenderState::Search { forward, .. } => assert!(!forward),
-            other => panic!("expected Search, got {:?}", other),
-        }
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::KeybindingsHelp { .. }
+        ));
     }
 
     #[tokio::test]

@@ -7,13 +7,14 @@ Search operates on visible lines only — it respects active filters and only sc
 | Key | Action |
 |---|---|
 | `/` | Search forward |
-| `?` | Search backward |
 | `n` | Jump to next match |
 | `N` | Jump to previous match |
 
+There's no default key for a dedicated backward search — `?` opens the [keybindings help overlay](../configuration/keybindings.md#keybindings-help) instead. Search backward by pressing `/`, then `N` to step backward from the match; `search_backward` remains available to rebind in config if you want a dedicated key.
+
 ## Usage
 
-Press `/` or `?` to open the search bar at the bottom of the screen. Type your query and press `Enter`. logana highlights all matches on visible lines and scrolls to the first match.
+Press `/` to open the search bar at the bottom of the screen. Type your query and press `Enter`. logana highlights all matches on visible lines and scrolls to the first match.
 
 - `n` wraps around to the first match after the last line.
 - `N` wraps around to the last match before the first line.

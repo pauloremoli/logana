@@ -5,6 +5,13 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Add `--fga` to `:filter`/`:highlight` to auto-pick a random, colorful foreground color readable against the current theme background.
+- Add tab-completion for `--regex`/`-r`, `--ignore-case`/`-i`, `--auto`/`-a`, and `--fga` on `:filter`/`:exclude`/`:highlight`, and `-a` on `:group`.
+
+### Changed
+- Rebind the keybindings help overlay from `F1` to `?`, freeing `F1` and dropping `?`'s default backward-search binding (still reachable via `/` then `N`, or by rebinding `search_backward`).
+
 ## [0.7.7] - 2026-09-19
 
 ### Added

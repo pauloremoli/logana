@@ -71,6 +71,7 @@ impl App {
                 ignore_case,
                 group,
                 auto,
+                fga,
             }) => {
                 return self
                     .cmd_filter(filter::FilterArgs {
@@ -83,6 +84,7 @@ impl App {
                         ignore_case,
                         group,
                         auto,
+                        fga,
                     })
                     .await;
             }
@@ -107,6 +109,7 @@ impl App {
                 ignore_case,
                 group,
                 auto,
+                fga,
             }) => {
                 return self
                     .cmd_highlight(filter::FilterArgs {
@@ -119,6 +122,7 @@ impl App {
                         ignore_case,
                         group,
                         auto,
+                        fga,
                     })
                     .await;
             }
@@ -2352,6 +2356,67 @@ mod tests {
         let result = app.run_command("filter --auto --bg blue INFO").await;
         assert!(result.is_err());
         assert!(app.tabs[0].log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_fga_flag_sets_only_fg_readable_against_theme_bg() {
+        let mut app = make_app(&["INFO foo"]).await;
+        app.run_command("filter --fga INFO").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        let cc = filters[0].color_config.as_ref().unwrap();
+        assert!(cc.bg.is_none(), "--fga must leave bg unset");
+        let to_rgb = |c: ratatui::style::Color| match c {
+            ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+            other => panic!("expected --fga to generate an Rgb color, got {other:?}"),
+        };
+        let fg = to_rgb(cc.fg.unwrap());
+        let theme_bg = to_rgb(app.theme.root_bg);
+        let ratio = crate::theme::contrast_ratio(fg, theme_bg);
+        assert!(
+            ratio >= crate::theme::MIN_READABLE_CONTRAST,
+            "fga fg must be readable against the theme background, got ratio {ratio}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_fga_and_bg_keeps_explicit_bg() {
+        let mut app = make_app(&["INFO foo"]).await;
+        app.run_command("filter --fga --bg blue INFO")
+            .await
+            .unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        let cc = filters[0].color_config.as_ref().unwrap();
+        assert_eq!(cc.bg, Some(ratatui::style::Color::Blue));
+        assert!(cc.fg.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_filter_fga_combined_with_fg_is_an_error() {
+        let mut app = make_app(&["INFO foo"]).await;
+        let result = app.run_command("filter --fga --fg red INFO").await;
+        assert!(result.is_err());
+        assert!(app.tabs[0].log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_filter_fga_combined_with_auto_is_an_error() {
+        let mut app = make_app(&["INFO foo"]).await;
+        let result = app.run_command("filter --fga --auto INFO").await;
+        assert!(result.is_err());
+        assert!(app.tabs[0].log_manager.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_highlight_with_fga_flag_sets_only_fg() {
+        let mut app = make_app(&["INFO foo"]).await;
+        app.run_command("highlight --fga INFO").await.unwrap();
+        let filters = app.tabs[0].log_manager.get_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].filter_type, FilterType::Highlight);
+        let cc = filters[0].color_config.as_ref().unwrap();
+        assert!(cc.bg.is_none());
+        assert!(cc.fg.is_some());
     }
 
     #[tokio::test]
