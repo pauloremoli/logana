@@ -1514,6 +1514,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dispatch_open_files_continues_after_failure() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let good_path = tmp.path().join("good.log");
+        std::fs::write(&good_path, b"hello\n").unwrap();
+        let paths = vec![
+            "/nonexistent/missing.log".to_string(),
+            good_path.to_str().unwrap().to_string(),
+        ];
+        let initial_tabs = app.tabs.len();
+        app.dispatch_key_result(
+            KeyResult::OpenFiles(paths),
+            KeyCode::Null,
+            KeyModifiers::NONE,
+        )
+        .await;
+        // The failure must not stop the good path from still being opened.
+        assert_eq!(app.tabs.len(), initial_tabs + 1);
+        assert!(app.tabs[app.active_tab].interaction.command_error.is_some());
+    }
+
+    #[tokio::test]
     async fn test_dispatch_never_restore_session() {
         let mut app = make_app(&["line"]).await;
         app.dispatch_key_result(

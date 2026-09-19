@@ -81,6 +81,14 @@ pub struct ExtractedFile {
     pub temp_file: NamedTempFile,
 }
 
+/// Outcome of extracting a batch of archive/directory entries: every entry
+/// that succeeded, plus one message per entry that failed — so a single bad
+/// entry (e.g. a permission error) never discards the rest of the batch.
+pub struct ExtractionOutcome<T> {
+    pub files: Vec<T>,
+    pub errors: Vec<String>,
+}
+
 pub fn detect_archive_type(path: &str) -> Option<ArchiveType> {
     let lower = path.to_ascii_lowercase();
     if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {

@@ -649,26 +649,25 @@ impl App {
 
         tokio::task::spawn_blocking(move || {
             let merge_result = merge_progress_tx.map(|merge_progress_tx| {
-                crate::ingestion::extract_and_detect_merge_marked(
+                let mut outcome = crate::ingestion::extract_and_detect_merge_marked(
                     &source_path,
                     &tree,
                     merge_progress_tx,
-                )
-                .and_then(|sources| {
-                    let unrecognized: Vec<&str> = sources
-                        .iter()
-                        .filter(|s| s.detected.format.is_none())
-                        .map(|s| s.label.as_str())
-                        .collect();
-                    if unrecognized.is_empty() {
-                        Ok(sources)
-                    } else {
-                        Err(format!(
-                            "Cannot merge \u{2014} unrecognized log format for: {}",
-                            unrecognized.join(", ")
-                        ))
-                    }
-                })
+                );
+                let unrecognized: Vec<&str> = outcome
+                    .files
+                    .iter()
+                    .filter(|s| s.detected.format.is_none())
+                    .map(|s| s.label.as_str())
+                    .collect();
+                if !unrecognized.is_empty() {
+                    outcome.errors.push(format!(
+                        "Cannot merge \u{2014} unrecognized log format for: {}",
+                        unrecognized.join(", ")
+                    ));
+                    outcome.files.clear();
+                }
+                outcome
             });
             let selected_files =
                 crate::ingestion::extract_selected(&source_path, &tree, progress_tx);
@@ -729,76 +728,69 @@ impl App {
         let mut errors: Vec<String> = Vec::new();
         let mut created_any_tab = false;
 
-        match result.selected_files {
-            Ok(files) if !files.is_empty() => {
-                created_any_tab = true;
-                // Remove the placeholder tab BEFORE recording tab indices for the
-                // background loads.  If we remove it after, all stored tab_idx values
-                // shift by one and each load replaces the wrong tab.
-                if self.stdin_load_state.is_none()
-                    && let Some(idx) = self.tabs.iter().position(|t| {
-                        t.file_reader.line_count() == 0
-                            && t.load_state.is_none()
-                            && t.archive_temp.is_none()
-                            && t.merged.is_none()
-                    })
+        let selected = result.selected_files;
+        if !selected.files.is_empty() {
+            created_any_tab = true;
+            // Remove the placeholder tab BEFORE recording tab indices for the
+            // background loads.  If we remove it after, all stored tab_idx values
+            // shift by one and each load replaces the wrong tab.
+            if self.stdin_load_state.is_none()
+                && let Some(idx) = self.tabs.iter().position(|t| {
+                    t.file_reader.line_count() == 0
+                        && t.load_state.is_none()
+                        && t.archive_temp.is_none()
+                        && t.merged.is_none()
+                })
+            {
+                // `merge_tab_idx` is a local copy of `state.merge_tab_idx`
+                // (already cleared from `self.pending_archive` above), so
+                // `remove_tab_at`'s own pending-state fixups can't reach
+                // it — it needs the same by-position shift by hand.
+                self.remove_tab_at(idx);
+                if let Some(merge_idx) = merge_tab_idx.as_mut()
+                    && *merge_idx > idx
                 {
-                    // `merge_tab_idx` is a local copy of `state.merge_tab_idx`
-                    // (already cleared from `self.pending_archive` above), so
-                    // `remove_tab_at`'s own pending-state fixups can't reach
-                    // it — it needs the same by-position shift by hand.
-                    self.remove_tab_at(idx);
-                    if let Some(merge_idx) = merge_tab_idx.as_mut()
-                        && *merge_idx > idx
-                    {
-                        *merge_idx -= 1;
-                    }
+                    *merge_idx -= 1;
                 }
-                let first_new_tab_idx = self.tabs.len();
-                for file in files {
-                    let tab_idx = self.tabs.len();
-                    let tmp_path = file.temp_file.path().to_string_lossy().to_string();
-                    let preview = FileReader::from_file_head(&tmp_path, self.preview_bytes)
-                        .await
-                        .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
-                    let log_manager =
-                        LogManager::new(self.db.clone(), Some(tmp_path.clone())).await;
-                    let mut tab = TabState::new(preview, log_manager, file.name);
-                    tab.archive_temp = Some(file.temp_file);
-                    self.apply_tab_defaults(&mut tab).await;
-                    self.tabs.push(tab);
-                    self.begin_file_load(
-                        tmp_path,
-                        LoadContext::ReplaceTab { tab_idx },
-                        None,
-                        false,
-                    )
-                    .await;
-                }
-                self.active_tab = first_new_tab_idx;
             }
-            Ok(_) => {}
-            Err(e) => errors.push(format!("Failed to extract archive: {e}")),
+            let first_new_tab_idx = self.tabs.len();
+            for file in selected.files {
+                let tab_idx = self.tabs.len();
+                let tmp_path = file.temp_file.path().to_string_lossy().to_string();
+                let preview = FileReader::from_file_head(&tmp_path, self.preview_bytes)
+                    .await
+                    .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
+                let log_manager = LogManager::new(self.db.clone(), Some(tmp_path.clone())).await;
+                let mut tab = TabState::new(preview, log_manager, file.name);
+                tab.archive_temp = Some(file.temp_file);
+                self.apply_tab_defaults(&mut tab).await;
+                self.tabs.push(tab);
+                self.begin_file_load(tmp_path, LoadContext::ReplaceTab { tab_idx }, None, false)
+                    .await;
+            }
+            self.active_tab = first_new_tab_idx;
+        }
+        if !selected.errors.is_empty() {
+            errors.push(format!("Failed to extract: {}", selected.errors.join(", ")));
         }
 
         match result.merge_result {
             None => {}
-            Some(Ok(sources)) => {
-                created_any_tab = true;
-                if let Some(tab_idx) = merge_tab_idx {
-                    let inputs = Self::merge_inputs_from_extracted(sources);
-                    // Runs after the selected-files branch above so a merged
-                    // tab (the more "primary" result of a mixed apply) wins
-                    // `active_tab` when both kinds of tabs were created —
-                    // `start_merge_build_streaming` re-asserts it.
-                    self.start_merge_build_streaming(tab_idx, inputs).await;
-                }
-            }
-            Some(Err(e)) => {
-                if let Some(tab_idx) = merge_tab_idx {
+            Some(outcome) => {
+                if !outcome.files.is_empty() {
+                    created_any_tab = true;
+                    if let Some(tab_idx) = merge_tab_idx {
+                        let inputs = Self::merge_inputs_from_extracted(outcome.files);
+                        // Runs after the selected-files branch above so a merged
+                        // tab (the more "primary" result of a mixed apply) wins
+                        // `active_tab` when both kinds of tabs were created —
+                        // `start_merge_build_streaming` re-asserts it.
+                        self.start_merge_build_streaming(tab_idx, inputs).await;
+                    }
+                } else if let Some(tab_idx) = merge_tab_idx {
                     self.remove_pending_merged_tab(tab_idx);
                 }
-                errors.push(e);
+                errors.extend(outcome.errors);
             }
         }
 

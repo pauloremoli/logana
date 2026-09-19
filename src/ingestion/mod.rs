@@ -7,8 +7,8 @@ pub mod otlp_receiver;
 pub mod paged_file;
 
 pub use archive::{
-    ArchiveExtractionProgress, ArchiveType, ExtractedFile, detect_archive_type, extract,
-    extract_with_progress, list_archive_files, uses_streaming_path,
+    ArchiveExtractionProgress, ArchiveType, ExtractedFile, ExtractionOutcome, detect_archive_type,
+    extract, extract_with_progress, list_archive_files, uses_streaming_path,
 };
 pub use archive_tree::{
     ArchiveNode, ArchiveTree, CheckState, MergeMarkedSource, NodeId, NodeKind,

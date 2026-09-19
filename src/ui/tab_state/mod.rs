@@ -2838,9 +2838,10 @@ pub struct ArchiveExtractionState {
 /// failure in one (e.g. an unrecognized format among merge-marked files)
 /// never blocks the other from succeeding.
 pub struct ArchivePickerApplyResult {
-    pub selected_files: Result<Vec<crate::ingestion::ExtractedFile>, String>,
+    pub selected_files: crate::ingestion::ExtractionOutcome<crate::ingestion::ExtractedFile>,
     /// `None` when nothing was merge-marked.
-    pub merge_result: Option<Result<Vec<crate::ingestion::MergeMarkedSource>, String>>,
+    pub merge_result:
+        Option<crate::ingestion::ExtractionOutcome<crate::ingestion::MergeMarkedSource>>,
 }
 
 /// Tracks an in-progress background archive *listing* (the pre-extraction

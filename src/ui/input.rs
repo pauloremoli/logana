@@ -439,13 +439,16 @@ impl App {
     }
 
     async fn handle_open_files(&mut self, paths: Vec<String>) {
+        let mut errors = Vec::new();
         for path in paths {
             if let Err(e) = self.open_file(&path).await {
-                self.tabs[self.active_tab].interaction.command_error = Some(e);
-                break;
+                errors.push(e);
             }
         }
         self.remove_empty_placeholder();
+        if !errors.is_empty() {
+            self.tabs[self.active_tab].interaction.command_error = Some(errors.join(" "));
+        }
     }
 
     /// Applies a directory-sourced archive picker (`:open`'d a directory,
