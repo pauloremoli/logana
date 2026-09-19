@@ -1664,7 +1664,7 @@ mod tests {
         let mut app = make_app(&["line one"]).await;
         app.tabs[0].merged_temp = Some(tempfile::NamedTempFile::new().unwrap());
         app.tabs[0].merged = Some(crate::ui::MergedState {
-            source_tab_indices: Vec::new(),
+            source_tab_ids: Vec::new(),
             source_parsers: Vec::new(),
             source_labels: vec!["a.log".to_string()],
             source_line_counts: vec![1],

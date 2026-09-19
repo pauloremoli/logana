@@ -3,11 +3,15 @@ use std::sync::Arc;
 use crate::filters::{CanonicalTs, timestamp_to_canonical};
 use crate::ingestion::{FileReader, MergedEntry};
 use crate::parser::LogFormatParser;
+use crate::ui::tab_state::TabId;
 use crate::ui::tab_state::year_map::YearMap;
 
 pub struct MergedState {
-    /// Which tab index each source maps to (for live-update polling).
-    pub source_tab_indices: Vec<usize>,
+    /// Which tab each source maps to (for live-update polling). A source
+    /// tab closed after the merge was built simply resolves to `None` via
+    /// `App::tab_index_for_id` and is skipped, rather than desyncing onto
+    /// whatever tab now sits at its old position.
+    pub source_tab_ids: Vec<TabId>,
     /// Per-source parser (mirrors what was used for format detection in each source tab).
     pub source_parsers: Vec<Option<Arc<dyn LogFormatParser>>>,
     /// Human-readable label for each source (e.g. filename).

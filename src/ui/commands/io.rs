@@ -96,9 +96,10 @@ impl App {
         self.tabs[tab_idx].log_manager =
             crate::db::LogManager::new(self.db.clone(), Some(abs_path.clone())).await;
 
+        let tab_id = self.tabs[tab_idx].id;
         self.begin_file_load(
             abs_path,
-            crate::ui::LoadContext::ReplaceTab { tab_idx },
+            crate::ui::LoadContext::ReplaceTab { tab_id },
             None,
             false,
         )

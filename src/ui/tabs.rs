@@ -164,15 +164,24 @@ impl App {
         &mut self.tabs[self.active_tab]
     }
 
-    /// Removes the tab at `idx` and fixes up every in-flight background
-    /// operation that tracks a tab index by position (`pending_merge_builds`,
-    /// `pending_archive`/`pending_directory_merge`'s merge tab, every
-    /// remaining tab's `load_state.on_complete`), since removal shifts every
-    /// later index down by one. Without this, a background merge or load
-    /// racing an unrelated tab close would silently write into the wrong tab.
+    /// Resolves a `TabId` stored across an await point or multiple frames
+    /// back to a live `App::tabs` index — `None` once that tab has been
+    /// closed, letting a stale reference bail out cleanly instead of
+    /// silently landing on whatever tab now sits at its old position.
+    pub fn tab_index_for_id(&self, id: crate::ui::TabId) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
+    }
+
+    /// Removes the tab at `idx`. Every in-flight background operation that
+    /// refers to a tab (`pending_merge_builds`, `pending_archive`/
+    /// `pending_directory_merge`'s merge tab, every remaining tab's
+    /// `load_state.on_complete`, a merged tab's own source tabs) stores a
+    /// stable `TabId` rather than a `Vec` position, so removing a tab here
+    /// never desyncs any of them — a stale id just resolves to `None` via
+    /// `tab_index_for_id` wherever it's next used.
     ///
     /// The only place that should call `self.tabs.remove` — any other way
-    /// risks that desync.
+    /// risks bypassing `active_tab` clamping.
     pub(crate) fn remove_tab_at(&mut self, idx: usize) {
         if idx >= self.tabs.len() {
             return;
@@ -182,54 +191,6 @@ impl App {
             self.active_tab -= 1;
         }
         self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
-
-        for state in &mut self.pending_merge_builds {
-            if state.tab_idx > idx {
-                state.tab_idx -= 1;
-            }
-        }
-        if let Some(state) = self.pending_archive.as_mut()
-            && let Some(merge_idx) = state.merge_tab_idx.as_mut()
-            && *merge_idx > idx
-        {
-            *merge_idx -= 1;
-        }
-        if let Some(state) = self.pending_directory_merge.as_mut()
-            && state.tab_idx > idx
-        {
-            state.tab_idx -= 1;
-        }
-        // Every remaining tab's own in-progress background load (if any)
-        // embeds the tab_idx it was started with, so it can find its way
-        // back to the right tab once loading finishes — that index must
-        // shift the same way every other pending-state tracker above does,
-        // or a load started before this removal lands on whatever tab now
-        // occupies its old position instead (see `handle_open_files`,
-        // whose `remove_empty_placeholder` runs after opening files while
-        // their loads are still in flight).
-        for tab in &mut self.tabs {
-            let Some(ls) = tab.load_state.as_mut() else {
-                continue;
-            };
-            match &mut ls.on_complete {
-                crate::ui::LoadContext::ReplaceTab { tab_idx } if *tab_idx > idx => {
-                    *tab_idx -= 1;
-                }
-                crate::ui::LoadContext::SessionRestoreTab {
-                    tab_idx,
-                    initial_tab_idx,
-                    ..
-                } => {
-                    if *tab_idx > idx {
-                        *tab_idx -= 1;
-                    }
-                    if *initial_tab_idx > idx {
-                        *initial_tab_idx -= 1;
-                    }
-                }
-                _ => {}
-            }
-        }
     }
 
     pub async fn close_tab(&mut self) -> bool {
@@ -257,33 +218,30 @@ impl App {
 
     pub(super) fn handle_open_merge_select(&mut self) {
         use crate::mode::merge_select_mode::MergeSelectMode;
-        let (tabs, tab_indices): (Vec<(String, bool)>, Vec<usize>) = self
+        let active_tab = self.active_tab;
+        let (tabs, tab_ids): (Vec<(String, bool)>, Vec<crate::ui::TabId>) = self
             .tabs
             .iter()
             .enumerate()
-            .map(|(i, t)| ((t.title.clone(), i == self.active_tab), i))
+            .map(|(i, t)| ((t.title.clone(), i == active_tab), t.id))
             .unzip();
         if tabs.len() < 2 {
             self.tabs[self.active_tab].interaction.command_error =
                 Some("No other tabs to merge".to_string());
             return;
         }
-        self.tabs[self.active_tab].interaction.mode =
-            Box::new(MergeSelectMode::new(tabs, tab_indices));
+        self.tabs[self.active_tab].interaction.mode = Box::new(MergeSelectMode::new(tabs, tab_ids));
     }
 
     /// Opens the `Ctrl+P` quick-open popup, snapshotting every open tab's
-    /// title against its `self.tabs` index.
+    /// title against its stable id.
     pub(super) fn handle_open_file_switcher(&mut self) {
         use crate::mode::file_switcher_mode::FileSwitcherMode;
-        let entries: Vec<(usize, String)> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (i, t.title.clone()))
-            .collect();
+        let entries: Vec<(crate::ui::TabId, String)> =
+            self.tabs.iter().map(|t| (t.id, t.title.clone())).collect();
+        let active_tab_id = self.tabs[self.active_tab].id;
         self.tabs[self.active_tab].interaction.mode =
-            Box::new(FileSwitcherMode::new(entries, self.active_tab));
+            Box::new(FileSwitcherMode::new(entries, active_tab_id));
     }
 
     /// A source tab's parser for a nested `merge_inputs_from_tabs` build. A
@@ -356,16 +314,16 @@ impl App {
     }
 
     /// Builds and pushes one merged tab from `inputs`, sorted by timestamp
-    /// across every source. `source_tab_indices` drives live-update
-    /// polling (`App::advance_merged_tabs`) — pass an empty `Vec` for
+    /// across every source. `source_tab_ids` drives live-update polling
+    /// (`App::advance_merged_tabs`) — pass an empty `Vec` for
     /// extraction-sourced merges, which have no open tab to poll for
-    /// growth (an empty `source_tab_indices` is already a verified no-op
+    /// growth (an empty `source_tab_ids` is already a verified no-op
     /// there).
     async fn build_merged_tab(
         &mut self,
         inputs: MergeSourceInputs,
         title: String,
-        source_tab_indices: Vec<usize>,
+        source_tab_ids: Vec<crate::ui::TabId>,
     ) {
         use crate::ui::tab_state::merged::{MergedState, build_merged_index};
 
@@ -394,7 +352,7 @@ impl App {
         self.apply_default_filters_if_empty_for_merge(&mut tab, &inputs.parsers)
             .await;
         tab.merged = Some(MergedState {
-            source_tab_indices,
+            source_tab_ids,
             source_parsers: inputs.parsers,
             source_labels: inputs.labels,
             source_line_counts,
@@ -407,11 +365,14 @@ impl App {
         self.active_tab = self.tabs.len() - 1;
     }
 
-    pub(crate) async fn open_merge_tab(&mut self, source_tab_indices: Vec<usize>) {
+    pub(crate) async fn open_merge_tab(&mut self, source_tab_ids: Vec<crate::ui::TabId>) {
+        let source_tab_indices: Vec<usize> = source_tab_ids
+            .iter()
+            .filter_map(|id| self.tab_index_for_id(*id))
+            .collect();
         let inputs = self.merge_inputs_from_tabs(&source_tab_indices);
-        let title = format!("merged({})", source_tab_indices.len());
-        self.build_merged_tab(inputs, title, source_tab_indices)
-            .await;
+        let title = format!("merged({})", source_tab_ids.len());
+        self.build_merged_tab(inputs, title, source_tab_ids).await;
     }
 
     /// Creates an empty, "pending" merged tab immediately and makes it
@@ -425,7 +386,10 @@ impl App {
     /// The caller must report Phase 1 progress on this tab and, once
     /// sources are ready, call [`Self::start_merge_build_streaming`] to
     /// fill it in — or remove the tab if Phase 1 fails first.
-    pub(crate) async fn create_pending_merged_tab(&mut self, labels: Vec<String>) -> usize {
+    pub(crate) async fn create_pending_merged_tab(
+        &mut self,
+        labels: Vec<String>,
+    ) -> crate::ui::TabId {
         use crate::ui::tab_state::merged::MergedState;
 
         let sources_total = labels.len();
@@ -439,7 +403,7 @@ impl App {
         tab.filter.visible_indices = VisibleLines::Filtered(Vec::new());
         tab.display.show_line_numbers = false;
         tab.merged = Some(MergedState {
-            source_tab_indices: Vec::new(),
+            source_tab_ids: Vec::new(),
             source_parsers: Vec::new(),
             source_labels: labels,
             source_line_counts: Vec::new(),
@@ -448,10 +412,10 @@ impl App {
             building: Some((0, sources_total)),
         });
         self.apply_tab_defaults(&mut tab).await;
+        let tab_id = tab.id;
         self.tabs.push(tab);
-        let tab_idx = self.tabs.len() - 1;
-        self.active_tab = tab_idx;
-        tab_idx
+        self.active_tab = self.tabs.len() - 1;
+        tab_id
     }
 
     /// Fills in the tab created by [`Self::create_pending_merged_tab`] once
@@ -460,18 +424,18 @@ impl App {
     /// the live tab by [`Self::poll_merge_builds`] — same "renders
     /// progressively instead of freezing" reasoning as `create_pending_merged_tab`,
     /// just for the index-build phase instead of the read/extract phase.
-    /// A no-op if `tab_idx` no longer exists (its tab was closed while
+    /// A no-op if `tab_id` no longer exists (its tab was closed while
     /// Phase 1 was still running).
     pub(crate) async fn start_merge_build_streaming(
         &mut self,
-        tab_idx: usize,
+        tab_id: crate::ui::TabId,
         inputs: MergeSourceInputs,
     ) {
         use crate::ui::tab_state::merged::build_merged_index_streaming;
 
-        if tab_idx >= self.tabs.len() {
+        let Some(tab_idx) = self.tab_index_for_id(tab_id) else {
             return;
-        }
+        };
 
         self.apply_default_filters_if_empty_for_merge_at(tab_idx, &inputs.parsers)
             .await;
@@ -510,7 +474,7 @@ impl App {
         });
 
         self.pending_merge_builds.push(crate::ui::MergeBuildState {
-            tab_idx,
+            tab_id,
             sources_arc,
             update_rx,
         });
@@ -521,8 +485,10 @@ impl App {
     /// merge-marked file had an unrecognized format) — there's nothing left
     /// to fill it in, so it would otherwise sit around forever showing
     /// "building" progress that will never move.
-    pub(crate) fn remove_pending_merged_tab(&mut self, tab_idx: usize) {
-        self.remove_tab_at(tab_idx);
+    pub(crate) fn remove_pending_merged_tab(&mut self, tab_id: crate::ui::TabId) {
+        if let Some(tab_idx) = self.tab_index_for_id(tab_id) {
+            self.remove_tab_at(tab_idx);
+        }
     }
 }
 
@@ -547,13 +513,18 @@ mod tests {
         .await
     }
 
-    async fn push_tab_with_format(app: &mut App, content: &str, format_name: &str) -> usize {
+    async fn push_tab_with_format(
+        app: &mut App,
+        content: &str,
+        format_name: &str,
+    ) -> crate::ui::TabId {
         let fr = FileReader::from_bytes(content.as_bytes().to_vec());
         let lm = LogManager::new(app.db.clone(), None).await;
         let mut tab = TabState::new(fr, lm, "src".to_string());
         tab.display.format = crate::parser::find_builtin_parser(format_name).map(Arc::from);
+        let tab_id = tab.id;
         app.tabs.push(tab);
-        app.tabs.len() - 1
+        tab_id
     }
 
     fn write_include_error_filter(dir: &tempfile::TempDir, name: &str) -> String {
@@ -640,7 +611,7 @@ mod tests {
         let a = push_tab_with_format(&mut app, "2024-01-01T00:00:00Z a\n", "syslog").await;
         let b = push_tab_with_format(&mut app, "2024-01-01T00:00:01Z b\n", "syslog").await;
         app.open_merge_tab(vec![a, b]).await;
-        let inner_merged = app.tabs.len() - 1;
+        let inner_merged = app.tabs.last().unwrap().id;
 
         let c = push_tab_with_format(&mut app, "2024-01-01T00:00:02Z c\n", "syslog").await;
         app.open_merge_tab(vec![inner_merged, c]).await;

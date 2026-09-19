@@ -2,7 +2,7 @@ use rayon::iter::IndexedParallelIterator;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{mpsc, watch};
 
 use crate::db::CommentManager;
@@ -63,7 +63,7 @@ pub enum KeyResult {
     NeverRestoreSession,
     OpenMergeSelect,
     OpenMergedView {
-        source_tab_indices: Vec<usize>,
+        source_tab_ids: Vec<TabId>,
     },
     ExportWithFooter {
         path: String,
@@ -89,9 +89,8 @@ pub enum KeyResult {
         path: Option<String>,
     },
     /// Emitted by the file switcher popup (`Ctrl+P`) when Enter is pressed
-    /// on an entry — switches `App::active_tab` to the given `App::tabs`
-    /// index.
-    SwitchToTab(usize),
+    /// on an entry — switches `App::active_tab` to the tab with this id.
+    SwitchToTab(TabId),
     /// Emitted by the `:theme` picker every time the highlighted entry
     /// changes, so the whole UI re-renders with the named theme applied
     /// immediately — before the user confirms with Enter.
@@ -793,7 +792,28 @@ pub fn apply_collapse_correction(
     });
 }
 
+/// A tab's monotonically-generated, process-lifetime-unique identity —
+/// stable across `App.tabs` reshuffling (closing/reordering tabs), unlike
+/// a `Vec` position. Anything that needs to refer to a tab *across* an
+/// await point or multiple frames should store this instead of a `usize`
+/// index; resolve it back to a live index only at the point of use via
+/// `App::tab_index_for_id`, which naturally returns `None` if the tab has
+/// since been closed. Never persisted (session restore re-opens files by
+/// path and mints fresh ids), so it's a plain in-memory counter rather than
+/// a UUID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TabId(pub(crate) u64);
+
+static NEXT_TAB_ID: AtomicU64 = AtomicU64::new(1);
+
+impl TabId {
+    fn next() -> Self {
+        TabId(NEXT_TAB_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 pub struct TabState {
+    pub id: TabId,
     pub file_reader: FileReader,
     pub log_manager: LogManager,
     pub mark_manager: MarkManager,
@@ -882,6 +902,7 @@ impl TabState {
         });
 
         let mut tab = TabState {
+            id: TabId::next(),
             file_reader,
             log_manager,
             mark_manager: MarkManager::default(),
@@ -2860,13 +2881,13 @@ pub enum LoadContext {
     /// Replace the placeholder file_reader in the initial tab (startup).
     ReplaceInitialTab,
     /// Replace the file_reader of an existing tab created with a preview.
-    ReplaceTab { tab_idx: usize },
-    /// Update the preview tab at `tab_idx` with the full reader; continue session restore.
+    ReplaceTab { tab_id: TabId },
+    /// Update the preview tab at `tab_id` with the full reader; continue session restore.
     SessionRestoreTab {
-        tab_idx: usize,
+        tab_id: TabId,
         remaining: VecDeque<String>,
         total: usize,
-        initial_tab_idx: usize,
+        initial_tab_id: TabId,
     },
 }
 
@@ -2911,7 +2932,7 @@ pub struct ArchiveExtractionState {
     /// Space-ticked files are extracted one after another in the same
     /// background task and would otherwise overwrite each other's progress
     /// on a shared channel.
-    pub merge_tab_idx: Option<usize>,
+    pub merge_tab_id: Option<TabId>,
     pub merge_progress_rx:
         Option<tokio::sync::watch::Receiver<crate::ingestion::ArchiveExtractionProgress>>,
     /// Total merge-marked file count, for rendering `merge_progress_rx`'s
@@ -2960,7 +2981,7 @@ pub struct DirectoryMergeState {
     /// The "pending" merged tab created immediately (see
     /// `App::create_pending_merged_tab`), filled in once every source has
     /// been read or removed if reading fails.
-    pub tab_idx: usize,
+    pub tab_id: TabId,
     pub total: usize,
     /// Count of sources read so far.
     pub progress_rx: tokio::sync::watch::Receiver<usize>,
@@ -2975,7 +2996,7 @@ pub struct DirectoryMergeState {
 /// `App::poll_merge_builds` as it arrives so the tab fills in progressively
 /// instead of staying empty until every source has been read.
 pub struct MergeBuildState {
-    pub tab_idx: usize,
+    pub tab_id: TabId,
     /// The same source readers the tab's `FileReader::from_merged` was
     /// built with — kept here so each incremental update can rebuild the
     /// merged view without needing to look anything up on the tab itself.
@@ -5383,7 +5404,7 @@ mod tests {
         tab.display.format = None;
         tab.filter.visible_indices = VisibleLines::Filtered(vec![0, 1]);
         tab.merged = Some(MergedState {
-            source_tab_indices: vec![0, 1],
+            source_tab_ids: vec![TabId(0), TabId(1)],
             source_parsers: vec![None, Some(source_a_parser)],
             source_labels: vec!["b".to_string(), "a".to_string()],
             source_line_counts: vec![1, 1],

@@ -7,15 +7,16 @@ use ratatui::{
 };
 
 use crate::theme::Theme;
+use crate::ui::TabId;
 
 use super::popup_entry;
 
 pub struct FileSwitcherPopup<'a> {
     pub theme: &'a Theme,
-    /// (`App::tabs` index, tab title) for every open tab.
-    pub entries: &'a [(usize, String)],
+    /// (stable tab id, tab title) for every open tab.
+    pub entries: &'a [(TabId, String)],
     /// The tab that was active when the popup opened.
-    pub active_tab: usize,
+    pub active_tab: TabId,
     /// Index into the *visible* (filtered) entries.
     pub selected: usize,
     pub search: &'a str,
@@ -115,9 +116,9 @@ impl<'a> Widget for FileSwitcherPopup<'a> {
         let mut lines: Vec<Line> = Vec::new();
         for (i, &entry_idx) in vis.iter().enumerate().skip(scroll).take(content_h) {
             let is_selected = i == self.selected;
-            let (tab_idx, title) = &self.entries[entry_idx];
+            let (tab_id, title) = &self.entries[entry_idx];
             let prefix = if is_selected { "> " } else { "  " };
-            let marker = if *tab_idx == self.active_tab {
+            let marker = if *tab_id == self.active_tab {
                 "* "
             } else {
                 "  "
@@ -193,7 +194,7 @@ impl<'a> Widget for FileSwitcherPopup<'a> {
 mod tests {
     use crate::mode::file_switcher_mode::FileSwitcherMode;
     use crate::theme::Theme;
-    use crate::ui::App;
+    use crate::ui::{App, TabId};
     use crate::{config::Keybindings, ingestion::FileReader};
     use ratatui::{Terminal, backend::TestBackend};
     use std::sync::Arc;
@@ -220,8 +221,11 @@ mod tests {
     #[tokio::test]
     async fn test_file_switcher_popup_basic() {
         let mut app = make_app(&["line one"]).await;
-        let entries = vec![(0, "a.log".to_string()), (1, "b.log".to_string())];
-        app.tabs[0].interaction.mode = Box::new(FileSwitcherMode::new(entries, 0));
+        let entries = vec![
+            (TabId(0), "a.log".to_string()),
+            (TabId(1), "b.log".to_string()),
+        ];
+        app.tabs[0].interaction.mode = Box::new(FileSwitcherMode::new(entries, TabId(0)));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
@@ -234,8 +238,8 @@ mod tests {
     #[tokio::test]
     async fn test_file_switcher_popup_shows_search_placeholder_when_empty() {
         let mut app = make_app(&["line one"]).await;
-        let entries = vec![(0, "a.log".to_string())];
-        app.tabs[0].interaction.mode = Box::new(FileSwitcherMode::new(entries, 0));
+        let entries = vec![(TabId(0), "a.log".to_string())];
+        app.tabs[0].interaction.mode = Box::new(FileSwitcherMode::new(entries, TabId(0)));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
         let buf = terminal.backend().buffer().clone();
@@ -246,8 +250,10 @@ mod tests {
     #[tokio::test]
     async fn test_file_switcher_popup_many_entries_shows_scrollbar() {
         let mut app = make_app(&["line one"]).await;
-        let entries: Vec<(usize, String)> = (0..30).map(|i| (i, format!("file{i}.log"))).collect();
-        app.tabs[0].interaction.mode = Box::new(FileSwitcherMode::new(entries, 0));
+        let entries: Vec<(TabId, String)> = (0..30)
+            .map(|i| (TabId(i as u64), format!("file{i}.log")))
+            .collect();
+        app.tabs[0].interaction.mode = Box::new(FileSwitcherMode::new(entries, TabId(0)));
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }

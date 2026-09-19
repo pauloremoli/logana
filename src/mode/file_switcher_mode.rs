@@ -4,7 +4,7 @@ use crate::{
     mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,
     theme::Theme,
-    ui::{KeyResult, TabState},
+    ui::{KeyResult, TabId, TabState},
 };
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -17,19 +17,19 @@ use ratatui::text::{Line, Span};
 /// other action here for a bare key to conflict with.
 #[derive(Debug)]
 pub struct FileSwitcherMode {
-    /// (`App::tabs` index, tab title) for every open tab, snapshotted when
-    /// the popup opened.
-    entries: Vec<(usize, String)>,
+    /// (stable tab id, tab title) for every open tab, snapshotted when the
+    /// popup opened.
+    entries: Vec<(TabId, String)>,
     /// The tab that was active when the popup opened — used to highlight
     /// the current file in the rendered list.
-    active_tab: usize,
+    active_tab: TabId,
     /// Index into the *visible* (filtered) entries.
     selected: usize,
     search: String,
 }
 
 impl FileSwitcherMode {
-    pub fn new(entries: Vec<(usize, String)>, active_tab: usize) -> Self {
+    pub fn new(entries: Vec<(TabId, String)>, active_tab: TabId) -> Self {
         Self {
             entries,
             active_tab,
@@ -89,10 +89,10 @@ impl Mode for FileSwitcherMode {
             let Some(&entry_idx) = visible.get(self.selected) else {
                 return (Box::new(NormalMode::default()), KeyResult::Handled);
             };
-            let tab_idx = self.entries[entry_idx].0;
+            let tab_id = self.entries[entry_idx].0;
             return (
                 Box::new(NormalMode::default()),
-                KeyResult::SwitchToTab(tab_idx),
+                KeyResult::SwitchToTab(tab_id),
             );
         }
         if matches!(key, KeyCode::Esc) || kb.global.file_switcher.matches(key, modifiers) {
@@ -156,8 +156,10 @@ mod tests {
         TabState::new(reader, lm, "test".to_string())
     }
 
-    fn entries(n: usize) -> Vec<(usize, String)> {
-        (0..n).map(|i| (i, format!("file{i}.log"))).collect()
+    fn entries(n: usize) -> Vec<(TabId, String)> {
+        (0..n)
+            .map(|i| (TabId(i as u64), format!("file{i}.log")))
+            .collect()
     }
 
     async fn press(
@@ -170,7 +172,7 @@ mod tests {
             .await
     }
 
-    fn extract(state: ModeRenderState) -> (Vec<(usize, String)>, usize, usize, String) {
+    fn extract(state: ModeRenderState) -> (Vec<(TabId, String)>, TabId, usize, String) {
         match state {
             ModeRenderState::FileSwitcher {
                 entries,
@@ -184,10 +186,10 @@ mod tests {
 
     #[test]
     fn test_new_initializes_at_zero_with_empty_search() {
-        let mode = FileSwitcherMode::new(entries(3), 1);
+        let mode = FileSwitcherMode::new(entries(3), TabId(1));
         let (e, active, selected, search) = extract(mode.render_state());
         assert_eq!(e.len(), 3);
-        assert_eq!(active, 1);
+        assert_eq!(active, TabId(1));
         assert_eq!(selected, 0);
         assert_eq!(search, "");
     }
@@ -196,8 +198,11 @@ mod tests {
     async fn test_typing_narrows_selection_by_fuzzy_match() {
         let mut tab = make_tab().await;
         let mode = FileSwitcherMode::new(
-            vec![(0, "app.log".to_string()), (1, "server.log".to_string())],
-            0,
+            vec![
+                (TabId(0), "app.log".to_string()),
+                (TabId(1), "server.log".to_string()),
+            ],
+            TabId(0),
         );
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('s')).await;
         let (mode3, _) = mode2
@@ -205,18 +210,18 @@ mod tests {
             .await;
         // Only "server.log" matches "sv" (fuzzy subsequence) — "app.log"
         // must have been filtered out, so Enter on the sole remaining
-        // (auto-reselected) entry lands on tab index 1, not 0.
+        // (auto-reselected) entry lands on tab id 1, not 0.
         let (_, result) = mode3
             .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
             .await;
-        assert!(matches!(result, KeyResult::SwitchToTab(1)));
+        assert!(matches!(result, KeyResult::SwitchToTab(TabId(1))));
     }
 
     #[tokio::test]
     async fn test_scroll_down_moves_selection() {
         let mut tab = make_tab().await;
         let (mode2, result) = press(
-            FileSwitcherMode::new(entries(3), 0),
+            FileSwitcherMode::new(entries(3), TabId(0)),
             &mut tab,
             KeyCode::Char('j'),
         )
@@ -229,7 +234,7 @@ mod tests {
     #[tokio::test]
     async fn test_scroll_down_clamped_at_last() {
         let mut tab = make_tab().await;
-        let mut mode = FileSwitcherMode::new(entries(2), 0);
+        let mut mode = FileSwitcherMode::new(entries(2), TabId(0));
         mode.selected = 1;
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('j')).await;
         let (_, _, selected, _) = extract(mode2.render_state());
@@ -240,7 +245,7 @@ mod tests {
     async fn test_scroll_up_clamped_at_zero() {
         let mut tab = make_tab().await;
         let (mode2, _) = press(
-            FileSwitcherMode::new(entries(3), 0),
+            FileSwitcherMode::new(entries(3), TabId(0)),
             &mut tab,
             KeyCode::Char('k'),
         )
@@ -252,30 +257,33 @@ mod tests {
     #[tokio::test]
     async fn test_enter_switches_to_selected_tab() {
         let mut tab = make_tab().await;
-        let mut mode = FileSwitcherMode::new(entries(3), 0);
+        let mut mode = FileSwitcherMode::new(entries(3), TabId(0));
         mode.selected = 2;
         let (_, result) = press(mode, &mut tab, KeyCode::Enter).await;
-        assert!(matches!(result, KeyResult::SwitchToTab(2)));
+        assert!(matches!(result, KeyResult::SwitchToTab(TabId(2))));
     }
 
     #[tokio::test]
     async fn test_enter_on_narrowed_list_switches_to_correct_underlying_tab_index() {
         let mut tab = make_tab().await;
         let mode = FileSwitcherMode::new(
-            vec![(5, "app.log".to_string()), (9, "server.log".to_string())],
-            5,
+            vec![
+                (TabId(5), "app.log".to_string()),
+                (TabId(9), "server.log".to_string()),
+            ],
+            TabId(5),
         );
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('s')).await;
         let (_, result) = mode2
             .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
             .await;
-        assert!(matches!(result, KeyResult::SwitchToTab(9)));
+        assert!(matches!(result, KeyResult::SwitchToTab(TabId(9))));
     }
 
     #[tokio::test]
     async fn test_enter_with_empty_visible_list_returns_to_normal_without_switching() {
         let mut tab = make_tab().await;
-        let mode = FileSwitcherMode::new(vec![(0, "app.log".to_string())], 0);
+        let mode = FileSwitcherMode::new(vec![(TabId(0), "app.log".to_string())], TabId(0));
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('z')).await;
         let (_, result) = mode2
             .handle_key(&mut tab, KeyCode::Enter, KeyModifiers::NONE)
@@ -287,7 +295,7 @@ mod tests {
     async fn test_esc_clears_search_first() {
         let mut tab = make_tab().await;
         let (mode2, _) = press(
-            FileSwitcherMode::new(entries(3), 0),
+            FileSwitcherMode::new(entries(3), TabId(0)),
             &mut tab,
             KeyCode::Char('x'),
         )
@@ -303,7 +311,12 @@ mod tests {
     #[tokio::test]
     async fn test_esc_with_empty_search_returns_to_normal_mode() {
         let mut tab = make_tab().await;
-        let (_, result) = press(FileSwitcherMode::new(entries(3), 0), &mut tab, KeyCode::Esc).await;
+        let (_, result) = press(
+            FileSwitcherMode::new(entries(3), TabId(0)),
+            &mut tab,
+            KeyCode::Esc,
+        )
+        .await;
         assert!(matches!(result, KeyResult::Handled));
     }
 
@@ -311,7 +324,7 @@ mod tests {
     async fn test_ctrl_p_closes_popup_even_with_search_active() {
         let mut tab = make_tab().await;
         let (mode2, _) = press(
-            FileSwitcherMode::new(entries(3), 0),
+            FileSwitcherMode::new(entries(3), TabId(0)),
             &mut tab,
             KeyCode::Char('x'),
         )
@@ -330,7 +343,7 @@ mod tests {
     async fn test_backspace_removes_last_search_char() {
         let mut tab = make_tab().await;
         let (mode2, _) = press(
-            FileSwitcherMode::new(entries(3), 0),
+            FileSwitcherMode::new(entries(3), TabId(0)),
             &mut tab,
             KeyCode::Char('a'),
         )
@@ -346,7 +359,7 @@ mod tests {
     async fn test_unknown_key_returns_ignored() {
         let mut tab = make_tab().await;
         let (_, result) = press(
-            FileSwitcherMode::new(entries(3), 0),
+            FileSwitcherMode::new(entries(3), TabId(0)),
             &mut tab,
             KeyCode::F(5),
         )
@@ -356,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_mode_bar_content_contains_switch_label() {
-        let mode = FileSwitcherMode::new(entries(2), 0);
+        let mode = FileSwitcherMode::new(entries(2), TabId(0));
         let kb = Keybindings::default();
         let theme = crate::theme::Theme::default();
         let line = mode.mode_bar_content(&kb, &theme);

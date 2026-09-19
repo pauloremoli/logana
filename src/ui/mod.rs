@@ -32,7 +32,7 @@ pub use tab_state::{
     FileLoadState, FileWatchState, FilterChunk, FilterEvalContext, FilterHandle, FilterState,
     FilterViewSnapshot, InteractionState, KeyResult, LoadContext, MergeBuildState, MergedState,
     ScrollState, SearchHandle, SearchState, SidebarSide, StdinLoadState, StreamConnection,
-    StreamRetryState, StreamState, TabState, VisibleLines, apply_collapse_correction,
+    StreamRetryState, StreamState, TabId, TabState, VisibleLines, apply_collapse_correction,
     apply_continuation_correction, build_continuation_map, display_text_for_line, dlt_connect_fn,
     docker_connect_fn, line_is_visible, merge_filter_counts, otlp_connect_fn, otlp_grpc_connect_fn,
     run_connect_fn, watch_state_from_connection, watch_state_from_file,

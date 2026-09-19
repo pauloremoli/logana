@@ -45,7 +45,12 @@ type ArchivePickerData = Option<(
     bool,
 )>;
 
-type FileSwitcherData = Option<(Vec<(usize, String)>, usize, usize, String)>;
+type FileSwitcherData = Option<(
+    Vec<(crate::ui::TabId, String)>,
+    crate::ui::TabId,
+    usize,
+    String,
+)>;
 
 type ThemePickerData = Option<(Vec<String>, usize, String)>;
 
@@ -2468,7 +2473,7 @@ mod tests {
         let b: Option<Arc<dyn crate::parser::LogFormatParser>> =
             Some(Arc::new(crate::parser::JournalctlParser::default()));
         let merged = crate::ui::MergedState {
-            source_tab_indices: vec![],
+            source_tab_ids: vec![],
             source_parsers: vec![a, b],
             source_labels: vec![],
             source_line_counts: vec![],
@@ -2486,7 +2491,7 @@ mod tests {
         let b: Option<Arc<dyn crate::parser::LogFormatParser>> =
             Some(Arc::new(crate::parser::SyslogParser::default()));
         let merged = crate::ui::MergedState {
-            source_tab_indices: vec![],
+            source_tab_ids: vec![],
             source_parsers: vec![a, b],
             source_labels: vec![],
             source_line_counts: vec![],
@@ -2500,7 +2505,7 @@ mod tests {
     #[test]
     fn test_merged_format_name_none_when_no_source_detected_a_format() {
         let merged = crate::ui::MergedState {
-            source_tab_indices: vec![],
+            source_tab_ids: vec![],
             source_parsers: vec![None, None],
             source_labels: vec![],
             source_line_counts: vec![],
@@ -2518,7 +2523,7 @@ mod tests {
         let a: Option<Arc<dyn crate::parser::LogFormatParser>> =
             Some(Arc::new(crate::parser::JournalctlParser::default()));
         let merged = crate::ui::MergedState {
-            source_tab_indices: vec![],
+            source_tab_ids: vec![],
             source_parsers: vec![a, None],
             source_labels: vec![],
             source_line_counts: vec![],
@@ -2536,7 +2541,7 @@ mod tests {
             b"2024-02-22T10:15:30+0000 hostA sshd[1]: hi".as_slice(),
         ])
         .map(Arc::from);
-        app.open_merge_tab(vec![0]).await;
+        app.open_merge_tab(vec![app.tabs[0].id]).await;
         app.tabs.last_mut().unwrap().display.show_borders = true;
 
         let mut terminal = make_terminal();

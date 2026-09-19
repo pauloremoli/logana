@@ -1269,6 +1269,20 @@ impl FileReader {
         }
     }
 
+    /// If this is a merged reader, return the Arc to its per-source readers
+    /// (indexed by each `MergedEntry::source_idx`); otherwise `None`. Used
+    /// to carry a closed source tab's last-known content forward at its
+    /// same position when rebuilding `sources` after another source grows
+    /// — every existing `MergedEntry` still points at that position by
+    /// index, so the slot can't simply be dropped.
+    pub fn merged_sources(&self) -> Option<&Arc<Vec<FileReader>>> {
+        if let Storage::Merged { sources, .. } = &self.storage {
+            Some(sources)
+        } else {
+            None
+        }
+    }
+
     /// Return the raw bytes of line `idx` (without the trailing newline).
     ///
     /// For `Storage::Merged`, `idx` is interpreted as a compound key

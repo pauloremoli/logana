@@ -7,7 +7,7 @@ use crate::{
         value_colors_mode::ValueColorGroup,
     },
     theme::Theme,
-    ui::{KeyResult, TabState},
+    ui::{KeyResult, TabId, TabState},
 };
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -130,11 +130,11 @@ pub enum ModeRenderState {
         editing: Option<crate::mode::default_filters_mode::PathEditState>,
     },
     FileSwitcher {
-        /// (`App::tabs` index, tab title) for every open tab, snapshotted
-        /// when the popup opened.
-        entries: Vec<(usize, String)>,
+        /// (stable tab id, tab title) for every open tab, snapshotted when
+        /// the popup opened.
+        entries: Vec<(TabId, String)>,
         /// The tab that was active when the popup opened.
-        active_tab: usize,
+        active_tab: TabId,
         /// Index into the *visible* (filtered) entries.
         selected: usize,
         search: String,
@@ -909,7 +909,7 @@ mod tests {
         assert_eq!(
             ModeRenderState::FileSwitcher {
                 entries: vec![],
-                active_tab: 0,
+                active_tab: TabId(0),
                 selected: 0,
                 search: String::new(),
             }

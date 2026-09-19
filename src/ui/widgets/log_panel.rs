@@ -1328,7 +1328,7 @@ mod tests {
 
         let label_col_width = labels.iter().map(|l| l.len()).max().unwrap_or(0);
         app.tabs[0].merged = Some(crate::ui::MergedState {
-            source_tab_indices: Vec::new(),
+            source_tab_ids: Vec::new(),
             source_parsers,
             source_labels: labels.iter().map(|s| s.to_string()).collect(),
             source_line_counts: sources.iter().map(|l| l.len()).collect(),

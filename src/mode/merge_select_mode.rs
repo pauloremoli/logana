@@ -3,7 +3,7 @@ use crate::{
     mode::app_mode::{Mode, ModeRenderState, status_entry},
     mode::normal_mode::NormalMode,
     theme::Theme,
-    ui::{KeyResult, TabState},
+    ui::{KeyResult, TabId, TabState},
 };
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -14,17 +14,17 @@ use ratatui::text::{Line, Span};
 pub struct MergeSelectMode {
     /// Tab title + selected toggle (for display).
     pub tabs: Vec<(String, bool)>,
-    /// Actual `App::tabs` index for each entry in `tabs`.
-    pub tab_indices: Vec<usize>,
+    /// Stable id for each entry in `tabs`.
+    pub tab_ids: Vec<TabId>,
     /// Cursor position in the list.
     pub selected: usize,
 }
 
 impl MergeSelectMode {
-    pub fn new(tabs: Vec<(String, bool)>, tab_indices: Vec<usize>) -> Self {
+    pub fn new(tabs: Vec<(String, bool)>, tab_ids: Vec<TabId>) -> Self {
         MergeSelectMode {
             tabs,
-            tab_indices,
+            tab_ids,
             selected: 0,
         }
     }
@@ -41,12 +41,12 @@ impl Mode for MergeSelectMode {
         let kb = &tab.interaction.keybindings;
 
         if kb.select_fields.apply.matches(key, modifiers) {
-            let selected: Vec<usize> = self
+            let selected: Vec<TabId> = self
                 .tabs
                 .iter()
                 .enumerate()
                 .filter(|(_, (_, on))| *on)
-                .map(|(i, _)| self.tab_indices[i])
+                .map(|(i, _)| self.tab_ids[i])
                 .collect();
             if selected.len() < 2 {
                 tab.interaction.command_error = Some("Select at least 2 tabs to merge".to_string());
@@ -55,7 +55,7 @@ impl Mode for MergeSelectMode {
             return (
                 Box::new(NormalMode::default()),
                 KeyResult::OpenMergedView {
-                    source_tab_indices: selected,
+                    source_tab_ids: selected,
                 },
             );
         }
@@ -140,8 +140,8 @@ mod tests {
         (0..n).map(|i| (format!("tab{i}"), false)).collect()
     }
 
-    fn indices(n: usize) -> Vec<usize> {
-        (0..n).collect()
+    fn indices(n: usize) -> Vec<TabId> {
+        (0..n as u64).map(TabId).collect()
     }
 
     async fn press(
@@ -282,14 +282,14 @@ mod tests {
     #[tokio::test]
     async fn test_apply_with_two_selected_opens_merged_view() {
         let mut tab = make_tab().await;
-        let mut mode = MergeSelectMode::new(tabs(3), vec![10, 20, 30]);
+        let mut mode = MergeSelectMode::new(tabs(3), vec![TabId(10), TabId(20), TabId(30)]);
         mode.tabs[0].1 = true;
         mode.tabs[2].1 = true;
         let (_, result) = press(mode, &mut tab, KeyCode::Enter).await;
         assert!(matches!(
             result,
-            KeyResult::OpenMergedView { source_tab_indices }
-                if source_tab_indices == vec![10, 30]
+            KeyResult::OpenMergedView { source_tab_ids }
+                if source_tab_ids == vec![TabId(10), TabId(30)]
         ));
     }
 
@@ -324,6 +324,6 @@ mod tests {
         let mode = MergeSelectMode::new(tabs(5), indices(5));
         assert_eq!(mode.selected, 0);
         assert_eq!(mode.tabs.len(), 5);
-        assert_eq!(mode.tab_indices.len(), 5);
+        assert_eq!(mode.tab_ids.len(), 5);
     }
 }

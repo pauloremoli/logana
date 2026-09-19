@@ -506,7 +506,7 @@ impl App {
         // at all until it finished.
         let labels: Vec<String> = merge_marked.iter().map(|(name, ..)| name.clone()).collect();
         let total = labels.len();
-        let tab_idx = self.create_pending_merged_tab(labels).await;
+        let tab_id = self.create_pending_merged_tab(labels).await;
 
         let (progress_tx, progress_rx) = tokio::sync::watch::channel(0usize);
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -575,7 +575,7 @@ impl App {
         });
 
         self.pending_directory_merge = Some(crate::ui::DirectoryMergeState {
-            tab_idx,
+            tab_id,
             total,
             progress_rx,
             result_rx,
@@ -615,7 +615,7 @@ impl App {
         self.pending_archive = Some(crate::ui::ArchiveExtractionState {
             progress_rx,
             result_rx,
-            merge_tab_idx: None,
+            merge_tab_id: None,
             merge_progress_rx: None,
             merge_total: 0,
         });
@@ -631,8 +631,9 @@ impl App {
         };
 
         let progress_done = *state.progress_rx.borrow();
-        if state.tab_idx < self.tabs.len() {
-            self.tabs[state.tab_idx].set_notification(format!(
+        let tab_id = state.tab_id;
+        if let Some(tab_idx) = self.tabs.iter().position(|t| t.id == tab_id) {
+            self.tabs[tab_idx].set_notification(format!(
                 "Reading\u{2026} {}/{} files",
                 progress_done.min(state.total),
                 state.total
@@ -641,22 +642,19 @@ impl App {
 
         match state.result_rx.try_recv() {
             Ok(Ok(sources)) => {
-                let tab_idx = state.tab_idx;
                 self.pending_directory_merge = None;
                 let inputs = Self::merge_inputs_from_extracted(sources);
-                self.start_merge_build_streaming(tab_idx, inputs).await;
+                self.start_merge_build_streaming(tab_id, inputs).await;
             }
             Ok(Err(e)) => {
-                let tab_idx = state.tab_idx;
                 self.pending_directory_merge = None;
-                self.remove_pending_merged_tab(tab_idx);
+                self.remove_pending_merged_tab(tab_id);
                 self.tabs[self.active_tab].set_notification(e);
             }
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                let tab_idx = state.tab_idx;
                 self.pending_directory_merge = None;
-                self.remove_pending_merged_tab(tab_idx);
+                self.remove_pending_merged_tab(tab_id);
             }
         }
     }
@@ -712,8 +710,8 @@ impl App {
                     .await;
             }
             KeyResult::OpenMergeSelect => self.handle_open_merge_select(),
-            KeyResult::OpenMergedView { source_tab_indices } => {
-                self.open_merge_tab(source_tab_indices).await;
+            KeyResult::OpenMergedView { source_tab_ids } => {
+                self.open_merge_tab(source_tab_ids).await;
             }
             KeyResult::ExportWithFooter {
                 path,
@@ -735,8 +733,8 @@ impl App {
             KeyResult::SetDefaultFilterFile { format, path } => {
                 self.handle_set_default_filter_file(format, path).await;
             }
-            KeyResult::SwitchToTab(idx) => {
-                if idx < self.tabs.len() {
+            KeyResult::SwitchToTab(tab_id) => {
+                if let Some(idx) = self.tab_index_for_id(tab_id) {
                     self.active_tab = idx;
                 }
             }
@@ -939,11 +937,11 @@ mod tests {
     /// The merged tab must appear the instant `apply_directory_picker`
     /// returns, with real source filenames shown before the slow background
     /// read/copy phase even starts. A tab removed elsewhere while this
-    /// merge's index build is still running must not desync
-    /// `pending_merge_builds`'s tracked tab index, or the next update lands
+    /// merge's index build is still running must not disturb
+    /// `pending_merge_builds`'s tracked `TabId`, or the next update lands
     /// on — and corrupts — the wrong tab.
     #[tokio::test]
-    async fn test_removing_an_earlier_tab_keeps_a_still_building_merge_pointed_at_the_right_tab() {
+    async fn test_removing_an_earlier_tab_does_not_disturb_a_still_building_merges_tab_id() {
         let mut app = make_app().await;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -965,23 +963,28 @@ mod tests {
         // drained yet, so it's still "in flight" when the removal below
         // happens.
         assert_eq!(app.pending_merge_builds.len(), 1);
-        let merge_tab_idx_before = app.pending_merge_builds[0].tab_idx;
+        let merge_tab_id = app.pending_merge_builds[0].tab_id;
+        let merge_tab_idx_before = app.tab_index_for_id(merge_tab_id).unwrap();
         assert!(merge_tab_idx_before > 0);
 
         // Some unrelated tab before the still-building merge tab gets
-        // removed (a placeholder cleanup, `:close-tab`, ...) — must go
-        // through `remove_tab_at` so `pending_merge_builds` stays correct.
+        // removed (a placeholder cleanup, `:close-tab`, ...) — the merge's
+        // id is unaffected by the removal, unlike a raw `Vec` position.
         app.remove_tab_at(0);
         assert_eq!(
-            app.pending_merge_builds[0].tab_idx,
+            app.pending_merge_builds[0].tab_id, merge_tab_id,
+            "removing an unrelated tab must not change the still-building \
+             merge's tracked id"
+        );
+        assert_eq!(
+            app.tab_index_for_id(merge_tab_id).unwrap(),
             merge_tab_idx_before - 1,
-            "the still-building merge's tracked tab index must shift down \
-             after an earlier tab is removed"
+            "the id must resolve to the tab's new, shifted-down position"
         );
 
         drain_pending_merge_builds(&mut app).await;
 
-        let merged_tab = &app.tabs[merge_tab_idx_before - 1];
+        let merged_tab = &app.tabs[app.tab_index_for_id(merge_tab_id).unwrap()];
         assert!(merged_tab.merged.is_some(), "must still be the merged tab");
         assert_eq!(merged_tab.file_reader.line_count(), 2);
         assert_eq!(
@@ -1080,7 +1083,8 @@ mod tests {
             roots: vec![0],
         };
         app.apply_directory_picker(String::new(), tree).await;
-        let tab_idx = app.pending_directory_merge.as_ref().unwrap().tab_idx;
+        let tab_id = app.pending_directory_merge.as_ref().unwrap().tab_id;
+        let tab_idx = app.tab_index_for_id(tab_id).unwrap();
         // Poll a few times rather than once — the background read is a real
         // OS thread and may not have run yet on the very first poll.
         let mut notification = String::new();

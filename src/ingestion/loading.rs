@@ -10,7 +10,7 @@ use crate::mode::app_mode::ConfirmRestoreMode;
 use crate::mode::normal_mode::NormalMode;
 
 use crate::ui::{
-    App, ConnectFn, FileLoadState, LoadContext, StreamRetryState, TabState, VisibleLines,
+    App, ConnectFn, FileLoadState, LoadContext, StreamRetryState, TabId, TabState, VisibleLines,
     dlt_connect_fn, docker_connect_fn, otlp_connect_fn, otlp_grpc_connect_fn,
     watch_state_from_connection, watch_state_from_file,
 };
@@ -77,11 +77,11 @@ impl App {
             }
         }
 
+        let tab_id = tab.id;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
-        let tab_idx = self.active_tab;
 
-        self.begin_file_load(abs_path, LoadContext::ReplaceTab { tab_idx }, None, false)
+        self.begin_file_load(abs_path, LoadContext::ReplaceTab { tab_id }, None, false)
             .await;
         Ok(())
     }
@@ -419,7 +419,7 @@ impl App {
         &mut self,
         mut remaining: VecDeque<String>,
         total: usize,
-        initial_tab_idx: usize,
+        initial_tab_id: TabId,
     ) {
         loop {
             let next = match remaining.pop_front() {
@@ -427,7 +427,7 @@ impl App {
                 None => {
                     // Queue exhausted — remove the placeholder if it was never replaced.
                     if self.tabs.len() > 1
-                        && initial_tab_idx < self.tabs.len()
+                        && let Some(initial_tab_idx) = self.tab_index_for_id(initial_tab_id)
                         && self.tabs[initial_tab_idx]
                             .log_manager
                             .source_file()
@@ -482,30 +482,36 @@ impl App {
             if let Ok(Some(ctx)) = self.db.load_file_context(&abs_path).await {
                 tab.apply_file_context(&ctx);
             }
+            let tab_id = tab.id;
             self.tabs.push(tab);
-            let mut tab_idx = self.tabs.len() - 1;
+            let tab_idx = self.tabs.len() - 1;
 
             // If the initial placeholder is still empty and active, remove it now and
             // switch immediately to the new file tab so the user sees content right away.
-            let placeholder_is_empty = initial_tab_idx < tab_idx
-                && self.tabs[initial_tab_idx]
-                    .log_manager
-                    .source_file()
-                    .is_none()
-                && self.tabs[initial_tab_idx].file_reader.line_count() == 0;
+            let placeholder_is_empty = match self.tab_index_for_id(initial_tab_id) {
+                Some(initial_tab_idx) => {
+                    initial_tab_idx < tab_idx
+                        && self.tabs[initial_tab_idx]
+                            .log_manager
+                            .source_file()
+                            .is_none()
+                        && self.tabs[initial_tab_idx].file_reader.line_count() == 0
+                }
+                None => false,
+            };
             if placeholder_is_empty {
+                let initial_tab_idx = self.tab_index_for_id(initial_tab_id).unwrap();
                 self.remove_tab_at(initial_tab_idx);
-                tab_idx -= 1; // pushed after the placeholder, so index shifts by one
             }
-            self.active_tab = tab_idx;
+            self.active_tab = self.tab_index_for_id(tab_id).unwrap();
 
             self.begin_file_load(
                 next,
                 LoadContext::SessionRestoreTab {
-                    tab_idx,
+                    tab_id,
                     remaining,
                     total,
-                    initial_tab_idx,
+                    initial_tab_id,
                 },
                 None,
                 false,
@@ -571,14 +577,14 @@ impl App {
             }
 
             let tab_idx = match &context {
-                LoadContext::ReplaceInitialTab => 0,
-                LoadContext::ReplaceTab { tab_idx } => *tab_idx,
-                LoadContext::SessionRestoreTab { tab_idx, .. } => *tab_idx,
+                LoadContext::ReplaceInitialTab => Some(0),
+                LoadContext::ReplaceTab { tab_id } => self.tab_index_for_id(*tab_id),
+                LoadContext::SessionRestoreTab { tab_id, .. } => self.tab_index_for_id(*tab_id),
             };
             let cancel = Arc::new(AtomicBool::new(false));
             match FileReader::load(path.clone(), predicate, tail, cancel.clone(), false).await {
                 Ok(handle) => {
-                    if tab_idx < self.tabs.len() {
+                    if let Some(tab_idx) = tab_idx {
                         self.tabs[tab_idx].load_state = Some(FileLoadState {
                             path,
                             progress_rx: handle.progress_rx,
@@ -635,14 +641,14 @@ impl App {
         // wouldn't appear at all until it finished.
         let merge_labels = crate::ingestion::merge_marked_labels(&tree, &source_path);
         let merge_total = merge_labels.len();
-        let (merge_tab_idx, merge_progress_rx, merge_progress_tx) = if merge_total > 0 {
-            let tab_idx = self.create_pending_merged_tab(merge_labels).await;
+        let (merge_tab_id, merge_progress_rx, merge_progress_tx) = if merge_total > 0 {
+            let tab_id = self.create_pending_merged_tab(merge_labels).await;
             let (tx, rx) =
                 tokio::sync::watch::channel(crate::ingestion::ArchiveExtractionProgress {
                     file_index: 0,
                     fraction: 0.0,
                 });
-            (Some(tab_idx), Some(rx), Some(tx))
+            (Some(tab_id), Some(rx), Some(tx))
         } else {
             (None, None, None)
         };
@@ -680,7 +686,7 @@ impl App {
         self.pending_archive = Some(crate::ui::ArchiveExtractionState {
             progress_rx,
             result_rx,
-            merge_tab_idx,
+            merge_tab_id,
             merge_progress_rx,
             merge_total,
         });
@@ -699,11 +705,11 @@ impl App {
             let pct = (progress.fraction * 100.0) as u32;
             self.decompression_message = Some(format!("Decompressing archive\u{2026} {pct}%"));
         }
-        if let (Some(tab_idx), Some(merge_progress_rx)) =
-            (state.merge_tab_idx, &state.merge_progress_rx)
+        if let (Some(merge_tab_id), Some(merge_progress_rx)) =
+            (state.merge_tab_id, &state.merge_progress_rx)
         {
             let progress = *merge_progress_rx.borrow();
-            if tab_idx < self.tabs.len() {
+            if let Some(tab_idx) = self.tabs.iter().position(|t| t.id == merge_tab_id) {
                 self.tabs[tab_idx].set_notification(format!(
                     "Reading\u{2026} {}/{} files",
                     (progress.file_index + 1).min(state.merge_total),
@@ -721,7 +727,7 @@ impl App {
                 return;
             }
         };
-        let mut merge_tab_idx = state.merge_tab_idx;
+        let merge_tab_id = state.merge_tab_id;
         self.pending_archive = None;
         self.decompression_message = None;
 
@@ -731,9 +737,8 @@ impl App {
         let selected = result.selected_files;
         if !selected.files.is_empty() {
             created_any_tab = true;
-            // Remove the placeholder tab BEFORE recording tab indices for the
-            // background loads.  If we remove it after, all stored tab_idx values
-            // shift by one and each load replaces the wrong tab.
+            // Removing this placeholder tab doesn't disturb `merge_tab_id`
+            // (or anything else) — it's a stable id, not a position.
             if self.stdin_load_state.is_none()
                 && let Some(idx) = self.tabs.iter().position(|t| {
                     t.file_reader.line_count() == 0
@@ -742,20 +747,10 @@ impl App {
                         && t.merged.is_none()
                 })
             {
-                // `merge_tab_idx` is a local copy of `state.merge_tab_idx`
-                // (already cleared from `self.pending_archive` above), so
-                // `remove_tab_at`'s own pending-state fixups can't reach
-                // it — it needs the same by-position shift by hand.
                 self.remove_tab_at(idx);
-                if let Some(merge_idx) = merge_tab_idx.as_mut()
-                    && *merge_idx > idx
-                {
-                    *merge_idx -= 1;
-                }
             }
             let first_new_tab_idx = self.tabs.len();
             for file in selected.files {
-                let tab_idx = self.tabs.len();
                 let tmp_path = file.temp_file.path().to_string_lossy().to_string();
                 let preview = FileReader::from_file_head(&tmp_path, self.preview_bytes)
                     .await
@@ -765,8 +760,9 @@ impl App {
                 tab.source_path = Some(file.full_path);
                 tab.archive_temp = Some(file.temp_file);
                 self.apply_tab_defaults(&mut tab).await;
+                let tab_id = tab.id;
                 self.tabs.push(tab);
-                self.begin_file_load(tmp_path, LoadContext::ReplaceTab { tab_idx }, None, false)
+                self.begin_file_load(tmp_path, LoadContext::ReplaceTab { tab_id }, None, false)
                     .await;
             }
             self.active_tab = first_new_tab_idx;
@@ -780,16 +776,16 @@ impl App {
             Some(outcome) => {
                 if !outcome.files.is_empty() {
                     created_any_tab = true;
-                    if let Some(tab_idx) = merge_tab_idx {
+                    if let Some(tab_id) = merge_tab_id {
                         let inputs = Self::merge_inputs_from_extracted(outcome.files);
                         // Runs after the selected-files branch above so a merged
                         // tab (the more "primary" result of a mixed apply) wins
                         // `active_tab` when both kinds of tabs were created —
                         // `start_merge_build_streaming` re-asserts it.
-                        self.start_merge_build_streaming(tab_idx, inputs).await;
+                        self.start_merge_build_streaming(tab_id, inputs).await;
                     }
-                } else if let Some(tab_idx) = merge_tab_idx {
-                    self.remove_pending_merged_tab(tab_idx);
+                } else if let Some(tab_id) = merge_tab_id {
+                    self.remove_pending_merged_tab(tab_id);
                 }
                 errors.extend(outcome.errors);
             }
@@ -1118,10 +1114,10 @@ impl App {
                 let rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
                 self.tabs[0].stream.watch = Some(watch_state_from_file(rx, path));
             }
-            LoadContext::ReplaceTab { tab_idx } => {
-                if tab_idx >= self.tabs.len() {
+            LoadContext::ReplaceTab { tab_id } => {
+                let Some(tab_idx) = self.tab_index_for_id(tab_id) else {
                     return;
-                }
+                };
                 self.tabs[tab_idx].file_reader = result.reader;
                 self.tabs[tab_idx].detect_and_apply_format();
                 self.apply_default_filters_if_empty_at(tab_idx).await;
@@ -1130,16 +1126,16 @@ impl App {
                 self.tabs[tab_idx].stream.watch = Some(watch_state_from_file(rx, path));
             }
             LoadContext::SessionRestoreTab {
-                tab_idx,
+                tab_id,
                 remaining,
                 total,
-                initial_tab_idx,
+                initial_tab_id,
             } => {
-                if tab_idx >= self.tabs.len() {
-                    self.continue_session_restore(remaining, total, initial_tab_idx)
+                let Some(tab_idx) = self.tab_index_for_id(tab_id) else {
+                    self.continue_session_restore(remaining, total, initial_tab_id)
                         .await;
                     return;
-                }
+                };
                 self.tabs[tab_idx].file_reader = result.reader;
                 // Reset visible_indices to All(n) so that the scroll anchor
                 // computed in begin_filter_refresh reflects the full file, not
@@ -1158,7 +1154,7 @@ impl App {
                 let rx = FileReader::spawn_file_watcher(path.clone(), total_bytes).await;
                 self.tabs[tab_idx].stream.watch = Some(watch_state_from_file(rx, path));
 
-                self.continue_session_restore(remaining, total, initial_tab_idx)
+                self.continue_session_restore(remaining, total, initial_tab_id)
                     .await;
             }
         }
@@ -1261,16 +1257,16 @@ impl App {
             if self.tabs[mi].stream.paused {
                 continue;
             }
-            let src_indices = match &self.tabs[mi].merged {
-                Some(m) if !m.stopped => m.source_tab_indices.clone(),
+            let src_ids = match &self.tabs[mi].merged {
+                Some(m) if !m.stopped => m.source_tab_ids.clone(),
                 _ => continue,
             };
 
             let mut any_grew = false;
-            for (si, &src_tab_idx) in src_indices.iter().enumerate() {
-                if src_tab_idx >= n {
+            for (si, &src_tab_id) in src_ids.iter().enumerate() {
+                let Some(src_tab_idx) = self.tab_index_for_id(src_tab_id) else {
                     continue;
-                }
+                };
                 let new_count = self.tabs[src_tab_idx].file_reader.line_count();
                 let old_count = self.tabs[mi].merged.as_ref().unwrap().source_line_counts[si];
                 if new_count <= old_count {
@@ -1304,9 +1300,22 @@ impl App {
                     old_count,
                 );
 
-                let sources: Vec<crate::ingestion::FileReader> = src_indices
+                // Every existing `MergedEntry` points at a source by its
+                // stable position in this array, so a closed source tab's
+                // slot can't be dropped — it keeps its last-known (frozen)
+                // reader from the array being replaced instead.
+                let existing_sources = self.tabs[mi].file_reader.merged_sources().cloned();
+                let sources: Vec<crate::ingestion::FileReader> = src_ids
                     .iter()
-                    .map(|&idx| self.tabs[idx].file_reader.clone())
+                    .enumerate()
+                    .map(|(pos, id)| {
+                        self.tabs
+                            .iter()
+                            .find(|t| t.id == *id)
+                            .map(|t| t.file_reader.clone())
+                            .or_else(|| existing_sources.as_ref().and_then(|s| s.get(pos).cloned()))
+                            .unwrap_or_else(|| crate::ingestion::FileReader::from_bytes(vec![]))
+                    })
                     .collect();
 
                 let entries_arc = std::sync::Arc::new(entries);
@@ -1357,10 +1366,9 @@ impl App {
             }
 
             let Some(update) = latest else { continue };
-            let tab_idx = state.tab_idx;
-            if tab_idx >= self.tabs.len() {
+            let Some(tab_idx) = self.tabs.iter().position(|t| t.id == state.tab_id) else {
                 continue;
-            }
+            };
 
             let done = update.sources_done >= update.sources_total;
             let entries_arc = std::sync::Arc::new(update.entries);
@@ -1605,21 +1613,23 @@ impl App {
     async fn skip_or_fail_load(&mut self, context: LoadContext) {
         match context {
             LoadContext::SessionRestoreTab {
-                tab_idx,
+                tab_id,
                 remaining,
                 total,
-                initial_tab_idx,
+                initial_tab_id,
             } => {
                 // Remove the preview tab created before the load started.
-                if tab_idx < self.tabs.len() && self.tabs.len() > 1 {
+                if self.tabs.len() > 1
+                    && let Some(tab_idx) = self.tab_index_for_id(tab_id)
+                {
                     self.remove_tab_at(tab_idx);
                 }
-                self.continue_session_restore(remaining, total, initial_tab_idx)
+                self.continue_session_restore(remaining, total, initial_tab_id)
                     .await;
             }
-            LoadContext::ReplaceTab { tab_idx } => {
+            LoadContext::ReplaceTab { tab_id } => {
                 // Remove the placeholder preview tab; no further action needed.
-                if tab_idx < self.tabs.len() {
+                if let Some(tab_idx) = self.tab_index_for_id(tab_id) {
                     self.remove_tab_at(tab_idx);
                 }
             }
@@ -1635,9 +1645,9 @@ impl App {
         }
         let total = files.len();
         let queue: VecDeque<String> = files.into_iter().collect();
-        let initial_tab_idx = self.active_tab;
+        let initial_tab_id = self.tabs[self.active_tab].id;
         self.tabs[self.active_tab].interaction.mode = Box::new(NormalMode::default());
-        self.continue_session_restore(queue, total, initial_tab_idx)
+        self.continue_session_restore(queue, total, initial_tab_id)
             .await;
     }
 }
@@ -2109,14 +2119,16 @@ mod tests {
         let preview_reader = FileReader::from_bytes(vec![]);
         let log_manager = LogManager::new(app.db.clone(), None).await;
         let preview_tab = TabState::new(preview_reader, log_manager, "preview.log".to_string());
+        let preview_tab_id = preview_tab.id;
+        let initial_tab_id = app.tabs[0].id;
         app.tabs.push(preview_tab);
         assert_eq!(app.tabs.len(), 2);
 
         app.skip_or_fail_load(LoadContext::SessionRestoreTab {
-            tab_idx: 1, // the preview tab, not the initial placeholder
+            tab_id: preview_tab_id, // the preview tab, not the initial placeholder
             remaining: VecDeque::new(),
             total: 1,
-            initial_tab_idx: 0,
+            initial_tab_id,
         })
         .await;
 
@@ -2922,7 +2934,7 @@ mod tests {
         let path = tmp.path().to_str().unwrap().to_string();
 
         let queue: std::collections::VecDeque<String> = std::iter::once(path).collect();
-        app.continue_session_restore(queue, 1, 0).await;
+        app.continue_session_restore(queue, 1, app.tabs[0].id).await;
 
         // Placeholder should be gone; only the preview tab remains.
         assert_eq!(
@@ -2942,7 +2954,7 @@ mod tests {
         let mut app = make_app(&[]).await;
         let queue = VecDeque::new();
         // Should just return; the only tab is the placeholder.
-        app.continue_session_restore(queue, 0, 0).await;
+        app.continue_session_restore(queue, 0, app.tabs[0].id).await;
         assert_eq!(app.tabs.len(), 1);
     }
 
@@ -3000,7 +3012,7 @@ mod tests {
         app.db.save_file_context(&ctx).await.unwrap();
 
         let queue: std::collections::VecDeque<String> = std::iter::once(path).collect();
-        app.continue_session_restore(queue, 1, 0).await;
+        app.continue_session_restore(queue, 1, app.tabs[0].id).await;
 
         // Preview tab should have context applied before the full load completes.
         assert_eq!(
@@ -3778,7 +3790,7 @@ mod tests {
         let mut app = make_app(&[]).await;
         let mut queue = VecDeque::new();
         queue.push_back("docker:mycontainer".to_string());
-        app.continue_session_restore(queue, 1, 0).await;
+        app.continue_session_restore(queue, 1, app.tabs[0].id).await;
         let tab_idx = app.tabs.len() - 1;
         assert!(app.tabs[tab_idx].title.contains("docker:mycontainer"));
         assert!(app.tabs[tab_idx].stream.retry.is_some());
@@ -3789,7 +3801,7 @@ mod tests {
         let mut app = make_app(&[]).await;
         let mut queue = VecDeque::new();
         queue.push_back("dlt://192.168.1.1:3490".to_string());
-        app.continue_session_restore(queue, 1, 0).await;
+        app.continue_session_restore(queue, 1, app.tabs[0].id).await;
         let tab_idx = app.tabs.len() - 1;
         assert!(app.tabs[tab_idx].stream.retry.is_some());
     }
@@ -3799,7 +3811,7 @@ mod tests {
         let mut app = make_app(&[]).await;
         let mut queue = VecDeque::new();
         queue.push_back("otlp://4318".to_string());
-        app.continue_session_restore(queue, 1, 0).await;
+        app.continue_session_restore(queue, 1, app.tabs[0].id).await;
         let tab_idx = app.tabs.len() - 1;
         assert!(app.tabs[tab_idx].stream.retry.is_some());
     }
@@ -3809,7 +3821,7 @@ mod tests {
         let mut app = make_app(&[]).await;
         let mut queue = VecDeque::new();
         queue.push_back("otlp-grpc://4317".to_string());
-        app.continue_session_restore(queue, 1, 0).await;
+        app.continue_session_restore(queue, 1, app.tabs[0].id).await;
         let tab_idx = app.tabs.len() - 1;
         assert!(app.tabs[tab_idx].stream.retry.is_some());
     }
@@ -4192,10 +4204,11 @@ mod tests {
         let fr = FileReader::from_bytes(vec![]);
         let lm = LogManager::new(app.db.clone(), None).await;
         let tab = TabState::new(fr, lm, "preview".to_string());
+        let tab_id = tab.id;
         app.tabs.push(tab);
         assert_eq!(app.tabs.len(), 2);
 
-        app.skip_or_fail_load(LoadContext::ReplaceTab { tab_idx: 1 })
+        app.skip_or_fail_load(LoadContext::ReplaceTab { tab_id })
             .await;
         assert_eq!(app.tabs.len(), 1);
     }
@@ -4866,7 +4879,8 @@ mod tests {
         app.poll_archive_extraction().await;
         std::fs::remove_file(&path).unwrap();
 
-        let tab_idx = app.pending_archive.as_ref().unwrap().merge_tab_idx.unwrap();
+        let tab_id = app.pending_archive.as_ref().unwrap().merge_tab_id.unwrap();
+        let tab_idx = app.tab_index_for_id(tab_id).unwrap();
         let notification = app.tabs[tab_idx]
             .interaction
             .notification
@@ -5064,7 +5078,7 @@ mod tests {
     #[tokio::test]
     async fn test_open_merge_tab_clears_format_and_continuation_map() {
         let mut app = make_app(&["2024-01-01 10:00:00.000 source-a line1"]).await;
-        app.open_merge_tab(vec![0]).await;
+        app.open_merge_tab(vec![app.tabs[0].id]).await;
         let merged_tab = app.tabs.last().unwrap();
         assert!(
             merged_tab.display.format.is_none(),
@@ -5079,7 +5093,7 @@ mod tests {
     #[tokio::test]
     async fn test_advance_merged_tabs_stopped_skips_update() {
         let mut app = make_app(&["2024-01-01 10:00:00.000 line1"]).await;
-        app.open_merge_tab(vec![0]).await;
+        app.open_merge_tab(vec![app.tabs[0].id]).await;
 
         let mi = app.tabs.len() - 1;
         app.tabs[mi].merged.as_mut().unwrap().stopped = true;
@@ -5105,7 +5119,7 @@ mod tests {
     #[tokio::test]
     async fn test_advance_merged_tabs_paused_skips_update() {
         let mut app = make_app(&["2024-01-01 10:00:00.000 line1"]).await;
-        app.open_merge_tab(vec![0]).await;
+        app.open_merge_tab(vec![app.tabs[0].id]).await;
 
         let mi = app.tabs.len() - 1;
         app.tabs[mi].stream.paused = true;
@@ -5130,7 +5144,7 @@ mod tests {
     #[tokio::test]
     async fn test_advance_merged_tabs_active_filter_triggers_refresh_not_reset() {
         let mut app = make_app(&["2024-01-01 10:00:00.000 keep"]).await;
-        app.open_merge_tab(vec![0]).await;
+        app.open_merge_tab(vec![app.tabs[0].id]).await;
 
         let mi = app.tabs.len() - 1;
         app.active_tab = mi;
@@ -5169,5 +5183,68 @@ mod tests {
             "advance_merged_tabs must call begin_filter_refresh, not reset visible_indices"
         );
         drop(tx);
+    }
+
+    /// Regression test for a real desync: before `MergedState` tracked
+    /// source tabs by `TabId`, it tracked them by raw `Vec` position
+    /// (`source_tab_indices`), which `remove_tab_at` never adjusted.
+    /// Closing an earlier, unrelated tab would silently shift every later
+    /// tab's index down by one, so `advance_merged_tabs` would poll growth
+    /// from whatever tab now sat at a source's old position — not the
+    /// actual source. Growing the real source after such a removal must
+    /// still land in the merged tab, attributed to the right source.
+    #[tokio::test]
+    async fn test_advance_merged_tabs_survives_removing_an_earlier_unrelated_tab() {
+        let mut app = make_app(&[]).await; // tab 0: unrelated placeholder, removed below.
+
+        let lm_a = LogManager::new(app.db.clone(), None).await;
+        let mut tab_a = TabState::new(
+            FileReader::from_bytes(b"2024-01-01T10:00:00Z from-a".to_vec()),
+            lm_a,
+            "a".to_string(),
+        );
+        tab_a.display.format = crate::parser::find_builtin_parser("syslog").map(Arc::from);
+        let tab_a_id = tab_a.id;
+        app.tabs.push(tab_a);
+
+        let lm_b = LogManager::new(app.db.clone(), None).await;
+        let mut tab_b = TabState::new(
+            FileReader::from_bytes(b"2024-01-01T10:00:01Z from-b".to_vec()),
+            lm_b,
+            "b".to_string(),
+        );
+        tab_b.display.format = crate::parser::find_builtin_parser("syslog").map(Arc::from);
+        let tab_b_id = tab_b.id;
+        app.tabs.push(tab_b);
+
+        app.open_merge_tab(vec![tab_a_id, tab_b_id]).await;
+        let merged_id = app.tabs.last().unwrap().id;
+
+        // Remove the unrelated placeholder before either source — this is
+        // exactly the shift that used to desync a raw-index tracker.
+        app.remove_tab_at(0);
+
+        let tab_b_idx = app.tab_index_for_id(tab_b_id).unwrap();
+        app.tabs[tab_b_idx].file_reader = FileReader::from_bytes(
+            b"2024-01-01T10:00:01Z from-b\n2024-01-01T10:00:02Z from-b-grew\n".to_vec(),
+        );
+
+        app.advance_merged_tabs();
+
+        let merged_idx = app.tab_index_for_id(merged_id).unwrap();
+        let merged_reader = &app.tabs[merged_idx].file_reader;
+        assert_eq!(
+            merged_reader.line_count(),
+            3,
+            "must include the new line from the real source b, not skip it \
+             or duplicate/misattribute it"
+        );
+        assert_eq!(merged_reader.get_line(0), b"2024-01-01T10:00:00Z from-a");
+        assert_eq!(merged_reader.get_line(1), b"2024-01-01T10:00:01Z from-b");
+        assert_eq!(
+            merged_reader.get_line(2),
+            b"2024-01-01T10:00:02Z from-b-grew",
+            "growth must be attributed to source b, the tab that actually grew"
+        );
     }
 }
