@@ -633,7 +633,7 @@ impl App {
         // progress from the moment the merge begins — for a big archive,
         // extraction below is the slow part, and without this the tab
         // wouldn't appear at all until it finished.
-        let merge_labels = crate::ingestion::merge_marked_labels(&tree);
+        let merge_labels = crate::ingestion::merge_marked_labels(&tree, &source_path);
         let merge_total = merge_labels.len();
         let (merge_tab_idx, merge_progress_rx, merge_progress_tx) = if merge_total > 0 {
             let tab_idx = self.create_pending_merged_tab(merge_labels).await;
@@ -5051,7 +5051,7 @@ mod tests {
             "exactly the 2 confirmed files should have been extracted, not b.log"
         );
         let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(titles, vec!["top.log", "a.log"]);
+        assert_eq!(titles, vec!["top.log", "nested/inner.zip/a.log"]);
         for tab in &app.tabs {
             assert!(
                 tab.file_reader.line_count() > 0 || tab.load_state.is_some(),

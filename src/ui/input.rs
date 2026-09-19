@@ -1267,7 +1267,7 @@ mod tests {
 
         assert_eq!(app.tabs.len(), initial_tabs + 1);
         let titles: Vec<&str> = app.tabs.iter().map(|t| t.title.as_str()).collect();
-        assert!(titles.contains(&"inner.log"));
+        assert!(titles.contains(&"bundle.zip/inner.log"));
     }
 
     #[tokio::test]

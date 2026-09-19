@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Cursor, Read, Seek};
 use std::sync::Arc;
@@ -1007,12 +1006,11 @@ pub(crate) fn extract_ids(
     ids: &[NodeId],
     progress_tx: tokio::sync::watch::Sender<ArchiveExtractionProgress>,
 ) -> ExtractionOutcome<ExtractedFile> {
-    let mut used_names: HashMap<String, usize> = HashMap::new();
     let mut files = Vec::with_capacity(ids.len());
     let mut errors = Vec::new();
     let total = ids.len().max(1);
     for (i, &node_id) in ids.iter().enumerate() {
-        let name = disambiguated_name(tree, node_id, &mut used_names);
+        let name = relative_name(tree, node_id, path);
         let full_path = node_source_path(tree, node_id, path);
         let result = resolve_node_bytes(tree, node_id, path)
             .and_then(|bytes| decompress_to_temp(&mut Cursor::new(bytes), name.clone(), full_path));
@@ -1055,22 +1053,21 @@ pub fn extract_selected(
 }
 
 /// The display labels every merge-marked file will extract to — same
-/// disambiguation as `extract_and_detect_merge_marked`, but computed from
-/// the tree alone, so the destination tab can be titled immediately,
-/// before the slow read phase produces anything.
-pub fn merge_marked_labels(tree: &ArchiveTree) -> Vec<String> {
-    let mut used_names: HashMap<String, usize> = HashMap::new();
+/// naming as `extract_and_detect_merge_marked`, but computed from the tree
+/// alone, so the destination tab can be titled immediately, before the slow
+/// read phase produces anything.
+pub fn merge_marked_labels(tree: &ArchiveTree, root_path: &str) -> Vec<String> {
     tree.nodes
         .iter()
         .filter(|n| n.merge_marked && matches!(n.kind, NodeKind::File))
-        .map(|n| disambiguated_name(tree, n.id, &mut used_names))
+        .map(|n| relative_name(tree, n.id, root_path))
         .collect()
 }
 
 /// A merge-marked file's extracted, format-detected form — ready to feed
 /// into building a merged tab without its own `TabState`/`LogManager`/DB row.
 pub struct MergeMarkedSource {
-    /// Same disambiguated display name `extract_selected` produces.
+    /// Same root-relative display name `extract_selected` produces.
     pub label: String,
     pub reader: crate::ingestion::FileReader,
     pub detected: crate::ingestion::format_detect::DetectedFormat,
@@ -1115,45 +1112,25 @@ pub fn extract_and_detect_merge_marked(
     }
 }
 
-/// A selected file's display name: its basename (compression suffix
-/// stripped, see [`display_name_for_extraction`]), or — only once a later
-/// file collides with an earlier basename — the basename suffixed with its
-/// full ancestry path, keeping the no-collision case clean. The ancestry
-/// path (not just the immediate parent's name) matters because two nested
-/// containers can share a name too, e.g. `"2023/logs.zip"` and
-/// `"2024/logs.zip"` both containing an `"app.log"` — suffixing with just
-/// the parent name ("logs.zip") would leave them colliding with each other.
-fn disambiguated_name(
-    tree: &ArchiveTree,
-    node_id: NodeId,
-    used: &mut HashMap<String, usize>,
-) -> String {
-    let node = &tree.nodes[node_id];
-    let display_name = display_name_for_extraction(&node.name);
-    let seen_before = used.entry(display_name.clone()).or_insert(0);
-    *seen_before += 1;
-    if *seen_before == 1 {
-        return display_name;
+/// A selected file's display name: its path relative to the opened
+/// archive/directory root (e.g. `"folder1/runtime.log"`, or
+/// `"a.zip/app.log"` for an entry nested inside a nested archive), with any
+/// compression suffix on the leaf stripped (see
+/// [`display_name_for_extraction`]). Always the full relative path — not
+/// just the basename — so entries that share a basename in different
+/// folders/archives (e.g. `"2023/logs.zip"` and `"2024/logs.zip"` both
+/// containing an `"app.log"`) stay distinguishable as tab names.
+fn relative_name(tree: &ArchiveTree, node_id: NodeId, root_path: &str) -> String {
+    let source_path = node_source_path(tree, node_id, root_path);
+    let root = root_path.trim_end_matches('/');
+    let relative = source_path
+        .strip_prefix(root)
+        .unwrap_or(&source_path)
+        .trim_start_matches('/');
+    match relative.rsplit_once('/') {
+        Some((dir, leaf)) => format!("{dir}/{}", display_name_for_extraction(leaf)),
+        None => display_name_for_extraction(relative),
     }
-    match full_ancestry_path(tree, node_id).rsplit_once('/') {
-        Some((dir, _)) => format!("{} ({})", display_name, dir),
-        None => display_name,
-    }
-}
-
-/// `node_id`'s path from the tree's root, joining each ancestor's own
-/// `full_path` — unlike a single node's `full_path` (relative only to its
-/// *own* containing archive), this stays unique across arbitrarily nested
-/// archives, since no two nodes anywhere in the tree can share it.
-fn full_ancestry_path(tree: &ArchiveTree, node_id: NodeId) -> String {
-    let mut segments = Vec::new();
-    let mut current = Some(node_id);
-    while let Some(id) = current {
-        segments.push(tree.nodes[id].full_path.as_str());
-        current = tree.nodes[id].parent;
-    }
-    segments.reverse();
-    segments.join("/")
 }
 
 /// The real, human-facing location of `node_id`'s content — an absolute
@@ -2926,14 +2903,14 @@ mod tests {
         extracted.sort_by(|a, b| a.name.cmp(&b.name));
 
         assert_eq!(extracted.len(), 2);
-        assert_eq!(extracted[0].name, "a.log");
+        assert_eq!(extracted[0].name, "bundle.zip/a.log");
         assert_eq!(read_extracted(&mut extracted[0]), "one");
-        assert_eq!(extracted[1].name, "b.log");
+        assert_eq!(extracted[1].name, "bundle.zip/b.log");
         assert_eq!(read_extracted(&mut extracted[1]), "two");
     }
 
     #[test]
-    fn test_extract_selected_disambiguates_colliding_basenames() {
+    fn test_extract_selected_names_colliding_basenames_by_relative_path() {
         let inner_a = make_zip(&[("app.log", b"from-a")]);
         let inner_a_bytes = std::fs::read(inner_a.path()).unwrap();
         let inner_b = make_zip(&[("app.log", b"from-b")]);
@@ -2960,11 +2937,11 @@ mod tests {
 
         let mut names: Vec<&str> = extracted.iter().map(|f| f.name.as_str()).collect();
         names.sort();
-        assert_eq!(names, vec!["app.log", "app.log (b.zip)"]);
+        assert_eq!(names, vec!["a.zip/app.log", "b.zip/app.log"]);
     }
 
     #[test]
-    fn test_extract_selected_disambiguates_same_named_containers_in_different_dirs() {
+    fn test_extract_selected_names_same_named_containers_in_different_dirs_by_relative_path() {
         let inner_2023 = make_zip(&[("app.log", b"from-2023")]);
         let inner_2023_bytes = std::fs::read(inner_2023.path()).unwrap();
         let inner_2024 = make_zip(&[("app.log", b"from-2024")]);
@@ -2989,14 +2966,12 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         extracted.sort_by(|a, b| a.name.cmp(&b.name));
 
-        // Both nested containers are named "logs.zip", so disambiguating the
-        // second occurrence by the immediate parent's bare name alone would
-        // produce "app.log (logs.zip)" — indistinguishable from what a third
-        // same-named container would also produce. The full archive-relative
-        // ancestry path keeps it unique.
         let mut names: Vec<&str> = extracted.iter().map(|f| f.name.as_str()).collect();
         names.sort();
-        assert_eq!(names, vec!["app.log", "app.log (2024/logs.zip)"]);
+        assert_eq!(
+            names,
+            vec!["2023/logs.zip/app.log", "2024/logs.zip/app.log"]
+        );
     }
 
     #[test]
@@ -3040,7 +3015,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(extracted.len(), 1);
-        assert_eq!(extracted[0].name, "app.log");
+        assert_eq!(extracted[0].name, "inner.zip/app.log");
         assert_eq!(read_extracted(&mut extracted[0]), "deeply nested content");
     }
 
@@ -3106,5 +3081,23 @@ mod tests {
         assert_eq!(extracted.len(), 1);
         assert_eq!(extracted[0].name, "app.log");
         assert_eq!(read_extracted(&mut extracted[0]), "cached path content");
+    }
+
+    #[test]
+    fn test_extract_selected_directory_same_basename_in_different_subdirs_is_relative_to_root() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp_dir.path().join("folder1")).unwrap();
+        std::fs::create_dir(tmp_dir.path().join("folder2")).unwrap();
+        std::fs::write(tmp_dir.path().join("folder1/runtime.log"), b"one").unwrap();
+        std::fs::write(tmp_dir.path().join("folder2/runtime.log"), b"two").unwrap();
+        let dir_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut tree = list_directory_tree(&dir_path).unwrap();
+        tree.set_all_files_selected(true);
+        let extracted = extract_selected(&dir_path, &tree, no_progress()).files;
+
+        let mut names: Vec<&str> = extracted.iter().map(|f| f.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["folder1/runtime.log", "folder2/runtime.log"]);
     }
 }
