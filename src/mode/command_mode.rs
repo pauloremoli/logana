@@ -66,6 +66,15 @@ impl CommandMode {
         }
     }
 
+    /// True if `input` is a `FILE_PATH_COMMANDS` invocation (e.g. `open <path>`),
+    /// meaning its trailing argument is a file path.
+    fn is_file_path_completion(input: &str) -> bool {
+        let trimmed = input.trim_start();
+        FILE_PATH_COMMANDS
+            .iter()
+            .any(|cmd| trimmed.starts_with(&format!("{cmd} ")))
+    }
+
     /// If `input` starts with `cmd` followed by a space, returns the rest as the argument partial.
     fn arg_partial<'a>(input: &'a str, cmd: &str) -> Option<&'a str> {
         input
@@ -382,9 +391,18 @@ impl Mode for CommandMode {
             }
             KeyCode::Char(c) => {
                 if let Some(query) = self.completion_query.take() {
-                    self.input = query;
-                    self.cursor = self.input.len();
-                    self.completion_index = None;
+                    // A file-path completion (e.g. `:open`) is already the
+                    // literal value the user wants; typing more (like a `*`
+                    // glob suffix) should extend it, not discard it back to
+                    // the pre-Tab partial the way command/field fuzzy-search
+                    // completions do.
+                    if Self::is_file_path_completion(&self.input) {
+                        self.completion_index = None;
+                    } else {
+                        self.input = query;
+                        self.cursor = self.input.len();
+                        self.completion_index = None;
+                    }
                 }
                 self.input.insert(self.cursor, c);
                 self.cursor += 1;
@@ -943,6 +961,39 @@ mod tests {
             "Should accept application.log, got: {accepted}"
         );
         assert!(completion_index(mode3.as_ref()).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_typing_glob_char_after_file_path_tab_completion_extends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        std::fs::write(path.join("system.log"), b"data").unwrap();
+
+        let partial = format!("{}/sy", path.to_str().unwrap());
+        let input_str = format!("open {}", partial);
+        let cursor = input_str.len();
+        let mode = CommandMode::with_history(input_str, cursor, vec![]);
+        let mut tab = make_tab().await;
+        let (mode2, _) = Box::new(mode)
+            .handle_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE)
+            .await;
+        let (completed, _) = command_state(mode2.as_ref()).unwrap();
+        assert!(
+            completed.ends_with("system.log"),
+            "Tab should complete to system.log, got: {completed}"
+        );
+
+        // Typing '*' right after a file-path Tab completion (no Space) must
+        // extend the completed path, not revert to the pre-Tab partial.
+        let (mode3, _) = mode2
+            .handle_key(&mut tab, KeyCode::Char('*'), KeyModifiers::NONE)
+            .await;
+        let (input, _) = command_state(mode3.as_ref()).unwrap();
+        assert_eq!(
+            input,
+            format!("{}*", completed),
+            "Typing '*' should append to the completed path, got: {input}"
+        );
     }
 
     #[tokio::test]
