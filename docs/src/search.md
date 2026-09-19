@@ -19,6 +19,8 @@ Press `/` to open the search bar at the bottom of the screen. Type your query an
 - `n` wraps around to the first match after the last line.
 - `N` wraps around to the last match before the first line.
 
+Once a search is committed, the hint line shows `match <current> / <total>` alongside the configured `next_match`/`prev_match` keys (`n`/`N` by default) as a reminder of how to step through the results.
+
 ## Pattern Syntax
 
 Search uses full regex syntax. Examples:

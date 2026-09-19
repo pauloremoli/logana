@@ -13,6 +13,11 @@ pub struct InputBar<'a> {
     pub total_matches: usize,
     pub current_occurrence: usize,
     pub progress: Option<(String, usize)>,
+    /// Configured `next_match`/`prev_match` keys, shown next to the match
+    /// count once a search is committed so the navigation keys are
+    /// discoverable without opening the keybindings help overlay.
+    pub next_match_key: &'a str,
+    pub prev_match_key: &'a str,
     pub theme: &'a Theme,
 }
 
@@ -37,8 +42,11 @@ impl<'a> InputBar<'a> {
                 "  no matches".to_string()
             } else {
                 format!(
-                    "  match {} / {}",
-                    self.current_occurrence, self.total_matches
+                    "  match {} / {}  ({}/{}: next/prev match)",
+                    self.current_occurrence,
+                    self.total_matches,
+                    self.next_match_key,
+                    self.prev_match_key
                 )
             }
         } else {
@@ -101,6 +109,8 @@ mod tests {
             total_matches: 5,
             current_occurrence: 2,
             progress: None,
+            next_match_key: "n",
+            prev_match_key: "N",
             theme,
         }
     }
@@ -116,6 +126,8 @@ mod tests {
             total_matches: 3,
             current_occurrence: 1,
             progress: None,
+            next_match_key: "n",
+            prev_match_key: "N",
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 2)).unwrap();
@@ -133,6 +145,8 @@ mod tests {
             total_matches: 2,
             current_occurrence: 1,
             progress: None,
+            next_match_key: "n",
+            prev_match_key: "N",
             theme: &theme,
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 2)).unwrap();
@@ -150,6 +164,8 @@ mod tests {
             total_matches: 1,
             current_occurrence: 1,
             progress: None,
+            next_match_key: "n",
+            prev_match_key: "N",
             theme: &theme,
         };
         let area = Rect::new(0, 5, 80, 1);
@@ -168,6 +184,8 @@ mod tests {
             total_matches: 1,
             current_occurrence: 1,
             progress: None,
+            next_match_key: "n",
+            prev_match_key: "N",
             theme: &theme,
         };
         let area = Rect::new(0, 5, 80, 1);
@@ -185,6 +203,8 @@ mod tests {
             total_matches: 7,
             current_occurrence: 1,
             progress: None,
+            next_match_key: "n",
+            prev_match_key: "N",
             theme: &theme,
         };
         assert_eq!(bar.hint_text(), "  7 matches");
@@ -201,6 +221,8 @@ mod tests {
             total_matches: 0,
             current_occurrence: 0,
             progress: None,
+            next_match_key: "n",
+            prev_match_key: "N",
             theme: &theme,
         };
         assert_eq!(bar.hint_text(), "  no matches");
@@ -217,9 +239,32 @@ mod tests {
             total_matches: 10,
             current_occurrence: 3,
             progress: None,
+            next_match_key: "n",
+            prev_match_key: "N",
             theme: &theme,
         };
-        assert_eq!(bar.hint_text(), "  match 3 / 10");
+        assert_eq!(bar.hint_text(), "  match 3 / 10  (n/N: next/prev match)");
+    }
+
+    #[test]
+    fn test_hint_text_inactive_with_matches_uses_configured_keys() {
+        let theme = Theme::default();
+        let bar = InputBar {
+            query: "x",
+            cursor_pos: 1,
+            forward: true,
+            is_active: false,
+            total_matches: 10,
+            current_occurrence: 3,
+            progress: None,
+            next_match_key: "Ctrl+n",
+            prev_match_key: "Ctrl+p",
+            theme: &theme,
+        };
+        assert_eq!(
+            bar.hint_text(),
+            "  match 3 / 10  (Ctrl+n/Ctrl+p: next/prev match)"
+        );
     }
 
     #[test]

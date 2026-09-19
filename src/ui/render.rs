@@ -887,6 +887,9 @@ impl App {
                 .handle
                 .as_ref()
                 .map(|h| progress_bar_str(*h.progress_rx.borrow()));
+            let keybindings = &self.tabs[self.active_tab].interaction.keybindings;
+            let next_match_key = keybindings.normal.next_match.display();
+            let prev_match_key = keybindings.normal.prev_match.display();
             let bar = InputBar {
                 query: &input_str,
                 cursor_pos,
@@ -895,6 +898,8 @@ impl App {
                 total_matches: total,
                 current_occurrence,
                 progress,
+                next_match_key: &next_match_key,
+                prev_match_key: &prev_match_key,
                 theme: &self.theme,
             };
             if let Some((cx, cy)) = bar.cursor_position(input_area) {
