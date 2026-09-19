@@ -79,6 +79,9 @@ impl Mode for CommentMode {
         // Save (configurable, default Ctrl+S)
         if comment_kb.save.matches(key, modifiers) {
             let text = self.lines.join("\n");
+            // Commented lines are always marked, so they stay visible even
+            // under an active filter — see `TabState::mark_lines`.
+            tab.mark_lines(&self.line_indices);
             if let Some(idx) = self.editing_index {
                 let mut comments = tab.comment_manager.get().to_vec();
                 if idx < comments.len() {
@@ -319,6 +322,46 @@ mod tests {
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].text, "line one\nline two");
         assert_eq!(comments[0].line_indices, vec![0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_s_auto_marks_commented_lines() {
+        let mut tab = make_tab().await;
+        assert!(!tab.mark_manager.is_marked(0));
+        assert!(!tab.mark_manager.is_marked(1));
+        let mut mode = CommentMode::new(vec![0, 1]);
+        mode.lines = vec!["note".to_string()];
+        press(mode, &mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
+        assert!(
+            tab.mark_manager.is_marked(0),
+            "commenting a line must auto-mark it"
+        );
+        assert!(tab.mark_manager.is_marked(1));
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_s_auto_mark_keeps_commented_line_visible_under_filter() {
+        use crate::filters::{FilterOptions, FilterType};
+        let mut tab = make_tab().await;
+        tab.log_manager
+            .add_filter_with_color(
+                "nonexistent".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.refresh_visible();
+        assert!(
+            !tab.filter.visible_indices.contains(0),
+            "precondition: the filter hides every line"
+        );
+        let mut mode = CommentMode::new(vec![0]);
+        mode.lines = vec!["note".to_string()];
+        press(mode, &mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL).await;
+        assert!(
+            tab.filter.visible_indices.contains(0),
+            "a commented line must stay visible even though the active filter hides it"
+        );
     }
 
     #[tokio::test]

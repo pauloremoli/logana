@@ -565,11 +565,14 @@ impl App {
         }
         match cmd {
             McpCommand::ToggleMark(idx) => {
-                self.tabs[self.active_tab].mark_manager.toggle(idx);
+                self.tabs[self.active_tab].toggle_mark(idx);
                 self.save_tab_context(&self.tabs[self.active_tab]).await;
                 self.refresh_mcp_snapshot();
             }
             McpCommand::AddAnnotation { text, line_indices } => {
+                // Commented lines are always marked, so they stay visible
+                // even under an active filter — see `TabState::mark_lines`.
+                self.tabs[self.active_tab].mark_lines(&line_indices);
                 self.tabs[self.active_tab]
                     .comment_manager
                     .add(text, line_indices);
@@ -1959,6 +1962,10 @@ mod tests {
         .unwrap();
         app.poll_mcp_commands().await;
         assert!(!app.tabs[0].comment_manager.get().is_empty());
+        assert!(
+            app.tabs[0].mark_manager.is_marked(0),
+            "an MCP-added annotation must auto-mark its line too"
+        );
     }
 
     #[tokio::test]

@@ -136,12 +136,12 @@ impl Mode for VisualLineMode {
                 let all_marked = line_indices.iter().all(|&i| tab.mark_manager.is_marked(i));
                 if all_marked {
                     for idx in &line_indices {
-                        tab.mark_manager.toggle(*idx);
+                        tab.toggle_mark(*idx);
                     }
                 } else {
                     for idx in &line_indices {
                         if !tab.mark_manager.is_marked(*idx) {
-                            tab.mark_manager.toggle(*idx);
+                            tab.toggle_mark(*idx);
                         }
                     }
                 }

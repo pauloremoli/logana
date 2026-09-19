@@ -24,6 +24,8 @@ All notable changes to logana will be documented in this file.
 
 ### Changed
 - `:open` and a directory command-line argument now open every file inside the directory by default, each in its own tab, instead of showing a picker. Use `:file-picker` to choose which files to open instead.
+- Commenting a line now marks it automatically.
+- Marked and commented lines always stay visible, even when an active filter would otherwise hide them.
 
 ### Fixed
 - Fix filter groups being shared across tabs/files instead of scoped per file like filters, including `:toggle-group` affecting other tabs and `:save-filters`/`:load-filters` leaking groups between them.

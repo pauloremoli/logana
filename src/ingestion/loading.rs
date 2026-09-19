@@ -1566,6 +1566,7 @@ impl App {
                             tab.filter.manager.has_include(),
                         );
                     }
+                    tab.union_marked_into_visible();
                     tab.sync_collapse_mask();
                     tab.restore_scroll_to_line(scroll_anchor);
                 } else if tab.filter.visible_indices.is_empty() {
@@ -3091,6 +3092,26 @@ mod tests {
             tx.try_send(chunk).unwrap();
         }
         (handle, tx)
+    }
+
+    #[tokio::test]
+    async fn test_advance_filter_computation_keeps_marked_line_visible_on_last_chunk() {
+        let mut app = make_app(&["line0", "line1", "line2"]).await;
+        app.tabs[0].mark_manager.toggle(1);
+        let (handle, _tx) = make_filter_handle_with_chunks(vec![FilterChunk {
+            // The background scan's own content-based result excludes line
+            // 1 — it must still end up visible because it's marked.
+            visible: vec![0, 2],
+            filter_match_counts: None,
+            is_last: true,
+            progress: 1.0,
+        }]);
+        app.tabs[0].filter.handle = Some(handle);
+        app.advance_filter_computation();
+        assert_eq!(
+            app.tabs[0].filter.visible_indices,
+            VisibleLines::Filtered(vec![0, 1, 2])
+        );
     }
 
     #[tokio::test]

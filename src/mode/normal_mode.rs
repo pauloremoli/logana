@@ -314,7 +314,7 @@ impl Mode for NormalMode {
 
         if kb.normal.mark_line.matches(key, modifiers) {
             if let Some(line_idx) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
-                tab.mark_manager.toggle(line_idx);
+                tab.toggle_mark(line_idx);
             }
             tab.interaction.g_key_pressed = false;
             self.count = None;

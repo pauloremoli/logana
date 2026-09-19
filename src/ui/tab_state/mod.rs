@@ -447,6 +447,33 @@ impl VisibleLines {
     pub fn slice_to_vec(&self, lo: usize, hi: usize) -> Vec<usize> {
         (lo..=hi).map(|i| self.get(i)).collect()
     }
+
+    /// Inserts `idx` at its sorted position if it isn't already visible.
+    /// No-op for `All`, since every line is already visible there.
+    pub fn ensure_visible(&mut self, idx: usize) {
+        let Self::Filtered(v) = self else { return };
+        if let Err(pos) = v.binary_search(&idx) {
+            v.insert(pos, idx);
+        }
+    }
+
+    /// Ensures every index in `marked` is present — used so marked (and
+    /// commented) lines stay visible even when a filter would otherwise
+    /// hide them. No-op for `All`, since every line is already visible.
+    pub fn union_marked(&mut self, marked: &[usize]) {
+        let Self::Filtered(v) = self else { return };
+        let mut existing: std::collections::HashSet<usize> = v.iter().copied().collect();
+        let mut added = false;
+        for &idx in marked {
+            if existing.insert(idx) {
+                v.push(idx);
+                added = true;
+            }
+        }
+        if added {
+            v.sort_unstable();
+        }
+    }
 }
 
 impl Default for VisibleLines {
@@ -1002,6 +1029,43 @@ impl TabState {
         })
     }
 
+    /// Re-applies "marked lines are always visible" to the current view —
+    /// call after any full recompute of `visible_indices` so a line that's
+    /// marked (directly, or auto-marked by a comment) stays visible even
+    /// when it doesn't match the active filters.
+    pub(crate) fn union_marked_into_visible(&mut self) {
+        let mut marked = self.mark_manager.get_indices();
+        let line_count = self.file_reader.line_count();
+        marked.retain(|&i| i < line_count);
+        self.filter.visible_indices.union_marked(&marked);
+    }
+
+    /// Marks `line_idx` and, if a filter currently hides it, shows it
+    /// immediately rather than waiting for the next filter recompute.
+    pub fn mark_line(&mut self, line_idx: usize) {
+        self.mark_manager.mark(line_idx);
+        self.filter.visible_indices.ensure_visible(line_idx);
+    }
+
+    /// Marks every line in `indices` — used to auto-mark a line (or a
+    /// commented range) so commented lines are always visible, matching
+    /// `mark_line`'s single-line behavior.
+    pub fn mark_lines(&mut self, indices: &[usize]) {
+        for &idx in indices {
+            self.mark_line(idx);
+        }
+    }
+
+    /// Toggles `line_idx`'s mark. When the toggle marks it, it's made
+    /// visible immediately (see `mark_line`); unmarking is reconciled by
+    /// the next full filter recompute rather than hidden right away.
+    pub fn toggle_mark(&mut self, line_idx: usize) {
+        self.mark_manager.toggle(line_idx);
+        if self.mark_manager.is_marked(line_idx) {
+            self.filter.visible_indices.ensure_visible(line_idx);
+        }
+    }
+
     fn scan_level_forward(&self, from: usize, errors: bool) -> Option<usize> {
         let len = self.filter.visible_indices.len();
         (from.saturating_add(1)..len).find(|&pos| self.pos_matches_level(pos, errors))
@@ -1077,6 +1141,7 @@ impl TabState {
             self.filter.date_styles = Vec::new();
             self.filter.field_styles = Vec::new();
             self.filter.match_counts = Vec::new();
+            self.union_marked_into_visible();
             self.sync_collapse_mask();
             self.restore_scroll_to_line(current_line);
             return;
@@ -1322,6 +1387,7 @@ impl TabState {
             }
         }
 
+        self.union_marked_into_visible();
         self.sync_collapse_mask();
         self.restore_scroll_to_line(current_line);
     }
@@ -1607,6 +1673,7 @@ impl TabState {
             self.filter.date_styles = Vec::new();
             self.filter.field_styles = Vec::new();
             self.filter.match_counts = Vec::new();
+            self.union_marked_into_visible();
             self.sync_collapse_mask();
             self.restore_scroll_to_line(current_line);
             return;
@@ -1655,6 +1722,7 @@ impl TabState {
             self.filter.text_styles = saved_styles;
             self.filter.date_styles = saved_date_styles;
             self.filter.field_styles = saved_field_styles;
+            self.union_marked_into_visible();
             self.sync_collapse_mask();
             self.restore_scroll_to_line(current_line);
             return;
@@ -1703,6 +1771,7 @@ impl TabState {
             self.filter.date_styles = saved_date_styles;
             self.filter.field_styles = saved_field_styles;
             self.filter.match_counts = cached.match_counts.clone();
+            self.union_marked_into_visible();
             self.restore_scroll_to_line(current_line);
             return;
         }
@@ -3269,6 +3338,100 @@ mod tests {
         let mut tab = make_tab(&["line1"]).await;
         tab.merged_temp = Some(tempfile::NamedTempFile::new().unwrap());
         assert!(tab.is_temp_backed());
+    }
+
+    #[test]
+    fn test_visible_lines_ensure_visible_inserts_sorted() {
+        let mut v = VisibleLines::Filtered(vec![0, 4, 8]);
+        v.ensure_visible(2);
+        assert_eq!(v, VisibleLines::Filtered(vec![0, 2, 4, 8]));
+    }
+
+    #[test]
+    fn test_visible_lines_ensure_visible_noop_when_already_present() {
+        let mut v = VisibleLines::Filtered(vec![0, 2, 4]);
+        v.ensure_visible(2);
+        assert_eq!(v, VisibleLines::Filtered(vec![0, 2, 4]));
+    }
+
+    #[test]
+    fn test_visible_lines_ensure_visible_noop_for_all() {
+        let mut v = VisibleLines::All(5);
+        v.ensure_visible(2);
+        assert_eq!(v, VisibleLines::All(5));
+    }
+
+    #[test]
+    fn test_visible_lines_union_marked_adds_missing_sorted() {
+        let mut v = VisibleLines::Filtered(vec![1, 5]);
+        v.union_marked(&[3, 1, 7]);
+        assert_eq!(v, VisibleLines::Filtered(vec![1, 3, 5, 7]));
+    }
+
+    #[test]
+    fn test_visible_lines_union_marked_noop_for_all() {
+        let mut v = VisibleLines::All(10);
+        v.union_marked(&[3, 7]);
+        assert_eq!(v, VisibleLines::All(10));
+    }
+
+    #[tokio::test]
+    async fn test_toggle_mark_shows_line_hidden_by_active_filter() {
+        let mut tab = make_tab(&["keep", "hide", "keep2"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "keep".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.refresh_visible();
+        assert!(
+            !tab.filter.visible_indices.contains(1),
+            "precondition: the filter hides line 1"
+        );
+        tab.toggle_mark(1);
+        assert!(
+            tab.filter.visible_indices.contains(1),
+            "marking a filtered-out line must show it immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mark_survives_a_fresh_filter_recompute() {
+        let mut tab = make_tab(&["keep", "hide", "keep2"]).await;
+        tab.mark_manager.toggle(1);
+        tab.log_manager
+            .add_filter_with_color(
+                "keep".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.refresh_visible();
+        assert!(
+            tab.filter.visible_indices.contains(1),
+            "a marked line must stay visible through a fresh filter scan, \
+             not just an immediate toggle patch"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mark_lines_marks_and_shows_every_index() {
+        let mut tab = make_tab(&["keep", "hide", "hide2", "keep2"]).await;
+        tab.log_manager
+            .add_filter_with_color(
+                "keep".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.refresh_visible();
+        tab.mark_lines(&[1, 2]);
+        assert!(tab.mark_manager.is_marked(1));
+        assert!(tab.mark_manager.is_marked(2));
+        assert!(tab.filter.visible_indices.contains(1));
+        assert!(tab.filter.visible_indices.contains(2));
     }
 
     #[tokio::test]

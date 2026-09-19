@@ -15,6 +15,12 @@ impl MarkManager {
         }
     }
 
+    /// Ensures `line_idx` is marked, regardless of its current state —
+    /// unlike `toggle`, calling this twice has the same effect as once.
+    pub fn mark(&mut self, line_idx: usize) {
+        self.marks.insert(line_idx);
+    }
+
     pub fn is_marked(&self, line_idx: usize) -> bool {
         self.marks.contains(&line_idx)
     }
@@ -65,6 +71,16 @@ mod tests {
         assert!(m.is_marked(5));
 
         assert_eq!(m.get_indices(), vec![5]);
+    }
+
+    #[test]
+    fn test_mark_is_idempotent_and_does_not_toggle_off() {
+        let mut m = MarkManager::default();
+        m.mark(3);
+        assert!(m.is_marked(3));
+        m.mark(3);
+        assert!(m.is_marked(3), "marking twice must not unmark");
+        assert_eq!(m.get_indices(), vec![3]);
     }
 
     #[test]
