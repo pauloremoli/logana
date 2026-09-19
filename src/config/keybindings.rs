@@ -421,6 +421,14 @@ fn default_toggle_groups_panel() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('g'), KeyModifiers::NONE)])
 }
 #[inline(always)]
+fn default_ui_sidebar_grow() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('>'), KeyModifiers::NONE)])
+}
+#[inline(always)]
+fn default_ui_sidebar_shrink() -> KeyBindings {
+    KeyBindings(vec![KeyBinding(KeyCode::Char('<'), KeyModifiers::NONE)])
+}
+#[inline(always)]
 fn default_visual_mode() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('V'), KeyModifiers::NONE)])
 }
@@ -709,14 +717,6 @@ fn default_filter_exit() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Esc, KeyModifiers::NONE)])
 }
 #[inline(always)]
-fn default_filter_sidebar_grow() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('>'), KeyModifiers::NONE)])
-}
-#[inline(always)]
-fn default_filter_sidebar_shrink() -> KeyBindings {
-    KeyBindings(vec![KeyBinding(KeyCode::Char('<'), KeyModifiers::NONE)])
-}
-#[inline(always)]
 fn default_filter_search() -> KeyBindings {
     KeyBindings(vec![KeyBinding(KeyCode::Char('/'), KeyModifiers::NONE)])
 }
@@ -751,10 +751,6 @@ pub struct FilterKeybindings {
     pub add_highlight_filter: KeyBindings,
     #[serde(default = "default_filter_exit")]
     pub exit_mode: KeyBindings,
-    #[serde(default = "default_filter_sidebar_grow")]
-    pub sidebar_grow: KeyBindings,
-    #[serde(default = "default_filter_sidebar_shrink")]
-    pub sidebar_shrink: KeyBindings,
     #[serde(default = "default_filter_search")]
     pub search: KeyBindings,
 }
@@ -776,8 +772,6 @@ impl Default for FilterKeybindings {
             add_date_filter: default_filter_add_date(),
             add_highlight_filter: default_filter_add_highlight(),
             exit_mode: default_filter_exit(),
-            sidebar_grow: default_filter_sidebar_grow(),
-            sidebar_shrink: default_filter_sidebar_shrink(),
             search: default_filter_search(),
         }
     }
@@ -1646,6 +1640,10 @@ pub struct UiKeybindings {
     pub toggle_relative_line_numbers: KeyBindings,
     #[serde(default = "default_toggle_groups_panel")]
     pub toggle_groups_panel: KeyBindings,
+    #[serde(default = "default_ui_sidebar_grow")]
+    pub sidebar_grow: KeyBindings,
+    #[serde(default = "default_ui_sidebar_shrink")]
+    pub sidebar_shrink: KeyBindings,
     #[serde(default = "default_ui_exit")]
     pub exit: KeyBindings,
 }
@@ -1659,6 +1657,8 @@ impl Default for UiKeybindings {
             toggle_wrap: default_toggle_wrap(),
             toggle_relative_line_numbers: default_toggle_relative_line_numbers(),
             toggle_groups_panel: default_toggle_groups_panel(),
+            sidebar_grow: default_ui_sidebar_grow(),
+            sidebar_shrink: default_ui_sidebar_shrink(),
             exit: default_ui_exit(),
         }
     }

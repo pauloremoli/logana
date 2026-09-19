@@ -422,18 +422,6 @@ impl FilterManagementMode {
     fn add_highlight_filter(tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
         open_command(tab, "highlight ".to_string())
     }
-
-    fn sidebar_grow(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
-        tab.display.sidebar_width = tab.display.sidebar_width.saturating_add(2);
-        let (mode, _) = stay_at(self.selected_filter_index, tab);
-        (mode, KeyResult::ResizeSidebar(tab.display.sidebar_width))
-    }
-
-    fn sidebar_shrink(&self, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
-        tab.display.sidebar_width = tab.display.sidebar_width.saturating_sub(2).max(10);
-        let (mode, _) = stay_at(self.selected_filter_index, tab);
-        (mode, KeyResult::ResizeSidebar(tab.display.sidebar_width))
-    }
 }
 
 #[async_trait]
@@ -581,13 +569,6 @@ impl Mode for FilterManagementMode {
         if kb.filter.add_highlight_filter.matches(key, modifiers) {
             return Self::add_highlight_filter(tab);
         }
-        if kb.filter.sidebar_grow.matches(key, modifiers) {
-            return self.sidebar_grow(tab);
-        }
-        if kb.filter.sidebar_shrink.matches(key, modifiers) {
-            return self.sidebar_shrink(tab);
-        }
-
         self.count = None;
         tab.interaction.g_key_pressed = false;
         (self, KeyResult::Ignored)
@@ -678,21 +659,6 @@ impl Mode for FilterManagementMode {
             "clear",
             theme,
         );
-        spans.push(Span::styled("<", Style::default().fg(theme.text)));
-        spans.push(Span::styled(
-            kb.filter.sidebar_shrink.display(),
-            Style::default()
-                .fg(theme.text_highlight_fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled("/", Style::default().fg(theme.text)));
-        spans.push(Span::styled(
-            kb.filter.sidebar_grow.display(),
-            Style::default()
-                .fg(theme.text_highlight_fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled("> resize  ", Style::default().fg(theme.text)));
         status_entry(&mut spans, kb.filter.search.display(), "search", theme);
         status_entry(&mut spans, kb.filter.exit_mode.display(), "exit", theme);
         Line::from(spans)
@@ -847,33 +813,6 @@ mod tests {
         let mut tab = make_tab(&["line"]).await;
         let (_, result) = press(filter_mode(0), &mut tab, KeyCode::BackTab).await;
         assert!(matches!(result, KeyResult::Ignored));
-    }
-
-    #[tokio::test]
-    async fn test_sidebar_grow_emits_resize_sidebar_with_new_width() {
-        let mut tab = make_tab(&["line"]).await;
-        let before = tab.display.sidebar_width;
-        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::Char('>')).await;
-        assert_eq!(tab.display.sidebar_width, before + 2);
-        assert!(matches!(result, KeyResult::ResizeSidebar(w) if w == before + 2));
-    }
-
-    #[tokio::test]
-    async fn test_sidebar_shrink_emits_resize_sidebar_with_new_width() {
-        let mut tab = make_tab(&["line"]).await;
-        let before = tab.display.sidebar_width;
-        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::Char('<')).await;
-        assert_eq!(tab.display.sidebar_width, before - 2);
-        assert!(matches!(result, KeyResult::ResizeSidebar(w) if w == before - 2));
-    }
-
-    #[tokio::test]
-    async fn test_sidebar_shrink_stops_at_minimum_width() {
-        let mut tab = make_tab(&["line"]).await;
-        tab.display.sidebar_width = 10;
-        let (_, result) = press(filter_mode(0), &mut tab, KeyCode::Char('<')).await;
-        assert_eq!(tab.display.sidebar_width, 10);
-        assert!(matches!(result, KeyResult::ResizeSidebar(10)));
     }
 
     #[tokio::test]

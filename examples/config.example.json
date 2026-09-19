@@ -70,9 +70,7 @@
       "add_include_filter": "i",
       "add_exclude_filter": "o",
       "add_date_filter": "t",
-      "exit_mode": "Esc",
-      "sidebar_grow": ">",
-      "sidebar_shrink": "<"
+      "exit_mode": "Esc"
     },
     "global": {
       "quit": "q",
@@ -172,6 +170,8 @@
       "toggle_mode_bar": "b",
       "toggle_borders": "B",
       "toggle_wrap": "w",
+      "sidebar_grow": ">",
+      "sidebar_shrink": "<",
       "exit": "Esc"
     }
   }

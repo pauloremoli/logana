@@ -109,13 +109,11 @@ Multiple alternatives:
   "move_filter_up": "K",
   "toggle_all_filters": "A",
   "clear_all_filters": "C",
-  "exit_mode": "Esc",
-  "sidebar_grow": ">",
-  "sidebar_shrink": "<"
+  "exit_mode": "Esc"
 }
 ```
 
-The filter manager also reuses the shared `navigation` group above (`scroll_down`/`scroll_up`/`half_page_down`/`half_page_up`/`page_down`/`page_up`) and, for jump-to-top/bottom, the `normal.go_to_top_chord`/`normal.go_to_bottom` bindings — no separate fields needed for those. `sidebar_grow`/`sidebar_shrink` resize the sidebar while it's focused.
+The filter manager also reuses the shared `navigation` group above (`scroll_down`/`scroll_up`/`half_page_down`/`half_page_up`/`page_down`/`page_up`) and, for jump-to-top/bottom, the `normal.go_to_top_chord`/`normal.go_to_bottom` bindings — no separate fields needed for those.
 
 ## Group Mode
 
@@ -223,9 +221,13 @@ The filter manager also reuses the shared `navigation` group above (`scroll_down
   "toggle_wrap": "w",
   "toggle_relative_line_numbers": "r",
   "toggle_groups_panel": "g",
+  "sidebar_grow": ">",
+  "sidebar_shrink": "<",
   "exit": "Esc"
 }
 ```
+
+`sidebar_grow`/`sidebar_shrink` resize the sidebar and keep UI Options Mode open, so `<`/`>` can be pressed repeatedly.
 
 ## Select Fields Mode
 

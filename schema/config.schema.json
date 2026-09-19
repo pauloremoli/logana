@@ -75,8 +75,6 @@
           "move_filter_up": "K",
           "search": "/",
           "set_color": "c",
-          "sidebar_grow": ">",
-          "sidebar_shrink": "<",
           "toggle_all_filters": "A",
           "toggle_filter": "Space"
         },
@@ -178,6 +176,8 @@
         },
         "ui": {
           "exit": "Esc",
+          "sidebar_grow": ">",
+          "sidebar_shrink": "<",
           "toggle_borders": "B",
           "toggle_groups_panel": "g",
           "toggle_mode_bar": "b",
@@ -453,8 +453,6 @@
             "move_filter_up": "K",
             "search": "/",
             "set_color": "c",
-            "sidebar_grow": ">",
-            "sidebar_shrink": "<",
             "toggle_all_filters": "A",
             "toggle_filter": "Space"
           },
@@ -702,6 +700,8 @@
         "ui": {
           "default": {
             "exit": "Esc",
+            "sidebar_grow": ">",
+            "sidebar_shrink": "<",
             "toggle_borders": "B",
             "toggle_groups_panel": "g",
             "toggle_mode_bar": "b",
@@ -1214,22 +1214,6 @@
         },
         "exit_mode": {
           "default": "Esc",
-          "allOf": [
-            {
-              "$ref": "#/definitions/KeyBindings"
-            }
-          ]
-        },
-        "sidebar_grow": {
-          "default": ">",
-          "allOf": [
-            {
-              "$ref": "#/definitions/KeyBindings"
-            }
-          ]
-        },
-        "sidebar_shrink": {
-          "default": "<",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"
@@ -2077,6 +2061,22 @@
         },
         "toggle_groups_panel": {
           "default": "g",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "sidebar_grow": {
+          "default": ">",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "sidebar_shrink": {
+          "default": "<",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"

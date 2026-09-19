@@ -75,6 +75,16 @@ impl Mode for UiMode {
             );
         }
 
+        if kb.ui.sidebar_grow.matches(key, modifiers) {
+            tab.display.sidebar_width = tab.display.sidebar_width.saturating_add(2);
+            return (self, KeyResult::ResizeSidebar(tab.display.sidebar_width));
+        }
+
+        if kb.ui.sidebar_shrink.matches(key, modifiers) {
+            tab.display.sidebar_width = tab.display.sidebar_width.saturating_sub(2).max(10);
+            return (self, KeyResult::ResizeSidebar(tab.display.sidebar_width));
+        }
+
         // Pass global keys (quit, tab switch) through to App.
         (self, KeyResult::Ignored)
     }
@@ -128,6 +138,21 @@ impl Mode for UiMode {
             format!("groups{}", on_off(self.groups_panel)),
             theme,
         );
+        spans.push(Span::styled("<", Style::default().fg(theme.text)));
+        spans.push(Span::styled(
+            kb.ui.sidebar_shrink.display(),
+            Style::default()
+                .fg(theme.text_highlight_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.text)));
+        spans.push(Span::styled(
+            kb.ui.sidebar_grow.display(),
+            Style::default()
+                .fg(theme.text_highlight_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("> resize  ", Style::default().fg(theme.text)));
         status_entry(&mut spans, kb.ui.exit.display(), "back", theme);
 
         Line::from(spans)
@@ -228,6 +253,35 @@ mod tests {
                 mode.render_state()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_grow_emits_resize_sidebar_and_stays_in_ui_mode() {
+        let mut tab = make_tab().await;
+        let before = tab.display.sidebar_width;
+        let (mode, result) = press(&mut tab, KeyCode::Char('>'), KeyModifiers::NONE).await;
+        assert_eq!(tab.display.sidebar_width, before + 2);
+        assert!(matches!(result, KeyResult::ResizeSidebar(w) if w == before + 2));
+        assert!(matches!(mode.render_state(), ModeRenderState::Ui));
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_shrink_emits_resize_sidebar_and_stays_in_ui_mode() {
+        let mut tab = make_tab().await;
+        let before = tab.display.sidebar_width;
+        let (mode, result) = press(&mut tab, KeyCode::Char('<'), KeyModifiers::NONE).await;
+        assert_eq!(tab.display.sidebar_width, before - 2);
+        assert!(matches!(result, KeyResult::ResizeSidebar(w) if w == before - 2));
+        assert!(matches!(mode.render_state(), ModeRenderState::Ui));
+    }
+
+    #[tokio::test]
+    async fn test_sidebar_shrink_stops_at_minimum_width() {
+        let mut tab = make_tab().await;
+        tab.display.sidebar_width = 10;
+        let (_, result) = press(&mut tab, KeyCode::Char('<'), KeyModifiers::NONE).await;
+        assert_eq!(tab.display.sidebar_width, 10);
+        assert!(matches!(result, KeyResult::ResizeSidebar(10)));
     }
 
     #[tokio::test]

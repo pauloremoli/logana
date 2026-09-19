@@ -351,6 +351,14 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: ui.toggle_relative_line_numbers.display(),
     });
     rows.push(HelpRow::Entry {
+        action: "Grow sidebar".into(),
+        keys: ui.sidebar_grow.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Shrink sidebar".into(),
+        keys: ui.sidebar_shrink.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Exit UI mode".into(),
         keys: ui.exit.display(),
     });
@@ -399,14 +407,6 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
     rows.push(HelpRow::Entry {
         action: "Clear all".into(),
         keys: f.clear_all_filters.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Grow sidebar".into(),
-        keys: f.sidebar_grow.display(),
-    });
-    rows.push(HelpRow::Entry {
-        action: "Shrink sidebar".into(),
-        keys: f.sidebar_shrink.display(),
     });
     rows.push(HelpRow::Entry {
         action: "Exit filter mode".into(),
