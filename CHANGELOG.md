@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-09-19
+
 ### Added
 - Add relative line numbers, toggleable via `:relative-line-numbers` and the UI options menu.
 - Add `:collapse`/`:expand` to hide or reveal continuation lines file-wide, with `>`/`<` to expand or collapse the entry under the cursor at any time.
