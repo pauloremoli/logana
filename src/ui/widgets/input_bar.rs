@@ -3,6 +3,7 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
+use crate::mode::app_mode::status_entry;
 use crate::theme::Theme;
 
 pub struct InputBar<'a> {
@@ -34,24 +35,46 @@ impl<'a> InputBar<'a> {
         }
     }
 
-    fn hint_text(&self) -> String {
-        if !self.query.is_empty() {
-            if self.is_active {
-                format!("  {} matches", self.total_matches)
-            } else if self.total_matches == 0 {
-                "  no matches".to_string()
-            } else {
-                format!(
-                    "  match {} / {}  ({}/{}: next/prev match)",
-                    self.current_occurrence,
-                    self.total_matches,
-                    self.next_match_key,
-                    self.prev_match_key
-                )
-            }
-        } else {
-            "  Type pattern and press Enter to search".to_string()
+    /// Builds the hint line shown below the search input. While typing, the
+    /// confirm key isn't repeated here — `SearchMode`'s mode bar already
+    /// shows `<Enter> search` for as long as the search box is open. Once a
+    /// search is committed, the navigation keys are styled the same way as
+    /// a mode bar's `<key> action` entries (see `status_entry`) so they
+    /// read consistently with the rest of the UI.
+    fn hint_line(&self) -> Line<'static> {
+        let text_style = Style::default().fg(self.theme.text);
+        if self.query.is_empty() {
+            return Line::from(Span::styled("  Type a pattern to search", text_style));
         }
+        if self.is_active {
+            return Line::from(Span::styled(
+                format!("  {} matches", self.total_matches),
+                text_style,
+            ));
+        }
+        if self.total_matches == 0 {
+            return Line::from(Span::styled("  no matches", text_style));
+        }
+        let mut spans = vec![Span::styled(
+            format!(
+                "  match {} / {}   ",
+                self.current_occurrence, self.total_matches
+            ),
+            text_style,
+        )];
+        status_entry(
+            &mut spans,
+            self.next_match_key.to_string(),
+            "next",
+            self.theme,
+        );
+        status_entry(
+            &mut spans,
+            self.prev_match_key.to_string(),
+            "prev",
+            self.theme,
+        );
+        Line::from(spans)
     }
 }
 
@@ -72,9 +95,8 @@ impl<'a> Widget for InputBar<'a> {
             .wrap(Wrap { trim: false });
         search_line.render(chunks[0], buf);
 
-        let hint_text = self.hint_text();
-        let hint = Paragraph::new(hint_text)
-            .style(Style::default().fg(self.theme.text).bg(self.theme.root_bg));
+        let hint_line = self.hint_line();
+        let hint = Paragraph::new(hint_line).style(Style::default().bg(self.theme.root_bg));
         hint.render(chunks[1], buf);
 
         if let Some((bar_str, pct)) = self.progress {
@@ -99,6 +121,10 @@ mod tests {
     use super::*;
     use crate::theme::Theme;
     use ratatui::{Terminal, backend::TestBackend};
+
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
 
     fn make_bar<'a>(query: &'a str, is_active: bool, theme: &'a Theme) -> InputBar<'a> {
         InputBar {
@@ -193,7 +219,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hint_text_active_with_matches() {
+    fn test_hint_active_with_matches_does_not_repeat_confirm_key() {
+        // SearchMode's mode bar already shows <Enter> search while the
+        // search box is open, so the hint line shouldn't repeat it.
         let theme = Theme::default();
         let bar = InputBar {
             query: "x",
@@ -207,11 +235,11 @@ mod tests {
             prev_match_key: "N",
             theme: &theme,
         };
-        assert_eq!(bar.hint_text(), "  7 matches");
+        assert_eq!(line_text(&bar.hint_line()), "  7 matches");
     }
 
     #[test]
-    fn test_hint_text_inactive_no_matches() {
+    fn test_hint_inactive_no_matches() {
         let theme = Theme::default();
         let bar = InputBar {
             query: "x",
@@ -225,11 +253,11 @@ mod tests {
             prev_match_key: "N",
             theme: &theme,
         };
-        assert_eq!(bar.hint_text(), "  no matches");
+        assert_eq!(line_text(&bar.hint_line()), "  no matches");
     }
 
     #[test]
-    fn test_hint_text_inactive_with_matches() {
+    fn test_hint_inactive_with_matches_mentions_navigation_keys() {
         let theme = Theme::default();
         let bar = InputBar {
             query: "x",
@@ -243,11 +271,16 @@ mod tests {
             prev_match_key: "N",
             theme: &theme,
         };
-        assert_eq!(bar.hint_text(), "  match 3 / 10  (n/N: next/prev match)");
+        let text = line_text(&bar.hint_line());
+        assert!(text.contains("match 3 / 10"), "{text}");
+        assert!(text.contains('n'), "{text}");
+        assert!(text.contains("next"), "{text}");
+        assert!(text.contains('N'), "{text}");
+        assert!(text.contains("prev"), "{text}");
     }
 
     #[test]
-    fn test_hint_text_inactive_with_matches_uses_configured_keys() {
+    fn test_hint_inactive_with_matches_uses_configured_keys() {
         let theme = Theme::default();
         let bar = InputBar {
             query: "x",
@@ -261,16 +294,15 @@ mod tests {
             prev_match_key: "Ctrl+p",
             theme: &theme,
         };
-        assert_eq!(
-            bar.hint_text(),
-            "  match 3 / 10  (Ctrl+n/Ctrl+p: next/prev match)"
-        );
+        let text = line_text(&bar.hint_line());
+        assert!(text.contains("Ctrl+n"), "{text}");
+        assert!(text.contains("Ctrl+p"), "{text}");
     }
 
     #[test]
-    fn test_hint_text_empty_query() {
+    fn test_hint_empty_query() {
         let theme = Theme::default();
         let bar = make_bar("", true, &theme);
-        assert!(bar.hint_text().contains("Type pattern"));
+        assert_eq!(line_text(&bar.hint_line()), "  Type a pattern to search");
     }
 }

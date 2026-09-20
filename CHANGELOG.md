@@ -8,7 +8,7 @@ All notable changes to logana will be documented in this file.
 ### Added
 - Add `--fga` to `:filter`/`:highlight` to auto-pick a random, colorful foreground color readable against the current theme background.
 - Add tab-completion for `--regex`/`-r`, `--ignore-case`/`-i`, `--auto`/`-a`, and `--fga` on `:filter`/`:exclude`/`:highlight`, and `-a` on `:group`.
-- Show the `next_match`/`prev_match` keys next to the match count in the search bar once a search is committed.
+- Show the `next_match`/`prev_match` keys next to the match count in the search bar once a search is committed, styled like the mode bar's key hints.
 - Add `--out <dir>` to `:open`/`:file-picker` and the CLI to choose where archive/directory contents are extracted, defaulting to the current working directory.
 
 ### Changed

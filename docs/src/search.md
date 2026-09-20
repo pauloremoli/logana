@@ -19,7 +19,7 @@ Press `/` to open the search bar at the bottom of the screen. Type your query an
 - `n` wraps around to the first match after the last line.
 - `N` wraps around to the last match before the first line.
 
-Once a search is committed, the hint line shows `match <current> / <total>` alongside the configured `next_match`/`prev_match` keys (`n`/`N` by default) as a reminder of how to step through the results.
+While typing, the hint line shows a live match count; the mode bar already shows `<Enter> search` for as long as the search box is open, so the hint line doesn't repeat it. Once the search is committed, the hint line shows `match <current> / <total>` alongside the configured `next_match`/`prev_match` keys (`n`/`N` by default), styled the same way as a mode bar's key hints, as a reminder of how to step through the results.
 
 ## Pattern Syntax
 
