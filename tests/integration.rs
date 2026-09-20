@@ -1424,3 +1424,71 @@ fn test_headless_binary_loads_custom_schema_and_honors_field_filter() {
         "non-matching line should have been filtered out: {stdout:?}"
     );
 }
+
+#[test]
+fn test_merge_flag_requires_headless() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = tmp.path().join("a.log");
+    let b = tmp.path().join("b.log");
+    std::fs::write(&a, "Jan  1 00:00:01 host tag: a1\n").unwrap();
+    std::fs::write(&b, "Jan  1 00:00:02 host tag: b1\n").unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_logana"))
+        .arg("--merge")
+        .arg(&a)
+        .arg(&b)
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .output()
+        .expect("failed to run the logana binary");
+
+    assert!(
+        !output.status.success(),
+        "--merge without --headless should be rejected by clap"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("headless"),
+        "error should mention the missing --headless flag: {stderr:?}"
+    );
+}
+
+/// End-to-end check that `--headless --merge` interleaves multiple files by
+/// timestamp via the real CLI path, not just the library-level
+/// `headless_merge` unit tests (which call `run_headless_merge` directly).
+#[test]
+fn test_headless_binary_merges_files_by_timestamp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = tmp.path().join("a.log");
+    let b = tmp.path().join("b.log");
+    std::fs::write(
+        &a,
+        "Jan  1 00:00:01 host tag: a1\nJan  1 00:00:03 host tag: a2\n",
+    )
+    .unwrap();
+    std::fs::write(&b, "Jan  1 00:00:02 host tag: b1\n").unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_logana"))
+        .arg("--headless")
+        .arg("--merge")
+        .arg(&a)
+        .arg(&b)
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .output()
+        .expect("failed to run the logana binary");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "Jan  1 00:00:01 host tag: a1",
+            "Jan  1 00:00:02 host tag: b1",
+            "Jan  1 00:00:03 host tag: a2",
+        ]
+    );
+}

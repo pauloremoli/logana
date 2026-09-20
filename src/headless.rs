@@ -26,6 +26,9 @@ pub struct HeadlessArgs {
     /// Directory extracted archive contents are written into. Extraction
     /// always writes real, permanent files here — never temp files.
     pub out_dir: PathBuf,
+    /// Interleave all input files by timestamp instead of concatenating
+    /// them. Requires at least 2 input files.
+    pub merge: bool,
 }
 
 pub fn same_file(input: &str, output: &std::path::Path) -> bool {
@@ -114,6 +117,22 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
         io::stdin().read_to_end(&mut bytes)?;
         let reader = FileReader::from_bytes(bytes);
         run_headless_to_writer(reader, &log_manager, &mut *writer)?;
+        writer.flush()?;
+        finalize_output(tmp_path)?;
+        return Ok(());
+    }
+
+    if args.merge {
+        let warnings = crate::headless_merge::run_headless_merge(
+            &args.files,
+            &args.out_dir,
+            &log_manager,
+            &mut *writer,
+        )
+        .await?;
+        for warning in &warnings {
+            eprintln!("Warning: {warning}");
+        }
         writer.flush()?;
         finalize_output(tmp_path)?;
         return Ok(());
@@ -822,6 +841,7 @@ mod tests {
             timestamp_filters: vec![],
             output: Some(out_tmp.path().to_path_buf()),
             out_dir: std::env::temp_dir(),
+            merge: false,
         })
         .await
         .unwrap();
@@ -857,6 +877,7 @@ mod tests {
             timestamp_filters: vec![],
             output: Some(out_tmp.path().to_path_buf()),
             out_dir: std::env::temp_dir(),
+            merge: false,
         })
         .await
         .unwrap();
@@ -888,6 +909,7 @@ mod tests {
             timestamp_filters: vec![],
             output: Some(out_tmp.path().to_path_buf()),
             out_dir: std::env::temp_dir(),
+            merge: false,
         })
         .await;
         std::fs::remove_file(&gz_path).unwrap();
@@ -934,6 +956,7 @@ mod tests {
             timestamp_filters: vec![],
             output: Some(out_tmp.path().to_path_buf()),
             out_dir: std::env::temp_dir(),
+            merge: false,
         })
         .await
         .unwrap();
@@ -960,6 +983,7 @@ mod tests {
             timestamp_filters: vec![],
             output: Some(path.clone()),
             out_dir: std::env::temp_dir(),
+            merge: false,
         })
         .await;
 
@@ -968,6 +992,42 @@ mod tests {
         assert!(msg.contains("same as the input file"));
         // Original file must be untouched.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "INFO foo\n");
+    }
+
+    #[tokio::test]
+    async fn test_headless_merge_same_input_output_is_rejected() {
+        use std::io::Write as _;
+
+        let mut tmp_a = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp_a, "Jan  1 00:00:01 host tag: a1").unwrap();
+        tmp_a.flush().unwrap();
+        let mut tmp_b = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp_b, "Jan  1 00:00:02 host tag: b1").unwrap();
+        tmp_b.flush().unwrap();
+
+        let path_a = tmp_a.path().to_path_buf();
+        let result = run_headless(&HeadlessArgs {
+            files: vec![
+                path_a.to_str().unwrap().to_string(),
+                tmp_b.path().to_str().unwrap().to_string(),
+            ],
+            filters: None,
+            include_filters: vec![],
+            exclude_filters: vec![],
+            timestamp_filters: vec![],
+            output: Some(path_a.clone()),
+            out_dir: std::env::temp_dir(),
+            merge: true,
+        })
+        .await;
+
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("same as the input file"));
+        assert_eq!(
+            std::fs::read_to_string(&path_a).unwrap(),
+            "Jan  1 00:00:01 host tag: a1\n"
+        );
     }
 
     #[tokio::test]

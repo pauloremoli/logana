@@ -96,6 +96,13 @@ struct Args {
     /// temp files.
     #[arg(long, value_name = "DIR")]
     out: Option<std::path::PathBuf>,
+
+    /// Interleave all input files by timestamp instead of concatenating
+    /// them (requires --headless). Requires at least 2 input files;
+    /// archive inputs contribute one merge source per file inside the
+    /// archive.
+    #[arg(long, requires = "headless")]
+    merge: bool,
 }
 
 /// Resolves the `--out` flag to a concrete directory: the given path, or
@@ -273,6 +280,7 @@ async fn run_headless_mode(args: Args) -> Result<()> {
         timestamp_filters: args.timestamp_filters,
         output: args.output,
         out_dir,
+        merge: args.merge,
     })
     .await
 }

@@ -24,7 +24,7 @@ mod tab_state;
 pub mod widgets;
 
 pub use app::App;
-pub use tab_state::merged::extend_merged_index;
+pub use tab_state::merged::{build_merged_index, extend_merged_index};
 pub use tab_state::year_map::YearMap;
 pub use tab_state::{
     ArchiveExpandState, ArchiveExtractionState, ArchiveListingState, ArchivePickerApplyResult,

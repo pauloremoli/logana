@@ -10,6 +10,7 @@ All notable changes to logana will be documented in this file.
 - Add tab-completion for `--regex`/`-r`, `--ignore-case`/`-i`, `--auto`/`-a`, and `--fga` on `:filter`/`:exclude`/`:highlight`, and `-a` on `:group`.
 - Show the `next_match`/`prev_match` keys next to the match count in the search bar once a search is committed, styled like the mode bar's key hints.
 - Add `--out <dir>` to `:open`/`:file-picker` and the CLI to choose where archive/directory contents are extracted, defaulting to the current working directory.
+- Add `--merge` to `--headless` to interleave multiple files by timestamp instead of concatenating them.
 
 ### Changed
 - Archive and directory extraction now always writes real files to disk instead of temp files.

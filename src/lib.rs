@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod filters;
 pub mod headless;
+mod headless_merge;
 pub mod ingestion;
 pub mod mcp;
 pub mod mode;
