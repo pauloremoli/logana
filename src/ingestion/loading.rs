@@ -90,19 +90,26 @@ impl App {
     /// (directory or archive -> picker, otherwise a regular file) but always
     /// targeting a freshly created tab instead of the currently active one.
     /// Used for command-line paths beyond the first.
-    pub async fn open_path_as_tab(&mut self, path: &str) -> Result<(), String> {
+    pub async fn open_path_as_tab(
+        &mut self,
+        path: &str,
+        out_dir: std::path::PathBuf,
+    ) -> Result<(), String> {
         if std::path::Path::new(path).is_dir() {
             let tree = crate::ingestion::list_directory_tree(path)?;
             let tab_idx = self.push_blank_tab(path).await;
-            self.tabs[tab_idx].interaction.mode = Box::new(
-                crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.to_string()),
-            );
+            self.tabs[tab_idx].interaction.mode =
+                Box::new(crate::mode::archive_picker_mode::ArchivePickerMode::new(
+                    tree,
+                    path.to_string(),
+                    out_dir,
+                ));
             return Ok(());
         }
 
         if crate::ingestion::detect_archive_type(path).is_some() {
             self.push_blank_tab(path).await;
-            self.load_archive_listing_now(path).await;
+            self.load_archive_listing_now(path, out_dir).await;
             return Ok(());
         }
 
@@ -130,7 +137,7 @@ impl App {
     /// instead of going through the single `pending_archive_listing` slot —
     /// used when opening several archive paths back-to-back at startup would
     /// otherwise race for that slot.
-    async fn load_archive_listing_now(&mut self, path: &str) {
+    async fn load_archive_listing_now(&mut self, path: &str, out_dir: std::path::PathBuf) {
         let path_owned = path.to_string();
         let result =
             tokio::task::spawn_blocking(move || crate::ingestion::list_archive_tree(&path_owned))
@@ -142,6 +149,7 @@ impl App {
                     Box::new(crate::mode::archive_picker_mode::ArchivePickerMode::new(
                         tree,
                         path.to_string(),
+                        out_dir,
                     ));
             }
             Ok(Ok(_)) => self.tabs[tab_idx].set_notification("Archive contains no files."),
@@ -624,6 +632,7 @@ impl App {
         &mut self,
         source_path: String,
         tree: crate::ingestion::ArchiveTree,
+        out_dir: std::path::PathBuf,
     ) {
         let (progress_tx, progress_rx) =
             tokio::sync::watch::channel(crate::ingestion::ArchiveExtractionProgress {
@@ -657,6 +666,7 @@ impl App {
             let merge_result = merge_progress_tx.map(|merge_progress_tx| {
                 let mut outcome = crate::ingestion::extract_and_detect_merge_marked(
                     &source_path,
+                    &out_dir,
                     &tree,
                     merge_progress_tx,
                 );
@@ -676,7 +686,7 @@ impl App {
                 outcome
             });
             let selected_files =
-                crate::ingestion::extract_selected(&source_path, &tree, progress_tx);
+                crate::ingestion::extract_selected(&source_path, &out_dir, &tree, progress_tx);
             let _ = result_tx.send(crate::ui::ArchivePickerApplyResult {
                 selected_files,
                 merge_result,
@@ -741,28 +751,24 @@ impl App {
             // (or anything else) — it's a stable id, not a position.
             if self.stdin_load_state.is_none()
                 && let Some(idx) = self.tabs.iter().position(|t| {
-                    t.file_reader.line_count() == 0
-                        && t.load_state.is_none()
-                        && t.archive_temp.is_none()
-                        && t.merged.is_none()
+                    t.file_reader.line_count() == 0 && t.load_state.is_none() && t.merged.is_none()
                 })
             {
                 self.remove_tab_at(idx);
             }
             let first_new_tab_idx = self.tabs.len();
             for file in selected.files {
-                let tmp_path = file.temp_file.path().to_string_lossy().to_string();
-                let preview = FileReader::from_file_head(&tmp_path, self.preview_bytes)
+                let disk_path = file.path.to_string_lossy().to_string();
+                let preview = FileReader::from_file_head(&disk_path, self.preview_bytes)
                     .await
                     .unwrap_or_else(|_| FileReader::from_bytes(vec![]));
-                let log_manager = LogManager::new(self.db.clone(), Some(tmp_path.clone())).await;
+                let log_manager = LogManager::new(self.db.clone(), Some(disk_path.clone())).await;
                 let mut tab = TabState::new(preview, log_manager, file.name);
                 tab.source_path = Some(file.full_path);
-                tab.archive_temp = Some(file.temp_file);
                 self.apply_tab_defaults(&mut tab).await;
                 let tab_id = tab.id;
                 self.tabs.push(tab);
-                self.begin_file_load(tmp_path, LoadContext::ReplaceTab { tab_id }, None, false)
+                self.begin_file_load(disk_path, LoadContext::ReplaceTab { tab_id }, None, false)
                     .await;
             }
             self.active_tab = first_new_tab_idx;
@@ -806,7 +812,7 @@ impl App {
     /// Spawn a background scan of an archive's contents (without extracting
     /// anything yet) so the archive picker popup can show a file tree.
     /// Call [`Self::poll_archive_listing`] each frame to check for completion.
-    pub async fn begin_archive_listing(&mut self, path: &str) {
+    pub async fn begin_archive_listing(&mut self, path: &str, out_dir: std::path::PathBuf) {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         self.decompression_message = Some("Reading archive contents\u{2026}".to_string());
 
@@ -818,6 +824,7 @@ impl App {
 
         self.pending_archive_listing = Some(crate::ui::ArchiveListingState {
             source_path: path.to_string(),
+            out_dir,
             result_rx,
         });
     }
@@ -833,15 +840,19 @@ impl App {
         match state.result_rx.try_recv() {
             Ok(Ok(tree)) => {
                 let source_path = state.source_path.clone();
+                let out_dir = state.out_dir.clone();
                 self.pending_archive_listing = None;
                 self.decompression_message = None;
                 if tree.nodes.is_empty() {
                     self.tabs[self.active_tab].set_notification("Archive contains no files.");
                     return;
                 }
-                self.tabs[self.active_tab].interaction.mode = Box::new(
-                    crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, source_path),
-                );
+                self.tabs[self.active_tab].interaction.mode =
+                    Box::new(crate::mode::archive_picker_mode::ArchivePickerMode::new(
+                        tree,
+                        source_path,
+                        out_dir,
+                    ));
             }
             Ok(Err(e)) => {
                 self.pending_archive_listing = None;
@@ -1717,6 +1728,25 @@ mod tests {
             .to_string()
     }
 
+    /// Counts regular files under `dir`, recursively — used to assert that
+    /// extraction wrote real files to disk instead of temp copies.
+    fn count_regular_files(dir: &std::path::Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .map(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    count_regular_files(&path)
+                } else {
+                    1
+                }
+            })
+            .sum()
+    }
+
     async fn make_app(lines: &[&str]) -> App {
         let data: Vec<u8> = lines.join("\n").into_bytes();
         let file_reader = FileReader::from_bytes(data);
@@ -2398,10 +2428,12 @@ mod tests {
         let tmp_b = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp_b.path(), b"b\n").unwrap();
 
-        app.open_path_as_tab(tmp_a.path().to_str().unwrap())
+        let out_dir = tempfile::tempdir().unwrap();
+        app.open_path_as_tab(tmp_a.path().to_str().unwrap(), out_dir.path().to_path_buf())
             .await
             .unwrap();
-        app.open_path_as_tab(tmp_b.path().to_str().unwrap())
+        let out_dir = tempfile::tempdir().unwrap();
+        app.open_path_as_tab(tmp_b.path().to_str().unwrap(), out_dir.path().to_path_buf())
             .await
             .unwrap();
 
@@ -2417,7 +2449,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.log"), b"one\n").unwrap();
 
-        app.open_path_as_tab(dir.path().to_str().unwrap())
+        let out_dir = tempfile::tempdir().unwrap();
+        app.open_path_as_tab(dir.path().to_str().unwrap(), out_dir.path().to_path_buf())
             .await
             .unwrap();
 
@@ -2441,9 +2474,15 @@ mod tests {
         let path2 = tmp2.path().to_str().unwrap().to_string() + ".zip";
         std::fs::copy(tmp2.path(), &path2).unwrap();
 
-        app.open_path_as_tab(&path1).await.unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        app.open_path_as_tab(&path1, out_dir.path().to_path_buf())
+            .await
+            .unwrap();
         let first_tab = app.active_tab;
-        app.open_path_as_tab(&path2).await.unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        app.open_path_as_tab(&path2, out_dir.path().to_path_buf())
+            .await
+            .unwrap();
         let second_tab = app.active_tab;
 
         std::fs::remove_file(&path1).unwrap();
@@ -4244,7 +4283,9 @@ mod tests {
         let path = tmp.path().to_str().unwrap().to_string() + ".zip";
         std::fs::copy(tmp.path(), &path).unwrap();
 
-        app.begin_archive_listing(&path).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.begin_archive_listing(&path, out_dir.path().to_path_buf())
+            .await;
 
         assert_eq!(
             app.tabs.len(),
@@ -4268,7 +4309,9 @@ mod tests {
         let path = tmp.path().to_str().unwrap().to_string() + ".zip";
         std::fs::copy(tmp.path(), &path).unwrap();
 
-        app.begin_archive_listing(&path).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.begin_archive_listing(&path, out_dir.path().to_path_buf())
+            .await;
 
         for _ in 0..100 {
             app.poll_archive_listing().await;
@@ -4294,8 +4337,12 @@ mod tests {
     async fn test_poll_archive_listing_shows_notification_on_error() {
         let mut app = make_app(&[]).await;
 
-        app.begin_archive_listing("/nonexistent/path/archive.zip")
-            .await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.begin_archive_listing(
+            "/nonexistent/path/archive.zip",
+            out_dir.path().to_path_buf(),
+        )
+        .await;
 
         for _ in 0..100 {
             app.poll_archive_listing().await;
@@ -4348,9 +4395,13 @@ mod tests {
         ));
 
         let mut app = make_app(&[]).await;
-        app.tabs[app.active_tab].interaction.mode = Box::new(
-            crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.clone()),
-        );
+        let out_dir = tempfile::tempdir().unwrap();
+        app.tabs[app.active_tab].interaction.mode =
+            Box::new(crate::mode::archive_picker_mode::ArchivePickerMode::new(
+                tree,
+                path.clone(),
+                out_dir.path().to_path_buf(),
+            ));
 
         app.begin_archive_node_expand(lazy_id).await;
         assert!(app.pending_archive_expand.is_some());
@@ -4416,9 +4467,13 @@ mod tests {
             .id;
 
         let mut app = make_app(&[]).await;
-        app.tabs[app.active_tab].interaction.mode = Box::new(
-            crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.clone()),
-        );
+        let out_dir = tempfile::tempdir().unwrap();
+        app.tabs[app.active_tab].interaction.mode =
+            Box::new(crate::mode::archive_picker_mode::ArchivePickerMode::new(
+                tree,
+                path.clone(),
+                out_dir.path().to_path_buf(),
+            ));
 
         app.begin_archive_node_expand(lazy_id).await;
 
@@ -4479,9 +4534,13 @@ mod tests {
             .id;
 
         let mut app = make_app(&[]).await;
-        app.tabs[app.active_tab].interaction.mode = Box::new(
-            crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path.clone()),
-        );
+        let out_dir = tempfile::tempdir().unwrap();
+        app.tabs[app.active_tab].interaction.mode =
+            Box::new(crate::mode::archive_picker_mode::ArchivePickerMode::new(
+                tree,
+                path.clone(),
+                out_dir.path().to_path_buf(),
+            ));
 
         // The source file disappears before the background fetch runs.
         std::fs::remove_file(&path).unwrap();
@@ -4526,7 +4585,9 @@ mod tests {
             .id;
         tree.nodes[a_id].selected = true;
 
-        app.apply_archive_picker(path.clone(), tree).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.apply_archive_picker(path.clone(), tree, out_dir.path().to_path_buf())
+            .await;
 
         for _ in 0..100 {
             app.poll_archive_extraction().await;
@@ -4595,7 +4656,9 @@ mod tests {
         }
 
         let tabs_before = app.tabs.len();
-        app.apply_archive_picker(path.clone(), tree).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.apply_archive_picker(path.clone(), tree, out_dir.path().to_path_buf())
+            .await;
         drain_pending_archive(&mut app).await;
         std::fs::remove_file(&path).unwrap();
 
@@ -4644,7 +4707,9 @@ mod tests {
             }
         }
 
-        app.apply_archive_picker(path.clone(), tree).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.apply_archive_picker(path.clone(), tree, out_dir.path().to_path_buf())
+            .await;
         drain_pending_archive(&mut app).await;
         let archive_name = archive_basename(&path);
         std::fs::remove_file(&path).unwrap();
@@ -4693,7 +4758,9 @@ mod tests {
             }
         }
 
-        app.apply_archive_picker(path.clone(), tree).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.apply_archive_picker(path.clone(), tree, out_dir.path().to_path_buf())
+            .await;
         drain_pending_archive(&mut app).await;
         let archive_name = archive_basename(&path);
         std::fs::remove_file(&path).unwrap();
@@ -4746,7 +4813,9 @@ mod tests {
             }
         }
 
-        app.apply_archive_picker(path.clone(), tree).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.apply_archive_picker(path.clone(), tree, out_dir.path().to_path_buf())
+            .await;
         drain_pending_archive(&mut app).await;
         drain_pending_merge_builds(&mut app).await;
         std::fs::remove_file(&path).unwrap();
@@ -4790,7 +4859,9 @@ mod tests {
             }
         }
 
-        app.apply_archive_picker(path.clone(), tree).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.apply_archive_picker(path.clone(), tree, out_dir.path().to_path_buf())
+            .await;
         drain_pending_archive(&mut app).await;
         std::fs::remove_file(&path).unwrap();
 
@@ -4855,7 +4926,9 @@ mod tests {
         }
 
         let initial_tabs = app.tabs.len();
-        app.apply_archive_picker(path.clone(), tree).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.apply_archive_picker(path.clone(), tree, out_dir.path().to_path_buf())
+            .await;
         let archive_name = archive_basename(&path);
         std::fs::remove_file(&path).unwrap();
 
@@ -4901,7 +4974,9 @@ mod tests {
             }
         }
 
-        app.apply_archive_picker(path.clone(), tree).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.apply_archive_picker(path.clone(), tree, out_dir.path().to_path_buf())
+            .await;
         app.poll_archive_extraction().await;
         std::fs::remove_file(&path).unwrap();
 
@@ -4942,7 +5017,9 @@ mod tests {
         }
 
         let initial_tabs = app.tabs.len();
-        app.apply_archive_picker(path.clone(), tree).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.apply_archive_picker(path.clone(), tree, out_dir.path().to_path_buf())
+            .await;
         assert_eq!(
             app.tabs.len(),
             initial_tabs + 1,
@@ -4974,7 +5051,7 @@ mod tests {
     /// file — mirrors the directory-picker guarantee in
     /// `ui::input::tests::test_apply_directory_picker_merge_is_self_contained_in_temp`.
     #[tokio::test]
-    async fn test_apply_archive_picker_merge_is_self_contained_in_temp() {
+    async fn test_apply_archive_picker_merge_is_self_contained_on_disk() {
         let mut app = make_app(&[]).await;
 
         let tmp = crate::ingestion::archive::test_helpers::make_zip(&[
@@ -4997,16 +5074,18 @@ mod tests {
             }
         }
 
-        app.apply_archive_picker(path.clone(), tree).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.apply_archive_picker(path.clone(), tree, out_dir.path().to_path_buf())
+            .await;
         drain_pending_archive(&mut app).await;
         drain_pending_merge_builds(&mut app).await;
         std::fs::remove_file(&path).unwrap();
 
         let merged_tab = app.tabs.last().unwrap();
         assert_eq!(
-            merged_tab.merge_source_temps.len(),
+            count_regular_files(out_dir.path()),
             2,
-            "each merge-marked entry must have its own retained temp copy"
+            "each merge-marked entry must have been written to its own real file under out_dir"
         );
         assert!(
             merged_tab.merged_temp.is_some(),
@@ -5037,7 +5116,9 @@ mod tests {
         let path = outer_tmp.path().to_str().unwrap().to_string() + ".tar.gz";
         std::fs::copy(outer_tmp.path(), &path).unwrap();
 
-        app.begin_archive_listing(&path).await;
+        let out_dir = tempfile::tempdir().unwrap();
+        app.begin_archive_listing(&path, out_dir.path().to_path_buf())
+            .await;
         assert!(app.pending_archive_listing.is_some());
 
         for _ in 0..100 {

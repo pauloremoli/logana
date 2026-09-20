@@ -1,8 +1,9 @@
 use std::fs::File;
 use std::io::{Cursor, Read, Seek};
+use std::path::Path;
 use std::sync::Arc;
 
-use crate::ingestion::archive::{decompress_to_temp, detect_archive_type, stem};
+use crate::ingestion::archive::{detect_archive_type, stem, write_entry_to_disk};
 use crate::ingestion::{ArchiveExtractionProgress, ArchiveType, ExtractedFile, ExtractionOutcome};
 
 /// Caps total entries walked across one listing pass (all nesting levels
@@ -1002,6 +1003,7 @@ fn list_tar_entries<R: Read>(
 /// real disk file.
 pub(crate) fn extract_ids(
     path: &str,
+    out_dir: &Path,
     tree: &ArchiveTree,
     ids: &[NodeId],
     progress_tx: tokio::sync::watch::Sender<ArchiveExtractionProgress>,
@@ -1012,8 +1014,9 @@ pub(crate) fn extract_ids(
     for (i, &node_id) in ids.iter().enumerate() {
         let name = relative_name(tree, node_id, path);
         let full_path = node_source_path(tree, node_id, path);
-        let result = resolve_node_bytes(tree, node_id, path)
-            .and_then(|bytes| decompress_to_temp(&mut Cursor::new(bytes), name.clone(), full_path));
+        let result = resolve_node_bytes(tree, node_id, path).and_then(|bytes| {
+            write_entry_to_disk(&mut Cursor::new(bytes), out_dir, name.clone(), full_path)
+        });
         match result {
             Ok(extracted) => files.push(extracted),
             Err(e) => errors.push(format!("{name}: {e}")),
@@ -1031,6 +1034,7 @@ pub(crate) fn extract_ids(
 /// selected descendants — those are never even opened).
 fn extract_by_flag(
     path: &str,
+    out_dir: &Path,
     tree: &ArchiveTree,
     field: MarkField,
     progress_tx: tokio::sync::watch::Sender<ArchiveExtractionProgress>,
@@ -1041,15 +1045,16 @@ fn extract_by_flag(
         .filter(|n| field.get(n) && matches!(n.kind, NodeKind::File))
         .map(|n| n.id)
         .collect();
-    extract_ids(path, tree, &matched, progress_tx)
+    extract_ids(path, out_dir, tree, &matched, progress_tx)
 }
 
 pub fn extract_selected(
     path: &str,
+    out_dir: &Path,
     tree: &ArchiveTree,
     progress_tx: tokio::sync::watch::Sender<ArchiveExtractionProgress>,
 ) -> ExtractionOutcome<ExtractedFile> {
-    extract_by_flag(path, tree, MarkField::Selected, progress_tx)
+    extract_by_flag(path, out_dir, tree, MarkField::Selected, progress_tx)
 }
 
 /// The display labels every merge-marked file will extract to — same
@@ -1071,11 +1076,10 @@ pub struct MergeMarkedSource {
     pub label: String,
     pub reader: crate::ingestion::FileReader,
     pub detected: crate::ingestion::format_detect::DetectedFormat,
-    /// Owns the on-disk temp copy `reader` was built from, so the merged
-    /// tab is self-contained and never re-opens the original entry.
-    /// Dropping it deletes the temp copy, so the owning tab (see
-    /// `TabState::merge_source_temps`) must outlive it.
-    pub temp_file: tempfile::NamedTempFile,
+    /// The real, permanent file `reader` was built from, written under the
+    /// caller-chosen output directory — the merged tab's source is
+    /// self-contained on disk and never re-opens the original entry.
+    pub path: std::path::PathBuf,
 }
 
 /// Extracts every `merge_marked` file in `tree`, like `extract_selected`
@@ -1086,15 +1090,16 @@ pub struct MergeMarkedSource {
 /// block merging the rest.
 pub fn extract_and_detect_merge_marked(
     path: &str,
+    out_dir: &Path,
     tree: &ArchiveTree,
     progress_tx: tokio::sync::watch::Sender<ArchiveExtractionProgress>,
 ) -> ExtractionOutcome<MergeMarkedSource> {
-    let extracted = extract_by_flag(path, tree, MarkField::MergeMarked, progress_tx);
+    let extracted = extract_by_flag(path, out_dir, tree, MarkField::MergeMarked, progress_tx);
     let files = extracted
         .files
         .into_iter()
         .map(|f| {
-            let path_str = f.temp_file.path().to_string_lossy().to_string();
+            let path_str = f.path.to_string_lossy().to_string();
             let reader = crate::ingestion::FileReader::new(&path_str)
                 .unwrap_or_else(|_| crate::ingestion::FileReader::from_bytes(vec![]));
             let detected = crate::ingestion::format_detect::detect_format_for_reader(&reader);
@@ -1102,7 +1107,7 @@ pub fn extract_and_detect_merge_marked(
                 label: f.name,
                 reader,
                 detected,
-                temp_file: f.temp_file,
+                path: f.path,
             }
         })
         .collect();
@@ -1122,7 +1127,7 @@ pub fn extract_and_detect_merge_marked(
 /// path — not just the basename — so entries that share a basename in
 /// different folders/archives (e.g. `"2023/logs.zip"` and `"2024/logs.zip"`
 /// both containing an `"app.log"`) stay distinguishable as tab names.
-fn relative_name(tree: &ArchiveTree, node_id: NodeId, root_path: &str) -> String {
+pub(crate) fn relative_name(tree: &ArchiveTree, node_id: NodeId, root_path: &str) -> String {
     let source_path = node_source_path(tree, node_id, root_path);
     let root = root_strip_prefix(root_path);
     let relative = source_path
@@ -1347,7 +1352,6 @@ mod tests {
     use crate::ingestion::archive::test_helpers::{
         make_bz2, make_gz, make_tar, make_tar_bz2, make_tar_gz, make_tar_xz, make_xz, make_zip,
     };
-    use std::io::SeekFrom;
 
     fn path_with_ext(tmp: &tempfile::NamedTempFile, ext: &str) -> String {
         let path = tmp.path().to_str().unwrap().to_string() + ext;
@@ -1367,10 +1371,7 @@ mod tests {
     }
 
     fn read_extracted(file: &mut ExtractedFile) -> String {
-        let mut content = String::new();
-        file.temp_file.seek(SeekFrom::Start(0)).unwrap();
-        file.temp_file.read_to_string(&mut content).unwrap();
-        content
+        std::fs::read_to_string(&file.path).unwrap()
     }
 
     fn no_progress() -> tokio::sync::watch::Sender<ArchiveExtractionProgress> {
@@ -1836,7 +1837,8 @@ mod tests {
             "toggling a fallback File node must actually flip its selection"
         );
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(extracted.len(), 1);
@@ -2658,7 +2660,8 @@ mod tests {
             .id;
         tree.nodes[a_id].merge_marked = true;
 
-        let extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         std::fs::remove_file(&path).unwrap();
 
         assert!(
@@ -2680,7 +2683,9 @@ mod tests {
             .id;
         tree.nodes[a_id].selected = true;
 
-        let merge_sources = extract_and_detect_merge_marked(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let merge_sources =
+            extract_and_detect_merge_marked(&path, out_dir.path(), &tree, no_progress()).files;
         std::fs::remove_file(&path).unwrap();
 
         assert!(
@@ -2707,7 +2712,9 @@ mod tests {
             }
         }
 
-        let sources = extract_and_detect_merge_marked(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let sources =
+            extract_and_detect_merge_marked(&path, out_dir.path(), &tree, no_progress()).files;
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(sources.len(), 2);
@@ -2732,7 +2739,8 @@ mod tests {
         let mut tree = list_directory_tree(&dir_path).unwrap();
         tree.set_all_files_selected(true);
 
-        let outcome = extract_selected(&dir_path, &tree, no_progress());
+        let out_dir = tempfile::tempdir().unwrap();
+        let outcome = extract_selected(&dir_path, out_dir.path(), &tree, no_progress());
 
         assert_eq!(outcome.files.len(), 1);
         let expected = tmp_dir.path().join("a.log").to_str().unwrap().to_string();
@@ -2749,7 +2757,8 @@ mod tests {
         let mut tree = list_directory_tree(&dir_path).unwrap();
         tree.set_all_files_selected(true);
 
-        let outcome = extract_selected(&dir_path, &tree, no_progress());
+        let out_dir = tempfile::tempdir().unwrap();
+        let outcome = extract_selected(&dir_path, out_dir.path(), &tree, no_progress());
 
         assert_eq!(outcome.files.len(), 1);
         let expected = tmp_dir
@@ -2775,7 +2784,8 @@ mod tests {
         let mut tree = list_directory_tree(&dir_path).unwrap();
         tree.set_all_files_selected(true);
 
-        let outcome = extract_selected(&dir_path, &tree, no_progress());
+        let out_dir = tempfile::tempdir().unwrap();
+        let outcome = extract_selected(&dir_path, out_dir.path(), &tree, no_progress());
 
         assert_eq!(outcome.files.len(), 1);
         let expected = format!("{}/a.log", zip_path.to_str().unwrap());
@@ -2791,7 +2801,8 @@ mod tests {
         let mut tree = list_archive_tree(&renamed).unwrap();
         tree.set_all_files_selected(true);
 
-        let outcome = extract_selected(&renamed, &tree, no_progress());
+        let out_dir = tempfile::tempdir().unwrap();
+        let outcome = extract_selected(&renamed, out_dir.path(), &tree, no_progress());
         std::fs::remove_file(&renamed).unwrap();
 
         assert_eq!(outcome.files.len(), 1);
@@ -2808,7 +2819,8 @@ mod tests {
         let mut tree = list_archive_tree(&path).unwrap();
         select_by_full_path(&mut tree, "a.log");
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
 
         assert_eq!(extracted.len(), 1);
         assert_eq!(
@@ -2826,7 +2838,8 @@ mod tests {
         select_by_full_path(&mut tree, "a.log");
         select_by_full_path(&mut tree, "c.log");
 
-        let extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         let archive_name = archive_basename(&path);
         let expected = vec![
             format!("{archive_name}/a.log"),
@@ -2854,7 +2867,13 @@ mod tests {
             node.selected = true;
         }
 
-        let outcome = extract_selected(tmp_dir.path().to_str().unwrap(), &tree, no_progress());
+        let out_dir = tempfile::tempdir().unwrap();
+        let outcome = extract_selected(
+            tmp_dir.path().to_str().unwrap(),
+            out_dir.path(),
+            &tree,
+            no_progress(),
+        );
         std::fs::set_permissions(&b_path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         assert_eq!(
@@ -2893,7 +2912,8 @@ mod tests {
             "precondition: TarGz entries (including nested-archive containers) are cached by default"
         );
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(extracted.len(), 1);
@@ -2922,7 +2942,8 @@ mod tests {
         assert!(tree.nodes[leaf_id].cached_bytes.is_none());
         assert_eq!(tree.nodes[leaf_id].depth, 2);
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(extracted.len(), 1);
@@ -2940,7 +2961,8 @@ mod tests {
         let bundle_id = find_node(&tree, "bundle.zip").id;
         tree.toggle_subtree(bundle_id);
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
         extracted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2980,7 +3002,8 @@ mod tests {
             tree.nodes[id].selected = true;
         }
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
         extracted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -3016,7 +3039,8 @@ mod tests {
             tree.nodes[id].selected = true;
         }
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
         extracted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -3044,7 +3068,8 @@ mod tests {
         let mut tree = list_archive_tree(&path).unwrap();
         select_by_full_path(&mut tree, "app.log.gz");
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(extracted.len(), 1);
@@ -3069,7 +3094,8 @@ mod tests {
             "precondition: the leaf must have a real Container ancestor"
         );
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
 
@@ -3090,7 +3116,8 @@ mod tests {
         let mut tree = list_archive_tree(&path).unwrap();
         select_by_full_path(&mut tree, "app.log.gz");
 
-        let extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
 
@@ -3112,7 +3139,8 @@ mod tests {
         select_by_full_path(&mut tree, "a.log.bz2");
         select_by_full_path(&mut tree, "b.log.xz");
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
         extracted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -3139,7 +3167,8 @@ mod tests {
             "precondition: TarGz entries are cached by default"
         );
 
-        let mut extracted = extract_selected(&path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut extracted = extract_selected(&path, out_dir.path(), &tree, no_progress()).files;
         let archive_name = archive_basename(&path).to_string();
         std::fs::remove_file(&path).unwrap();
 
@@ -3159,7 +3188,8 @@ mod tests {
 
         let mut tree = list_directory_tree(&dir_path).unwrap();
         tree.set_all_files_selected(true);
-        let extracted = extract_selected(&dir_path, &tree, no_progress()).files;
+        let out_dir = tempfile::tempdir().unwrap();
+        let extracted = extract_selected(&dir_path, out_dir.path(), &tree, no_progress()).files;
 
         let mut names: Vec<&str> = extracted.iter().map(|f| f.name.as_str()).collect();
         names.sort();

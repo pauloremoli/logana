@@ -144,9 +144,24 @@ pub enum Commands {
     /// Toggle log level color highlighting
     LevelColors,
     /// Open a file in a new tab
-    Open { path: String },
+    Open {
+        path: String,
+        /// Directory to extract archive contents into, when `path` is an
+        /// archive or a directory. Defaults to the current working
+        /// directory. Extraction always writes real, permanent files —
+        /// never temp files.
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// Open a picker to choose which files to open from a directory or archive
-    FilePicker { path: String },
+    FilePicker {
+        path: String,
+        /// Directory to extract archive contents into once files are
+        /// picked. Defaults to the current working directory. Extraction
+        /// always writes real, permanent files — never temp files.
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// Close the current tab
     CloseTab,
     /// Show the active tab's real source path

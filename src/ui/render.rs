@@ -1499,8 +1499,11 @@ mod tests {
             .collect();
         let roots = (0..30).collect();
         let tree = ArchiveTree { nodes, roots };
-        app.tabs[0].interaction.mode =
-            Box::new(ArchivePickerMode::new(tree, "archive.zip".to_string()));
+        app.tabs[0].interaction.mode = Box::new(ArchivePickerMode::new(
+            tree,
+            "archive.zip".to_string(),
+            std::env::temp_dir(),
+        ));
         assert_eq!(app.tabs[0].interaction.archive_picker_visible_height, 0);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();

@@ -90,6 +90,11 @@ pub struct ArchivePickerMode {
     all_ids: Vec<NodeId>,
     pub selected: usize,
     pub source_path: String,
+    /// Where extraction should write real files once the picker is
+    /// confirmed — the archive/directory's own out-dir, given via `:open
+    /// --out`/`:file-picker --out` or the CLI `--out` flag, defaulting to
+    /// the current working directory.
+    pub out_dir: std::path::PathBuf,
     /// Live typeahead query; non-empty narrows [`Self::visible_rows`] to
     /// matching files and the containers that hold them.
     pub search: String,
@@ -109,13 +114,14 @@ pub struct ArchivePickerMode {
 }
 
 impl ArchivePickerMode {
-    pub fn new(tree: ArchiveTree, source_path: String) -> Self {
+    pub fn new(tree: ArchiveTree, source_path: String, out_dir: std::path::PathBuf) -> Self {
         let all_ids = tree.visible_rows();
         Self {
             tree,
             all_ids,
             selected: 0,
             source_path,
+            out_dir,
             search: String::new(),
             search_matcher: SearchMatcher::MatchAll,
             searching: false,
@@ -389,6 +395,7 @@ impl Mode for ArchivePickerMode {
                 KeyResult::ApplyArchivePicker {
                     source_path: self.source_path.clone(),
                     tree: self.tree.clone(),
+                    out_dir: self.out_dir.clone(),
                 },
             );
         }
@@ -713,7 +720,11 @@ mod tests {
     }
 
     fn mode_with_lazy_node() -> ArchivePickerMode {
-        ArchivePickerMode::new(build_tree_with_lazy_node(), "archive.zip".to_string())
+        ArchivePickerMode::new(
+            build_tree_with_lazy_node(),
+            "archive.zip".to_string(),
+            std::env::temp_dir(),
+        )
     }
 
     /// Builds:
@@ -735,7 +746,11 @@ mod tests {
     }
 
     fn mode() -> ArchivePickerMode {
-        ArchivePickerMode::new(build_test_tree(), "archive.zip".to_string())
+        ArchivePickerMode::new(
+            build_test_tree(),
+            "archive.zip".to_string(),
+            std::env::temp_dir(),
+        )
     }
 
     /// A flat tree of `n` top-level files — large enough to exercise
@@ -750,7 +765,11 @@ mod tests {
     }
 
     fn mode_with_n_files(n: usize) -> ArchivePickerMode {
-        ArchivePickerMode::new(build_flat_tree(n), "archive.zip".to_string())
+        ArchivePickerMode::new(
+            build_flat_tree(n),
+            "archive.zip".to_string(),
+            std::env::temp_dir(),
+        )
     }
 
     async fn press(
@@ -1217,7 +1236,9 @@ mod tests {
         m.tree.nodes[0].selected = true;
         let (_, result) = press(m, &mut tab, KeyCode::Enter).await;
         match result {
-            KeyResult::ApplyArchivePicker { source_path, tree } => {
+            KeyResult::ApplyArchivePicker {
+                source_path, tree, ..
+            } => {
                 assert_eq!(source_path, "archive.zip");
                 assert!(tree.nodes[0].selected);
             }
@@ -1281,7 +1302,7 @@ mod tests {
         tree.nodes[1].kind = NodeKind::UnreadableContainer {
             error: "bad zip".to_string(),
         };
-        let m = ArchivePickerMode::new(tree, "archive.zip".to_string());
+        let m = ArchivePickerMode::new(tree, "archive.zip".to_string(), std::env::temp_dir());
         let (rows, _, _) = extract_state(m.render_state());
         assert_eq!(rows[1].kind, RowKind::Error);
         assert!(rows[1].name.contains("bad zip"));
@@ -1796,7 +1817,11 @@ mod tests {
         std::fs::write(tmp.path().join("subdir/b.log"), b"two").unwrap();
         let tree = crate::ingestion::list_directory_tree(tmp.path().to_str().unwrap()).unwrap();
 
-        let mut m = ArchivePickerMode::new(tree, tmp.path().to_str().unwrap().to_string());
+        let mut m = ArchivePickerMode::new(
+            tree,
+            tmp.path().to_str().unwrap().to_string(),
+            std::env::temp_dir(),
+        );
         let (rows, _, _) = extract_state(m.render_state());
         assert_eq!(
             rows.len(),

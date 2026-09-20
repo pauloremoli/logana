@@ -114,19 +114,24 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "open",
-        usage: "open <path>",
-        description: "Open a file in a new tab. A path with *, ?, or [] wildcards opens every matching file, each in its own tab. A directory opens every file inside it (including inside any archives found there), each in its own tab; use file-picker to choose which ones instead.",
+        usage: "open <path> [--out <dir>]",
+        description: "Open a file in a new tab. A path with *, ?, or [] wildcards opens every matching file, each in its own tab. A directory opens every file inside it (including inside any archives found there), each in its own tab; use file-picker to choose which ones instead. When path is an archive or directory, --out sets the directory extracted files are written to (defaults to the current working directory).",
         examples: &[
             "open /var/log/syslog",
             "open /var/log/syslog*",
             "open /var/log",
+            "open logs.tar.gz --out /tmp/extracted",
         ],
     },
     CommandInfo {
         name: "file-picker",
-        usage: "file-picker <path>",
-        description: "Open a picker to choose which files to open from a directory or archive, instead of open's default of opening everything.",
-        examples: &["file-picker /var/log", "file-picker logs.tar.gz"],
+        usage: "file-picker <path> [--out <dir>]",
+        description: "Open a picker to choose which files to open from a directory or archive, instead of open's default of opening everything. --out sets the directory extracted files are written to once picked (defaults to the current working directory).",
+        examples: &[
+            "file-picker /var/log",
+            "file-picker logs.tar.gz",
+            "file-picker logs.tar.gz --out /tmp/extracted",
+        ],
     },
     CommandInfo {
         name: "close-tab",

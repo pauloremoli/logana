@@ -1,12 +1,10 @@
 use std::fs::File;
-use std::io::{self, Read, Write};
-use std::path::Path;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-
-use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ArchiveExtractionProgress {
@@ -78,13 +76,17 @@ pub enum ArchiveType {
 
 pub struct ExtractedFile {
     pub name: String,
-    /// Where this entry actually lives — an absolute disk path, or an
-    /// archive path suffixed with its internal entry path (e.g.
-    /// `/var/log/bundle.zip/app.log`) — distinct from `temp_file`, which is
-    /// just a scratch copy of the bytes. Lets a tab report its real source
-    /// even after extraction moved the content to a temp file.
+    /// Where this entry actually lives inside its *source* archive/directory
+    /// — an absolute disk path, or an archive path suffixed with its
+    /// internal entry path (e.g. `/var/log/bundle.zip/app.log`). Distinct
+    /// from `path`, which is where the extracted bytes were written on
+    /// disk. Lets a tab report its real source even after extraction wrote
+    /// the content out under the destination directory.
     pub full_path: String,
-    pub temp_file: NamedTempFile,
+    /// The real, permanent file this entry's bytes were written to, under
+    /// the caller-chosen output directory. Never a temp file — the caller
+    /// is responsible for choosing a destination that outlives extraction.
+    pub path: PathBuf,
 }
 
 /// Outcome of extracting a batch of archive/directory entries: every entry
@@ -118,16 +120,17 @@ pub fn detect_archive_type(path: &str) -> Option<ArchiveType> {
     }
 }
 
-pub fn extract(path: &str) -> Result<Vec<ExtractedFile>, String> {
+pub fn extract(path: &str, out_dir: &Path) -> Result<Vec<ExtractedFile>, String> {
     let (tx, _rx) = tokio::sync::watch::channel(ArchiveExtractionProgress {
         file_index: 0,
         fraction: 0.0,
     });
-    extract_with_progress(path, tx, None)
+    extract_with_progress(path, out_dir, tx, None)
 }
 
 pub fn extract_with_progress(
     path: &str,
+    out_dir: &Path,
     progress_tx: tokio::sync::watch::Sender<ArchiveExtractionProgress>,
     name_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> Result<Vec<ExtractedFile>, String> {
@@ -141,8 +144,9 @@ pub fn extract_with_progress(
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index, progress_tx);
             let mut decoder = flate2::read::GzDecoder::new(reader);
-            Ok(vec![decompress_to_temp(
+            Ok(vec![write_entry_to_disk(
                 &mut decoder,
+                out_dir,
                 stem(&stem(path)),
                 path.to_string(),
             )?])
@@ -151,8 +155,9 @@ pub fn extract_with_progress(
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index, progress_tx);
             let mut decoder = bzip2::read::BzDecoder::new(reader);
-            Ok(vec![decompress_to_temp(
+            Ok(vec![write_entry_to_disk(
                 &mut decoder,
+                out_dir,
                 stem(&stem(path)),
                 path.to_string(),
             )?])
@@ -161,8 +166,9 @@ pub fn extract_with_progress(
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index, progress_tx);
             let mut decoder = xz2::read::XzDecoder::new(reader);
-            Ok(vec![decompress_to_temp(
+            Ok(vec![write_entry_to_disk(
                 &mut decoder,
+                out_dir,
                 stem(&stem(path)),
                 path.to_string(),
             )?])
@@ -189,7 +195,7 @@ pub fn extract_with_progress(
                     fraction: 0.0,
                 });
                 let full_path = format!("{path}/{name}");
-                results.push(decompress_to_temp(&mut entry, name, full_path)?);
+                results.push(write_entry_to_disk(&mut entry, out_dir, name, full_path)?);
                 let _ = progress_tx.send(ArchiveExtractionProgress {
                     file_index: logical_idx,
                     fraction: 1.0,
@@ -202,34 +208,35 @@ pub fn extract_with_progress(
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index.clone(), progress_tx);
             let mut archive = tar::Archive::new(reader);
-            extract_tar_entries_with_progress(path, &mut archive, &file_index, &name_tx)
+            extract_tar_entries_with_progress(path, out_dir, &mut archive, &file_index, &name_tx)
         }
         ArchiveType::TarGz => {
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index.clone(), progress_tx);
             let decoder = flate2::read::GzDecoder::new(reader);
             let mut archive = tar::Archive::new(decoder);
-            extract_tar_entries_with_progress(path, &mut archive, &file_index, &name_tx)
+            extract_tar_entries_with_progress(path, out_dir, &mut archive, &file_index, &name_tx)
         }
         ArchiveType::TarBz2 => {
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index.clone(), progress_tx);
             let decoder = bzip2::read::BzDecoder::new(reader);
             let mut archive = tar::Archive::new(decoder);
-            extract_tar_entries_with_progress(path, &mut archive, &file_index, &name_tx)
+            extract_tar_entries_with_progress(path, out_dir, &mut archive, &file_index, &name_tx)
         }
         ArchiveType::TarXz => {
             let file = File::open(path).map_err(|e| e.to_string())?;
             let reader = ProgressReader::new(file, file_size, file_index.clone(), progress_tx);
             let decoder = xz2::read::XzDecoder::new(reader);
             let mut archive = tar::Archive::new(decoder);
-            extract_tar_entries_with_progress(path, &mut archive, &file_index, &name_tx)
+            extract_tar_entries_with_progress(path, out_dir, &mut archive, &file_index, &name_tx)
         }
     }
 }
 
 fn extract_tar_entries_with_progress<R: Read>(
     path: &str,
+    out_dir: &Path,
     archive: &mut tar::Archive<R>,
     file_index: &Arc<AtomicUsize>,
     name_tx: &Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -251,7 +258,7 @@ fn extract_tar_entries_with_progress<R: Read>(
         }
         file_index.store(idx, Ordering::Relaxed);
         let full_path = format!("{path}/{name}");
-        results.push(decompress_to_temp(&mut entry, name, full_path)?);
+        results.push(write_entry_to_disk(&mut entry, out_dir, name, full_path)?);
         idx += 1;
     }
     Ok(results)
@@ -329,18 +336,50 @@ pub(crate) fn stem(path: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn decompress_to_temp(
+/// Resolves `relative` (an archive-entry name, potentially attacker
+/// controlled) to a path under `out_dir`, rejecting any component that
+/// would escape it — `..`, an absolute root, or a Windows drive prefix —
+/// so a malicious archive entry (zip-slip) can never write outside the
+/// chosen destination.
+fn safe_output_path(out_dir: &Path, relative: &str) -> Result<PathBuf, String> {
+    let mut resolved = out_dir.to_path_buf();
+    let mut has_component = false;
+    for component in Path::new(relative).components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                resolved.push(part);
+                has_component = true;
+            }
+            std::path::Component::CurDir => {}
+            _ => return Err(format!("unsafe path in archive entry: '{relative}'")),
+        }
+    }
+    if !has_component {
+        return Err(format!("invalid entry name: '{relative}'"));
+    }
+    Ok(resolved)
+}
+
+/// Writes one entry's decompressed bytes to a real file on disk under
+/// `out_dir`, mirroring the entry's own relative directory structure
+/// (creating parent directories as needed). Overwrites an existing file at
+/// that path, same as any ordinary extraction tool.
+pub(crate) fn write_entry_to_disk(
     reader: &mut dyn Read,
+    out_dir: &Path,
     name: String,
     full_path: String,
 ) -> Result<ExtractedFile, String> {
-    let mut tmp = NamedTempFile::new().map_err(|e| e.to_string())?;
-    io::copy(reader, &mut tmp).map_err(|e| e.to_string())?;
-    tmp.flush().map_err(|e| e.to_string())?;
+    let dest = safe_output_path(out_dir, &name)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut out = File::create(&dest).map_err(|e| e.to_string())?;
+    io::copy(reader, &mut out).map_err(|e| e.to_string())?;
     Ok(ExtractedFile {
         name,
         full_path,
-        temp_file: tmp,
+        path: dest,
     })
 }
 
@@ -349,8 +388,8 @@ pub(crate) fn decompress_to_temp(
 /// into nested archives).
 #[cfg(test)]
 pub(crate) mod test_helpers {
-    use super::*;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     pub(crate) fn make_gz(content: &[u8]) -> NamedTempFile {
         let mut tmp = NamedTempFile::new().unwrap();
@@ -454,13 +493,10 @@ pub(crate) mod test_helpers {
 mod tests {
     use super::test_helpers::*;
     use super::*;
-    use std::io::{Seek, SeekFrom, Write};
+    use std::io::Write;
 
     fn read_extracted(file: &mut ExtractedFile) -> String {
-        let mut content = String::new();
-        file.temp_file.seek(SeekFrom::Start(0)).unwrap();
-        file.temp_file.read_to_string(&mut content).unwrap();
-        content
+        std::fs::read_to_string(&file.path).unwrap()
     }
 
     // detect_archive_type
@@ -544,7 +580,8 @@ mod tests {
         let tmp = make_gz(content);
         let path = tmp.path().to_str().unwrap().to_string() + ".gz";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let mut files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(read_extracted(&mut files[0]).as_bytes(), content);
@@ -556,7 +593,8 @@ mod tests {
         let tmp = make_bz2(content);
         let path = tmp.path().to_str().unwrap().to_string() + ".bz2";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let mut files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(read_extracted(&mut files[0]).as_bytes(), content);
@@ -568,7 +606,8 @@ mod tests {
         let tmp = make_xz(content);
         let path = tmp.path().to_str().unwrap().to_string() + ".xz";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let mut files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(read_extracted(&mut files[0]).as_bytes(), content);
@@ -580,7 +619,8 @@ mod tests {
         let tmp = make_zip(&[("app.log", content)]);
         let path = tmp.path().to_str().unwrap().to_string() + ".zip";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let mut files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "app.log");
@@ -592,7 +632,8 @@ mod tests {
         let tmp = make_zip(&[("a.log", b"aaa\n"), ("b.log", b"bbb\n")]);
         let path = tmp.path().to_str().unwrap().to_string() + ".zip";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 2);
         let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
@@ -602,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_extract_zip_skips_directories() {
-        let mut tmp = NamedTempFile::new().unwrap();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
         let mut zip = zip::ZipWriter::new(&mut tmp);
         zip.add_directory("logs/", zip::write::SimpleFileOptions::default())
             .unwrap();
@@ -612,7 +653,8 @@ mod tests {
         zip.finish().unwrap();
         let path = tmp.path().to_str().unwrap().to_string() + ".zip";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "logs/app.log");
@@ -623,7 +665,8 @@ mod tests {
         let tmp = make_zip(&[("2023/app.log", b"old\n"), ("2024/app.log", b"new\n")]);
         let path = tmp.path().to_str().unwrap().to_string() + ".zip";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         let mut names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
         names.sort();
@@ -635,7 +678,8 @@ mod tests {
         let tmp = make_tar(&[("2023/app.log", b"old\n"), ("2024/app.log", b"new\n")]);
         let path = tmp.path().to_str().unwrap().to_string() + ".tar";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         let mut names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
         names.sort();
@@ -648,7 +692,8 @@ mod tests {
         let tmp = make_tar(&[("app.log", content)]);
         let path = tmp.path().to_str().unwrap().to_string() + ".tar";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let mut files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "app.log");
@@ -660,7 +705,8 @@ mod tests {
         let tmp = make_tar(&[("a.log", b"aaa\n"), ("b.log", b"bbb\n")]);
         let path = tmp.path().to_str().unwrap().to_string() + ".tar";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 2);
     }
@@ -671,7 +717,8 @@ mod tests {
         let tmp = make_tar_gz(&[("app.log", content)]);
         let path = tmp.path().to_str().unwrap().to_string() + ".tar.gz";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let mut files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(read_extracted(&mut files[0]).as_bytes(), content);
@@ -683,7 +730,8 @@ mod tests {
         let tmp = make_tar_bz2(&[("app.log", content)]);
         let path = tmp.path().to_str().unwrap().to_string() + ".tar.bz2";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let mut files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(read_extracted(&mut files[0]).as_bytes(), content);
@@ -695,7 +743,8 @@ mod tests {
         let tmp = make_tar_xz(&[("app.log", content)]);
         let path = tmp.path().to_str().unwrap().to_string() + ".tar.xz";
         std::fs::copy(tmp.path(), &path).unwrap();
-        let mut files = extract(&path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut files = extract(&path, out_dir.path()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(read_extracted(&mut files[0]).as_bytes(), content);
@@ -703,8 +752,58 @@ mod tests {
 
     #[test]
     fn test_extract_nonexistent_file_returns_err() {
-        let result = extract("/nonexistent/path/file.gz");
+        let out_dir = tempfile::tempdir().unwrap();
+        let result = extract("/nonexistent/path/file.gz", out_dir.path());
         assert!(result.is_err());
+    }
+
+    // write_entry_to_disk / out_dir behavior
+
+    #[test]
+    fn test_extract_writes_real_file_under_out_dir() {
+        let content = b"hello from gz\n";
+        let tmp = make_gz(content);
+        let path = tmp.path().to_str().unwrap().to_string() + ".gz";
+        std::fs::copy(tmp.path(), &path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let files = extract(&path, out_dir.path()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].path.starts_with(out_dir.path()));
+        assert!(files[0].path.exists());
+    }
+
+    #[test]
+    fn test_extract_zip_preserves_directory_structure_on_disk() {
+        let tmp = make_zip(&[("2023/app.log", b"old\n"), ("2024/app.log", b"new\n")]);
+        let path = tmp.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp.path(), &path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let files = extract(&path, out_dir.path()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(out_dir.path().join("2023/app.log").exists());
+        assert!(out_dir.path().join("2024/app.log").exists());
+    }
+
+    #[test]
+    fn test_safe_output_path_rejects_parent_dir_traversal() {
+        let out_dir = tempfile::tempdir().unwrap();
+        assert!(safe_output_path(out_dir.path(), "../escape.log").is_err());
+        assert!(safe_output_path(out_dir.path(), "a/../../escape.log").is_err());
+    }
+
+    #[test]
+    fn test_safe_output_path_rejects_absolute_entry() {
+        let out_dir = tempfile::tempdir().unwrap();
+        assert!(safe_output_path(out_dir.path(), "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn test_safe_output_path_accepts_normal_relative_entry() {
+        let out_dir = tempfile::tempdir().unwrap();
+        let resolved = safe_output_path(out_dir.path(), "logs/app.log").unwrap();
+        assert_eq!(resolved, out_dir.path().join("logs/app.log"));
     }
 
     #[test]
@@ -874,11 +973,12 @@ mod tests {
         let tmp = make_gz(content);
         let path = tmp.path().to_str().unwrap().to_string() + ".log.gz";
         std::fs::copy(tmp.path(), &path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
         let (tx, rx) = watch::channel(ArchiveExtractionProgress {
             file_index: 0,
             fraction: 0.0,
         });
-        let mut files = extract_with_progress(&path, tx, None).unwrap();
+        let mut files = extract_with_progress(&path, out_dir.path(), tx, None).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(read_extracted(&mut files[0]).as_bytes(), content);
@@ -897,11 +997,12 @@ mod tests {
         let tmp = make_zip(&[("a.log", b"aaa\n"), ("b.log", b"bbb\n")]);
         let path = tmp.path().to_str().unwrap().to_string() + ".zip";
         std::fs::copy(tmp.path(), &path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
         let (tx, rx) = watch::channel(ArchiveExtractionProgress {
             file_index: 0,
             fraction: 0.0,
         });
-        let files = extract_with_progress(&path, tx, None).unwrap();
+        let files = extract_with_progress(&path, out_dir.path(), tx, None).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 2);
         let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
@@ -922,11 +1023,12 @@ mod tests {
         let tmp = make_bz2(content);
         let path = tmp.path().to_str().unwrap().to_string() + ".log.bz2";
         std::fs::copy(tmp.path(), &path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
         let (tx, rx) = watch::channel(ArchiveExtractionProgress {
             file_index: 0,
             fraction: 0.0,
         });
-        let mut files = extract_with_progress(&path, tx, None).unwrap();
+        let mut files = extract_with_progress(&path, out_dir.path(), tx, None).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(read_extracted(&mut files[0]).as_bytes(), content);
@@ -940,11 +1042,12 @@ mod tests {
         let tmp = make_tar(&[("a.log", b"aaa\n"), ("b.log", b"bbb\n")]);
         let path = tmp.path().to_str().unwrap().to_string() + ".tar";
         std::fs::copy(tmp.path(), &path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
         let (tx, rx) = watch::channel(ArchiveExtractionProgress {
             file_index: 0,
             fraction: 0.0,
         });
-        let files = extract_with_progress(&path, tx, None).unwrap();
+        let files = extract_with_progress(&path, out_dir.path(), tx, None).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 2);
         let p = rx.borrow();
@@ -958,12 +1061,13 @@ mod tests {
         let tmp = make_tar_gz(&[("app.log", content)]);
         let path = tmp.path().to_str().unwrap().to_string() + ".tar.gz";
         std::fs::copy(tmp.path(), &path).unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
         let (tx, _rx) = watch::channel(ArchiveExtractionProgress {
             file_index: 0,
             fraction: 0.0,
         });
         let (name_tx, mut name_rx) = mpsc::unbounded_channel();
-        let mut files = extract_with_progress(&path, tx, Some(name_tx)).unwrap();
+        let mut files = extract_with_progress(&path, out_dir.path(), tx, Some(name_tx)).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(read_extracted(&mut files[0]).as_bytes(), content);

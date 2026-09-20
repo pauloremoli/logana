@@ -2,6 +2,18 @@ use crate::commands::auto_complete::expand_tilde;
 use crate::db::{FileContextStore, FilterStore, GroupStore};
 use crate::ui::App;
 use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+
+/// Resolves `:open`/`:file-picker`'s `--out <dir>` flag to a concrete
+/// directory: the given (tilde-expanded) path, or the current working
+/// directory when omitted — extraction always writes real files there,
+/// never temp files.
+fn resolve_out_dir(out: Option<String>) -> PathBuf {
+    match out {
+        Some(dir) => PathBuf::from(expand_tilde(&dir)),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    }
+}
 
 impl App {
     pub(super) fn cmd_export_marked(&mut self, path: String) -> Result<bool, String> {
@@ -89,8 +101,7 @@ impl App {
 
     /// Re-points a temp-backed tab at the file it was just saved to: moves
     /// its filters/groups from the old (ephemeral) source key to the new
-    /// path, drops the temp copies (`archive_temp`/`merge_source_temps`/
-    /// `merged_temp`) and, for a picker-triggered merge, the multi-source
+    /// path, drops the temp copy (`merged_temp`) and the multi-source
     /// `merged` state too (the saved file is a single flat file now, not
     /// several sources to track), then reloads the tab's content from the
     /// saved path — same as opening it fresh, including live tail-watching
@@ -126,8 +137,6 @@ impl App {
         }
 
         self.tabs[tab_idx].title = title;
-        self.tabs[tab_idx].archive_temp = None;
-        self.tabs[tab_idx].merge_source_temps = Vec::new();
         self.tabs[tab_idx].merged_temp = None;
         self.tabs[tab_idx].merged = None;
         self.tabs[tab_idx].log_manager =
@@ -268,8 +277,13 @@ impl App {
         Ok(false)
     }
 
-    pub(super) async fn cmd_open(&mut self, path: String) -> Result<bool, String> {
+    pub(super) async fn cmd_open(
+        &mut self,
+        path: String,
+        out: Option<String>,
+    ) -> Result<bool, String> {
         let path = expand_tilde(&path);
+        let out_dir = resolve_out_dir(out);
         if crate::utils::filesystem::should_glob_expand(&path) {
             let matches = crate::utils::filesystem::expand_glob(&path)?;
             if matches.is_empty() {
@@ -277,11 +291,11 @@ impl App {
             }
             let mut mode_was_set = false;
             for m in matches {
-                mode_was_set = self.open_glob_match(&m).await?;
+                mode_was_set = self.open_glob_match(&m, out_dir.clone()).await?;
             }
             return Ok(mode_was_set);
         }
-        self.open_glob_match(&path).await
+        self.open_glob_match(&path, out_dir).await
     }
 
     /// Opens a single resolved path (directory -> every file inside it, each
@@ -290,15 +304,20 @@ impl App {
     /// glob pattern. Returns whether the active tab's mode was already set
     /// explicitly, so a caller looping over multiple matches knows whether
     /// the *last* one needs that treatment too.
-    async fn open_glob_match(&mut self, path: &str) -> Result<bool, String> {
+    async fn open_glob_match(
+        &mut self,
+        path: &str,
+        out_dir: std::path::PathBuf,
+    ) -> Result<bool, String> {
         if std::path::Path::new(path).is_dir() {
             let mut tree = crate::ingestion::list_directory_tree(path)?;
             tree.set_all_files_selected(true);
-            self.apply_archive_picker(path.to_string(), tree).await;
+            self.apply_archive_picker(path.to_string(), tree, out_dir)
+                .await;
             return Ok(false);
         }
         if crate::ingestion::detect_archive_type(path).is_some() {
-            self.begin_archive_listing(path).await;
+            self.begin_archive_listing(path, out_dir).await;
             return Ok(true);
         }
         self.open_file(path).await?;
@@ -308,17 +327,22 @@ impl App {
     /// Opens the interactive picker for `path` — a directory or an archive —
     /// so the user can choose which files to open instead of `:open`'s
     /// default of opening everything.
-    pub(super) async fn cmd_file_picker(&mut self, path: String) -> Result<bool, String> {
+    pub(super) async fn cmd_file_picker(
+        &mut self,
+        path: String,
+        out: Option<String>,
+    ) -> Result<bool, String> {
         let path = expand_tilde(&path);
+        let out_dir = resolve_out_dir(out);
         if std::path::Path::new(&path).is_dir() {
             let tree = crate::ingestion::list_directory_tree(&path)?;
             self.tabs[self.active_tab].interaction.mode = Box::new(
-                crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path),
+                crate::mode::archive_picker_mode::ArchivePickerMode::new(tree, path, out_dir),
             );
             return Ok(true);
         }
         if crate::ingestion::detect_archive_type(&path).is_some() {
-            self.begin_archive_listing(&path).await;
+            self.begin_archive_listing(&path, out_dir).await;
             return Ok(true);
         }
         Err(format!(

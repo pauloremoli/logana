@@ -73,6 +73,9 @@ pub enum KeyResult {
     ApplyArchivePicker {
         source_path: String,
         tree: ArchiveTree,
+        /// Where extraction should write real files — see
+        /// `ArchivePickerMode::out_dir`.
+        out_dir: std::path::PathBuf,
     },
     /// The archive picker is still open (unlike `ApplyArchivePicker`, which
     /// replaces the mode) — the background fetch behind this lands back on
@@ -827,16 +830,6 @@ pub struct TabState {
     pub display: DisplayConfig,
     pub interaction: InteractionState,
     pub load_state: Option<FileLoadState>,
-    /// Keeps extracted archive temp file alive for the lifetime of this tab.
-    pub archive_temp: Option<tempfile::NamedTempFile>,
-    /// For a picker-triggered merged tab (archive or directory), keeps each
-    /// merge-marked source's own temp copy alive for the lifetime of this
-    /// tab — a directory source is copied into temp same as an archive
-    /// source is extracted into temp, so the merged tab is self-contained
-    /// and never needs to re-open the original files. Empty for anything
-    /// that isn't a picker-triggered merge (including a live `:merge` tab,
-    /// which reads its still-growing sources directly).
-    pub merge_source_temps: Vec<tempfile::NamedTempFile>,
     /// For a picker-triggered merged tab, the final sorted/interleaved
     /// content written to one temp file once the background merge build
     /// finishes — the literal "saved merged file". Not used for reading
@@ -940,8 +933,6 @@ impl TabState {
                 ..InteractionState::default()
             },
             load_state: None,
-            archive_temp: None,
-            merge_source_temps: Vec::new(),
             merged_temp: None,
             extraction_progress: None,
             continuation_map,
@@ -954,12 +945,14 @@ impl TabState {
     }
 
     /// Whether this tab's content lives only in a temp file rather than a
-    /// location the user chose — an extracted archive file, or a
-    /// picker-triggered merge (see `archive_temp`/`merged_temp`). Drives the
-    /// `[TEMP]` title marker so it's clear the data disappears once the temp
-    /// file is cleaned up, unlike a normally opened file.
+    /// location the user chose — a picker-triggered merge's synthesized,
+    /// interleaved result (see `merged_temp`). An extracted archive entry no
+    /// longer qualifies: extraction always writes a real, permanent file
+    /// under the chosen output directory. Drives the `[TEMP]` title marker
+    /// so it's clear the data disappears once the temp file is cleaned up,
+    /// unlike a normally opened file.
     pub fn is_temp_backed(&self) -> bool {
-        self.archive_temp.is_some() || self.merged_temp.is_some()
+        self.merged_temp.is_some()
     }
 
     /// This tab's real source location: `source_path` when set (a
@@ -2958,6 +2951,9 @@ pub struct ArchiveListingState {
     /// Path to the archive being listed, carried through to the picker mode
     /// once listing finishes (extraction later re-opens the same path).
     pub source_path: String,
+    /// Where extraction should write real files once the picker is
+    /// confirmed, carried through to the picker mode alongside `source_path`.
+    pub out_dir: std::path::PathBuf,
     /// Delivers the listed tree (or error) when listing finishes.
     pub result_rx: tokio::sync::oneshot::Receiver<Result<ArchiveTree, String>>,
 }
@@ -3345,13 +3341,6 @@ mod tests {
     async fn test_is_temp_backed_false_for_a_regular_tab() {
         let tab = make_tab(&["line1"]).await;
         assert!(!tab.is_temp_backed());
-    }
-
-    #[tokio::test]
-    async fn test_is_temp_backed_true_with_archive_temp() {
-        let mut tab = make_tab(&["line1"]).await;
-        tab.archive_temp = Some(tempfile::NamedTempFile::new().unwrap());
-        assert!(tab.is_temp_backed());
     }
 
     #[tokio::test]

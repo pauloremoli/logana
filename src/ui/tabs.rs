@@ -20,10 +20,6 @@ pub(crate) struct MergeSourceInputs {
     pub(crate) year_maps: Vec<Option<Arc<YearMap>>>,
     pub(crate) continuation_maps: Vec<Option<Arc<Vec<usize>>>>,
     pub(crate) labels: Vec<String>,
-    /// Owned temp copies backing `sources`, kept alive on the resulting tab
-    /// (see `TabState::merge_source_temps`). Empty for `:merge`'s
-    /// already-open-tab sources, which have no temp copy of their own.
-    pub(crate) temp_files: Vec<tempfile::NamedTempFile>,
 }
 
 impl App {
@@ -283,7 +279,6 @@ impl App {
                 .iter()
                 .map(|&i| self.tabs[i].title.clone())
                 .collect(),
-            temp_files: Vec::new(),
         }
     }
 
@@ -300,7 +295,6 @@ impl App {
             year_maps: Vec::with_capacity(sources.len()),
             continuation_maps: Vec::with_capacity(sources.len()),
             labels: Vec::with_capacity(sources.len()),
-            temp_files: Vec::with_capacity(sources.len()),
         };
         for s in sources {
             inputs.labels.push(s.label);
@@ -308,7 +302,6 @@ impl App {
             inputs.year_maps.push(s.detected.year_map);
             inputs.continuation_maps.push(s.detected.continuation_map);
             inputs.sources.push(s.reader);
-            inputs.temp_files.push(s.temp_file);
         }
         inputs
     }
@@ -448,7 +441,6 @@ impl App {
 
         self.tabs[tab_idx].file_reader =
             FileReader::from_merged(Arc::new(Vec::new()), sources_arc.clone());
-        self.tabs[tab_idx].merge_source_temps = inputs.temp_files;
         if let Some(merged) = self.tabs[tab_idx].merged.as_mut() {
             merged.source_parsers = inputs.parsers.clone();
             merged.source_labels = inputs.labels;

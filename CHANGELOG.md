@@ -9,8 +9,10 @@ All notable changes to logana will be documented in this file.
 - Add `--fga` to `:filter`/`:highlight` to auto-pick a random, colorful foreground color readable against the current theme background.
 - Add tab-completion for `--regex`/`-r`, `--ignore-case`/`-i`, `--auto`/`-a`, and `--fga` on `:filter`/`:exclude`/`:highlight`, and `-a` on `:group`.
 - Show the `next_match`/`prev_match` keys next to the match count in the search bar once a search is committed.
+- Add `--out <dir>` to `:open`/`:file-picker` and the CLI to choose where archive/directory contents are extracted, defaulting to the current working directory.
 
 ### Changed
+- Archive and directory extraction now always writes real files to disk instead of temp files.
 - Rebind the keybindings help overlay from `F1` to `?`, freeing `F1` and dropping `?`'s default backward-search binding (still reachable via `/` then `N`, or by rebinding `search_backward`).
 
 ## [0.7.7] - 2026-09-19

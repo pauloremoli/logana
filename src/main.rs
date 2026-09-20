@@ -89,6 +89,22 @@ struct Args {
     /// Stderr lines are prefixed with "ERROR " for visibility.
     #[arg(long, value_name = "COMMAND", conflicts_with = "files")]
     run: Option<String>,
+
+    /// Directory to extract archive contents into, when a given path is an
+    /// archive or a directory. Defaults to the current working directory.
+    /// Extracted files are always written to real, permanent files — never
+    /// temp files.
+    #[arg(long, value_name = "DIR")]
+    out: Option<std::path::PathBuf>,
+}
+
+/// Resolves the `--out` flag to a concrete directory: the given path, or
+/// the current working directory when omitted (falling back to `.` on the
+/// rare system where the cwd can't be read).
+fn resolve_out_dir(out: Option<&std::path::PathBuf>) -> std::path::PathBuf {
+    out.cloned().unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    })
 }
 
 struct AlternateScreen {
@@ -248,6 +264,7 @@ async fn run_headless_mode(args: Args) -> Result<()> {
         eprintln!("Warning: {warning}");
     }
 
+    let out_dir = resolve_out_dir(args.out.as_ref());
     logana::headless::run_headless(&logana::headless::HeadlessArgs {
         files: args.files,
         filters: args.filters,
@@ -255,6 +272,7 @@ async fn run_headless_mode(args: Args) -> Result<()> {
         exclude_filters: args.exclude_filters,
         timestamp_filters: args.timestamp_filters,
         output: args.output,
+        out_dir,
     })
     .await
 }
@@ -357,6 +375,7 @@ async fn begin_initial_load(
     background_file_load: bool,
     stdin_is_piped: bool,
     args: &Args,
+    out_dir: &std::path::Path,
 ) {
     let has_inline_filters = !args.include_filters.is_empty()
         || !args.exclude_filters.is_empty()
@@ -373,7 +392,8 @@ async fn begin_initial_load(
     if background_file_load {
         if let Some(path) = source_path {
             if logana::ingestion::detect_archive_type(&path).is_some() {
-                app.begin_archive_listing(&path).await;
+                app.begin_archive_listing(&path, out_dir.to_path_buf())
+                    .await;
             } else {
                 app.begin_file_load(
                     path,
@@ -400,7 +420,8 @@ async fn begin_initial_load(
         // moment `app.run()` starts.
         app.session.pending_session_restore = None;
         tree.set_all_files_selected(true);
-        app.apply_archive_picker(path.clone(), tree).await;
+        app.apply_archive_picker(path.clone(), tree, out_dir.to_path_buf())
+            .await;
     }
 }
 
@@ -430,17 +451,19 @@ async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
         app.session.startup_warnings.push(err);
     }
     apply_cli_args_to_app(&mut app, &args).await;
+    let out_dir = resolve_out_dir(args.out.as_ref());
     begin_initial_load(
         &mut app,
         source_path,
         background_file_load,
         stdin_is_piped,
         &args,
+        &out_dir,
     )
     .await;
 
     for path in args.files.iter().skip(1) {
-        if let Err(msg) = app.open_path_as_tab(path).await {
+        if let Err(msg) = app.open_path_as_tab(path, out_dir.clone()).await {
             app.session
                 .startup_warnings
                 .push(format!("could not open '{}': {}", path, msg));
@@ -892,8 +915,17 @@ mod tests {
         let dir = tmp.path().to_str().unwrap().to_string();
         let args = Args::try_parse_from(["logana", &dir]).unwrap();
         let (source_path, background_file_load) = resolve_source(args.files.first());
+        let out_dir = tempfile::tempdir().unwrap();
 
-        begin_initial_load(&mut app, source_path, background_file_load, false, &args).await;
+        begin_initial_load(
+            &mut app,
+            source_path,
+            background_file_load,
+            false,
+            &args,
+            out_dir.path(),
+        )
+        .await;
         for _ in 0..100 {
             app.poll_archive_extraction().await;
             if app.pending_archive.is_none() {

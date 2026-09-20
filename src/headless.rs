@@ -1,5 +1,5 @@
 use std::io::{self, BufWriter, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -23,6 +23,9 @@ pub struct HeadlessArgs {
     pub exclude_filters: Vec<String>,
     pub timestamp_filters: Vec<String>,
     pub output: Option<std::path::PathBuf>,
+    /// Directory extracted archive contents are written into. Extraction
+    /// always writes real, permanent files here — never temp files.
+    pub out_dir: PathBuf,
 }
 
 pub fn same_file(input: &str, output: &std::path::Path) -> bool {
@@ -118,7 +121,7 @@ pub async fn run_headless(args: &HeadlessArgs) -> Result<()> {
 
     for path in &args.files {
         if crate::ingestion::detect_archive_type(path).is_some() {
-            run_headless_archive(path, &log_manager, &mut *writer).await?;
+            run_headless_archive(path, &args.out_dir, &log_manager, &mut *writer).await?;
         } else {
             run_headless_file(path, &log_manager, &mut *writer).await?;
         }
@@ -164,18 +167,21 @@ async fn run_headless_file(
 
 async fn run_headless_archive(
     path: &str,
+    out_dir: &Path,
     log_manager: &LogManager,
     writer: &mut dyn Write,
 ) -> Result<()> {
     let path_str = path.to_string();
-    let files = tokio::task::spawn_blocking(move || crate::ingestion::extract(&path_str))
-        .await
-        .map_err(|e| anyhow::anyhow!("Archive extraction task failed: {e}"))?
-        .map_err(|e| anyhow::anyhow!("Failed to extract '{path}': {e}"))?;
+    let out_dir_owned = out_dir.to_path_buf();
+    let files =
+        tokio::task::spawn_blocking(move || crate::ingestion::extract(&path_str, &out_dir_owned))
+            .await
+            .map_err(|e| anyhow::anyhow!("Archive extraction task failed: {e}"))?
+            .map_err(|e| anyhow::anyhow!("Failed to extract '{path}': {e}"))?;
 
     let cancel = Arc::new(AtomicBool::new(false));
     for file in files {
-        let tmp_path = file.temp_file.path().to_string_lossy().to_string();
+        let tmp_path = file.path.to_string_lossy().to_string();
         let (fm, _, _, _) = log_manager.build_filter_manager();
         let needs_parse = {
             let filter_defs = log_manager.get_filters();
@@ -629,7 +635,10 @@ mod tests {
         )
         .await;
         let mut out = Vec::new();
-        run_headless_archive(&path, &lm, &mut out).await.unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        run_headless_archive(&path, out_dir.path(), &lm, &mut out)
+            .await
+            .unwrap();
         std::fs::remove_file(&path).unwrap();
 
         let result = String::from_utf8(out).unwrap();
@@ -653,7 +662,10 @@ mod tests {
         )
         .await;
         let mut out = Vec::new();
-        run_headless_archive(&path, &lm, &mut out).await.unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        run_headless_archive(&path, out_dir.path(), &lm, &mut out)
+            .await
+            .unwrap();
         std::fs::remove_file(&path).unwrap();
 
         let result = String::from_utf8(out).unwrap();
@@ -809,6 +821,7 @@ mod tests {
             exclude_filters: vec![],
             timestamp_filters: vec![],
             output: Some(out_tmp.path().to_path_buf()),
+            out_dir: std::env::temp_dir(),
         })
         .await
         .unwrap();
@@ -843,6 +856,7 @@ mod tests {
             exclude_filters: vec![],
             timestamp_filters: vec![],
             output: Some(out_tmp.path().to_path_buf()),
+            out_dir: std::env::temp_dir(),
         })
         .await
         .unwrap();
@@ -873,6 +887,7 @@ mod tests {
             exclude_filters: vec![],
             timestamp_filters: vec![],
             output: Some(out_tmp.path().to_path_buf()),
+            out_dir: std::env::temp_dir(),
         })
         .await;
         std::fs::remove_file(&gz_path).unwrap();
@@ -918,6 +933,7 @@ mod tests {
             exclude_filters: vec![],
             timestamp_filters: vec![],
             output: Some(out_tmp.path().to_path_buf()),
+            out_dir: std::env::temp_dir(),
         })
         .await
         .unwrap();
@@ -943,6 +959,7 @@ mod tests {
             exclude_filters: vec![],
             timestamp_filters: vec![],
             output: Some(path.clone()),
+            out_dir: std::env::temp_dir(),
         })
         .await;
 

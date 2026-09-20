@@ -150,8 +150,10 @@ impl App {
             Some(Commands::SidebarPosition { side }) => {
                 return self.cmd_sidebar_position(side).await;
             }
-            Some(Commands::Open { path }) => return self.cmd_open(path).await,
-            Some(Commands::FilePicker { path }) => return self.cmd_file_picker(path).await,
+            Some(Commands::Open { path, out }) => return self.cmd_open(path, out).await,
+            Some(Commands::FilePicker { path, out }) => {
+                return self.cmd_file_picker(path, out).await;
+            }
             Some(Commands::CloseTab) => return self.cmd_close_tab(),
             Some(Commands::Path) => return self.cmd_path(),
             Some(Commands::ClearFilters) => return self.cmd_clear_filters().await,
@@ -1214,7 +1216,11 @@ mod tests {
         std::fs::write(tmp.path().join("a.log"), b"hello").unwrap();
         std::fs::write(tmp.path().join("b.log"), b"world").unwrap();
         let dir = tmp.path().to_str().unwrap();
-        let result = app.run_command(&format!("open {}", dir)).await.unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let result = app
+            .run_command(&format!("open {} --out {}", dir, out_dir.path().display()))
+            .await
+            .unwrap();
         assert!(
             !result,
             "open <dir> sets no explicit mode itself; extraction happens in the background"
@@ -1236,7 +1242,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.log"), b"hello").unwrap();
         let dir = tmp.path().to_str().unwrap();
-        app.run_command(&format!("open {}", dir)).await.unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        app.run_command(&format!("open {} --out {}", dir, out_dir.path().display()))
+            .await
+            .unwrap();
         drain_pending_archive(&mut app).await;
 
         let a_idx = app
@@ -1641,7 +1650,7 @@ mod tests {
     #[tokio::test]
     async fn test_save_on_temp_backed_tab_switches_to_the_saved_file() {
         let mut app = make_app(&["line one", "line two"]).await;
-        app.tabs[0].archive_temp = Some(tempfile::NamedTempFile::new().unwrap());
+        app.tabs[0].merged_temp = Some(tempfile::NamedTempFile::new().unwrap());
         assert!(app.tabs[0].is_temp_backed());
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -1653,7 +1662,7 @@ mod tests {
             !app.tabs[0].is_temp_backed(),
             "the tab must no longer be temp-backed after saving"
         );
-        assert!(app.tabs[0].archive_temp.is_none());
+        assert!(app.tabs[0].merged_temp.is_none());
         assert_eq!(
             app.tabs[0].title,
             std::path::Path::new(&path)
@@ -1692,10 +1701,10 @@ mod tests {
         assert!(!app.tabs[0].is_temp_backed());
     }
 
-    /// Builds an app whose single tab is backed by a real temp file (as an
-    /// archive-extracted tab would be), with its `LogManager` scoped to that
-    /// temp path — unlike `make_app`'s sourceless tab, this lets a `:save`
-    /// migrate filters/groups/context away from a real DB key.
+    /// Builds an app whose single tab is backed by a real temp file (as a
+    /// picker-triggered merged tab would be), with its `LogManager` scoped
+    /// to that temp path — unlike `make_app`'s sourceless tab, this lets a
+    /// `:save` migrate filters/groups/context away from a real DB key.
     async fn make_temp_backed_app(lines: &[&str]) -> (App, Arc<Database>, String) {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let temp_source = tempfile::NamedTempFile::new().unwrap();
@@ -1711,7 +1720,7 @@ mod tests {
         )
         .build()
         .await;
-        app.tabs[0].archive_temp = Some(temp_source);
+        app.tabs[0].merged_temp = Some(temp_source);
         assert!(app.tabs[0].is_temp_backed());
         (app, db, old_source)
     }
