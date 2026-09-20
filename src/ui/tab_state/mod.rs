@@ -2913,6 +2913,15 @@ pub struct StdinLoadState {
 
 /// Tracks an in-progress background archive extraction.
 pub struct ArchiveExtractionState {
+    /// The tab this apply was requested from — the interactive picker's own
+    /// tab, or (for a CLI/`:open` archive argument) the blank tab created to
+    /// hold its picker before extraction. `None` only if `active_tab` was
+    /// somehow out of bounds when the apply started. Used to remove that
+    /// exact tab, if it still looks untouched, once extraction finishes —
+    /// scanning for "any" empty-looking tab instead would remove the wrong
+    /// one when multiple archives are opened at once, each with its own
+    /// still-unconfirmed picker tab.
+    pub source_tab_id: Option<TabId>,
     /// Per-file extraction progress updates for Space-ticked files.
     pub progress_rx: tokio::sync::watch::Receiver<crate::ingestion::ArchiveExtractionProgress>,
     /// Delivers both the Space-ticked and 'm'-marked outcomes when the

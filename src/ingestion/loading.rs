@@ -634,6 +634,7 @@ impl App {
         tree: crate::ingestion::ArchiveTree,
         out_dir: std::path::PathBuf,
     ) {
+        let source_tab_id = self.tabs.get(self.active_tab).map(|t| t.id);
         let (progress_tx, progress_rx) =
             tokio::sync::watch::channel(crate::ingestion::ArchiveExtractionProgress {
                 file_index: 0,
@@ -694,6 +695,7 @@ impl App {
         });
 
         self.pending_archive = Some(crate::ui::ArchiveExtractionState {
+            source_tab_id,
             progress_rx,
             result_rx,
             merge_tab_id,
@@ -738,24 +740,47 @@ impl App {
             }
         };
         let merge_tab_id = state.merge_tab_id;
+        let source_tab_id = state.source_tab_id;
         self.pending_archive = None;
         self.decompression_message = None;
 
         let mut errors: Vec<String> = Vec::new();
-        let mut created_any_tab = false;
 
         let selected = result.selected_files;
+        let merge_will_create_tab = result
+            .merge_result
+            .as_ref()
+            .is_some_and(|outcome| !outcome.files.is_empty());
+        let created_any_tab = !selected.files.is_empty() || merge_will_create_tab;
+
+        // Removing this placeholder tab doesn't disturb `merge_tab_id` (or
+        // anything else) — it's a stable id, not a position. Must run before
+        // any new tabs are pushed below, whether from selected files or a
+        // merge, so their indices (`first_new_tab_idx`, `active_tab`)
+        // already account for its absence. Previously this only ran inside
+        // the selected-files branch, so a merge-marked-only apply (no
+        // separately selected files) left the placeholder open.
+        //
+        // Targeted by `source_tab_id` rather than scanning for "any" tab
+        // that looks like an empty placeholder — opening several archives
+        // at once (e.g. via a shell glob) leaves each one's own blank,
+        // unconfirmed picker tab sitting alongside this one until it's
+        // confirmed too, and an untargeted scan could remove one of those
+        // instead of (or as well as) this apply's own tab.
+        if created_any_tab
+            && self.stdin_load_state.is_none()
+            && let Some(id) = source_tab_id
+            && let Some(idx) = self.tabs.iter().position(|t| {
+                t.id == id
+                    && t.file_reader.line_count() == 0
+                    && t.load_state.is_none()
+                    && t.merged.is_none()
+            })
+        {
+            self.remove_tab_at(idx);
+        }
+
         if !selected.files.is_empty() {
-            created_any_tab = true;
-            // Removing this placeholder tab doesn't disturb `merge_tab_id`
-            // (or anything else) — it's a stable id, not a position.
-            if self.stdin_load_state.is_none()
-                && let Some(idx) = self.tabs.iter().position(|t| {
-                    t.file_reader.line_count() == 0 && t.load_state.is_none() && t.merged.is_none()
-                })
-            {
-                self.remove_tab_at(idx);
-            }
             let first_new_tab_idx = self.tabs.len();
             for file in selected.files {
                 let disk_path = file.path.to_string_lossy().to_string();
@@ -781,7 +806,6 @@ impl App {
             None => {}
             Some(outcome) => {
                 if !outcome.files.is_empty() {
-                    created_any_tab = true;
                     if let Some(tab_id) = merge_tab_id {
                         let inputs = Self::merge_inputs_from_extracted(outcome.files);
                         // Runs after the selected-files branch above so a merged
@@ -2497,6 +2521,69 @@ mod tests {
             app.tabs[second_tab].interaction.mode.render_state(),
             ModeRenderState::ArchivePicker { .. }
         ));
+    }
+
+    /// Regression test: opening several archives at once (e.g. via a shell
+    /// glob passed as multiple CLI args) leaves each one's own blank,
+    /// unconfirmed picker tab sitting alongside the app's genesis
+    /// placeholder tab — all of them looking identical to an untargeted
+    /// "any empty tab" scan (0 lines, no load, not merged). Confirming one
+    /// archive's picker must close only *that* archive's own tab, not the
+    /// genesis tab or another archive's still-pending one.
+    #[tokio::test]
+    async fn test_apply_archive_picker_removes_only_its_own_tab_when_other_placeholders_exist() {
+        let mut app = make_app(&[]).await;
+        let genesis_tab_id = app.tabs[0].id;
+
+        let tmp1 = crate::ingestion::archive::test_helpers::make_zip(&[("a.log", b"one")]);
+        let path1 = tmp1.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp1.path(), &path1).unwrap();
+
+        let tmp2 = crate::ingestion::archive::test_helpers::make_zip(&[("b.log", b"two")]);
+        let path2 = tmp2.path().to_str().unwrap().to_string() + ".zip";
+        std::fs::copy(tmp2.path(), &path2).unwrap();
+
+        let out_dir1 = tempfile::tempdir().unwrap();
+        app.open_path_as_tab(&path1, out_dir1.path().to_path_buf())
+            .await
+            .unwrap();
+        let archive1_tab_id = app.tabs[app.active_tab].id;
+
+        let out_dir2 = tempfile::tempdir().unwrap();
+        app.open_path_as_tab(&path2, out_dir2.path().to_path_buf())
+            .await
+            .unwrap();
+        let archive2_tab_id = app.tabs[app.active_tab].id;
+
+        // Simulate the user going back to archive1's tab and confirming its
+        // picker while archive2's picker is still sitting unconfirmed.
+        let archive1_idx = app
+            .tabs
+            .iter()
+            .position(|t| t.id == archive1_tab_id)
+            .unwrap();
+        app.active_tab = archive1_idx;
+        let mut tree1 = crate::ingestion::list_archive_tree(&path1).unwrap();
+        tree1.set_all_files_selected(true);
+        app.apply_archive_picker(path1.clone(), tree1, out_dir1.path().to_path_buf())
+            .await;
+        drain_pending_archive(&mut app).await;
+
+        std::fs::remove_file(&path1).unwrap();
+        std::fs::remove_file(&path2).unwrap();
+
+        assert!(
+            !app.tabs.iter().any(|t| t.id == archive1_tab_id),
+            "archive1's own blank picker tab must be closed once its extraction completes"
+        );
+        assert!(
+            app.tabs.iter().any(|t| t.id == genesis_tab_id),
+            "an unrelated tab must never be removed instead of the one that was actually confirmed"
+        );
+        assert!(
+            app.tabs.iter().any(|t| t.id == archive2_tab_id),
+            "another archive's still-unconfirmed picker tab must be left alone"
+        );
     }
 
     #[tokio::test]
@@ -4663,10 +4750,13 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
 
         assert!(app.pending_archive.is_none());
+        // `apply_archive_picker` adds the merged tab up front (+1), and
+        // extraction completing removes the empty starting placeholder it
+        // replaces (-1) — net unchanged from `tabs_before`.
         assert_eq!(
             app.tabs.len(),
-            tabs_before + 1,
-            "exactly one merged tab must be created, no separate tabs for the merge-marked files"
+            tabs_before,
+            "exactly one merged tab must be created in place of the placeholder, no separate tabs for the merge-marked files"
         );
         let merged_tab = app.tabs.last().unwrap();
         assert!(merged_tab.merged.is_some());
@@ -4675,6 +4765,12 @@ mod tests {
                 .iter()
                 .any(|t| t.title == "a.log" || t.title == "b.log"),
             "merge-marked files must never get their own separate tab"
+        );
+        assert!(
+            !app.tabs.iter().any(|t| t.file_reader.line_count() == 0
+                && t.load_state.is_none()
+                && t.merged.is_none()),
+            "the empty starting placeholder must be closed once the merge-marked files replace it"
         );
     }
 

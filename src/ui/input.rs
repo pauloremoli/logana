@@ -464,6 +464,12 @@ impl App {
         tree: crate::ingestion::ArchiveTree,
         out_dir: std::path::PathBuf,
     ) {
+        // Captured before `handle_open_files` below runs — it may already
+        // remove this tab via `remove_empty_placeholder()` if disk-selected
+        // files were opened, in which case the id simply won't be found
+        // later; if it's still here once `begin_directory_archived_extraction`
+        // finishes, it gets cleaned up then instead.
+        let source_tab_id = self.tabs.get(self.active_tab).map(|t| t.id);
         let selected: Vec<&crate::ingestion::ArchiveNode> = tree
             .nodes
             .iter()
@@ -487,6 +493,7 @@ impl App {
                 tree.clone(),
                 archived_selected_ids,
                 out_dir.clone(),
+                source_tab_id,
             )
             .await;
         }
@@ -609,6 +616,7 @@ impl App {
         tree: crate::ingestion::ArchiveTree,
         ids: Vec<crate::ingestion::NodeId>,
         out_dir: std::path::PathBuf,
+        source_tab_id: Option<crate::ui::TabId>,
     ) {
         let (progress_tx, progress_rx) =
             tokio::sync::watch::channel(crate::ingestion::ArchiveExtractionProgress {
@@ -633,6 +641,7 @@ impl App {
         });
 
         self.pending_archive = Some(crate::ui::ArchiveExtractionState {
+            source_tab_id,
             progress_rx,
             result_rx,
             merge_tab_id: None,

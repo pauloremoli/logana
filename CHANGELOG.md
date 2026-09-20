@@ -16,6 +16,9 @@ All notable changes to logana will be documented in this file.
 - Archive and directory extraction now always writes real files to disk instead of temp files.
 - Rebind the keybindings help overlay from `F1` to `?`, freeing `F1` and dropping `?`'s default backward-search binding (still reachable via `/` then `N`, or by rebinding `search_backward`).
 
+### Fixed
+- Close the empty placeholder tab after decompression.
+
 ## [0.7.7] - 2026-09-19
 
 ### Added
