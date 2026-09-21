@@ -1426,29 +1426,55 @@ fn test_headless_binary_loads_custom_schema_and_honors_field_filter() {
 }
 
 #[test]
-fn test_merge_flag_requires_headless() {
+fn test_merge_requires_at_least_two_files() {
+    // --merge works in both --headless and TUI mode, so this validation
+    // must fire before either mode starts (an interactive TUI can't be
+    // driven from a spawned-process test, unlike --headless).
     let tmp = tempfile::tempdir().unwrap();
     let a = tmp.path().join("a.log");
-    let b = tmp.path().join("b.log");
     std::fs::write(&a, "Jan  1 00:00:01 host tag: a1\n").unwrap();
-    std::fs::write(&b, "Jan  1 00:00:02 host tag: b1\n").unwrap();
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_logana"))
         .arg("--merge")
         .arg(&a)
-        .arg(&b)
         .env("XDG_CONFIG_HOME", tmp.path())
         .output()
         .expect("failed to run the logana binary");
 
     assert!(
         !output.status.success(),
-        "--merge without --headless should be rejected by clap"
+        "--merge with fewer than 2 files should be rejected before launching"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("headless"),
-        "error should mention the missing --headless flag: {stderr:?}"
+        stderr.contains("at least 2"),
+        "error should mention the minimum file count: {stderr:?}"
+    );
+}
+
+#[test]
+fn test_output_requires_headless_or_merge() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = tmp.path().join("a.log");
+    std::fs::write(&a, "Jan  1 00:00:01 host tag: a1\n").unwrap();
+    let out_path = tmp.path().join("out.log");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_logana"))
+        .arg("--output")
+        .arg(&out_path)
+        .arg(&a)
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .output()
+        .expect("failed to run the logana binary");
+
+    assert!(
+        !output.status.success(),
+        "--output without --headless or --merge should be rejected before launching"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--headless or --merge"),
+        "error should name the two flags --output requires one of: {stderr:?}"
     );
 }
 

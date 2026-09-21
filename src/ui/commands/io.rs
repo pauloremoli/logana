@@ -45,7 +45,7 @@ impl App {
         Ok(false)
     }
 
-    pub(super) async fn cmd_save(&mut self, path: String) -> Result<bool, String> {
+    pub(crate) async fn cmd_save(&mut self, path: String) -> Result<bool, String> {
         if path.is_empty() {
             return Err("Path is required".to_string());
         }

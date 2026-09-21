@@ -78,8 +78,10 @@ struct Args {
     #[arg(long)]
     headless: bool,
 
-    /// Write output to PATH instead of stdout (requires --headless).
-    #[arg(long, value_name = "PATH", requires = "headless")]
+    /// Write output to PATH instead of stdout (requires --headless or
+    /// --merge). With --merge and no --headless, the resulting tab is saved
+    /// to PATH immediately instead of staying temp-backed.
+    #[arg(long, value_name = "PATH")]
     output: Option<std::path::PathBuf>,
 
     /// Execute a command and stream its output to a tab.
@@ -98,10 +100,10 @@ struct Args {
     out: Option<std::path::PathBuf>,
 
     /// Interleave all input files by timestamp instead of concatenating
-    /// them (requires --headless). Requires at least 2 input files;
-    /// archive inputs contribute one merge source per file inside the
-    /// archive.
-    #[arg(long, requires = "headless")]
+    /// them (or, without --headless, open the result as a tab). Requires
+    /// at least 2 input files; archive inputs contribute one merge source
+    /// per file inside the archive.
+    #[arg(long)]
     merge: bool,
 }
 
@@ -246,6 +248,26 @@ fn validate_startup_args(args: &Args) -> std::result::Result<(), String> {
     for args_str in &args.timestamp_filters {
         if let Err(msg) = validate_inline_filter("date-filter", args_str) {
             return Err(format!("Error (-t/--timestamp): {}", msg));
+        }
+    }
+
+    if args.output.is_some() && !args.headless && !args.merge {
+        return Err("Error: --output requires --headless or --merge.".to_string());
+    }
+    if args.merge {
+        if args.files.len() < 2 {
+            return Err(format!(
+                "Error: --merge requires at least 2 input files, got {}.",
+                args.files.len()
+            ));
+        }
+        for path in &args.files {
+            if std::path::Path::new(path).is_dir() {
+                return Err(format!(
+                    "Error: '{}' is a directory. --merge requires file paths.",
+                    path
+                ));
+            }
         }
     }
 
@@ -460,21 +482,31 @@ async fn run_tui(args: Args, db: Arc<Database>) -> Result<()> {
     }
     apply_cli_args_to_app(&mut app, &args).await;
     let out_dir = resolve_out_dir(args.out.as_ref());
-    begin_initial_load(
-        &mut app,
-        source_path,
-        background_file_load,
-        stdin_is_piped,
-        &args,
-        &out_dir,
-    )
-    .await;
 
-    for path in args.files.iter().skip(1) {
-        if let Err(msg) = app.open_path_as_tab(path, out_dir.clone()).await {
-            app.session
-                .startup_warnings
-                .push(format!("could not open '{}': {}", path, msg));
+    if args.merge {
+        if let Err(msg) = app
+            .build_merge_tab_from_cli(&args.files, &out_dir, args.output.as_deref())
+            .await
+        {
+            app.session.startup_warnings.push(msg);
+        }
+    } else {
+        begin_initial_load(
+            &mut app,
+            source_path,
+            background_file_load,
+            stdin_is_piped,
+            &args,
+            &out_dir,
+        )
+        .await;
+
+        for path in args.files.iter().skip(1) {
+            if let Err(msg) = app.open_path_as_tab(path, out_dir.clone()).await {
+                app.session
+                    .startup_warnings
+                    .push(format!("could not open '{}': {}", path, msg));
+            }
         }
     }
 

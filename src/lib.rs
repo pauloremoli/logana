@@ -6,6 +6,7 @@ pub mod headless;
 mod headless_merge;
 pub mod ingestion;
 pub mod mcp;
+mod merge_sources;
 pub mod mode;
 pub mod parser;
 pub mod utils;

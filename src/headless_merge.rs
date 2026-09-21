@@ -1,7 +1,5 @@
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 
@@ -9,19 +7,6 @@ use crate::db::LogManager;
 use crate::filters::{FilterDecision, extract_date_filters, extract_field_filters};
 use crate::ingestion::FileReader;
 use crate::parser::LogFormatParser;
-use crate::ui::YearMap;
-
-/// One fully-loaded `--merge` input: its content plus everything
-/// `build_merged_index` and filtering need to fold it into the merged,
-/// timestamp-sorted output.
-struct MergeSource {
-    reader: FileReader,
-    parser: Option<Arc<dyn LogFormatParser>>,
-    year_map: Option<Arc<YearMap>>,
-    continuation_map: Option<Arc<Vec<usize>>>,
-    /// Ascending line indices this source's active filters keep.
-    visible: Vec<usize>,
-}
 
 /// Interleaves every input file (and, for archive inputs, every file inside
 /// the archive) into `writer` in timestamp order, applying `log_manager`'s
@@ -34,40 +19,24 @@ pub(crate) async fn run_headless_merge(
     log_manager: &LogManager,
     writer: &mut dyn Write,
 ) -> Result<Vec<String>> {
-    if files.len() < 2 {
-        anyhow::bail!(
-            "--merge requires at least 2 input files, got {}",
-            files.len()
-        );
-    }
+    let (sources, warnings) = crate::merge_sources::resolve_merge_sources(files, out_dir).await?;
 
-    let mut warnings = Vec::new();
-    let mut merge_sources = Vec::new();
-    for path in files {
-        if crate::ingestion::detect_archive_type(path).is_some() {
-            let (sources, mut errors) =
-                load_archive_merge_sources(path, out_dir, log_manager).await?;
-            warnings.append(&mut errors);
-            merge_sources.extend(sources);
-        } else {
-            let (source, warning) = load_plain_merge_source(path, log_manager).await?;
-            warnings.extend(warning);
-            merge_sources.push(source);
-        }
-    }
-
-    let parsers: Vec<_> = merge_sources.iter().map(|s| s.parser.clone()).collect();
-    let year_maps: Vec<_> = merge_sources.iter().map(|s| s.year_map.clone()).collect();
-    let continuation_maps: Vec<_> = merge_sources
+    let visible: Vec<Vec<usize>> = sources
         .iter()
-        .map(|s| s.continuation_map.clone())
+        .map(|s| collect_visible_lines(&s.reader, log_manager, s.detected.format.as_deref()))
         .collect();
-    let (sources, visible): (Vec<FileReader>, Vec<Vec<usize>>) = merge_sources
-        .into_iter()
-        .map(|s| (s.reader, s.visible))
-        .unzip();
+    let parsers: Vec<_> = sources.iter().map(|s| s.detected.format.clone()).collect();
+    let year_maps: Vec<_> = sources
+        .iter()
+        .map(|s| s.detected.year_map.clone())
+        .collect();
+    let continuation_maps: Vec<_> = sources
+        .iter()
+        .map(|s| s.detected.continuation_map.clone())
+        .collect();
+    let readers: Vec<FileReader> = sources.into_iter().map(|s| s.reader).collect();
 
-    let entries = crate::ui::build_merged_index(&sources, &parsers, &year_maps, &continuation_maps);
+    let entries = crate::ui::build_merged_index(&readers, &parsers, &year_maps, &continuation_maps);
 
     for entry in &entries {
         if visible[entry.source_idx]
@@ -76,124 +45,11 @@ pub(crate) async fn run_headless_merge(
         {
             continue;
         }
-        writer.write_all(&sources[entry.source_idx].get_line(entry.line_idx))?;
+        writer.write_all(&readers[entry.source_idx].get_line(entry.line_idx))?;
         writer.write_all(b"\n")?;
     }
 
     Ok(warnings)
-}
-
-/// Loads a plain (non-archive) merge source: its full content, detected
-/// format, and the line indices the active filters keep. Returns a warning
-/// when no format was detected — that source will contribute no lines.
-async fn load_plain_merge_source(
-    path: &str,
-    log_manager: &LogManager,
-) -> Result<(MergeSource, Option<String>)> {
-    let reader = load_merge_source(path).await?;
-    let detected = crate::ingestion::format_detect::detect_format_for_reader(&reader);
-    let warning = detected.format.is_none().then(|| {
-        format!(
-            "'{path}' has no detected timestamp format; its lines will not appear in the merged output."
-        )
-    });
-    let visible = collect_visible_lines(&reader, log_manager, detected.format.as_deref());
-    Ok((
-        MergeSource {
-            reader,
-            parser: detected.format,
-            year_map: detected.year_map,
-            continuation_map: detected.continuation_map,
-            visible,
-        },
-        warning,
-    ))
-}
-
-/// Loads a merge source's full content. Unlike the plain-concatenation
-/// headless path, merge always needs every line's bytes to compute sort
-/// keys, so it never installs a `VisibilityPredicate`.
-async fn load_merge_source(load_path: &str) -> Result<FileReader> {
-    let cancel = Arc::new(AtomicBool::new(false));
-    let handle = FileReader::load(load_path.to_string(), None, false, cancel, true).await?;
-    let result = handle
-        .result_rx
-        .await
-        .map_err(|_| io::Error::other("file load cancelled"))??;
-    Ok(result.reader)
-}
-
-/// Expands one archive path into a merge source per file it contains,
-/// recursing through any nesting (an archive inside an archive) and
-/// decompressing lone compressed entries (e.g. a `.tar` containing
-/// `app.log.gz`) — the same `ArchiveTree` machinery the TUI's own archive
-/// merge-picker uses (`crate::ingestion::list_archive_tree`,
-/// `extract_and_detect_merge_marked`), rather than a flat single-level
-/// extraction that would leave nested compression undecoded. A file that
-/// fails to extract is reported as a warning and excluded, rather than
-/// failing the whole merge.
-async fn load_archive_merge_sources(
-    path: &str,
-    out_dir: &Path,
-    log_manager: &LogManager,
-) -> Result<(Vec<MergeSource>, Vec<String>)> {
-    let path_owned = path.to_string();
-    // `extract_and_detect_merge_marked` names each entry's destination
-    // after the archive's own basename (e.g. `bundle.tar.gz/inner.log`) to
-    // keep entries from different archives apart — but that collides with
-    // the archive file itself when `out_dir` is its own directory (the
-    // common case: `--out` defaults to the current directory, and that's
-    // usually also where the archive being merged lives). Extracting into
-    // a dedicated subdirectory keeps every entry's path away from any
-    // input file, while still landing under the caller-chosen `out_dir` as
-    // real, permanent files.
-    let out_dir_owned = out_dir.join(".logana-merge");
-    let outcome = tokio::task::spawn_blocking(move || {
-        let mut tree = crate::ingestion::list_archive_tree(&path_owned)?;
-        for root in tree.roots.clone() {
-            tree.merge_select_subtree(root);
-        }
-        let (progress_tx, _progress_rx) =
-            tokio::sync::watch::channel(crate::ingestion::ArchiveExtractionProgress {
-                file_index: 0,
-                fraction: 0.0,
-            });
-        Ok::<_, String>(crate::ingestion::extract_and_detect_merge_marked(
-            &path_owned,
-            &out_dir_owned,
-            &tree,
-            progress_tx,
-        ))
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("Archive extraction task failed: {e}"))?
-    .map_err(|e| anyhow::anyhow!("Failed to extract '{path}': {e}"))?;
-
-    let mut warnings: Vec<String> = outcome
-        .errors
-        .into_iter()
-        .map(|e| format!("'{path}': {e}"))
-        .collect();
-
-    let mut sources = Vec::with_capacity(outcome.files.len());
-    for file in outcome.files {
-        if file.detected.format.is_none() {
-            warnings.push(format!(
-                "'{}' has no detected timestamp format; its lines will not appear in the merged output.",
-                file.label
-            ));
-        }
-        let visible =
-            collect_visible_lines(&file.reader, log_manager, file.detected.format.as_deref());
-        sources.push(MergeSource {
-            reader: file.reader,
-            parser: file.detected.format,
-            year_map: file.detected.year_map,
-            continuation_map: file.detected.continuation_map,
-            visible,
-        });
-    }
-    Ok((sources, warnings))
 }
 
 /// Returns the ascending line indices `log_manager`'s active filters keep,
@@ -302,6 +158,7 @@ fn collect_visible_lines(
 mod tests {
     use super::*;
     use crate::db::Database;
+    use std::sync::Arc;
 
     async fn log_manager() -> LogManager {
         let db = Arc::new(Database::in_memory().await.unwrap());

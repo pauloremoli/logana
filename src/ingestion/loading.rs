@@ -704,6 +704,76 @@ impl App {
         });
     }
 
+    /// Builds a merged tab directly from `--merge`'s CLI file paths — used
+    /// when `--merge` is given without `--headless`. No picker is
+    /// involved: sources come straight from disk paths, with archives
+    /// expanded/recursed the same way headless `--merge` does
+    /// (`merge_sources::resolve_merge_sources`), then fed through the same
+    /// `create_pending_merged_tab`/`start_merge_build_streaming` machinery
+    /// `apply_archive_picker`'s merge branch uses.
+    ///
+    /// A freshly-launched TUI has nothing worth restoring over this, so
+    /// any queued session restore is cancelled first — same reasoning as
+    /// the directory-argument case in `main.rs`'s `begin_initial_load`.
+    ///
+    /// When `output` is given, waits for the build to finish and saves the
+    /// result there (the tab ends up backed by that real file instead of
+    /// staying `[TEMP]`) — equivalent to running `:save <output>` on the
+    /// tab right after it finishes building.
+    pub async fn build_merge_tab_from_cli(
+        &mut self,
+        files: &[String],
+        out_dir: &std::path::Path,
+        output: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        self.session.pending_session_restore = None;
+        // Captured before the merged tab is created below, so it's the
+        // tab active at CLI startup — the app's empty genesis tab, in
+        // every real invocation of this method. Removed by id (not by an
+        // untargeted "any empty tab" scan) for the same reason the
+        // archive-picker's placeholder cleanup is: safe even if something
+        // else about startup ever adds another empty-looking tab first.
+        let placeholder_tab_id = self.tabs.get(self.active_tab).map(|t| t.id);
+
+        let (sources, warnings) = crate::merge_sources::resolve_merge_sources(files, out_dir)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.session.startup_warnings.extend(warnings);
+
+        if sources.is_empty() {
+            return Err("No mergeable files found.".to_string());
+        }
+
+        let labels: Vec<String> = sources.iter().map(|s| s.label.clone()).collect();
+        let tab_id = self.create_pending_merged_tab(labels).await;
+        let inputs = Self::merge_inputs_from_extracted(sources);
+        self.start_merge_build_streaming(tab_id, inputs).await;
+
+        if let Some(id) = placeholder_tab_id
+            && let Some(idx) = self.tabs.iter().position(|t| {
+                t.id == id
+                    && t.file_reader.line_count() == 0
+                    && t.load_state.is_none()
+                    && t.merged.is_none()
+            })
+        {
+            self.remove_tab_at(idx);
+        }
+
+        if let Some(output_path) = output {
+            while !self.pending_merge_builds.is_empty() {
+                self.poll_merge_builds();
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let path_str = output_path.to_string_lossy().into_owned();
+            self.cmd_save(path_str)
+                .await
+                .map_err(|e| format!("Failed to save merged output: {e}"))?;
+        }
+
+        Ok(())
+    }
+
     /// Poll the pending archive-picker apply each frame. When the background
     /// task finishes, pushes extracted tabs, builds a merged tab if any
     /// files were merge-marked, and clears `pending_archive`.
@@ -4715,6 +4785,101 @@ mod tests {
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn test_build_merge_tab_from_cli_creates_temp_backed_merged_tab_and_closes_placeholder() {
+        let mut app = make_app(&[]).await;
+        let genesis_tab_id = app.tabs[0].id;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        let b = tmp.path().join("b.log");
+        std::fs::write(&a, "2024-01-01 10:00:00 INFO line from a\n").unwrap();
+        std::fs::write(&b, "2024-01-01 09:00:00 INFO line from b\n").unwrap();
+
+        let out_dir = tempfile::tempdir().unwrap();
+        app.build_merge_tab_from_cli(
+            &[
+                a.to_str().unwrap().to_string(),
+                b.to_str().unwrap().to_string(),
+            ],
+            out_dir.path(),
+            None,
+        )
+        .await
+        .unwrap();
+        drain_pending_merge_builds(&mut app).await;
+
+        assert_eq!(
+            app.tabs.len(),
+            1,
+            "the genesis placeholder must be closed, leaving only the merged tab"
+        );
+        assert!(!app.tabs.iter().any(|t| t.id == genesis_tab_id));
+        let merged = &app.tabs[0];
+        assert!(merged.merged.is_some());
+        assert!(
+            merged.is_temp_backed(),
+            "no --output was given, so the tab must stay temp-backed"
+        );
+        // Sorted by timestamp: b (09:00) before a (10:00).
+        assert_eq!(
+            merged.file_reader.get_line(0),
+            b"2024-01-01 09:00:00 INFO line from b"
+        );
+        assert_eq!(
+            merged.file_reader.get_line(1),
+            b"2024-01-01 10:00:00 INFO line from a"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_merge_tab_from_cli_with_output_saves_and_drops_temp_backing() {
+        let mut app = make_app(&[]).await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.log");
+        let b = tmp.path().join("b.log");
+        std::fs::write(&a, "2024-01-01 10:00:00 INFO line from a\n").unwrap();
+        std::fs::write(&b, "2024-01-01 09:00:00 INFO line from b\n").unwrap();
+        let out_path = tmp.path().join("merged.log");
+
+        let out_dir = tempfile::tempdir().unwrap();
+        app.build_merge_tab_from_cli(
+            &[
+                a.to_str().unwrap().to_string(),
+                b.to_str().unwrap().to_string(),
+            ],
+            out_dir.path(),
+            Some(out_path.as_path()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(app.tabs.len(), 1);
+        assert!(
+            !app.tabs[0].is_temp_backed(),
+            "giving --output must save the tab to a real file instead of leaving it temp-backed"
+        );
+        let saved = std::fs::read_to_string(&out_path).unwrap();
+        assert_eq!(
+            saved,
+            "2024-01-01 09:00:00 INFO line from b\n2024-01-01 10:00:00 INFO line from a\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_merge_tab_from_cli_requires_at_least_two_files() {
+        let mut app = make_app(&[]).await;
+        let out_dir = tempfile::tempdir().unwrap();
+
+        let err = app
+            .build_merge_tab_from_cli(&["only-one.log".to_string()], out_dir.path(), None)
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("at least 2"));
     }
 
     #[tokio::test]
