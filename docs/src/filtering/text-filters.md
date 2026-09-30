@@ -83,7 +83,7 @@ You can add as many filters as you like. They combine as follows:
 2. **Exclude filters** — a line matching any enabled exclude filter is hidden.
 3. **Highlight filters** — never affect which lines are shown, only their styling.
 
-Exclude takes priority: a line that satisfies an include filter but also matches an exclude filter is hidden.
+Order matters for include/exclude: filters are evaluated top to bottom, and the first one that matches (Include or Exclude) decides the line's visibility. If a line matches both an earlier include and a later exclude, the include wins and the line stays visible. Use `K`/`J` in the filter manager (`f`) to move a filter up or down the list — put an exclude above the include it needs to override to make it win instead. [Field-scoped](field-filters.md) exclude filters don't have this quirk: they always hide a matching line regardless of where they sit in the list.
 
 ## Toggling Filters
 

@@ -2,6 +2,14 @@
 
 Annotations let you attach multiline comments to log lines and export an analysis report. This is useful for incident investigations, code reviews, and sharing findings with your team.
 
+<p align="center">
+  <img src="filters-marks-comments.png" alt="logana TUI showing two marked lines with a navy background and two multiline comment banners inserted above their log lines" />
+</p>
+
+<p align="center">
+  <sub>Two lines are bookmarked with <code>m</code> (navy background) — the two <code>FATAL</code> task failures. Each also carries a comment added with <code>c</code>, rendered as a banner directly above the line it annotates.</sub>
+</p>
+
 ## Visual Selection
 
 Use [Visual Line Mode](visual-line-mode.md) (`V`) to select whole lines, or [Visual Character Mode](visual-char-mode.md) (`v`) to select text within a line. From either mode you can attach a comment, mark lines, copy to clipboard, or build a filter.

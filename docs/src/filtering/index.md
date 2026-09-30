@@ -12,11 +12,17 @@ Filters are the primary way to narrow the log view. They are layered: include pa
 | `F` | Toggle all filtering on/off |
 | `H` | Toggle highlight mode (see below) |
 
+Filters mix freely — this session (loaded from a [real production incident log](https://github.com/logpai/loghub)) combines a date-range filter, two exclude filters, a plain text include, a [field filter](field-filters.md) combined with free text, and five [highlight filters](text-filters.md#highlight-filters) — one per component, so each service class gets its own color as you read through the log. Related filters share a [group](#filter-groups) — `noise`, `task`, `resource`, `incident` — so a whole category can be toggled or reordered together:
+
+<p align="center">
+  <img src="../filters-marks-comments.png" alt="logana TUI sidebar showing a date filter, an exclude filter, a plain include, a field+include filter, and five per-component highlight filters, each in its own colored group" />
+</p>
+
 ## How Filters Work
 
 **Include filters:** If any include filter is enabled, only lines matching at least one include filter are shown.
 
-**Exclude filters:** Any line matching an enabled exclude filter is hidden, regardless of include filters.
+**Exclude filters:** Any line matching an enabled exclude filter is hidden — except when a plain text/regex include filter *earlier in the filter list* already matched the same line first. Text and regex filters are evaluated top to bottom in the order they were added; the first match (Include or Exclude) wins. In the [filter manager](#filter-manager), `K`/`J` move a filter up/down the list, so putting an exclude above a conflicting include makes it win. [Field-scoped](field-filters.md) exclude filters are the exception — they're unconditional and always hide a matching line regardless of order.
 
 **Highlight filters:** Apply their color styling to matching lines but never affect visibility — every line stays shown. See [Text Filters](text-filters.md#highlight-filters) for details.
 

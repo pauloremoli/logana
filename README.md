@@ -9,26 +9,18 @@
 </p>
 
 <p align="center">
-  logana turns any log source — files, compressed archives, Docker containers, or OTel streams — into structured, filterable, annotatable data. Filter by pattern, field, or date range; jump between errors and warnings; annotate key lines; bookmark findings; and export to Markdown, Jira, or AI assistants via the built-in MCP server — all persistent across sessions.
+  A fast terminal log viewer. Filter logs of any size and format, mark and annotate what matters, then export your findings.
 </p>
 
 <p align="center">
-  <img src="docs/src/demo.gif" alt="logana demo" />
+  <img src="docs/src/filters-marks-comments.png" alt="logana TUI showing colored, grouped filters alongside marked lines and inline comments" />
 </p>
 
----
-
-## Features
-
-- **Any log format** — JSON, syslog, journalctl, logfmt, OpenTelemetry, DLT, or your own custom `{field}` schema
-- **Any source** — files, directories, compressed/archives, Docker containers, OTel (gRPC/HTTP), stdin
-- **Filtering** — include/exclude, regex, field-scoped, date-range, and highlight-only filters, all remappable and scriptable from the CLI
-- **Vim-style navigation** — `j`/`k`, `gg`/`G`, count prefixes, `/` search, jump straight to the next error or warning
-- **Annotations** — comment on lines and export the analysis to Markdown or Jira
-- **Persistent sessions** — filters, marks, and scroll position are restored automatically
-- **MCP server** — expose marks and annotations to AI assistants
-- **Headless mode** — run the full filter pipeline without a TUI, for scripting and huge logs
-- **Fully configurable** — every keybinding is remappable
+- Any log format — JSON, syslog, logfmt, OpenTelemetry, DLT, or a custom schema
+- Include/exclude/highlight filters — by text, regex, field, or date range
+- Bookmark and annotate lines, then export to Markdown or Jira
+- Vim-style navigation, fully remappable keybindings
+- MCP server to expose your findings to AI assistants
 
 ---
 
@@ -61,23 +53,6 @@ cargo install logana
 # or install the latest binary directly
 cargo binstall logana
 ```
-
----
-
-## Performance
-
-Filtering a [3.3 GB access log with 10M+ lines](https://www.kaggle.com/datasets/eliasdabbas/web-server-access-logs) against [lnav](https://lnav.org/), cold disk cache:
-
-| | logana | lnav |
-|---|---|---|
-| Headless (10-run avg) | 0.99 s | 11.2 s |
-| TUI, open → filter → quit | 1.8 s | 11.8 s |
-
-<p align="center">
-  <img src="docs/src/performance.gif" alt="logana performance comparison with lnav" />
-</p>
-
-> lnav offers features beyond filtering that may account for part of the difference — this compares filtering performance only. Hardware: AMD Ryzen 9 8945HS · 32 GB DDR5 5600 MHz · NVMe 4.0 x4.
 
 ---
 

@@ -13,15 +13,15 @@ The `--field` flag tells logana to treat the pattern as a `key=value` pair. The 
 
 ```sh
 :filter --field level=error         # show only lines where level contains "error"
-:filter --field component=auth      # show only lines from the auth component
+:filter --field user=alice          # show only lines with an extra "user" field containing "alice"
 :exclude --field level=debug        # hide all debug-level lines
 ```
 
 `--field` can be repeated within a single command to require several fields at once, and combined with trailing free text that must also match — all AND'd together in one filter:
 
 ```sh
-:filter --field level=INFO --field component=Draco Power measurements:
-# shows only lines where level contains "INFO" AND component contains "Draco"
+:filter --field level=INFO --field user=Draco Power measurements:
+# shows only lines where level contains "INFO" AND user contains "Draco"
 # AND the line contains "Power measurements:"
 ```
 
@@ -39,6 +39,8 @@ The following short aliases are recognised regardless of how the field is named 
 
 For example, `:filter --field lvl=warn` and `:filter --field level=warn` are equivalent.
 
+> **Watch out:** some formats fold several raw key names into one of the aliases above during parsing — for example, logfmt treats `source`, `module`, `logger`, `component`, `service`, `caller`, and `name` all as the **target** field, so `--field service=payments` matches nothing even when the raw line has `service=payments`; use `--field target=payments` instead. If a field filter you expect to match returns zero results, try the alias it might have been folded into (`target`, `level`, `message`) before assuming the value is wrong.
+
 ## Combining Field Filters
 
 There are two distinct ways to combine field conditions, with different logic:
@@ -46,8 +48,8 @@ There are two distinct ways to combine field conditions, with different logic:
 **Multiple `--field` flags in one command** — AND logic. Every condition (and any trailing text) must match:
 
 ```sh
-:filter --field level=error --field component=auth
-# only lines where level contains "error" AND component contains "auth"
+:filter --field level=error --field user=auth
+# only lines where level contains "error" AND user contains "auth"
 ```
 
 **Multiple separate `:filter` commands** — OR logic, same as any other include filters. Each broadens what's visible:
@@ -79,7 +81,7 @@ Field filters appear in the filter manager sidebar with a `[field]` tag. A filte
 ```
 [x] In: level=error [field]
 [x] Out: level=debug [field]
-[x] In: level=INFO, component=Draco, Power measurements: [field]
+[x] In: level=INFO, user=Draco, Power measurements: [field]
 ```
 
 ## Group-Scoped Fields
