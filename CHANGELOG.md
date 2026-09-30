@@ -18,6 +18,7 @@ All notable changes to logana will be documented in this file.
 
 ### Fixed
 - Close the empty placeholder tab after decompression.
+- Fix field and date filters passed on the command line showing the wrong lines at startup.
 
 ## [0.7.7] - 2026-09-19
 

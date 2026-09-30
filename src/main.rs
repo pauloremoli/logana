@@ -399,6 +399,20 @@ async fn apply_cli_args_to_app(app: &mut App, args: &Args) {
     }
 }
 
+/// Whether any enabled filter in `defs` is field-scoped or date-based.
+///
+/// The fast startup [`VisibilityPredicate`] precompute only evaluates plain
+/// text/regex filters (it has no log-format parser available yet), so a
+/// field or date filter present at startup must skip it and fall back to
+/// the normal filter pass instead — otherwise that filter's visibility and
+/// match count are wrong from the first frame and never self-correct.
+fn has_field_or_date_filters(defs: &[logana::filters::FilterDef]) -> bool {
+    defs.iter().filter(|d| d.enabled).any(|d| {
+        d.pattern.starts_with(logana::filters::FIELD_PREFIX)
+            || d.pattern.starts_with(logana::filters::DATE_PREFIX)
+    })
+}
+
 async fn begin_initial_load(
     app: &mut App,
     source_path: Option<String>,
@@ -411,13 +425,15 @@ async fn begin_initial_load(
         || !args.exclude_filters.is_empty()
         || !args.timestamp_filters.is_empty();
 
-    let startup_predicate: Option<VisibilityPredicate> =
-        if background_file_load && (args.filters.is_some() || has_inline_filters) {
-            let (fm, _, _, _) = app.tabs[0].log_manager.build_filter_manager();
-            Some(VisibilityPredicate::new(fm))
-        } else {
-            None
-        };
+    let startup_predicate: Option<VisibilityPredicate> = if background_file_load
+        && (args.filters.is_some() || has_inline_filters)
+        && !has_field_or_date_filters(app.tabs[0].log_manager.get_filters())
+    {
+        let (fm, _, _, _) = app.tabs[0].log_manager.build_filter_manager();
+        Some(VisibilityPredicate::new(fm))
+    } else {
+        None
+    };
 
     if background_file_load {
         if let Some(path) = source_path {
@@ -870,6 +886,86 @@ mod tests {
     fn test_validate_file_arg_empty_string() {
         let result = validate_file_arg("");
         assert!(result.is_err());
+    }
+
+    fn make_filter_def(pattern: &str, enabled: bool) -> logana::filters::FilterDef {
+        logana::filters::FilterDef {
+            id: 0,
+            pattern: pattern.to_string(),
+            filter_type: logana::filters::FilterType::Include,
+            enabled,
+            color_config: None,
+            use_regex: false,
+            ignore_case: false,
+            group: None,
+        }
+    }
+
+    #[test]
+    fn test_has_field_or_date_filters_false_for_plain_text() {
+        let defs = vec![make_filter_def("ERROR", true)];
+        assert!(!has_field_or_date_filters(&defs));
+    }
+
+    #[test]
+    fn test_has_field_or_date_filters_true_for_field_filter() {
+        let defs = vec![make_filter_def("@field:level:ERROR", true)];
+        assert!(has_field_or_date_filters(&defs));
+    }
+
+    #[test]
+    fn test_has_field_or_date_filters_true_for_date_filter() {
+        let defs = vec![make_filter_def("@date:> 2024-02-21", true)];
+        assert!(has_field_or_date_filters(&defs));
+    }
+
+    #[test]
+    fn test_has_field_or_date_filters_ignores_disabled() {
+        let defs = vec![make_filter_def("@field:level:ERROR", false)];
+        assert!(!has_field_or_date_filters(&defs));
+    }
+
+    #[tokio::test]
+    async fn test_begin_initial_load_field_filter_startup_shows_correct_lines() {
+        // Regression test: a field filter (`--field ...`) supplied at startup
+        // used to always take the fast text-only precompute path, which
+        // can't see field filters at all — it would compute the wrong
+        // visible set (and a stuck-at-0 match count) and never self-correct,
+        // since that path deliberately skips the normal filter refresh.
+        let mut app = make_test_app().await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            b"level=ERROR service=api msg=bad\nlevel=INFO service=api msg=ok\nlevel=ERROR service=api msg=worse\n",
+        )
+        .unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let args = Args::try_parse_from(["logana", &path, "-i", "--field level=ERROR"]).unwrap();
+        apply_cli_args_to_app(&mut app, &args).await;
+        let (source_path, background_file_load) = resolve_source(args.files.first());
+        let out_dir = tempfile::tempdir().unwrap();
+
+        begin_initial_load(
+            &mut app,
+            source_path,
+            background_file_load,
+            false,
+            &args,
+            out_dir.path(),
+        )
+        .await;
+
+        for _ in 0..100 {
+            app.advance_file_load().await;
+            app.advance_filter_computation();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(
+            app.tabs[0].filter.visible_indices.len(),
+            2,
+            "startup field filter should show only the ERROR lines, not be stuck wrong"
+        );
     }
 
     #[test]

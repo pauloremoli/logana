@@ -1128,7 +1128,7 @@ impl App {
     }
 
     /// Poll for completion of background file loads across all tabs (called every frame).
-    pub(crate) async fn advance_file_load(&mut self) {
+    pub async fn advance_file_load(&mut self) {
         let mut completed = Vec::new();
         for tab in &mut self.tabs {
             if let Some(ref mut ls) = tab.load_state
@@ -1608,7 +1608,7 @@ impl App {
     /// Called every frame from the event loop (non-blocking: `try_recv`).
     /// Chunks are applied incrementally: the first chunk replaces `visible_indices`,
     /// subsequent chunks extend it.  Scroll and counts are updated on every chunk.
-    pub(crate) fn advance_filter_computation(&mut self) {
+    pub fn advance_filter_computation(&mut self) {
         use tokio::sync::mpsc::error::TryRecvError;
         for tab in &mut self.tabs {
             if tab.filter.handle.is_none() {
