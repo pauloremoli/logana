@@ -95,7 +95,7 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
 fn handle_key_press(state: &mut GuiState, key: GuiKey, modifiers: GuiModifiers) -> Effect {
     match &state.mode {
         InteractionMode::Normal => handle_normal_mode_key(state, key, modifiers),
-        InteractionMode::Command { .. } => handle_command_mode_key(state, key),
+        InteractionMode::Command { .. } => handle_command_mode_key(state, key, modifiers),
     }
 }
 
@@ -123,11 +123,32 @@ fn handle_normal_mode_key(state: &mut GuiState, key: GuiKey, modifiers: GuiModif
     }
 }
 
-fn handle_command_mode_key(state: &mut GuiState, key: GuiKey) -> Effect {
-    if matches!(key, GuiKey::Named(NamedKey::Escape)) {
-        state.mode = InteractionMode::Normal;
+/// Command mode has no focused text-editing widget of its own to fall
+/// keys through to (see `should_capture`), so every key that isn't a
+/// control character is handled here directly: typed characters append to
+/// the buffer, Backspace removes the last one, Enter submits, Escape
+/// cancels back to Normal mode.
+fn handle_command_mode_key(state: &mut GuiState, key: GuiKey, modifiers: GuiModifiers) -> Effect {
+    match key {
+        GuiKey::Named(NamedKey::Escape) => {
+            state.mode = InteractionMode::Normal;
+            Effect::None
+        }
+        GuiKey::Named(NamedKey::Enter) => handle_command_submitted(state),
+        GuiKey::Named(NamedKey::Backspace) => {
+            if let InteractionMode::Command { input } = &mut state.mode {
+                input.pop();
+            }
+            Effect::None
+        }
+        GuiKey::Character(c) if !modifiers.control => {
+            if let InteractionMode::Command { input } = &mut state.mode {
+                input.push_str(&c);
+            }
+            Effect::None
+        }
+        _ => Effect::None,
     }
-    Effect::None
 }
 
 /// Closes the command bar unconditionally (matching the TUI, which always
@@ -329,13 +350,17 @@ fn is_character(key: &GuiKey, expected: &str) -> bool {
     matches!(key, GuiKey::Character(c) if c == expected)
 }
 
-/// Whether `key` should be let through to a focused widget (e.g. the
-/// command-bar text input) instead of being handled/consumed here —
-/// Normal mode consumes everything; Command mode only intercepts Escape.
-pub fn should_capture(mode: &InteractionMode, key: &GuiKey) -> bool {
+/// Whether `key` should be handled by the capture-phase handler rather
+/// than left to bubble to a focused widget. Both modes capture everything
+/// today — Command mode has no separate text-editing widget of its own
+/// (see `handle_command_mode_key`), so there's nothing to fall through
+/// to. Kept as an explicit per-mode decision rather than an unconditional
+/// `true`, since a future phase may adopt a real focusable input widget
+/// for Command mode, which would need to receive some keys directly.
+pub fn should_capture(mode: &InteractionMode, _key: &GuiKey) -> bool {
     match mode {
         InteractionMode::Normal => true,
-        InteractionMode::Command { .. } => matches!(key, GuiKey::Named(NamedKey::Escape)),
+        InteractionMode::Command { .. } => true,
     }
 }
 
@@ -684,13 +709,13 @@ mod tests {
     }
 
     #[test]
-    fn command_mode_only_captures_escape() {
+    fn command_mode_also_captures_every_key() {
         let mode = InteractionMode::Command {
             input: String::new(),
         };
         assert!(should_capture(&mode, &GuiKey::Named(NamedKey::Escape)));
-        assert!(!should_capture(&mode, &char_key("j")));
-        assert!(!should_capture(&mode, &char_key("a")));
+        assert!(should_capture(&mode, &char_key("j")));
+        assert!(should_capture(&mode, &char_key("a")));
     }
 
     use crate::db::Database;
@@ -976,6 +1001,93 @@ mod tests {
             }
         );
         assert!(matches!(effect, Effect::FocusCommandBar));
+    }
+
+    #[tokio::test]
+    async fn typing_a_character_in_command_mode_appends_to_the_buffer() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.mode = InteractionMode::Command {
+            input: "filter".to_string(),
+        };
+        update(
+            &mut state,
+            Message::KeyPressed(char_key(" "), GuiModifiers::default()),
+        );
+        assert_eq!(
+            state.mode,
+            InteractionMode::Command {
+                input: "filter ".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn backspace_in_command_mode_removes_the_last_character() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.mode = InteractionMode::Command {
+            input: "filter".to_string(),
+        };
+        update(
+            &mut state,
+            Message::KeyPressed(GuiKey::Named(NamedKey::Backspace), GuiModifiers::default()),
+        );
+        assert_eq!(
+            state.mode,
+            InteractionMode::Command {
+                input: "filte".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_held_characters_are_not_inserted_in_command_mode() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.mode = InteractionMode::Command {
+            input: "filter".to_string(),
+        };
+        update(
+            &mut state,
+            Message::KeyPressed(
+                char_key("c"),
+                GuiModifiers {
+                    control: true,
+                    shift: false,
+                },
+            ),
+        );
+        assert_eq!(
+            state.mode,
+            InteractionMode::Command {
+                input: "filter".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn escape_in_command_mode_returns_to_normal() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.mode = InteractionMode::Command {
+            input: "filter".to_string(),
+        };
+        update(
+            &mut state,
+            Message::KeyPressed(GuiKey::Named(NamedKey::Escape), GuiModifiers::default()),
+        );
+        assert_eq!(state.mode, InteractionMode::Normal);
+    }
+
+    #[tokio::test]
+    async fn enter_in_command_mode_submits_the_command() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.mode = InteractionMode::Command {
+            input: "filter ERROR".to_string(),
+        };
+        let effect = update(
+            &mut state,
+            Message::KeyPressed(GuiKey::Named(NamedKey::Enter), GuiModifiers::default()),
+        );
+        assert!(matches!(effect, Effect::ExecuteCommand { tab_idx: 0, .. }));
+        assert_eq!(state.mode, InteractionMode::Normal);
     }
 
     #[tokio::test]
