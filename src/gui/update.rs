@@ -4,6 +4,7 @@ use crate::db::{Database, LogManager};
 use crate::filters::{DATE_PREFIX, FilterOptions, FilterType, group_enabled, parse_date_filter};
 use crate::gui::effect::Effect;
 use crate::gui::message::{FileLoaded, Message};
+use crate::gui::runtime;
 use crate::gui::state::{GuiState, StatusMessage};
 use crate::ingestion::FileReader;
 use crate::input::{KeyCode, KeyModifiers};
@@ -98,6 +99,15 @@ fn dispatch_key(state: &mut GuiState, code: KeyCode, modifiers: KeyModifiers) ->
         return Effect::None;
     };
     let mode = std::mem::replace(&mut tab.interaction.mode, Box::new(NormalMode::default()));
+    // `Mode::handle_key` never truly suspends — it doesn't await real I/O
+    // inside the trait method itself — but some implementations (e.g.
+    // `TabState::begin_filter_refresh`, which `tokio::task::spawn_blocking`s
+    // the background filter scan) assume an ambient tokio runtime, which
+    // gpui's own render thread doesn't provide. Entering the shared
+    // runtime's context for the call — without actually awaiting or
+    // blocking on anything here — gives `spawn_blocking` a live `Handle`
+    // to spawn onto, same as if this ran on a tokio worker thread.
+    let _guard = runtime::handle().enter();
     let Some((next_mode, result)) = mode.handle_key(tab, code, modifiers).now_or_never() else {
         tab.interaction.mode = Box::new(NormalMode::default());
         return Effect::None;
@@ -880,6 +890,44 @@ mod tests {
             state.tabs[0].interaction.mode.render_state(),
             crate::mode::app_mode::ModeRenderState::FilterManagement { .. }
         ));
+    }
+
+    /// Reproduces the real panic this guarded against: a `#[tokio::test]`
+    /// already runs inside its own ambient tokio reactor, which would mask
+    /// a missing `.enter()` guard in `dispatch_key` — gpui's real render
+    /// thread has no such ambient reactor. So setup runs inside a scratch
+    /// runtime's `block_on` (which exits its context when it returns), and
+    /// the actual `update()` dispatch calls run as a plain, non-async
+    /// `#[test]` with no tokio context of their own — exactly like gpui's
+    /// render thread — to prove `dispatch_key` supplies one itself.
+    #[test]
+    fn toggling_a_filter_while_others_stay_active_does_not_panic() {
+        let setup_rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut state, _file) = setup_rt.block_on(state_with_one_tab());
+        let lm = setup_rt.block_on(execute_command(
+            state.tabs[0].log_manager.clone(),
+            command("filter one"),
+        ));
+        let lm = setup_rt.block_on(execute_command(lm.unwrap(), command("filter two")));
+        state.tabs[0].log_manager = lm.unwrap();
+        force_recompute(&mut state.tabs[0]);
+        drop(setup_rt);
+
+        // No tokio context entered on this thread from here on — two
+        // enabled filters means toggling one off still leaves the tab
+        // with active filters, hitting the branch of `TabState::
+        // begin_filter_refresh` that spawns a background scan via
+        // `tokio::task::spawn_blocking`.
+        update(
+            &mut state,
+            Message::KeyPressed(KeyCode::Char('f'), KeyModifiers::NONE),
+        );
+        update(
+            &mut state,
+            Message::KeyPressed(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+
+        assert!(!state.tabs[0].log_manager.get_filters()[0].enabled);
     }
 
     #[tokio::test]
