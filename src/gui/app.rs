@@ -11,7 +11,9 @@ use gpui_kit::base::VirtualListScrollHandle;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, Entity, KeyDownEvent, ScrollStrategy, Window, actions, div, px};
+use gpui_kit::gpui::{
+    Context, Entity, FocusHandle, KeyDownEvent, ScrollStrategy, Window, actions, div, px,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -35,6 +37,13 @@ pub struct App {
     pub state: GuiState,
     pub log_scroll: VirtualListScrollHandle,
     pub menu_bar: Entity<AppMenuBar>,
+    /// Tracked by the root element (`Render::render`) so every keystroke
+    /// has somewhere to land even when nothing else (a button, the menu
+    /// bar) is focused. Reclaimed after every dispatch — see
+    /// `reclaim_focus_if_idle` — so a transient focus change elsewhere
+    /// (clicking a button, closing a native dialog) never leaves the
+    /// window unable to receive the next keystroke.
+    pub root_focus: FocusHandle,
 }
 
 impl App {
@@ -43,6 +52,7 @@ impl App {
             state: GuiState::new(db).with_theme(theme),
             log_scroll: VirtualListScrollHandle::new(),
             menu_bar: AppMenuBar::new(cx),
+            root_focus: cx.focus_handle(),
         }
     }
 
@@ -58,7 +68,19 @@ impl App {
         let effect = update::update(&mut self.state, message);
         self.apply_effect(effect, window, cx);
         self.sync_log_scroll();
+        self.reclaim_focus_if_idle(window, cx);
         cx.notify();
+    }
+
+    /// Refocuses the root element whenever nothing else holds focus, so
+    /// key capture keeps working no matter what happened in between —
+    /// a button click, a native file-dialog round trip, anything. Only
+    /// acts when focus is genuinely idle (`window.focused(cx).is_none()`),
+    /// so it never fights a widget that's deliberately holding focus.
+    fn reclaim_focus_if_idle(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.focused(cx).is_none() {
+            self.root_focus.focus(window, cx);
+        }
     }
 
     /// The active tab's `Mode`/global-key handling owns `scroll.scroll_offset`
@@ -233,6 +255,7 @@ impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
+            .track_focus(&self.root_focus)
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .flex()
@@ -241,10 +264,12 @@ impl Render for App {
             .on_action(cx.listener(Self::on_quit_action))
             .capture_key_down(cx.listener(|app, event: &KeyDownEvent, window, cx| {
                 // Captures every key press application-wide — nothing in
-                // this GUI holds gpui widget focus, so every key (typing
-                // into the command bar included) flows through here and
-                // into `Mode::handle_key`, exactly like the TUI's
-                // terminal-wide key capture.
+                // this GUI holds gpui widget focus for typing (the
+                // command bar included), so every key flows through here
+                // and into `Mode::handle_key`, exactly like the TUI's
+                // terminal-wide key capture. `track_focus` above plus
+                // `reclaim_focus_if_idle` (called after every dispatch)
+                // keep the root focused so this keeps firing reliably.
                 if let Some((key, modifiers)) = key::from_gpui_keystroke(&event.keystroke) {
                     cx.stop_propagation();
                     app.dispatch(Message::KeyPressed(key, modifiers), window, cx);

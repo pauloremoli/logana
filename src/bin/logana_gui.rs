@@ -27,10 +27,21 @@ fn main() {
                 ])
                 .owned(),
         ]);
-        gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
-            cx.new(|cx| App::new(Arc::clone(&db), theme.clone(), cx))
+        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            let app = cx.new(|cx| App::new(Arc::clone(&db), theme.clone(), cx));
+            // Give the root element initial keyboard focus so key capture
+            // starts working immediately, without requiring a click into
+            // the window first.
+            let root_focus = app.read(cx).root_focus.clone();
+            window.defer(cx, move |window, cx| {
+                if window.focused(cx).is_none() {
+                    root_focus.focus(window, cx);
+                }
+            });
+            app
         })
         .expect("failed to open window");
+        cx.activate(true);
     });
 }
 
