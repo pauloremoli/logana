@@ -7,13 +7,22 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div};
 
+/// `GroupManagementMode`'s live state, mirroring `FilterManagementView`.
+pub struct GroupManagementView {
+    pub selected_group: String,
+    pub search: String,
+    pub searching: bool,
+}
+
 /// Every known group name — filters' `--group` values plus predefined
-/// styles with no members yet.
+/// styles with no members yet — plus `GroupManagementMode`'s selection
+/// cursor and live search narrowing when `management` is `Some`.
 pub fn group_pane(
     tab_idx: usize,
     names: &[String],
     group_defs: &[GroupDef],
     filter_defs: &[FilterDef],
+    management: Option<&GroupManagementView>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let mut col = div()
@@ -21,12 +30,21 @@ pub fn group_pane(
         .flex_col()
         .gap_2()
         .child(format!("Groups [{}]", names.len()));
+    if let Some(mgmt) = management {
+        col = col.child(if mgmt.searching {
+            format!("/{}", mgmt.search)
+        } else {
+            "[GROUP MODE]".to_string()
+        });
+    }
     for name in names {
+        let selected = management.is_some_and(|mgmt| mgmt.selected_group == *name);
         col = col.child(group_row(
             tab_idx,
             name.clone(),
             group_defs,
             filter_defs,
+            selected,
             cx,
         ));
     }
@@ -38,6 +56,7 @@ fn group_row(
     name: String,
     group_defs: &[GroupDef],
     filter_defs: &[FilterDef],
+    selected: bool,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let count = member_count(&name, filter_defs);
@@ -55,6 +74,7 @@ fn group_row(
     div()
         .flex()
         .gap_2()
+        .child(if selected { "> " } else { "  " })
         .child(
             Checkbox::new(format!("group-toggle-{name}"))
                 .checked(enabled)

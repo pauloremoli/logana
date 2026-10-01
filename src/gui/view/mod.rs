@@ -3,6 +3,7 @@ pub mod filter_pane;
 pub mod group_pane;
 pub mod log_pane;
 pub mod mode_bar;
+pub mod search_bar;
 pub mod sidebar;
 pub mod tab_bar;
 
@@ -18,6 +19,7 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
         .child(tab_bar::tab_bar(&app.state, cx))
         .child(body(app, window, cx))
         .child(command_bar::command_bar(&app.state))
+        .child(search_bar::search_bar(&app.state))
         .child(mode_bar::mode_bar(&app.state))
 }
 

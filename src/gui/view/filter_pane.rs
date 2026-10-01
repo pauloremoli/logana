@@ -6,12 +6,23 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div};
 
-/// The active tab's filter list — a passive display, managed entirely via
-/// the `:` command bar and each row's own checkbox.
+/// `FilterManagementMode`'s live state, needed to render the sidebar's
+/// selection cursor and live search narrowing while that mode is active.
+pub struct FilterManagementView {
+    pub selected_index: usize,
+    pub search: String,
+    pub searching: bool,
+}
+
+/// The active tab's filter list — a passive display (managed via the `:`
+/// command bar and each row's own checkbox) unless `management` is
+/// `Some`, in which case it also shows `FilterManagementMode`'s selection
+/// cursor and search narrowing.
 pub fn filter_pane(
     tab_idx: usize,
     filter_defs: &[FilterDef],
     group_defs: &[GroupDef],
+    management: Option<&FilterManagementView>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let mut col = div()
@@ -19,8 +30,16 @@ pub fn filter_pane(
         .flex_col()
         .gap_2()
         .child(format!("Filters [{}]", filter_defs.len()));
-    for def in filter_defs {
-        col = col.child(filter_row(tab_idx, def, group_defs, cx));
+    if let Some(mgmt) = management {
+        col = col.child(if mgmt.searching {
+            format!("/{}", mgmt.search)
+        } else {
+            "[FILTER MODE]".to_string()
+        });
+    }
+    for (idx, def) in filter_defs.iter().enumerate() {
+        let selected = management.is_some_and(|mgmt| mgmt.selected_index == idx);
+        col = col.child(filter_row(tab_idx, def, group_defs, selected, cx));
     }
     col
 }
@@ -29,6 +48,7 @@ fn filter_row(
     tab_idx: usize,
     def: &FilterDef,
     group_defs: &[GroupDef],
+    selected: bool,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let id = def.id;
@@ -45,6 +65,7 @@ fn filter_row(
     div()
         .flex()
         .gap_2()
+        .child(if selected { "> " } else { "  " })
         .child(
             Checkbox::new(("filter-toggle", id))
                 .checked(def.enabled)
