@@ -86,7 +86,11 @@ fn line_row(
 ) -> gpui_kit::gpui::AnyElement {
     let bytes = tab.file_reader.get_line_zero_copy(line_idx);
     let text = String::from_utf8_lossy(bytes).into_owned();
-    let mut row = div().truncate().child(text);
+    // `w_full()` matters beyond general tidiness: without it the row
+    // shrink-wraps to its text content, so a selection `.bg()` only
+    // colors a narrow strip behind the characters instead of the whole
+    // row — easy to miss entirely as a "this line is selected" signal.
+    let mut row = div().w_full().truncate().child(text);
     if selected {
         if let Some(bg) = ratatui_color_to_gpui(theme.visual_select_bg) {
             row = row.bg(bg);

@@ -47,6 +47,15 @@ pub fn from_gpui_keystroke(keystroke: &Keystroke) -> Option<(KeyCode, KeyModifie
         "pagedown" => KeyCode::PageDown,
         "pageup" => KeyCode::PageUp,
         "right" => KeyCode::Right,
+        // Named like the other non-character keys above (gpui reports the
+        // spacebar as key "space", not key_char " "), so it must be
+        // matched explicitly — falling through to the `other` branch below
+        // would read `key_char` if present, but on an empty/missing
+        // key_char its last-resort fallback takes the first character of
+        // the key *name* itself, turning every space into 's'. Every
+        // filter/exclude/highlight/search command needs a literal space,
+        // so this silently broke typing any multi-word command.
+        "space" => KeyCode::Char(' '),
         "tab" => KeyCode::Tab,
         "up" => KeyCode::Up,
         other => {
@@ -102,6 +111,25 @@ mod tests {
             let (key, _) = from_gpui_keystroke(&keystroke(raw, false, false, false)).unwrap();
             assert_eq!(key, expected, "{raw}");
         }
+    }
+
+    #[test]
+    fn space_maps_to_a_literal_space_character() {
+        let (key, _) = from_gpui_keystroke(&keystroke("space", false, false, false)).unwrap();
+        assert_eq!(key, KeyCode::Char(' '));
+    }
+
+    #[test]
+    fn space_maps_correctly_even_with_no_key_char_present() {
+        // Reproduces the real bug: without an explicit "space" => Char(' ')
+        // case, a missing/empty key_char falls through to reading the
+        // first character of the key *name* string ("space"), producing
+        // 's' instead of a space — silently breaking every multi-word
+        // command (`filter ERROR`, `exclude foo`, ...).
+        let mut stroke = keystroke("space", false, false, false);
+        stroke.key_char = None;
+        let (key, _) = from_gpui_keystroke(&stroke).unwrap();
+        assert_eq!(key, KeyCode::Char(' '));
     }
 
     #[test]
