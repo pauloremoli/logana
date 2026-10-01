@@ -1,11 +1,265 @@
 use crate::commands::auto_complete::shell_split;
 use crate::commands::{CommandLine, Commands};
 use crate::db::LogManager;
-use crate::filters::{DATE_PREFIX, FilterOptions, FilterType, parse_date_filter};
-use crate::gui::effect::ScrollTarget;
+use crate::filters::{DATE_PREFIX, FilterOptions, FilterType, group_enabled, parse_date_filter};
+use crate::gui::effect::{Effect, ScrollTarget};
 use crate::gui::key::{GuiKey, GuiModifiers, NamedKey};
-use crate::gui::state::InteractionMode;
+use crate::gui::message::{FileLoaded, Message};
+use crate::gui::state::{GuiState, InteractionMode, StatusMessage, TabState};
+use crate::ingestion::FileReader;
 use clap::Parser;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+/// The central reducer: every user intent (`Message`) flows through here,
+/// mutating `state` directly and returning an `Effect` describing any
+/// async work or imperative widget action the gpui glue layer (`App` in
+/// `app.rs`) still needs to perform. Never touches a gpui type itself.
+pub fn update(state: &mut GuiState, message: Message) -> Effect {
+    match message {
+        Message::OpenFileDialog => Effect::OpenFileDialog,
+        Message::FileDialogResult(Some(path)) => Effect::LoadFile(path),
+        Message::FileDialogResult(None) => Effect::None,
+        Message::FileLoaded(Ok(loaded)) => {
+            push_tab(state, loaded);
+            Effect::None
+        }
+        Message::FileLoaded(Err(err)) => {
+            state.status = Some(StatusMessage::Error(err));
+            Effect::None
+        }
+        Message::TabSelected(idx) => {
+            if idx < state.tabs.len() {
+                state.active_tab = idx;
+            }
+            Effect::None
+        }
+        Message::TabClosed(idx) => {
+            if idx < state.tabs.len() {
+                state.tabs.remove(idx);
+                state.active_tab = active_after_close(state.active_tab, idx, state.tabs.len());
+            }
+            Effect::None
+        }
+        Message::KeyPressed(key, modifiers) => handle_key_press(state, key, modifiers),
+        Message::CommandInputChanged(new_input) => {
+            if let InteractionMode::Command { input } = &mut state.mode {
+                *input = new_input;
+            }
+            Effect::None
+        }
+        Message::CommandSubmitted => handle_command_submitted(state),
+        Message::CommandExecuted(tab_idx, result) => {
+            match result {
+                Ok(log_manager) => apply_log_manager(state, tab_idx, log_manager),
+                Err(err) => state.status = Some(StatusMessage::Error(err)),
+            }
+            Effect::None
+        }
+        Message::FilterToggled(tab_idx, id) => match state.tabs.get(tab_idx) {
+            Some(tab) => Effect::ToggleFilter {
+                tab_idx,
+                log_manager: tab.log_manager.clone(),
+                id,
+            },
+            None => Effect::None,
+        },
+        Message::FiltersMutated(tab_idx, log_manager) => {
+            apply_log_manager(state, tab_idx, log_manager);
+            Effect::None
+        }
+        Message::GroupToggled(tab_idx, name) => match state.tabs.get(tab_idx) {
+            Some(tab) => Effect::ToggleGroup {
+                tab_idx,
+                log_manager: tab.log_manager.clone(),
+                name,
+            },
+            None => Effect::None,
+        },
+        Message::GroupDeleted(tab_idx, name) => match state.tabs.get(tab_idx) {
+            Some(tab) => Effect::RemoveGroup {
+                tab_idx,
+                log_manager: tab.log_manager.clone(),
+                name,
+            },
+            None => Effect::None,
+        },
+        Message::GroupsMutated(tab_idx, log_manager) => {
+            apply_log_manager(state, tab_idx, log_manager);
+            Effect::None
+        }
+    }
+}
+
+fn handle_key_press(state: &mut GuiState, key: GuiKey, modifiers: GuiModifiers) -> Effect {
+    match &state.mode {
+        InteractionMode::Normal => handle_normal_mode_key(state, key, modifiers),
+        InteractionMode::Command { .. } => handle_command_mode_key(state, key),
+    }
+}
+
+fn handle_normal_mode_key(state: &mut GuiState, key: GuiKey, modifiers: GuiModifiers) -> Effect {
+    let (action, g_pending) = normal_action(&key, &modifiers, state.g_pending);
+    state.g_pending = g_pending;
+    match action {
+        NormalAction::Scroll(target) => Effect::Scroll(target),
+        NormalAction::NextTab => {
+            advance_tab(state, 1);
+            Effect::None
+        }
+        NormalAction::PrevTab => {
+            advance_tab(state, -1);
+            Effect::None
+        }
+        NormalAction::EnterCommandMode => {
+            state.mode = InteractionMode::Command {
+                input: String::new(),
+            };
+            Effect::FocusCommandBar
+        }
+        NormalAction::Quit => Effect::Quit,
+        NormalAction::None => Effect::None,
+    }
+}
+
+fn handle_command_mode_key(state: &mut GuiState, key: GuiKey) -> Effect {
+    if matches!(key, GuiKey::Named(NamedKey::Escape)) {
+        state.mode = InteractionMode::Normal;
+    }
+    Effect::None
+}
+
+/// Closes the command bar unconditionally (matching the TUI, which always
+/// returns to Normal mode on submit) and, for a non-empty valid command,
+/// asks the glue layer to run it asynchronously against the active tab's
+/// `LogManager`. A parse error is shown as a status message instead.
+fn handle_command_submitted(state: &mut GuiState) -> Effect {
+    let input = match &state.mode {
+        InteractionMode::Command { input } => input.clone(),
+        InteractionMode::Normal => return Effect::None,
+    };
+    state.mode = InteractionMode::Normal;
+    let tab_idx = state.active_tab;
+    let Some(tab) = state.tabs.get(tab_idx) else {
+        return Effect::None;
+    };
+    match parse_command(&input) {
+        Ok(Some(command)) => Effect::ExecuteCommand {
+            tab_idx,
+            log_manager: tab.log_manager.clone(),
+            command,
+        },
+        Ok(None) => Effect::None,
+        Err(err) => {
+            state.status = Some(StatusMessage::Error(err));
+            Effect::None
+        }
+    }
+}
+
+fn advance_tab(state: &mut GuiState, delta: isize) {
+    if !state.tabs.is_empty() {
+        state.active_tab = next_active_tab(state.active_tab, delta, state.tabs.len());
+    }
+}
+
+/// Which tab should be active after closing tab `closed`, given `active`
+/// was active before the close and `len_after` tabs remain.
+fn active_after_close(active: usize, closed: usize, len_after: usize) -> usize {
+    if len_after == 0 {
+        0
+    } else if closed < active {
+        active - 1
+    } else {
+        active.min(len_after - 1)
+    }
+}
+
+/// Cycles the active tab index by `delta` (+1/-1 for Tab/Shift+Tab),
+/// wrapping around `len` tabs.
+fn next_active_tab(active: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let len = len as isize;
+    (((active as isize + delta) % len) + len) as usize % len as usize
+}
+
+fn push_tab(state: &mut GuiState, loaded: FileLoaded) {
+    let mut tab = TabState::new(loaded.path, loaded.reader, loaded.log_manager);
+    recompute_tab(&mut tab);
+    state.tabs.push(tab);
+    state.active_tab = state.tabs.len() - 1;
+}
+
+fn apply_log_manager(state: &mut GuiState, tab_idx: usize, log_manager: LogManager) {
+    if let Some(tab) = state.tabs.get_mut(tab_idx) {
+        tab.log_manager = log_manager;
+        recompute_tab(tab);
+    }
+}
+
+/// Rebuilds `visible_lines`/`filter_defs`/`group_defs` from the tab's
+/// `LogManager` — called after every mutation, mirroring the TUI's
+/// `begin_filter_refresh`.
+pub fn recompute_tab(tab: &mut TabState) {
+    let (filter_manager, _, _, _) = tab.log_manager.build_filter_manager();
+    tab.visible_lines = filter_manager.compute_visible(&tab.reader);
+    tab.filter_defs = tab.log_manager.get_filters().to_vec();
+    tab.group_defs = tab.log_manager.get_group_styles().to_vec();
+}
+
+/// Loads `path` into a fresh `FileReader` + `LogManager` pair. Framework-
+/// neutral async work the glue layer runs under its tokio bridge in
+/// response to `Effect::LoadFile`.
+pub async fn load_file(path: PathBuf, db: Arc<crate::db::Database>) -> Result<FileLoaded, String> {
+    let path_str = path.to_string_lossy().into_owned();
+    let handle = FileReader::load(
+        path_str.clone(),
+        None,
+        false,
+        Arc::new(AtomicBool::new(false)),
+        false,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let result = handle
+        .result_rx
+        .await
+        .map_err(|_| "file load was cancelled".to_string())?
+        .map_err(|e| e.to_string())?;
+    let log_manager = LogManager::new(db, Some(path_str)).await;
+    Ok(FileLoaded {
+        path,
+        reader: result.reader,
+        log_manager,
+    })
+}
+
+/// A group's checkbox toggle in the sidebar: like the TUI's keyboard-driven
+/// `GroupManagementMode::toggle_group`, this flips "any member enabled" for
+/// a group with filters, or the group's own stored flag for a styled-but-
+/// empty group — unlike the `:toggle-group` *command*, it never errors.
+pub async fn toggle_group_checkbox(log_manager: &mut LogManager, name: &str) {
+    let has_filters = log_manager
+        .get_filters()
+        .iter()
+        .any(|f| f.group.as_deref() == Some(name));
+    let currently_enabled = if has_filters {
+        log_manager
+            .get_filters()
+            .iter()
+            .any(|f| f.group.as_deref() == Some(name) && f.enabled)
+    } else {
+        group_enabled(log_manager.get_group_styles(), name)
+    };
+    let new_state = !currently_enabled;
+    log_manager
+        .set_filters_enabled_by_group(name, new_state)
+        .await;
+    log_manager.set_group_enabled(name, new_state).await;
+}
 
 /// What a Normal-mode key press should do, independent of how the key
 /// arrived (gpui keystroke vs. the TUI's crossterm event) — mirrors the
@@ -591,5 +845,212 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("not yet supported"));
+    }
+
+    #[test]
+    fn active_after_close_shifts_left_when_an_earlier_tab_closes() {
+        assert_eq!(active_after_close(2, 0, 2), 1);
+    }
+
+    #[test]
+    fn active_after_close_stays_put_when_a_later_tab_closes() {
+        assert_eq!(active_after_close(0, 2, 2), 0);
+    }
+
+    #[test]
+    fn active_after_close_clamps_to_the_last_remaining_tab() {
+        assert_eq!(active_after_close(2, 2, 2), 1);
+    }
+
+    #[test]
+    fn active_after_close_is_zero_when_no_tabs_remain() {
+        assert_eq!(active_after_close(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn next_active_tab_wraps_forward() {
+        assert_eq!(next_active_tab(2, 1, 3), 0);
+    }
+
+    #[test]
+    fn next_active_tab_wraps_backward() {
+        assert_eq!(next_active_tab(0, -1, 3), 2);
+    }
+
+    #[test]
+    fn next_active_tab_is_zero_with_no_tabs() {
+        assert_eq!(next_active_tab(0, 1, 0), 0);
+    }
+
+    async fn state_with_one_tab() -> (GuiState, tempfile::NamedTempFile) {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut state = GuiState::new(db);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "line one\nline two\n").unwrap();
+        let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
+        let log_manager = LogManager::new(Arc::clone(&state.db), None).await;
+        let mut tab = TabState::new(file.path().to_path_buf(), reader, log_manager);
+        recompute_tab(&mut tab);
+        state.tabs.push(tab);
+        (state, file)
+    }
+
+    #[tokio::test]
+    async fn open_file_dialog_requests_the_dialog_effect() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut state = GuiState::new(db);
+        let effect = update(&mut state, Message::OpenFileDialog);
+        assert!(matches!(effect, Effect::OpenFileDialog));
+    }
+
+    #[tokio::test]
+    async fn file_dialog_result_with_a_path_requests_loading_it() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut state = GuiState::new(db);
+        let effect = update(
+            &mut state,
+            Message::FileDialogResult(Some(PathBuf::from("/tmp/x.log"))),
+        );
+        assert!(matches!(effect, Effect::LoadFile(p) if p == std::path::Path::new("/tmp/x.log")));
+    }
+
+    #[tokio::test]
+    async fn file_loaded_err_sets_a_status_message() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut state = GuiState::new(db);
+        update(&mut state, Message::FileLoaded(Err("boom".to_string())));
+        assert_eq!(state.status, Some(StatusMessage::Error("boom".to_string())));
+    }
+
+    #[tokio::test]
+    async fn tab_selected_switches_the_active_tab() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.tabs.push({
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), "x\n").unwrap();
+            let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
+            let lm = LogManager::new(Arc::clone(&state.db), None).await;
+            TabState::new(file.path().to_path_buf(), reader, lm)
+        });
+        update(&mut state, Message::TabSelected(1));
+        assert_eq!(state.active_tab, 1);
+    }
+
+    #[tokio::test]
+    async fn tab_closed_removes_the_tab_and_adjusts_active() {
+        let (mut state, _file) = state_with_one_tab().await;
+        update(&mut state, Message::TabClosed(0));
+        assert!(state.tabs.is_empty());
+        assert_eq!(state.active_tab, 0);
+    }
+
+    #[tokio::test]
+    async fn command_input_changed_updates_the_command_mode_buffer() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.mode = InteractionMode::Command {
+            input: String::new(),
+        };
+        update(
+            &mut state,
+            Message::CommandInputChanged("filter ERROR".to_string()),
+        );
+        assert_eq!(
+            state.mode,
+            InteractionMode::Command {
+                input: "filter ERROR".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_command_mode_switches_mode_and_requests_focus() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = update(
+            &mut state,
+            Message::KeyPressed(GuiKey::Character(":".to_string()), GuiModifiers::default()),
+        );
+        assert_eq!(
+            state.mode,
+            InteractionMode::Command {
+                input: String::new()
+            }
+        );
+        assert!(matches!(effect, Effect::FocusCommandBar));
+    }
+
+    #[tokio::test]
+    async fn j_in_normal_mode_requests_a_scroll_effect() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = update(
+            &mut state,
+            Message::KeyPressed(char_key("j"), GuiModifiers::default()),
+        );
+        assert!(matches!(effect, Effect::Scroll(ScrollTarget::By(1))));
+    }
+
+    #[tokio::test]
+    async fn command_submitted_with_no_tabs_does_nothing() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut state = GuiState::new(db);
+        state.mode = InteractionMode::Command {
+            input: "filter ERROR".to_string(),
+        };
+        let effect = update(&mut state, Message::CommandSubmitted);
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(state.mode, InteractionMode::Normal);
+    }
+
+    #[tokio::test]
+    async fn command_submitted_with_a_valid_command_requests_execution() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.mode = InteractionMode::Command {
+            input: "filter ERROR".to_string(),
+        };
+        let effect = update(&mut state, Message::CommandSubmitted);
+        assert!(matches!(effect, Effect::ExecuteCommand { tab_idx: 0, .. }));
+        assert_eq!(state.mode, InteractionMode::Normal);
+    }
+
+    #[tokio::test]
+    async fn command_submitted_with_an_invalid_command_sets_status() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.mode = InteractionMode::Command {
+            input: "not-a-real-command".to_string(),
+        };
+        update(&mut state, Message::CommandSubmitted);
+        assert!(matches!(state.status, Some(StatusMessage::Error(_))));
+    }
+
+    #[tokio::test]
+    async fn command_executed_ok_applies_the_log_manager_and_recomputes() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let lm = execute_command(state.tabs[0].log_manager.clone(), command("filter line"))
+            .await
+            .unwrap();
+        update(&mut state, Message::CommandExecuted(0, Ok(lm)));
+        assert_eq!(state.tabs[0].filter_defs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn toggle_group_checkbox_enables_a_disabled_group() {
+        let mut lm = execute_command(log_manager().await, command("filter -g net ERROR"))
+            .await
+            .unwrap();
+        lm = execute_command(lm, command("toggle-group net"))
+            .await
+            .unwrap();
+        assert!(!lm.get_filters()[0].enabled);
+        toggle_group_checkbox(&mut lm, "net").await;
+        assert!(lm.get_filters()[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn load_file_reads_a_real_file_into_a_log_manager() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "hello\nworld\n").unwrap();
+        let loaded = load_file(file.path().to_path_buf(), db).await.unwrap();
+        assert_eq!(loaded.path, file.path());
+        assert!(loaded.log_manager.get_filters().is_empty());
     }
 }
