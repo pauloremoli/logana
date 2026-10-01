@@ -33,6 +33,10 @@ pub struct TabState {
     pub visible_lines: Vec<usize>,
     pub filter_defs: Vec<FilterDef>,
     pub group_defs: Vec<GroupDef>,
+    /// Index into `visible_lines` of the topmost row the log pane should
+    /// show — the source of truth `NormalAction::Scroll` updates; the
+    /// gpui virtual list is just synced to match via `Effect::Scroll`.
+    pub scroll_offset: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +53,7 @@ impl TabState {
             visible_lines: Vec::new(),
             filter_defs: Vec::new(),
             group_defs: Vec::new(),
+            scroll_offset: 0,
         }
     }
 

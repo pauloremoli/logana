@@ -11,7 +11,10 @@ pub enum Effect {
     None,
     Quit,
     FocusCommandBar,
-    Scroll(ScrollTarget),
+    /// Scroll the active tab's log pane so line `usize` is the topmost
+    /// visible row — an absolute index, already clamped by `update()`
+    /// against the tab's visible-line count.
+    Scroll(usize),
     OpenFileDialog,
     LoadFile(PathBuf),
     ToggleFilter {
@@ -34,14 +37,4 @@ pub enum Effect {
         log_manager: LogManager,
         command: Commands,
     },
-}
-
-/// Scroll amount in lines — gpui-component's virtual list addresses rows
-/// by index, not pixel offset, so `update()` works in lines directly
-/// rather than guessing a row-height-to-pixels constant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollTarget {
-    By(i32),
-    Top,
-    Bottom,
 }

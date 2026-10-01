@@ -2,7 +2,7 @@ use crate::commands::auto_complete::shell_split;
 use crate::commands::{CommandLine, Commands};
 use crate::db::LogManager;
 use crate::filters::{DATE_PREFIX, FilterOptions, FilterType, group_enabled, parse_date_filter};
-use crate::gui::effect::{Effect, ScrollTarget};
+use crate::gui::effect::Effect;
 use crate::gui::key::{GuiKey, GuiModifiers, NamedKey};
 use crate::gui::message::{FileLoaded, Message};
 use crate::gui::state::{GuiState, InteractionMode, StatusMessage, TabState};
@@ -103,7 +103,10 @@ fn handle_normal_mode_key(state: &mut GuiState, key: GuiKey, modifiers: GuiModif
     let (action, g_pending) = normal_action(&key, &modifiers, state.g_pending);
     state.g_pending = g_pending;
     match action {
-        NormalAction::Scroll(target) => Effect::Scroll(target),
+        NormalAction::Scroll(target) => match resolve_scroll(state, target) {
+            Some(offset) => Effect::Scroll(offset),
+            None => Effect::None,
+        },
         NormalAction::NextTab => {
             advance_tab(state, 1);
             Effect::None
@@ -185,6 +188,21 @@ fn advance_tab(state: &mut GuiState, delta: isize) {
     }
 }
 
+/// Applies `target` to the active tab's `scroll_offset`, clamped to its
+/// visible-line count, and returns the resulting absolute offset — or
+/// `None` if there's no active tab (nothing to scroll).
+fn resolve_scroll(state: &mut GuiState, target: ScrollTarget) -> Option<usize> {
+    let tab = state.active_tab_mut()?;
+    let total = tab.visible_lines.len();
+    let new_offset = match target {
+        ScrollTarget::By(delta) => (tab.scroll_offset as i64 + delta as i64).max(0) as usize,
+        ScrollTarget::Top => 0,
+        ScrollTarget::Bottom => total.saturating_sub(1),
+    };
+    tab.scroll_offset = clamp_scroll_offset(new_offset, total);
+    Some(tab.scroll_offset)
+}
+
 /// Which tab should be active after closing tab `closed`, given `active`
 /// was active before the close and `len_after` tabs remain.
 fn active_after_close(active: usize, closed: usize, len_after: usize) -> usize {
@@ -229,6 +247,13 @@ pub fn recompute_tab(tab: &mut TabState) {
     tab.visible_lines = filter_manager.compute_visible(&tab.reader);
     tab.filter_defs = tab.log_manager.get_filters().to_vec();
     tab.group_defs = tab.log_manager.get_group_styles().to_vec();
+    tab.scroll_offset = clamp_scroll_offset(tab.scroll_offset, tab.visible_lines.len());
+}
+
+/// Clamps a scroll offset to the last valid row of a `total`-line list
+/// (`0` when there are no lines at all).
+fn clamp_scroll_offset(offset: usize, total: usize) -> usize {
+    offset.min(total.saturating_sub(1))
 }
 
 /// Loads `path` into a fresh `FileReader` + `LogManager` pair. Framework-
@@ -294,6 +319,16 @@ pub enum NormalAction {
     EnterCommandMode,
     Quit,
     None,
+}
+
+/// A relative or absolute scroll request from a Normal-mode key —
+/// resolved against the active tab's line count into an absolute
+/// `Effect::Scroll` offset by `handle_normal_mode_key`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollTarget {
+    By(i32),
+    Top,
+    Bottom,
 }
 
 /// Default half/full "page" size in lines, used until a later step wires
@@ -1091,13 +1126,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn j_in_normal_mode_requests_a_scroll_effect() {
+    async fn j_in_normal_mode_scrolls_down_one_line() {
         let (mut state, _file) = state_with_one_tab().await;
         let effect = update(
             &mut state,
             Message::KeyPressed(char_key("j"), GuiModifiers::default()),
         );
-        assert!(matches!(effect, Effect::Scroll(ScrollTarget::By(1))));
+        assert!(matches!(effect, Effect::Scroll(1)));
+        assert_eq!(state.tabs[0].scroll_offset, 1);
+    }
+
+    #[tokio::test]
+    async fn k_at_the_top_does_not_scroll_past_zero() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = update(
+            &mut state,
+            Message::KeyPressed(char_key("k"), GuiModifiers::default()),
+        );
+        assert!(matches!(effect, Effect::Scroll(0)));
+        assert_eq!(state.tabs[0].scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn shift_g_scrolls_to_the_last_line() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = update(
+            &mut state,
+            Message::KeyPressed(char_key("G"), GuiModifiers::default()),
+        );
+        assert!(matches!(effect, Effect::Scroll(1)));
+        assert_eq!(state.tabs[0].scroll_offset, 1);
+    }
+
+    #[tokio::test]
+    async fn scroll_with_no_tabs_open_does_nothing() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut state = GuiState::new(db);
+        let effect = update(
+            &mut state,
+            Message::KeyPressed(char_key("j"), GuiModifiers::default()),
+        );
+        assert!(matches!(effect, Effect::None));
     }
 
     #[tokio::test]
