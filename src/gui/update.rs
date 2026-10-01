@@ -1,6 +1,11 @@
+use crate::commands::auto_complete::shell_split;
+use crate::commands::{CommandLine, Commands};
+use crate::db::LogManager;
+use crate::filters::{DATE_PREFIX, FilterOptions, FilterType, parse_date_filter};
 use crate::gui::effect::ScrollTarget;
 use crate::gui::key::{GuiKey, GuiModifiers, NamedKey};
 use crate::gui::state::InteractionMode;
+use clap::Parser;
 
 /// What a Normal-mode key press should do, independent of how the key
 /// arrived (gpui keystroke vs. the TUI's crossterm event) — mirrors the
@@ -78,6 +83,206 @@ pub fn should_capture(mode: &InteractionMode, key: &GuiKey) -> bool {
         InteractionMode::Normal => true,
         InteractionMode::Command { .. } => matches!(key, GuiKey::Named(NamedKey::Escape)),
     }
+}
+
+/// Parses command-bar input the same way the TUI's `:` bar does — same
+/// clap grammar (`CommandLine`), same shell-style tokenizing.
+pub fn parse_command(input: &str) -> Result<Option<Commands>, String> {
+    CommandLine::try_parse_from(shell_split(input))
+        .map(|line| line.command)
+        .map_err(|e| e.to_string())
+}
+
+/// Runs one `Commands` against `log_manager`, mutating and returning it —
+/// mirrors the TUI's `App::run_command` dispatch for the subset of
+/// commands Phase 1 supports. A command this GUI doesn't implement yet
+/// (structured-field filtering, auto colors, every other `:` command)
+/// errors rather than silently doing nothing.
+pub async fn execute_command(
+    mut log_manager: LogManager,
+    command: Commands,
+) -> Result<LogManager, String> {
+    match command {
+        Commands::Filter {
+            pattern,
+            fg,
+            bg,
+            line_mode,
+            field,
+            regex,
+            ignore_case,
+            group,
+            auto,
+            fga,
+        } => {
+            reject_unsupported_filter_args(&field, auto, fga)?;
+            let options = filter_options(fg, bg, line_mode, regex, ignore_case, group);
+            log_manager
+                .add_filter_with_color(pattern.join(" "), FilterType::Include, options)
+                .await;
+        }
+        Commands::Exclude {
+            pattern,
+            field,
+            regex,
+            ignore_case,
+            group,
+        } => {
+            reject_unsupported_filter_args(&field, false, false)?;
+            let options = filter_options(None, None, false, regex, ignore_case, group);
+            log_manager
+                .add_filter_with_color(pattern.join(" "), FilterType::Exclude, options)
+                .await;
+        }
+        Commands::Highlight {
+            pattern,
+            fg,
+            bg,
+            line_mode,
+            field,
+            regex,
+            ignore_case,
+            group,
+            auto,
+            fga,
+        } => {
+            reject_unsupported_filter_args(&field, auto, fga)?;
+            let options = filter_options(fg, bg, line_mode, regex, ignore_case, group);
+            log_manager
+                .add_filter_with_color(pattern.join(" "), FilterType::Highlight, options)
+                .await;
+        }
+        Commands::ClearFilters => log_manager.clear_filters().await,
+        Commands::DisableFilters => log_manager.disable_all_filters().await,
+        Commands::EnableFilters => log_manager.enable_all_filters().await,
+        Commands::ToggleGroup { name } => toggle_group(&mut log_manager, &name).await?,
+        Commands::Group {
+            name,
+            fg,
+            bg,
+            line_mode,
+            auto,
+            clear,
+        } => set_group_style(&mut log_manager, name, fg, bg, line_mode, auto, clear).await?,
+        Commands::DateFilter {
+            expr,
+            fg,
+            bg,
+            line_mode,
+        } => add_date_filter(&mut log_manager, expr, fg, bg, line_mode).await?,
+        other => return Err(format!("{other:?} is not yet supported in the GUI")),
+    }
+    Ok(log_manager)
+}
+
+/// `--field` filtering needs the structured/JSON field display the GUI
+/// doesn't have yet; `--auto`/`--fga` need the TUI's private color-resolver
+/// (kept out of scope for this migration, see project notes). Both are
+/// rejected rather than silently ignored.
+fn reject_unsupported_filter_args(field: &[String], auto: bool, fga: bool) -> Result<(), String> {
+    if !field.is_empty() {
+        return Err(
+            "--field filtering requires structured field display, not yet supported in the GUI"
+                .to_string(),
+        );
+    }
+    if auto || fga {
+        return Err("--auto/--fga are not yet supported in the GUI".to_string());
+    }
+    Ok(())
+}
+
+fn filter_options(
+    fg: Option<String>,
+    bg: Option<String>,
+    line_mode: bool,
+    regex: bool,
+    ignore_case: bool,
+    group: Option<String>,
+) -> FilterOptions {
+    let mut opts = FilterOptions::default();
+    if line_mode {
+        opts = opts.line_mode();
+    }
+    if regex {
+        opts = opts.regex();
+    }
+    if ignore_case {
+        opts = opts.ignore_case();
+    }
+    if let Some(c) = fg.as_deref() {
+        opts = opts.fg(c);
+    }
+    if let Some(c) = bg.as_deref() {
+        opts = opts.bg(c);
+    }
+    if let Some(g) = group.as_deref() {
+        opts = opts.group(g);
+    }
+    opts
+}
+
+/// `:toggle-group` — if any member is currently enabled, disable the whole
+/// group; otherwise enable it. Errors for a name with no member filters,
+/// matching the TUI's `cmd_toggle_group`.
+async fn toggle_group(log_manager: &mut LogManager, name: &str) -> Result<(), String> {
+    let filters = log_manager.get_filters();
+    if !filters.iter().any(|f| f.group.as_deref() == Some(name)) {
+        return Err(format!("No such filter group: '{name}'"));
+    }
+    let any_enabled = filters
+        .iter()
+        .any(|f| f.group.as_deref() == Some(name) && f.enabled);
+    log_manager
+        .set_filters_enabled_by_group(name, !any_enabled)
+        .await;
+    Ok(())
+}
+
+/// `:group` — set/update a group's predefined style, or clear it with
+/// `--clear` (mutually exclusive with every other flag).
+async fn set_group_style(
+    log_manager: &mut LogManager,
+    name: String,
+    fg: Option<String>,
+    bg: Option<String>,
+    line_mode: bool,
+    auto: bool,
+    clear: bool,
+) -> Result<(), String> {
+    if clear {
+        if fg.is_some() || bg.is_some() || line_mode || auto {
+            return Err("--clear cannot be combined with --fg/--bg/-l/--auto".to_string());
+        }
+        log_manager.clear_group_style(&name).await;
+        return Ok(());
+    }
+    if auto {
+        return Err("--auto is not yet supported in the GUI".to_string());
+    }
+    log_manager
+        .set_group_style(&name, fg.as_deref(), bg.as_deref(), !line_mode)
+        .await;
+    Ok(())
+}
+
+/// `:date-filter` — validates the expression, then stores it as a
+/// `DATE_PREFIX`-tagged Include filter, same encoding the TUI uses.
+async fn add_date_filter(
+    log_manager: &mut LogManager,
+    expr: Vec<String>,
+    fg: Option<String>,
+    bg: Option<String>,
+    line_mode: bool,
+) -> Result<(), String> {
+    let expression = expr.join(" ");
+    parse_date_filter(&expression).map_err(|e| format!("Invalid date filter: {e}"))?;
+    let pattern = format!("{DATE_PREFIX}{expression}");
+    let options = filter_options(fg, bg, line_mode, false, false, None);
+    log_manager
+        .add_filter_with_color(pattern, FilterType::Include, options)
+        .await;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -232,5 +437,159 @@ mod tests {
         assert!(should_capture(&mode, &GuiKey::Named(NamedKey::Escape)));
         assert!(!should_capture(&mode, &char_key("j")));
         assert!(!should_capture(&mode, &char_key("a")));
+    }
+
+    use crate::db::Database;
+    use std::sync::Arc;
+
+    async fn log_manager() -> LogManager {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        LogManager::new(db, None).await
+    }
+
+    fn command(input: &str) -> Commands {
+        parse_command(input).unwrap().unwrap()
+    }
+
+    #[test]
+    fn parse_command_parses_a_filter_command() {
+        let parsed = parse_command("filter ERROR --fg red").unwrap().unwrap();
+        assert!(matches!(parsed, Commands::Filter { .. }));
+    }
+
+    #[test]
+    fn parse_command_rejects_invalid_input() {
+        assert!(parse_command("not-a-real-command").is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_command_filter_adds_an_include_filter() {
+        let lm = execute_command(log_manager().await, command("filter ERROR"))
+            .await
+            .unwrap();
+        assert_eq!(lm.get_filters().len(), 1);
+        assert_eq!(lm.get_filters()[0].filter_type, FilterType::Include);
+        assert_eq!(lm.get_filters()[0].pattern, "ERROR");
+    }
+
+    #[tokio::test]
+    async fn execute_command_exclude_adds_an_exclude_filter() {
+        let lm = execute_command(log_manager().await, command("exclude DEBUG"))
+            .await
+            .unwrap();
+        assert_eq!(lm.get_filters()[0].filter_type, FilterType::Exclude);
+    }
+
+    #[tokio::test]
+    async fn execute_command_highlight_adds_a_highlight_filter() {
+        let lm = execute_command(log_manager().await, command("highlight WARN"))
+            .await
+            .unwrap();
+        assert_eq!(lm.get_filters()[0].filter_type, FilterType::Highlight);
+    }
+
+    #[tokio::test]
+    async fn execute_command_rejects_field_filters() {
+        let err = execute_command(log_manager().await, command("filter --field level=error"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("structured field display"));
+    }
+
+    #[tokio::test]
+    async fn execute_command_rejects_auto_color_flags() {
+        let err = execute_command(log_manager().await, command("filter --auto ERROR"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("--auto"));
+    }
+
+    #[tokio::test]
+    async fn execute_command_clear_filters_removes_everything() {
+        let lm = execute_command(log_manager().await, command("filter ERROR"))
+            .await
+            .unwrap();
+        let lm = execute_command(lm, command("clear-filters")).await.unwrap();
+        assert!(lm.get_filters().is_empty());
+    }
+
+    #[tokio::test]
+    async fn execute_command_disable_then_enable_filters() {
+        let lm = execute_command(log_manager().await, command("filter ERROR"))
+            .await
+            .unwrap();
+        let lm = execute_command(lm, command("disable-filters"))
+            .await
+            .unwrap();
+        assert!(!lm.get_filters()[0].enabled);
+        let lm = execute_command(lm, command("enable-filters"))
+            .await
+            .unwrap();
+        assert!(lm.get_filters()[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn execute_command_toggle_group_toggles_members_off_then_on() {
+        let lm = execute_command(log_manager().await, command("filter -g net ERROR"))
+            .await
+            .unwrap();
+        let lm = execute_command(lm, command("toggle-group net"))
+            .await
+            .unwrap();
+        assert!(!lm.get_filters()[0].enabled);
+        let lm = execute_command(lm, command("toggle-group net"))
+            .await
+            .unwrap();
+        assert!(lm.get_filters()[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn execute_command_toggle_group_errors_for_an_unknown_group() {
+        let err = execute_command(log_manager().await, command("toggle-group missing"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn execute_command_group_sets_a_predefined_style() {
+        let lm = execute_command(log_manager().await, command("group net --fg red"))
+            .await
+            .unwrap();
+        assert_eq!(lm.get_group_styles().len(), 1);
+        assert_eq!(lm.get_group_styles()[0].name, "net");
+    }
+
+    #[tokio::test]
+    async fn execute_command_group_clear_rejects_other_flags() {
+        let err = execute_command(log_manager().await, command("group net --clear --fg red"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("--clear"));
+    }
+
+    #[tokio::test]
+    async fn execute_command_date_filter_adds_a_tagged_include_filter() {
+        let lm = execute_command(log_manager().await, command("date-filter > 2024-01-01"))
+            .await
+            .unwrap();
+        assert!(lm.get_filters()[0].pattern.starts_with(DATE_PREFIX));
+        assert_eq!(lm.get_filters()[0].filter_type, FilterType::Include);
+    }
+
+    #[tokio::test]
+    async fn execute_command_date_filter_rejects_an_invalid_expression() {
+        let err = execute_command(log_manager().await, command("date-filter not-a-date"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Invalid date filter"));
+    }
+
+    #[tokio::test]
+    async fn execute_command_rejects_an_unimplemented_command() {
+        let err = execute_command(log_manager().await, command("wrap"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("not yet supported"));
     }
 }
