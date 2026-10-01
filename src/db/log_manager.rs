@@ -46,6 +46,7 @@ fn filter_options_from_def(def: &FilterDef) -> FilterOptions {
     options
 }
 
+#[derive(Clone, Debug)]
 pub struct LogManager {
     pub db: Arc<Database>,
     source_file: Option<String>,
