@@ -2,6 +2,8 @@ pub mod commands;
 pub mod config;
 pub mod db;
 pub mod filters;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod headless;
 mod headless_merge;
 pub mod ingestion;
