@@ -1,6 +1,6 @@
 use crate::gui::app::App;
 use crate::gui::color::resolve_line_color;
-use crate::gui::state::TabState;
+use crate::ui::TabState;
 use gpui_kit::base::{VirtualListScrollHandle, v_virtual_list};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Size, div, px};
@@ -10,19 +10,19 @@ use std::rc::Rc;
 /// only needs height to lay out rows; width is inferred from content.
 const ROW_HEIGHT_PX: f32 = 20.0;
 
-/// Renders only the currently-visible window of `tab.visible_lines`,
+/// Renders only the currently-visible window of `tab.filter.visible_indices`,
 /// via gpui-component's virtual-scrolling list — no manual viewport math
 /// or rendered-line cap, unlike the discarded iced prototype. `log_scroll`
 /// is `App`'s own handle (not reachable through `cx`, which derefs to
-/// gpui's own `App` platform type, not ours), passed in so
-/// `Effect::Scroll` can drive the same handle from `apply_effect`.
+/// gpui's own `App` platform type, not ours), passed in so `App::
+/// sync_log_scroll` can drive the same handle after every dispatch.
 pub fn log_pane(
     tab_idx: usize,
     tab: &TabState,
     log_scroll: &VirtualListScrollHandle,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
-    let total = tab.visible_lines.len();
+    let total = tab.filter.visible_indices.len();
     let item_sizes = Rc::new(vec![Size::new(px(0.0), px(ROW_HEIGHT_PX)); total]);
     let view = cx.entity();
     v_virtual_list(
@@ -34,7 +34,7 @@ pub fn log_pane(
                 return Vec::new();
             };
             range
-                .filter_map(|pos| tab.visible_lines.get(pos).copied())
+                .filter_map(|pos| tab.filter.visible_indices.get_opt(pos))
                 .map(|line_idx| line_row(tab, line_idx))
                 .collect()
         },
@@ -49,10 +49,14 @@ pub fn log_pane(
 /// for it just makes rows overlap, so overflow is clipped with an ellipsis
 /// instead.
 fn line_row(tab: &TabState, line_idx: usize) -> gpui_kit::gpui::AnyElement {
-    let bytes = tab.reader.get_line_zero_copy(line_idx);
+    let bytes = tab.file_reader.get_line_zero_copy(line_idx);
     let text = String::from_utf8_lossy(bytes).into_owned();
     let mut row = div().truncate().child(text);
-    if let Some(color) = resolve_line_color(bytes, &tab.filter_defs, &tab.group_defs) {
+    if let Some(color) = resolve_line_color(
+        bytes,
+        tab.log_manager.get_filters(),
+        tab.log_manager.get_group_styles(),
+    ) {
         row = row.text_color(color);
     }
     row.into_any_element()

@@ -1,13 +1,17 @@
 use crate::commands::auto_complete::shell_split;
 use crate::commands::{CommandLine, Commands};
-use crate::db::LogManager;
+use crate::db::{Database, LogManager};
 use crate::filters::{DATE_PREFIX, FilterOptions, FilterType, group_enabled, parse_date_filter};
 use crate::gui::effect::Effect;
-use crate::gui::key::{GuiKey, GuiModifiers, NamedKey};
 use crate::gui::message::{FileLoaded, Message};
-use crate::gui::state::{GuiState, InteractionMode, StatusMessage, TabState};
+use crate::gui::state::{GuiState, StatusMessage};
 use crate::ingestion::FileReader;
+use crate::input::{KeyCode, KeyModifiers};
+use crate::mode::command_mode::CommandMode;
+use crate::mode::normal_mode::NormalMode;
+use crate::ui::{KeyResult, TabState, VisibleLines};
 use clap::Parser;
+use futures::FutureExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -36,20 +40,10 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             Effect::None
         }
         Message::TabClosed(idx) => {
-            if idx < state.tabs.len() {
-                state.tabs.remove(idx);
-                state.active_tab = active_after_close(state.active_tab, idx, state.tabs.len());
-            }
+            close_tab_at(state, idx);
             Effect::None
         }
-        Message::KeyPressed(key, modifiers) => handle_key_press(state, key, modifiers),
-        Message::CommandInputChanged(new_input) => {
-            if let InteractionMode::Command { input } = &mut state.mode {
-                *input = new_input;
-            }
-            Effect::None
-        }
-        Message::CommandSubmitted => handle_command_submitted(state),
+        Message::KeyPressed(code, modifiers) => dispatch_key(state, code, modifiers),
         Message::CommandExecuted(tab_idx, result) => {
             match result {
                 Ok(log_manager) => apply_log_manager(state, tab_idx, log_manager),
@@ -92,83 +86,120 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
     }
 }
 
-fn handle_key_press(state: &mut GuiState, key: GuiKey, modifiers: GuiModifiers) -> Effect {
-    match &state.mode {
-        InteractionMode::Normal => handle_normal_mode_key(state, key, modifiers),
-        InteractionMode::Command { .. } => handle_command_mode_key(state, key, modifiers),
-    }
-}
-
-fn handle_normal_mode_key(state: &mut GuiState, key: GuiKey, modifiers: GuiModifiers) -> Effect {
-    let (action, g_pending) = normal_action(&key, &modifiers, state.g_pending);
-    state.g_pending = g_pending;
-    match action {
-        NormalAction::Scroll(target) => match resolve_scroll(state, target) {
-            Some(offset) => Effect::Scroll(offset),
-            None => Effect::None,
-        },
-        NormalAction::NextTab => {
-            advance_tab(state, 1);
-            Effect::None
-        }
-        NormalAction::PrevTab => {
-            advance_tab(state, -1);
-            Effect::None
-        }
-        NormalAction::EnterCommandMode => {
-            state.mode = InteractionMode::Command {
-                input: String::new(),
-            };
-            Effect::FocusCommandBar
-        }
-        NormalAction::Quit => Effect::Quit,
-        NormalAction::None => Effect::None,
-    }
-}
-
-/// Command mode has no focused text-editing widget of its own to fall
-/// keys through to (see `should_capture`), so every key that isn't a
-/// control character is handled here directly: typed characters append to
-/// the buffer, Backspace removes the last one, Enter submits, Escape
-/// cancels back to Normal mode.
-fn handle_command_mode_key(state: &mut GuiState, key: GuiKey, modifiers: GuiModifiers) -> Effect {
-    match key {
-        GuiKey::Named(NamedKey::Escape) => {
-            state.mode = InteractionMode::Normal;
-            Effect::None
-        }
-        GuiKey::Named(NamedKey::Enter) => handle_command_submitted(state),
-        GuiKey::Named(NamedKey::Backspace) => {
-            if let InteractionMode::Command { input } = &mut state.mode {
-                input.pop();
-            }
-            Effect::None
-        }
-        GuiKey::Character(c) if !modifiers.control => {
-            if let InteractionMode::Command { input } = &mut state.mode {
-                input.push_str(&c);
-            }
-            Effect::None
-        }
-        _ => Effect::None,
-    }
-}
-
-/// Closes the command bar unconditionally (matching the TUI, which always
-/// returns to Normal mode on submit) and, for a non-empty valid command,
-/// asks the glue layer to run it asynchronously against the active tab's
-/// `LogManager`. A parse error is shown as a status message instead.
-fn handle_command_submitted(state: &mut GuiState) -> Effect {
-    let input = match &state.mode {
-        InteractionMode::Command { input } => input.clone(),
-        InteractionMode::Normal => return Effect::None,
+/// Drives the active tab's real `Mode` object with a keystroke, exactly
+/// like the TUI's event loop (`App::run` in `src/ui/app.rs`) does —
+/// `Mode::handle_key` never actually suspends (no implementation awaits
+/// real I/O inside the trait method itself; async work is always
+/// expressed as a `KeyResult` the caller performs afterward), so it's
+/// polled synchronously with `now_or_never()` rather than routed through
+/// an async round trip on every keystroke.
+fn dispatch_key(state: &mut GuiState, code: KeyCode, modifiers: KeyModifiers) -> Effect {
+    let Some(tab) = state.active_tab_mut() else {
+        return Effect::None;
     };
-    state.mode = InteractionMode::Normal;
+    let mode = std::mem::replace(&mut tab.interaction.mode, Box::new(NormalMode::default()));
+    let Some((next_mode, result)) = mode.handle_key(tab, code, modifiers).now_or_never() else {
+        tab.interaction.mode = Box::new(NormalMode::default());
+        return Effect::None;
+    };
+    tab.interaction.mode = next_mode;
+    sync_filter_recompute(tab);
+    apply_key_result(state, result, code, modifiers)
+}
+
+/// Handles whatever `Mode::handle_key` decided beyond mutating the tab
+/// directly: a command to run (`ExecuteCommand`), a global keybinding the
+/// mode itself doesn't own (`Ignored` — quit, tab switching), or one of
+/// `UiMode`'s bulk visibility toggles. Variants needing substantial new
+/// GUI surface this phase doesn't have yet (Docker/DLT streaming, the
+/// archive picker, merge view, export, theme picker, session restore,
+/// default-filters mapping, the file switcher) fall through as a no-op —
+/// a deliberate, incremental scoping choice, not a silent gap.
+fn apply_key_result(
+    state: &mut GuiState,
+    result: KeyResult,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Effect {
+    match result {
+        KeyResult::ExecuteCommand(cmd) => return handle_command_string(state, cmd),
+        KeyResult::Ignored => return handle_global_key(state, code, modifiers),
+        KeyResult::ToggleSidebar => toggle_display(state, |d| d.show_sidebar = !d.show_sidebar),
+        KeyResult::ToggleModeBar => toggle_display(state, |d| d.show_mode_bar = !d.show_mode_bar),
+        KeyResult::ToggleBorders => toggle_display(state, |d| d.show_borders = !d.show_borders),
+        KeyResult::ToggleWrap => toggle_display(state, |d| d.wrap = !d.wrap),
+        KeyResult::ToggleLineNumbers => {
+            toggle_display(state, |d| d.show_line_numbers = !d.show_line_numbers)
+        }
+        KeyResult::ToggleRelativeLineNumbers => toggle_display(state, |d| {
+            d.relative_line_numbers = !d.relative_line_numbers
+        }),
+        KeyResult::ToggleGroupsPanel => {
+            toggle_display(state, |d| d.show_groups_panel = !d.show_groups_panel)
+        }
+        KeyResult::ResizeSidebar(width) => {
+            if let Some(tab) = state.active_tab_mut() {
+                tab.display.sidebar_width = width;
+            }
+        }
+        KeyResult::ApplyValueColors(disabled) => state.theme.value_colors.disabled = disabled,
+        KeyResult::ApplyLevelColors(disabled) => {
+            toggle_display(state, |d| d.level_colors_disabled = disabled)
+        }
+        KeyResult::SwitchToTab(id) => {
+            if let Some(idx) = state.tabs.iter().position(|t| t.id == id) {
+                state.active_tab = idx;
+            }
+        }
+        _ => {}
+    }
+    Effect::None
+}
+
+fn toggle_display(state: &mut GuiState, f: impl FnOnce(&mut crate::ui::DisplayConfig)) {
+    if let Some(tab) = state.active_tab_mut() {
+        f(&mut tab.display);
+    }
+}
+
+/// Mirrors the TUI's `App::handle_global_key` (`src/ui/input.rs`) for the
+/// subset this GUI supports — quit, tab switching, closing the active
+/// tab, and opening a new one via the command bar. Only reached when the
+/// active mode didn't consume the key itself (`KeyResult::Ignored`).
+fn handle_global_key(state: &mut GuiState, code: KeyCode, modifiers: KeyModifiers) -> Effect {
+    let Some(tab) = state.active_tab() else {
+        return Effect::None;
+    };
+    let kb = tab.interaction.keybindings.clone();
+    if kb.global.quit.matches(code, modifiers) {
+        return Effect::Quit;
+    }
+    if kb.global.next_tab.matches(code, modifiers) {
+        advance_tab(state, 1);
+    } else if kb.global.prev_tab.matches(code, modifiers) {
+        advance_tab(state, -1);
+    } else if kb.global.close_tab.matches(code, modifiers) {
+        close_tab_at(state, state.active_tab);
+    } else if kb.global.new_tab.matches(code, modifiers)
+        && let Some(tab) = state.active_tab_mut()
+    {
+        let history = tab.interaction.command_history.clone();
+        tab.interaction.mode = Box::new(CommandMode::with_history("open ".to_string(), 5, history));
+    }
+    Effect::None
+}
+
+/// Parses and runs a command string the exact same way `KeyResult::
+/// ExecuteCommand` asks the TUI to (mirroring `App::run_command`'s grammar,
+/// via the same clap-derived `CommandLine`), against the active tab's
+/// `LogManager`. Unsupported commands are rejected with a status message
+/// rather than silently ignored — see `execute_command`.
+fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
     let tab_idx = state.active_tab;
     let Some(tab) = state.tabs.get(tab_idx) else {
         return Effect::None;
     };
-    match parse_command(&input) {
+    match parse_command(&cmd) {
         Ok(Some(command)) => Effect::ExecuteCommand {
             tab_idx,
             log_manager: tab.log_manager.clone(),
@@ -188,19 +219,11 @@ fn advance_tab(state: &mut GuiState, delta: isize) {
     }
 }
 
-/// Applies `target` to the active tab's `scroll_offset`, clamped to its
-/// visible-line count, and returns the resulting absolute offset — or
-/// `None` if there's no active tab (nothing to scroll).
-fn resolve_scroll(state: &mut GuiState, target: ScrollTarget) -> Option<usize> {
-    let tab = state.active_tab_mut()?;
-    let total = tab.visible_lines.len();
-    let new_offset = match target {
-        ScrollTarget::By(delta) => (tab.scroll_offset as i64 + delta as i64).max(0) as usize,
-        ScrollTarget::Top => 0,
-        ScrollTarget::Bottom => total.saturating_sub(1),
-    };
-    tab.scroll_offset = clamp_scroll_offset(new_offset, total);
-    Some(tab.scroll_offset)
+fn close_tab_at(state: &mut GuiState, idx: usize) {
+    if idx < state.tabs.len() {
+        state.tabs.remove(idx);
+        state.active_tab = active_after_close(state.active_tab, idx, state.tabs.len());
+    }
 }
 
 /// Which tab should be active after closing tab `closed`, given `active`
@@ -226,8 +249,13 @@ fn next_active_tab(active: usize, delta: isize, len: usize) -> usize {
 }
 
 fn push_tab(state: &mut GuiState, loaded: FileLoaded) {
-    let mut tab = TabState::new(loaded.path, loaded.reader, loaded.log_manager);
-    recompute_tab(&mut tab);
+    let title = loaded
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| loaded.path.display().to_string());
+    let mut tab = TabState::new(loaded.reader, loaded.log_manager, title);
+    force_recompute(&mut tab);
     state.tabs.push(tab);
     state.active_tab = state.tabs.len() - 1;
 }
@@ -235,31 +263,46 @@ fn push_tab(state: &mut GuiState, loaded: FileLoaded) {
 fn apply_log_manager(state: &mut GuiState, tab_idx: usize, log_manager: LogManager) {
     if let Some(tab) = state.tabs.get_mut(tab_idx) {
         tab.log_manager = log_manager;
-        recompute_tab(tab);
+        force_recompute(tab);
     }
 }
 
-/// Rebuilds `visible_lines`/`filter_defs`/`group_defs` from the tab's
-/// `LogManager` — called after every mutation, mirroring the TUI's
-/// `begin_filter_refresh`.
-pub fn recompute_tab(tab: &mut TabState) {
-    let (filter_manager, _, _, _) = tab.log_manager.build_filter_manager();
-    tab.visible_lines = filter_manager.compute_visible(&tab.reader);
-    tab.filter_defs = tab.log_manager.get_filters().to_vec();
-    tab.group_defs = tab.log_manager.get_group_styles().to_vec();
-    tab.scroll_offset = clamp_scroll_offset(tab.scroll_offset, tab.visible_lines.len());
+/// Recomputes `visible_indices` from scratch against the tab's current
+/// `LogManager`/filter-enabled state. Simpler than the TUI's
+/// `TabState::begin_filter_refresh` (which streams results from a
+/// cancellable background scan for large files) — a deliberate
+/// simplification for this phase; see `sync_filter_recompute`.
+fn force_recompute(tab: &mut TabState) {
+    let has_active_filters = tab.log_manager.get_filters().iter().any(|f| f.enabled);
+    if !tab.filter.enabled || !has_active_filters {
+        tab.filter.visible_indices = VisibleLines::All(tab.file_reader.line_count());
+        return;
+    }
+    let (filter_manager, ..) = tab.log_manager.build_filter_manager();
+    let visible = filter_manager.compute_visible(&tab.file_reader);
+    tab.filter.visible_indices = VisibleLines::Filtered(visible);
 }
 
-/// Clamps a scroll offset to the last valid row of a `total`-line list
-/// (`0` when there are no lines at all).
-fn clamp_scroll_offset(offset: usize, total: usize) -> usize {
-    offset.min(total.saturating_sub(1))
+/// A `Mode::handle_key` implementation that wants a filter/visibility
+/// refresh calls the TUI's real `TabState::begin_filter_refresh`, which
+/// (for the "has active filters" case) kicks off a cancellable background
+/// scan and leaves `tab.filter.handle` set rather than updating
+/// `visible_indices` synchronously. This GUI doesn't yet drive that
+/// background-scan/polling machinery (see `force_recompute`'s doc comment),
+/// so it discards the handle and recomputes synchronously instead —
+/// correct, just without the background scan's large-file performance win.
+fn sync_filter_recompute(tab: &mut TabState) {
+    if tab.filter.handle.take().is_some() {
+        force_recompute(tab);
+    }
 }
 
 /// Loads `path` into a fresh `FileReader` + `LogManager` pair. Framework-
 /// neutral async work the glue layer runs under its tokio bridge in
-/// response to `Effect::LoadFile`.
-pub async fn load_file(path: PathBuf, db: Arc<crate::db::Database>) -> Result<FileLoaded, String> {
+/// response to `Effect::LoadFile`; `push_tab` turns the result into a
+/// full `TabState` (format detection, continuation/year maps, etc.) via
+/// the TUI's own `TabState::new`.
+pub async fn load_file(path: PathBuf, db: Arc<Database>) -> Result<FileLoaded, String> {
     let path_str = path.to_string_lossy().into_owned();
     let handle = FileReader::load(
         path_str.clone(),
@@ -307,98 +350,6 @@ pub async fn toggle_group_checkbox(log_manager: &mut LogManager, name: &str) {
     log_manager.set_group_enabled(name, new_state).await;
 }
 
-/// What a Normal-mode key press should do, independent of how the key
-/// arrived (gpui keystroke vs. the TUI's crossterm event) — mirrors the
-/// TUI NormalMode's `j/k`, `Ctrl+d/u`, `PageUp/Down`, `gg`/`G`,
-/// `Tab`/`Shift+Tab`, `:`, `q` bindings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NormalAction {
-    Scroll(ScrollTarget),
-    NextTab,
-    PrevTab,
-    EnterCommandMode,
-    Quit,
-    None,
-}
-
-/// A relative or absolute scroll request from a Normal-mode key —
-/// resolved against the active tab's line count into an absolute
-/// `Effect::Scroll` offset by `handle_normal_mode_key`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollTarget {
-    By(i32),
-    Top,
-    Bottom,
-}
-
-/// Default half/full "page" size in lines, used until a later step wires
-/// the log pane's real viewport height through — matches a plausible
-/// terminal/window height, same ballpark as the TUI's own page scrolling.
-const HALF_PAGE_LINES: i32 = 15;
-const FULL_PAGE_LINES: i32 = 30;
-
-/// Maps a Normal-mode key press to the action it performs, and the new
-/// value `g_pending` should take afterward. `g_pending` tracks a leading
-/// `g` so `gg` (jump to top) can be recognized as a two-key chord, exactly
-/// like the TUI's `g_key_pressed` flag.
-pub fn normal_action(
-    key: &GuiKey,
-    modifiers: &GuiModifiers,
-    g_pending: bool,
-) -> (NormalAction, bool) {
-    if g_pending {
-        let action = if is_character(key, "g") {
-            NormalAction::Scroll(ScrollTarget::Top)
-        } else {
-            NormalAction::None
-        };
-        return (action, false);
-    }
-
-    let action = match key {
-        GuiKey::Character(c) if c == "g" => {
-            return (NormalAction::None, true);
-        }
-        GuiKey::Character(c) if c == "G" => NormalAction::Scroll(ScrollTarget::Bottom),
-        GuiKey::Character(c) if c == "j" => NormalAction::Scroll(ScrollTarget::By(1)),
-        GuiKey::Character(c) if c == "k" => NormalAction::Scroll(ScrollTarget::By(-1)),
-        GuiKey::Character(c) if c == "d" && modifiers.control => {
-            NormalAction::Scroll(ScrollTarget::By(HALF_PAGE_LINES))
-        }
-        GuiKey::Character(c) if c == "u" && modifiers.control => {
-            NormalAction::Scroll(ScrollTarget::By(-HALF_PAGE_LINES))
-        }
-        GuiKey::Character(c) if c == ":" => NormalAction::EnterCommandMode,
-        GuiKey::Character(c) if c == "q" => NormalAction::Quit,
-        GuiKey::Named(NamedKey::PageDown) => {
-            NormalAction::Scroll(ScrollTarget::By(FULL_PAGE_LINES))
-        }
-        GuiKey::Named(NamedKey::PageUp) => NormalAction::Scroll(ScrollTarget::By(-FULL_PAGE_LINES)),
-        GuiKey::Named(NamedKey::Tab) if !modifiers.shift => NormalAction::NextTab,
-        GuiKey::Named(NamedKey::Tab) if modifiers.shift => NormalAction::PrevTab,
-        _ => NormalAction::None,
-    };
-    (action, false)
-}
-
-fn is_character(key: &GuiKey, expected: &str) -> bool {
-    matches!(key, GuiKey::Character(c) if c == expected)
-}
-
-/// Whether `key` should be handled by the capture-phase handler rather
-/// than left to bubble to a focused widget. Both modes capture everything
-/// today — Command mode has no separate text-editing widget of its own
-/// (see `handle_command_mode_key`), so there's nothing to fall through
-/// to. Kept as an explicit per-mode decision rather than an unconditional
-/// `true`, since a future phase may adopt a real focusable input widget
-/// for Command mode, which would need to receive some keys directly.
-pub fn should_capture(mode: &InteractionMode, _key: &GuiKey) -> bool {
-    match mode {
-        InteractionMode::Normal => true,
-        InteractionMode::Command { .. } => true,
-    }
-}
-
 /// Parses command-bar input the same way the TUI's `:` bar does — same
 /// clap grammar (`CommandLine`), same shell-style tokenizing.
 pub fn parse_command(input: &str) -> Result<Option<Commands>, String> {
@@ -409,7 +360,7 @@ pub fn parse_command(input: &str) -> Result<Option<Commands>, String> {
 
 /// Runs one `Commands` against `log_manager`, mutating and returning it —
 /// mirrors the TUI's `App::run_command` dispatch for the subset of
-/// commands Phase 1 supports. A command this GUI doesn't implement yet
+/// commands this GUI supports. A command it doesn't implement yet
 /// (structured-field filtering, auto colors, every other `:` command)
 /// errors rather than silently doing nothing.
 pub async fn execute_command(
@@ -469,7 +420,7 @@ pub async fn execute_command(
         Commands::ClearFilters => log_manager.clear_filters().await,
         Commands::DisableFilters => log_manager.disable_all_filters().await,
         Commands::EnableFilters => log_manager.enable_all_filters().await,
-        Commands::ToggleGroup { name } => toggle_group(&mut log_manager, &name).await?,
+        Commands::ToggleGroup { name } => toggle_group_command(&mut log_manager, &name).await?,
         Commands::Group {
             name,
             fg,
@@ -539,7 +490,7 @@ fn filter_options(
 /// `:toggle-group` — if any member is currently enabled, disable the whole
 /// group; otherwise enable it. Errors for a name with no member filters,
 /// matching the TUI's `cmd_toggle_group`.
-async fn toggle_group(log_manager: &mut LogManager, name: &str) -> Result<(), String> {
+async fn toggle_group_command(log_manager: &mut LogManager, name: &str) -> Result<(), String> {
     let filters = log_manager.get_filters();
     if !filters.iter().any(|f| f.group.as_deref() == Some(name)) {
         return Err(format!("No such filter group: '{name}'"));
@@ -602,159 +553,7 @@ async fn add_date_filter(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn char_key(c: &str) -> GuiKey {
-        GuiKey::Character(c.to_string())
-    }
-
-    fn mods(control: bool, shift: bool) -> GuiModifiers {
-        GuiModifiers { control, shift }
-    }
-
-    #[test]
-    fn j_scrolls_down_one_line() {
-        let (action, g) = normal_action(&char_key("j"), &mods(false, false), false);
-        assert_eq!(action, NormalAction::Scroll(ScrollTarget::By(1)));
-        assert!(!g);
-    }
-
-    #[test]
-    fn k_scrolls_up_one_line() {
-        let (action, _) = normal_action(&char_key("k"), &mods(false, false), false);
-        assert_eq!(action, NormalAction::Scroll(ScrollTarget::By(-1)));
-    }
-
-    #[test]
-    fn ctrl_d_scrolls_down_half_a_page() {
-        let (action, _) = normal_action(&char_key("d"), &mods(true, false), false);
-        assert_eq!(
-            action,
-            NormalAction::Scroll(ScrollTarget::By(HALF_PAGE_LINES))
-        );
-    }
-
-    #[test]
-    fn ctrl_u_scrolls_up_half_a_page() {
-        let (action, _) = normal_action(&char_key("u"), &mods(true, false), false);
-        assert_eq!(
-            action,
-            NormalAction::Scroll(ScrollTarget::By(-HALF_PAGE_LINES))
-        );
-    }
-
-    #[test]
-    fn plain_d_and_u_do_nothing() {
-        assert_eq!(
-            normal_action(&char_key("d"), &mods(false, false), false).0,
-            NormalAction::None
-        );
-        assert_eq!(
-            normal_action(&char_key("u"), &mods(false, false), false).0,
-            NormalAction::None
-        );
-    }
-
-    #[test]
-    fn page_down_scrolls_a_full_page() {
-        let (action, _) = normal_action(
-            &GuiKey::Named(NamedKey::PageDown),
-            &mods(false, false),
-            false,
-        );
-        assert_eq!(
-            action,
-            NormalAction::Scroll(ScrollTarget::By(FULL_PAGE_LINES))
-        );
-    }
-
-    #[test]
-    fn page_up_scrolls_a_full_page_up() {
-        let (action, _) =
-            normal_action(&GuiKey::Named(NamedKey::PageUp), &mods(false, false), false);
-        assert_eq!(
-            action,
-            NormalAction::Scroll(ScrollTarget::By(-FULL_PAGE_LINES))
-        );
-    }
-
-    #[test]
-    fn single_g_sets_g_pending_without_acting() {
-        let (action, g) = normal_action(&char_key("g"), &mods(false, false), false);
-        assert_eq!(action, NormalAction::None);
-        assert!(g);
-    }
-
-    #[test]
-    fn gg_jumps_to_top_and_clears_g_pending() {
-        let (action, g) = normal_action(&char_key("g"), &mods(false, false), true);
-        assert_eq!(action, NormalAction::Scroll(ScrollTarget::Top));
-        assert!(!g);
-    }
-
-    #[test]
-    fn g_then_unrelated_key_clears_g_pending_without_acting() {
-        let (action, g) = normal_action(&char_key("j"), &mods(false, false), true);
-        assert_eq!(action, NormalAction::None);
-        assert!(!g);
-    }
-
-    #[test]
-    fn shift_g_jumps_to_bottom() {
-        let (action, _) = normal_action(&char_key("G"), &mods(false, true), false);
-        assert_eq!(action, NormalAction::Scroll(ScrollTarget::Bottom));
-    }
-
-    #[test]
-    fn tab_moves_to_next_tab() {
-        let (action, _) = normal_action(&GuiKey::Named(NamedKey::Tab), &mods(false, false), false);
-        assert_eq!(action, NormalAction::NextTab);
-    }
-
-    #[test]
-    fn shift_tab_moves_to_previous_tab() {
-        let (action, _) = normal_action(&GuiKey::Named(NamedKey::Tab), &mods(false, true), false);
-        assert_eq!(action, NormalAction::PrevTab);
-    }
-
-    #[test]
-    fn colon_enters_command_mode() {
-        let (action, _) = normal_action(&char_key(":"), &mods(false, false), false);
-        assert_eq!(action, NormalAction::EnterCommandMode);
-    }
-
-    #[test]
-    fn q_quits() {
-        let (action, _) = normal_action(&char_key("q"), &mods(false, false), false);
-        assert_eq!(action, NormalAction::Quit);
-    }
-
-    #[test]
-    fn unrecognized_key_does_nothing() {
-        let (action, _) = normal_action(&char_key("z"), &mods(false, false), false);
-        assert_eq!(action, NormalAction::None);
-    }
-
-    #[test]
-    fn normal_mode_captures_every_key() {
-        assert!(should_capture(&InteractionMode::Normal, &char_key("j")));
-        assert!(should_capture(
-            &InteractionMode::Normal,
-            &GuiKey::Named(NamedKey::Escape)
-        ));
-    }
-
-    #[test]
-    fn command_mode_also_captures_every_key() {
-        let mode = InteractionMode::Command {
-            input: String::new(),
-        };
-        assert!(should_capture(&mode, &GuiKey::Named(NamedKey::Escape)));
-        assert!(should_capture(&mode, &char_key("j")));
-        assert!(should_capture(&mode, &char_key("a")));
-    }
-
     use crate::db::Database;
-    use std::sync::Arc;
 
     async fn log_manager() -> LogManager {
         let db = Arc::new(Database::in_memory().await.unwrap());
@@ -949,8 +748,8 @@ mod tests {
         std::fs::write(file.path(), "line one\nline two\n").unwrap();
         let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
         let log_manager = LogManager::new(Arc::clone(&state.db), None).await;
-        let mut tab = TabState::new(file.path().to_path_buf(), reader, log_manager);
-        recompute_tab(&mut tab);
+        let mut tab = TabState::new(reader, log_manager, "test.log".to_string());
+        force_recompute(&mut tab);
         state.tabs.push(tab);
         (state, file)
     }
@@ -985,13 +784,13 @@ mod tests {
     #[tokio::test]
     async fn tab_selected_switches_the_active_tab() {
         let (mut state, _file) = state_with_one_tab().await;
-        state.tabs.push({
-            let file = tempfile::NamedTempFile::new().unwrap();
-            std::fs::write(file.path(), "x\n").unwrap();
-            let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
-            let lm = LogManager::new(Arc::clone(&state.db), None).await;
-            TabState::new(file.path().to_path_buf(), reader, lm)
-        });
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "x\n").unwrap();
+        let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
+        let lm = LogManager::new(Arc::clone(&state.db), None).await;
+        state
+            .tabs
+            .push(TabState::new(reader, lm, "x.log".to_string()));
         update(&mut state, Message::TabSelected(1));
         assert_eq!(state.active_tab, 1);
     }
@@ -1005,201 +804,95 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn command_input_changed_updates_the_command_mode_buffer() {
-        let (mut state, _file) = state_with_one_tab().await;
-        state.mode = InteractionMode::Command {
-            input: String::new(),
-        };
-        update(
-            &mut state,
-            Message::CommandInputChanged("filter ERROR".to_string()),
-        );
-        assert_eq!(
-            state.mode,
-            InteractionMode::Command {
-                input: "filter ERROR".to_string()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn enter_command_mode_switches_mode_and_requests_focus() {
-        let (mut state, _file) = state_with_one_tab().await;
-        let effect = update(
-            &mut state,
-            Message::KeyPressed(GuiKey::Character(":".to_string()), GuiModifiers::default()),
-        );
-        assert_eq!(
-            state.mode,
-            InteractionMode::Command {
-                input: String::new()
-            }
-        );
-        assert!(matches!(effect, Effect::FocusCommandBar));
-    }
-
-    #[tokio::test]
-    async fn typing_a_character_in_command_mode_appends_to_the_buffer() {
-        let (mut state, _file) = state_with_one_tab().await;
-        state.mode = InteractionMode::Command {
-            input: "filter".to_string(),
-        };
-        update(
-            &mut state,
-            Message::KeyPressed(char_key(" "), GuiModifiers::default()),
-        );
-        assert_eq!(
-            state.mode,
-            InteractionMode::Command {
-                input: "filter ".to_string()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn backspace_in_command_mode_removes_the_last_character() {
-        let (mut state, _file) = state_with_one_tab().await;
-        state.mode = InteractionMode::Command {
-            input: "filter".to_string(),
-        };
-        update(
-            &mut state,
-            Message::KeyPressed(GuiKey::Named(NamedKey::Backspace), GuiModifiers::default()),
-        );
-        assert_eq!(
-            state.mode,
-            InteractionMode::Command {
-                input: "filte".to_string()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn ctrl_held_characters_are_not_inserted_in_command_mode() {
-        let (mut state, _file) = state_with_one_tab().await;
-        state.mode = InteractionMode::Command {
-            input: "filter".to_string(),
-        };
-        update(
-            &mut state,
-            Message::KeyPressed(
-                char_key("c"),
-                GuiModifiers {
-                    control: true,
-                    shift: false,
-                },
-            ),
-        );
-        assert_eq!(
-            state.mode,
-            InteractionMode::Command {
-                input: "filter".to_string()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn escape_in_command_mode_returns_to_normal() {
-        let (mut state, _file) = state_with_one_tab().await;
-        state.mode = InteractionMode::Command {
-            input: "filter".to_string(),
-        };
-        update(
-            &mut state,
-            Message::KeyPressed(GuiKey::Named(NamedKey::Escape), GuiModifiers::default()),
-        );
-        assert_eq!(state.mode, InteractionMode::Normal);
-    }
-
-    #[tokio::test]
-    async fn enter_in_command_mode_submits_the_command() {
-        let (mut state, _file) = state_with_one_tab().await;
-        state.mode = InteractionMode::Command {
-            input: "filter ERROR".to_string(),
-        };
-        let effect = update(
-            &mut state,
-            Message::KeyPressed(GuiKey::Named(NamedKey::Enter), GuiModifiers::default()),
-        );
-        assert!(matches!(effect, Effect::ExecuteCommand { tab_idx: 0, .. }));
-        assert_eq!(state.mode, InteractionMode::Normal);
-    }
-
-    #[tokio::test]
     async fn j_in_normal_mode_scrolls_down_one_line() {
         let (mut state, _file) = state_with_one_tab().await;
-        let effect = update(
+        update(
             &mut state,
-            Message::KeyPressed(char_key("j"), GuiModifiers::default()),
+            Message::KeyPressed(KeyCode::Char('j'), KeyModifiers::NONE),
         );
-        assert!(matches!(effect, Effect::Scroll(1)));
-        assert_eq!(state.tabs[0].scroll_offset, 1);
+        assert_eq!(state.tabs[0].scroll.scroll_offset, 1);
     }
 
     #[tokio::test]
-    async fn k_at_the_top_does_not_scroll_past_zero() {
+    async fn colon_enters_command_mode() {
         let (mut state, _file) = state_with_one_tab().await;
-        let effect = update(
+        update(
             &mut state,
-            Message::KeyPressed(char_key("k"), GuiModifiers::default()),
+            Message::KeyPressed(KeyCode::Char(':'), KeyModifiers::NONE),
         );
-        assert!(matches!(effect, Effect::Scroll(0)));
-        assert_eq!(state.tabs[0].scroll_offset, 0);
+        assert!(matches!(
+            state.tabs[0].interaction.mode.render_state(),
+            crate::mode::app_mode::ModeRenderState::Command { .. }
+        ));
     }
 
     #[tokio::test]
-    async fn shift_g_scrolls_to_the_last_line() {
+    async fn typing_a_command_and_pressing_enter_runs_it() {
         let (mut state, _file) = state_with_one_tab().await;
+        update(
+            &mut state,
+            Message::KeyPressed(KeyCode::Char(':'), KeyModifiers::NONE),
+        );
+        for c in "filter ERROR".chars() {
+            update(
+                &mut state,
+                Message::KeyPressed(KeyCode::Char(c), KeyModifiers::NONE),
+            );
+        }
         let effect = update(
             &mut state,
-            Message::KeyPressed(char_key("G"), GuiModifiers::default()),
+            Message::KeyPressed(KeyCode::Enter, KeyModifiers::NONE),
         );
-        assert!(matches!(effect, Effect::Scroll(1)));
-        assert_eq!(state.tabs[0].scroll_offset, 1);
-    }
-
-    #[tokio::test]
-    async fn scroll_with_no_tabs_open_does_nothing() {
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let mut state = GuiState::new(db);
-        let effect = update(
-            &mut state,
-            Message::KeyPressed(char_key("j"), GuiModifiers::default()),
-        );
-        assert!(matches!(effect, Effect::None));
-    }
-
-    #[tokio::test]
-    async fn command_submitted_with_no_tabs_does_nothing() {
-        let db = Arc::new(Database::in_memory().await.unwrap());
-        let mut state = GuiState::new(db);
-        state.mode = InteractionMode::Command {
-            input: "filter ERROR".to_string(),
-        };
-        let effect = update(&mut state, Message::CommandSubmitted);
-        assert!(matches!(effect, Effect::None));
-        assert_eq!(state.mode, InteractionMode::Normal);
-    }
-
-    #[tokio::test]
-    async fn command_submitted_with_a_valid_command_requests_execution() {
-        let (mut state, _file) = state_with_one_tab().await;
-        state.mode = InteractionMode::Command {
-            input: "filter ERROR".to_string(),
-        };
-        let effect = update(&mut state, Message::CommandSubmitted);
         assert!(matches!(effect, Effect::ExecuteCommand { tab_idx: 0, .. }));
-        assert_eq!(state.mode, InteractionMode::Normal);
     }
 
     #[tokio::test]
-    async fn command_submitted_with_an_invalid_command_sets_status() {
+    async fn q_quits() {
         let (mut state, _file) = state_with_one_tab().await;
-        state.mode = InteractionMode::Command {
-            input: "not-a-real-command".to_string(),
-        };
-        update(&mut state, Message::CommandSubmitted);
-        assert!(matches!(state.status, Some(StatusMessage::Error(_))));
+        let effect = update(
+            &mut state,
+            Message::KeyPressed(KeyCode::Char('q'), KeyModifiers::NONE),
+        );
+        assert!(matches!(effect, Effect::Quit));
+    }
+
+    #[tokio::test]
+    async fn ctrl_g_enters_group_management_mode() {
+        let (mut state, _file) = state_with_one_tab().await;
+        update(
+            &mut state,
+            Message::KeyPressed(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(
+            state.tabs[0].interaction.mode.render_state(),
+            crate::mode::app_mode::ModeRenderState::GroupManagement { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn f_enters_filter_management_mode() {
+        let (mut state, _file) = state_with_one_tab().await;
+        update(
+            &mut state,
+            Message::KeyPressed(KeyCode::Char('f'), KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            state.tabs[0].interaction.mode.render_state(),
+            crate::mode::app_mode::ModeRenderState::FilterManagement { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn slash_enters_search_mode() {
+        let (mut state, _file) = state_with_one_tab().await;
+        update(
+            &mut state,
+            Message::KeyPressed(KeyCode::Char('/'), KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            state.tabs[0].interaction.mode.render_state(),
+            crate::mode::app_mode::ModeRenderState::Search { .. }
+        ));
     }
 
     #[tokio::test]
@@ -1209,7 +902,7 @@ mod tests {
             .await
             .unwrap();
         update(&mut state, Message::CommandExecuted(0, Ok(lm)));
-        assert_eq!(state.tabs[0].filter_defs.len(), 1);
+        assert_eq!(state.tabs[0].log_manager.get_filters().len(), 1);
     }
 
     #[tokio::test]

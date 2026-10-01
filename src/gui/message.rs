@@ -1,6 +1,6 @@
 use crate::db::LogManager;
-use crate::gui::key::{GuiKey, GuiModifiers};
 use crate::ingestion::FileReader;
+use crate::input::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 
 pub enum Message {
@@ -9,9 +9,12 @@ pub enum Message {
     FileLoaded(Result<FileLoaded, String>),
     TabSelected(usize),
     TabClosed(usize),
-    KeyPressed(GuiKey, GuiModifiers),
-    CommandInputChanged(String),
-    CommandSubmitted,
+    /// Routed into the active tab's real `Mode::handle_key` — see
+    /// `gui::update::dispatch_key`. Command-mode text entry, search
+    /// queries, filter/group-management navigation, and every other
+    /// mode's input all flow through this one variant now, same as the
+    /// TUI's single crossterm key-event entry point.
+    KeyPressed(KeyCode, KeyModifiers),
     CommandExecuted(usize, Result<LogManager, String>),
 
     FilterToggled(usize, usize),

@@ -8,7 +8,12 @@ use gpui_kit::gpui::{Context, Window, div};
 pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     let mut bar = div().flex().gap_1().p_1();
     for (idx, tab) in state.tabs.iter().enumerate() {
-        bar = bar.child(tab_label(idx, tab.title(), idx == state.active_tab, cx));
+        bar = bar.child(tab_label(
+            idx,
+            tab.title.clone(),
+            idx == state.active_tab,
+            cx,
+        ));
     }
     bar.child(
         Button::new("open-file")

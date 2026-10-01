@@ -11,27 +11,28 @@ use gpui_kit::base::VirtualListScrollHandle;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{
-    Context, Entity, FocusHandle, KeyDownEvent, ScrollStrategy, Window, actions, div, px,
-};
+use gpui_kit::gpui::{Context, Entity, KeyDownEvent, ScrollStrategy, Window, actions, div, px};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 // Actions bound once at startup (see `src/bin/logana_gui.rs`) so the File
-// menu and global keybindings (`q`, `Ctrl+O`) both reach the same handlers
-// as a normal keypress would, via gpui's own action-dispatch system rather
-// than only through the capture-phase handler below.
+// menu and global keybindings (`Ctrl+O`, `Ctrl+Q`) both reach the same
+// handlers as a normal keypress would, via gpui's own action-dispatch
+// system rather than only through the capture-phase handler below. `q`
+// quitting Normal mode is handled entirely by the real `Mode`/keybindings
+// machinery now (`KeyResult::Ignored` -> `handle_global_key`), same as the
+// TUI — these actions are just the GUI-native (File menu, Ctrl+Q) paths.
 actions!(logana_gui, [OpenFile, Quit]);
 
 /// The only place in the GUI that touches gpui types directly. Owns the
-/// framework-neutral `GuiState` and translates between it and gpui: a
-/// capture-phase key handler feeds `Message`s into `update()`, and
-/// `apply_effect` carries out whatever `Effect` comes back — spawning
-/// async work on the shared tokio runtime (see `runtime`) or driving a
-/// gpui widget (focus, quit, scroll) directly.
+/// framework-neutral `GuiState` (which now holds the TUI's own
+/// `ui::TabState`/`Box<dyn Mode>` per tab — see `gui::state`) and
+/// translates between it and gpui: a capture-phase key handler feeds
+/// `Message`s into `update()`, and `apply_effect` carries out whatever
+/// `Effect` comes back — spawning async work on the shared tokio runtime
+/// (see `runtime`) or driving a gpui widget (quit, scroll) directly.
 pub struct App {
     pub state: GuiState,
-    pub command_bar_focus: FocusHandle,
     pub log_scroll: VirtualListScrollHandle,
     pub menu_bar: Entity<AppMenuBar>,
 }
@@ -40,7 +41,6 @@ impl App {
     pub fn new(db: Arc<Database>, theme: TuiTheme, cx: &mut Context<Self>) -> Self {
         Self {
             state: GuiState::new(db).with_theme(theme),
-            command_bar_focus: cx.focus_handle(),
             log_scroll: VirtualListScrollHandle::new(),
             menu_bar: AppMenuBar::new(cx),
         }
@@ -57,17 +57,26 @@ impl App {
     pub fn dispatch(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
         let effect = update::update(&mut self.state, message);
         self.apply_effect(effect, window, cx);
+        self.sync_log_scroll();
         cx.notify();
     }
 
-    fn apply_effect(&mut self, effect: Effect, window: &mut Window, cx: &mut Context<Self>) {
+    /// The active tab's `Mode`/global-key handling owns `scroll.scroll_offset`
+    /// directly (same as the TUI) rather than returning it as an `Effect` —
+    /// simpler to just always sync the gpui virtual list to match after
+    /// every dispatch than to thread it through every possible `Effect`
+    /// variant. Idempotent and cheap when scrolling didn't change.
+    fn sync_log_scroll(&self) {
+        if let Some(tab) = self.state.active_tab() {
+            self.log_scroll
+                .scroll_to_item(tab.scroll.scroll_offset, ScrollStrategy::Top);
+        }
+    }
+
+    fn apply_effect(&mut self, effect: Effect, _window: &mut Window, cx: &mut Context<Self>) {
         match effect {
             Effect::None => {}
             Effect::Quit => cx.quit(),
-            Effect::FocusCommandBar => self.command_bar_focus.focus(window, cx),
-            Effect::Scroll(line) => {
-                self.log_scroll.scroll_to_item(line, ScrollStrategy::Top);
-            }
             Effect::OpenFileDialog => self.spawn_open_file_dialog(cx),
             Effect::LoadFile(path) => self.spawn_load_file(path, cx),
             Effect::ToggleFilter {
@@ -231,8 +240,12 @@ impl Render for App {
             .on_action(cx.listener(Self::on_open_file_action))
             .on_action(cx.listener(Self::on_quit_action))
             .capture_key_down(cx.listener(|app, event: &KeyDownEvent, window, cx| {
-                let (key, modifiers) = key::from_gpui_keystroke(&event.keystroke);
-                if update::should_capture(&app.state.mode, &key) {
+                // Captures every key press application-wide — nothing in
+                // this GUI holds gpui widget focus, so every key (typing
+                // into the command bar included) flows through here and
+                // into `Mode::handle_key`, exactly like the TUI's
+                // terminal-wide key capture.
+                if let Some((key, modifiers)) = key::from_gpui_keystroke(&event.keystroke) {
                     cx.stop_propagation();
                     app.dispatch(Message::KeyPressed(key, modifiers), window, cx);
                 }

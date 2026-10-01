@@ -10,11 +10,6 @@ use std::path::PathBuf;
 pub enum Effect {
     None,
     Quit,
-    FocusCommandBar,
-    /// Scroll the active tab's log pane so line `usize` is the topmost
-    /// visible row — an absolute index, already clamped by `update()`
-    /// against the tab's visible-line count.
-    Scroll(usize),
     OpenFileDialog,
     LoadFile(PathBuf),
     ToggleFilter {
