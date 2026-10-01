@@ -43,10 +43,15 @@ pub fn log_pane(
     .size_full()
 }
 
+/// Each row renders as a single line, matching the TUI's default (`:wrap`
+/// is off until a later phase implements it): wrapping a long line onto
+/// multiple visual lines without the virtual list reserving extra height
+/// for it just makes rows overlap, so overflow is clipped with an ellipsis
+/// instead.
 fn line_row(tab: &TabState, line_idx: usize) -> gpui_kit::gpui::AnyElement {
     let bytes = tab.reader.get_line_zero_copy(line_idx);
     let text = String::from_utf8_lossy(bytes).into_owned();
-    let mut row = div().child(text);
+    let mut row = div().truncate().child(text);
     if let Some(color) = resolve_line_color(bytes, &tab.filter_defs, &tab.group_defs) {
         row = row.text_color(color);
     }

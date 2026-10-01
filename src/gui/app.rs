@@ -8,10 +8,20 @@ use crate::gui::state::GuiState;
 use crate::gui::update;
 use crate::theme::Theme as TuiTheme;
 use gpui_kit::base::VirtualListScrollHandle;
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, FocusHandle, KeyDownEvent, ScrollStrategy, Window, div, px};
+use gpui_kit::gpui::{
+    Context, Entity, FocusHandle, KeyDownEvent, ScrollStrategy, Window, actions, div, px,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+// Actions bound once at startup (see `src/bin/logana_gui.rs`) so the File
+// menu and global keybindings (`q`, `Ctrl+O`) both reach the same handlers
+// as a normal keypress would, via gpui's own action-dispatch system rather
+// than only through the capture-phase handler below.
+actions!(logana_gui, [OpenFile, Quit]);
 
 /// The only place in the GUI that touches gpui types directly. Owns the
 /// framework-neutral `GuiState` and translates between it and gpui: a
@@ -23,6 +33,7 @@ pub struct App {
     pub state: GuiState,
     pub command_bar_focus: FocusHandle,
     pub log_scroll: VirtualListScrollHandle,
+    pub menu_bar: Entity<AppMenuBar>,
 }
 
 impl App {
@@ -31,7 +42,16 @@ impl App {
             state: GuiState::new(db).with_theme(theme),
             command_bar_focus: cx.focus_handle(),
             log_scroll: VirtualListScrollHandle::new(),
+            menu_bar: AppMenuBar::new(cx),
         }
+    }
+
+    fn on_open_file_action(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch(Message::OpenFileDialog, window, cx);
+    }
+
+    fn on_quit_action(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.quit();
     }
 
     pub fn dispatch(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
@@ -204,7 +224,12 @@ impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
-            .p(px(8.))
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .flex()
+            .flex_col()
+            .on_action(cx.listener(Self::on_open_file_action))
+            .on_action(cx.listener(Self::on_quit_action))
             .capture_key_down(cx.listener(|app, event: &KeyDownEvent, window, cx| {
                 let (key, modifiers) = key::from_gpui_keystroke(&event.keystroke);
                 if update::should_capture(&app.state.mode, &key) {
@@ -212,6 +237,12 @@ impl Render for App {
                     app.dispatch(Message::KeyPressed(key, modifiers), window, cx);
                 }
             }))
-            .child(crate::gui::view::view(self, window, cx))
+            .child(div().h(px(28.)).child(self.menu_bar.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .p(px(8.))
+                    .child(crate::gui::view::view(self, window, cx)),
+            )
     }
 }

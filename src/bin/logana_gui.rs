@@ -1,7 +1,8 @@
-use gpui_kit::gpui::WindowOptions;
+use gpui_kit::component::GlobalState;
 use gpui_kit::gpui::prelude::*;
+use gpui_kit::gpui::{KeyBinding, Menu, MenuItem, WindowOptions};
 use logana::db::{Database, default_db_path};
-use logana::gui::app::App;
+use logana::gui::app::{App, OpenFile, Quit};
 use logana::gui::runtime;
 use logana::gui::theme as gui_theme;
 use logana::theme::Theme as TuiTheme;
@@ -13,6 +14,19 @@ fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         gui_theme::install(&theme, cx);
+        cx.bind_keys([
+            KeyBinding::new("q", Quit, None),
+            KeyBinding::new("ctrl-o", OpenFile, None),
+        ]);
+        GlobalState::global_mut(cx).set_app_menus(vec![
+            Menu::new("File")
+                .items([
+                    MenuItem::action("Open...", OpenFile),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit", Quit),
+                ])
+                .owned(),
+        ]);
         gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
             cx.new(|cx| App::new(Arc::clone(&db), theme.clone(), cx))
         })
