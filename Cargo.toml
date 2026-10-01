@@ -55,6 +55,7 @@ tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
 strum = { version = "0.28.0", features = ["derive"] }
 schemars = { version = "0.8", default-features = false, features = ["derive", "preserve_order"] }
 arc-swap = { version = "1.9", default-features = false }
+gpui-kit = { version = "0.7", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["rayon", "html_reports"] }
@@ -89,3 +90,11 @@ codegen-units = 1
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[features]
+gui = ["dep:gpui-kit"]
+
+[[bin]]
+name = "logana-gui"
+path = "src/bin/logana_gui.rs"
+required-features = ["gui"]
