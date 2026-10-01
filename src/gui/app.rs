@@ -6,13 +6,15 @@ use crate::gui::message::Message;
 use crate::gui::runtime;
 use crate::gui::state::GuiState;
 use crate::gui::update;
+use crate::gui::update::{NormalAction, ScrollTarget};
 use crate::theme::Theme as TuiTheme;
 use gpui_kit::base::VirtualListScrollHandle;
 use gpui_kit::component::ActiveTheme;
-use gpui_kit::component::menu::AppMenuBar;
+use gpui_kit::component::menu::{AppMenuBar, ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
-    Context, Entity, FocusHandle, KeyDownEvent, ScrollStrategy, Window, actions, div, px,
+    App as GpuiApp, ClickEvent, Context, Entity, FocusHandle, KeyDownEvent, ScrollStrategy, Window,
+    actions, div, px,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -220,8 +222,68 @@ impl App {
     }
 }
 
+/// One context-menu item that runs a `NormalAction` — the label shows the
+/// same keybinding hint the mode bar does, so the menu and the mode bar
+/// never describe the bindings differently.
+fn normal_action_item(
+    label: &'static str,
+    action: NormalAction,
+    my_app: &Entity<App>,
+) -> PopupMenuItem {
+    let my_app = my_app.clone();
+    PopupMenuItem::new(label).on_click(
+        move |_: &ClickEvent, window: &mut Window, cx: &mut GpuiApp| {
+            my_app.update(cx, |app, cx| {
+                app.dispatch(Message::RunNormalAction(action), window, cx);
+            });
+        },
+    )
+}
+
+/// Builds the right-click context menu: the same Normal-mode actions the
+/// mode bar advertises (`gg`/`G`/Tab/Shift-Tab/`:`), plus Open/Quit —
+/// mirroring the TUI's keybindings rather than inventing GUI-only ones.
+fn build_context_menu(
+    my_app: Entity<App>,
+    menu: PopupMenu,
+    _window: &mut Window,
+    _cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    menu.item(normal_action_item(
+        "Scroll to top (gg)",
+        NormalAction::Scroll(ScrollTarget::Top),
+        &my_app,
+    ))
+    .item(normal_action_item(
+        "Scroll to bottom (G)",
+        NormalAction::Scroll(ScrollTarget::Bottom),
+        &my_app,
+    ))
+    .separator()
+    .item(normal_action_item(
+        "Next tab (Tab)",
+        NormalAction::NextTab,
+        &my_app,
+    ))
+    .item(normal_action_item(
+        "Previous tab (Shift-Tab)",
+        NormalAction::PrevTab,
+        &my_app,
+    ))
+    .separator()
+    .item(normal_action_item(
+        "Command mode (:)",
+        NormalAction::EnterCommandMode,
+        &my_app,
+    ))
+    .separator()
+    .menu("Open...", Box::new(OpenFile))
+    .menu("Quit (q)", Box::new(Quit))
+}
+
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let my_app = cx.entity();
         div()
             .size_full()
             .bg(cx.theme().background)
@@ -237,6 +299,9 @@ impl Render for App {
                     app.dispatch(Message::KeyPressed(key, modifiers), window, cx);
                 }
             }))
+            .context_menu(move |menu, window, cx| {
+                build_context_menu(my_app.clone(), menu, window, cx)
+            })
             .child(div().h(px(28.)).child(self.menu_bar.clone()))
             .child(
                 div()

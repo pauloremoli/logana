@@ -57,6 +57,11 @@ fn theme_set_json(theme: &TuiTheme) -> String {
     set("background", theme.root_bg);
     set("foreground", theme.text);
     set("border", theme.border);
+    // Popovers/menus (e.g. the context menu) use the same flat
+    // background as the rest of the app — the TUI has no distinct
+    // "elevated surface" shade, panels are differentiated by border only.
+    set("popover.background", theme.root_bg);
+    set("popover.foreground", theme.text);
     set("primary.background", theme.text_highlight_fg);
     set("selection.background", theme.text_highlight_bg);
     set("success.background", theme.info_fg);

@@ -1,5 +1,6 @@
 use crate::db::LogManager;
 use crate::gui::key::{GuiKey, GuiModifiers};
+use crate::gui::update::NormalAction;
 use crate::ingestion::FileReader;
 use std::path::PathBuf;
 
@@ -10,6 +11,10 @@ pub enum Message {
     TabSelected(usize),
     TabClosed(usize),
     KeyPressed(GuiKey, GuiModifiers),
+    /// A Normal-mode action picked from the context menu instead of typed
+    /// — runs through the exact same `apply_normal_action` a keypress
+    /// would, so the two paths can never drift apart.
+    RunNormalAction(NormalAction),
     CommandInputChanged(String),
     CommandSubmitted,
     CommandExecuted(usize, Result<LogManager, String>),
