@@ -1,3 +1,4 @@
+use crate::input::{KeyCode, KeyModifiers};
 use crate::{
     config::{DltDevice, Keybindings},
     db::FileContext,
@@ -10,7 +11,6 @@ use crate::{
     ui::{KeyResult, TabId, TabState},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::sync::Arc;

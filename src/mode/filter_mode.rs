@@ -1,5 +1,6 @@
 use crate::config::Keybindings;
 use crate::filters::{ColorConfig, FilterType};
+use crate::input::{KeyCode, KeyModifiers};
 use crate::mode::app_mode::{Mode, ModeRenderState, status_entry};
 use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
@@ -7,7 +8,6 @@ use crate::theme::{Theme, color_to_string};
 use crate::ui::KeyResult;
 use crate::ui::TabState;
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 

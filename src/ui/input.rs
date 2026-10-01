@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyModifiers};
+use crate::input::{KeyCode, KeyModifiers};
 
 use super::App;
 use super::KeyResult;
@@ -12,6 +12,54 @@ use crate::mode::filter_mode::FilterManagementMode;
 use crate::mode::normal_mode::NormalMode;
 
 use super::app::DOUBLE_CLICK_MS;
+
+/// Converts a real crossterm keystroke into the framework-neutral type
+/// `Mode::handle_key` takes, at the one point real terminal input enters
+/// the app (`App::run`'s event loop, in `app.rs`). Returns `None` for keys
+/// with no neutral equivalent (media keys, lock keys, etc.) — no binding
+/// could ever match them anyway.
+pub(super) fn from_crossterm(
+    code: crossterm::event::KeyCode,
+    mods: crossterm::event::KeyModifiers,
+) -> Option<(KeyCode, KeyModifiers)> {
+    use crossterm::event::KeyCode as CtKeyCode;
+    use crossterm::event::KeyModifiers as CtKeyModifiers;
+
+    let key = match code {
+        CtKeyCode::Backspace => KeyCode::Backspace,
+        CtKeyCode::BackTab => KeyCode::BackTab,
+        CtKeyCode::Char(c) => KeyCode::Char(c),
+        CtKeyCode::Delete => KeyCode::Delete,
+        CtKeyCode::Down => KeyCode::Down,
+        CtKeyCode::End => KeyCode::End,
+        CtKeyCode::Enter => KeyCode::Enter,
+        CtKeyCode::Esc => KeyCode::Esc,
+        CtKeyCode::F(n) => KeyCode::F(n),
+        CtKeyCode::Home => KeyCode::Home,
+        CtKeyCode::Insert => KeyCode::Insert,
+        CtKeyCode::Left => KeyCode::Left,
+        CtKeyCode::Null => KeyCode::Null,
+        CtKeyCode::PageDown => KeyCode::PageDown,
+        CtKeyCode::PageUp => KeyCode::PageUp,
+        CtKeyCode::Right => KeyCode::Right,
+        CtKeyCode::Tab => KeyCode::Tab,
+        CtKeyCode::Up => KeyCode::Up,
+        _ => return None,
+    };
+
+    let mut modifiers = KeyModifiers::NONE;
+    if mods.contains(CtKeyModifiers::SHIFT) {
+        modifiers |= KeyModifiers::SHIFT;
+    }
+    if mods.contains(CtKeyModifiers::CONTROL) {
+        modifiers |= KeyModifiers::CONTROL;
+    }
+    if mods.contains(CtKeyModifiers::ALT) {
+        modifiers |= KeyModifiers::ALT;
+    }
+
+    Some((key, modifiers))
+}
 
 impl App {
     pub(super) async fn handle_global_key(&mut self, key: KeyCode, modifiers: KeyModifiers) {
@@ -811,12 +859,68 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::from_crossterm;
     use crate::config::Keybindings;
     use crate::db::{Database, LogManager};
     use crate::ingestion::{ArchiveNode, ArchiveTree, FileReader, NodeKind};
+    use crate::input::{KeyCode, KeyModifiers};
     use crate::theme::Theme;
     use crate::ui::App;
     use std::sync::Arc;
+
+    #[test]
+    fn from_crossterm_maps_a_plain_character() {
+        let (key, modifiers) = from_crossterm(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        )
+        .unwrap();
+        assert_eq!(key, KeyCode::Char('j'));
+        assert_eq!(modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn from_crossterm_maps_every_modifier() {
+        let (_, modifiers) = from_crossterm(
+            crossterm::event::KeyCode::Char('d'),
+            crossterm::event::KeyModifiers::CONTROL
+                | crossterm::event::KeyModifiers::SHIFT
+                | crossterm::event::KeyModifiers::ALT,
+        )
+        .unwrap();
+        assert!(modifiers.contains(KeyModifiers::CONTROL));
+        assert!(modifiers.contains(KeyModifiers::SHIFT));
+        assert!(modifiers.contains(KeyModifiers::ALT));
+    }
+
+    #[test]
+    fn from_crossterm_maps_named_keys() {
+        let cases = [
+            (crossterm::event::KeyCode::Enter, KeyCode::Enter),
+            (crossterm::event::KeyCode::Esc, KeyCode::Esc),
+            (crossterm::event::KeyCode::Backspace, KeyCode::Backspace),
+            (crossterm::event::KeyCode::Tab, KeyCode::Tab),
+            (crossterm::event::KeyCode::BackTab, KeyCode::BackTab),
+            (crossterm::event::KeyCode::F(1), KeyCode::F(1)),
+            (crossterm::event::KeyCode::PageUp, KeyCode::PageUp),
+            (crossterm::event::KeyCode::PageDown, KeyCode::PageDown),
+        ];
+        for (input, expected) in cases {
+            let (key, _) = from_crossterm(input, crossterm::event::KeyModifiers::NONE).unwrap();
+            assert_eq!(key, expected, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn from_crossterm_returns_none_for_unmapped_keys() {
+        assert!(
+            from_crossterm(
+                crossterm::event::KeyCode::CapsLock,
+                crossterm::event::KeyModifiers::NONE,
+            )
+            .is_none()
+        );
+    }
 
     /// Counts regular files under `dir`, recursively — used to assert that
     /// extraction wrote real files to disk instead of temp copies.
@@ -1430,8 +1534,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_theme_picker_end_to_end_preview_confirm_and_revert() {
+        use crate::input::KeyCode;
         use crate::mode::app_mode::ModeRenderState;
-        use crossterm::event::KeyCode;
 
         let mut app = make_app().await;
         let original_theme = app.theme.clone();
@@ -1469,8 +1573,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_theme_picker_end_to_end_confirm_persists_previewed_theme() {
+        use crate::input::KeyCode;
         use crate::mode::app_mode::ModeRenderState;
-        use crossterm::event::KeyCode;
 
         let mut app = make_app().await;
         app.run_command("theme").await.unwrap();

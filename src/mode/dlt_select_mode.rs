@@ -1,3 +1,4 @@
+use crate::input::{KeyCode, KeyModifiers};
 use crate::{
     config::{DEFAULT_DLT_PORT, DltDevice, Keybindings},
     mode::app_mode::{Mode, ModeRenderState, status_entry},
@@ -6,7 +7,6 @@ use crate::{
     ui::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 

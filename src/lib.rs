@@ -7,6 +7,7 @@ pub mod gui;
 pub mod headless;
 mod headless_merge;
 pub mod ingestion;
+pub mod input;
 pub mod mcp;
 mod merge_sources;
 pub mod mode;

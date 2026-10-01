@@ -440,7 +440,7 @@ pub fn schemas_dir() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use crate::db::AppSettingsStore;
-    use crossterm::event::{KeyCode, KeyModifiers};
+    use crate::input::{KeyCode, KeyModifiers};
 
     #[test]
     fn test_parse_single_char() {

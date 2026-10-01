@@ -2682,7 +2682,7 @@ mod tests {
 
         // Leaving filter mode (Esc) must not reset the remembered position;
         // the sidebar keeps showing the same scroll while browsing.
-        app.handle_key_event(crossterm::event::KeyCode::Esc).await;
+        app.handle_key_event(crate::input::KeyCode::Esc).await;
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::Normal
@@ -2692,8 +2692,7 @@ mod tests {
 
         // Re-entering filter mode restores the exact same selection.
         app.tabs[0].interaction.mode = Box::new(NormalMode::default());
-        app.handle_key_event(crossterm::event::KeyCode::Char('f'))
-            .await;
+        app.handle_key_event(crate::input::KeyCode::Char('f')).await;
         match app.tabs[0].interaction.mode.render_state() {
             ModeRenderState::FilterManagement { selected_index, .. } => {
                 assert_eq!(selected_index, 25);
@@ -3108,7 +3107,7 @@ mod tests {
     async fn test_startup_warnings_cleared_on_keypress() {
         let mut app = make_app(&["line 0"]).await;
         app.session.startup_warnings = vec!["conflict".to_string()];
-        app.handle_key_event(crossterm::event::KeyCode::Esc).await;
+        app.handle_key_event(crate::input::KeyCode::Esc).await;
         assert!(
             app.session.startup_warnings.is_empty(),
             "startup_warnings should be cleared after a keypress"

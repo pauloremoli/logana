@@ -1,3 +1,4 @@
+use crate::input::{KeyCode, KeyModifiers};
 use crate::{
     config::Keybindings,
     mode::{
@@ -8,7 +9,6 @@ use crate::{
     ui::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 

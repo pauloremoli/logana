@@ -1831,9 +1831,9 @@ mod tests {
     /// global collapse mode ever being turned on.
     #[tokio::test]
     async fn test_collapse_indicator_renders_end_to_end_via_normal_mode_key() {
+        use crate::input::{KeyCode, KeyModifiers};
         use crate::mode::app_mode::Mode;
         use crate::mode::normal_mode::NormalMode;
-        use crossterm::event::{KeyCode, KeyModifiers};
 
         let mut app = make_app(&[
             "2024-07-24T10:00:00Z INFO request processed",

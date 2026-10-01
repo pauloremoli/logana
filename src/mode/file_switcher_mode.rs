@@ -1,3 +1,4 @@
+use crate::input::{KeyCode, KeyModifiers};
 use crate::{
     commands::auto_complete::fuzzy_match,
     config::Keybindings,
@@ -7,7 +8,6 @@ use crate::{
     ui::{KeyResult, TabId, TabState},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 

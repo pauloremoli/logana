@@ -491,18 +491,20 @@ impl App {
                     crossterm::event::Event::Key(key)
                         if key.kind == crossterm::event::KeyEventKind::Press =>
                     {
-                        self.session.startup_warnings.clear();
-                        let tab = &mut self.tabs[self.active_tab];
-                        let mode = std::mem::replace(
-                            &mut tab.interaction.mode,
-                            Box::new(NormalMode::default()),
-                        );
-                        let (next_mode, result) =
-                            mode.handle_key(tab, key.code, key.modifiers).await;
-                        tab.interaction.mode = next_mode;
-                        self.dispatch_key_result(result, key.code, key.modifiers)
-                            .await;
-                        self.refresh_mcp_snapshot();
+                        if let Some((code, modifiers)) =
+                            super::input::from_crossterm(key.code, key.modifiers)
+                        {
+                            self.session.startup_warnings.clear();
+                            let tab = &mut self.tabs[self.active_tab];
+                            let mode = std::mem::replace(
+                                &mut tab.interaction.mode,
+                                Box::new(NormalMode::default()),
+                            );
+                            let (next_mode, result) = mode.handle_key(tab, code, modifiers).await;
+                            tab.interaction.mode = next_mode;
+                            self.dispatch_key_result(result, code, modifiers).await;
+                            self.refresh_mcp_snapshot();
+                        }
                     }
                     crossterm::event::Event::Mouse(mouse) => {
                         self.handle_mouse_event(mouse).await;
@@ -603,8 +605,8 @@ mod tests {
     use crate::db::LogManager;
     use crate::filters::FilterType;
     use crate::ingestion::FileReader;
+    use crate::input::{KeyCode, KeyModifiers};
     use crate::ui::KeyResult;
-    use crossterm::event::{KeyCode, KeyModifiers};
     use std::sync::Arc;
 
     /// Awaits all pending background filter computations across all tabs.

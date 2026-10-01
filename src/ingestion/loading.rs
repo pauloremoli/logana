@@ -5403,17 +5403,13 @@ mod tests {
         assert_eq!(rows[2].name, "a.log");
 
         // Select "top.log" (row 0, already at cursor 0).
-        app.handle_key_event(crossterm::event::KeyCode::Char(' '))
-            .await;
+        app.handle_key_event(crate::input::KeyCode::Char(' ')).await;
         // Move cursor: row 0 -> row 1 (container) -> row 2 ("a.log").
-        app.handle_key_event(crossterm::event::KeyCode::Char('j'))
-            .await;
-        app.handle_key_event(crossterm::event::KeyCode::Char('j'))
-            .await;
-        app.handle_key_event(crossterm::event::KeyCode::Char(' '))
-            .await;
+        app.handle_key_event(crate::input::KeyCode::Char('j')).await;
+        app.handle_key_event(crate::input::KeyCode::Char('j')).await;
+        app.handle_key_event(crate::input::KeyCode::Char(' ')).await;
         // Confirm the selection.
-        app.handle_key_event(crossterm::event::KeyCode::Enter).await;
+        app.handle_key_event(crate::input::KeyCode::Enter).await;
 
         assert!(app.pending_archive.is_some());
         for _ in 0..100 {

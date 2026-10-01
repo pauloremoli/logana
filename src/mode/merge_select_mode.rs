@@ -1,3 +1,4 @@
+use crate::input::{KeyCode, KeyModifiers};
 use crate::{
     config::Keybindings,
     mode::app_mode::{Mode, ModeRenderState, status_entry},
@@ -6,7 +7,6 @@ use crate::{
     ui::{KeyResult, TabId, TabState},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -126,7 +126,6 @@ mod tests {
     use crate::db::{Database, LogManager};
     use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
-    use crossterm::event::KeyModifiers;
     use std::sync::Arc;
 
     async fn make_tab() -> TabState {
