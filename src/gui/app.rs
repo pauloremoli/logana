@@ -7,8 +7,9 @@ use crate::gui::runtime;
 use crate::gui::state::GuiState;
 use crate::gui::update;
 use crate::theme::Theme as TuiTheme;
+use gpui_kit::base::VirtualListScrollHandle;
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, FocusHandle, KeyDownEvent, Window, div, px};
+use gpui_kit::gpui::{Context, FocusHandle, KeyDownEvent, ScrollStrategy, Window, div, px};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -17,10 +18,11 @@ use std::sync::Arc;
 /// capture-phase key handler feeds `Message`s into `update()`, and
 /// `apply_effect` carries out whatever `Effect` comes back — spawning
 /// async work on the shared tokio runtime (see `runtime`) or driving a
-/// gpui widget (focus, quit) directly.
+/// gpui widget (focus, quit, scroll) directly.
 pub struct App {
     pub state: GuiState,
     pub command_bar_focus: FocusHandle,
+    pub log_scroll: VirtualListScrollHandle,
 }
 
 impl App {
@@ -28,6 +30,7 @@ impl App {
         Self {
             state: GuiState::new(db).with_theme(theme),
             command_bar_focus: cx.focus_handle(),
+            log_scroll: VirtualListScrollHandle::new(),
         }
     }
 
@@ -42,9 +45,8 @@ impl App {
             Effect::None => {}
             Effect::Quit => cx.quit(),
             Effect::FocusCommandBar => self.command_bar_focus.focus(window, cx),
-            Effect::Scroll(_target) => {
-                // Wired to the virtual list's scroll handle once log_pane
-                // exists (Phase 1 step 6).
+            Effect::Scroll(line) => {
+                self.log_scroll.scroll_to_item(line, ScrollStrategy::Top);
             }
             Effect::OpenFileDialog => self.spawn_open_file_dialog(cx),
             Effect::LoadFile(path) => self.spawn_load_file(path, cx),
@@ -199,7 +201,7 @@ impl App {
 }
 
 impl Render for App {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .p(px(8.))
@@ -210,9 +212,6 @@ impl Render for App {
                     app.dispatch(Message::KeyPressed(key, modifiers), window, cx);
                 }
             }))
-            .child(format!(
-                "logana-gui — {} tab(s) open",
-                self.state.tabs.len()
-            ))
+            .child(crate::gui::view::view(self, window, cx))
     }
 }
