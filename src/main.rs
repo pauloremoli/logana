@@ -140,15 +140,6 @@ impl Drop for AlternateScreen {
     }
 }
 
-fn get_db_path() -> String {
-    if let Some(data_dir) = dirs::data_dir() {
-        let app_dir = data_dir.join("logana");
-        app_dir.join("logana.db").to_string_lossy().to_string()
-    } else {
-        "logana.db".to_string()
-    }
-}
-
 /// Expands any glob-pattern entry in `files` (e.g. `system.log*`) into its
 /// sorted list of matching paths, leaving literal paths untouched. A pattern
 /// that matches nothing is an error naming the pattern, since the user
@@ -209,7 +200,7 @@ fn resolve_source(file_path: Option<&String>) -> (Option<String>, bool) {
 }
 
 async fn init_database() -> Result<Arc<Database>> {
-    let db_path = get_db_path();
+    let db_path = logana::db::default_db_path();
     let db = match Database::new(&db_path).await {
         Ok(db) => db,
         Err(err) => {
@@ -831,35 +822,6 @@ mod tests {
     fn test_args_mcp_flag_custom_port() {
         let args = Args::try_parse_from(["logana", "--mcp", "8080"]).unwrap();
         assert_eq!(args.mcp, Some(8080));
-    }
-
-    #[test]
-    fn test_get_db_path_contains_logana() {
-        let path = get_db_path();
-        assert!(
-            path.contains("logana"),
-            "DB path should contain 'logana': {}",
-            path
-        );
-        assert!(
-            path.ends_with("logana.db"),
-            "DB path should end with 'logana.db': {}",
-            path
-        );
-    }
-
-    #[test]
-    fn test_get_db_path_uses_data_dir_when_available() {
-        let path = get_db_path();
-        if dirs::data_dir().is_some() {
-            assert!(
-                path.contains("logana"),
-                "DB path should include app directory: {}",
-                path
-            );
-        } else {
-            assert_eq!(path, "logana.db");
-        }
     }
 
     #[test]

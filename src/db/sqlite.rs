@@ -162,6 +162,18 @@ pub trait AppSettingsStore: Send + Sync {
     async fn load_app_setting(&self, key: SettingsKey) -> Result<Option<String>>;
 }
 
+/// The default sqlite DB path both the TUI and GUI binaries persist to:
+/// `<platform data dir>/logana/logana.db`, falling back to a relative
+/// `logana.db` when the platform has no resolvable data directory.
+pub fn default_db_path() -> String {
+    if let Some(data_dir) = dirs::data_dir() {
+        let app_dir = data_dir.join("logana");
+        app_dir.join("logana.db").to_string_lossy().to_string()
+    } else {
+        "logana.db".to_string()
+    }
+}
+
 pub struct Database {
     pool: SqlitePool,
 }
@@ -1292,6 +1304,13 @@ mod tests {
 
     async fn setup_db() -> Database {
         Database::in_memory().await.unwrap()
+    }
+
+    #[test]
+    fn default_db_path_contains_logana() {
+        let path = default_db_path();
+        assert!(path.contains("logana"), "{path}");
+        assert!(path.ends_with("logana.db"), "{path}");
     }
 
     #[tokio::test]
