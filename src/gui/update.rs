@@ -43,7 +43,6 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             Effect::None
         }
         Message::KeyPressed(key, modifiers) => handle_key_press(state, key, modifiers),
-        Message::RunNormalAction(action) => apply_normal_action(state, action),
         Message::CommandInputChanged(new_input) => {
             if let InteractionMode::Command { input } = &mut state.mode {
                 *input = new_input;
@@ -103,14 +102,6 @@ fn handle_key_press(state: &mut GuiState, key: GuiKey, modifiers: GuiModifiers) 
 fn handle_normal_mode_key(state: &mut GuiState, key: GuiKey, modifiers: GuiModifiers) -> Effect {
     let (action, g_pending) = normal_action(&key, &modifiers, state.g_pending);
     state.g_pending = g_pending;
-    apply_normal_action(state, action)
-}
-
-/// Runs one `NormalAction` against `state` — the shared tail end of both
-/// a Normal-mode keypress (via `handle_normal_mode_key`) and a context
-/// menu item picked with the mouse (via `Message::RunNormalAction`), so
-/// the two stay identical by construction rather than by convention.
-pub fn apply_normal_action(state: &mut GuiState, action: NormalAction) -> Effect {
     match action {
         NormalAction::Scroll(target) => match resolve_scroll(state, target) {
             Some(offset) => Effect::Scroll(offset),
@@ -1140,17 +1131,6 @@ mod tests {
         let effect = update(
             &mut state,
             Message::KeyPressed(char_key("j"), GuiModifiers::default()),
-        );
-        assert!(matches!(effect, Effect::Scroll(1)));
-        assert_eq!(state.tabs[0].scroll_offset, 1);
-    }
-
-    #[tokio::test]
-    async fn run_normal_action_from_a_context_menu_item_scrolls_the_same_as_a_keypress() {
-        let (mut state, _file) = state_with_one_tab().await;
-        let effect = update(
-            &mut state,
-            Message::RunNormalAction(NormalAction::Scroll(ScrollTarget::Bottom)),
         );
         assert!(matches!(effect, Effect::Scroll(1)));
         assert_eq!(state.tabs[0].scroll_offset, 1);
