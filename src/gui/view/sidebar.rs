@@ -65,7 +65,8 @@ pub fn sidebar(
         .gap_4()
         .w(px(SIDEBAR_WIDTH))
         .p_2()
-        .border_l_1()
+        .when(tab.display.sidebar_side.is_left(), |d| d.border_r_1())
+        .when(!tab.display.sidebar_side.is_left(), |d| d.border_l_1())
         .border_color(cx.theme().border)
         .child(sidebar_header(
             sidebar_tab,

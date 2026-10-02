@@ -582,6 +582,7 @@ fn apply_display_command(tab: &mut TabState, command: &Commands) -> bool {
         }
         Commands::Collapse => set_collapse_continuations(tab, true),
         Commands::Expand => set_collapse_continuations(tab, false),
+        Commands::SidebarPosition { side } => tab.display.sidebar_side = *side,
         _ => return false,
     }
     true
@@ -1507,6 +1508,26 @@ mod tests {
         assert!(state.tabs[0].display.collapse_continuations);
         handle_command_string(&mut state, "expand".to_string());
         assert!(!state.tabs[0].display.collapse_continuations);
+    }
+
+    #[tokio::test]
+    async fn sidebar_position_command_moves_the_sidebar() {
+        let (mut state, _file) = state_with_one_tab().await;
+        assert_eq!(
+            state.tabs[0].display.sidebar_side,
+            crate::ui::SidebarSide::Right
+        );
+        let effect = handle_command_string(&mut state, "sidebar-position left".to_string());
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(
+            state.tabs[0].display.sidebar_side,
+            crate::ui::SidebarSide::Left
+        );
+        handle_command_string(&mut state, "sidebar-position right".to_string());
+        assert_eq!(
+            state.tabs[0].display.sidebar_side,
+            crate::ui::SidebarSide::Right
+        );
     }
 
     #[tokio::test]

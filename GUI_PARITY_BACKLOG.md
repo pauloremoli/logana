@@ -29,8 +29,8 @@ with "not yet supported in the GUI":
 - [ ] Sources: `Merge`, `Docker`, `Dlt`, `Otel`, `Schema`
 - [ ] Streaming: `Tail`, `Reset` (`Pause`/`Resume`/`Stop` already work, see
       above)
-- [ ] Misc: `EnableMcp`/`DisableMcp`, `DefaultFilters`, `SidebarPosition`,
-      `Run`, `Path`
+- [ ] Misc: `EnableMcp`/`DisableMcp`, `DefaultFilters`, `Run`, `Path`
+      (`SidebarPosition` is wired, see below)
 
 `Wrap`/`LineNumbers`/`RelativeLineNumbers`/`Collapse`/`Expand` are a
 deliberate simplification vs. the TUI: app-wide settings there (broadcast
@@ -90,7 +90,8 @@ Even once the modes above are rendered, there's no effect yet for:
   persisted, see above), `:value-colors`/`:level-colors` pickers,
   `:set-theme <name>`, `:set-color` (recolors the filter named by
   `tab.filter.filter_context`, threaded through a new `Effect::
-  ExecuteCommand.filter_context` field)
+  ExecuteCommand.filter_context` field), `:sidebar-position` (the
+  sidebar actually moves sides, with its border flipping to match)
 - Resizable, content-auto-fit log table columns; Time/Level columns hidden
   for unstructured files
 - Visual-line selection highlighting; a separate cursor-row highlight for

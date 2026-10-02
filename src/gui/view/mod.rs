@@ -85,36 +85,41 @@ fn body(app: &mut App, _window: &mut Window, cx: &mut Context<App>) -> impl Into
     }
     let active_tab = app.state.active_tab;
     match app.state.tabs.get(active_tab) {
-        Some(_) => div()
-            .flex()
-            .flex_1()
-            .min_h(px(0.))
-            .child({
-                // Re-borrow after the match's immutable borrow of `app.state`
-                // ends, so `log_pane`'s `cx.entity()` call (which needs
-                // `&mut Context<App>`) and `sidebar`'s panes aren't fighting
-                // the outer borrow.
-                let tab = &app.state.tabs[active_tab];
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .px(px(16.))
-                    .py(px(8.))
-                    .child(log_pane::log_pane(
-                        active_tab,
-                        tab,
-                        app.state.column_widths,
-                        &app.log_scroll,
-                        cx,
-                    ))
-            })
-            .child({
+        Some(_) => {
+            // Re-borrow after the match's immutable borrow of `app.state`
+            // ends, so `log_pane`'s `cx.entity()` call (which needs
+            // `&mut Context<App>`) and `sidebar`'s panes aren't fighting
+            // the outer borrow.
+            let tab = &app.state.tabs[active_tab];
+            let sidebar_on_left = tab.display.sidebar_side.is_left();
+            let table = div()
+                .flex()
+                .flex_1()
+                .min_w(px(0.))
+                .px(px(16.))
+                .py(px(8.))
+                .child(log_pane::log_pane(
+                    active_tab,
+                    tab,
+                    app.state.column_widths,
+                    &app.log_scroll,
+                    cx,
+                ))
+                .into_any_element();
+            let sidebar = {
                 let sidebar_tab = app.state.sidebar_tab;
                 let tab = &app.state.tabs[active_tab];
                 sidebar::sidebar(active_tab, tab, sidebar_tab, &app.state.facet_expanded, cx)
-            })
-            .into_any_element(),
+                    .into_any_element()
+            };
+            let mut row = div().flex().flex_1().min_h(px(0.));
+            row = if sidebar_on_left {
+                row.child(sidebar).child(table)
+            } else {
+                row.child(table).child(sidebar)
+            };
+            row.into_any_element()
+        }
         None => div()
             .flex_1()
             .flex()
