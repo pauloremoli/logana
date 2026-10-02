@@ -5,7 +5,7 @@ use crate::theme::Theme as TuiTheme;
 use crate::ui::TabState;
 use gpui_kit::base::{VirtualListScrollHandle, v_virtual_list};
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{AnyElement, Context, Rgba, Size, div, px};
+use gpui_kit::gpui::{AnyElement, Context, FontWeight, Rgba, Size, div, px};
 use std::rc::Rc;
 
 /// Fixed row height, used for every visible log line — the virtual list
@@ -48,6 +48,7 @@ pub fn log_pane(
                         tab,
                         line_idx,
                         selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&pos)),
+                        pos == tab.scroll.scroll_offset,
                         &app.state.theme,
                     )
                 })
@@ -78,7 +79,13 @@ fn visual_line_selection(tab: &TabState) -> Option<(usize, usize)> {
 /// multiple visual lines without the virtual list reserving extra height
 /// for it just makes rows overlap, so overflow is clipped with an ellipsis
 /// instead.
-fn line_row(tab: &TabState, line_idx: usize, selected: bool, theme: &TuiTheme) -> AnyElement {
+fn line_row(
+    tab: &TabState,
+    line_idx: usize,
+    selected: bool,
+    is_cursor_row: bool,
+    theme: &TuiTheme,
+) -> AnyElement {
     let owned_line_bytes = tab.file_reader.get_line(line_idx);
     let bytes: &[u8] = &owned_line_bytes;
     if selected {
@@ -94,6 +101,13 @@ fn line_row(tab: &TabState, line_idx: usize, selected: bool, theme: &TuiTheme) -
         }
         if let Some(fg) = ratatui_color_to_gpui(theme.visual_select_fg) {
             row = row.text_color(fg);
+        }
+        // Matches the TUI's own visual-selection render: every selected
+        // row gets the bg/fg above, but only the one at the cursor
+        // (`tab.scroll.scroll_offset`, one end of the selected range)
+        // also gets bold + underline, marking which end is "active".
+        if is_cursor_row {
+            row = row.font_weight(FontWeight::BOLD).underline();
         }
         return row.into_any_element();
     }
@@ -201,7 +215,7 @@ mod tests {
     async fn line_row_does_not_panic_for_paged_storage() {
         let tab = paged_tab().await;
         let theme = TuiTheme::default();
-        let _ = line_row(&tab, 0, false, &theme);
+        let _ = line_row(&tab, 0, false, false, &theme);
     }
 
     #[tokio::test]
