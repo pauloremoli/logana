@@ -49,7 +49,6 @@ the `Box<dyn Mode>` boundary) but nothing draws their popup yet:
 - [ ] `docker_select_mode`
 - [ ] `export_footer_mode`
 - [ ] `file_switcher_mode`
-- [ ] `keybindings_help_mode`
 - [ ] `merge_select_mode`
 - [ ] `select_fields_mode`
 - [ ] `theme_picker_mode`
@@ -74,7 +73,7 @@ Even once the modes above are rendered, there's no effect yet for:
 - Tab switch/close (mouse + keyboard)
 - Filter/group toggle (mouse + keyboard)
 - Command palette overlay (`:` commands), search bar (click to enter
-  `SearchMode`), time-range dropdown
+  `SearchMode`), time-range dropdown, `?` keybindings-help overlay
 - Resizable, content-auto-fit log table columns; Time/Level columns hidden
   for unstructured files
 - Visual-line selection highlighting; a separate cursor-row highlight for

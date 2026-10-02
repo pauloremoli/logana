@@ -2,6 +2,7 @@ pub mod command_palette;
 pub mod field_facets;
 pub mod filter_pane;
 pub mod group_pane;
+pub mod keybindings_help_overlay;
 pub mod log_pane;
 pub mod nav_rail;
 pub mod search_bar;
@@ -54,6 +55,11 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
         root = root.child(palette);
     }
     if let Some(overlay) = search_bar::time_range_overlay(&app.state, viewport, cx) {
+        root = root.child(overlay);
+    }
+    if let Some(overlay) =
+        keybindings_help_overlay::keybindings_help_overlay(&app.state, viewport, cx)
+    {
         root = root.child(overlay);
     }
     root
