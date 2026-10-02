@@ -11,11 +11,11 @@ use gpui_kit::gpui::{Context, Rgba, Window, div, px};
 use std::collections::HashMap;
 
 /// "Available Filters": one collapsible category per field `counts`
-/// reports, each listing its values with a checkbox and occurrence
-/// count. Reflects and controls real filters (`filter_id_for_field_equality`
-/// / `Message::FacetValueToggled`) — see that message's reducer arm for
-/// why toggling a checkbox doesn't change visibility yet (`--field`
-/// filters are still rejected by the GUI, a known, agreed limitation).
+/// reports, each listing its values with a checkbox and occurrence count.
+/// Reflects and controls real filters (`filter_id_for_field_equality` /
+/// `Message::FacetValueToggled`) — toggling a checkbox adds or removes a
+/// real `--field name=value` filter via the normal command pipeline, same
+/// as typing `:filter --field name=value` in the TUI.
 pub fn field_facets(
     tab_idx: usize,
     counts: &FieldValueCounts,

@@ -24,8 +24,6 @@ with "not yet supported in the GUI":
 - [ ] Streaming: `Tail`, `Stop`, `Pause`, `Resume`, `Reset`
 - [ ] Misc: `EnableMcp`/`DisableMcp`, `DefaultFilters`, `SidebarPosition`,
       `Run`, `Path`
-- [ ] `--field` filtering and `--auto`/`--fga` auto-color args (rejected
-      even on otherwise-supported commands)
 
 ## Modes with no GUI rendering
 

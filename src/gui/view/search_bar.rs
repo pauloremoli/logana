@@ -3,6 +3,7 @@ use crate::gui::message::Message;
 use crate::gui::state::GuiState;
 use crate::gui::time_range::{ALL_PRESETS, preset_label};
 use crate::gui::update::is_tab_live;
+use crate::input::{KeyCode, KeyModifiers};
 use crate::mode::app_mode::ModeRenderState;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable;
@@ -45,19 +46,26 @@ pub fn search_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
 /// (bordered, rounded, its own background) even though it isn't a
 /// focusable native input: typing is handled entirely by the TUI's real
 /// `SearchMode`, same as every other mode, via the root's capture-phase
-/// key handler — this just reflects its `render_state`.
+/// key handler — this just reflects its `render_state`. Clicking it while
+/// not already searching dispatches the same `/` keypress `NormalMode`'s
+/// `search_forward` binding handles, so it enters `SearchMode` through the
+/// real keybinding-driven transition rather than a GUI-only shortcut; once
+/// already searching, clicking does nothing (routing another `/` through
+/// `SearchMode` would type a literal `/` into the query).
 fn search_input(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
-    let (text, is_placeholder) = match state
+    let render_state = state
         .active_tab()
-        .map(|tab| tab.interaction.mode.render_state())
-    {
+        .map(|tab| tab.interaction.mode.render_state());
+    let (text, is_placeholder) = match &render_state {
         Some(ModeRenderState::Search { query, forward, .. }) => {
-            let prompt = if forward { "/" } else { "?" };
+            let prompt = if *forward { "/" } else { "?" };
             (format!("{prompt}{query}"), false)
         }
         _ => (PLACEHOLDER.to_string(), true),
     };
+    let already_searching = matches!(render_state, Some(ModeRenderState::Search { .. }));
     let mut input = div()
+        .id("search-input")
         .flex()
         .flex_1()
         .h(px(24.))
@@ -70,6 +78,15 @@ fn search_input(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
         .child(text);
     if is_placeholder {
         input = input.text_color(cx.theme().muted_foreground);
+    }
+    if !already_searching {
+        input = input.on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
+            app.dispatch(
+                Message::KeyPressed(KeyCode::Char('/'), KeyModifiers::NONE),
+                window,
+                cx,
+            );
+        }));
     }
     input
 }

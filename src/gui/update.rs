@@ -561,11 +561,11 @@ pub async fn execute_command(
             auto,
             fga,
         } => {
-            reject_unsupported_filter_args(&field)?;
             let (fg, bg) = crate::ui::resolve_colors(auto, fga, fg, bg, theme_bg)?;
             let options = filter_options(fg, bg, line_mode, regex, ignore_case, group);
+            let stored_pattern = stored_filter_pattern(&field, &pattern.join(" "))?;
             log_manager
-                .add_filter_with_color(pattern.join(" "), FilterType::Include, options)
+                .add_filter_with_color(stored_pattern, FilterType::Include, options)
                 .await;
         }
         Commands::Exclude {
@@ -575,10 +575,10 @@ pub async fn execute_command(
             ignore_case,
             group,
         } => {
-            reject_unsupported_filter_args(&field)?;
             let options = filter_options(None, None, false, regex, ignore_case, group);
+            let stored_pattern = stored_filter_pattern(&field, &pattern.join(" "))?;
             log_manager
-                .add_filter_with_color(pattern.join(" "), FilterType::Exclude, options)
+                .add_filter_with_color(stored_pattern, FilterType::Exclude, options)
                 .await;
         }
         Commands::Highlight {
@@ -593,11 +593,11 @@ pub async fn execute_command(
             auto,
             fga,
         } => {
-            reject_unsupported_filter_args(&field)?;
             let (fg, bg) = crate::ui::resolve_colors(auto, fga, fg, bg, theme_bg)?;
             let options = filter_options(fg, bg, line_mode, regex, ignore_case, group);
+            let stored_pattern = stored_filter_pattern(&field, &pattern.join(" "))?;
             log_manager
-                .add_filter_with_color(pattern.join(" "), FilterType::Highlight, options)
+                .add_filter_with_color(stored_pattern, FilterType::Highlight, options)
                 .await;
         }
         Commands::ClearFilters => log_manager.clear_filters().await,
@@ -623,16 +623,18 @@ pub async fn execute_command(
     Ok(log_manager)
 }
 
-/// `--field` filtering needs the structured/JSON field display the GUI
-/// doesn't have yet, so it's rejected rather than silently ignored.
-fn reject_unsupported_filter_args(field: &[String]) -> Result<(), String> {
-    if !field.is_empty() {
-        return Err(
-            "--field filtering requires structured field display, not yet supported in the GUI"
-                .to_string(),
-        );
+/// The pattern stored on the new `FilterDef`: `pattern` verbatim when
+/// there's no `--field` condition, or `pattern` AND'd with every `--field
+/// key=value` via the same `@field:`-prefixed encoding the TUI's
+/// `cmd_filter` uses — so a field filter added from the GUI (the facet
+/// checkboxes) round-trips through `filter_id_for_field_equality` exactly
+/// like one added from the TUI's command bar.
+fn stored_filter_pattern(field: &[String], pattern: &str) -> Result<String, String> {
+    if field.is_empty() {
+        Ok(pattern.to_string())
+    } else {
+        crate::ui::build_field_filter_pattern(field, pattern)
     }
-    Ok(())
 }
 
 fn filter_options(
@@ -790,15 +792,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_command_rejects_field_filters() {
-        let err = execute_command(
+    async fn execute_command_accepts_field_filters() {
+        let lm = execute_command(
             log_manager().await,
             command("filter --field level=error"),
             TEST_THEME_BG,
         )
         .await
-        .unwrap_err();
-        assert!(err.contains("structured field display"));
+        .unwrap();
+        assert_eq!(
+            lm.get_filters()[0].pattern,
+            format!("{FIELD_PREFIX}level:error")
+        );
     }
 
     #[tokio::test]
@@ -1276,27 +1281,15 @@ mod tests {
     #[tokio::test]
     async fn facet_value_toggled_removes_the_existing_field_filter() {
         let (mut state, _file) = state_with_one_tab().await;
-        let lm = execute_command(
+        let log_manager = execute_command(
             state.tabs[0].log_manager.clone(),
             command("filter --field level=error"),
             TEST_THEME_BG,
         )
-        .await;
-        // --field filters are currently rejected by the GUI (see
-        // reject_unsupported_filter_args) - confirm that, then exercise
-        // filter_id_for_field_equality directly against a hand-inserted
-        // field filter, since execute_command can't produce one today.
-        assert!(lm.is_err());
-
-        state.tabs[0]
-            .log_manager
-            .add_filter_with_color(
-                format!("{FIELD_PREFIX}level:error"),
-                FilterType::Include,
-                FilterOptions::default(),
-            )
-            .await;
-        let id = state.tabs[0].log_manager.get_filters()[0].id;
+        .await
+        .expect("field filter should be accepted");
+        let id = log_manager.get_filters()[0].id;
+        state.tabs[0].log_manager = log_manager;
 
         let effect = update(
             &mut state,
