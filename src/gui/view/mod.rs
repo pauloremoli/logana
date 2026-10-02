@@ -1,4 +1,5 @@
 pub mod command_bar;
+pub mod field_facets;
 pub mod filter_pane;
 pub mod group_pane;
 pub mod log_pane;
@@ -69,7 +70,7 @@ fn body(app: &mut App, _window: &mut Window, cx: &mut Context<App>) -> impl Into
             .child({
                 let sidebar_tab = app.state.sidebar_tab;
                 let tab = &app.state.tabs[active_tab];
-                sidebar::sidebar(active_tab, tab, sidebar_tab, cx)
+                sidebar::sidebar(active_tab, tab, sidebar_tab, &app.state.facet_expanded, cx)
             })
             .into_any_element(),
         None => div()

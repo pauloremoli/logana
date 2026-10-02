@@ -1,3 +1,4 @@
+use super::field_facets;
 use super::filter_pane::{self, FilterManagementView};
 use super::group_pane::{self, GroupManagementView};
 use crate::gui::app::App;
@@ -11,6 +12,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::button::Button;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
+use std::collections::HashMap;
 
 const SIDEBAR_WIDTH: f32 = 320.0;
 const SIDEBAR_HEADER_HEIGHT: f32 = 32.0;
@@ -19,6 +21,7 @@ pub fn sidebar(
     tab_idx: usize,
     tab: &TabState,
     sidebar_tab: SidebarTab,
+    facet_expanded: &HashMap<String, bool>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let names = tab.log_manager.group_names();
@@ -59,13 +62,29 @@ pub fn sidebar(
         .p_2()
         .child(sidebar_header(sidebar_tab, cx));
     col = match sidebar_tab {
-        SidebarTab::Filters => col.child(filter_pane::filter_pane(
-            tab_idx,
-            filter_defs,
-            group_defs,
-            filter_management.as_ref(),
-            cx,
-        )),
+        SidebarTab::Filters => {
+            let col = col.child(filter_pane::filter_pane(
+                tab_idx,
+                filter_defs,
+                group_defs,
+                filter_management.as_ref(),
+                cx,
+            ));
+            // Re-scans up to 5000 lines on every render while the Filters
+            // tab is open (same cap as `build_field_index`, which this
+            // mirrors) — fine for the file sizes exercised so far, but a
+            // real cost on a large file; caching this per tab (recompute
+            // only when the file or its filters change) is the natural
+            // follow-up if it's ever visibly slow.
+            let counts = tab.build_field_value_counts();
+            col.child(field_facets::field_facets(
+                tab_idx,
+                &counts,
+                filter_defs,
+                facet_expanded,
+                cx,
+            ))
+        }
         SidebarTab::Groups => col.child(group_pane::group_pane(
             tab_idx,
             &names,

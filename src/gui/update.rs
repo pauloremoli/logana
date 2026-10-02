@@ -156,7 +156,7 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
 /// whether toggling it should add or remove that filter. Decodes the
 /// `@field:`-prefixed stored pattern via the existing field-filter parser
 /// rather than string-matching it.
-fn filter_id_for_field_equality(
+pub fn filter_id_for_field_equality(
     filter_defs: &[FilterDef],
     field: &str,
     value: &str,
