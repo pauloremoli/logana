@@ -2856,6 +2856,78 @@ impl TabState {
             values,
         }
     }
+
+    /// Per-field value occurrence counts, for the GUI's faceted filter
+    /// checkboxes (`gui::view::field_facets`) — a separate function from
+    /// `build_field_index` (same sampling strategy/cap) rather than a
+    /// change to its return shape, so autocomplete's existing call sites
+    /// and tests are untouched. Values are sorted by count descending,
+    /// then alphabetically, matching a typical "most common first" facet
+    /// list. `timestamp`/`message` are excluded, same as
+    /// `build_field_index` (free text, not a meaningful facet).
+    pub fn build_field_value_counts(&self) -> FieldValueCounts {
+        let Some(parser) = &self.display.format else {
+            return FieldValueCounts::default();
+        };
+
+        const SAMPLE_LIMIT: usize = 5_000;
+        let total = self.file_reader.line_count();
+        let limit = total.min(SAMPLE_LIMIT);
+
+        const NAME_SAMPLE: usize = 200;
+        let name_sample = total.min(NAME_SAMPLE);
+        let owned_name_lines: Vec<_> = (0..name_sample)
+            .map(|i| self.file_reader.get_line(i))
+            .collect();
+        let name_lines: Vec<&[u8]> = owned_name_lines.iter().map(|l| &**l).collect();
+        let names = parser.collect_field_names(&name_lines);
+
+        let mut counts: HashMap<String, HashMap<String, usize>> = HashMap::new();
+        for i in 0..limit {
+            let owned_line = self.file_reader.get_line(i);
+            let line: &[u8] = &owned_line;
+            let Some(parts) = parser.parse_line(line) else {
+                continue;
+            };
+            for name in &names {
+                if matches!(name.as_str(), "timestamp" | "message") {
+                    continue;
+                }
+                if let Some(v) = crate::filters::resolve_field(name, &parts) {
+                    *counts
+                        .entry(name.clone())
+                        .or_default()
+                        .entry(v.to_string())
+                        .or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut sorted_counts: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+        for (name, value_counts) in &counts {
+            let mut entries: Vec<(String, usize)> =
+                value_counts.iter().map(|(v, c)| (v.clone(), *c)).collect();
+            entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            sorted_counts.insert(name.clone(), entries);
+        }
+
+        let mut names: Vec<String> = counts.keys().cloned().collect();
+        names.sort();
+
+        FieldValueCounts {
+            names,
+            counts: sorted_counts,
+        }
+    }
+}
+
+/// Per-field value occurrence counts, from `TabState::
+/// build_field_value_counts` — `counts[name]` is sorted by occurrence
+/// count descending, then alphabetically.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FieldValueCounts {
+    pub names: Vec<String>,
+    pub counts: HashMap<String, Vec<(String, usize)>>,
 }
 
 impl std::fmt::Debug for TabState {
@@ -6337,6 +6409,42 @@ mod tests {
             "message should have no sampled values"
         );
         assert!(!index.values.get("level").unwrap_or(&vec![]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_build_field_value_counts_counts_occurrences() {
+        let lines = [
+            r#"{"time":"2024-01-01T00:00:00Z","level":"info","msg":"a"}"#,
+            r#"{"time":"2024-01-01T00:00:01Z","level":"info","msg":"b"}"#,
+            r#"{"time":"2024-01-01T00:00:02Z","level":"warn","msg":"c"}"#,
+        ];
+        let tab = make_tab(&lines).await;
+        let counts = tab.build_field_value_counts();
+        assert!(counts.names.contains(&"level".to_string()));
+        let level_counts = counts.counts.get("level").unwrap();
+        assert_eq!(
+            level_counts,
+            &vec![("info".to_string(), 2), ("warn".to_string(), 1)],
+            "sorted by count descending, then alphabetically"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_field_value_counts_excludes_timestamp_and_message() {
+        let lines = [r#"{"time":"2024-01-01T00:00:00Z","level":"info","msg":"hello"}"#];
+        let tab = make_tab(&lines).await;
+        let counts = tab.build_field_value_counts();
+        assert!(!counts.names.contains(&"timestamp".to_string()));
+        assert!(!counts.names.contains(&"message".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_build_field_value_counts_is_empty_without_a_detected_format() {
+        let tab = make_tab(&["plain text line"]).await;
+        assert!(tab.display.format.is_none());
+        let counts = tab.build_field_value_counts();
+        assert!(counts.names.is_empty());
+        assert!(counts.counts.is_empty());
     }
 
     #[tokio::test]

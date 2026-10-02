@@ -39,6 +39,9 @@ pub enum Message {
     SidebarToggled,
     ClearAllFilters(usize),
     FilterRemoved(usize, usize),
+
+    FacetToggled(String),
+    FacetValueToggled(usize, String, String),
 }
 
 pub struct FileLoaded {

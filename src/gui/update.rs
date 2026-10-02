@@ -1,7 +1,10 @@
 use crate::commands::auto_complete::shell_split;
 use crate::commands::{CommandLine, Commands};
 use crate::db::{Database, LogManager};
-use crate::filters::{DATE_PREFIX, FilterOptions, FilterType, group_enabled, parse_date_filter};
+use crate::filters::{
+    DATE_PREFIX, FIELD_PREFIX, FilterDef, FilterOptions, FilterType, group_enabled,
+    parse_date_filter, parse_field_filter_expr,
+};
 use crate::gui::effect::Effect;
 use crate::gui::message::{FileLoaded, Message};
 use crate::gui::runtime;
@@ -125,7 +128,50 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             },
             None => Effect::None,
         },
+        Message::FacetToggled(field) => {
+            let expanded = state.facet_expanded.entry(field).or_insert(false);
+            *expanded = !*expanded;
+            Effect::None
+        }
+        Message::FacetValueToggled(tab_idx, field, value) => {
+            state.active_tab = tab_idx;
+            let Some(tab) = state.tabs.get(tab_idx) else {
+                return Effect::None;
+            };
+            match filter_id_for_field_equality(tab.log_manager.get_filters(), &field, &value) {
+                Some(id) => Effect::RemoveFilter {
+                    tab_idx,
+                    log_manager: tab.log_manager.clone(),
+                    id,
+                },
+                None => handle_command_string(state, format!("filter --field {field}={value}")),
+            }
+        }
     }
+}
+
+/// Finds the filter that's an exact `--field name=value` equality match
+/// for `field`/`value` (no extra `--field` conditions, no trailing free
+/// text) — used to read a facet checkbox's checked state and to decide
+/// whether toggling it should add or remove that filter. Decodes the
+/// `@field:`-prefixed stored pattern via the existing field-filter parser
+/// rather than string-matching it.
+fn filter_id_for_field_equality(
+    filter_defs: &[FilterDef],
+    field: &str,
+    value: &str,
+) -> Option<usize> {
+    filter_defs.iter().find_map(|def| {
+        let expr = def.pattern.strip_prefix(FIELD_PREFIX)?;
+        let (conditions, text) = parse_field_filter_expr(expr).ok()?;
+        if text.is_some() {
+            return None;
+        }
+        match conditions.as_slice() {
+            [(k, v)] if k == field && v == value => Some(def.id),
+            _ => None,
+        }
+    })
 }
 
 /// Applies a time-range preset: runs the real `:date-filter` command for
@@ -1200,6 +1246,99 @@ mod tests {
             }
             other => panic!("expected RemoveFilter, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn facet_toggled_flips_expand_state_starting_from_collapsed() {
+        let (mut state, _file) = state_with_one_tab().await;
+        assert!(!state.facet_expanded.contains_key("level"));
+        update(&mut state, Message::FacetToggled("level".to_string()));
+        assert_eq!(state.facet_expanded.get("level"), Some(&true));
+        update(&mut state, Message::FacetToggled("level".to_string()));
+        assert_eq!(state.facet_expanded.get("level"), Some(&false));
+    }
+
+    #[tokio::test]
+    async fn facet_value_toggled_adds_a_field_filter_when_none_exists() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = update(
+            &mut state,
+            Message::FacetValueToggled(0, "level".to_string(), "error".to_string()),
+        );
+        match effect {
+            Effect::ExecuteCommand { command, .. } => {
+                assert!(matches!(command, Commands::Filter { .. }));
+            }
+            other => panic!("expected ExecuteCommand(Filter), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn facet_value_toggled_removes_the_existing_field_filter() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let lm = execute_command(
+            state.tabs[0].log_manager.clone(),
+            command("filter --field level=error"),
+            TEST_THEME_BG,
+        )
+        .await;
+        // --field filters are currently rejected by the GUI (see
+        // reject_unsupported_filter_args) - confirm that, then exercise
+        // filter_id_for_field_equality directly against a hand-inserted
+        // field filter, since execute_command can't produce one today.
+        assert!(lm.is_err());
+
+        state.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                format!("{FIELD_PREFIX}level:error"),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        let id = state.tabs[0].log_manager.get_filters()[0].id;
+
+        let effect = update(
+            &mut state,
+            Message::FacetValueToggled(0, "level".to_string(), "error".to_string()),
+        );
+        match effect {
+            Effect::RemoveFilter { id: removed_id, .. } => assert_eq!(removed_id, id),
+            other => panic!("expected RemoveFilter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn filter_id_for_field_equality_finds_the_matching_filter() {
+        let def = FilterDef {
+            id: 7,
+            pattern: format!("{FIELD_PREFIX}level:error"),
+            filter_type: FilterType::Include,
+            enabled: true,
+            color_config: None,
+            use_regex: false,
+            ignore_case: false,
+            group: None,
+        };
+        assert_eq!(
+            filter_id_for_field_equality(&[def], "level", "error"),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn filter_id_for_field_equality_ignores_non_field_filters() {
+        let def = FilterDef {
+            id: 1,
+            pattern: "ERROR".to_string(),
+            filter_type: FilterType::Include,
+            enabled: true,
+            color_config: None,
+            use_regex: false,
+            ignore_case: false,
+            group: None,
+        };
+        assert_eq!(filter_id_for_field_equality(&[def], "level", "error"), None);
     }
 
     #[tokio::test]

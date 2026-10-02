@@ -2,6 +2,7 @@ use crate::db::Database;
 use crate::gui::time_range::TimeRangePreset;
 use crate::theme::Theme as TuiTheme;
 use crate::ui::TabState;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct GuiState {
@@ -14,6 +15,11 @@ pub struct GuiState {
     pub time_range_open: bool,
     pub time_range_preset: TimeRangePreset,
     pub sidebar_tab: SidebarTab,
+    /// Per-field expand/collapse state for the sidebar's "Available
+    /// Filters" facet categories — missing/absent means collapsed, so a
+    /// newly-seen field starts collapsed without needing to be
+    /// pre-populated.
+    pub facet_expanded: HashMap<String, bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +61,7 @@ impl GuiState {
             time_range_open: false,
             time_range_preset: TimeRangePreset::default(),
             sidebar_tab: SidebarTab::default(),
+            facet_expanded: HashMap::new(),
         }
     }
 
